@@ -1,0 +1,55 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+*.log
+logs/
+
+# Generated project outputs
+exports/audio/
+runs/
+*.mp3
+*.wav
+*.m4a
+*.flac
+
+# Large or private source material
+sources/raw/
+project/sources/raw/
+
+# Temporary files
+tmp/
+temp/
+.cache/
