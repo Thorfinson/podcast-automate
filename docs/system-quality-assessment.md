@@ -22,6 +22,8 @@ Tutor-Pädagogik, Quiz, Lernstandsdiagnostik und Wiederholungsplanung sind auße
 | Zusammenhang | Vertagte Fragen werden später aufgenommen; die letzte Folge verbindet die Ergebnisse. | Folgen stehen nebeneinander oder verlieren zentrale offene Fragen. |
 | Dialog | Host-Nachfragen bewirken Präzisierung, Herleitung, Kritik oder ein vertieftes Beispiel. | Sprecher wechseln nur zwischen kurzen Behauptungen und Zustimmung. |
 | Hörbarkeit | Tempo, Aussprache, Pausen und Kapitel unterstützen die Erklärung. | Ein formal korrektes Skript ist gesprochen schwer nachvollziehbar. |
+| Automatische Produktion | Zwei beständige Stimmen, passende Übergänge, Lautheit und fertige Dateien entstehen ohne manuellen Schnitt. | Der Nutzer muss Audioschnipsel sortieren, verbinden oder im Editor reparieren. |
+| Zuverlässigkeit | Abo-Pausen und technische Fehler lassen sich mit erhaltenen Ergebnissen fortsetzen. | Eine Unterbrechung erzwingt die Neuberechnung der Serie oder einen ungefragten API-Wechsel. |
 | Laufzeit | Aus dem Inhalt geplante und tatsächlich gemessene Dauer werden ausgewiesen; jede Audiofolge bleibt bei höchstens 30 Minuten. | Eine feste Gesamtstundenzahl gilt als Qualitätsnachweis oder Wortzahl wird mit Tiefe gleichgesetzt. |
 
 ## Was der Tiefencheck leisten muss
@@ -58,7 +60,17 @@ Die Nutzerbeispiele liefern zwei mögliche Piloten:
 - **Energiebasierte Modelle im Maschinenlernen:** prüfen, ob Begriffe, Voraussetzungen, Erklärschritte und konkrete Beispiele eine längere Serie tragen. Aussagen zu Yann LeCun und Alfredo Canziani müssen anhand konkreter Arbeiten zugeordnet werden.
 - **Blutwerte:** prüfen, ob Grundlagen und unterschiedliche Arten fachlicher Aussagen nachvollziehbar getrennt werden und personenzentrierte Ausgangsquellen in eine breitere Quellenlage eingeordnet werden. Eine ungeklärte Personenangabe wird nicht stillschweigend einer Person zugeordnet.
 
-Diese Piloten sind Rechercheaufträge, keine bereits geprüften fachlichen Ergebnisse. Der Implementierungsplan priorisiert zunächst eine zentrale Erklärfolge des ersten Themas als Qualitätsmaßstab.
+Diese Piloten sind Rechercheaufträge, keine bereits geprüften fachlichen Ergebnisse. Nach einem frühen technischen Audiotest priorisiert der Implementierungsplan eine zentrale Erklärfolge des ersten Themas als fachlichen Qualitätsmaßstab.
+
+## Früher Audiotest und automatische Prüfungen
+
+Vor dem Aufbau der vollständigen Recherchepipeline wird auf Windows 11 mit der Radeon RX 9070 XT eine deutsche Hörprobe automatisch erzeugt und montiert. Sie enthält beide Stimmen, längere Erklärpassagen, Sprecherwechsel, Fachbegriffe, Zahlen und Einheiten. Qwen3-TTS ist der erste Kandidat; seine Eignung auf diesem Rechner ist noch nicht nachgewiesen.
+
+Der Test dokumentiert Modell- und Laufzeitversionen, Speicherbedarf, Erzeugungsdauer, Verständlichkeit, Stimmenkonstanz und Aussprache. Eine kurze Hörprobe dient der anfänglichen Auswahl von Modell und Stimmen. Sie ist kein wiederkehrender manueller Schnittschritt.
+
+Im Produktionslauf werden fehlende oder beschädigte Segmente, leere Ausgabe, auffällige Stille, Pegelfehler und unplausible Dauer automatisch geprüft. Betroffene Segmente erhalten begrenzte Reparaturversuche. Verbleibende Befunde blockieren den betroffenen finalen Export mit einer konkreten Fehlermeldung. Kapitel und Laufzeit werden an den tatsächlich montierten Audiodaten geprüft.
+
+Eine ergänzende lokale Rücktranskription wird anhand bekannter Auslassungen und Wiederholungen bewertet. Sie darf nicht allein als Nachweis für korrekte Aussprache gelten. Automatische Fehlererkennung kann keine fehlerfreie oder durchgehend natürliche Sprachausgabe garantieren; die Hörprüfung des Piloten bleibt ein eigenes Abnahmekriterium.
 
 ## Vorgehen zur Abnahme
 
@@ -66,7 +78,8 @@ Diese Piloten sind Rechercheaufträge, keine bereits geprüften fachlichen Ergeb
 2. Einen Gesamtplan und eine zentrale Folge prüfen, bevor die vollständige Serie produziert wird.
 3. Erkannte Lücken in Wissensmodell, Plan und Skript korrigieren.
 4. Die vollständige Skriptserie gegen Quellen, Abdeckung und Zusammenhang prüfen.
-5. Nach Freigabe Audio erzeugen; Aussprache, tatsächliche Laufzeiten und Hörverständlichkeit prüfen.
+5. Nach Freigabe Audio automatisch erzeugen und montieren; Aussprache, tatsächliche Laufzeiten und Hörverständlichkeit prüfen.
 6. Die vollständige Pilotserie bewerten und verbleibende Mängel konkret dokumentieren.
+7. Unterbrechung, Abo-Pause und defektes Segment gezielt erproben; fertige Ergebnisse müssen erhalten bleiben.
 
-Automatische Prüfungen, Modellbewertungen und menschliche Befunde bleiben im Qualitätsbericht getrennt. Blockierende Befunde müssen vor finalem Export behoben sein. Die genauen technischen Gates und die Definition of Done stehen in [SPEC.md](../SPEC.md).
+Diese redaktionelle Abnahme bewertet den MVP. Der normale Produktionslauf erfordert keine manuelle Bearbeitung jeder Folge. Automatische Prüfungen, Modellbewertungen und menschliche Befunde bleiben im Qualitätsbericht getrennt. Blockierende Befunde müssen vor finalem Export behoben sein. Die genauen technischen Gates und die Definition of Done stehen in [SPEC.md](../SPEC.md).

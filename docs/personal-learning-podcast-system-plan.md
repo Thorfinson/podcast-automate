@@ -1,136 +1,186 @@
 # Implementierungsplan: Deep-Dive-Serien
 
-## Verbindlicher Fokus
+Stand: 2026-09-10. Dieser Plan konkretisiert [SPEC.md](../SPEC.md). Das Repository enthält bislang Dokumentation; alle folgenden Meilensteine sind noch umzusetzen.
 
-Die Produkt- und Architekturentscheidungen stehen in [SPEC.md](../SPEC.md). Dieser Plan beschreibt die Umsetzung des am 2026-09-10 priorisierten Hauptfalls: Thema vorgeben, Quellen recherchieren und eine zusammenhängende Podcastserie erhalten, deren Folgenzahl und Gesamtdauer sich aus Themenumfang und gewünschter Tiefe ergeben. Jede Folge dauert höchstens 30 Minuten.
+## Ziel und feststehende Entscheidungen
 
-Die Serie muss ausführliche Erklärungen, Beispiele, Belege, Gegenpositionen und eine nachvollziehbare Reihenfolge bieten. Tutor, Quiz, Karteikarten, Prüfungsmodus und Wiederholungsplanung sind zurückgestellt. Sie sind keine Voraussetzung für den Recherchekern oder die Abnahme des MVP.
+Ein Thema führt zu einer recherchierten, zusammenhängenden Podcastserie. Begriffe, Mechanismen, Beispiele, Gegenpositionen und Unsicherheiten bekommen den nötigen Raum. Themenumfang und gewünschte Tiefe bestimmen die Folgenzahl. Es gibt keine feste Gesamtdauer und keine maximale Folgenzahl; einzelne Folgen bleiben gemäß Spezifikation bei höchstens 30 Minuten.
 
-## Konsequenzen für die Architektur
-
-| Entscheidung | Umsetzung |
+| Bereich | Entscheidung |
 | --- | --- |
-| Thema als Einstieg | Themenauftrag und aktive Quellenrecherche ergänzen die Ingestion eigener Dateien. |
-| Serie als Standard | Serienplan, Abdeckungsmatrix und Abhängigkeiten entstehen vor den einzelnen Skripten. |
-| Inhalt bestimmt den Serienumfang | Folgenzahl und Gesamtdauer werden aus Themenabdeckung und Tiefe abgeleitet; weitere nötige Folgen sind möglich. |
-| Gründliche Erklärungen | Wissensmodell enthält Voraussetzungen, Mechanismen und ausgearbeitete Beispiele zusätzlich zu Claims. |
-| Zusammenhängende Folgen | Jeder Skriptaufruf kennt relevante Quellen, den Gesamtplan, bereits Erklärtes und offene Fragen. |
-| Hörbares MVP | Audio-Export ist Bestandteil des fertigen MVP; pro Lauf bleibt die explizite Audio-Freigabe erhalten. |
-| Ein Ausgabeformat | Ein Deep-Dive-Planer und -Generator; keine generische Routing-Schicht für spätere Modi. |
+| Nutzung | Persönliches Projekt, lokale CLI und Projektdateien |
+| Zielrechner | Windows 11 mit AMD Radeon RX 9070 XT |
+| Textmodelle | Vorhandenes ChatGPT-/Codex-Abo zuerst; Claude Code als austauschbare Alternative |
+| Sprachausgabe | Lokal; Qwen3-TTS ist der erste zu prüfende Kandidat |
+| Produktion | Zwei beständige deutsche Host-Stimmen; Montage, Pausen, Lautheit, Kapitel und Export automatisch |
+| Bedienung | Thema eingeben und Lauf starten; kein manueller Audioschnitt |
+| Umfang | Inhaltlich begründete Serie, die bei zusätzlichem Erklärbedarf wachsen kann |
+| Zurückgestellt | Tutor, Quiz, Karteikarten, Web-App, Veröffentlichung und aufwendiges Sounddesign |
 
-## Meilenstein 0: Eine Folge als Qualitätsmaßstab
+Die Abos liefern die Textverarbeitung über die offiziellen CLI-Werkzeuge. Sie machen das Textmodell nicht lokal. Die Sprachausgabe soll auf dem eigenen Rechner laufen. Zusätzliche bezahlte Modell- oder Audio-APIs sind keine Voraussetzung des MVP.
 
-Vor einer vollständigen automatischen Produktion wird ein fachlicher Pilot aus den Nutzerbeispielen gewählt. Der erste vorgeschlagene Pilot ist die Frage nach energiebasierten Modellen im Maschinenlernen, ausgehend von konkret recherchierten Arbeiten von Yann LeCun und Alfredo Canziani.
+## Technische Vorgaben für den Start
 
-Dafür entstehen zunächst:
+Diese Vorgaben sind umsetzbare Standardentscheidungen. Sie verlangen keine weitere Auswahl durch den Nutzer.
 
-1. ein Themenauftrag mit Leitfrage, Vorwissen und gewünschter inhaltlicher Tiefe,
-2. ein begrenztes, geprüftes Quelldossier mit Herkunft und Quellenabschnitten,
-3. ein vorläufiger Serienplan mit inhaltlich begründeter Folgenzahl, Abhängigkeiten und Laufzeitschätzungen,
-4. ein vollständig ausgearbeitetes Skript für eine inhaltlich zentrale Folge bis 30 Minuten,
-5. eine redaktionelle Bewertung der Erklärungstiefe und der Quellenbindung.
-
-Eine zentrale Erklärfolge ist besonders aussagekräftig: An ihr lässt sich prüfen, ob das System einen Zusammenhang wirklich entfaltet und ein Beispiel durchführt. Ein gelungener Einstieg allein weist diese Fähigkeit noch nicht nach.
-
-Dieser Meilenstein liefert Referenzausgaben und Prüfkriterien. Er ersetzt nicht die spätere vollständige Pilotserie. Die Recherche des Pilotinhalts und die Erzeugung der Artefakte sind noch ausstehende Arbeiten; die Dokumentation enthält bisher keine fertigen fachlichen Ergebnisse.
-
-## Phase 1: Projektstruktur und Datenverträge
-
-- Projektkonfiguration aus `TopicBrief` und verbindliche Artefaktpfade aus der Spezifikation umsetzen.
-- Schemas für Quellen, Wissensmodell, Serienplan, Episodenplan, Qualitätsbericht und Manifest implementieren.
-- Stabile IDs und die maschinenlesbare Referenzsyntax im Skript festlegen.
-- `pla init` und `pla ingest` für Markdown, Text und PDF bauen.
-- Quellen abschnittsweise importieren, Hashes und Rechte erfassen, Duplikate und Importfehler behandeln.
-- Run-Stände einfrieren und Stufen wiederaufnehmbar machen.
-
-**Abnahme:** Ein lokales Fixture lässt sich importieren und validieren. Ungültige IDs und fehlende Quellenabschnitte werden erkannt. Es gibt keine erforderlichen Tutor-Felder.
-
-## Phase 2: Themengeleitete Recherche
-
-- `pla research` mit echten Such- und Abrufwerkzeugen implementieren.
-- Aus Leitfrage und Vorwissen Teilfragen, Grundlagen und Suchbegriffe ableiten.
-- Personen und Werke anhand konkreter Quellen zuordnen.
-- Quellenkandidaten, Auswahlgründe, Zugriffsfehler und Recherchegrenzen dokumentieren.
-- Primärquellen und fachliche Einordnungen einlesen; Suchausschnitte nicht als Volltext behandeln.
-- Abdeckung prüfen und notwendige ergänzende Suchrunden begrenzen.
-
-**Abnahme:** Ein Themenauftrag funktioniert ohne mitgelieferte Quelldateien. Nicht zugängliche oder unzureichende Quellen führen zu sichtbaren Lücken. Zuschreibungen an Personen bleiben überprüfbar.
-
-## Phase 3: Wissensmodell und Synthese
-
-- Begriffe, Claims, Evidence-Einträge, Gegenpositionen und Unsicherheiten extrahieren.
-- Voraussetzungen und Erklärabhängigkeiten verknüpfen.
-- Mechanismen in nachvollziehbare Schritte zerlegen und Beispiele mit Quellen verankern.
-- Perspektiven vergleichen und redaktionelle Schlussfolgerungen markieren.
-- Recherche-Briefing, Argumentkarte und offene Fragen aus demselben Modell ableiten.
-
-**Abnahme:** Die priorisierten Fragen haben eine Quellenbasis oder klar ausgewiesene Lücken. Das Modell trägt eine Erklärung über mehrere Folgen. Widersprüche werden eingeordnet, ohne Scheinkonsens zu erzeugen.
-
-## Phase 4: Serien- und Episodenplanung
-
-- `pla plan` mit inhaltlich abgeleiteter Folgenzahl und harter Obergrenze von 30 Minuten je Folge bauen.
-- Folgen nach Voraussetzungen und aufeinander aufbauenden Fragen anordnen.
-- Bei zusätzlichem Erklärbedarf weitere Folgen einplanen; keine feste Gesamtlänge oder maximale Folgenzahl einbauen.
-- Claims, Begriffe und Teilfragen in einer Abdeckungsmatrix zuweisen.
-- Erklärschritte, Beispiele und Gegenpositionen in Szenen mit Zeitbudget planen.
-- Vertagte Kernfragen einer späteren Folge zuordnen oder begründet ausschließen.
-- Wortzahl- und Pausenschätzung für Laufzeiten einführen; nach dem Audio-Pilot kalibrieren.
-
-**Abnahme:** Der Plan deckt die priorisierten Fragen in der gewünschten Tiefe ab, begründet seine Folgenzahl und hat keine verlorenen Kerninhalte oder unerklärten Voraussetzungen. Die Gesamtdauer ergibt sich aus den Folgen. Ein ausdrücklich genannter Zeitwunsch und nötige Abweichungen werden sichtbar gemacht.
-
-## Phase 5: Skripterstellung und Qualitätsprüfungen
-
-- `pla script` für die gesamte Serie und einzelne Folgen implementieren.
-- Pro Folge relevante Quellenabschnitte und Serienkontext zusammenstellen.
-- Vollständige, sprechbare Erklärungen mit zwei funktionalen Host-Rollen erzeugen.
-- Wissensmodell-Referenzen maschinenlesbar im Skript halten.
-- `pla check` mit deterministischen Prüfungen und getrennt ausgewiesenen inhaltlichen Reviews umsetzen.
-- Quellenpassung, Erklärungstiefe, Szenenfortschritt und Wiederholungen über Folgengrenzen hinweg prüfen.
-- Ergänzende Recherche und Überarbeitung auf konkret festgestellte Lücken begrenzen.
-- Qualitätsberichte an Artefakthashes binden; Änderungen machen betroffene Prüfungen ungültig.
-
-**Abnahme:** Eine vollständige Serie aus Skripten beantwortet die Leitfrage schrittweise. Eine oberflächliche Zusammenfassung besteht den Tiefencheck auch dann nicht, wenn alle Referenzen formal gültig sind.
-
-## Phase 6: Audio, Export und vollständiger Pilot
-
-- TTS-Anbindung, Sprecherstimmen und Aussprache zentraler Begriffe konfigurieren.
-- Segmentweise rendern, cachen, zusammensetzen und Lautheit normalisieren.
-- Kostenschätzung vor Audio-Freigabe bereitstellen.
-- `pla render` nur mit aktueller Qualitätsprüfung und expliziter Freigabe zulassen.
-- Tatsächliche Laufzeiten messen und zu lange Folgen vor dem finalen Export korrigieren.
-- Kapitel aus der Audio-Zeitleiste sowie Transkripte und Show Notes exportieren.
-- Unterbrochene Folgen ohne komplette Neuberechnung fortsetzen.
-- Die vollständige Pilotserie redaktionell anhören und anhand der Qualitätskriterien bewerten.
-
-**Abnahme:** Der Hauptfall ist als zusammenhängende Serie mit inhaltlich begründetem Umfang hörbar. Zusätzliche nötige Folgen können produziert werden. Keine Audiofolge überschreitet 30 Minuten. Geplante und tatsächliche Gesamtdauer werden ausgewiesen, und alle Begleitdateien sind vorhanden.
-
-## Evaluation und Fixtures
-
-Die verbindlichen Fixtures stehen in der Spezifikation:
-
-- `fixtures/simple_topic` für schnelle technische Prüfungen,
-- `fixtures/mechanism_series` für Tiefe, Abhängigkeiten und langen Serienumfang,
-- `fixtures/conflicting_perspectives` für Quellenkritik und die Trennung von Positionen und Evidenz.
-
-Referenzausgaben benennen erwartete Claims, Erklärschritte, Beispiele, Grenzen und problematische Fälle. Das Serienfixture prüft zusätzlich Themenabdeckung, Reihenfolge, Wiederholungen und die Erweiterung um weitere inhaltlich nötige Folgen. Eine feste Gesamtlänge oder Folgenzahl ist kein Abnahmekriterium. Der frühere prüfungsbezogene Fixture-Fall wird nicht für den MVP benötigt.
-
-Die Bewertungskriterien stehen in [system-quality-assessment.md](system-quality-assessment.md). Formale Validierung und redaktionelle Bewertung werden getrennt berichtet. Ein bestandener Modellreview allein belegt keine Hörqualität.
-
-## Offene technische Entscheidungen
-
-Vor der jeweiligen Implementierungsphase sind konkret zu entscheiden:
-
-| Entscheidung | Spätestens erforderlich |
+| Baustein | Umsetzung |
 | --- | --- |
-| Programmiersprache, CLI-Framework und Schema-Bibliothek | Phase 1 |
-| Skriptformat und Referenzsyntax | Phase 1 |
-| Such- und Abrufprovider, Umgang mit PDF- und Transkriptzugriff | Phase 2 |
-| LLM-Provider, Modelle, Kontextaufteilung, Retry- und Kostenlimits | Phase 3 |
-| Bewertungsschema für Evidenzpassung und Erklärungstiefe | Vor der ersten Skriptabnahme |
-| TTS-Provider, Stimmen, Aussprachelexikon und Audio-Werkzeuge | Phase 6 |
+| Anwendung | Python 3.12, Typer für die CLI, Pydantic 2 für validierte Datenverträge |
+| Persistenz | YAML-/JSON-Artefakte, stabile IDs, atomare Dateischreibvorgänge und Run-Manifeste; zunächst keine Datenbank |
+| Textadapter | Zunächst ein Adapter für Codex CLI mit Abo-Anmeldung und strukturierten Ergebnissen |
+| Recherche | Suchwerkzeuge des gewählten CLI-Backends; tatsächlicher Abruf und lokale Speicherung zugänglicher Quellentexte |
+| Import | Markdown, Text, HTML und textbasierte PDFs; unlesbare oder nicht zugängliche Inhalte als Lücke erfassen |
+| Skript | Kanonisches script.yaml mit Regie und Referenzen; script.md als daraus erzeugte Lesefassung |
+| Audio | Separater lokaler TTS-Prozess in eigener Python-Umgebung; Ein- und Ausgabe über Dateien |
+| Montage | FFmpeg und ffprobe für Audioverarbeitung, Messung und MP3-Export |
+| Tests | Kleine lokale Fixtures für Ablauf und Fehlerfälle; echte Modell- und GPU-Tests separat auf dem Zielrechner |
 
-Diese Entscheidungen sind noch offen. Die neue Priorisierung wählt keinen Anbieter und implementiert noch keine Pipeline.
+Der Controller startet Unterprozesse mit Argumentlisten ohne Shell-Auswertung. Windows-Pfade und Leerzeichen werden berücksichtigt. Die TTS-Umgebung erhält eigene festgehaltene Paket- und Modellversionen, sobald die Kombination auf dem Zielrechner funktioniert.
 
-## Spätere Optionen
+Codex unterstützt Abo-Anmeldung sowie nichtinteraktive Aufrufe mit strukturierten Ausgaben. Darauf basiert der erste Adapter. Er nutzt die offizielle CLI und deren Anmeldung. Ein späterer Claude-Adapter verwendet denselben internen Auftrag-/Ergebnisvertrag; beide Adapter müssen nicht gleichzeitig gebaut werden. Quellen: [Codex-Anmeldung](https://learn.chatgpt.com/docs/auth), [Codex für Skripte](https://learn.chatgpt.com/docs/non-interactive-mode), [Claude Code für Skripte](https://code.claude.com/docs/en/headless).
 
-Nach Abnahme des Deep-Dive-MVP können Tutor-Modus, Quiz, Karteikarten, Prüfungsmodus, Wiederholungsplanung, zusätzliche Stimmen, Sounddesign und weitere Oberflächen neu priorisiert werden. Das Quellen- und Wissensmodell kann dafür weiterverwendet werden; zusätzliche Modi dürfen den ersten Hauptfall nicht verzögern.
+Qwen3-TTS unterstützt Deutsch und bietet unterschiedliche Modellgrößen. Ob die konkrete Kombination aus Modell, PyTorch und AMD-Laufzeit auf diesem Rechner zuverlässig funktioniert und angenehm klingt, ist noch nicht getestet. Die Windows-Installation folgt der zum Testzeitpunkt passenden AMD-Anleitung; eine Unterstützung der Grafikkarte allein beweist noch keine Kompatibilität des TTS-Pakets. Quellen: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS), [AMD-Kompatibilitätsmatrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html).
+
+## Geplanter Bedienablauf
+
+Nach der einmaligen Installation und Abo-Anmeldung:
+
+~~~powershell
+pla doctor
+pla init .\energy-models --topic "Energiebasierte Modelle gründlich verstehen"
+pla run .\energy-models --approve-audio
+pla status .\energy-models
+~~~
+
+Der freigegebene Gesamtlauf umfasst Recherche, Wissensmodell, Serienplanung, Skripte, Prüfungen und fertige Audiodateien. Ohne Audio-Freigabe endet er bei den prüfbaren Skripten. Die Freigabe gilt für diesen Lauf, nicht als dauerhafte Erlaubnis für beliebige spätere Produktionen. Die geprüften und gerenderten Stände werden mit ihren Hashes protokolliert.
+
+Bei ausgeschöpftem Abo-Kontingent speichert das Programm seinen Stand. Ein späteres `pla resume .\energy-models` setzt dort fort. Es gibt keine Schleife, die das Limit ständig erneut anfragt, und keinen stillen Wechsel auf eine kostenpflichtige API. Ein fehlender Login, ein technischer Fehler und ein Qualitätsproblem erhalten unterscheidbare Statusmeldungen.
+
+Die einzelnen Befehle aus der Spezifikation bleiben für gezielte Prüfung und Korrektur verfügbar. Der Nutzer muss keine Texte zwischen Chatfenstern kopieren und keine Audioschnipsel in einem Editor zusammensetzen.
+
+## Reihenfolge und überprüfbare Ergebnisse
+
+| Meilenstein | Sichtbares Ergebnis | Voraussetzung |
+| --- | --- | --- |
+| 0. Machbarkeit auf Windows | Deutsche Hörprobe mit zwei Stimmen, automatisch fertige MP3 und gemessene Renderdaten; erfolgreicher Abo-CLI-Test | Zugang zum Zielrechner |
+| 1. Ausführbares Grundgerüst | Installierbare CLI, Datenverträge, Textadapter, Status und Wiederaufnahme | CLI-Teil aus 0; GPU-unabhängig |
+| 2. Kleiner vollständiger Durchlauf | Aus einem lokalen Quelldossier entsteht eine geprüfte und automatisch montierte Audiofolge | 0 und 1 |
+| 3. Recherche und fachliche Tiefe | Aus einem Thema entstehen echte Quellen, Wissensmodell, Serienentwurf und eine zentrale Erklärfolge | 2 |
+| 4. Zusammenhängende Serie | Mehrere aufeinander aufbauende Folgen mit Abdeckung und inhaltlich begründeten Erweiterungen | 3 |
+| 5. Zuverlässige Gesamtproduktion | Vollständige Pilotserie, automatische Fehlerbehandlung, belastbare Wiederaufnahme und Windows-Anleitung | 4 |
+
+### Meilenstein 0: Die riskanten Annahmen zuerst prüfen
+
+Auf dem Windows-Rechner werden Betriebssystemversion, Treiber, GPU-Speicher und passende PyTorch-/AMD-Laufzeit erfasst. Zuerst wird die native Windows-Installation geprüft. WSL2 wäre ein gezielter Ausweichweg, falls der native TTS-Versuch an einer nachgewiesenen Inkompatibilität scheitert; es ist keine vorab vorausgesetzte Installation.
+
+Zwei kleine Versuche liefern belastbare Ausgangsdaten:
+
+1. Codex CLI mit vorhandener Abo-Anmeldung: strukturierte Ausgabe erzeugen, tatsächlich verfügbare Suchwerkzeuge prüfen und eine gefundene Quelle abrufen.
+2. Qwen3-TTS: einen deutschen Dialog mit wechselnden und längeren Sprecherpassagen, Fachbegriffen, Zahlen und Einheiten erzeugen. Segmente automatisch zu einer MP3 mit Pausen und Kapitelmarken verbinden.
+
+Gemessen werden Modellladezeit, benötigter GPU-Speicher, Renderdauer im Verhältnis zur Hörzeit sowie Fehler bei wiederholter Erzeugung. Eine Hörprobe bewertet Verständlichkeit, Natürlichkeit, Aussprache und Stimmenkonstanz. Das ist eine Qualitätsentscheidung beim Aufbau, kein manueller Schnittschritt für jede Folge.
+
+**Abnahme:** Ein wiederholbarer Textaufruf und ein dokumentierter lokaler Audioweg funktionieren. Die gewählte Modellvariante und Stimmen werden anhand der Ergebnisse festgehalten. Bei TTS-Problemen werden zunächst kleinere Modellvariante oder kompatible lokale Alternative geprüft. Eine Änderung des Betriebswegs wird mit konkretem Fehler und brauchbarer Alternative zur Entscheidung vorgelegt; bis dahin kann das GPU-unabhängige Grundgerüst entstehen.
+
+### Meilenstein 1: CLI, Datenverträge und wiederaufnehmbare Aufträge
+
+- Python-Paket, Konfiguration und Befehle `init`, `doctor`, `status` und `resume` anlegen.
+- Die strukturierten Artefakte aus der Spezifikation als versionierte Schemas umsetzen; mit TopicBrief, SourceDocument, KnowledgeModel, SeriesPlan, EpisodeScript und RunManifest beginnen.
+- Den Codex-Adapter für definierte Eingaben, JSON-Schema-Ausgaben, Zeitlimits, Fehlerklassifikation und verfügbare Nutzungsmetadaten bauen.
+- Ergebnisse vor Übernahme validieren und atomar speichern. Unvollständige Modellantworten werden nicht zu fertigen Stufenergebnissen.
+- Pro Stufe Eingabehash, Prompt- und Modellversion, Ergebnis und Status erfassen. Zustände umfassen `pending`, `running`, `completed`, `waiting_for_quota`, `blocked` und `failed`.
+- Bei Wiederaufnahme nur unveränderte, erfolgreich abgeschlossene Ergebnisse übernehmen. Abbruch und erneuter Start dürfen keine abgeschlossene Arbeit duplizieren.
+
+**Abnahme:** Eine kleine strukturierte Aufgabe läuft über das Abo und lässt sich nach einem simulierten Abbruch fortsetzen. Ungültige Ausgabe, fehlender Login und Kontingentlimit werden unterscheidbar behandelt. In normalen Tests werden Providerantworten aufgezeichnet oder simuliert; sie benötigen keine laufenden Abos oder GPU.
+
+### Meilenstein 2: Ein kleiner Durchlauf bis zur fertigen Audiodatei
+
+Mit `fixtures/simple_topic` wird zunächst ein kleiner, fachlich überschaubarer Quellenbestand vollständig verarbeitet:
+
+1. Quellen importieren, in stabile Abschnitte zerlegen und referenzieren.
+2. Ein kleines Wissensmodell, einen Folgenplan und ein sprechbares Skript erzeugen.
+3. Quellenbindung, Sprecherzuordnung, Vollständigkeit und geschätzte Laufzeit prüfen.
+4. Freigegebenes Skript lokal sprechen, automatisch montieren und exportieren.
+
+Das kanonische `script.yaml` enthält geordnete Segmente mit `segment_id`, `scene_id`, `chapter_id`, `speaker_id`, `text`, `knowledge_refs` und `pause_after_ms`. Die Wissensmodell-IDs führen zu Belegen der Form `source_id#section_id`. Nur der gesprochene Text geht an TTS; Regie und Referenzen werden nicht vorgelesen. Die Lesefassung, das Transkript und der Renderauftrag entstehen aus demselben Datenstand.
+
+Lange Sprecherpassagen können für die Synthese an Satzgrenzen unterteilt werden. Sie bleiben inhaltlich zusammenhängende Erklärungen. Die gemessene Audio-Zeitleiste speichert die Zuordnung zwischen Skriptsegmenten, Audiodateien und Kapiteln.
+
+**Abnahme:** Der gesamte Weg bis MP3, Kapitel, Transkript und Show Notes funktioniert ohne manuelle Montage. Ein fehlender Quellenbezug blockiert die Produktion; ein defektes Audiosegment blockiert den finalen Export. Dieser kleine technische Durchlauf ist noch kein Nachweis für eine tiefe Serie.
+
+### Meilenstein 3: Themenrecherche und eine gehaltvolle Erklärfolge
+
+- Aus dem Thema Teilfragen, Voraussetzungen und Suchaufträge ableiten.
+- Quellen suchen und tatsächlich abrufen; Zugriffsfehler und Auswahlgründe dokumentieren.
+- Markdown, Text, HTML und textbasierte PDFs in referenzierbare Abschnitte importieren. Video- oder Audioquellen zunächst nur bei zugänglichem Transkript verwenden; automatische Transkription fremder Medien bleibt eine spätere Ergänzung.
+- Claims, Begriffe, Mechanismen, Beispiele, Gegenpositionen und Unsicherheiten zu einem Wissensmodell verbinden.
+- Recherche-Briefing, Argumentkarte, offene Fragen und vorläufigen Serienplan daraus ableiten.
+- Eine zentrale Erklärfolge mit zwei Hosts schreiben, prüfen und als Audio produzieren.
+
+Der erste fachliche Pilot ist energiebasiertes Maschinenlernen anhand konkret recherchierter Arbeiten von Yann LeCun und Alfredo Canziani. Eine zentrale Folge muss einen Mechanismus Schritt für Schritt erklären und ein Beispiel durchführen. Sie ist aussagekräftiger als ein reiner Serieneinstieg. Das Blutwerte-Thema kann danach Quellenkritik und Gesundheitskontext prüfen; die Identität einer genannten Person muss dafür belegt werden.
+
+Deterministische Referenzprüfungen und inhaltlicher Modellreview werden getrennt ausgewiesen. Der Review erhält konkrete Quellenabschnitte und muss problematische Passagen benennen. Eine bloße Quellen-ID oder eine lange Wortliste erfüllt den Tiefencheck nicht.
+
+**Abnahme:** Ein Themenauftrag funktioniert ohne vorbereitete Quelldateien. Die zentrale Folge besteht die Kriterien aus [system-quality-assessment.md](system-quality-assessment.md). Wesentliche Recherchelücken bleiben sichtbar und blockieren abhängige Inhalte. Quellen- und Aufruflimits begrenzen einzelne Arbeitsläufe; sie dürfen keine unbegründete Vollständigkeitsbehauptung erzeugen.
+
+### Meilenstein 4: Inhaltlich geplante und erweiterbare Serien
+
+- Teilfragen, Begriffe und Claims einer Abdeckungsmatrix und geordneten Folgen zuweisen.
+- Jede Folge erhält relevante Quellen, benötigte Wissensmodelleinträge und den Stand bereits erklärter sowie vertagter Inhalte.
+- Skripte folgenweise erzeugen und gezielt automatisch überarbeiten; die Gesamtserie muss nicht in einen einzelnen Modellaufruf passen.
+- Voraussetzungen, Fortschritt, Wiederholungen und abschließende Synthese über Folgengrenzen prüfen.
+- Laufzeitschätzungen mit den gemessenen Sprechgeschwindigkeiten der gewählten Stimmen kalibrieren.
+- Bei zusätzlichem Erklärbedarf Folgen ergänzen. Überschreitet eine fertige Folge 30 Minuten, Inhalte an einer sinnvollen Grenze aufteilen, Übergänge überarbeiten und betroffene Prüfungen erneuern.
+- Neue Erkenntnisse zuerst ins Wissensmodell aufnehmen und nur die davon abhängigen Ergebnisse neu erzeugen.
+
+**Abnahme:** `fixtures/mechanism_series` wächst bei zusätzlichem inhaltlichem Bedarf über seinen ursprünglichen Plan hinaus. Frühere Grundlagen werden passend aufgegriffen; vertagte Kernfragen gehen nicht verloren. `fixtures/conflicting_perspectives` prüft die Trennung von Position, Interpretation und belegter Aussage. Keine feste Gesamtstundenzahl dient als Qualitätsmaß.
+
+### Meilenstein 5: Automatische Produktion belastbar machen
+
+Die fertige Produktion übernimmt folgende Arbeit selbst:
+
+| Schritt | Verhalten |
+| --- | --- |
+| Sprechtext vorbereiten | Zahlen, Einheiten, Abkürzungen und Aussprache zentraler Begriffe eindeutig behandeln; Bedeutung beibehalten |
+| Segmente erzeugen | Beständige Stimmen verwenden; Text, Modellrevision, Stimme, Aussprache und Einstellungen im Cache-Key berücksichtigen |
+| Audio prüfen | Fehlende oder beschädigte Dateien, leeres Audio, auffällige Stille, Pegelfehler und unplausible Dauer erkennen |
+| Fehler korrigieren | Betroffene Segmente mit begrenzten Versuchen neu erzeugen; verbleibende Fehler klar melden |
+| Folge montieren | Formate vereinheitlichen, geplante Pausen einsetzen und Segmente ohne abgeschnittene Sprachlaute verbinden |
+| Ausgabe messen | Lautheit normalisieren, tatsächliche Dauer und Kapitelpositionen ermitteln |
+| Exportieren | MP3 mit 44,1 kHz, Stereo und Ziel -16 LUFS sowie Kapitel, Transkript und Show Notes bereitstellen |
+
+FFmpeg liefert unter anderem Lautheitsnormalisierung und Stilleerkennung; die Anwendung verbindet diese Werkzeuge mit der strukturierten Regie. [FFmpeg-Filterdokumentation](https://ffmpeg.org/ffmpeg-filters.html#loudnorm)
+
+Ergänzende lokale Rücktranskription wird am Pilot darauf geprüft, ob sie Auslassungen und Wiederholungen zuverlässig erkennt. Sie ist kein Beweis für fehlerfreie Aussprache. Ein automatischer Befund muss das betroffene Segment und den Grund benennen. Nach ausgeschöpften Reparaturversuchen endet der betroffene Auftrag mit Fehlerbericht; er fordert keinen manuellen Audioschnitt an.
+
+Unterbrechungen werden auf Stufen-, Folgen- und Segmentebene abgefangen. Bereits gültige Audiodateien bleiben im Cache. Kapitelzeiten stammen aus den gemessenen, fertig montierten Audiodaten. Eine Aufteilung oder Textkorrektur erneuert die betroffenen Checks und Ausgabedateien.
+
+**Abnahme:** Die vollständige Pilotserie wird unter Windows mit Abo-Textbackend und lokaler Sprachausgabe erzeugt. Installation, Login, Start, Fortschritt, Wiederaufnahme und Fehlerbehebung sind dokumentiert. Eine redaktionelle Hörprüfung bewertet die Qualität des MVP; im normalen Produktionsablauf ist keine manuelle Bearbeitung jeder Folge erforderlich.
+
+## Gezielte Verifikation
+
+Diese Prüfungen adressieren die wesentlichen Risiken:
+
+- Unbelegte Aussage oder nicht eingelesene Quelle: Prüfung schlägt fehl.
+- Formal gültiges, aber oberflächliches Skript: Tiefenreview nennt fehlende Erklärschritte.
+- Änderung an einer Quelle: abhängige Prüfungen und Skripte werden als veraltet erkannt.
+- Abbruch während eines Modellaufrufs: kein unvollständiges Ergebnis wird übernommen.
+- Kontingentlimit: Stand bleibt erhalten, Wiederaufnahme wiederholt keine fertigen Stufen.
+- Defektes Audiosegment: gezielte Neuerzeugung statt vollständiger Neuberechnung der Serie.
+- Tatsächlich zu lange Folge: sinnvolle Aufteilung, erneute Prüfung und aktualisierte Kapitel.
+- Zusätzliche inhaltliche Anforderungen: weitere Folgen möglich, ohne pauschales Serienlimit.
+
+Die technische Testsuite läuft ohne bezahlte Modellaufrufe. Echte Abo-, GPU- und Hörtests sind getrennte Pilotprüfungen auf dem Zielrechner. Ein bestandener Modellreview allein ist kein Nachweis für fachliche Richtigkeit oder angenehme Hörqualität.
+
+## Noch zu klären und nächster Schritt
+
+Die Produktrichtung und das Zielbetriebssystem sind entschieden. Für den Beginn ist keine weitere Grundsatzentscheidung des Nutzers nötig.
+
+| Offener Punkt | Wie er geklärt wird |
+| --- | --- |
+| Exakte Windows-, Treiber- und Laufzeitversionen | Beim Machbarkeitstest auf dem Zielrechner erfassen |
+| Qwen-Modellvariante und zwei geeignete Stimmen | Hörprobe, Speicherbedarf und Renderzeit vergleichen |
+| Verfügbare Suche im gewählten Abo-CLI | Echten Such- und Quellenabruf im ersten Test nachweisen |
+| Nutzen automatischer Rücktranskription | Mit bekannten Fehlerfällen aus dem Audiopilot bewerten |
+
+Als Nächstes wird Meilenstein 0 umgesetzt, zusammen mit dem dafür nötigen minimalen Prüfprogramm. Erst nach einem echten Versuch auf dem Zielrechner lässt sich der lokale Audioweg als bestätigt bezeichnen. Claude-Unterstützung, zusätzliche Audioanbieter und weitere Oberflächen folgen nur bei konkretem Bedarf.

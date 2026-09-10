@@ -8,7 +8,7 @@ Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vortr�
 
 Zielniveau ist standardmäßig anspruchsvoll und verständlich mit erklärten Voraussetzungen. Vorwissen und gewünschte Detailtiefe können im Themenauftrag angepasst werden. Technische Zusammenhänge dürfen längere Erklärungen benötigen; die Gesprächsform erzwingt keine kurzen Sprecherantworten.
 
-Der MVP startet als CLI mit lokalen Projektdateien. Die Dokumente beschreiben geplantes Verhalten; eine ausführbare Implementierung existiert noch nicht.
+Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Die Dokumente beschreiben geplantes Verhalten; eine ausführbare Implementierung existiert noch nicht.
 
 ### Hauptfälle
 
@@ -39,10 +39,11 @@ Alle Pfade sind relativ zum Projektordner:
 | `research/open_questions.md` | Offene Fragen, Widersprüche und Recherchelücken |
 | `models/series_plan.yaml` | Inhaltlich begründete Folgenzahl, Reihenfolge, Themenabdeckung, Gesamtbogen und Laufzeitschätzungen |
 | `episodes/<episode_id>/episode_plan.yaml` | Szenen, Erklärziele, benötigte Claims und Übergänge |
-| `episodes/<episode_id>/script.md` | Vollständiges Skript mit Sprecherrollen und Wissensmodell-Referenzen |
+| `episodes/<episode_id>/script.yaml` | Kanonisches Skript mit gesprochenem Text, Regie und Wissensmodell-Referenzen |
+| `episodes/<episode_id>/script.md` | Aus dem kanonischen Skript erzeugte Lesefassung |
 | `episodes/<episode_id>/show_notes.md` | Quellen, Kapitelübersicht und ergänzende Hinweise |
 | `reports/quality_report.yaml` | Befunde je Folge und für die gesamte Serie |
-| `runs/<run_id>/run_manifest.yaml` | Versionen, Eingaben, Ausgaben, Freigabestand und Kosten |
+| `runs/<run_id>/run_manifest.yaml` | Versionen, Eingaben, Ausgaben, Fortschritt, Freigabestand und verfügbare Verbrauchsdaten |
 
 Nach Audio-Freigabe entstehen zusätzlich für jede ausgewählte Folge:
 
@@ -50,6 +51,8 @@ Nach Audio-Freigabe entstehen zusätzlich für jede ausgewählte Folge:
 - `exports/<episode_id>/chapters.json`,
 - `exports/<episode_id>/transcript.md`,
 - `exports/<episode_id>/show_notes.md`.
+
+Während der Audioerzeugung hält `audio/<episode_id>/timeline.json` die tatsächlich gemessenen Segmentzeiten und ihre Zuordnung zu Skript und Kapiteln fest. Wiederverwendbare Audiosegmente liegen in `cache/audio/`. Laufdaten, Modellgewichte und Zugangsdaten gehören nicht ins Git-Repository.
 
 Rohquellen liegen in `sources/raw/`, bereinigte Abschnitte in `sources/processed/`. Run-Verzeichnisse halten Eingabe- und Ausgabestände sowie Logs fest. Der Claim Graph ist Bestandteil des `KnowledgeModel`; eine zusätzliche Datei mit konkurrierendem Datenstand ist nicht erforderlich.
 
@@ -77,6 +80,7 @@ Deterministisch sind Ablauf, Schema-Prüfungen und die Wiederverwendung gespeich
 ## 4. CLI-Entscheidung
 
 ```bash
+pla doctor
 pla init <project-dir> --topic "Thema oder Frage"
 pla research <project-dir>
 pla ingest <project-dir>
@@ -86,14 +90,20 @@ pla script <project-dir> [--episode ep_001]
 pla check <project-dir>
 pla render <project-dir> [--episode ep_001] --approve-audio
 pla export <project-dir>
-pla run <project-dir>
+pla run <project-dir> [--approve-audio]
+pla status <project-dir>
+pla resume <project-dir> [--approve-audio]
 ```
 
 Ohne zusätzliche Zeitvorgabe wird die Serienlänge aus dem Inhalt abgeleitet. Nur wenn der Nutzer ausdrücklich eine Gesamtdauer wünscht, kann `pla init` optional `--total-minutes <minutes>` als Planungswunsch übernehmen; der Parameter hat keinen Standardwert.
 
-`pla run` führt die Stufen von Recherche bis Qualitätsbericht aus und endet vor Audio. Ohne `--episode` bearbeiten `script` und `render` alle geplanten Folgen. Einzelne Skripte können zur redaktionellen Prüfung vorgezogen werden.
+`pla doctor` prüft lokale Voraussetzungen, CLI-Anmeldung und Verfügbarkeit des Audio-Backends. `pla run` führt ohne Audio-Freigabe die Stufen von Recherche bis Qualitätsbericht aus. Mit `--approve-audio` folgen automatisch Audioerzeugung, Montage, Prüfung und Export. Ohne `--episode` bearbeiten `script` und `render` alle geplanten Folgen. Einzelne Skripte können zur redaktionellen Prüfung vorgezogen werden.
 
 `pla render` benötigt sowohl `--approve-audio` als auch einen aktuellen Qualitätsbericht ohne blockierende Befunde für die ausgewählten Folgen und den Serienplan. Ein bestandener Bericht ersetzt keine Audio-Freigabe. `pla export` erzeugt keine neue Audioausgabe und veröffentlicht nichts automatisch.
+
+Die Freigabe eines Gesamtlaufs umfasst dessen automatisch geprüfte Skripte und begrenzte Reparaturen. Vor jedem Rendern werden die aktuellen Qualitätsprüfungen und die freigegebenen Input-Hashes protokolliert. Automatische Textkorrekturen innerhalb dieses Laufs benötigen erneute bestandene Checks. Eine manuelle Änderung an Eingaben oder Produktionskonfiguration erfordert eine erneute Audio-Freigabe; eine bloße Wiederaufnahme eines unveränderten Laufs übernimmt dessen Freigabe.
+
+`pla status` zeigt Fortschritt, fertige Folgen und konkrete Pausierungs- oder Fehlergründe. `pla resume` setzt den letzten unterbrochenen Lauf mit unveränderten gültigen Ergebnissen fort. Ein ausgeschöpftes Abo-Kontingent führt zu `waiting_for_quota`, nicht zu unvollständigen Endergebnissen oder einem automatischen Wechsel auf bezahlte APIs.
 
 ## 5. Datenverträge
 
@@ -111,7 +121,8 @@ Diese Verträge müssen bei der Implementierung als validierbare Schemas umgeset
 | `seed_people`, `seed_urls`, `local_sources` | Optionale Rechercheeinstiege; Personen brauchen eine belegte Quellenzuordnung |
 | `target_total_minutes` | Optionaler, ausdrücklich genannter Planungswunsch; standardmäßig nicht gesetzt (`null`), keine implizite Gesamtzeitgrenze |
 | `max_episode_minutes` | Harte Obergrenze 30 |
-| `research_limits` | Begrenzung für Suchrunden, Quellen und Modellkosten |
+| `research_limits` | Begrenzung für Suchrunden, Quellen und Modellaufrufe pro Arbeitslauf; keine pauschale Grenze für Serienumfang |
+| `text_backend`, `tts_backend`, `voice_profile` | Gewählter CLI-Adapter, lokaler TTS-Adapter und beständige Sprecherstimmen; keine Zugangsdaten |
 | `style_profile_id` | Standard `de_calm_deep` |
 | `export_context` | Standard `private_learning`; öffentlicher Export bleibt außerhalb des MVP |
 
@@ -165,7 +176,9 @@ Eine Abdeckungsmatrix ordnet jede priorisierte Teilfrage und jeden zentralen Cla
 
 Ein Episodenplan enthält `episode_id`, `mode: deep_dive`, Stilprofil, Zeitbudget, Sprecherrollen und Szenen. Jede Szene hat eine Funktion, Frage, Zielzeit, relevante Wissensmodell-IDs, Erklärschritte und einen Übergang.
 
-Das Skript enthält vollständige gesprochene Texte, Sprecherrollen, Kapitel und Pausen. Fachliche Aussagen erhalten maschinenlesbare Wissensmodell-Referenzen. Diese Referenzen werden beim Audio-Rendern nicht mitgesprochen, bleiben aber in den prüfbaren Artefakten erhalten. Die konkrete Referenzsyntax ist vor dem ersten Skriptgenerator festzulegen.
+Das kanonische `script.yaml` enthält `schema_version`, `episode_id` und geordnete Segmente mit `segment_id`, `scene_id`, `chapter_id`, `speaker_id`, `text`, `knowledge_refs` und `pause_after_ms`. `knowledge_refs` verweist auf stabile IDs des Wissensmodells; dieses führt die Quellenbezüge in der Form `source_id#section_id`. Reine Übergänge können ohne fachliche Referenz auskommen. Quellenbindung und inhaltlicher Review prüfen die Vollständigkeit der Zuordnung.
+
+Die gesprochene Fassung besteht aus vollständigen Erklärungen. Regie und Referenzen werden nicht mitgesprochen. `script.md`, Transkript und Renderaufträge werden aus demselben kanonischen Stand erzeugt. Modellbedingte Unterteilungen langer Sprecherpassagen erfolgen an Satzgrenzen und bleiben auf das ursprüngliche Segment zurückführbar. Die Audio-Zeitleiste enthält die tatsächlich gemessenen Zeiten; redaktionelle Kapitelpositionen sind vor dem Rendern nur geplant.
 
 ## 6. Recherche und inhaltliche Tiefe
 
@@ -247,7 +260,11 @@ Prompts sind getrennte, versionierte Templates mit definierten Eingaben, Ausgabe
 9. `review_episode.v1`,
 10. `review_series.v1`.
 
-Suche, Abruf und Textextraktion benötigen echte Werkzeug- beziehungsweise Provider-Anbindungen. Ein Modell darf keine nicht abgerufenen Quellen als gelesene Evidenz ausgeben. LLM-, Recherche- und TTS-Provider werden bei der Implementierung ausgewählt; bisher ist kein Anbieter festgelegt.
+Das erste Textbackend ist Codex CLI mit vorhandener ChatGPT-Abo-Anmeldung. Ein kleiner Adapter kapselt Aufträge, strukturierte Ausgaben, Validierung, verfügbare Nutzungsmetadaten und Fehler. Claude Code kann später denselben Vertrag bedienen. Die Anwendung verwendet die offiziellen CLI-Anmeldungen; sie implementiert keine eigenen Zugriffe mit ausgelesenen Sitzungstokens. Modell und CLI-Version werden pro Lauf festgehalten. Die dokumentierten Grundlagen stehen im [Implementierungsplan](docs/personal-learning-podcast-system-plan.md).
+
+Suche, Abruf und Textextraktion benötigen echte Werkzeuganbindungen. Zunächst werden die Suchwerkzeuge des gewählten CLI-Backends genutzt und ihre Verfügbarkeit durch einen realen Abruf geprüft. Ein Modell darf keine nicht abgerufenen Quellen als gelesene Evidenz ausgeben. Nicht zugängliche Texte bleiben Quellenkandidaten oder dokumentierte Lücken.
+
+Die Abo-Kontingente gelten auch für automatisierte Aufrufe. Fertige Stufenergebnisse werden gespeichert; bei ausgeschöpftem Kontingent wird pausiert. Wiederholungen bei technischen oder Validierungsfehlern sind begrenzt. Ein späterer Anbieterwechsel ist eine ausdrückliche Konfigurationsentscheidung, kein automatischer Ausweg aus einem Limit. Für den MVP werden keine API-Zahlungsdaten vorausgesetzt.
 
 ## 10. Qualitätsprüfungen
 
@@ -265,10 +282,11 @@ Suche, Abruf und Textextraktion benötigen echte Werkzeug- beziehungsweise Provi
 | `duration_check` | Ja | Geplante und geschätzte Laufzeit bleiben je Folge bei höchstens 30 Minuten; vor Audio-Export gilt zusätzlich die gemessene Dauer. |
 | `rights_check` | Ja | Export berücksichtigt Quellenrechte, Zitatgrenzen, `private` und `no_export`. |
 | `audio_readiness_check` | Ja vor Rendern | Sprecher, gesprochener Text, Pausen und Kapitel sind eindeutig. |
+| `audio_output_check` | Ja vor finalem Audioexport | Alle Segmente sind vorhanden und technisch gültig; Montage, gemessene Dauer und Kapitel stimmen überein. |
 
 ID- und Schema-Prüfungen sind maschinell deterministisch. Inhaltliche Tiefe, Evidenzpassung und Natürlichkeit benötigen redaktionelle Bewertung; eine Quellen-ID beweist keine sachliche Richtigkeit. Der Bericht trennt automatische Prüfungen, Modellbewertungen und menschliche Befunde.
 
-Ein Bericht speichert die Hashes der geprüften Quellen-, Modell-, Plan- und Skriptstände. Eine Änderung dieser Eingaben macht betroffene Freigaben ungültig. Blockierende Befunde verhindern finalen Export und Audio-Rendering; interne Artefakte und Fehlerberichte bleiben zur Korrektur verfügbar. Ein Bericht über nur eine Folge darf nicht als Prüfung der gesamten Serie gelten.
+Ein Bericht speichert die Hashes der geprüften Quellen-, Modell-, Plan- und Skriptstände. Eine Änderung dieser Eingaben macht betroffene Qualitätsfreigaben ungültig. Blockierende Vorabprüfungen verhindern Audio-Rendering; Befunde am erzeugten Audio erlauben gezielte Reparaturversuche, verhindern aber den finalen Export. Interne Artefakte und Fehlerberichte bleiben zur Korrektur verfügbar. Ein Bericht über nur eine Folge darf nicht als Prüfung der gesamten Serie gelten.
 
 ## 11. Rechte und Datenschutz
 
@@ -286,12 +304,16 @@ Die bestehende Transparenznotiz bleibt Bestandteil der Exporte:
 ## 12. Audio und Wiederaufnahme
 
 - Audio wird nur nach expliziter Freigabe und bestandenen blockierenden Prüfungen erzeugt.
-- Rendering erfolgt pro Sprechersegment, anschließend werden Segmente zu Folgen zusammengesetzt.
-- Der Cache-Key berücksichtigt Provider, Modell, Stimme, gesprochenen Segmenttext, Aussprache- und TTS-Einstellungen.
+- TTS läuft lokal auf dem Windows-Rechner in einer separaten Umgebung. Qwen3-TTS ist der erste Testkandidat; Modellvariante, Stimmen und passende AMD-Laufzeit werden anhand eines frühen Machbarkeitstests festgelegt. Die konkrete Kombination ist bisher nicht erprobt.
+- Rendering erfolgt pro Sprechersegment, anschließend werden Segmente automatisch zu Folgen zusammengesetzt. Der Nutzer muss keinen Audioeditor bedienen.
+- Die strukturierte Regie steuert Sprecherzuordnung, Pausen und Kapitel. FFmpeg und ffprobe übernehmen Montage und Messung; unbeabsichtigte Randstille darf korrigiert werden, Sprachlaute und geplante Denkpausen müssen erhalten bleiben.
+- Der Cache-Key berücksichtigt Provider, Modellrevision, Stimme, gesprochenen Segmenttext, Aussprache- und TTS-Einstellungen einschließlich gegebenenfalls verwendeter Seeds.
 - Nur geänderte oder fehlende Segmente werden neu gerendert. Fehlgeschlagene Folgen können einzeln fortgesetzt werden.
+- Fehlende oder beschädigte Dateien, leere Ausgabe, auffällige Stille, Pegelfehler und unplausible Dauer führen zu gezielter Prüfung und begrenzten Reparaturversuchen. Bleibt ein Fehler bestehen, wird er mit Segment-ID gemeldet und der betroffene finale Export blockiert.
 - Standardformat ist MP3, 44.1 kHz, Stereo und lautheitsnormalisiert auf -16 LUFS.
-- Kapitelmarken werden aus der tatsächlichen Audio-Zeitleiste erzeugt. Laufzeit und Aussprache zentraler Begriffe werden am Audio geprüft.
-- Vor Freigabe wird eine Kostenschätzung für die ausgewählten Folgen bereitgestellt. Verbrauchte Kosten und Cache-Nutzung werden im Manifest protokolliert.
+- Kapitelmarken werden aus der tatsächlichen Audio-Zeitleiste erzeugt. Zu lange Folgen werden automatisch sinnvoll aufgeteilt oder überarbeitet und erneut geprüft.
+- Aussprache und Stimmenkonstanz werden im Audiopilot bewertet und über ein zentrales Ausspracheprofil unterstützt. Ergänzende lokale Rücktranskription zur Erkennung von Auslassungen und Wiederholungen wird am Pilot erprobt; sie garantiert keine fehlerfreie Aussprache.
+- Vor Produktion werden Umfang und, soweit aus dem Pilot ableitbar, Renderzeit und Speicherbedarf angezeigt. Der Lauf protokolliert tatsächliche Renderdauer, Cache-Nutzung und verfügbare Abo-Verbrauchsdaten. Unbekanntes Restkontingent wird als unbekannt ausgewiesen. Geschätzte API-Dollarwerte einer CLI sind keine tatsächlich berechneten Abo-Kosten.
 
 Musik, aufwendiges Sounddesign und ein dritter Host sind keine Voraussetzungen für den ersten MVP.
 
@@ -299,7 +321,7 @@ Musik, aufwendiges Sounddesign und ein dritter Host sind keine Voraussetzungen f
 
 Das Manifest speichert Run-ID, Erstellungszeit, Pipeline- und Schema-Version, Themenauftrag, Recherchegrenzen, Quellen- und Artefakthashes, Prompt-Versionen, verwendete Modelle und Einstellungen sowie die Ausgabepfade je Folge.
 
-Zusätzlich erfasst es ausgeführte Stufen, Warnungen und Fehler, tatsächliche Kosten, Cache-Treffer, Qualitätsstatus, geprüfte Input-Hashes und die Audio-Freigabe für konkrete Skriptstände und Folgen. Quellentexte und Modellantworten werden soweit zulässig im Run eingefroren, damit spätere Änderungen an Onlinequellen den ursprünglichen Lauf nicht still verändern.
+Zusätzlich erfasst es Status und Wiederaufnahmepunkte je Stufe, Folge und Segment, Warnungen und Fehler, verfügbare Verbrauchsdaten, Renderzeiten, Cache-Treffer, Qualitätsstatus, geprüfte Input-Hashes sowie Herkunft und Umfang der Audio-Freigabe für konkrete Skriptstände und Folgen. Statuswerte umfassen `pending`, `running`, `completed`, `waiting_for_quota`, `blocked` und `failed`. Kostenfelder unterscheiden Schätzung und tatsächlich separat berechnete Beträge; sie dürfen aus Abo-Aufrufen keine erfundenen Rechnungsbeträge ableiten. Quellentexte und Modellantworten werden soweit zulässig im Run eingefroren, damit spätere Änderungen an Onlinequellen den ursprünglichen Lauf nicht still verändern.
 
 ## 14. Evaluation und Definition of Done
 
@@ -320,10 +342,11 @@ Der MVP ist fertig, wenn:
 - geplante und tatsächliche Gesamtdauer sichtbar sind; ein ausdrücklich genannter Zeitwunsch wird separat ausgewiesen,
 - Folgen aufeinander aufbauen und zentrale Fragen ausführlich beantworten,
 - Aussagen, Gegenpositionen und Unsicherheiten auf überprüfbare Quellen zurückführbar sind,
-- blockierende Befunde Rendern und finalen Export verhindern,
+- blockierende Vorabprüfungen das Rendern verhindern und fehlerhaftes Audio nicht final exportiert wird,
 - Skripte vor Audio prüfbar sind und Audio nur nach Freigabe entsteht,
 - MP3-Folgen, Kapitel, Transkripte und Show Notes vollständig exportiert werden,
+- der vollständige Hauptfall unter Windows 11 mit Abo-Textbackend, lokalem TTS und automatischer Montage ohne manuellen Audioschnitt funktioniert,
 - die Fixtures und eine redaktionelle Hörprüfung des Piloten bestanden sind,
-- unterbrochene Läufe ohne vollständige Neuberechnung wiederaufgenommen werden können.
+- unterbrochene Läufe einschließlich Abo-Pausen ohne vollständige Neuberechnung wiederaufgenommen werden können.
 
-Ein reiner Skriptprototyp ist ein erster Meilenstein. Die vollständige hörbare Serie ist das Abnahmeziel des MVP. Kriterien für die qualitative Prüfung stehen in [docs/system-quality-assessment.md](docs/system-quality-assessment.md).
+Die vollständige hörbare Serie ist das Abnahmeziel des MVP; ein reiner Skriptprototyp erfüllt es noch nicht. Kriterien für die qualitative Prüfung stehen in [docs/system-quality-assessment.md](docs/system-quality-assessment.md).

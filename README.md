@@ -33,13 +33,30 @@ Der erste MVP konzentriert sich vollständig auf Deep-Dive-Serien:
 4. Einen Serienplan mit Themenabdeckung, daraus abgeleiteter Folgenzahl und geschätzter Laufzeit erstellen.
 5. Folgen einzeln als ausführliche, sprechbare Skripte mit zwei Hosts ausarbeiten.
 6. Quellenbindung, Tiefe, Zusammenhang und Laufzeit prüfen.
-7. Nach Audio-Freigabe MP3-Folgen mit Kapiteln, Transkripten und Show Notes exportieren.
+7. Nach Audio-Freigabe lokal sprechen, automatisch montieren und MP3-Folgen mit Kapiteln, Transkripten und Show Notes exportieren.
 
 Audio-Export gehört zum MVP. Ein Lauf kann zur Prüfung bei den Skripten enden; Audio wird ausschließlich mit expliziter Freigabe und bestandenen blockierenden Qualitätsprüfungen erzeugt.
 
 Tutor-Modus, Quiz, Karteikarten, Prüfungsmodus und Wiederholungsplanung sind spätere Optionen und keine MVP-Anforderungen.
 
+## Geplanter Betrieb
+
+Das Zielsystem ist Windows 11 mit einer AMD Radeon RX 9070 XT. Recherche und Skripte nutzen zunächst Codex CLI mit dem vorhandenen ChatGPT-Abo; Claude Code ist eine spätere Alternative. TTS soll lokal laufen. Qwen3-TTS ist der erste Kandidat für den Machbarkeitstest, noch keine auf diesem Rechner bestätigte Lösung. Die technischen Grundlagen und Quellen stehen im [Implementierungsplan](docs/personal-learning-podcast-system-plan.md).
+
+Sprecherwechsel, Pausen, Montage, Lautheitsanpassung, Kapitel und Export werden automatisiert. Manueller Audioschnitt gehört nicht zum Bedienablauf. Zusätzliche bezahlte APIs sind keine Voraussetzung des MVP. Bei ausgeschöpftem Abo-Kontingent pausiert der Lauf und bewahrt bereits fertige Ergebnisse.
+
 ## Geplante CLI
+
+Für den vollständigen Lauf nach Installation und Abo-Anmeldung:
+
+```powershell
+pla doctor
+pla init .\my-topic --topic "Energiebasierte Modelle verstehen"
+pla run .\my-topic --approve-audio
+pla status .\my-topic
+```
+
+`pla resume .\my-topic` setzt einen unterbrochenen Lauf fort. Ohne `--approve-audio` endet `pla run` vor der Audioerzeugung. Einzelne Arbeitsschritte lassen sich ebenfalls ausführen:
 
 ```bash
 pla init ./my-topic --topic "Energiebasierte Modelle verstehen"
@@ -57,12 +74,12 @@ pla export ./my-topic
 
 ## Entwicklungsstand
 
-Das Repository enthält derzeit Spezifikation, Implementierungsplan und Evaluationskriterien. CLI, Recherche, Skriptgenerator und Audio-Rendering sind noch nicht implementiert.
+Das Repository enthält derzeit Spezifikation, Implementierungsplan und Evaluationskriterien. CLI, Recherche, Skriptgenerator und Audio-Rendering sind noch nicht implementiert. Die Umsetzung beginnt mit einem Abo-CLI-Test und einer automatisch montierten Hörprobe auf dem Windows-Rechner; danach folgt ein kleiner vollständiger Durchlauf von Quellen bis MP3.
 
 ## Dokumentation
 
 - [SPEC.md](SPEC.md): verbindlicher Hauptfall, Architektur, Datenverträge und Abnahmekriterien.
-- [docs/personal-learning-podcast-system-plan.md](docs/personal-learning-podcast-system-plan.md): Umsetzungsschritte und offene technische Entscheidungen.
+- [docs/personal-learning-podcast-system-plan.md](docs/personal-learning-podcast-system-plan.md): technische Startentscheidungen, sechs Meilensteine und konkrete Abnahmen.
 - [docs/system-quality-assessment.md](docs/system-quality-assessment.md): Bewertungskriterien für Recherche, Tiefe, Serienaufbau und Hörqualität.
 
 ## Lizenz
