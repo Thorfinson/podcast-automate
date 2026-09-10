@@ -2,7 +2,7 @@
 
 ## 1. Produktentscheidung
 
-Stand der Priorisierung: 2026-09-10. Der Hauptfall ist eine persönliche Deep-Dive-Podcastserie zu einem vorgegebenen Thema. Der Nutzer möchte über drei bis vier Stunden ausführlich in Zusammenhänge einsteigen. Eine einzelne Folge dauert höchstens 30 Minuten.
+Stand der Priorisierung: 2026-09-10. Der Hauptfall ist eine persönliche Deep-Dive-Podcastserie zu einem vorgegebenen Thema. Umfang und gewünschte inhaltliche Tiefe bestimmen die Folgenzahl und Gesamtdauer. Komplexe Themen bekommen die zusätzlichen Folgen, die ihre gründliche Erklärung benötigt. Es gibt keine feste Gesamtlänge oder Folgenzahl. Eine einzelne Folge dauert höchstens 30 Minuten.
 
 Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vorträge, Papers, Links und eigene Dateien sind optionale Ausgangspunkte. Die Quellenrecherche gehört zum MVP; ein bereits gefüllter Quellenordner ist keine Voraussetzung.
 
@@ -29,7 +29,7 @@ Alle Pfade sind relativ zum Projektordner:
 
 | Pflichtartefakt | Zweck |
 | --- | --- |
-| `project.yaml` | Themenauftrag, Vorwissen, Schwerpunkte, Sprache und Zeitbudget |
+| `project.yaml` | Themenauftrag, Vorwissen, gewünschte Tiefe, Schwerpunkte und Sprache |
 | `research/research_plan.yaml` | Teilfragen, Suchstrategie, Abdeckung und Recherchegrenzen |
 | `research/source_candidates.yaml` | Gefundene Quellen, Auswahlgründe und Zugriffsprobleme |
 | `models/source_index.yaml` | Eingelesene Quellen, Abschnitte, Metadaten, Rechte und Hashes |
@@ -37,7 +37,7 @@ Alle Pfade sind relativ zum Projektordner:
 | `research/research_briefing.md` | Quellenübergreifende Synthese |
 | `research/argument_map.md` | Argumente und ihre Verbindungen |
 | `research/open_questions.md` | Offene Fragen, Widersprüche und Recherchelücken |
-| `models/series_plan.yaml` | Folgen, Reihenfolge, Themenabdeckung, Gesamtbogen und Zeitbudgets |
+| `models/series_plan.yaml` | Inhaltlich begründete Folgenzahl, Reihenfolge, Themenabdeckung, Gesamtbogen und Laufzeitschätzungen |
 | `episodes/<episode_id>/episode_plan.yaml` | Szenen, Erklärziele, benötigte Claims und Übergänge |
 | `episodes/<episode_id>/script.md` | Vollständiges Skript mit Sprecherrollen und Wissensmodell-Referenzen |
 | `episodes/<episode_id>/show_notes.md` | Quellen, Kapitelübersicht und ergänzende Hinweise |
@@ -59,11 +59,11 @@ Die Pipeline hat explizite, versionierte Stufen. Das `KnowledgeModel` ist die ge
 
 | Stufe | Aufgabe | Hauptausgabe |
 | --- | --- | --- |
-| Themenplanung | Leitfrage eingrenzen, Vorwissen und Zeitbudget festhalten | Themenauftrag und Rechercheplan |
+| Themenplanung | Leitfrage eingrenzen, Vorwissen und gewünschte Tiefe festhalten | Themenauftrag und Rechercheplan |
 | Recherche | Quellen finden, Personen und Werke zuordnen, Lücken erkennen | Quellenkandidaten |
 | Ingestion | Quellen normalisieren, segmentieren, deduplizieren und referenzierbar machen | Quellenindex |
 | Analyse und Synthese | Aussagen, Belege, Voraussetzungen und Gegenpositionen verbinden | Wissensmodell und Briefing |
-| Serienplanung | Verständnisweg, Folgenfragen, Abdeckung und Zeit verteilen | Serienplan |
+| Serienplanung | Aus Verständnisweg und Themenabdeckung Folgen ableiten und ihre Laufzeit schätzen | Serienplan |
 | Folgenplanung und Skript | Jede Folge mit passendem Kontext gründlich ausarbeiten | Episodenplan, Skript, Show Notes |
 | Qualitätsprüfung | Einzelne Folgen und ihre Zusammenhänge prüfen | Qualitätsbericht |
 | Audio und Export | Freigegebene Skripte sprechen, prüfen und paketieren | MP3-Folgen und Begleitdateien |
@@ -77,7 +77,7 @@ Deterministisch sind Ablauf, Schema-Prüfungen und die Wiederverwendung gespeich
 ## 4. CLI-Entscheidung
 
 ```bash
-pla init <project-dir> --topic "Thema oder Frage" --total-minutes 210
+pla init <project-dir> --topic "Thema oder Frage"
 pla research <project-dir>
 pla ingest <project-dir>
 pla model <project-dir>
@@ -88,6 +88,8 @@ pla render <project-dir> [--episode ep_001] --approve-audio
 pla export <project-dir>
 pla run <project-dir>
 ```
+
+Ohne zusätzliche Zeitvorgabe wird die Serienlänge aus dem Inhalt abgeleitet. Nur wenn der Nutzer ausdrücklich eine Gesamtdauer wünscht, kann `pla init` optional `--total-minutes <minutes>` als Planungswunsch übernehmen; der Parameter hat keinen Standardwert.
 
 `pla run` führt die Stufen von Recherche bis Qualitätsbericht aus und endet vor Audio. Ohne `--episode` bearbeiten `script` und `render` alle geplanten Folgen. Einzelne Skripte können zur redaktionellen Prüfung vorgezogen werden.
 
@@ -104,9 +106,10 @@ Diese Verträge müssen bei der Implementierung als validierbare Schemas umgeset
 | `topic`, `central_question` | Thema und Leitfrage der Serie |
 | `language` | Standardsprache `de-DE` |
 | `audience_level`, `prior_knowledge` | Anspruch und bereits bekannte Grundlagen |
+| `depth_request` | Gewünschte inhaltliche Tiefe und Erklärschwerpunkte; unabhängig von der Hörzeit |
 | `focus_questions`, `excluded_topics` | Gewünschte Schwerpunkte und Grenzen |
 | `seed_people`, `seed_urls`, `local_sources` | Optionale Rechercheeinstiege; Personen brauchen eine belegte Quellenzuordnung |
-| `target_total_minutes` | Gewünschte Gesamtlänge, standardmäßig 210; Hauptfall 180 bis 240 |
+| `target_total_minutes` | Optionaler, ausdrücklich genannter Planungswunsch; standardmäßig nicht gesetzt (`null`), keine implizite Gesamtzeitgrenze |
 | `max_episode_minutes` | Harte Obergrenze 30 |
 | `research_limits` | Begrenzung für Suchrunden, Quellen und Modellkosten |
 | `style_profile_id` | Standard `de_calm_deep` |
@@ -146,7 +149,7 @@ Tutor-Lernziele, Bloom-Stufen und Quizdaten sind keine erforderlichen Bestandtei
 
 ### 5.4 SeriesPlan
 
-Der Serienplan enthält die Leitfrage, das gewünschte und geplante Gesamtbudget, den übergreifenden Erklärbogen und eine geordnete Liste von Folgen. Je Folge werden mindestens festgehalten:
+Der Serienplan enthält die Leitfrage, die gewünschte Tiefe, die inhaltlich begründete Folgenzahl, die daraus geschätzte Gesamtdauer, den übergreifenden Erklärbogen und eine geordnete Liste von Folgen. Ein ausdrücklich genannter Zeitwunsch wird separat festgehalten. Je Folge werden mindestens festgehalten:
 
 - `episode_id`, Nummer, Titel, eigene zentrale Frage und Zweck,
 - `target_minutes`,
@@ -199,13 +202,16 @@ Bei Gesundheitsthemen gehören aktuelle fachliche Primärquellen und Leitlinien 
 
 ## 7. Serienplanung und Laufzeit
 
-Die Serie ist das Standardprodukt. Das Standardbudget von 210 Minuten entspricht sieben Folgen mit je 30 Minuten Planbudget. Der Hauptfall von 180 bis 240 Minuten ergibt typischerweise sechs bis acht Folgen; die tatsächliche Aufteilung folgt den Teilfragen und Erklärabhängigkeiten.
+Die Serie ist das Standardprodukt. Ihre Länge ergibt sich aus Teilfragen, notwendigen Grundlagen, Erklärabhängigkeiten und gewünschter Tiefe. Zuerst wird der inhaltlich nötige Umfang geplant, daraus folgen die Episoden und ihre geschätzte Gesamtdauer. Es gibt weder eine allgemeine Mindest- oder Höchstdauer der Serie noch eine festgelegte Folgenzahl.
 
 - Keine Folge darf 30 Minuten überschreiten.
-- Die Summe der Folgenbudgets muss dem gewählten Gesamtbudget entsprechen. Eine inhaltlich begründete Abweichung wird im Serienplan sichtbar ausgewiesen.
+- Die geschätzte Gesamtdauer ist die Summe der Folgenlaufzeiten und ein Ergebnis der Planung. Sie muss keinen vorgegebenen Stundenbereich treffen.
+- Benötigt das Thema mehr Raum, wird die Serie um inhaltlich begründete Folgen erweitert. Die Erweiterung ist kein Qualitätsfehler.
+- Eine Serie ist inhaltlich vollständig, wenn ihre priorisierten Fragen in der gewünschten Tiefe beantwortet oder ihre fachlichen Grenzen nachvollziehbar eingeordnet sind.
 - Bei unzureichendem Material wird eine kürzere Serie vorgeschlagen oder gezielt nachrecherchiert. Skripte werden nicht künstlich gestreckt.
 - Passt eine Folge nicht in ihr Budget, werden sinnvoll abgegrenzte Inhalte in eine weitere Folge verlagert. Belege, Beispiele und Gegenpositionen dürfen dabei nicht pauschal wegfallen.
-- Zusätzliche Folgen und Änderungen des Gesamtbudgets müssen aus dem Serienplan nachvollziehbar sein.
+- Zusätzliche Folgen und Änderungen der geschätzten Gesamtdauer müssen aus dem Serienplan nachvollziehbar sein.
+- Ein ausdrücklich genannter Gesamtzeitwunsch wird gegen den nötigen Inhalt abgewogen. Passt die gewünschte Tiefe nicht hinein, weist der Plan die nötige zusätzliche Hörzeit oder konkrete Umfangsänderungen aus; Inhalte werden nicht stillschweigend gekürzt.
 - Skriptlaufzeit wird aus gesprochenen Wörtern, konfigurierter Sprechgeschwindigkeit und Pausen geschätzt. Die Rate ist nach dem ersten Audio-Pilot zu kalibrieren.
 - Nach dem Rendern zählt die gemessene Audiodauer. Zu lange Folgen werden vor dem finalen Export überarbeitet oder geteilt; die Sprechgeschwindigkeit wird nicht zur Umgehung der Obergrenze erhöht.
 
@@ -300,7 +306,7 @@ Zusätzlich erfasst es ausgeführte Stufen, Warnungen und Fehler, tatsächliche 
 Vor weiteren Ausgabeformaten werden drei Fixture-Projekte angelegt:
 
 1. `fixtures/simple_topic`: kleiner, konsistenter Quellenbestand für schnelle Prüfungen von Ingestion, Referenzen und Export.
-2. `fixtures/mechanism_series`: eine Serie mit aufeinander aufbauenden Grundlagen und Mechanismen sowie einem Planbudget von 180 bis 240 Minuten.
+2. `fixtures/mechanism_series`: eine Serie mit aufeinander aufbauenden Grundlagen und Mechanismen. Die Planung muss mit zusätzlichem inhaltlichem Bedarf um weitere Folgen wachsen können, ohne an einer festen Gesamtzeit oder Folgenzahl zu scheitern.
 3. `fixtures/conflicting_perspectives`: widersprüchliche Positionen, unsichere Evidenz und eine personenzentrierte Ausgangsfrage.
 
 Jedes Fixture erhält erwartete Kernclaims, Erklärschritte, Quellenbezüge, Beispiele, Grenzen und mindestens einen absichtlich problematischen Fall. Das Serienfixture umfasst zudem erwartete Abhängigkeiten, Abdeckung und unerwünschte Wiederholungen. Die Hauptfälle aus Abschnitt 1 sind Kandidaten für spätere fachliche Piloten; konkrete Quellen müssen dafür recherchiert werden.
@@ -309,8 +315,9 @@ Der MVP ist fertig, wenn:
 
 - ein Thema ohne vorbereiteten Quellenordner zu einer recherchierten Serie führt,
 - alle Pflichtartefakte existieren und ihre strukturierten Daten gegen implementierte Schemas validieren,
-- eine vollständige Pilotserie insgesamt 180 bis 240 Minuten tatsächliche Audiodauer erreicht und jede Audiofolge höchstens 30 Minuten dauert,
-- Abweichungen zwischen gewünschter, geplanter und tatsächlicher Gesamtdauer sichtbar sind,
+- eine vollständige Pilotserie ihren Themenauftrag in der gewünschten Tiefe abdeckt und jede Audiofolge höchstens 30 Minuten dauert,
+- zusätzliche inhaltlich nötige Folgen ohne feste Gesamtzeit- oder Folgenbegrenzung geplant und erzeugt werden können,
+- geplante und tatsächliche Gesamtdauer sichtbar sind; ein ausdrücklich genannter Zeitwunsch wird separat ausgewiesen,
 - Folgen aufeinander aufbauen und zentrale Fragen ausführlich beantworten,
 - Aussagen, Gegenpositionen und Unsicherheiten auf überprüfbare Quellen zurückführbar sind,
 - blockierende Befunde Rendern und finalen Export verhindern,

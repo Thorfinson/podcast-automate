@@ -1,6 +1,6 @@
 # Podcast Automate: Deep-Dive-Serien
 
-Ein persönliches Recherche-zu-Podcast-System: Ein Thema vorgeben und daraus eine zusammenhängende, quellengebundene Deep-Dive-Serie von drei bis vier Stunden entwickeln. Einzelne Folgen dauern höchstens 30 Minuten; typischerweise entstehen sechs bis acht Folgen.
+Ein persönliches Recherche-zu-Podcast-System: Ein Thema vorgeben und daraus eine zusammenhängende, quellengebundene Deep-Dive-Serie entwickeln. Themenumfang und gewünschte Tiefe bestimmen, wie viele Folgen nötig sind. Die Gesamtdauer und Folgenzahl haben keine feste Vorgabe; einzelne Folgen dauern höchstens 30 Minuten.
 
 ## Hauptfall
 
@@ -27,10 +27,10 @@ Länge allein erfüllt den Qualitätsanspruch nicht. Wiederholte Überblickstext
 
 Der erste MVP konzentriert sich vollständig auf Deep-Dive-Serien:
 
-1. Themenauftrag, Vorwissen und Zeitbudget festhalten.
+1. Themenauftrag, Vorwissen und gewünschte inhaltliche Tiefe festhalten.
 2. Quellen recherchieren, importieren und bewerten.
 3. Ein gemeinsames Wissensmodell mit Aussagen, Belegen, Voraussetzungen und Unsicherheiten aufbauen.
-4. Einen Serienplan mit Themenabdeckung und Zeitbudget erstellen.
+4. Einen Serienplan mit Themenabdeckung, daraus abgeleiteter Folgenzahl und geschätzter Laufzeit erstellen.
 5. Folgen einzeln als ausführliche, sprechbare Skripte mit zwei Hosts ausarbeiten.
 6. Quellenbindung, Tiefe, Zusammenhang und Laufzeit prüfen.
 7. Nach Audio-Freigabe MP3-Folgen mit Kapiteln, Transkripten und Show Notes exportieren.
@@ -42,7 +42,7 @@ Tutor-Modus, Quiz, Karteikarten, Prüfungsmodus und Wiederholungsplanung sind sp
 ## Geplante CLI
 
 ```bash
-pla init ./my-topic --topic "Energiebasierte Modelle verstehen" --total-minutes 210
+pla init ./my-topic --topic "Energiebasierte Modelle verstehen"
 pla research ./my-topic
 pla ingest ./my-topic
 pla model ./my-topic
