@@ -1,644 +1,322 @@
-# SPEC: Personal Learning Podcast System
+# SPEC: Podcast Automate – Deep-Dive-Serien
 
 ## 1. Produktentscheidung
 
-Das Produkt ist ein CLI-first Recherche-zu-Audio-Lernsystem. Es erzeugt aus einem Quellenordner zuerst ein validiertes Wissensmodell und daraus anschließend Skripte und optionale Audio-Exports.
+Stand der Priorisierung: 2026-09-10. Der Hauptfall ist eine persönliche Deep-Dive-Podcastserie zu einem vorgegebenen Thema. Der Nutzer möchte über drei bis vier Stunden ausführlich in Zusammenhänge einsteigen. Eine einzelne Folge dauert höchstens 30 Minuten.
 
-### Zielnutzer im MVP
+Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vorträge, Papers, Links und eigene Dateien sind optionale Ausgangspunkte. Die Quellenrecherche gehört zum MVP; ein bereits gefüllter Quellenordner ist keine Voraussetzung.
 
-Der MVP ist für fortgeschrittene Selbstlerner gebaut, die eigene Quellen in ein strukturiertes Lern- und Podcastformat überführen wollen.
+Zielniveau ist standardmäßig anspruchsvoll und verständlich mit erklärten Voraussetzungen. Vorwissen und gewünschte Detailtiefe können im Themenauftrag angepasst werden. Technische Zusammenhänge dürfen längere Erklärungen benötigen; die Gesprächsform erzwingt keine kurzen Sprecherantworten.
 
-Nicht Teil des MVP:
+Der MVP startet als CLI mit lokalen Projektdateien. Die Dokumente beschreiben geplantes Verhalten; eine ausführbare Implementierung existiert noch nicht.
 
-- Team-Kollaboration,
-- Web-App,
-- mobile App,
-- Kursverwaltung,
-- Zahlungsmodell,
-- öffentlicher Podcast-Hoster,
-- automatische Veröffentlichung.
+### Hauptfälle
 
-## 2. Verbindlicher MVP-Scope
+- Maschinenlernen, etwa die Frage nach energiebasierten Modellen anhand konkret recherchierter Arbeiten von Yann LeCun und Alfredo Canziani: Grundlagen, Funktionsweise, Beispiele, Vergleich, Beleglage und offene Fragen.
+- Blutwerte: Begriffe, Zusammenhänge und Grenzen der Interpretation; konkrete Aussagen einer vom Nutzer genannten Person werden mit weiteren fachlichen Quellen eingeordnet. Die Nutzerangabe „Timo Osterhaus“ ist vor einer Quellenzuordnung anhand eines konkreten Links oder Werkes zu verifizieren.
 
-Der MVP erzeugt genau diese Pflichtartefakte:
+Die Beispiele legen keine fachlichen Ergebnisse fest. Eine genannte Person ist ein Rechercheeinstieg. Ihre Aussagen werden als solche belegt und von anderen Positionen und übergreifender Evidenz unterschieden.
 
-1. `knowledge_model.yaml`,
-2. `research_briefing.md`,
-3. `argument_map.md`,
-4. `deep_dive_script.md`,
-5. `tutor_script.md`,
-6. `quiz_cards.yaml`,
-7. `show_notes.md`,
-8. `quality_report.yaml`,
-9. `run_manifest.yaml`.
+### Zurückgestellt
 
-Optional erzeugt der MVP nach expliziter Freigabe:
+Tutor-Modus, Quiz, Karteikarten, Prüfungsmodus, adaptive Lerndiagnostik und Spaced Repetition sind außerhalb des MVP. Sie erzeugen keine Pflichtfelder, Prompt-Stufen, Exporte oder Abnahmekriterien für Deep-Dive-Serien. Weitere spätere Optionen sind Web-App, Teamfunktionen und automatische Veröffentlichung.
 
-- `audio/deep_dive.mp3`,
-- `audio/tutor.mp3`,
-- `chapters.json`,
-- `transcript.md`.
+## 2. MVP-Scope und Artefakte
 
-## 3. Architekturentscheidung
+Der vollständige MVP führt vom Themenauftrag bis zur hörbaren Serie. Audio-Export ist eine MVP-Funktion; jeder Lauf kann vor der Audioerzeugung mit prüfbaren Skripten enden.
 
-Die Architektur ist eine deterministische Pipeline mit versionierten Zwischenergebnissen.
+Alle Pfade sind relativ zum Projektordner:
 
-```text
-sources/ -> ingestion -> source_index.yaml
-source_index.yaml -> analysis -> knowledge_model.yaml
-knowledge_model.yaml -> planning -> episode_plan.yaml
-knowledge_model.yaml + episode_plan.yaml -> scripting -> scripts/*.md
-scripts/*.md -> quality gates -> quality_report.yaml
-scripts/*.md + approved quality_report.yaml -> audio render -> audio/*.mp3
-```
+| Pflichtartefakt | Zweck |
+| --- | --- |
+| `project.yaml` | Themenauftrag, Vorwissen, Schwerpunkte, Sprache und Zeitbudget |
+| `research/research_plan.yaml` | Teilfragen, Suchstrategie, Abdeckung und Recherchegrenzen |
+| `research/source_candidates.yaml` | Gefundene Quellen, Auswahlgründe und Zugriffsprobleme |
+| `models/source_index.yaml` | Eingelesene Quellen, Abschnitte, Metadaten, Rechte und Hashes |
+| `models/knowledge_model.yaml` | Begriffe, Claims, Evidenz, Abhängigkeiten, Beispiele und Unsicherheiten |
+| `research/research_briefing.md` | Quellenübergreifende Synthese |
+| `research/argument_map.md` | Argumente und ihre Verbindungen |
+| `research/open_questions.md` | Offene Fragen, Widersprüche und Recherchelücken |
+| `models/series_plan.yaml` | Folgen, Reihenfolge, Themenabdeckung, Gesamtbogen und Zeitbudgets |
+| `episodes/<episode_id>/episode_plan.yaml` | Szenen, Erklärziele, benötigte Claims und Übergänge |
+| `episodes/<episode_id>/script.md` | Vollständiges Skript mit Sprecherrollen und Wissensmodell-Referenzen |
+| `episodes/<episode_id>/show_notes.md` | Quellen, Kapitelübersicht und ergänzende Hinweise |
+| `reports/quality_report.yaml` | Befunde je Folge und für die gesamte Serie |
+| `runs/<run_id>/run_manifest.yaml` | Versionen, Eingaben, Ausgaben, Freigabestand und Kosten |
 
-Das `KnowledgeModel` ist die Single Source of Truth. Skripte dürfen keine neuen Fakten einführen, die nicht im Wissensmodell als Claim, Uncertainty, Example oder Definition enthalten sind.
+Nach Audio-Freigabe entstehen zusätzlich für jede ausgewählte Folge:
 
-## 4. Projektstruktur
+- `exports/<episode_id>/audio.mp3`,
+- `exports/<episode_id>/chapters.json`,
+- `exports/<episode_id>/transcript.md`,
+- `exports/<episode_id>/show_notes.md`.
 
-Ein Projekt nutzt diese Ordnerstruktur:
+Rohquellen liegen in `sources/raw/`, bereinigte Abschnitte in `sources/processed/`. Run-Verzeichnisse halten Eingabe- und Ausgabestände sowie Logs fest. Der Claim Graph ist Bestandteil des `KnowledgeModel`; eine zusätzliche Datei mit konkurrierendem Datenstand ist nicht erforderlich.
 
-```text
-project/
-  sources/
-    raw/
-    processed/
-  models/
-    source_index.yaml
-    knowledge_model.yaml
-    episode_plan.deep_dive.yaml
-    episode_plan.tutor.yaml
-  scripts/
-    deep_dive_script.md
-    tutor_script.md
-  reports/
-    quality_report.yaml
-    ingestion_report.yaml
-  exports/
-    show_notes.md
-    quiz_cards.yaml
-    transcript.md
-    chapters.json
-    audio/
-  runs/
-    <run_id>/
-      run_manifest.yaml
-      inputs/
-      outputs/
-      logs/
-```
+## 3. Architektur und Arbeitsablauf
 
-## 5. CLI-Entscheidung
+Die Pipeline hat explizite, versionierte Stufen. Das `KnowledgeModel` ist die gemeinsame inhaltliche Grundlage der gesamten Serie.
 
-Der MVP stellt diese Befehle bereit:
+| Stufe | Aufgabe | Hauptausgabe |
+| --- | --- | --- |
+| Themenplanung | Leitfrage eingrenzen, Vorwissen und Zeitbudget festhalten | Themenauftrag und Rechercheplan |
+| Recherche | Quellen finden, Personen und Werke zuordnen, Lücken erkennen | Quellenkandidaten |
+| Ingestion | Quellen normalisieren, segmentieren, deduplizieren und referenzierbar machen | Quellenindex |
+| Analyse und Synthese | Aussagen, Belege, Voraussetzungen und Gegenpositionen verbinden | Wissensmodell und Briefing |
+| Serienplanung | Verständnisweg, Folgenfragen, Abdeckung und Zeit verteilen | Serienplan |
+| Folgenplanung und Skript | Jede Folge mit passendem Kontext gründlich ausarbeiten | Episodenplan, Skript, Show Notes |
+| Qualitätsprüfung | Einzelne Folgen und ihre Zusammenhänge prüfen | Qualitätsbericht |
+| Audio und Export | Freigegebene Skripte sprechen, prüfen und paketieren | MP3-Folgen und Begleitdateien |
+
+Eine lange Serie wird nicht in einem einzigen vollständigen Skriptaufruf angefordert. Jede Folge erhält ihre relevanten Quellenabschnitte, den Serienplan, benötigte Wissensmodell-Einträge und einen Überblick über bereits Erklärtes und noch offene Fragen.
+
+Ergänzende Recherche ist möglich, wenn Planung oder Schreiben eine konkrete Lücke aufdecken. Neue fachliche Inhalte werden zuerst im Wissensmodell verankert; betroffene Pläne, Skripte und Qualitätsberichte werden anschließend erneut geprüft. Fehlgeschlagene Stufen bleiben wiederaufnehmbar.
+
+Deterministisch sind Ablauf, Schema-Prüfungen und die Wiederverwendung gespeicherter Ergebnisse. Neue Modellaufrufe sind nicht als wortgleich reproduzierbar zugesichert. Ein gespeicherter Lauf muss aus seinen eingefrorenen Eingaben und Ergebnissen nachvollziehbar und erneut exportierbar sein.
+
+## 4. CLI-Entscheidung
 
 ```bash
-pla init <project-dir>
+pla init <project-dir> --topic "Thema oder Frage" --total-minutes 210
+pla research <project-dir>
 pla ingest <project-dir>
 pla model <project-dir>
-pla plan <project-dir> --mode deep_dive|tutor
-pla script <project-dir> --mode deep_dive|tutor
+pla plan <project-dir>
+pla script <project-dir> [--episode ep_001]
 pla check <project-dir>
-pla render <project-dir> --mode deep_dive|tutor --approve-audio
+pla render <project-dir> [--episode ep_001] --approve-audio
 pla export <project-dir>
-pla run <project-dir> --modes deep_dive,tutor
+pla run <project-dir>
 ```
 
-`pla render` schlägt ohne `--approve-audio` fehl. Audio wird nie implizit erzeugt.
+`pla run` führt die Stufen von Recherche bis Qualitätsbericht aus und endet vor Audio. Ohne `--episode` bearbeiten `script` und `render` alle geplanten Folgen. Einzelne Skripte können zur redaktionellen Prüfung vorgezogen werden.
 
-## 6. Datenmodelle
+`pla render` benötigt sowohl `--approve-audio` als auch einen aktuellen Qualitätsbericht ohne blockierende Befunde für die ausgewählten Folgen und den Serienplan. Ein bestandener Bericht ersetzt keine Audio-Freigabe. `pla export` erzeugt keine neue Audioausgabe und veröffentlicht nichts automatisch.
 
-### 6.1 SourceDocument
+## 5. Datenverträge
 
-```yaml
-id: source_001
-type: pdf | markdown | text | article | transcript | slide | interview | note | link
-title: string
-author: string | null
-published_date: string | null
-imported_at: string
-language: de-DE | en-US | other
-url: string | null
-license_status: owned | public_domain | open_license | permission_granted | unknown | restricted
-allowed_usage: private_learning | internal_review | publishable_summary | publishable_quotes | no_export
-reliability: high | medium | low | unknown
-text_hash: sha256:string
-sections:
-  - id: section_001
-    heading: string | null
-    text: string
-    page_start: integer | null
-    page_end: integer | null
-    timestamp_start: string | null
-    timestamp_end: string | null
-quotes:
-  - id: quote_001
-    section_id: section_001
-    text: string
-    max_export_words: integer
-uncertainties:
-  - string
-```
+Diese Verträge müssen bei der Implementierung als validierbare Schemas umgesetzt werden. Sie beschreiben keine bereits vorhandenen Schema-Dateien. Alle strukturierten Hauptartefakte besitzen eine `schema_version` und stabile IDs.
 
-### 6.2 KnowledgeModel
+### 5.1 TopicBrief (`project.yaml`)
 
-```yaml
-schema_version: 1
-topic: string
-central_question: string
-audience_level: beginner | intermediate | advanced_without_prerequisites | advanced
-style_profile_id: string
-key_terms:
-  - id: term_001
-    term: string
-    definition: string
-    source_refs:
-      - source_001#section_001
-claims:
-  - id: claim_001
-    claim: string
-    type: descriptive | causal | normative | historical | statistical
-    confidence: high | medium | low
-    evidence:
-      - id: evidence_001
-        source_ref: source_001#section_001
-        strength: high | medium | low
-        note: string
-    counterpoints:
-      - id: counter_001
-        text: string
-        source_ref: source_002#section_004
-uncertainties:
-  - id: uncertainty_001
-    text: string
-    reason: missing_data | conflicting_sources | weak_evidence | unclear_definition
-learning_objectives:
-  - id: lo_001
-    objective: string
-    bloom_level: remember | understand | apply | analyze | evaluate | create
-misconceptions:
-  - id: misconception_001
-    misconception: string
-    correction: string
-examples:
-  - id: example_001
-    text: string
-    source_ref: source_001#section_002 | null
-```
+| Feld | Bedeutung |
+| --- | --- |
+| `topic`, `central_question` | Thema und Leitfrage der Serie |
+| `language` | Standardsprache `de-DE` |
+| `audience_level`, `prior_knowledge` | Anspruch und bereits bekannte Grundlagen |
+| `focus_questions`, `excluded_topics` | Gewünschte Schwerpunkte und Grenzen |
+| `seed_people`, `seed_urls`, `local_sources` | Optionale Rechercheeinstiege; Personen brauchen eine belegte Quellenzuordnung |
+| `target_total_minutes` | Gewünschte Gesamtlänge, standardmäßig 210; Hauptfall 180 bis 240 |
+| `max_episode_minutes` | Harte Obergrenze 30 |
+| `research_limits` | Begrenzung für Suchrunden, Quellen und Modellkosten |
+| `style_profile_id` | Standard `de_calm_deep` |
+| `export_context` | Standard `private_learning`; öffentlicher Export bleibt außerhalb des MVP |
 
-### 6.3 EpisodePlan
+### 5.2 SourceDocument
 
-```yaml
-schema_version: 1
-mode: deep_dive | tutor
-length_minutes: integer
-style_profile_id: string
-hosts:
-  - id: host_a
-    role: narrator | explainer | skeptic | examiner | learner_proxy
-structure:
-  - id: segment_001
-    kind: cold_open | question | background | claim | counterpoint | example | quiz | summary | conclusion
-    target_minutes: number
-    required_claim_ids:
-      - claim_001
-    required_learning_objective_ids:
-      - lo_001
-quality_gates:
-  - source_check
-  - depth_check
-  - learning_check
-  - redundancy_check
-  - hallucination_check
-```
+Jede Quelle enthält:
 
-## 7. Style Profiles
+- `id`, `type`, `title`, `author`, `published_date`, `imported_at`, `language`, `url`,
+- `license_status`: `owned`, `public_domain`, `open_license`, `permission_granted`, `unknown` oder `restricted`,
+- `allowed_usage`: `private_learning`, `internal_review`, `publishable_summary`, `publishable_quotes` oder `no_export`,
+- `private`: expliziter Ausschluss vom Export,
+- `reliability` mit Begründung, Primärquellenbezug, Interessenlage und Zugriffsstatus,
+- `text_hash` sowie `sections` mit stabilen IDs, Text und vorhandenen Seiten- oder Zeitmarken,
+- `quotes` mit Abschnittsreferenz und `max_export_words`,
+- `uncertainties` zur Quelle selbst.
 
-Der MVP enthält diese Profile:
+Eine gefundene, aber nicht eingelesene Quelle bleibt ein Quellenkandidat. Titel und Suchausschnitte reichen nicht als Beleg für detaillierte fachliche Aussagen.
 
-```yaml
-id: de_calm_deep
-audio_language: de-DE
-tone: calm_deep_essayistic
-pace: medium
-host_count: 2
-humor: low
-technical_depth: medium_high
-```
+### 5.3 KnowledgeModel
 
-```yaml
-id: de_tutor_clear
-audio_language: de-DE
-tone: clear_supportive_tutor
-pace: slow_medium
-host_count: 2
-humor: low
-technical_depth: adaptive
-pause_seconds_after_question: 3
-```
+| Bestandteil | Erforderlicher Inhalt |
+| --- | --- |
+| `key_terms` | ID, Definition und Quellenreferenzen |
+| `claims` | ID, Aussage, Typ, Konfidenz und Evidence-Einträge mit Quellenabschnitt, Stärke und Begründung |
+| `counterpoints` | ID, Gegenargument oder Grenze, Quellenreferenzen und Verbindung zum betroffenen Claim |
+| `dependencies` | Welche Begriffe oder Claims vor anderen erklärt sein müssen |
+| `mechanisms` | Erklärschritte für einen Zusammenhang mit zugehörigen Claim- und Term-IDs |
+| `examples` | Beispiele mit Referenzen; erfundene Veranschaulichungen ausdrücklich als hypothetisch markieren |
+| `uncertainties` | ID, offene Frage und Grund, etwa fehlende Daten, widersprüchliche Quellen oder unklare Begriffe |
+| `editorial_priorities` | Relevanz für die Leitfrage, notwendige Voraussetzungen und begründet ausgelassene Inhalte |
 
-## 8. Prompt- und Modellstrategie
+Quellenreferenzen verwenden `source_id#section_id`. Jeder fachliche Claim hat mindestens einen Evidence-Eintrag. Redaktionelle Schlussfolgerungen werden als solche gekennzeichnet und verweisen auf belegte Ausgangsclaims. Anschauliche Beispiele dürfen keine unbelegten Tatsachen suggerieren.
 
-Prompts sind versionierte Templates. Jede Stufe hat ein JSON/YAML-Schema und validiert ihre Ausgabe.
+Tutor-Lernziele, Bloom-Stufen und Quizdaten sind keine erforderlichen Bestandteile.
 
-Pflichtstufen:
+### 5.4 SeriesPlan
 
-1. `extract_sources.v1`,
-2. `build_source_index.v1`,
-3. `build_knowledge_model.v1`,
-4. `plan_deep_dive.v1`,
-5. `plan_tutor.v1`,
-6. `write_deep_dive_script.v1`,
-7. `write_tutor_script.v1`,
-8. `quality_review.v1`,
-9. `export_learning_assets.v1`.
+Der Serienplan enthält die Leitfrage, das gewünschte und geplante Gesamtbudget, den übergreifenden Erklärbogen und eine geordnete Liste von Folgen. Je Folge werden mindestens festgehalten:
 
-## 9. Quality Gates
+- `episode_id`, Nummer, Titel, eigene zentrale Frage und Zweck,
+- `target_minutes`,
+- vorausgesetzte Folgen, Begriffe und Claims,
+- neu zu erklärende Begriffe, Claims, Mechanismen und Beispiele,
+- behandelte Gegenpositionen und Unsicherheiten,
+- bewusst vertagte Fragen mit späterer Zielfolge oder begründetem Ausschluss,
+- Anschlussfrage zur nächsten Folge; bei der letzten Folge abschließende Synthese.
+
+Eine Abdeckungsmatrix ordnet jede priorisierte Teilfrage und jeden zentralen Claim einer oder mehreren Folgen zu. Erneute Verwendung wird als notwendige Vertiefung oder kurze Rückschau begründet.
+
+### 5.5 EpisodePlan und Skript
+
+Ein Episodenplan enthält `episode_id`, `mode: deep_dive`, Stilprofil, Zeitbudget, Sprecherrollen und Szenen. Jede Szene hat eine Funktion, Frage, Zielzeit, relevante Wissensmodell-IDs, Erklärschritte und einen Übergang.
+
+Das Skript enthält vollständige gesprochene Texte, Sprecherrollen, Kapitel und Pausen. Fachliche Aussagen erhalten maschinenlesbare Wissensmodell-Referenzen. Diese Referenzen werden beim Audio-Rendern nicht mitgesprochen, bleiben aber in den prüfbaren Artefakten erhalten. Die konkrete Referenzsyntax ist vor dem ersten Skriptgenerator festzulegen.
+
+## 6. Recherche und inhaltliche Tiefe
+
+### Themengeleitete Recherche
+
+1. Aus dem Themenauftrag Teilfragen, notwendige Grundlagen und Suchbegriffe ableiten.
+2. Genannte Personen und konkrete Werke zuordnen; bei ungeklärter Identität die Zuschreibung offenlassen.
+3. Primärquellen und fachliche Übersichten suchen und auf Aktualität, Relevanz, Methodik und Interessenlage prüfen.
+4. Relevante unabhängige Einordnungen, Gegenpositionen und Grenzen suchen.
+5. Aussagen quellenübergreifend verbinden und bestehende Widersprüche erklären.
+6. Abdeckung und verbleibende Lücken dokumentieren. Bei ausgeschöpftem Budget mit sichtbaren Lücken enden.
+
+Jede priorisierte Teilfrage braucht tragfähiges Material oder einen dokumentierten Befund, warum sie nicht beantwortet werden kann. Wesentliche ungeklärte Grundlagen blockieren die davon abhängigen Folgen. Quellenanzahl allein ist kein Qualitätsnachweis; fehlende unabhängige Bestätigung wird sichtbar gemacht.
+
+### Pflichtniveau
+
+Der MVP muss über Extraktion und Argumentkarte hinaus eine Synthese leisten: Was hängt wie zusammen, worauf beruhen die Aussagen, worin unterscheiden sich Positionen, und was bleibt offen? Diese Anforderung gilt für jede Serie, unabhängig von der Anzahl der Quellen.
+
+Für jede zentrale Erklärfrage müssen im Plan und Skript erkennbar sein:
+
+- präzise Begriffe und benötigte Voraussetzungen,
+- eine nachvollziehbare Erklärung des Wie und Warum, soweit die Quellen dies tragen,
+- mindestens ein ausführlich durchgearbeitetes Beispiel oder eine Fallanalyse,
+- Belege sowie relevante Grenzen, Alternativen oder Unsicherheiten,
+- eine Antwort auf die Folgenfrage und deren Beitrag zur Serienfrage.
+
+Die Elemente müssen inhaltlich aufeinander bezogen sein. Ihre bloße Erwähnung erfüllt den Tiefencheck nicht. Ein Gegenargument wird nicht erfunden, wenn die Quellen keines tragen; tatsächliche Grenzen oder offene Fragen werden entsprechend benannt.
+
+### Fachliche Perspektiven
+
+Eine personenzentrierte Recherche unterscheidet zwischen einer belegten Aussage dieser Person, ihrer Interpretation und dem Befund weiterer Quellen. Fachbegriffe müssen in ihrem jeweiligen Kontext erklärt werden.
+
+Bei Gesundheitsthemen gehören aktuelle fachliche Primärquellen und Leitlinien in die Recherche. Referenzbereiche, Entscheidungsgrenzen und behauptete „Optimalwerte“ werden im Quellenmodell getrennt geführt und nach Herkunft eingeordnet. Persönliche Diagnose oder Behandlung anhand individueller Laborbefunde ist kein Hauptfall dieses MVP.
+
+## 7. Serienplanung und Laufzeit
+
+Die Serie ist das Standardprodukt. Das Standardbudget von 210 Minuten entspricht sieben Folgen mit je 30 Minuten Planbudget. Der Hauptfall von 180 bis 240 Minuten ergibt typischerweise sechs bis acht Folgen; die tatsächliche Aufteilung folgt den Teilfragen und Erklärabhängigkeiten.
+
+- Keine Folge darf 30 Minuten überschreiten.
+- Die Summe der Folgenbudgets muss dem gewählten Gesamtbudget entsprechen. Eine inhaltlich begründete Abweichung wird im Serienplan sichtbar ausgewiesen.
+- Bei unzureichendem Material wird eine kürzere Serie vorgeschlagen oder gezielt nachrecherchiert. Skripte werden nicht künstlich gestreckt.
+- Passt eine Folge nicht in ihr Budget, werden sinnvoll abgegrenzte Inhalte in eine weitere Folge verlagert. Belege, Beispiele und Gegenpositionen dürfen dabei nicht pauschal wegfallen.
+- Zusätzliche Folgen und Änderungen des Gesamtbudgets müssen aus dem Serienplan nachvollziehbar sein.
+- Skriptlaufzeit wird aus gesprochenen Wörtern, konfigurierter Sprechgeschwindigkeit und Pausen geschätzt. Die Rate ist nach dem ersten Audio-Pilot zu kalibrieren.
+- Nach dem Rendern zählt die gemessene Audiodauer. Zu lange Folgen werden vor dem finalen Export überarbeitet oder geteilt; die Sprechgeschwindigkeit wird nicht zur Umgehung der Obergrenze erhöht.
+
+### Zusammenhang über mehrere Folgen
+
+Der Plan ordnet die Folgen nach notwendigen Grundlagen und aufeinander aufbauenden Fragen. Geeignete Zwecke sind Grundlagen, Mechanismus, Vertiefung, Gegenposition, Fallstudie, Anwendung und Synthese. Eine Serie muss nicht alle Zwecke als getrennte Folgen verwenden.
+
+Jede Folge benennt knapp, welches Wissen sie voraussetzt, und beantwortet eine eigene Frage substanziell. Kurze Rückschauen sind erlaubt. Bereits erklärte Grundlagen sollen nicht bei jeder Folge wieder den Hauptteil bilden. Die letzte Folge verbindet die Ergebnisse und markiert verbleibende offene Fragen.
+
+## 8. Storytelling und Sprechstil
+
+Das Standardprofil `de_calm_deep` verwendet Deutsch, einen ruhigen, gründlichen Ton, mittleres Sprechtempo, wenig Humor und zwei Hosts.
+
+- Host A entwickelt Erklärungen, führt Beispiele durch und verbindet Befunde.
+- Host B fragt nach Mechanismen, prüft Annahmen, bringt Einwände und markiert unklare Begriffe.
+
+Sprecherwechsel folgen dem Gedankengang. Längere zusammenhängende Erklärungen sind ausdrücklich erlaubt. Host B darf nicht überwiegend Zustimmung oder Stichworte liefern. Fragen dienen der Erschließung des Themas; es gibt keine verpflichtenden Quiz- oder Antwortpausen für den Hörer.
+
+Eine Folge führt von einer konkreten Frage oder einem Fall über Kontext, Erklärung, Belege, Komplikation und Vertiefung zur Synthese. Der Einstieg benennt die Folgenfrage innerhalb der ersten 90 Sekunden. Der Schluss greift sie auf. Eine Grundlagenfolge darf einen anderen Spannungsbogen haben als eine Kontroversenfolge; Dramaturgie soll den Inhalt tragen.
+
+## 9. Prompt- und Modellstrategie
+
+Prompts sind getrennte, versionierte Templates mit definierten Eingaben, Ausgaben und Validierung:
+
+1. `plan_research.v1`,
+2. `review_source_candidates.v1`,
+3. `extract_sources.v1`,
+4. `build_knowledge_model.v1`,
+5. `synthesize_research.v1`,
+6. `plan_series.v1`,
+7. `plan_episode.v1`,
+8. `write_deep_dive_script.v1`,
+9. `review_episode.v1`,
+10. `review_series.v1`.
+
+Suche, Abruf und Textextraktion benötigen echte Werkzeug- beziehungsweise Provider-Anbindungen. Ein Modell darf keine nicht abgerufenen Quellen als gelesene Evidenz ausgeben. LLM-, Recherche- und TTS-Provider werden bei der Implementierung ausgewählt; bisher ist kein Anbieter festgelegt.
+
+## 10. Qualitätsprüfungen
 
 | Gate | Blockierend | Regel |
 | --- | --- | --- |
-| `source_check` | Ja | Jede starke Skriptaussage muss eine Claim-ID oder Term-ID haben. |
-| `evidence_check` | Ja | Jede Claim-ID braucht mindestens eine Evidence-ID. |
-| `hallucination_check` | Ja | Neue Fakten im Skript ohne Wissensmodell-Referenz sind Fehler. |
-| `rights_check` | Ja | Quellen mit `no_export` dürfen nicht in Show Notes oder Audio erscheinen. |
-| `learning_check` | Ja für Tutor | Tutor-Skripte brauchen mindestens drei Lernziele und fünf Abruffragen. |
-| `depth_check` | Warnung | Pro zentraler Frage muss mindestens ein Gegenargument oder eine Unsicherheit vorkommen. |
-| `redundancy_check` | Warnung | Kein Abschnitt darf mehr als 30 Prozent Satzähnlichkeit zum direkt vorherigen Abschnitt haben. |
-| `audio_readiness_check` | Warnung | Sprecherrollen, Pausen und Kapitelmarken müssen vollständig sein. |
+| `schema_check` | Ja | Artefakte und alle referenzierten IDs sind gültig. |
+| `source_check` | Ja | Fachliche Skriptaussagen verweisen auf passende Wissensmodell-Einträge. |
+| `evidence_check` | Ja | Claims und fachliche Definitionen sind auf tatsächlich eingelesene Quellen zurückführbar. |
+| `factual_review` | Ja bei Befund | Evidenz trägt die Aussage; neue oder überzogene Behauptungen gehen zurück in die Recherche. |
+| `research_coverage_check` | Ja bei wesentlichen Lücken | Teilfragen und Grundlagen sind abgedeckt oder mit begründeten Folgen für den Umfang markiert. |
+| `depth_check` | Ja | Zentrale Fragen werden anhand von Erklärschritten, ausgearbeiteten Beispielen, Evidenz und Grenzen substanziell beantwortet. |
+| `series_planning_check` | Ja | Fragen, Claims und Voraussetzungen sind Folgen zugeordnet; vertagte Kerninhalte gehen nicht verloren. |
+| `continuity_check` | Ja bei Verständnisbruch | Reihenfolge und Übergänge funktionieren; Begriffe werden vor ihrer notwendigen Verwendung erklärt. |
+| `redundancy_check` | Warnung | Unnötige Wiederholungen innerhalb und zwischen Folgen ersetzen keine Vertiefung. |
+| `duration_check` | Ja | Geplante und geschätzte Laufzeit bleiben je Folge bei höchstens 30 Minuten; vor Audio-Export gilt zusätzlich die gemessene Dauer. |
+| `rights_check` | Ja | Export berücksichtigt Quellenrechte, Zitatgrenzen, `private` und `no_export`. |
+| `audio_readiness_check` | Ja vor Rendern | Sprecher, gesprochener Text, Pausen und Kapitel sind eindeutig. |
 
-Audio-Rendering ist blockiert, wenn ein blockierendes Gate fehlschlägt.
+ID- und Schema-Prüfungen sind maschinell deterministisch. Inhaltliche Tiefe, Evidenzpassung und Natürlichkeit benötigen redaktionelle Bewertung; eine Quellen-ID beweist keine sachliche Richtigkeit. Der Bericht trennt automatische Prüfungen, Modellbewertungen und menschliche Befunde.
 
-## 10. Rechte, Datenschutz und Sicherheit
+Ein Bericht speichert die Hashes der geprüften Quellen-, Modell-, Plan- und Skriptstände. Eine Änderung dieser Eingaben macht betroffene Freigaben ungültig. Blockierende Befunde verhindern finalen Export und Audio-Rendering; interne Artefakte und Fehlerberichte bleiben zur Korrektur verfügbar. Ein Bericht über nur eine Folge darf nicht als Prüfung der gesamten Serie gelten.
 
-### Rechte
+## 11. Rechte und Datenschutz
 
-- Standardstatus importierter Quellen ist `unknown`.
-- Quellen mit `unknown` dürfen privat analysiert werden, aber nicht in öffentlich gedachte Show Notes exportiert werden.
-- Quellen mit `restricted` oder `no_export` dürfen nicht direkt zitiert werden.
-- Das System paraphrasiert standardmäßig und erzwingt kurze Zitate mit Quelle und Wortlimit.
+- Importierte Quellen haben zunächst den Rechtezustand `unknown`.
+- Quellen mit `unknown` können privat analysiert werden, dürfen aber nicht in öffentlich gedachte Show Notes gelangen.
+- `private: true` und `allowed_usage: no_export` schließen Quellen aus Skript- und Audioexporten aus.
+- `restricted` erlaubt keine direkten Zitate; Nutzungsstatus und Zitatlimits werden beim Export geprüft.
+- Paraphrasen sind der Standard; kurze Zitate bleiben ihrer Quelle zugeordnet.
+- Projektdateien werden lokal gespeichert. Logs enthalten keine vollständigen Quellentexte. Personenbezogene Daten werden vor Modellaufrufen in einer Redaction-Stufe behandelt.
 
-### Datenschutz
-
-- Lokale Projektdateien sind die primäre Persistenz.
-- Logs dürfen keine vollständigen Quellentexte enthalten.
-- Personenbezogene Daten werden vor Modellaufrufen durch eine Redaction-Stufe markiert.
-- Nutzer kann Quellen mit `private: true` vom Export ausschließen.
-
-### Transparenznotiz
-
-Jeder Export enthält:
+Die bestehende Transparenznotiz bleibt Bestandteil der Exporte:
 
 > Dieser Output ist eine quellengebundene Synthese. Er ersetzt keine fachliche, rechtliche, medizinische oder wissenschaftliche Begutachtung. Unsichere oder widersprüchliche Quellenlagen werden markiert.
 
-## 11. Audio-Entscheidung
+## 12. Audio und Wiederaufnahme
 
-- Audio ist im MVP optional.
-- Audio wird segmentweise gerendert.
-- Cache-Key ist `sha256(voice_id + segment_text + tts_settings)`.
-- Nur geänderte Segmente werden neu gerendert.
-- Standardformat ist MP3, 44.1 kHz, Stereo, lautheitsnormalisiert auf -16 LUFS.
-- Pausen im Tutor-Modus werden explizit als Stille gerendert.
+- Audio wird nur nach expliziter Freigabe und bestandenen blockierenden Prüfungen erzeugt.
+- Rendering erfolgt pro Sprechersegment, anschließend werden Segmente zu Folgen zusammengesetzt.
+- Der Cache-Key berücksichtigt Provider, Modell, Stimme, gesprochenen Segmenttext, Aussprache- und TTS-Einstellungen.
+- Nur geänderte oder fehlende Segmente werden neu gerendert. Fehlgeschlagene Folgen können einzeln fortgesetzt werden.
+- Standardformat ist MP3, 44.1 kHz, Stereo und lautheitsnormalisiert auf -16 LUFS.
+- Kapitelmarken werden aus der tatsächlichen Audio-Zeitleiste erzeugt. Laufzeit und Aussprache zentraler Begriffe werden am Audio geprüft.
+- Vor Freigabe wird eine Kostenschätzung für die ausgewählten Folgen bereitgestellt. Verbrauchte Kosten und Cache-Nutzung werden im Manifest protokolliert.
 
-## 12. Run Manifest
+Musik, aufwendiges Sounddesign und ein dritter Host sind keine Voraussetzungen für den ersten MVP.
 
-Jeder Lauf erzeugt ein Manifest:
+## 13. Run Manifest
 
-```yaml
-run_id: 2026-07-08T12-00-00Z
-created_at: 2026-07-08T12:00:00Z
-pipeline_version: 1
-prompt_versions:
-  extract_sources: v1
-  build_knowledge_model: v1
-  quality_review: v1
-source_hashes:
-  source_001: sha256:...
-model_hashes:
-  knowledge_model: sha256:...
-outputs:
-  knowledge_model: models/knowledge_model.yaml
-  deep_dive_script: scripts/deep_dive_script.md
-  tutor_script: scripts/tutor_script.md
-quality_status: passed | warning | failed
-audio_approved: false
-```
+Das Manifest speichert Run-ID, Erstellungszeit, Pipeline- und Schema-Version, Themenauftrag, Recherchegrenzen, Quellen- und Artefakthashes, Prompt-Versionen, verwendete Modelle und Einstellungen sowie die Ausgabepfade je Folge.
 
-## 13. Evaluationsdaten
+Zusätzlich erfasst es ausgeführte Stufen, Warnungen und Fehler, tatsächliche Kosten, Cache-Treffer, Qualitätsstatus, geprüfte Input-Hashes und die Audio-Freigabe für konkrete Skriptstände und Folgen. Quellentexte und Modellantworten werden soweit zulässig im Run eingefroren, damit spätere Änderungen an Onlinequellen den ursprünglichen Lauf nicht still verändern.
 
-Vor Feature-Erweiterungen müssen drei Fixture-Projekte existieren:
+## 14. Evaluation und Definition of Done
 
-1. `fixtures/simple_topic`: zwei bis drei konsistente Quellen,
-2. `fixtures/controversial_topic`: widersprüchliche Quellen,
-3. `fixtures/exam_topic`: Lernstoff mit klaren Prüfungszielen.
+Vor weiteren Ausgabeformaten werden drei Fixture-Projekte angelegt:
 
-Jedes Fixture enthält erwartete Claims, Lernziele, Gegenargumente und mindestens einen absichtlich problematischen Fall.
+1. `fixtures/simple_topic`: kleiner, konsistenter Quellenbestand für schnelle Prüfungen von Ingestion, Referenzen und Export.
+2. `fixtures/mechanism_series`: eine Serie mit aufeinander aufbauenden Grundlagen und Mechanismen sowie einem Planbudget von 180 bis 240 Minuten.
+3. `fixtures/conflicting_perspectives`: widersprüchliche Positionen, unsichere Evidenz und eine personenzentrierte Ausgangsfrage.
 
-## 14. Definition of Done
+Jedes Fixture erhält erwartete Kernclaims, Erklärschritte, Quellenbezüge, Beispiele, Grenzen und mindestens einen absichtlich problematischen Fall. Das Serienfixture umfasst zudem erwartete Abhängigkeiten, Abdeckung und unerwünschte Wiederholungen. Die Hauptfälle aus Abschnitt 1 sind Kandidaten für spätere fachliche Piloten; konkrete Quellen müssen dafür recherchiert werden.
 
 Der MVP ist fertig, wenn:
 
-- alle Pflichtartefakte erzeugt werden,
-- alle YAML-Dateien gegen Schemas validieren,
-- blockierende Quality Gates Audio verhindern,
-- ein Run über das Manifest reproduzierbar ist,
-- Skripte keine faktenbezogenen Aussagen ohne Wissensmodell-Referenz enthalten,
-- Tutor-Skripte Lernziele, Pausen, Abruffragen und Musterantworten enthalten,
-- optionale Audio-Exports nur mit expliziter Freigabe entstehen,
-- Fixture-Projekte erfolgreich durch die Pipeline laufen.
-
-## 15. Deep-Research-Definition
-
-Der Rechercheteil ist nur dann ausreichend definiert, wenn er nicht bloß Zusammenfassungen erzeugt, sondern eine belastbare Wissensstruktur mit Quellenkritik, Argumentlogik und offenen Fragen.
-
-### 15.1 Recherche-Tiefenstufen
-
-| Stufe | Name | Mindestleistung |
-| --- | --- | --- |
-| 0 | Import | Quellen werden nur gespeichert und in Abschnitte zerlegt. |
-| 1 | Summary | Quellen werden abschnittsweise zusammengefasst. |
-| 2 | Claim Extraction | Aussagen, Begriffe, Beispiele und Evidenz werden extrahiert. |
-| 3 | Argument Map | Claims werden mit Evidenz, Gegenargumenten und Unsicherheiten verbunden. |
-| 4 | Synthesis | Widersprüche, Forschungslücken, Begriffsunterschiede und Abhängigkeiten werden erklärt. |
-| 5 | Editorial Judgment | Das System priorisiert, was zentral, kontrovers, unsicher, überraschend und lernrelevant ist. |
-
-Der MVP muss Stufe 3 erreichen. Stufe 4 ist für kontroverse Themen Pflicht, sobald mehr als drei Quellen verarbeitet werden. Stufe 5 ist Roadmap, darf aber bereits als Review-Hinweis erscheinen.
-
-### 15.2 Verbindliche Research-Artefakte
-
-Zusätzlich zum `KnowledgeModel` erzeugt Deep Research:
-
-- `source_index.yaml`: Quellen, Metadaten, Rechte, Hashes und Reliability,
-- `claim_graph.yaml`: Claims, Evidence, Counterpoints, Dependencies,
-- `research_briefing.md`: verständliche Synthese,
-- `open_questions.md`: offene Fragen, Widersprüche und Recherchebedarf,
-- `editorial_priorities.yaml`: Wichtigkeit, Neuigkeitswert, Kontroversität und Lernrelevanz.
-
-### 15.3 Quellenkritik
-
-Jede Quelle erhält eine Bewertung nach diesen Kriterien:
-
-- Nähe zur Primärquelle,
-- Aktualität,
-- methodische Qualität,
-- mögliche Interessenlage,
-- Widerspruch zu anderen Quellen,
-- Relevanz für die zentrale Frage.
-
-Claims aus schwachen Quellen dürfen im Skript nur mit sprachlicher Einschränkung verwendet werden.
-
-## 16. Pädagogische Spezifikation
-
-Der Tutor-Modus ist nur gut definiert, wenn er nicht einfach erklärt, sondern Lernen aktiv auslöst, überprüft und wiederholt.
-
-### 16.1 Didaktisches Modell
-
-Der MVP kombiniert vier Prinzipien:
-
-1. **Learning Objectives:** Jede Folge beginnt mit aktiv überprüfbaren Lernzielen.
-2. **Retrieval Practice:** Lernende müssen Wissen aktiv abrufen, bevor die Musterantwort kommt.
-3. **Worked Examples:** Neue Konzepte werden an Beispielen und Gegenbeispielen erklärt.
-4. **Misconception Repair:** Typische Fehlannahmen werden explizit diagnostiziert und korrigiert.
-
-### 16.2 Tutor-Folgenstruktur
-
-Jede Tutor-Folge muss diese Elemente enthalten:
-
-1. Lernziel,
-2. Vorwissensfrage,
-3. kurze Erklärung,
-4. Antwortpause,
-5. Beispiel,
-6. Gegenbeispiel,
-7. Verständnisfrage,
-8. typischer Fehler,
-9. Korrektur des Fehlers,
-10. Mini-Zusammenfassung,
-11. Transferfrage,
-12. Abrufquiz,
-13. nächste Wiederholungsempfehlung.
-
-### 16.3 Lernziel-Qualität
-
-Lernziele sind ungültig, wenn sie nur „verstehen“ oder „kennenlernen“ sagen. Sie müssen beobachtbare Verben verwenden, etwa:
-
-- erklären,
-- unterscheiden,
-- anwenden,
-- vergleichen,
-- bewerten,
-- kritisch einordnen.
-
-### 16.4 Fragenmix
-
-Jede Tutor-Folge braucht mindestens:
-
-- zwei Abruffragen,
-- eine Verständnisfrage,
-- eine Transferfrage,
-- eine Fehlkonzept-Frage,
-- eine Selbstbewertungsfrage.
-
-## 17. Storytelling- und Dramaturgie-Spezifikation
-
-Der Deep-Dive-Modus ist nur gut definiert, wenn er eine narrative und argumentative Dramaturgie besitzt, nicht nur eine lineare Inhaltsliste.
-
-### 17.1 Deep-Dive-Dramaturgie
-
-Jede Deep-Dive-Folge nutzt diese Makrostruktur:
-
-1. **Cold Open:** konkrete Szene, Konflikt oder überraschender Befund.
-2. **Promise:** Was kann der Hörer am Ende besser verstehen?
-3. **Map:** Welche Route nimmt die Folge?
-4. **Context:** historischer, technischer oder sozialer Hintergrund.
-5. **Tension 1:** erste zentrale These mit Evidenz.
-6. **Complication:** Gegenargument, Grenze oder Widerspruch.
-7. **Tension 2:** tiefere Erklärung oder zweiter Blickwinkel.
-8. **Case:** konkretes Beispiel oder Fallstudie.
-9. **Synthesis:** Was folgt aus den konkurrierenden Perspektiven?
-10. **Open Loop Closure:** Rückkehr zur Eingangsfrage.
-11. **Afterthought:** ein prägnanter Schlussgedanke ohne falsche Eindeutigkeit.
-
-### 17.2 Szenen statt Abschnitte
-
-Ein Deep-Dive-Skript besteht aus Szenen. Jede Szene braucht:
-
-- Funktion in der Dramaturgie,
-- zentrale Frage,
-- relevante Claims,
-- Konflikt oder Erkenntnisfortschritt,
-- Übergang zur nächsten Szene.
-
-### 17.3 Host-Rollen
-
-Der MVP nutzt zwei Rollen:
-
-- **Host A:** erklärt, synthetisiert, führt durch die Geschichte.
-- **Host B:** fragt kritisch nach, markiert Unsicherheiten, vertritt Hörerfragen.
-
-Optional später:
-
-- **Host C:** Gegenposition, Praxisbeispiel oder Prüfungsrolle.
-
-### 17.4 Qualitätsregeln für Dialog
-
-Dialog ist ungültig, wenn Host B nur Stichworte liefert. Host B muss mindestens eine dieser Funktionen erfüllen:
-
-- Einwand,
-- Präzisierung,
-- Verständnisfrage,
-- Gegenbeispiel,
-- Quellenkritik,
-- Transfer in Alltag oder Praxis.
-
-### 17.5 Dramaturgische Qualitätsmetriken
-
-| Metrik | Mindestwert |
-| --- | --- |
-| Hook vorhanden | Ja |
-| Zentrale Frage innerhalb der ersten 90 Sekunden | Ja |
-| Mindestens zwei Spannungsbögen | Ja |
-| Mindestens ein echter Gegenstandpunkt | Ja |
-| Mindestens ein konkretes Beispiel | Ja |
-| Schluss greift Eingangsfrage wieder auf | Ja |
-| Keine reine Listenstruktur über mehr als drei Minuten | Ja |
-
-## 18. Gesamtbewertung des Definitionsstands
-
-Nach diesen Ergänzungen ist der technische Kern gut definiert, die Pädagogik solide definiert und die Dramaturgie ausreichend spezifiziert, um erste Skriptgeneratoren zu bauen.
-
-| Bereich | Bewertung | Begründung |
-| --- | --- | --- |
-| Deep Research | Gut, aber noch nicht wissenschaftlich vollständig | Claim Graph, Quellenkritik und offene Fragen sind definiert; systematische Literaturreview-Methodik ist nicht Teil des MVP. |
-| Pädagogik | Gut für Selbstlernen | Lernziele, Retrieval Practice, Fehlkonzepte und Transferfragen sind Pflicht; adaptive Diagnostik bleibt Roadmap. |
-| Storytelling | Gut für MVP-Skripte | Makrostruktur, Szenenlogik, Host-Rollen und Dramaturgie-Metriken sind festgelegt; Feinschliff bleibt redaktionell. |
-| Dramaturgie | Gut messbar | Hook, zentrale Frage, Spannungsbögen, Gegenstandpunkt und Schlussrückbindung sind prüfbar. |
-| Audio-Inszenierung | Mittel | Stimmen, Pausen und Kapitel sind definiert; Sounddesign, Musik und Performance-Regie sind noch Roadmap. |
-
-Die wichtigste verbleibende Lücke ist nicht mehr die Spezifikation, sondern die spätere Evaluation an echten Fixture-Projekten: Erst Beispielquellen und Goldstandard-Ausgaben zeigen, ob Research, Didaktik und Dramaturgie wirklich gut genug umgesetzt sind.
-
-## 19. Deep-Dive-Serienplanung und 30-Minuten-Grenze
-
-Deep-Dive-Folgen sind im MVP auf maximal 30 Minuten begrenzt. Wenn ein Thema mehr Tiefe braucht, erzeugt das System keine überlange Einzelfolge, sondern plant eine Serie aus mehreren Folgen.
-
-### 19.1 Harte Längenentscheidung
-
-- `deep_dive` hat eine Zielspanne von 24 bis 30 Minuten.
-- 30 Minuten sind die harte Obergrenze für eine einzelne Deep-Dive-Folge.
-- Bei geschätzter Skriptlänge über 30 Minuten muss der Episode Planner splitten.
-- Kürzungen dürfen nicht dazu führen, dass Gegenargumente, Unsicherheiten oder Quellenkritik entfernt werden.
-
-### 19.2 Tiefe-Wunsch des Nutzers
-
-Der Nutzer wählt vor der Planung eine gewünschte Tiefe:
-
-```yaml
-depth_request: overview | standard | deep | expert_series
-```
-
-| Tiefe | Planung |
-| --- | --- |
-| `overview` | Eine kompakte Folge mit Fokus auf zentrale Frage und wichtigste Claims. |
-| `standard` | Eine Folge bis 30 Minuten mit Kontext, Belegen, Gegenposition und Beispiel. |
-| `deep` | Zwei bis drei Folgen: Einstieg, Vertiefung, Konsequenzen oder offene Fragen. |
-| `expert_series` | Mehrteilige Serie mit separaten Folgen für Grundlagen, Kontroversen, Methoden, Fälle und Ausblick. |
-
-### 19.3 Komplexitätsbewertung
-
-Vor der Episodenplanung berechnet das System eine Themenkomplexität.
-
-```yaml
-complexity_score:
-  source_count: integer
-  claim_count: integer
-  counterpoint_count: integer
-  uncertainty_count: integer
-  key_term_count: integer
-  prerequisite_count: integer
-  controversy_level: low | medium | high
-  estimated_minutes: integer
-  recommended_episode_count: integer
-```
-
-### 19.4 Split-Regeln
-
-Das System erzeugt mehrere Deep-Dive-Folgen, wenn mindestens eine Bedingung erfüllt ist:
-
-- `estimated_minutes > 30`,
-- `depth_request` ist `deep` oder `expert_series`,
-- mehr als acht zentrale Claims vorhanden sind,
-- mehr als vier zentrale Gegenargumente vorhanden sind,
-- mehr als sechs Schlüsselbegriffe erklärt werden müssen,
-- die Quellenlage `controversy_level: high` hat.
-
-### 19.5 Serientypen
-
-Jede Folge einer Serie erhält einen Zweck:
-
-| Serientyp | Zweck |
-| --- | --- |
-| `foundation` | Grundlagen, zentrale Frage, Begriffe und Kontext. |
-| `deepening` | Vertiefung eines Claims, Mechanismus oder Forschungsstrangs. |
-| `extension` | Erweiterung auf Anwendungsfälle, Nachbarfragen oder Praxisfolgen. |
-| `continuation` | Fortsetzung einer noch nicht abgeschlossenen Argumentation. |
-| `counterpoint` | Gegenpositionen, Kontroversen und Unsicherheiten. |
-| `case_study` | Konkretes Beispiel oder Fallanalyse. |
-| `synthesis` | Zusammenführung, Konsequenzen, offene Fragen und Ausblick. |
-
-### 19.6 SeriesPlan
-
-Bei mehr als einer Folge erzeugt die Planung zusätzlich `series_plan.yaml`.
-
-```yaml
-schema_version: 1
-topic: string
-depth_request: standard | deep | expert_series
-complexity_score:
-  estimated_minutes: 86
-  recommended_episode_count: 3
-series:
-  - episode_number: 1
-    mode: deep_dive
-    series_type: foundation
-    title: string
-    central_question: string
-    target_minutes: 28
-    included_claim_ids:
-      - claim_001
-    deferred_claim_ids:
-      - claim_006
-    handoff_question: string
-  - episode_number: 2
-    mode: deep_dive
-    series_type: deepening
-    title: string
-    central_question: string
-    target_minutes: 29
-  - episode_number: 3
-    mode: deep_dive
-    series_type: synthesis
-    title: string
-    central_question: string
-    target_minutes: 27
-```
-
-### 19.7 Dramaturgie über mehrere Folgen
-
-Eine Serie braucht nicht nur einzelne gute Folgen, sondern einen Bogen über die gesamte Staffel:
-
-- Folge 1 beantwortet die Grundfrage nur teilweise und markiert bewusst offene Schleifen.
-- Vertiefungsfolgen lösen je eine zentrale offene Schleife.
-- Erweiterungsfolgen übertragen das Thema auf neue Kontexte.
-- Fortsetzungsfolgen führen eine unterbrochene Argumentation weiter.
-- Die letzte Folge enthält Synthese, Rückblick und offene Forschungs- oder Praxisfragen.
-
-### 19.8 Quality Gate für Serienplanung
-
-`series_planning_check` ist blockierend für Deep-Dive-Ausgaben.
-
-| Regel | Blockierend |
-| --- | --- |
-| Keine Deep-Dive-Folge überschreitet 30 Minuten Zielzeit. | Ja |
-| Jede ausgelagerte zentrale These erscheint in einer späteren Folge oder wird bewusst verworfen. | Ja |
-| Jede Folge hat einen eigenen Zweck und eine eigene zentrale Frage. | Ja |
-| Eine Serie hat einen übergreifenden Spannungsbogen. | Warnung |
-| Die letzte Folge enthält Synthese oder bewussten Ausblick. | Warnung |
+- ein Thema ohne vorbereiteten Quellenordner zu einer recherchierten Serie führt,
+- alle Pflichtartefakte existieren und ihre strukturierten Daten gegen implementierte Schemas validieren,
+- eine vollständige Pilotserie insgesamt 180 bis 240 Minuten tatsächliche Audiodauer erreicht und jede Audiofolge höchstens 30 Minuten dauert,
+- Abweichungen zwischen gewünschter, geplanter und tatsächlicher Gesamtdauer sichtbar sind,
+- Folgen aufeinander aufbauen und zentrale Fragen ausführlich beantworten,
+- Aussagen, Gegenpositionen und Unsicherheiten auf überprüfbare Quellen zurückführbar sind,
+- blockierende Befunde Rendern und finalen Export verhindern,
+- Skripte vor Audio prüfbar sind und Audio nur nach Freigabe entsteht,
+- MP3-Folgen, Kapitel, Transkripte und Show Notes vollständig exportiert werden,
+- die Fixtures und eine redaktionelle Hörprüfung des Piloten bestanden sind,
+- unterbrochene Läufe ohne vollständige Neuberechnung wiederaufgenommen werden können.
+
+Ein reiner Skriptprototyp ist ein erster Meilenstein. Die vollständige hörbare Serie ist das Abnahmeziel des MVP. Kriterien für die qualitative Prüfung stehen in [docs/system-quality-assessment.md](docs/system-quality-assessment.md).
