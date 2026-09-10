@@ -2,6 +2,22 @@
 
 Ein persönliches Recherche-zu-Podcast-System: Ein Thema vorgeben und daraus eine zusammenhängende, quellengebundene Deep-Dive-Serie entwickeln. Themenumfang und gewünschte Tiefe bestimmen, wie viele Folgen nötig sind. Die Gesamtdauer und Folgenzahl haben keine feste Vorgabe; einzelne Folgen dauern höchstens 30 Minuten.
 
+## Ausführbarer Stand: Version 0.1
+
+Die erste Implementierung enthält Projektverwaltung, eine Codex-Abo-Verbindungsprobe und einen Qwen-Worker mit automatischer MP3-Montage. [Installation und erste Proben unter Windows 11](docs/windows-quickstart.md).
+
+| Befehl | Bereits implementiert |
+| --- | --- |
+| `pla init` | Validierten Themenauftrag und lokale Projektstruktur anlegen |
+| `pla doctor` | Installation, Abo-Anmeldung und TTS-Umgebung prüfen |
+| `pla text-probe` | Strukturierte Codex-Antwort über die bestehende Abo-Anmeldung anfordern |
+| `pla audio-probe --approve-audio` | Mitgelieferten deutschen Dialog lokal sprechen und automatisch montieren |
+| `pla status` | Fortschritt, Fehler und veränderte Ergebnisse anzeigen |
+| `pla resume` | Unterbrochene Proben mit gültigen Ergebnissen fortsetzen |
+| `pla schemas` | Die implementierten Datenverträge als JSON-Schemas exportieren |
+
+Der lokale Audioweg erzeugt MP3, Kapitel, Transkript und Messberichte. Die Montage ist mit echten FFmpeg-Aufrufen getestet; die Modellantworten werden in den Tests simuliert. Echte Codex-Abo-Aufrufe und Qwen auf der Radeon sind noch auf dem Zielrechner zu prüfen. Recherche und vollständige Serienproduktion sind die nächsten Ausbaustufen.
+
 ## Hauptfall
 
 Der Nutzer möchte ein anspruchsvolles Thema ausführlich erschließen. Der Einstieg kann eine Frage, eine These, eine Person oder eine konkrete Quelle sein. Eigene PDFs, Texte und Links können die Recherche ergänzen, sind aber keine Voraussetzung.
@@ -45,9 +61,9 @@ Das Zielsystem ist Windows 11 mit einer AMD Radeon RX 9070 XT. Recherche und Skr
 
 Sprecherwechsel, Pausen, Montage, Lautheitsanpassung, Kapitel und Export werden automatisiert. Manueller Audioschnitt gehört nicht zum Bedienablauf. Zusätzliche bezahlte APIs sind keine Voraussetzung des MVP. Bei ausgeschöpftem Abo-Kontingent pausiert der Lauf und bewahrt bereits fertige Ergebnisse.
 
-## Geplante CLI
+## Geplante vollständige Pipeline
 
-Für den vollständigen Lauf nach Installation und Abo-Anmeldung:
+Die folgenden Befehle beschreiben das Ziel der weiteren Implementierung. Der vollständige `pla run` ist noch nicht verfügbar:
 
 ```powershell
 pla doctor
@@ -74,10 +90,11 @@ pla export ./my-topic
 
 ## Entwicklungsstand
 
-Das Repository enthält derzeit Spezifikation, Implementierungsplan und Evaluationskriterien. CLI, Recherche, Skriptgenerator und Audio-Rendering sind noch nicht implementiert. Die Umsetzung beginnt mit einem Abo-CLI-Test und einer automatisch montierten Hörprobe auf dem Windows-Rechner; danach folgt ein kleiner vollständiger Durchlauf von Quellen bis MP3.
+Das Grundgerüst und die technischen Proben sind implementiert. Der Code verwendet Python 3.12, argparse aus der Standardbibliothek, Pydantic und YAML. Die Tests prüfen unter anderem Abo-Pausen, ungültige Antworten, Wiederaufnahme und Audio-Montage. Es gibt noch keine recherchierte Pilotserie oder bestätigte Hörqualität auf dem Zielrechner.
 
 ## Dokumentation
 
+- [docs/windows-quickstart.md](docs/windows-quickstart.md): ausführbare Befehle, Windows-Installation und aktueller Funktionsumfang.
 - [SPEC.md](SPEC.md): verbindlicher Hauptfall, Architektur, Datenverträge und Abnahmekriterien.
 - [docs/personal-learning-podcast-system-plan.md](docs/personal-learning-podcast-system-plan.md): technische Startentscheidungen, sechs Meilensteine und konkrete Abnahmen.
 - [docs/system-quality-assessment.md](docs/system-quality-assessment.md): Bewertungskriterien für Recherche, Tiefe, Serienaufbau und Hörqualität.

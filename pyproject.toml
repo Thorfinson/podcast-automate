@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "podcast-automate"
+version = "0.1.0"
+description = "Local tools for researched deep-dive podcast series"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7"]
+
+[project.scripts]
+pla = "podcast_automate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+podcast_automate = ["data/*.json"]

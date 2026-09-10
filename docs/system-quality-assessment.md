@@ -4,7 +4,7 @@
 
 Der priorisierte Hauptfall ist eine quellengebundene Podcastserie, deren Umfang sich aus dem Thema und der gewünschten Tiefe ergibt. Gesamtdauer und Folgenzahl sind nicht fest vorgegeben; jede Folge dauert höchstens 30 Minuten. Bewertet werden Recherche, Erklärungstiefe, Aufbau über mehrere Folgen und Hörqualität.
 
-Das Repository enthält derzeit Anforderungen und einen Implementierungsplan. Es gibt noch keine implementierte Pipeline, vollständigen Pilotoutputs oder gemessenen Qualitätsresultate. Frühere Zahlenbewertungen des Definitionsstands sind keine nachgewiesenen Produkteigenschaften und werden durch konkrete Prüfkriterien ersetzt.
+Version 0.1 enthält eine technische CLI mit Codex-Probe, Qwen-Worker, Wiederaufnahme und automatischer Audio-Montage. Die Tests prüfen simulierte Modellantworten und echte FFmpeg-Verarbeitung von Testsignalen. Es gibt noch keine vollständige Recherchepipeline, fachlichen Pilotoutputs oder gemessene Hörqualität auf dem Radeon-Zielrechner. Frühere Zahlenbewertungen des Definitionsstands sind keine nachgewiesenen Produkteigenschaften und werden durch konkrete Prüfkriterien ersetzt.
 
 Tutor-Pädagogik, Quiz, Lernstandsdiagnostik und Wiederholungsplanung sind außerhalb dieser MVP-Bewertung. Verständliche Erklärungen und sinnvoll aufgebaute Grundlagen bleiben entscheidend.
 

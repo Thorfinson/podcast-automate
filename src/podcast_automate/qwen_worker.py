@@ -1,0 +1,167 @@
+"""Standalone worker: runs in the user's separate PyTorch/Qwen environment."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.metadata
+import importlib.util
+import json
+import os
+import platform
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+def save(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def hash_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def environment_report() -> dict:
+    report = {"python": platform.python_version(), "system": platform.system(),
+              "os_version": platform.version(), "packages": {}, "gpu_available": False}
+    for name in ("torch", "qwen-tts", "soundfile", "transformers"):
+        try:
+            report["packages"][name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            report["packages"][name] = None
+    if importlib.util.find_spec("torch"):
+        import torch
+        report["hip_version"] = getattr(torch.version, "hip", None)
+        report["gpu_available"] = torch.cuda.is_available()
+        if report["gpu_available"]:
+            report["gpu_name"] = torch.cuda.get_device_name(0)
+            report["gpu_memory_bytes"] = torch.cuda.get_device_properties(0).total_memory
+    return report
+
+
+def cached_segment(wav: Path, meta: Path) -> dict | None:
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        if wav.is_file() and data["sha256"] == hash_file(wav):
+            return data
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def render(request: dict, report: dict) -> dict:
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from huggingface_hub import snapshot_download
+    from qwen_tts import Qwen3TTSModel
+
+    config = request["runtime"]
+    device = config["tts_device"]
+    if device != "cpu" and not torch.cuda.is_available():
+        raise RuntimeError("GPU_UNAVAILABLE")
+    if Path(config["tts_model"]).is_dir():
+        raise RuntimeError("USE_PINNED_HUGGINGFACE_MODEL")
+    # Load processor and model from the same immutable downloaded snapshot.
+    snapshot = snapshot_download(config["tts_model"], revision=config["tts_revision"])
+    revision = Path(snapshot).name
+    start = time.perf_counter()
+    model = Qwen3TTSModel.from_pretrained(
+        snapshot, device_map=device,
+        dtype=torch.float32 if device == "cpu" else torch.bfloat16,
+        attn_implementation=config["tts_attention"],
+    )
+    load_seconds = time.perf_counter() - start
+    if device != "cpu":
+        torch.cuda.reset_peak_memory_stats()
+    cache = Path(request["cache_dir"])
+    cache.mkdir(parents=True, exist_ok=True)
+    results = []
+    for segment in request["segments"]:
+        voice = request["voices"][segment["speaker_id"]]
+        settings = {
+            "worker_version": 1, "model": config["tts_model"], "revision": revision,
+            "voice": voice, "text": segment["text"], "language": "German",
+            "device": device, "attention": config["tts_attention"], "seed": config["seed"],
+            "packages": report["packages"], "hip_version": report.get("hip_version"),
+        }
+        key = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
+        wav, meta = cache / f"{key}.wav", cache / f"{key}.json"
+        data = cached_segment(wav, meta)
+        hit = data is not None
+        if not hit:
+            torch.manual_seed(config["seed"])
+            started = time.perf_counter()
+            with torch.inference_mode():
+                waves, rate = model.generate_custom_voice(
+                    text=segment["text"], language="German", speaker=voice)
+            samples = np.asarray(waves[0], dtype=np.float32)
+            if samples.ndim != 1 or not samples.size or not np.isfinite(samples).all():
+                raise RuntimeError("INVALID_AUDIO")
+            peak = float(np.abs(samples).max())
+            if peak < 1e-5:
+                raise RuntimeError("EMPTY_AUDIO")
+            if peak > 0.99:
+                samples = samples * (0.99 / peak)
+            fd, temporary = tempfile.mkstemp(dir=cache, suffix=".wav")
+            os.close(fd)
+            try:
+                sf.write(temporary, samples, rate, subtype="PCM_16")
+                os.replace(temporary, wav)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+            data = {
+                "sha256": hash_file(wav), "duration_seconds": len(samples) / rate,
+                "render_seconds": time.perf_counter() - started, "settings": settings,
+            }
+            save(meta, data)
+        results.append({
+            "segment_id": segment["segment_id"], "path": str(wav),
+            "cache_hit": hit, **data,
+        })
+    return {
+        **report, "model_revision": revision, "model_load_seconds": load_seconds,
+        "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated() if device != "cpu" else None,
+        "segments": results,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--doctor", action="store_true")
+    parser.add_argument("--request", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        report = environment_report()
+        if not args.doctor:
+            if args.request is None:
+                parser.error("--request is required for rendering")
+            report = render(json.loads(args.request.read_text(encoding="utf-8")), report)
+        save(args.output, report)
+        return 0
+    except Exception as exc:
+        messages = {
+            "GPU_UNAVAILABLE": "PyTorch erkennt keine GPU. Passende AMD-PyTorch-Installation prüfen.",
+            "USE_PINNED_HUGGINGFACE_MODEL": "Für die Probe einen Hugging-Face-Modellnamen verwenden.",
+            "INVALID_AUDIO": "Das Modell lieferte ungültige Audiodaten.",
+            "EMPTY_AUDIO": "Das Modell lieferte nur Stille.",
+        }
+        message = messages.get(str(exc), f"TTS-Umgebung fehlgeschlagen ({type(exc).__name__}).")
+        save(args.output, {"error": message, "error_type": type(exc).__name__})
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
