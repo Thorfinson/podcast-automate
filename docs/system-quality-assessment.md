@@ -2,7 +2,7 @@
 
 ## Stand und Bewertungsgrundlage
 
-Der priorisierte Hauptfall ist eine quellengebundene Podcastserie von drei bis vier Stunden mit höchstens 30 Minuten pro Folge. Bewertet werden Recherche, Erklärungstiefe, Aufbau über mehrere Folgen und Hörqualität.
+Der priorisierte Hauptfall ist eine quellengebundene Podcastserie, deren Umfang sich aus dem Thema und der gewünschten Tiefe ergibt. Gesamtdauer und Folgenzahl sind nicht fest vorgegeben; jede Folge dauert höchstens 30 Minuten. Bewertet werden Recherche, Erklärungstiefe, Aufbau über mehrere Folgen und Hörqualität.
 
 Das Repository enthält derzeit Anforderungen und einen Implementierungsplan. Es gibt noch keine implementierte Pipeline, vollständigen Pilotoutputs oder gemessenen Qualitätsresultate. Frühere Zahlenbewertungen des Definitionsstands sind keine nachgewiesenen Produkteigenschaften und werden durch konkrete Prüfkriterien ersetzt.
 
@@ -18,10 +18,11 @@ Tutor-Pädagogik, Quiz, Lernstandsdiagnostik und Wiederholungsplanung sind auße
 | Beispiele | Ein konkretes Beispiel wird Schritt für Schritt durchgearbeitet und mit der Erklärung verbunden. | Beispiele bleiben kurze Stichworte oder schmückende Anekdoten. |
 | Evidenz und Grenzen | Befunde, Interpretation, Hypothesen und Unsicherheit werden unterschieden. | Eine einzelne Perspektive wird als gesicherter Gesamtstand ausgegeben. |
 | Serienaufbau | Folgen beantworten unterschiedliche Fragen und bauen auf bereits eingeführten Grundlagen auf. | Jede Folge beginnt erneut mit demselben Überblick. |
+| Serienumfang | Die Folgenzahl deckt den nötigen Erklärbedarf ab und wächst bei zusätzlichen inhaltlichen Anforderungen. | Kerninhalte werden wegen einer pauschalen Gesamtzeit- oder Folgenbegrenzung gekürzt. |
 | Zusammenhang | Vertagte Fragen werden später aufgenommen; die letzte Folge verbindet die Ergebnisse. | Folgen stehen nebeneinander oder verlieren zentrale offene Fragen. |
 | Dialog | Host-Nachfragen bewirken Präzisierung, Herleitung, Kritik oder ein vertieftes Beispiel. | Sprecher wechseln nur zwischen kurzen Behauptungen und Zustimmung. |
 | Hörbarkeit | Tempo, Aussprache, Pausen und Kapitel unterstützen die Erklärung. | Ein formal korrektes Skript ist gesprochen schwer nachvollziehbar. |
-| Laufzeit | Budget, Schätzung und gemessene Dauer werden ausgewiesen; jede Audiofolge bleibt bei höchstens 30 Minuten. | Wortzahl wird mit Tiefe gleichgesetzt oder Überlänge erst beim Hören bemerkt. |
+| Laufzeit | Aus dem Inhalt geplante und tatsächlich gemessene Dauer werden ausgewiesen; jede Audiofolge bleibt bei höchstens 30 Minuten. | Eine feste Gesamtstundenzahl gilt als Qualitätsnachweis oder Wortzahl wird mit Tiefe gleichgesetzt. |
 
 ## Was der Tiefencheck leisten muss
 

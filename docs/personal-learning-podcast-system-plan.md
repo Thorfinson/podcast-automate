@@ -2,7 +2,7 @@
 
 ## Verbindlicher Fokus
 
-Die Produkt- und Architekturentscheidungen stehen in [SPEC.md](../SPEC.md). Dieser Plan beschreibt die Umsetzung des am 2026-09-10 priorisierten Hauptfalls: Thema vorgeben, Quellen recherchieren und eine zusammenhängende Podcastserie von drei bis vier Stunden erhalten, mit höchstens 30 Minuten pro Folge.
+Die Produkt- und Architekturentscheidungen stehen in [SPEC.md](../SPEC.md). Dieser Plan beschreibt die Umsetzung des am 2026-09-10 priorisierten Hauptfalls: Thema vorgeben, Quellen recherchieren und eine zusammenhängende Podcastserie erhalten, deren Folgenzahl und Gesamtdauer sich aus Themenumfang und gewünschter Tiefe ergeben. Jede Folge dauert höchstens 30 Minuten.
 
 Die Serie muss ausführliche Erklärungen, Beispiele, Belege, Gegenpositionen und eine nachvollziehbare Reihenfolge bieten. Tutor, Quiz, Karteikarten, Prüfungsmodus und Wiederholungsplanung sind zurückgestellt. Sie sind keine Voraussetzung für den Recherchekern oder die Abnahme des MVP.
 
@@ -12,7 +12,7 @@ Die Serie muss ausführliche Erklärungen, Beispiele, Belege, Gegenpositionen un
 | --- | --- |
 | Thema als Einstieg | Themenauftrag und aktive Quellenrecherche ergänzen die Ingestion eigener Dateien. |
 | Serie als Standard | Serienplan, Abdeckungsmatrix und Abhängigkeiten entstehen vor den einzelnen Skripten. |
-| Drei bis vier Stunden Gesamtumfang | Zeitbudget wird auf Folgen verteilt; jede Folge und die gesamte Serie werden geprüft. |
+| Inhalt bestimmt den Serienumfang | Folgenzahl und Gesamtdauer werden aus Themenabdeckung und Tiefe abgeleitet; weitere nötige Folgen sind möglich. |
 | Gründliche Erklärungen | Wissensmodell enthält Voraussetzungen, Mechanismen und ausgearbeitete Beispiele zusätzlich zu Claims. |
 | Zusammenhängende Folgen | Jeder Skriptaufruf kennt relevante Quellen, den Gesamtplan, bereits Erklärtes und offene Fragen. |
 | Hörbares MVP | Audio-Export ist Bestandteil des fertigen MVP; pro Lauf bleibt die explizite Audio-Freigabe erhalten. |
@@ -24,9 +24,9 @@ Vor einer vollständigen automatischen Produktion wird ein fachlicher Pilot aus 
 
 Dafür entstehen zunächst:
 
-1. ein Themenauftrag mit Leitfrage, Vorwissen und 210 Minuten Zielbudget,
+1. ein Themenauftrag mit Leitfrage, Vorwissen und gewünschter inhaltlicher Tiefe,
 2. ein begrenztes, geprüftes Quelldossier mit Herkunft und Quellenabschnitten,
-3. ein vorläufiger Serienplan mit ungefähr sieben Folgen und deren Abhängigkeiten,
+3. ein vorläufiger Serienplan mit inhaltlich begründeter Folgenzahl, Abhängigkeiten und Laufzeitschätzungen,
 4. ein vollständig ausgearbeitetes Skript für eine inhaltlich zentrale Folge bis 30 Minuten,
 5. eine redaktionelle Bewertung der Erklärungstiefe und der Quellenbindung.
 
@@ -68,14 +68,15 @@ Dieser Meilenstein liefert Referenzausgaben und Prüfkriterien. Er ersetzt nicht
 
 ## Phase 4: Serien- und Episodenplanung
 
-- `pla plan` mit Gesamtbudget und harter Obergrenze von 30 Minuten je Folge bauen.
+- `pla plan` mit inhaltlich abgeleiteter Folgenzahl und harter Obergrenze von 30 Minuten je Folge bauen.
 - Folgen nach Voraussetzungen und aufeinander aufbauenden Fragen anordnen.
+- Bei zusätzlichem Erklärbedarf weitere Folgen einplanen; keine feste Gesamtlänge oder maximale Folgenzahl einbauen.
 - Claims, Begriffe und Teilfragen in einer Abdeckungsmatrix zuweisen.
 - Erklärschritte, Beispiele und Gegenpositionen in Szenen mit Zeitbudget planen.
 - Vertagte Kernfragen einer späteren Folge zuordnen oder begründet ausschließen.
 - Wortzahl- und Pausenschätzung für Laufzeiten einführen; nach dem Audio-Pilot kalibrieren.
 
-**Abnahme:** Der Plan umfasst den gewünschten Zeitrahmen, erklärt seine Aufteilung und hat keine verlorenen Kerninhalte oder unerklärten Voraussetzungen. Abweichungen vom Gesamtbudget sind begründet sichtbar.
+**Abnahme:** Der Plan deckt die priorisierten Fragen in der gewünschten Tiefe ab, begründet seine Folgenzahl und hat keine verlorenen Kerninhalte oder unerklärten Voraussetzungen. Die Gesamtdauer ergibt sich aus den Folgen. Ein ausdrücklich genannter Zeitwunsch und nötige Abweichungen werden sichtbar gemacht.
 
 ## Phase 5: Skripterstellung und Qualitätsprüfungen
 
@@ -101,7 +102,7 @@ Dieser Meilenstein liefert Referenzausgaben und Prüfkriterien. Er ersetzt nicht
 - Unterbrochene Folgen ohne komplette Neuberechnung fortsetzen.
 - Die vollständige Pilotserie redaktionell anhören und anhand der Qualitätskriterien bewerten.
 
-**Abnahme:** Der Hauptfall ist als zusammenhängende Serie mit insgesamt 180 bis 240 Minuten tatsächlicher Audiodauer hörbar. Keine Audiofolge überschreitet 30 Minuten. Geplante und tatsächliche Gesamtdauer werden ausgewiesen, und alle Begleitdateien sind vorhanden.
+**Abnahme:** Der Hauptfall ist als zusammenhängende Serie mit inhaltlich begründetem Umfang hörbar. Zusätzliche nötige Folgen können produziert werden. Keine Audiofolge überschreitet 30 Minuten. Geplante und tatsächliche Gesamtdauer werden ausgewiesen, und alle Begleitdateien sind vorhanden.
 
 ## Evaluation und Fixtures
 
@@ -111,7 +112,7 @@ Die verbindlichen Fixtures stehen in der Spezifikation:
 - `fixtures/mechanism_series` für Tiefe, Abhängigkeiten und langen Serienumfang,
 - `fixtures/conflicting_perspectives` für Quellenkritik und die Trennung von Positionen und Evidenz.
 
-Referenzausgaben benennen erwartete Claims, Erklärschritte, Beispiele, Grenzen und problematische Fälle. Das Serienfixture prüft zusätzlich Themenabdeckung, Reihenfolge und Wiederholungen. Der frühere prüfungsbezogene Fixture-Fall wird nicht für den MVP benötigt.
+Referenzausgaben benennen erwartete Claims, Erklärschritte, Beispiele, Grenzen und problematische Fälle. Das Serienfixture prüft zusätzlich Themenabdeckung, Reihenfolge, Wiederholungen und die Erweiterung um weitere inhaltlich nötige Folgen. Eine feste Gesamtlänge oder Folgenzahl ist kein Abnahmekriterium. Der frühere prüfungsbezogene Fixture-Fall wird nicht für den MVP benötigt.
 
 Die Bewertungskriterien stehen in [system-quality-assessment.md](system-quality-assessment.md). Formale Validierung und redaktionelle Bewertung werden getrennt berichtet. Ein bestandener Modellreview allein belegt keine Hörqualität.
 
