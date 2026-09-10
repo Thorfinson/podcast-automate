@@ -21,6 +21,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.venv-tts/
 venv/
 dist/
 build/
@@ -38,6 +39,10 @@ pnpm-debug.log*
 logs/
 
 # Generated project outputs
+projects/
+probes/
+cache/audio/
+.pla.lock
 exports/audio/
 runs/
 *.mp3

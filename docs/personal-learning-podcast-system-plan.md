@@ -1,6 +1,8 @@
 # Implementierungsplan: Deep-Dive-Serien
 
-Stand: 2026-09-10. Dieser Plan konkretisiert [SPEC.md](../SPEC.md). Das Repository enthält bislang Dokumentation; alle folgenden Meilensteine sind noch umzusetzen.
+Stand: 2026-09-10. Dieser Plan konkretisiert [SPEC.md](../SPEC.md). Version 0.1 enthält jetzt das Grundgerüst und technische Proben. [Windows-Anleitung und verfügbare Befehle](windows-quickstart.md).
+
+Meilenstein 0 ist als ausführbarer Codex-Test und lokale Qwen-Hörprobe vorbereitet; die tatsächlichen Abo- und Radeon-Versuche stehen noch aus. Aus Meilenstein 1 sind CLI, erste Datenverträge, Dateiverwaltung, Prozessadapter, Status und Wiederaufnahme implementiert. Quellen-/Wissens-/Serienmodelle und die nachfolgenden Meilensteine sind noch offen. Die FFmpeg-Montage wurde mit Testsignalen ausgeführt; fachliche und stimmliche Qualität sind dadurch nicht belegt.
 
 ## Ziel und feststehende Entscheidungen
 
@@ -25,7 +27,7 @@ Diese Vorgaben sind umsetzbare Standardentscheidungen. Sie verlangen keine weite
 
 | Baustein | Umsetzung |
 | --- | --- |
-| Anwendung | Python 3.12, Typer für die CLI, Pydantic 2 für validierte Datenverträge |
+| Anwendung | Python 3.12, argparse aus der Standardbibliothek für die CLI, Pydantic 2 für validierte Datenverträge |
 | Persistenz | YAML-/JSON-Artefakte, stabile IDs, atomare Dateischreibvorgänge und Run-Manifeste; zunächst keine Datenbank |
 | Textadapter | Zunächst ein Adapter für Codex CLI mit Abo-Anmeldung und strukturierten Ergebnissen |
 | Recherche | Suchwerkzeuge des gewählten CLI-Backends; tatsächlicher Abruf und lokale Speicherung zugänglicher Quellentexte |
@@ -35,7 +37,7 @@ Diese Vorgaben sind umsetzbare Standardentscheidungen. Sie verlangen keine weite
 | Montage | FFmpeg und ffprobe für Audioverarbeitung, Messung und MP3-Export |
 | Tests | Kleine lokale Fixtures für Ablauf und Fehlerfälle; echte Modell- und GPU-Tests separat auf dem Zielrechner |
 
-Der Controller startet Unterprozesse mit Argumentlisten ohne Shell-Auswertung. Windows-Pfade und Leerzeichen werden berücksichtigt. Die TTS-Umgebung erhält eigene festgehaltene Paket- und Modellversionen, sobald die Kombination auf dem Zielrechner funktioniert.
+Die erste Implementierung verwendet argparse statt des zunächst vorgeschlagenen Typer und hält damit die CLI ohne weitere Framework-Abhängigkeit. Der Controller startet Unterprozesse mit Argumentlisten ohne Shell-Auswertung. Windows-Pfade und Leerzeichen werden berücksichtigt. Die TTS-Umgebung erhält eigene festgehaltene Paket- und Modellversionen, sobald die Kombination auf dem Zielrechner funktioniert.
 
 Codex unterstützt Abo-Anmeldung sowie nichtinteraktive Aufrufe mit strukturierten Ausgaben. Darauf basiert der erste Adapter. Er nutzt die offizielle CLI und deren Anmeldung. Ein späterer Claude-Adapter verwendet denselben internen Auftrag-/Ergebnisvertrag; beide Adapter müssen nicht gleichzeitig gebaut werden. Quellen: [Codex-Anmeldung](https://learn.chatgpt.com/docs/auth), [Codex für Skripte](https://learn.chatgpt.com/docs/non-interactive-mode), [Claude Code für Skripte](https://code.claude.com/docs/en/headless).
 
@@ -183,4 +185,4 @@ Die Produktrichtung und das Zielbetriebssystem sind entschieden. Für den Beginn
 | Verfügbare Suche im gewählten Abo-CLI | Echten Such- und Quellenabruf im ersten Test nachweisen |
 | Nutzen automatischer Rücktranskription | Mit bekannten Fehlerfällen aus dem Audiopilot bewerten |
 
-Als Nächstes wird Meilenstein 0 umgesetzt, zusammen mit dem dafür nötigen minimalen Prüfprogramm. Erst nach einem echten Versuch auf dem Zielrechner lässt sich der lokale Audioweg als bestätigt bezeichnen. Claude-Unterstützung, zusätzliche Audioanbieter und weitere Oberflächen folgen nur bei konkretem Bedarf.
+Als Nächstes werden die implementierten Proben auf dem Windows-Zielrechner ausgeführt und die Quellen-/Wissensverarbeitung für den kleinen vollständigen Durchlauf ergänzt. Erst nach einem echten Versuch auf dem Zielrechner lässt sich der lokale Audioweg als bestätigt bezeichnen. Claude-Unterstützung, zusätzliche Audioanbieter und weitere Oberflächen folgen nur bei konkretem Bedarf.

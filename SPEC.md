@@ -8,7 +8,7 @@ Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vortr�
 
 Zielniveau ist standardmäßig anspruchsvoll und verständlich mit erklärten Voraussetzungen. Vorwissen und gewünschte Detailtiefe können im Themenauftrag angepasst werden. Technische Zusammenhänge dürfen längere Erklärungen benötigen; die Gesprächsform erzwingt keine kurzen Sprecherantworten.
 
-Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Die Dokumente beschreiben geplantes Verhalten; eine ausführbare Implementierung existiert noch nicht.
+Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Diese Spezifikation beschreibt den vollständigen Zielumfang. Version 0.1 implementiert zunächst Projektverwaltung und technische Text-/Audio-Proben; der aktuelle Stand steht in der [Windows-Anleitung](docs/windows-quickstart.md).
 
 ### Hauptfälle
 
@@ -79,6 +79,8 @@ Deterministisch sind Ablauf, Schema-Prüfungen und die Wiederverwendung gespeich
 
 ## 4. CLI-Entscheidung
 
+Bereits implementiert sind `init`, `doctor`, `status`, `resume`, `schemas`, `text-probe` und `audio-probe`. Die beiden Proben schreiben Ergebnisse nach `probes/` und ersetzen keine fachlich geprüfte Podcastproduktion. Die folgenden Befehle beschreiben die vollständige geplante Pipeline:
+
 ```bash
 pla doctor
 pla init <project-dir> --topic "Thema oder Frage"
@@ -107,7 +109,7 @@ Die Freigabe eines Gesamtlaufs umfasst dessen automatisch geprüfte Skripte und 
 
 ## 5. Datenverträge
 
-Diese Verträge müssen bei der Implementierung als validierbare Schemas umgesetzt werden. Sie beschreiben keine bereits vorhandenen Schema-Dateien. Alle strukturierten Hauptartefakte besitzen eine `schema_version` und stabile IDs.
+Die vollständigen Verträge werden schrittweise als validierbare Schemas umgesetzt. Version 0.1 enthält Pydantic-Modelle für TopicBrief, EpisodeScript und das Manifest der technischen Proben sowie deren Export über `pla schemas`. Quellen-, Wissens- und Serienmodelle sind noch ausstehend. Alle strukturierten Hauptartefakte besitzen eine `schema_version` und stabile IDs.
 
 ### 5.1 TopicBrief (`project.yaml`)
 
