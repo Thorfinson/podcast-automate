@@ -1,0 +1,31 @@
+# Gemini-Audio über OpenRouter
+
+Im Studio unter **Idee & Stimmen → Wer spricht deinen Podcast? → Audioanbieter** die Option **Gemini 3.1 Flash TTS · OpenRouter** wählen. Danach beide Stimmen auswählen, den OpenRouter-Key hinterlegen und speichern. Das Schreibmodell kann weiterhin Codex sein. Die Audioauswahl wird separat gespeichert und verändert weder das geprüfte Skript noch seine Recherche.
+
+Bei Gemini sind **Sadaltager** für den Experten und **Aoede** für die neugierige Gesprächspartnerin vorbelegt. Das ist eine bearbeitbare Vorauswahl. Die 30 verfügbaren Stimmen wurden am 13. September 2026 anhand von `supported_voices` im öffentlichen [OpenRouter-Modellkatalog](https://openrouter.ai/api/v1/models?output_modalities=speech) geprüft:
+
+Zephyr, Puck, Charon, Kore, Fenrir, Leda, Orus, Aoede, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager und Sulafat.
+
+Unter **„Gemini-Stimmen zum Vergleichen“** stehen alle 30 Stimmen. **„Fehlende Hörproben erzeugen · API“** erstellt einmalig eine kurze Aufnahme je fehlender Stimme, auf Deutsch oder Englisch entsprechend der ausgewählten Sprache. Alle lesen denselben Vergleichstext. Der Fortschritt zeigt, wie viele Proben bereits gespeichert sind. Bei einer Unterbrechung bleiben fertige Stimmen erhalten; derselbe Button setzt mit den fehlenden fort. Neue Aufnahmen nutzen OpenRouter-Guthaben.
+
+Neben jeder fertigen Stimme steht **▶ Play**. Dieser Button spielt ausschließlich die gespeicherte MP3 ab, ohne Modellaufruf oder API-Key. Ein weiterer Klick pausiert; der Player unten bietet eine Zeitleiste. Hörproben bleiben über Projektwechsel und Studio-Neustarts erhalten. Eine einzelne fehlende Stimme kann weiterhin über „Hörprobe erzeugen · API“ neben der Rollenauswahl erstellt werden. Laden der Seite und Wechseln von Sprache oder Stimme erzeugen keine Aufnahmen.
+
+Die gemeinsame Bibliothek liegt unter `projects/voice-samples/gemini/` und ist durch die vorhandene Gitignore-Regel für `projects/` ausgeschlossen. Sprache, Stimme, Modell, Vergleichstext und Adapterversion bestimmen die Aufnahme; Dateiprüfsummen verhindern die Wiederverwendung beschädigter Dateien. Bereits vorhandene passende WAV-Aufnahmen aus einzelnen Projekten werden ohne erneuten API-Aufruf übernommen. Deutsch und Englisch besitzen getrennte Bibliotheken.
+
+Für eine Folge anschließend das Skript lesen und unter **Audio & Export** genau diesen Text mit dem angezeigten Anbieter und den Stimmen freigeben. Ein Anbieterwechsel übernimmt keine frühere Qwen-Freigabe für kostenpflichtige Gemini-Aufrufe. Bei einer Fortsetzung bleiben Modell, Stimmen und Text des begonnenen Audiolaufs fest; der Key darf erneuert werden. Frühere Aufnahmen bleiben verfügbar und werden als frühere Fassung gekennzeichnet.
+
+## Umsetzung
+
+Die Anbindung verwendet den dokumentierten binären Endpunkt `POST https://openrouter.ai/api/v1/audio/speech`, mit `model: google/gemini-3.1-flash-tts-preview`, dem freigegebenen Text als `input`, einer ausgewählten `voice` und `response_format: pcm`. Sie verwendet keinen Chat- oder JSON-Schema-Aufruf für Sprache. PCM wird entsprechend der Modellspezifikation als 24-kHz-/16-Bit-Mono in WAV gespeichert und anschließend mit der vorhandenen FFmpeg-Montage als MP3 exportiert. [OpenRouter-TTS-Dokumentation](https://openrouter.ai/docs/guides/overview/multimodal/tts), [Modellbeschreibung](https://openrouter.ai/google/gemini-3.1-flash-tts-preview).
+
+Der dokumentierte OpenRouter-Speech-Aufruf hat eine einzelne Stimme pro Anfrage. Daher vertont diese Version die vorhandenen Sprechersegmente mit ihrer jeweiligen Gemini-Stimme und montiert sie in Skriptreihenfolge. **Native Zwei-Sprecher-Anfragen innerhalb eines einzigen Gemini-Aufrufs sind hier noch nicht angebunden.** Googles eigene API unterstützt diesen Modus, ihr separates Anfrageformat wird nicht ungeprüft auf OpenRouter übertragen. [Googles Mehrsprecher-Dokumentation](https://ai.google.dev/gemini-api/docs/speech-generation#multi-speaker).
+
+Es gibt keine redaktionelle Vorgabe von 30–90 Sekunden und keinen erzwungenen Sprecherwechsel. Sehr große Segmente werden allein zum Einhalten der Anfragegröße an Satz- oder Wortgrenzen aufgeteilt; alle Zeichen und die Sprecherzuordnung bleiben erhalten. Zusammenhängende Monologe bleiben Monologe. Text, Sprache, Stimme, Modell und Adapterversion bestimmen den Cache. Unterbrochene Anfragen landen nicht als fertiges Audio im Cache. Nach einem Fehler startet kein automatischer kostenpflichtiger Wiederholungsversuch; der Nutzer setzt den Lauf ausdrücklich fort.
+
+Der API-Key bleibt im Arbeitsspeicher und im Authorization-Header. Er wird nicht im Auftrag, Cache oder in Prozessargumenten gespeichert. Weiterleitungen sind gesperrt. Fehlerantworten, leeres Audio, unerwartete Formate und beschädigte Cache-Dateien werden abgefangen. Die technische Audioprüfung kann jedoch nicht beweisen, dass jedes Wort korrekt gesprochen wurde: Bei einem Roh-Audiostream stehen keine verlässlichen Wortzeitmarken oder eine vollständige Transkriptprüfung zur Verfügung. Deshalb bleiben Hörprüfung, Aussprache und mögliche Auslassungen Teil der Abnahme.
+
+## Prüfung und verbleibende Praxisprobe
+
+Automatisierte Tests prüfen den Speech-Aufruf und seine Stimmen, WAV-Erzeugung, Aufteilung ohne Textverlust, Cache-Wiederverwendung, API-/Formatfehler, unveränderte Skripte, getrennte Anbieterwahl, Freigaben und Wiederaufnahme nach einem API-Limit. Die bestehende FFmpeg-Montage wird dabei mit simulierten API-Audiodaten ausgeführt. Qwen- und Schreibaufrufe sind in den Gemini-Integrationstests ausdrücklich gesperrt.
+
+Ein echter OpenRouter-Hörtest und ein Geschwindigkeitsvergleich wurden mangels hinterlegtem Key noch nicht ausgeführt. Gemini vermeidet die lokale GPU-Vertonung; eine konkrete Beschleunigung oder natürliche Stimmqualität ist erst nach diesem Hörtest belegt. Das Modell wird von OpenRouter derzeit als Preview geführt.

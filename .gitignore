@@ -27,6 +27,10 @@ dist/
 build/
 *.egg-info/
 
+# Project-local third-party binaries and downloads
+/tools/ffmpeg/
+/tools/python/
+
 # Node
 node_modules/
 npm-debug.log*
@@ -43,6 +47,7 @@ projects/
 probes/
 cache/audio/
 .pla.lock
+.studio/
 exports/audio/
 runs/
 *.mp3

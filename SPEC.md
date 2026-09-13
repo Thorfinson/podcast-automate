@@ -6,9 +6,9 @@ Stand der Priorisierung: 2026-09-10. Der Hauptfall ist eine persönliche Deep-Di
 
 Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vorträge, Papers, Links und eigene Dateien sind optionale Ausgangspunkte. Die Quellenrecherche gehört zum MVP; ein bereits gefüllter Quellenordner ist keine Voraussetzung.
 
-Zielniveau ist standardmäßig anspruchsvoll und verständlich mit erklärten Voraussetzungen. Vorwissen und gewünschte Detailtiefe können im Themenauftrag angepasst werden. Technische Zusammenhänge dürfen längere Erklärungen benötigen; die Gesprächsform erzwingt keine kurzen Sprecherantworten.
+Der Standard setzt keine fachlichen oder mathematischen Vorkenntnisse voraus und erklärt auch anspruchsvolle Zusammenhänge in Alltagssprache. Klare mentale Bilder, konkrete Beispiele und kleine Erklärschritte tragen die gewünschte Tiefe. Vorwissen und Detailtiefe können im Themenauftrag angepasst werden. Zusammenhänge dürfen längere Erklärungen benötigen; die Gesprächsform erzwingt keine kurzen Sprecherantworten.
 
-Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Diese Spezifikation beschreibt den vollständigen Zielumfang. Version 0.1 implementiert zunächst Projektverwaltung und technische Text-/Audio-Proben; der aktuelle Stand steht in der [Windows-Anleitung](docs/windows-quickstart.md).
+Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Diese Spezifikation beschreibt den vollständigen Zielumfang. Version 0.1 implementiert Projektverwaltung, technische Text-/Audio-Proben und einen begrenzten Recherchepass bis zum belegten Dossier; der aktuelle Stand steht in der [Windows-Anleitung](docs/windows-quickstart.md) und der [Rechercheanleitung](docs/research.md).
 
 ### Hauptfälle
 
@@ -79,7 +79,7 @@ Deterministisch sind Ablauf, Schema-Prüfungen und die Wiederverwendung gespeich
 
 ## 4. CLI-Entscheidung
 
-Bereits implementiert sind `init`, `doctor`, `status`, `resume`, `schemas`, `text-probe` und `audio-probe`. Die beiden Proben schreiben Ergebnisse nach `probes/` und ersetzen keine fachlich geprüfte Podcastproduktion. Die folgenden Befehle beschreiben die vollständige geplante Pipeline:
+Bereits implementiert sind `init`, `doctor`, `status`, `resume`, `schemas`, `text-probe`, `audio-probe`, `research` und `script`. Die beiden Proben schreiben Ergebnisse nach `probes/`. `research` führt Live-Suche, Quellenimport, Dossiererstellung und Quellenreview aus. `script` erstellt daraus ein kompaktes Wissensmodell, einen Serienentwurf und geprüfte Dialogskripte zur Leseprüfung. `script --episode ep_001` zieht die erste Folge vor; ohne Auswahl werden alle geplanten Skripte geschrieben. Audio wird dabei nicht erzeugt. [Skriptworkflow](docs/scripts.md). Die folgende Befehlsfolge beschreibt darüber hinaus die vollständige Zielpipeline; nicht jeder aufgeführte Befehl ist bereits einzeln implementiert:
 
 ```bash
 pla doctor
@@ -109,7 +109,7 @@ Die Freigabe eines Gesamtlaufs umfasst dessen automatisch geprüfte Skripte und 
 
 ## 5. Datenverträge
 
-Die vollständigen Verträge werden schrittweise als validierbare Schemas umgesetzt. Version 0.1 enthält Pydantic-Modelle für TopicBrief, EpisodeScript und das Manifest der technischen Proben sowie deren Export über `pla schemas`. Quellen-, Wissens- und Serienmodelle sind noch ausstehend. Alle strukturierten Hauptartefakte besitzen eine `schema_version` und stabile IDs.
+Die vollständigen Verträge werden schrittweise als validierbare Schemas umgesetzt. Version 0.1 exportiert über `pla schemas` dreizehn Verträge: TopicBrief, EpisodeScript, TextProbeOutput, RunManifest, ResearchDiscovery, SourceDocument, SourceIndex, ResearchDossier, DossierReview, KnowledgeModel, SeriesPlan, EpisodePlan und ScriptReview. Das kompakte Wissensmodell übernimmt die belegten Befunde unverändert und referenziert Begriffe, Mechanismen, Beispiele und Grenzen über deren IDs. Serienentwurf und Szenen sind validierbar; die in den folgenden Abschnitten beschriebenen Datenmodelle enthalten zusätzlich den noch ausstehenden Zielumfang, etwa differenzierte Konfidenz-/Evidenzbewertungen und die vollständige Serienabdeckung.
 
 ### 5.1 TopicBrief (`project.yaml`)
 
@@ -208,6 +208,16 @@ Für jede zentrale Erklärfrage müssen im Plan und Skript erkennbar sein:
 - eine Antwort auf die Folgenfrage und deren Beitrag zur Serienfrage.
 
 Die Elemente müssen inhaltlich aufeinander bezogen sein. Ihre bloße Erwähnung erfüllt den Tiefencheck nicht. Ein Gegenargument wird nicht erfunden, wenn die Quellen keines tragen; tatsächliche Grenzen oder offene Fragen werden entsprechend benannt.
+
+### Verständlich ohne Vorwissen
+
+Recherchetexte und spätere Podcastskripte richten sich standardmäßig an neugierige Menschen ohne fachliche oder mathematische Vorkenntnisse. Inhaltliche Tiefe entsteht durch nachvollziehbare Zusammenhänge und Ursachen. Formeln, Abkürzungsketten und unerklärte Fachsprache gehören nicht in den gesprochenen Erklärtext.
+
+Eine zentrale Erklärung beginnt mit einer vertrauten Situation oder einem klaren mentalen Bild. Daran wird Schritt für Schritt gezeigt, was sich verändert und warum. Erst nach der Idee folgt ein Fachbegriff, wenn er zum Verständnis oder Wiedererkennen nützlich ist. Wenige durchgehende Bilder schaffen Orientierung; häufige Wechsel zwischen unverbundenen Metaphern erschweren das Zuhören.
+
+Der Ton bleibt erwachsen und auf Augenhöhe. Fehlendes Spezialwissen ist kein Anlass, Selbstverständliches ausführlich zu erklären. Begriffe werden einmal knapp eingeführt und danach normal verwendet. Wiederholte Definitionen, belehrende Vorreden, das Ankündigen jedes kleinen Schritts und mehrere Zusammenfassungen derselben Idee werden gestrichen. Metaphern sollen einen Zusammenhang erschließen; ihre wichtige Grenze wird einmal dort benannt, wo sie relevant ist.
+
+Metaphern sind ausdrücklich Veranschaulichungen. Die Erklärung benennt ihre Grenze und trennt erfundene Alltagssituationen von belegten Versuchen. Im Dossier werden sie als `illustration` und `illustration_limit` zusammen gespeichert. Der Quellenreview prüft auch, ob das Bild den belegten Zusammenhang korrekt wiedergibt. Im späteren Dialog darf die zweite Stimme dort nachfragen, wo jemand ohne Vorwissen einen Zwischenschritt braucht.
 
 ### Fachliche Perspektiven
 

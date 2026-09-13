@@ -13,7 +13,7 @@ from .models import RuntimeSettings
 from .process import run_process
 
 
-def inspect(settings: RuntimeSettings) -> dict:
+def inspect(settings: RuntimeSettings, *, include_tts=True) -> dict:
     checks = []
     checks.append({"name": "python", "ok": True, "detail": platform.python_version()})
     checks.append({"name": "system", "ok": True,
@@ -26,6 +26,9 @@ def inspect(settings: RuntimeSettings) -> dict:
         checks.append({"name": "codex_login", "ok": True, "detail": mode})
     except AppError as exc:
         checks.append({"name": "codex_login", "ok": False, "detail": str(exc)})
+    if not include_tts:
+        return {"ready": all(check["ok"] for check in checks), "checks": checks,
+                "tts": None, "model_inference_tested": False}
     tts = None
     try:
         with tempfile.TemporaryDirectory(prefix="pla-doctor-") as temporary:
