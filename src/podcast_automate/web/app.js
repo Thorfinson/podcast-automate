@@ -157,6 +157,11 @@ function renderAudio() {
   if(e.audio.length) html+=`<section class="panel"><h2>Anhören und herunterladen</h2>${!e.audio_current?'<p class="note">Diese Aufnahme gehört zu einem früheren Skript- oder Stimmenstand.</p>':""}${e.audio.map((path,i)=>{const url="/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");return `<div class="audio-track"><strong>Audiodatei ${i+1}</strong><audio controls preload="none" src="${url}"></audio><a href="${url}" download>MP3 herunterladen</a><p>${escape(path.split("/").slice(-2).join(" / "))}</p></div>`;}).join("")}</section>`;
   return html;
 }
+function renderScriptProgress(p, active) {
+  if(p?.phase!=="script")return "";
+  const elapsed=p.activity_started_at?Math.max(0,Math.floor((Date.now()-Date.parse(p.activity_started_at))/60000)):null;
+  return `<section class="script-progress"><p class="current-episode"><strong>${p.current_episode?`Folge ${Number(p.episode_number)} von ${Number(p.total_segments)} · ${escape(p.episode_title)}`:escape(stageNames[p.stage]||"Fortschritt")}</strong></p><p>${active?'<span class="activity-dot" aria-hidden="true"></span>':"Zuletzt: "}${escape(p.activity)}${active&&elapsed!==null?` · seit ${elapsed<1?"weniger als einer Minute":`${elapsed} Min.`}`:""}</p><p class="hint">Die Anzeige aktualisiert sich automatisch. Ein Modellaufruf kann mehrere Minuten dauern.</p>${p.total_segments?`<progress value="${Number(p.completed_segments)}" max="${Number(p.total_segments)}" aria-label="Fertige Folgen in dieser Stufe"></progress><p>${Number(p.completed_segments)} von ${Number(p.total_segments)} Folgen: ${escape(stageNames[p.stage]||p.stage)} abgeschlossen</p>`:""}<ol class="episode-progress">${(p.episodes||[]).map(e=>`<li>${e.completed?"✓":e.episode_id===p.current_episode?"●":"○"} ${escape(e.title)}</li>`).join("")}</ol>${(p.episodes||[]).filter(e=>e.teaching_preview).map(e=>`<details data-progress-episode="${escape(e.episode_id)}"><summary>Lehrkonzept lesen: ${escape(e.title)}</summary><pre class="document" data-progress-preview="${escape(e.episode_id)}">${escape(e.teaching_preview)}</pre></details>`).join("")}</section>`;
+}
 function renderJob() {
   const j=project?.job, box=$("job-status");
   const legacy=!j&&project?.run&&project.run.status!=="completed"?project.run:null;
@@ -168,11 +173,22 @@ function renderJob() {
   // Preserve the audio element and its playback position during status polling.
   if(view===lastJobView)return;
   lastJobView=view;
-  const title=active?actionNames[j.action]:({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
-  const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active;
-  box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${j?.message?`<p>${escape(j.message)}</p>`:""}${active?`<p>Seit ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${v.status}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${j?.progress?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
+  const opened=new Set(Array.from(box.querySelectorAll?.("details[open][data-progress-episode]")||[],el=>el.dataset.progressEpisode));
+  const scrolls=new Map(Array.from(box.querySelectorAll?.("[data-progress-preview]")||[],el=>[el.dataset.progressPreview,el.scrollTop]));
+  const missingFoundation=!active&&Object.values(r?.stages||{}).some(v=>v.error?.code==="teaching_research_required");
+  const designBlocked=!active&&Object.values(r?.stages||{}).some(v=>v.error?.code==="teaching_design_failed");
+  const foundationResearch=active&&j?.progress?.phase==="foundation_research";
+  const title=designBlocked?"Lehrkonzept angehalten: Erklärung noch unvollständig":foundationResearch?"Fehlende Erklärgrundlagen werden automatisch recherchiert":missingFoundation?"Automatische Recherche konnte noch nicht abgeschlossen werden":active?actionNames[j.action]:({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
+  const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked;
+  const message=designBlocked&&j?.progress?.review_issues?.length?"Die automatische Überarbeitung hat noch nicht alle Kritikpunkte gelöst. Der bisherige Stand ist gespeichert.":missingFoundation&&/research_needed\.md/.test(j?.message||"")?"Der Abgleich zwischen Quellen und Lehrkonzept ist noch offen. Der bisherige Auftrag bleibt gespeichert.":j?.message;
+  box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Seit ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${v.status}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${j?.progress?.phase!=="script"&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
+  if(missingFoundation)box.innerHTML+=`<p>Der aktuelle Stand und die bisherigen Belege sind gespeichert. Noch offene Fragen:</p>${j?.research_gaps?.length?`<ul>${j.research_gaps.map(g=>`<li><strong>${escape(g.question)}</strong><p>${escape(g.why_needed)}</p></li>`).join("")}</ul>`:""}<button class="secondary small" data-step="1">Bisherige Recherche ansehen</button>`;
   if(j?.sample)box.innerHTML+=`<p>Hörprobe: ${escape(j.sample.voice)} · ${escape(j.sample.language)}</p><audio controls preload="none" src="${mediaUrl(j.sample.audio)}"></audio><div class="actions"><a href="${mediaUrl(j.sample.audio)}" target="_blank" rel="noopener">Hörprobe separat öffnen</a><a href="${mediaUrl(j.sample.audio)}" download>MP3 herunterladen</a></div>`;
   if(j?.action==="audio_samples"&&j?.progress?.current_voice&&active)box.innerHTML+=`<p>Aktuelle Stimme: ${escape(j.progress.current_voice)}</p>`;
+  box.innerHTML+=renderScriptProgress(j?.progress,active);
+  if(j?.progress?.review_issues?.length)box.innerHTML+=`<details class="review-points" open><summary>Was noch erklärt werden muss</summary><ul>${j.progress.review_issues.map(issue=>`<li>${escape(issue)}</li>`).join("")}</ul></details>`;
+  for(const detail of box.querySelectorAll?.("[data-progress-episode]")||[])detail.open=opened.has(detail.dataset.progressEpisode);
+  for(const preview of box.querySelectorAll?.("[data-progress-preview]")||[])preview.scrollTop=scrolls.get(preview.dataset.progressPreview)||0;
 }
 function render() { renderNavigation(); renderJob(); $("content").innerHTML=[renderBrief,renderResearch,renderOutline,renderScript,renderAudio][step](); syncPlayButtons(); }
 async function refreshProjects() {
@@ -180,8 +196,10 @@ async function refreshProjects() {
   $("project-select").innerHTML='<option value="">Neues Projekt</option>'+boot.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.topic)}</option>`).join("");
   $("project-select").value=project?.id||"";
 }
-async function selectProject(id) {
-  project=id?await api("/api/projects/"+encodeURIComponent(id)):null;
+async function selectProject(id, loaded=null) {
+  project=id?(loaded||await api("/api/projects/"+encodeURIComponent(id))):null;
+  window.history?.replaceState(null,"",id?"/?project="+encodeURIComponent(id):"/");
+  $("project-select").value=id||"";
   voiceDrafts={};episodeIndex=0; step=0; lastJobSignature=jobSignature(project?.job); render();
 }
 function configFromForm() {
@@ -286,7 +304,17 @@ async function poll() {
     }
   }catch(error){notice("Verbindung zum Studio unterbrochen. Ist das Studio-Fenster noch geöffnet?");}
 }
-attempt(async()=>{await refreshProjects();render();setInterval(poll,2500);});
+attempt(async()=>{
+  await refreshProjects();
+  const requested=window.location?new URLSearchParams(window.location.search).get("project"):null;
+  if(requested&&boot.projects.some(p=>p.id===requested))await selectProject(requested);
+  else {
+    const saved=await Promise.all(boot.projects.map(p=>api("/api/projects/"+encodeURIComponent(p.id)).catch(()=>null)));
+    const active=saved.find(p=>p?.job?.status==="running")||saved.filter(p=>p?.job?.started_at).sort((a,b)=>Date.parse(b.job.started_at)-Date.parse(a.job.started_at))[0];
+    if(active)await selectProject(active.id,active);else render();
+  }
+  setInterval(poll,2500);
+});
 for(const event of ["play","pause","ended"])$("sample-player").addEventListener(event,syncPlayButtons);
 
 // A small optional agent surface shares the visible navigation. It cannot approve generation.

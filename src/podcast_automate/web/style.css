@@ -15,3 +15,5 @@
 .sample-playback audio { width:min(420px,100%); }
 @media(max-width:1080px) { .sample-playback { margin-left:215px; } }
 @media(max-width:650px) { .sample-playback { margin-left:0; padding:12px 18px; flex-wrap:wrap; gap:8px; } }
+
+.script-progress{border-top:1px solid #c9dcd0;margin-top:18px;padding-top:14px}.current-episode{font-size:16px!important}.episode-progress{list-style:none;padding:0;margin:14px 0;font-size:14px}.episode-progress li{padding:3px 0}.script-progress details{background:#fff;border:1px solid #c9dcd0;border-radius:6px;padding:12px 15px;margin-top:10px}.script-progress .document{max-height:480px;margin-bottom:0}.activity-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:7px;animation:activity-pulse 1.8s ease-in-out infinite}@keyframes activity-pulse{50%{opacity:.3}}@media(prefers-reduced-motion:reduce){.activity-dot{animation:none}}

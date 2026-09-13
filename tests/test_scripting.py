@@ -19,7 +19,7 @@ from tests.test_research import HTML, discovery, dossier_from_prompt
 from tests.teaching_fixtures import teaching_response
 from tests.polishing_fixtures import polish_review
 from podcast_automate.polishing import DialoguePolishReview
-from podcast_automate.teaching import TeachingPlan, TeachingPlanReview, ListenerReadback, TeachingReview, EditorialReview
+from podcast_automate.teaching import TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview
 
 
 def example_plan():
@@ -66,7 +66,7 @@ class ScriptingTests(unittest.TestCase):
         self.assertFalse(kwargs["search"])
         if output_type is DialoguePolishReview:
             return polish_review(prompt), {}
-        if output_type in (TeachingPlan, TeachingPlanReview, ListenerReadback, TeachingReview, EditorialReview):
+        if output_type in (TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview):
             return teaching_response(prompt, output_type), {}
         if output_type is SeriesPlan:
             return example_plan(), {}

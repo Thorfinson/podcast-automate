@@ -4,6 +4,46 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('src/podcast_automate/web/app.js', 'utf8');
+test('script progress shows the active episode and readable results without audio counts',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'running',action:'resume',started_at:new Date().toISOString(),progress:{phase:'script',stage:'teaching',current_episode:'ep_002',episode_number:2,episode_title:'Attention',activity:'Lehrkonzept wird geprüft',activity_started_at:new Date().toISOString(),completed_segments:1,total_segments:6,episodes:[{episode_id:'ep_001',title:'Introduction',completed:true,teaching_preview:'A safe <script> excerpt'},{episode_id:'ep_002',title:'Attention',completed:false,teaching_preview:''}]},run:{stages:{teaching:{status:'running'}}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Folge 2 von 6'));
+  assert.ok(html.includes('1 von 6 Folgen'));
+  assert.ok(html.includes('Lehrkonzept lesen'));
+  assert.ok(html.includes('A safe &lt;script&gt; excerpt'));
+  assert.ok(!html.includes('Sprechabschnitten'));
+});
+test('choosing a project keeps its identity in the URL for reloads without browser storage',async()=>{
+  const app=studio();
+  app.run(`window.history={replaceState(state,title,url){window.savedProjectUrl=url;}};`);
+  await app.run(`selectProject('example',{id:'example',config:boot.defaults,text:{provider:'codex_cli',model:null,max_output_tokens:32768},chat:[]})`);
+  assert.equal(app.run('window.savedProjectUrl'),'/?project=example');
+  assert.equal(app.elements.get('project-select').value,'example');
+});
+test('a stopped teaching review shows its concrete issues instead of a path and futile retry',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'blocked',action:'resume',message:'Review: C:/private/checkpoint.json',progress:{phase:'script',stage:'teaching',activity:'Lehrkonzept wird geprüft',current_episode:'ep_002',episode_number:2,episode_title:'Second lesson',completed_segments:1,total_segments:6,episodes:[],review_issues:['Explain the Key projection.']},run:{stages:{teaching:{status:'blocked',error:{code:'teaching_design_failed'}}}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Explain the Key projection.'));
+  assert.ok(html.includes('Was noch erklärt werden muss'));
+  assert.ok(!html.includes('C:/private'));
+  assert.ok(!html.includes('data-action="resume"'));
+});
+test('foundation research runs without a retry button and exposes real unresolved questions',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'running',action:'resume',started_at:new Date().toISOString(),progress:{phase:'foundation_research'},run:{stages:{teaching:{status:'running'}}}}};renderJob();`);
+  let html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('automatisch recherchiert'));
+  assert.ok(!html.includes('undefined von'));
+  assert.ok(!html.includes('data-action="resume"'));
+  app.run(`project.job.status='blocked';project.job.message='Erforderliche Erklärgrundlagen fehlen: C:/private/research_needed.md';project.job.run.stages.teaching.error={code:'teaching_research_required'};project.job.research_gaps=[{question:'What changes <script>?',why_needed:'Missing mechanism'}];renderJob();`);
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('What changes &lt;script&gt;?'));
+  assert.ok(html.includes('Missing mechanism'));
+  assert.ok(!html.includes('C:/private'));
+  assert.ok(!html.includes('data-action="resume"'));
+});
 function studio() {
   const elements = new Map(), registered = new Map(), requests = [];
   const element = id => {
