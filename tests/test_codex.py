@@ -24,6 +24,10 @@ if args == ["login", "status"]:
 if args == ["--version"]:
     print("codex-cli test-version")
     sys.exit(0)
+if mode == "explicit":
+    assert args[args.index("--model")+1] == "gpt-6-astra"
+    assert 'model_reasoning_effort="xhigh"' in args
+    assert '--ignore-user-config' in args
 if mode == "timeout":
     time.sleep(20)
 if mode == "quota":
@@ -79,6 +83,20 @@ class CodexTests(unittest.TestCase):
         with patch.dict(os.environ, {"PLA_TEST_MODE": "api"}), self.assertRaises(AppError) as error:
             self.adapter.probe("Thema", self.root / "request")
         self.assertEqual(error.exception.code, "subscription_required")
+
+    def test_model_and_effort_are_explicit_even_when_user_config_is_ignored(self):
+        self.adapter.settings = self.adapter.settings.model_copy(update={"codex_model": "gpt-6-astra"})
+        self.adapter.reasoning_effort = "xhigh"
+        with patch.dict(os.environ, {"PLA_TEST_MODE": "explicit"}):
+            _, metadata = self.adapter.probe("Thema", self.root / "explicit")
+        self.assertEqual(metadata["requested_model"], "gpt-6-astra")
+        self.assertEqual(metadata["requested_reasoning_effort"], "xhigh")
+
+    def test_invalid_reasoning_and_model_are_rejected_before_start(self):
+        with self.assertRaises(AppError):
+            CodexAdapter(RuntimeSettings(), reasoning_effort='xhigh"; unsafe')
+        with self.assertRaises(AppError):
+            CodexAdapter(RuntimeSettings(codex_model="--untrusted-flag"))
 
     def test_research_requires_observed_search_tool_event(self):
         from podcast_automate.models import TextProbeOutput

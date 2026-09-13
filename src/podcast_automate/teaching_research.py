@@ -45,6 +45,8 @@ def gaps_in(work):
         if data.get("resolved"):
             continue
         for gap in data.get("questions", []):
+            if gap.get("kind", "evidence") != "evidence":
+                continue
             row = {"episode_id": data["episode_id"], "question": gap["question"], "why_needed": gap["why_needed"]}
             if row not in rows:
                 rows.append(row)

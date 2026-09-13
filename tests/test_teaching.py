@@ -85,6 +85,99 @@ class TeachingTests(unittest.TestCase):
         gap = next((self.root / "runs" / run.run_id / "teaching").glob("*/research_needed.json"))
         self.assertIn("learned", json.loads(gap.read_text())["questions"][0]["question"])
 
+    def test_editorial_gap_is_repaired_without_web_research_even_if_author_misclassified_it(self):
+        reviews = 0
+        def model(prompt, output_type, directory, **kwargs):
+            nonlocal reviews
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is TeachingPlan and "Repair these design issues" not in prompt:
+                result.research_gaps = [ResearchGap(question="Which position of our example should we mark?",
+                    why_needed="Our internal illustration needs a concrete position.")]
+            elif output_type is TeachingPlan:
+                self.assertIn("Redaktionellen Anschluss", prompt)
+                result.research_gaps = []
+                result.worked_example.setup += " Mark the first candidate in this illustration."
+            if output_type is TeachingPlanReview:
+                reviews += 1
+                for assessment in result.gap_assessments:
+                    assessment.kind = "editorial_context"
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
+             patch("podcast_automate.scripting.research_foundations", side_effect=AssertionError("No web search for internal context")):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(reviews, 2)
+        self.assertFalse((self.root / "runs" / run.run_id / "teaching/ep_001/research_needed.json").exists())
+
+    def test_prerequisite_example_reaches_later_design_writing_and_source_review(self):
+        plan = fixtures.example_plan()
+        later = plan.episodes[0].model_copy(deep=True)
+        later.episode_id, later.prerequisite_episodes = "ep_002", ["ep_001"]
+        plan.episodes.append(later)
+        example = "Mara placed the letter in the drawer. She opened the drawer later."
+        seen = set()
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is fixtures.SeriesPlan:
+                return plan, {}
+            payload = json.loads(prompt.splitlines()[-1])
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            entry = payload.get("episode", {})
+            if output_type is TeachingPlan and entry.get("episode_id") == "ep_001":
+                result.worked_example.setup = example
+            if entry.get("episode_id") == "ep_002" and (
+                output_type in (TeachingPlan, TeachingPlanReview, fixtures.ScriptReview) or
+                (output_type is fixtures.EpisodeScript and "series" in payload)):
+                inherited = payload["prerequisite_context"]
+                self.assertEqual(inherited[0]["teaching_design"]["worked_example"]["setup"], example)
+                seen.add(output_type)
+            if output_type is fixtures.EpisodeScript:
+                result.episode_id = entry["episode_id"]
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(seen, {TeachingPlan, TeachingPlanReview, fixtures.EpisodeScript, fixtures.ScriptReview})
+        context_file = self.root / "runs" / run.run_id / "teaching/ep_002/continuity.json"
+        self.assertEqual(json.loads(context_file.read_text())[0]["teaching_design"]["worked_example"]["setup"], example)
+
+    def test_context_uses_transitive_prior_plans_and_never_future_or_unreviewed_examples(self):
+        from podcast_automate.teaching import prerequisite_context
+        plan = fixtures.example_plan()
+        for index in (2, 3, 4):
+            entry = plan.episodes[0].model_copy(deep=True)
+            entry.episode_id = f"ep_{index:03d}"
+            entry.prerequisite_episodes = [f"ep_{index-1:03d}"]
+            plan.episodes.append(entry)
+        work = self.root / "context-test"
+        for entry in plan.episodes:
+            design = teaching_response(json.dumps({"episode": entry.model_dump()}), TeachingPlan)
+            review = {"issues": [], "research_gaps": [], "gap_assessments": []}
+            folder = work / "teaching" / entry.episode_id
+            write_json(folder / "plan.json", design.model_dump())
+            write_json(folder / "review.json", review)
+            write_json(folder / "checkpoint.json", {"design": design.model_dump(), "review": review})
+        write_json(work / "teaching/ep_002/checkpoint.json", {"design": {}, "review": None})
+        rows = prerequisite_context(plan, plan.episodes[2], work)
+        self.assertEqual([r["episode_id"] for r in rows], ["ep_001", "ep_002"])
+        self.assertEqual(rows[0]["status"], "reviewed_teaching_plan")
+        self.assertEqual(rows[1]["status"], "outline_only")
+        self.assertNotIn("teaching_design", rows[1])
+
+    def test_changed_prerequisite_example_invalidates_the_cached_design_review(self):
+        from podcast_automate.scripting import load_research
+        _, dossier, _, _, sources = load_research(self.root, self.fixture.config)
+        entry = fixtures.example_plan().episodes[0]
+        calls = []
+        def invoke(prompt, schema, version):
+            calls.append((schema, prompt))
+            return teaching_response(prompt, schema)
+        folder = self.root / "design"
+        for example in ("The first example.", "The first example.", "The changed example."):
+            build_teaching_plan(self.fixture.config, entry, dossier, sources, invoke, folder,
+                                continuity=[{"example": example}])
+        self.assertEqual([schema for schema, _ in calls], [TeachingPlan, TeachingPlanReview, TeachingPlanReview])
+        self.assertIn("The changed example.", calls[-1][1])
+
     def test_bad_design_repairs_are_bounded_across_resume(self):
         def model(prompt, output_type, directory, **kwargs):
             result, meta = self.model(prompt, output_type, directory, **kwargs)

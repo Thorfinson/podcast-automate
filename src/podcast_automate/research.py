@@ -21,6 +21,7 @@ from .runner import execute_stages, manifest_path, outputs_valid
 from .sources import EXTRACTION_VERSION, canonical_url, clean, import_source
 from .storage import (atomic_text, digest, file_hash, inside, load_project, project_lock,
                       read_yaml, write_json, write_yaml)
+from .text_settings import validate_model, validate_reasoning
 
 RESEARCH_VERSION = "research.v2-foundations"
 PLAIN_LANGUAGE = (
@@ -114,8 +115,11 @@ def inherit_sources(root, work, manifest, config, local_files, parent_id):
 def reserve_call(work: Path, limits, *, search=False) -> int:
     path = work / "budget.json"
     budget = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"model_calls": 0, "search_rounds": 0}
-    if budget["model_calls"] >= limits.model_calls or (search and budget["search_rounds"] >= limits.search_rounds):
-        raise AppError("Recherchebudget erreicht. Für weitere Arbeit einen neuen Recherchelauf starten.",
+    if budget["model_calls"] >= limits.model_calls:
+        raise AppError(f"Limit von {limits.model_calls} Modellaufrufen erreicht. Der bisherige Stand bleibt gespeichert.",
+                       code="research_budget_exhausted", status="blocked")
+    if search and budget["search_rounds"] >= limits.search_rounds:
+        raise AppError(f"Limit von {limits.search_rounds} Rechercherunden erreicht. Der bisherige Stand bleibt gespeichert.",
                        code="research_budget_exhausted", status="blocked")
     budget["model_calls"] += 1
     budget["search_rounds"] += int(search)
@@ -220,15 +224,31 @@ def render_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, index
 
 
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
-                 reuse_sources: str | None = None) -> RunManifest:
+                 reuse_sources: str | None = None, model=None, reasoning_effort=None) -> RunManifest:
     root = root.resolve()
     config = load_project(root)
     local_files = [(root / value).resolve() for value in config.local_sources]
     local_hashes = {str(path): file_hash(path) if path.is_file() else None for path in local_files}
     with project_lock(root):
+        validate_model(model)
+        validate_reasoning(reasoning_effort)
+        selection = {"provider": "codex_cli", "model": model or config.runtime.codex_model,
+                     "reasoning_effort": reasoning_effort} if model is not None or reasoning_effort is not None else None
+        if resume:
+            path = manifest_path(root, run_id)
+            request_path = path.parent / "research_request.json"
+            saved = json.loads(request_path.read_text(encoding="utf-8")).get("text_generation") if request_path.exists() else None
+            if ((model is not None and model != (saved or {}).get("model")) or
+                    (reasoning_effort is not None and reasoning_effort != (saved or {}).get("reasoning_effort"))):
+                raise AppError("Modellauswahl geändert. Fortsetzen verwendet die gespeicherte Rechercheauswahl.",
+                               code="inputs_changed", status="blocked")
+            selection = saved
         config_hash = digest(config.model_dump(mode="json"))
-        input_hash = digest({"project": config_hash, "pipeline": __version__,
-                             "research": RESEARCH_VERSION, "local_files": local_hashes})
+        inputs = {"project": config_hash, "pipeline": __version__,
+                  "research": RESEARCH_VERSION, "local_files": local_hashes}
+        if selection is not None:
+            inputs["text_generation"] = selection
+        input_hash = digest(inputs)
         if resume:
             path = manifest_path(root, run_id)
             manifest = RunManifest.model_validate(read_yaml(path))
@@ -242,6 +262,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                                    input_hash=input_hash, stages={name: StageRecord() for name in
                                    ("discovery", "retrieval", "dossier", "review", "publish")})
             write_yaml(path.parent / "project_snapshot.yaml", config.model_dump(mode="json"))
+            if selection is not None:
+                write_json(path.parent / "research_request.json", {"text_generation": selection})
         work = path.parent
         if reuse_sources:
             if resume:
@@ -262,7 +284,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             except (OSError, ValueError):
                 manifest.stages["review"].status = "pending"
         write_json(root / "runs/latest.json", {"run_id": manifest.run_id})
-        adapter = CodexAdapter(config.runtime)
+        adapter = CodexAdapter(config.runtime.model_copy(update={"codex_model": selection["model"]}) if selection else config.runtime,
+                               reasoning_effort=selection.get("reasoning_effort") if selection else None)
 
         def invoke(prompt, output_type, version, *, search=False):
             number = reserve_call(work, config.research_limits, search=search)

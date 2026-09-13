@@ -26,6 +26,9 @@ from .scripting import outline_hash, script_metrics
 from .speech import AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, selected_audio
 from .storage import digest, file_hash, init_project, inside, load_project, project_lock, read_yaml, write_json, write_yaml
 from .voice_samples import ready_sample, sample_inventory
+from .studio_scripts import script_previews
+from .text_settings import (CODEX_MODELS, DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT,
+                            REASONING_EFFORTS, validate_model, validate_reasoning)
 
 VOICES = QWEN_VOICES
 
@@ -54,12 +57,21 @@ class TextChoice(Contract):
     provider: str = "codex_cli"
     model: str | None = Field(default=None, max_length=200)
     max_output_tokens: int = Field(default=32768, ge=1024, le=200000)
+    reasoning_effort: str | None = None
 
     def kwargs(self):
         if self.provider not in {"codex_cli", "openrouter"}:
             raise AppError("Textanbieter auswählen.", code="invalid_backend")
-        return {"backend": self.provider, "model": self.model or None,
+        model = self.model or (DEFAULT_CODEX_MODEL if self.provider == "codex_cli" else None)
+        effort = self.reasoning_effort or (DEFAULT_REASONING_EFFORT if self.provider == "codex_cli" else None)
+        validate_model(model)
+        validate_reasoning(effort)
+        return {"backend": self.provider, "model": model, "reasoning_effort": effort,
                 "max_output_tokens": self.max_output_tokens if self.provider == "openrouter" else None}
+
+    def normalized(self):
+        selected = self.kwargs()
+        return {**self.model_dump(), "model": selected["model"], "reasoning_effort": selected["reasoning_effort"]}
 
 
 class Studio:
@@ -109,6 +121,9 @@ class Studio:
             except (AppError, ValueError):
                 continue
         return {"app": "podcast-studio", "workspace": str(self.workspace),
+                "capabilities": {"text_reasoning_selection": True},
+                "text_defaults": TextChoice().normalized(),
+                "text_catalog": {"codex_models": CODEX_MODELS, "reasoning_efforts": REASONING_EFFORTS},
                 "token": self.token, "projects": projects, "voices": VOICES,
                 "audio_catalog": audio_catalog(),
                 "voice_samples": sample_inventory(self.projects),
@@ -135,8 +150,15 @@ class Studio:
                             progress["completed_segments"] + nested.get("completed_segments", nested.get("completed", 0)))
                     data["progress"] = progress
         if data and (data.get("run") or {}).get("kind") == "script":
-            from .studio_progress import script_progress
-            data["progress"] = script_progress(root, data["run"])
+            from .studio_progress import safe_script_progress
+            progress = safe_script_progress(root, data["run"])
+            if progress:
+                data["progress"] = progress
+        if data and (data.get("run") or {}).get("kind") in {"script", "research"}:
+            run = data["run"]
+            work = manifest_path(root, run["run_id"]).parent
+            request = "script_request.json" if run["kind"] == "script" else "research_request.json"
+            data["text_generation"] = read_json(work / request, {}).get("text_generation")
         return data
 
     def detail(self, project):
@@ -174,6 +196,8 @@ class Studio:
                 "audio": audio_paths, "audio_current": report.get("script_sha256") == file_hash(folder / "script.yaml")
                 and report.get("voices") == audio.voices
                 and report.get("audio_generation", {"provider": "qwen3_local", "voices": report.get("voices")}) == audio.model_dump()})
+        run = (data.get("job") or {}).get("run") or data.get("run")
+        data["script_previews"] = script_previews(root, run)
         return data
 
     def idle(self, root=None):
@@ -190,7 +214,7 @@ class Studio:
         if choice.provider == "openrouter":
             from .openrouter import OpenRouterAdapter
             OpenRouterAdapter(config.runtime, model=choice.model, api_key=self.key or None,
-                              max_output_tokens=choice.max_output_tokens)
+                              max_output_tokens=choice.max_output_tokens, reasoning_effort=choice.reasoning_effort)
         slug = re.sub(r"[^a-z0-9]+", "-", config.topic.lower()).strip("-")[:40] or "podcast"
         slug += "-" + uuid.uuid4().hex[:6]
         root = inside(self.projects, slug)
@@ -199,7 +223,7 @@ class Studio:
         self.validate_voices(config)
         audio = AudioChoice.model_validate(data.get("audio_settings", {"voices": config.voice_profile}))
         init_project(root, config)
-        write_json(root / "studio/text.json", choice.model_dump())
+        write_json(root / "studio/text.json", choice.normalized())
         write_json(root / "studio/audio.json", audio.model_dump())
         return {"id": slug}
 
@@ -214,8 +238,8 @@ class Studio:
         if choice.provider == "openrouter":
             from .openrouter import OpenRouterAdapter
             OpenRouterAdapter(load_project(root).runtime, model=choice.model, api_key=self.key or None,
-                              max_output_tokens=choice.max_output_tokens)
-        write_json(root / "studio/text.json", choice.model_dump())
+                              max_output_tokens=choice.max_output_tokens, reasoning_effort=choice.reasoning_effort)
+        write_json(root / "studio/text.json", choice.normalized())
 
     def save(self, project, data):
         root = self.root(project)

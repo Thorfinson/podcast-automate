@@ -84,6 +84,24 @@ class OutlineGateTests(unittest.TestCase):
         self.assertEqual(original, (self.root / "project.yaml").read_bytes())
         self.assertIn("Go deeper", (self.root / "studio/chat.json").read_text())
 
+    def test_worker_uses_selected_model_for_assistant_and_initial_research(self):
+        from podcast_automate.studio import TextChoice
+        selection = {"provider": "codex_cli", "model": "gpt-5.6-sol", "reasoning_effort": "high"}
+        self.assertEqual(TextChoice().kwargs()["model"], "gpt-6-astra")
+        self.assertEqual(TextChoice().kwargs()["reasoning_effort"], "xhigh")
+        with patch("podcast_automate.studio_worker.run_research") as research:
+            research.return_value.model_dump.return_value = {"status": "pending"}
+            perform(self.root, {"action": "research", "text": selection})
+            research.assert_called_once_with(self.root, model="gpt-5.6-sol", reasoning_effort="high")
+        proposal = BriefProposal(message="A proposal.", topic="Title", central_question="Why?", prior_knowledge="",
+                                 depth_request="Deep", focus_questions=[], excluded_topics=[])
+        def reply(adapter, *args, **kwargs):
+            self.assertEqual(adapter.settings.codex_model, "gpt-5.6-sol")
+            self.assertEqual(adapter.reasoning_effort, "high")
+            return proposal, {}
+        with patch("podcast_automate.studio_worker.CodexAdapter.structured", autospec=True, side_effect=reply):
+            perform(self.root, {"action": "assistant", "message": "Help", "text": selection})
+
     def test_audio_hash_is_rechecked_inside_pipeline_before_gpu(self):
         from podcast_automate.episode_audio import run_episode_audio
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
@@ -157,6 +175,21 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/bootstrap", headers={"Sec-Fetch-Site":"cross-site"})[0], 403)
         self.assertNotEqual(self.request("/media/example/../../project.yaml")[0], 200)
 
+    def test_progress_read_failure_keeps_last_snapshot_and_does_not_fail_job_api(self):
+        run = {"run_id": "run_test", "kind": "script", "status": "running", "stages": {}}
+        progress = {"phase": "script", "model_calls": 41, "total_segments": 6, "updated_at": "2026-09-13T20:00:00+00:00"}
+        write_json(self.root / "studio/job.json", {"id": "active", "status": "running", "run": run})
+        write_json(self.root / "runs/run_test/progress.json", progress)
+        self.app.process_root = self.root
+        self.app.process = Mock()
+        self.app.process.poll.return_value = None
+        with patch("podcast_automate.studio_progress.script_progress", side_effect=PermissionError("temporarily locked")):
+            status, body, _ = self.request("/api/projects/example")
+        self.assertEqual(status, 200)
+        job = json.loads(body)["job"]
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(job["progress"], progress)
+
     def test_secret_stays_in_memory_and_out_of_project_files_and_command_line(self):
         self.assertEqual(self.request("/api/key", {"key":"test-secret-key"})[0], 200)
         self.assertNotIn(b"test-secret-key", self.request("/api/bootstrap")[1])
@@ -188,6 +221,57 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(saved["topic"], "A better question")
         self.assertEqual(saved["runtime"]["codex_executable"], "codex")
         self.assertEqual(self.request("/api/projects/example/save", data)[0], 400)
+
+    def test_model_selection_roundtrips_and_invalid_effort_never_changes_saved_settings(self):
+        bootstrap = json.loads(self.request("/api/bootstrap")[1])
+        self.assertTrue(bootstrap["capabilities"]["text_reasoning_selection"])
+        self.assertIn("gpt-6-astra", bootstrap["text_catalog"]["codex_models"])
+        detail = json.loads(self.request("/api/projects/example")[1])
+        data = {"config": detail["config"], "config_hash": detail["config_hash"],
+                "text": {"provider": "codex_cli", "model": "gpt-6-astra", "reasoning_effort": "xhigh"}}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        saved = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(saved["text"]["reasoning_effort"], "xhigh")
+        self.assertEqual(saved["text"]["model"], "gpt-6-astra")
+        self.assertEqual(saved["config_hash"], detail["config_hash"])
+        before = (self.root / "studio/text.json").read_bytes()
+        data["text"]["reasoning_effort"] = "invalid"
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 400)
+        self.assertEqual(before, (self.root / "studio/text.json").read_bytes())
+
+    def test_job_displays_its_saved_choice_instead_of_later_project_choices(self):
+        run = {"run_id": "run_test", "kind": "script", "status": "pending", "stages": {}}
+        selected = {"provider": "codex_cli", "model": "gpt-5.6-sol", "reasoning_effort": "high"}
+        write_json(self.root / "studio/job.json", {"id": "saved", "status": "pending", "run": run})
+        write_json(self.root / "runs/run_test/script_request.json", {"text_generation": selected})
+        write_json(self.root / "studio/text.json", {"provider": "codex_cli", "model": "gpt-6-astra", "reasoning_effort": "xhigh"})
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(detail["job"]["text_generation"], selected)
+        self.assertEqual(detail["text"]["model"], "gpt-6-astra")
+
+    def test_unpublished_script_is_readable_but_cannot_be_submitted_for_audio(self):
+        run = {"run_id": "run_test", "kind": "script", "status": "running", "stages": {"writing": {"status": "running"}}}
+        work = self.root / "runs/run_test"
+        write_json(self.root / "studio/job.json", {"id": "active", "status": "running", "run": run})
+        write_json(work / "series_plan.json", example_plan().model_dump())
+        write_json(work / "script_request.json", {"episode": None})
+        write_json(work / "drafts/ep_001.json", example_script().model_dump())
+        write_json(work / "drafts/ep_001.checkpoint.json", {"sha256": file_hash(work / "drafts/ep_001.json")})
+        self.app.process_root = self.root
+        self.app.process = Mock()
+        self.app.process.poll.return_value = None
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(detail["episodes"], [])
+        self.assertEqual(detail["script_previews"][0]["state"], "draft")
+        self.assertEqual(detail["job"]["progress"]["script_previews"], detail["script_previews"])
+        # Even after an interruption, a preview has no publish record or audio approval.
+        self.app.process.poll.return_value = 0
+        with patch("podcast_automate.studio.subprocess.Popen") as launch:
+            status, _, _ = self.request("/api/projects/example/start", {"action": "audio", "episode": "ep_001",
+                "approve_audio": True, "script_hash": detail["script_previews"][0]["hash"]})
+        self.assertEqual(status, 400)
+        launch.assert_not_called()
+        self.assertFalse((self.root / "episodes/ep_001/script.yaml").exists())
 
     def test_bad_model_does_not_leave_a_half_created_project(self):
         data = {"config":self.config.model_dump(), "text":{"provider":"openrouter", "model":None}}

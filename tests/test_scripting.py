@@ -74,6 +74,40 @@ class ScriptingTests(unittest.TestCase):
             return example_script(), {}
         return ScriptReview(issues=[], limitations=["A fixture is not a real editorial review."]), {}
 
+    def test_model_and_effort_apply_to_every_text_stage_and_resume_keeps_them(self):
+        selections = []
+        def selected(adapter, *args, **kwargs):
+            selections.append((adapter.settings.codex_model, adapter.reasoning_effort))
+            return self.model(*args, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", autospec=True, side_effect=selected):
+            first = run_script(self.root, model="gpt-6-astra", reasoning_effort="xhigh")
+            self.assertEqual(first.status, "completed")
+            second = run_script(self.root, resume=True, run_id=first.run_id)
+            with self.assertRaises(AppError) as changed:
+                run_script(self.root, resume=True, run_id=first.run_id, reasoning_effort="low")
+        self.assertEqual(second.status, "completed")
+        self.assertEqual(changed.exception.code, "inputs_changed")
+        self.assertEqual(selections, [("gpt-6-astra", "xhigh")] * 10)
+        request = json.loads((self.root / "runs" / first.run_id / "script_request.json").read_text(encoding="utf-8"))
+        self.assertEqual(request["text_generation"]["reasoning_effort"], "xhigh")
+
+    def test_legacy_run_without_reasoning_field_keeps_its_inputs_and_approval(self):
+        from podcast_automate.scripting import text_generation_settings, outline_hash
+        def legacy_settings(*args, **kwargs):
+            selected = text_generation_settings(*args, **kwargs)
+            selected.pop("reasoning_effort", None)
+            return selected
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            with patch("podcast_automate.scripting.text_generation_settings", side_effect=legacy_settings):
+                first = run_script(self.root, plan_only=True)
+            work = self.root / "runs" / first.run_id
+            before = (work / "script_request.json").read_bytes()
+            approval = outline_hash(work)
+            second = run_script(self.root, resume=True, approved_plan_hash=approval)
+        self.assertEqual(second.status, "completed")
+        self.assertEqual(before, (work / "script_request.json").read_bytes())
+        self.assertEqual(approval, outline_hash(work))
+
     def test_research_to_script_preserves_evidence_and_never_generates_audio(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model), \
              patch("podcast_automate.runner.run_tts", side_effect=AssertionError("No audio before user review")):

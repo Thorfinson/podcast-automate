@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .runner import manifest_path
-from .storage import file_hash, write_json
+from .run_budget import effective_limits
+from .errors import AppError
+from .models import ResearchLimits
+from .storage import file_hash, read_yaml, write_json
+from .studio_scripts import script_previews
 
 
 def read(path, default=None):
@@ -100,17 +105,31 @@ def script_progress(root, run):
     if stage == "publish":
         activity = "Ergebnisse werden bereitgestellt" if run.get("status") == "running" else "Ergebnisse bereit zur Durchsicht"
     started = datetime.fromtimestamp(calls[-1].stat().st_mtime, timezone.utc).isoformat() if calls else None
+    responses = list((work / "calls").glob("call_*/response.json"))
+    last_result = datetime.fromtimestamp(max(path.stat().st_mtime for path in responses), timezone.utc).isoformat() if responses else None
+    call_pending = bool(calls and not calls[-1].with_name("response.json").exists() and run.get("status") == "running")
     issues = []
     if stage == "teaching" and current and run.get("status") == "blocked":
         checkpoint = read(work / "teaching" / current["episode_id"] / "checkpoint.json", {})
         issues = (checkpoint.get("review") or {}).get("issues", [])
+    model_call_limit = None
+    try:
+        snapshot = read_yaml(work / "project_snapshot.yaml")
+        limits = ResearchLimits.model_validate(snapshot.get("research_limits", {}))
+        model_call_limit = effective_limits(work, limits, run.get("input_hash")).model_calls
+    except (AppError, ValueError, OSError):
+        pass
     # Keep the existing progress envelope readable by Studio instances already running during an update.
     return {"phase": "script", "unit": "episodes", "stage": stage, "activity": activity,
+            "updated_at": datetime.now(timezone.utc).isoformat(), "last_result_at": last_result,
+            "model_call_started_at": started if call_pending else None,
             "activity_started_at": started, "current_episode": current["episode_id"] if current else None,
             "episode_number": rows.index(current) + 1 if current else None,
             "episode_title": current["title"] if current else None,
             "completed_segments": sum(row["completed"] for row in rows), "total_segments": len(rows),
-            "model_calls": read(work / "budget.json", {}).get("model_calls", 0), "episodes": rows,
+            "model_calls": read(work / "budget.json", {}).get("model_calls", 0),
+            "model_call_limit": model_call_limit, "episodes": rows,
+            "script_previews": script_previews(root, run),
             "review_issues": issues}
 
 
@@ -118,18 +137,39 @@ def watch(root, job_id, stop=None):
     """Compatibility publisher for an existing server; exits with its one original job."""
     import time
     root = root.resolve()
+    unreadable = 0
     while stop is None or not stop.is_set():
-        job = read(root / "studio/job.json", {})
-        if job.get("id") != job_id or job.get("status") != "running":
-            return
-        run = job.get("run")
-        progress = script_progress(root, run)
-        if progress:
-            write_json(manifest_path(root, run["run_id"]).parent / "progress.json", progress)
+        job = read(root / "studio/job.json")
+        if not isinstance(job, dict) or not job.get("id") or not job.get("status"):
+            # A temporarily unreadable file is not evidence that the job ended.
+            # Bound retries so a standalone publisher exits if the project disappears.
+            unreadable += 1
+            if unreadable >= 30:
+                return
+        else:
+            unreadable = 0
+            if job["id"] != job_id or job["status"] != "running":
+                return
+            run = job.get("run")
+            progress = safe_script_progress(root, run)
+            if progress:
+                try:
+                    write_json(manifest_path(root, run["run_id"]).parent / "progress.json", progress)
+                except OSError:
+                    logging.getLogger(__name__).warning("Progress file temporarily unavailable; retrying.")
         if stop is None:
             time.sleep(2)
         elif stop.wait(2):
             return
+
+
+def safe_script_progress(root, run):
+    """Progress is optional: concurrent file access must not break a job or its API."""
+    try:
+        return script_progress(root, run)
+    except (OSError, ValueError, KeyError, TypeError):
+        logging.getLogger(__name__).warning("Progress temporarily unavailable; retaining the previous snapshot.")
+        return None
 
 
 if __name__ == "__main__":

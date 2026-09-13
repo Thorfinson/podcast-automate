@@ -92,6 +92,15 @@ class OpenRouterTests(unittest.TestCase):
             self.assertNotIn(KEY, str(caught.exception))
         self.assertFalse((self.root / "call/response.json").exists())
 
+    def test_reasoning_is_explicit_only_when_selected_and_is_recorded(self):
+        self.call(envelope())
+        self.assertNotIn("reasoning", json.loads(self.requests[-1][0].data))
+        self.adapter = OpenRouterAdapter(RuntimeSettings(), model="vendor/test-model", api_key=KEY,
+                                         reasoning_effort="high")
+        _, metadata = self.call(envelope())
+        self.assertEqual(json.loads(self.requests[-1][0].data)["reasoning"], {"effort": "high", "exclude": True})
+        self.assertEqual(metadata["requested_reasoning_effort"], "high")
+
     def test_http_200_error_body_is_not_treated_as_completed_work(self):
         with self.assertRaises(AppError) as caught:
             self.call({"error": {"code": 429, "message": KEY}})
