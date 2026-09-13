@@ -42,10 +42,18 @@ class TopicBrief(Contract):
     schema_version: Literal["1.0"] = "1.0"
     topic: NonEmpty
     central_question: str = ""
-    language: Literal["de-DE"] = "de-DE"
-    audience_level: str = "Anspruchsvoll, mit verständlich erklärten Voraussetzungen"
+    language: Literal["de-DE", "en-US"] = "de-DE"
+    audience_level: str = "Neugierige Erwachsene ohne spezielles Vorwissen; fachlich anspruchsvoll und auf Augenhöhe"
     prior_knowledge: str = ""
-    depth_request: str = "Mechanismen, ausgearbeitete Beispiele, Belege und Grenzen"
+    depth_request: str = ("Fachliche Tiefe von Grund auf entwickeln, klar und auf Augenhöhe. "
+                          "Eine zusammenhängende Erklärung aus Problem, Lösungsversuch und weiterführenden "
+                          "Konsequenzen aufbauen. Nicht nur sagen, was gilt, sondern erklären, warum es gilt "
+                          "und unter welchen Voraussetzungen. Allgemeine Auffassungsgabe voraussetzen, "
+                          "nötige Fachbegriffe knapp im Zusammenhang einführen und danach normal verwenden. "
+                          "Ein gutes Beispiel nachvollziehbar ausarbeiten; Metaphern gezielt und sparsam einsetzen. "
+                          "Keine Formeln oder unerklärten Abkürzungen. Keine belehrenden Vorreden, wiederholten "
+                          "Definitionen oder mehrfachen Zusammenfassungen derselben Idee. Grenzen dort einmal benennen, "
+                          "wo sie für das Verständnis wichtig sind. Fachliche Tiefe und natürlichen Gesprächsfluss erhalten.")
     focus_questions: list[str] = Field(default_factory=list)
     excluded_topics: list[str] = Field(default_factory=list)
     seed_people: list[str] = Field(default_factory=list)
@@ -131,7 +139,7 @@ class RunManifest(Contract):
     schema_version: Literal["1.0"] = "1.0"
     pipeline_version: str = "0.1.0"
     run_id: Identifier
-    kind: Literal["text_probe", "audio_probe"]
+    kind: Literal["text_probe", "audio_probe", "research", "script", "episode_audio"]
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
     project_hash: str

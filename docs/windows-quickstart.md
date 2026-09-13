@@ -1,6 +1,6 @@
 # Windows 11: erster ausführbarer Stand
 
-Version 0.1 enthält Projektverwaltung, eine Codex-Abo-Verbindungsprobe und eine automatisch montierte lokale Qwen-Hörprobe. Die vollständige Recherche- und Serienpipeline folgt in den nächsten Meilensteinen.
+Version 0.1 enthält Projektverwaltung, eine Codex-Abo-Verbindungsprobe, echte Themenrecherche mit Quellenabruf und Dossier sowie eine automatisch montierte lokale Qwen-Hörprobe. Die Verbindung vom Dossier zur Podcastserie folgt in den nächsten Meilensteinen. [Recherche starten und fortsetzen](research.md).
 
 ## 1. Anwendung installieren
 
@@ -31,20 +31,29 @@ Die Anbindung verwendet codex exec mit JSON-Ereignissen und einem Ausgabeschema.
 
 ## 3. Lokale Sprachausgabe vorbereiten
 
-FFmpeg und ffprobe müssen im PATH verfügbar sein. Beide werden für die Montage verwendet.
-
-Für Qwen wird eine zweite Umgebung angelegt:
+FFmpeg und ffprobe werden für die Montage verwendet. Das Repository enthält ein Setup für den projektlokalen Windows-x64-Build 9.0.1 mit SHA-256-Prüfung:
 
 ~~~powershell
-py -3.12 -m venv .venv-tts
+powershell -NoProfile -File .\scripts\setup-ffmpeg.ps1
+$ffmpegBin = (Resolve-Path .\tools\ffmpeg\bin).Path
+$env:PATH = "$ffmpegBin;$env:PATH"
+ffmpeg -version
+ffprobe -version
 ~~~
 
-In dieser Umgebung zuerst die zu Windows-Version und Radeon passende PyTorch-/AMD-Laufzeit nach der aktuellen AMD-Anleitung installieren. Verwende dabei .\.venv-tts\Scripts\python.exe als Python. Die Treiber- und Wheel-Versionen sind noch nicht für deinen Rechner gemessen und werden deshalb nicht als bereits bestätigte Kombination vorgegeben. [AMD-Kompatibilitätsmatrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html)
+Die Binärdateien liegen unter `tools/ffmpeg/bin/` und sind von Git ausgeschlossen. Das Setup ist nach einem frischen Checkout erneut nötig. Die beiden PATH-Zeilen in jedem neuen PowerShell-Fenster vor `doctor`, `audio-probe`, `resume` oder den Audio-Tests ausführen; eine systemweite PATH-Änderung ist nicht erforderlich. [Downloadquelle und Details](../README.md#ffmpeg-lokal-installieren-und-windows-probe-starten).
+
+Für Qwen gibt es nun ein Setup für die separate Python-3.12-Umgebung und die AMD-Wheels:
+
+~~~powershell
+powershell -NoProfile -File .\scripts\setup-qwen.ps1 -ProjectDir .\projects\energy-models
+~~~
+
+Das Setup lädt bei Bedarf Python 3.12.14 nach `tools/python/`, installiert PyTorch 2.9.1 mit ROCm 7.2.1 und Qwen 0.1.1 in `.venv-tts`, prüft GPU-Berechnung und lädt die feste Qwen-Modellrevision. Anschließend aktualisiert es den Python-Pfad und Modellstand in `project.yaml`. Auf dem Zielrechner erkennt diese Kombination die RX 9070 XT und besteht FP32-, FP16- und BF16-Berechnungen. [Versionen, Voraussetzungen und Details](qwen-windows.md).
 
 Anschließend:
 
 ~~~powershell
-.\.venv-tts\Scripts\python.exe -m pip install qwen-tts
 .\.venv\Scripts\pla.exe doctor .\projects\energy-models --json
 ~~~
 
@@ -104,6 +113,8 @@ Die Tests verwenden simulierte Codex-Antworten und echte FFmpeg-Montage mit erze
 
 Ohne FFmpeg werden die Audio-Integrationstests ausdrücklich übersprungen. Die Kernprüfungen laufen weiter.
 
-Lokal geprüft sind Dateiverwaltung, Schemas, Prozessaufrufe, Kontingentzustände, Wiederaufnahme, Audio-Montage, Laufzeiten und Kapitel. Ein erfolgreicher echter Codex-Abo-Aufruf sowie Qwen auf deiner RX 9070 XT sind noch ausstehende Tests. Für Windows und Linux ist ein CI-Testlauf ohne Modellkonten eingerichtet.
+Lokal geprüft sind Dateiverwaltung, Schemas, Prozessaufrufe, Kontingentzustände, Wiederaufnahme, Audio-Montage, Laufzeiten und Kapitel. Beim [Windows-Versuch am 13.09.2026](windows-pilot.md) bestanden alle 24 Tests mit FFmpeg, ein echter Codex-Abo-Aufruf und eine vollständige Qwen-Hörprobe auf der RX 9070 XT einschließlich Wiederaufnahme. Die 58,79 Sekunden lange MP3 ist technisch geprüft; Aussprache und Natürlichkeit sind noch anzuhören. Für Windows und Linux ist ein CI-Testlauf ohne Modellkonten eingerichtet.
 
-Noch nicht implementiert sind Themenrecherche, Quellen- und Wissensmodell, ausführliche Skripterstellung, Serienplanung, fachliche Qualitätsgates, automatische Textreparatur und Aufteilung zu langer Folgen. run, research, ingest, model, plan, script, check, render und export aus der vollständigen Produktspezifikation werden deshalb noch nicht als fertige CLI-Funktionen angeboten.
+`pla research` implementiert einen begrenzten Live-Recherchepass mit Quellenimport, Abschnittsreferenzen, Dossier, Referenzprüfung und Modellreview. Danach erstellt `pla script .\projects\windows-pilot --episode ep_001` einen Serienentwurf und die erste belegte Dialogfolge zur Leseprüfung. [Skriptworkflow](scripts.md). Audio wartet auf den ausdrücklichen Auftrag nach dieser Prüfung.
+
+Vollständige Qualitätsprüfungen über alle Folgengrenzen, Audio-Produktion recherchierter Folgen und Aufteilung zu langer Folgen bleiben weitere Ausbauschritte. `run`, `ingest`, `model`, `plan`, `check`, `render` und `export` aus der vollständigen Produktspezifikation werden noch nicht als eigenständige fertige CLI-Funktionen angeboten.

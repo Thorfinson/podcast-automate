@@ -1,0 +1,151 @@
+import json
+import unittest
+from unittest.mock import patch
+
+from podcast_automate.episode_audio import run_episode_audio
+from podcast_automate.errors import AppError
+from podcast_automate.models import EpisodeScript
+from podcast_automate.polishing import DialoguePolishReview, HOST_ROLES, polish_dialogue
+from podcast_automate.script_models import ScriptReview
+from podcast_automate.scripting import run_script, validate_script
+from podcast_automate.storage import digest, read_yaml, write_json, write_yaml
+from tests import test_scripting as fixtures
+
+
+class PolishingTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = fixtures.ScriptingTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.root = self.fixture.root
+
+    def test_separate_pass_reaches_final_checks_with_original_and_preserves_voice_selection(self):
+        final_checks = []
+        def model(prompt, output_type, directory, **kwargs):
+            value, metadata = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if kwargs['prompt_version'] == 'dialogue_polish.v1':
+                payload = json.loads(prompt.splitlines()[-1])
+                self.assertEqual(payload['host_roles'], HOST_ROLES)
+                value.segments[0].speaker_id = 'host_b'
+                value.segments[1].speaker_id = 'host_a'
+            if output_type is ScriptReview:
+                final_checks.append(json.loads(prompt.splitlines()[-1]))
+            return value, metadata
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, 'completed')
+        self.assertEqual(list(run.stages), ['planning', 'teaching', 'writing', 'polishing', 'review', 'publish'])
+        folder = self.root / 'runs' / run.run_id / 'polishing/ep_001'
+        self.assertIn('**Aiden:** What', (folder / 'before.md').read_text(encoding='utf-8'))
+        self.assertIn('**Vivian:** What', (folder / 'after.md').read_text(encoding='utf-8'))
+        self.assertIn('**Vivian:** What', (self.root / 'episodes/ep_001/script.md').read_text(encoding='utf-8'))
+        self.assertEqual(final_checks[0]['original_draft'], fixtures.example_script().model_dump())
+        self.assertEqual(final_checks[0]['script']['segments'][0]['speaker_id'], 'host_b')
+        self.assertEqual(final_checks[0]['host_roles'], HOST_ROLES)
+        report = read_yaml(self.root / 'reports/script_quality.yaml')
+        result = report['episodes']['ep_001']['dialogue_polish']
+        self.assertEqual(result['status'], 'passed')
+        self.assertNotEqual(result['original_digest'], result['polished_digest'])
+        self.assertFalse(result['human_reviewed'])
+        self.assertFalse(read_yaml(self.root / 'episodes/audio_review.yaml')['audio_approved'])
+        self.assertEqual(read_yaml(self.root / 'project.yaml')['voice_profile'], self.fixture.config.voice_profile)
+
+    def test_quota_between_polishing_and_comparison_reuses_candidate(self):
+        paused = False
+        def model(prompt, output_type, directory, **kwargs):
+            nonlocal paused
+            if output_type is DialoguePolishReview and not paused:
+                paused = True
+                raise AppError('Quota', code='quota_exhausted', status='waiting_for_quota')
+            return self.fixture.model(prompt, output_type, directory, **kwargs)
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            first = run_script(self.root)
+            self.assertEqual(first.stages['polishing'].status, 'waiting_for_quota')
+            self.assertEqual(first.stages['review'].status, 'pending')
+            count = self.fixture.calls.count(EpisodeScript)
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(resumed.status, 'completed')
+        self.assertEqual(self.fixture.calls.count(EpisodeScript), count)
+        self.assertEqual(count, 2)
+
+    def test_persistent_fact_drift_blocks_export_and_keeps_repair_limit_on_resume(self):
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if output_type is EpisodeScript and kwargs['prompt_version'].startswith('dialogue_polish'):
+                value.segments[1].text = 'It scores exactly 1000 possibilities and always succeeds.'
+            if output_type is DialoguePolishReview:
+                value.checks[0].verdict = 'fail'
+                value.checks[0].reason = 'The original has no count of 1000 and no success guarantee. Remove both additions.'
+            return value, meta
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            run = run_script(self.root)
+            count = len(self.fixture.calls)
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(run.stages['polishing'].error.code, 'dialogue_polish_failed')
+        self.assertEqual(resumed.status, 'blocked')
+        self.assertEqual(len(self.fixture.calls), count)
+        self.assertNotIn(ScriptReview, self.fixture.calls)
+        self.assertFalse((self.root / 'episodes/ep_001/script.yaml').exists())
+        checkpoint = json.loads((self.root / 'runs' / run.run_id / 'polishing/ep_001/checkpoint.json').read_text())
+        self.assertEqual(checkpoint['repairs'], 2)
+
+    def test_missing_criteria_or_invented_comparison_evidence_cannot_pass(self):
+        for corruption in ('criterion', 'before_quote', 'after_quote'):
+            def model(prompt, output_type, directory, **kwargs):
+                value, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+                if output_type is DialoguePolishReview:
+                    if corruption == 'criterion':
+                        value.checks.pop()
+                    elif corruption == 'before_quote':
+                        value.checks[0].before[0].quote = 'This sentence does not exist.'
+                    else:
+                        value.checks[0].after[0].quote = 'This sentence does not exist either.'
+                return value, meta
+            with self.subTest(corruption=corruption), patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+                run = run_script(self.root)
+            self.assertEqual(run.stages['polishing'].error.code,
+                             'invalid_polish_review' if corruption == 'criterion' else 'invalid_polish_evidence')
+            self.assertEqual(run.stages['review'].status, 'pending')
+
+    def test_changed_original_invalidates_cached_polish_even_when_segment_ids_match(self):
+        original = fixtures.example_script()
+        entry = fixtures.example_plan().episodes[0]
+        versions = []
+        def invoke(prompt, output_type, version):
+            versions.append(version)
+            if output_type is EpisodeScript:
+                return original.model_copy(deep=True)
+            return fixtures.polish_review(prompt)
+        args = (self.fixture.config, entry)
+        folder = self.root / 'isolated'
+        polish_dialogue(*args, original, None, invoke, folder, validate_script)
+        polish_dialogue(*args, original, None, invoke, folder, validate_script)
+        self.assertEqual(versions.count('dialogue_polish.v1'), 1)
+        original.segments[1].text += ' This comparison has a stated limitation.'
+        polish_dialogue(*args, original, None, invoke, folder, validate_script)
+        self.assertEqual(versions.count('dialogue_polish.v1'), 2)
+        report = json.loads((folder / 'result.json').read_text())
+        self.assertEqual(report['original_digest'], digest(original.model_dump()))
+
+    def test_damaged_or_removed_polishing_stage_blocks_approved_audio(self):
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=self.fixture.model):
+            run = run_script(self.root)
+        work = self.root / 'runs' / run.run_id
+        artifact = work / 'polishing/ep_001/script.json'
+        before = artifact.read_bytes()
+        write_json(artifact, {})
+        with patch('podcast_automate.episode_audio.run_tts', side_effect=AssertionError('No audio')):
+            with self.assertRaises(AppError) as caught:
+                run_episode_audio(self.root, episode='ep_001', approve_audio=True)
+            self.assertEqual(caught.exception.code, 'invalid_script')
+            artifact.write_bytes(before)
+            manifest = read_yaml(work / 'run_manifest.yaml')
+            del manifest['stages']['polishing']
+            write_yaml(work / 'run_manifest.yaml', manifest)
+            with self.assertRaises(AppError) as caught:
+                run_episode_audio(self.root, episode='ep_001', approve_audio=True)
+            self.assertEqual(caught.exception.code, 'invalid_script')
+
+
+if __name__ == '__main__':
+    unittest.main()

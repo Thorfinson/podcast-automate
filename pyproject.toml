@@ -9,7 +9,7 @@ description = "Local tools for researched deep-dive podcast series"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
-dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7"]
+dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7"]
 
 [project.scripts]
 pla = "podcast_automate.cli:main"
@@ -18,4 +18,4 @@ pla = "podcast_automate.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-podcast_automate = ["data/*.json"]
+podcast_automate = ["data/*.json", "web/*.html", "web/*.css", "web/*.js"]

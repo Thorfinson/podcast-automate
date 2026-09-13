@@ -1,0 +1,659 @@
+{
+  "label_origin": "User explicitly rejected this script for lack of introduction, progression, synthesis and followability on 2026-09-13.",
+  "expected_pass": false,
+  "brief": {
+    "audience_level": "Neugierige Erwachsene: universitäre fachliche Tiefe, vom Anfang des Themas aufgebaut",
+    "prior_knowledge": "Keine speziellen Vorkenntnisse voraussetzen. Begriffe, Voraussetzungen und Denkwege zuerst entwickeln; danach konsequent darauf aufbauen.",
+    "depth_request": "Universitäres Verständnis von Grund auf, klar und auf Augenhöhe. Eine zusammenhängende Geschichte aus Problem, Lösungsversuch, neuem Hindernis und daraus entwickeltem Mechanismus erzählen. Jeder Abschnitt baut fachlich auf dem vorherigen auf. Nicht nur sagen, was gilt: erklären, warum es gilt, wie man darauf kommt und unter welchen Voraussetzungen. Konkrete Beispiele Schritt für Schritt ausarbeiten und später für fortgeschrittene Konsequenzen wieder aufnehmen. Notwendige Begriffe wie Gradient, Normierung und Lernziel verständlich einführen und dann präzise verwenden; keine Formelrezitation und keine unerklärten Abkürzungen. Metaphern sparsam, keine belehrenden Vereinfachungen, kein Füllgespräch und keine mehrfachen Zusammenfassungen. Erste Folge etwa 29,5 Minuten mit rund 3700 bis 3800 gesprochenen Wörtern. Sie soll vom Ausgangsproblem bis zum eigentlichen Training und dessen Schwierigkeiten gelangen. Weitere Folgen vertiefen die Mechanismen, statt alle Substanz aus der ersten Folge auszulagern."
+  },
+  "script": {
+    "schema_version": "1.0",
+    "episode_id": "ep_001",
+    "title": "Möglichkeiten bewerten, Ausgaben suchen, Bewertungen lernen",
+    "purpose": "deep_dive",
+    "chapters": [
+      {
+        "chapter_id": "ep_001_sc_01",
+        "title": "Wenn eine Vorhersage zwischen den Möglichkeiten landet"
+      },
+      {
+        "chapter_id": "ep_001_sc_02",
+        "title": "Eine Ausgabe verändern, das Modell festhalten"
+      },
+      {
+        "chapter_id": "ep_001_sc_03",
+        "title": "Die Ellipse als ausgearbeitete Suche"
+      },
+      {
+        "chapter_id": "ep_001_sc_04",
+        "title": "Von niedriger Energie zu Wahrscheinlichkeit"
+      },
+      {
+        "chapter_id": "ep_001_sc_05",
+        "title": "Warum gutes Bewerten eine Gegenkraft braucht"
+      },
+      {
+        "chapter_id": "ep_001_sc_06",
+        "title": "Drei Ausgänge und eine überprüfbare Lernkorrektur"
+      },
+      {
+        "chapter_id": "ep_001_sc_07",
+        "title": "Modellbeispiele erzeugen und damit weiterlernen"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "seg_001",
+        "scene_id": "ep_001_sc_01",
+        "chapter_id": "ep_001_sc_01",
+        "speaker_id": "host_a",
+        "text": "Stell dir vor, ein Video hält an, und du sollst das nächste Bild ergänzen. Als erfundenes Beispiel nehmen wir einen Ball, dessen nächste Bewegung noch offen ist. Er könnte nach links oder nach rechts gehen. Beide Fortsetzungen passen zum bisherigen Verlauf. Ein Modell soll nun ein einziges Bild liefern. Was wäre eine gute Antwort? Ein deutlich erkennbarer Ball links wäre plausibel. Einer rechts ebenfalls. Ein verschwommener Ball zwischen beiden Möglichkeiten vielleicht gerade nicht.",
+        "knowledge_refs": [
+          "f01"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_002",
+        "scene_id": "ep_001_sc_01",
+        "chapter_id": "ep_001_sc_01",
+        "speaker_id": "host_b",
+        "text": "Trotzdem kann ein übliches Lernziel diesen verschwommenen Kompromiss begünstigen. Man vergleicht die vorhergesagten Bildwerte mit den tatsächlich beobachteten, quadriert ihre Abweichungen und zählt sie zusammen. Große Abweichungen wiegen dadurch besonders schwer. Legt sich das Modell auf die linke Fortsetzung fest, liegt es bei einer rechten Fortsetzung stark daneben. Zwischenwerte verteilen den Fehler auf beide Fälle. Das Modell kann seinen durchschnittlichen Fehler also verringern, indem es Möglichkeiten vermischt.",
+        "knowledge_refs": [
+          "f01"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_003",
+        "scene_id": "ep_001_sc_01",
+        "chapter_id": "ep_001_sc_01",
+        "speaker_id": "host_a",
+        "text": "An einem einzelnen Bildwert lässt sich der Anreiz nachvollziehen. Nehmen wir zur Veranschaulichung zwei gleich häufige Zielwerte, null und eins. Wer immer null ausgibt, hat einmal keinen Fehler und einmal die quadrierte Abweichung eins. Wer immer die Hälfte ausgibt, hat zweimal die quadrierte Abweichung ein Viertel. Im Durchschnitt ist das günstiger. Bei Bildern betrifft diese Mittelung viele Bildwerte zugleich. Unser Zahlenbeispiel erklärt den Lernanreiz; es ist kein berichtetes Videoexperiment.",
+        "knowledge_refs": [
+          "f01"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_004",
+        "scene_id": "ep_001_sc_01",
+        "chapter_id": "ep_001_sc_01",
+        "speaker_id": "host_b",
+        "text": "Damit stellt sich die Aufgabe anders: Können wir vollständige Fortsetzungen einzeln beurteilen, ohne sie vorher zusammenzumischen? Wir geben dem Modell den bisherigen Verlauf und jeweils ein mögliches nächstes Bild. Es bewertet, wie gut beides zusammenpasst. Mehrere Bilder dürfen dabei gleichzeitig gut abschneiden. Das Prinzip passt auch zu Übersetzungen: Für einen Satz können mehrere Formulierungen richtig sein. Die Bewertung muss keine einzige davon schon durch ihre Bauweise zur allein zulässigen Antwort erklären.",
+        "knowledge_refs": [
+          "f01",
+          "f02"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_005",
+        "scene_id": "ep_001_sc_01",
+        "chapter_id": "ep_001_sc_01",
+        "speaker_id": "host_a",
+        "text": "Diese gemeinsame Bewertung von Eingabe und möglicher Ausgabe heißt Energie. Niedrige Energie bedeutet gute Verträglichkeit. Ein energiebasiertes Modell kann also der linken und der rechten Fortsetzung niedrige Werte geben und dem unpassenden Zwischenbild einen höheren. Das ist zunächst eine Ausdrucksmöglichkeit des Modells, kein Versprechen, dass es schon richtig bewertet. Und aus einem niedrigen Zahlenwert folgt noch keine bestimmte Wahrscheinlichkeit. Dafür werden wir die übrigen Möglichkeiten ebenfalls berücksichtigen müssen.",
+        "knowledge_refs": [
+          "f02"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_006",
+        "scene_id": "ep_001_sc_01",
+        "chapter_id": "ep_001_sc_01",
+        "speaker_id": "host_b",
+        "text": "Unser Ausgangsproblem hat damit eine präzisere Form: Wir möchten mehrere passende Fortsetzungen erhalten können und zugleich lernen, welche Bewertungen angemessen sind. Aber eine Bewertungsfunktion liefert zunächst nur eine Antwort auf einen vorgelegten Vorschlag. Sie sagt, ob dieser Vorschlag gut passt. Eine brauchbare Ausgabe liegt dadurch noch nicht automatisch vor. Wir brauchen also einen Weg, aus der Fähigkeit zu bewerten eine Suche nach passenden Möglichkeiten zu machen.",
+        "knowledge_refs": [
+          "f02"
+        ],
+        "pause_after_ms": 650
+      },
+      {
+        "segment_id": "seg_007",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_a",
+        "text": "Dafür hilft als Denkbild eine Höhenkarte. Jeder Ort steht für einen Kandidaten, seine Höhe für dessen Energie. Wir beginnen irgendwo und versuchen, einen tieferen Ort zu erreichen. Beim späteren Lernen würden wir dagegen die Karte selbst verändern. Die Grenze des Vergleichs: Diese Höhe ist nur eine Bewertung, weder geografische Höhe noch physikalische Energie. Zunächst bleibt die Karte fest. Nur der Kandidat bewegt sich, während wir seine Bewertung immer wieder neu bestimmen.",
+        "knowledge_refs": [
+          "f03"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_008",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_b",
+        "text": "Bei einem Bild müssten wir sehr viele Bildwerte verändern. Um die Bewegung wirklich verfolgen zu können, nehmen wir ein übersichtliches geometrisches Beispiel. Die vorliegende Darstellung verwendet vierundzwanzig verrauschte Beobachtungspunkte um eine Ellipse. Vom Mittelpunkt reicht die Ellipse zwei Einheiten nach rechts und links sowie eineinhalb Einheiten nach oben und unten. Diese beiden Größen sind ihre Halbachsen. Die Beobachtungen liegen wegen des hinzugefügten Rauschens nicht alle genau auf der Ellipse.",
+        "knowledge_refs": [
+          "f04"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_009",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_a",
+        "text": "Ein veränderlicher Winkel wählt nun jeweils einen Punkt auf der Ellipse aus. Wenn wir den Winkel einmal ganz herumdrehen, durchläuft der erzeugte Punkt die Ellipse. Dieser Winkel ist verborgen: Die Beobachtung liefert einen Punkt, aber nicht schon die dazu passende Winkelposition. Für einen festgehaltenen Beobachtungspunkt vergleichen wir deshalb unterschiedliche Winkel. Die Energie ist der quadrierte Abstand zwischen dem beobachteten Punkt und dem Punkt, den der gewählte Winkel auf der Ellipse erzeugt.",
+        "knowledge_refs": [
+          "f04"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_010",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_b",
+        "text": "Wir brauchen hier also nicht gleichzeitig die gesamte Geometrie zu verändern. Wir lassen die Ellipse und die Beobachtung stehen und drehen nur ein wenig am Winkel. Dadurch wandert der erzeugte Punkt, und sein Abstand zur Beobachtung verändert sich. Wird der Abstand kleiner, wird auch sein Quadrat kleiner. Schon diese kleine Bewegung liefert eine örtliche Information: In welche Drehrichtung wird die Bewertung an der aktuellen Position besser, in welche schlechter?",
+        "knowledge_refs": [
+          "f04",
+          "f05"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_011",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_a",
+        "text": "Man kann diese Information genauer fassen: Wie stark verändert sich die Energie im Verhältnis zu einer sehr kleinen Winkeländerung? Das ist ihre lokale Änderungsrate. Ist sie positiv, steigt die Energie, wenn wir den Winkel vergrößern. Ein kleiner Schritt in die andere Richtung senkt sie dann zunächst. Ist sie negativ, hilft entsprechend die Gegenrichtung. Die Einschränkungen gehören dazu: Die Steigung darf nicht null sein, und der Schritt muss hinreichend klein bleiben.",
+        "knowledge_refs": [
+          "f05"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_012",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_b",
+        "text": "Das Wort lokal ist entscheidend. Die Änderungsrate beschreibt die unmittelbare Umgebung unserer jetzigen Position. Sie ist keine Auskunft über den gesamten weiteren Weg. Ein großer Sprung kann über den Bereich hinausführen, für den die Richtung hilfreich war. Deshalb besteht die Suche aus wiederholten kleinen Korrekturen: bewegen, an der neuen Position die Änderung erneut beurteilen und daraus die nächste Bewegung bestimmen. Eine einmal gefundene Richtung wird nicht einfach unbegrenzt beibehalten.",
+        "knowledge_refs": [
+          "f05"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_013",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_a",
+        "text": "Wenn mehrere Größen veränderlich sind, etwa viele Bildwerte, gibt es eine solche Änderungsrate für jede davon. Zusammen bilden sie den Gradienten. Er bündelt, wie die Energie auf kleine Änderungen des Kandidaten reagiert. Eine Bewegung gegen diesen Gradienten ist die entsprechende Suche zu niedrigeren Werten. Wir verlangen dafür eine ausreichend glatte Energiefunktion, damit diese örtlichen Richtungsinformationen verfügbar sind. Einen passenden Kandidaten bei festem Modell zu erschließen, nennen wir Inferenz.",
+        "knowledge_refs": [
+          "f03",
+          "f05"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_014",
+        "scene_id": "ep_001_sc_02",
+        "chapter_id": "ep_001_sc_02",
+        "speaker_id": "host_b",
+        "text": "Damit haben wir eine begründete Bewegungsregel, aber noch keinen Beweis, dass die Suche am besten möglichen Ort ankommt. Unsere Höhenkarte macht den Unterschied anschaulich: Die Richtung direkt unter den Füßen ist zugänglich, während tiefere Stellen anderswo unbekannt bleiben können. An der Ellipse lässt sich sogar zeigen, dass eine besonders schlechte Position örtlich zunächst gar keine Richtung anzeigt. Dafür wählen wir jetzt eine konkrete Beobachtung und rechnen die Abstände aus.",
+        "knowledge_refs": [
+          "f03",
+          "f05"
+        ],
+        "pause_after_ms": 650
+      },
+      {
+        "segment_id": "seg_015",
+        "scene_id": "ep_001_sc_03",
+        "chapter_id": "ep_001_sc_03",
+        "speaker_id": "host_a",
+        "text": "Unsere Beobachtung ist eigens für dieses Lehrbeispiel gewählt: drei Einheiten rechts vom Mittelpunkt, auf dessen Höhe. Sie ist kein zusätzlich berichteter Datenpunkt. Am rechten Ellipsenrand liegen wir zwei Einheiten rechts vom Mittelpunkt. Zur Beobachtung fehlt also eine Einheit; die Energie beträgt eins. Am oberen Rand liegen drei Einheiten horizontal und eineinhalb vertikal zwischen den Punkten. Die quadrierten Abweichungen ergeben zusammen elf Komma zwei fünf. Oben ist die Bewertung deutlich schlechter.",
+        "knowledge_refs": [
+          "f04",
+          "f05"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_016",
+        "scene_id": "ep_001_sc_03",
+        "chapter_id": "ep_001_sc_03",
+        "speaker_id": "host_b",
+        "text": "Beginnen wir schräg rechts oben auf der Ellipse. Eine kleine Drehung zum rechten Rand bringt den erzeugten Punkt weiter nach rechts und näher an die Höhe der Beobachtung. Beide Abweichungen werden kleiner. Daher sinkt auch die Energie. Nach der Bewegung bestimmen wir die örtliche Steigung neu. Je näher wir dem rechten Rand kommen, desto weniger lässt sich durch eine weitere kleine Drehung verbessern. Am Rand selbst würde Weiterdrehen uns wieder von der Beobachtung entfernen.",
+        "knowledge_refs": [
+          "f04",
+          "f05"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_017",
+        "scene_id": "ep_001_sc_03",
+        "chapter_id": "ep_001_sc_03",
+        "speaker_id": "host_a",
+        "text": "Jetzt der Gegenfall: Wir starten genau am linken Rand. Von dort sind es fünf Einheiten zur Beobachtung, die Energie beträgt fünfundzwanzig. Trotzdem ist die erste Änderungsrate dort null. Eine winzige Drehung verschiebt den Punkt zunächst vor allem nach oben oder unten. Wegen der Symmetrie gibt es in erster Ordnung keinen Unterschied zwischen den beiden Drehrichtungen. Der Abstand verbessert sich erst in einer Weise, die diese erste lokale Änderungsrate am Ausgangspunkt nicht erfasst.",
+        "knowledge_refs": [
+          "f04",
+          "f05"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_018",
+        "scene_id": "ep_001_sc_03",
+        "chapter_id": "ep_001_sc_03",
+        "speaker_id": "host_b",
+        "text": "Eine Suchregel, die allein der ersten Änderungsrate folgt, erhält dort also keinen Bewegungsimpuls. Dabei ist die Position keineswegs gut. Das erklärt, warum eine verschwindende Steigung kein Gütesiegel ist. An unserem rechten Rand verschwindet sie ebenfalls, dort aber an der besten Position. Die gleiche örtliche Meldung kann somit sehr unterschiedliche Situationen anzeigen. Aus der Regel für eine kleine Verbesserung folgt weder eine allgemeine Erfolgsgarantie noch automatisch das Erreichen des global besten Kandidaten.",
+        "knowledge_refs": [
+          "f05",
+          "f06"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_019",
+        "scene_id": "ep_001_sc_03",
+        "chapter_id": "ep_001_sc_03",
+        "speaker_id": "host_a",
+        "text": "Bisher blieb die Ellipse unverändert. Das ist wichtig, weil wir den Abstand auch auf andere Weise kleiner machen könnten: Wir könnten die waagerechte Halbachse verlängern. Dann würde der rechte Rand zur Beobachtung hinrücken. Doch damit hätten wir das Modell verändert. Andere Beobachtungen würden nun ebenfalls anders bewertet. Bei der Inferenz verstellen wir den Winkel für einen festgehaltenen Fall. Training würde hier die Halbachsen verändern, also gemeinsame Eigenschaften der Ellipse.",
+        "knowledge_refs": [
+          "f06"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_020",
+        "scene_id": "ep_001_sc_03",
+        "chapter_id": "ep_001_sc_03",
+        "speaker_id": "host_b",
+        "text": "Gedanklich könnten wir für jede Beobachtung sämtliche Winkel prüfen und den kleinsten quadrierten Abstand behalten. Dann bliebe pro Beobachtung ein einziger Wert übrig: Wie nahe kann ihr diese Modellellipse überhaupt kommen? Bei unserem Punkt ist das eins. Eine lokale Suche versucht, diesen Wert zu finden, kann ihn aber verfehlen. Und selbst wenn sie ihn erreicht, erfahren wir dadurch noch nicht, welche Anteile andere mögliche Ergebnisse erhalten sollten. Dafür brauchen wir eine Verteilung.",
+        "knowledge_refs": [
+          "f04",
+          "f05",
+          "f06"
+        ],
+        "pause_after_ms": 650
+      },
+      {
+        "segment_id": "seg_021",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_a",
+        "text": "Um aus Energien Wahrscheinlichkeiten zu machen, geben wir zunächst jeder Möglichkeit ein positives Gewicht. Niedrige Energie bekommt viel Gewicht, hohe Energie wenig. Die verwendete Umrechnung hat eine besondere Eigenschaft: Gleiche Energieanstiege verkleinern das Gewicht immer um denselben Faktor. Wenn ein bestimmter Anstieg ein Gewicht halbiert, halbiert ein weiterer gleich großer Anstieg es noch einmal. So entstehen relative Gewichte, die alle positiv bleiben. Diese Zuordnung führt nach der Normierung zur Gibbs-Boltzmann-Verteilung.",
+        "knowledge_refs": [
+          "f07"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_022",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_b",
+        "text": "Normierung heißt hier: Wir zählen sämtliche Gewichte zusammen und teilen jedes einzelne Gewicht durch diese gemeinsame Summe. Die entstehenden Anteile ergeben zusammen eins, also hundert Prozent. Als kleines Rechenbild nehmen wir drei Möglichkeiten mit den Gewichten zwei, eins und eins. Zusammen sind das vier. Die erste Möglichkeit erhält die Hälfte, die beiden anderen jeweils ein Viertel. Die Gewichte selbst waren noch keine Wahrscheinlichkeiten; ihre Anteile am Gesamtgewicht sind es.",
+        "knowledge_refs": [
+          "f07"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_023",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_a",
+        "text": "Erhöhen wir im selben erfundenen Beispiel nur das letzte Gewicht von eins auf drei, beträgt die Summe nun sechs. Die erste Möglichkeit hat weiterhin Gewicht zwei, ihr Anteil sinkt trotzdem von einer Hälfte auf ein Drittel. Ihre eigene Energie musste sich dafür nicht ändern. Diese gegenseitige Abhängigkeit wird beim Lernen entscheidend: Die Wahrscheinlichkeit eines Ergebnisses hängt sowohl von seiner Bewertung als auch von den Bewertungen sämtlicher anderen Ergebnisse ab.",
+        "knowledge_refs": [
+          "f07"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_023a",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_b",
+        "text": "Ein Gegenbeispiel zeigt das besonders deutlich. Angenommen, wir senken sämtliche Energien um denselben Betrag. Dann wachsen alle Gewichte um denselben Faktor. Die Gewichtssumme wächst ebenfalls um diesen Faktor. Beim Teilen kürzt sich die gemeinsame Veränderung heraus, und jede Wahrscheinlichkeit bleibt unverändert. Auch die beobachteten Ergebnisse sind dann kein bisschen wahrscheinlicher geworden. Ein Protokoll sinkender Datenenergien könnte also Fortschritt suggerieren, obwohl sich die Wahrscheinlichkeiten überhaupt nicht verbessern. Entscheidend sind die relativen Gewichte.",
+        "knowledge_refs": [
+          "f07"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_024",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_b",
+        "text": "Bei kontinuierlichen Ausgaben können Werte beliebig fein zwischen anderen Werten liegen. Wir haben dann keine endliche Liste, deren Einträge wir einfach abzählen. Stattdessen tragen wir Gewicht über den gesamten Ausgaberaum zusammen. Dieses kontinuierliche Aufsummieren heißt Integration. Auch hier brauchen wir ein endliches Gesamtgewicht, durch das wir teilen können. Nur die beobachteten Beispiele zu berücksichtigen würde nicht reichen: Die Verteilung soll ja auch Möglichkeiten bewerten, die in unserer Datensammlung gar nicht vorkommen.",
+        "knowledge_refs": [
+          "f07",
+          "f08"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_025",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_a",
+        "text": "Das Ergebnis heißt bei kontinuierlichen Werten Wahrscheinlichkeitsdichte. Sie beschreibt Wahrscheinlichkeit pro Raumeinheit. Um die Wahrscheinlichkeit eines Bereichs zu erhalten, müssen wir die Dichte über diesen Bereich aufsummieren. Ein hoher Dichtewert allein beantwortet deshalb noch keine Frage wie: Wie wahrscheinlich ist es, irgendwo in dieser Umgebung zu landen? Dafür zählt zusätzlich, wie weit sich die Umgebung erstreckt und wie sich die Dichte innerhalb ihrer Grenzen verändert.",
+        "knowledge_refs": [
+          "f08"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_026",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_b",
+        "text": "Wir können daraus selbst eine nützliche Folgerung entwickeln. Nehmen wir zwei erfundene Bereiche auf einer Linie, in denen die Dichte jeweils ungefähr gleichmäßig ist. Der zweite Bereich ist zehnmal so breit wie der erste, hat aber nur halb so hohe Dichte. Beim Aufsummieren bringt seine zehnfache Breite mehr ein, als die Halbierung wegnimmt: Er enthält fünfmal so viel Wahrscheinlichkeit. Das ist eine Veranschaulichung der Bereichsrechnung, kein Ergebnis eines Experiments.",
+        "knowledge_refs": [
+          "f08"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_027",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_a",
+        "text": "Damit unterscheiden sich zwei mögliche Ziele. Die Stelle kleinster Energie hat unter dieser Zuordnung die höchste Dichte. Sie zu finden beantwortet aber nicht, wo insgesamt die meiste Wahrscheinlichkeit liegt. Ein breiter Bereich mit etwas höherer Energie kann mehr Wahrscheinlichkeit enthalten als ein schmaler Bereich um das Minimum. Diese Aussage folgt aus der Normierung und dem Aufsummieren über Bereiche. Sie setzt voraus, dass überhaupt eine normierbare kontinuierliche Verteilung vorliegt.",
+        "knowledge_refs": [
+          "f07",
+          "f08"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_028",
+        "scene_id": "ep_001_sc_04",
+        "chapter_id": "ep_001_sc_04",
+        "speaker_id": "host_b",
+        "text": "Für unsere ursprüngliche Aufgabe heißt das: Eine ausgezeichnet bewertete Fortsetzung zu finden und mögliche Fortsetzungen in passenden Häufigkeiten zu erzeugen sind unterschiedliche Anforderungen. Die erste richtet den Blick auf einen guten Kandidaten, die zweite auf Anteile über den ganzen Raum. Sobald wir mit Wahrscheinlichkeiten lernen wollen, lässt sich dieser gemeinsame Raum nicht mehr ausblenden. Ein beobachtetes Ergebnis soll schließlich einen größeren Anteil bekommen, und nicht bloß irgendeinen niedrigeren Energiewert.",
+        "knowledge_refs": [
+          "f07",
+          "f08"
+        ],
+        "pause_after_ms": 650
+      },
+      {
+        "segment_id": "seg_029",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Ein entsprechendes Lernziel heißt Maximum Likelihood. Wir verändern die Modellparameter so, dass die beobachteten Ergebnisse unter der normierten Modellverteilung möglichst wahrscheinlich werden. Entscheidend ist das Wort normiert. Würden wir nur verlangen, dass Beobachtungen niedrige Energien erhalten, könnten anderswo ebenfalls niedrige oder noch niedrigere Energien entstehen. Die Daten wären dann vielleicht gut bewertet, hätten aber trotzdem zu kleine Wahrscheinlichkeitsanteile. Das Lernziel muss ihre Stellung gegenüber allen Möglichkeiten erfassen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_029a",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_b",
+        "text": "Für die konkrete Lernrechnung brauchen wir eine festgelegte Fehlergröße. Wir nehmen für jede Beobachtung den natürlichen Logarithmus ihrer Modellwahrscheinlichkeit, kehren das Vorzeichen um und mitteln über die Beobachtungen. Diesen mittleren negativen Logarithmus nennen wir im Folgenden Lernfehler. Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte. Der Logarithmus erhält die Rangfolge: Eine höhere Wahrscheinlichkeit hat einen höheren Logarithmus. Durch das umgekehrte Vorzeichen wird daraus ein kleinerer Fehler. Seine Minimierung verfolgt somit das Maximum-Likelihood-Ziel. Das Mitteln gewichtet häufig beobachtete Ergebnisse stärker, weil sie öfter in die Rechnung eingehen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_030",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Der Logarithmus macht dabei aus Verhältnissen Differenzen. Verdoppelt sich eine Wahrscheinlichkeit, wächst ihr Logarithmus um denselben Betrag, unabhängig vom Ausgangswert. Bei sehr kleinen Änderungen erfasst er die Änderung relativ zum bisherigen Wert. Auf unsere normierte Wahrscheinlichkeit angewendet trennt er deshalb den Beitrag des eigenen Gewichts vom Beitrag der gemeinsamen Gewichtssumme. Mit umgekehrtem Vorzeichen entsteht der Lernfehler aus der Datenenergie und dem Logarithmus dieser Summe, wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht. Damit können wir beide Wirkungen einer Parameteränderung getrennt verfolgen und anschließend zusammenführen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_031",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Verfolgen wir deshalb eine kleine Parameteränderung mit beiden Wirkungen. Zuerst verändert sie die Energie eines beobachteten Beispiels. Sinkt diese, steigt dessen Gewicht, was für seine Wahrscheinlichkeit hilfreich ist. Gleichzeitig bewertet derselbe Parameter auch andere Möglichkeiten. Deren Gewichte können sich ebenfalls verändern, und damit die gemeinsame Gewichtssumme. Steigt diese stark, nimmt sie den Vorteil des beobachteten Beispiels teilweise oder vollständig wieder weg. Beides muss in die Entscheidung über die Parameteränderung eingehen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_032",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_b",
+        "text": "Dabei tragen nicht alle Möglichkeiten gleich stark zur Änderung der Summe bei. Eine Möglichkeit, die schon einen großen Teil des Gesamtgewichts ausmacht, bewegt bei derselben relativen Gewichtsänderung mehr als eine fast gewichtlose Möglichkeit. Wenn wir die Änderung der Summe relativ zu ihrer bisherigen Größe betrachten, erscheinen deshalb genau die aktuellen Modellanteile als Gewichte. Die nötige Korrektur ist ein Durchschnitt über die Modellverteilung, nicht ein gleichmäßiger Durchschnitt über willkürlich ausgewählte Kandidaten.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_032a",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Durch den Logarithmus der Summe wird genau diese relative Änderung Teil unseres Lernfehlers. Eine Energieerhöhung vermindert das zugehörige Gewicht; deshalb geht die nach Modellanteilen gewichtete Energieänderung mit einem Minuszeichen ein. Der Beitrag der beobachteten Energie steht dagegen mit einem Pluszeichen im Fehler. So erhalten wir Datenwirkung minus Modellwirkung als Änderungsrate. Das legt die Größen und Vorzeichen fest, die wir gleich an drei getrennt verstellbaren Energien ausrechnen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_033",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "So entstehen zwei Beiträge zur Lernrichtung. Der Datenterm erfasst an den Beobachtungen, wie eine Parameteränderung ihre Energien beeinflusst, und drängt diese Energien abwärts. Der Modellterm erfasst solche Einflüsse im Durchschnitt unter der aktuellen Modellverteilung und wirkt dagegen. Wir haben damit die Herkunft dieser Gegenwirkung nachvollzogen: Sie entsteht aus der gemeinsamen Normierung. Diese Erklärung ist eine intuitive Herleitung der beiden Beiträge, kein formaler Beweis ihrer mathematischen Ableitung.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_034",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_b",
+        "text": "Dann wäre es irreführend, den Modellterm bloß als Bestrafung falscher Beispiele zu verstehen. Auch ein tatsächlich beobachtetes Ergebnis gehört zur Modellverteilung und geht mit seiner aktuellen Modellwahrscheinlichkeit in diesen Durchschnitt ein. Ein mögliches Ergebnis kann vollkommen berechtigt sein und trotzdem zu viel Anteil bekommen. In diesem Fall muss das Lernen seine relative Bevorzugung abschwächen. Ob etwas in den Daten vorkommt, entscheidet also nicht allein über die Richtung seiner Korrektur.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_035",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Außerdem verändern wir normalerweise gemeinsame Parameter, keine getrennten Regler für jede denkbare Ausgabe. Ein Parameter kann die Energien vieler Beispiele zugleich verschieben, bei manchen stark, bei anderen schwach oder in entgegengesetzter Richtung. Die beiden Beiträge beziehen sich deshalb auf die Empfindlichkeit der Energien gegenüber diesen Parametern. Wir mitteln für die Lernrichtung nicht einfach nur Energiewerte. Wir brauchen die Information, wie die Bewertungen auf eine Veränderung des Modells reagieren.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_036",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_b",
+        "text": "Darum muss nach einem Trainingsschritt auch nicht jede einzelne Datenenergie gesunken sein. Die Änderung folgt dem gemeinsamen Lernziel und den Möglichkeiten der gewählten Parameter. Manche Bewertungen sind miteinander verbunden. Um die gegenläufigen Beiträge zunächst unverstellt zu sehen, können wir diese Verbindung in einem kleinen Denkmodell vorübergehend aufheben. Wir kehren zum Ball zurück und erlauben für seine drei möglichen Ausgänge jeweils einen eigenen Energieregler. Dann lässt sich jede Korrektur unmittelbar überprüfen.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 650
+      },
+      {
+        "segment_id": "seg_037",
+        "scene_id": "ep_001_sc_06",
+        "chapter_id": "ep_001_sc_06",
+        "speaker_id": "host_a",
+        "text": "Dieses Beispiel ist erfunden: Der Ball bewegt sich linkswärts, bleibt stehen oder bewegt sich rechtswärts. In unseren gedachten Daten geht er in der Hälfte der Fälle nach links, in einem Drittel bleibt er stehen, in einem Sechstel geht er nach rechts. Das Modell beginnt mit drei gleichen Energien. Gleiche Energien bedeuten gleiche Gewichte und deshalb jeweils ein Drittel Wahrscheinlichkeit. Links fehlen dem Modell somit Anteile, während es rechts zu großzügig ist.",
+        "knowledge_refs": [
+          "f11"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_038",
+        "scene_id": "ep_001_sc_06",
+        "chapter_id": "ep_001_sc_06",
+        "speaker_id": "host_b",
+        "text": "Betrachten wir nur den linken Regler. Die Datenwirkung drängt seine Energie mit dem Gewicht einer Hälfte nach unten, denn so häufig kommt links vor. Die Modellgegenwirkung hat das Gewicht eines Drittels, denn diesen Anteil gibt das Modell links derzeit. Die Wirkung zum Senken überwiegt um ein Sechstel. Wir senken deshalb die linke Energie ein Stück. Ihr Gewicht wächst dadurch gegenüber den anderen Gewichten, und links erhält einen größeren Anteil.",
+        "knowledge_refs": [
+          "f10",
+          "f11"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_039",
+        "scene_id": "ep_001_sc_06",
+        "chapter_id": "ep_001_sc_06",
+        "speaker_id": "host_a",
+        "text": "Rechts kommt ebenfalls in den Daten vor, allerdings nur mit einem Sechstel. Die Datenwirkung zum Senken ist entsprechend kleiner. Das Modell gibt rechts noch ein Drittel, also doppelt so viel wie den gedachten Datenanteil. Hier überwiegt die Modellgegenwirkung um ein Sechstel. Die rechte Energie muss steigen. Damit wird rechts nicht als unmöglicher Ausgang behandelt. Wir korrigieren lediglich eine zu starke Bevorzugung. Beim Stillstand gleichen sich die beiden Drittel zunächst aus.",
+        "knowledge_refs": [
+          "f10",
+          "f11"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_040",
+        "scene_id": "ep_001_sc_06",
+        "chapter_id": "ep_001_sc_06",
+        "speaker_id": "host_b",
+        "text": "Bei den Vorzeichen lohnt sich Sorgfalt. Wenn wir Datenanteil minus Modellanteil nehmen, erhalten wir hier die Änderungsrate des Lernfehlers bezüglich der jeweiligen Energie. Links ist sie positiv: Eine kleine Erhöhung der linken Energie würde den Fehler erhöhen. Zur Fehlersenkung gehen wir daher entgegengesetzt und senken diese Energie. Rechts ist die Änderungsrate negativ, also hilft eine Erhöhung. Die Änderungsrate beschreibt den Fehleranstieg; die Korrektur läuft in die andere Richtung.",
+        "knowledge_refs": [
+          "f11"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_041",
+        "scene_id": "ep_001_sc_06",
+        "chapter_id": "ep_001_sc_06",
+        "speaker_id": "host_a",
+        "text": "Das fehlende Sechstel links ist dabei keine Anweisung, nach einem beliebigen einzelnen Schritt genau ein Sechstel Wahrscheinlichkeit hinzuzufügen. Wir verändern eine Energie. Daraus entstehen ein neues Gewicht und eine neue gemeinsame Gewichtssumme. Erst anschließend ergeben sich neue Wahrscheinlichkeiten. Auch der Anteil des Stillstands muss erneut berechnet werden, obwohl sein eigener Regler zunächst unverändert bleibt. Mit den neuen Modellanteilen ändern sich dann die Gegenwirkungen für den nächsten Trainingsschritt.",
+        "knowledge_refs": [
+          "f10",
+          "f11"
+        ],
+        "pause_after_ms": 350
+      },
+      {
+        "segment_id": "seg_042",
+        "scene_id": "ep_001_sc_06",
+        "chapter_id": "ep_001_sc_06",
+        "speaker_id": "host_b",
+        "text": "Wenn Modellanteile und Datenanteile übereinstimmen, gleichen sich in diesem Denkmodell die Beiträge an jedem Regler aus. Seine Grenze ist aber wesentlich: Die drei Energien sind unabhängig verstellbar, und wir verwenden keinen zusätzlichen Skalierungsfaktor. Gemeinsame Netzparameter erlauben diese getrennten Korrekturen gewöhnlich nicht. Trotzdem zeigt das Beispiel, wofür der Modellterm gebraucht wird. Bei drei Ausgängen kennen wir ihn durch Auflisten. Bei möglichen Bildern brauchen wir einen anderen Weg zu diesem Durchschnitt.",
+        "knowledge_refs": [
+          "f10",
+          "f11"
+        ],
+        "pause_after_ms": 650
+      },
+      {
+        "segment_id": "seg_043",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_a",
+        "text": "Praktisch schätzen wir den Modellterm mit erzeugten Beispielen. Statt sämtliche möglichen Bilder zu berücksichtigen, bilden wir den benötigten Durchschnitt an einer Auswahl von Modellbildern. Damit das funktioniert, muss diese Auswahl die aktuelle Modellverteilung hinreichend vertreten. Sie soll unterschiedliche Möglichkeiten in den passenden Anteilen enthalten. Das Erzeugen dieser Beispiele ist also ein Teil des Lernverfahrens mit einer eigenen Anforderung. Es genügt nicht, irgendeine Sammlung besonders niedrig bewerteter Bilder bereitzustellen.",
+        "knowledge_refs": [
+          "f12",
+          "f13"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_044",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_b",
+        "text": "Ein dafür eingesetztes Verfahren heißt Langevin-Sampling. Wir halten die Modellparameter fest und beginnen mit einem Bildkandidaten. Das Modell bestimmt, wie kleine Änderungen seiner Bildwerte die Energie beeinflussen. Wir verändern die Bildwerte ein Stück gegen diesen Energiegradienten und ergänzen eine zufällige Störung. Am entstandenen Kandidaten berechnen wir die Richtung erneut und wiederholen beides. Eine solche Folge aufeinander aufbauender Kandidaten wird als Kette bezeichnet. Während dieser Bewegungen bleibt die Bewertungsfunktion gleich.",
+        "knowledge_refs": [
+          "f12"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_045",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_a",
+        "text": "Der Zufall hat dabei eine andere Aufgabe als die gerichtete Verbesserung. Wir suchen Beispiele für einen Verteilungsdurchschnitt. Würden wir immer nur denselben tiefsten Kandidaten aufsuchen, fehlten andere Bereiche in dieser Schätzung. Die zufällige Bewegung kann auch in Richtungen führen, die die Energie örtlich erhöhen. So bleibt das Verfahren nicht auf reine Abwärtsbewegung beschränkt. Die Kombination soll das Erkunden ermöglichen und zugleich die Energiebewertung für die Verteilung der besuchten Kandidaten wirksam halten.",
+        "knowledge_refs": [
+          "f12",
+          "f13"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_046",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_b",
+        "text": "Dabei können beide Bestandteile das Geschehen zu stark bestimmen. Überwiegt die gerichtete Bewegung, ähnelt das Verfahren wieder einer Minimumsuche. Überwiegt das Rauschen, ähnelt es einer Zufallswanderung, bei der die Energiebewertung wenig ausrichtet. In unserem Höhenkartenbild soll die Bewegung also weder bloß am tiefen Ort enden noch nahezu unbeeindruckt vom Gelände umherlaufen. Ein geeigneter Ausgleich ist nötig. Aus dem bloßen Hinzufügen von Zufall folgt noch keine repräsentative Auswahl.",
+        "knowledge_refs": [
+          "f12",
+          "f13"
+        ],
+        "pause_after_ms": 400
+      },
+      {
+        "segment_id": "seg_047",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_a",
+        "text": "Das ausreichende Erkunden relevanter Bereiche heißt Durchmischung. Viele aufeinanderfolgende Schritte können trotzdem in derselben Umgebung bleiben. Dann erfahren wir viel über diese Umgebung und wenig darüber, welche anderen Bereiche das Modell ebenfalls bevorzugt. Ein weiterer Begriff ist stationär: Weitere Schritte verändern die Verteilung nicht mehr. Gemeint ist die Verteilung über mögliche Zustände, nicht ein einzelnes Bild, das stillsteht. Einzelne Ketten dürfen weiterwandern, während ihre gemeinsame Verteilung gleich bleibt.",
+        "knowledge_refs": [
+          "f13"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_048",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_b",
+        "text": "Wir sollten daraus keine Garantie für beliebige Schrittgrößen und Rauschstärken ableiten. Die vollständigen Bedingungen, unter denen das betrachtete Verfahren exakt zur gewünschten Verteilung führt, liegen uns hier nicht vor. Weder viele Schritte noch sichtbar unterschiedliche Kandidaten beweisen für sich genommen die richtigen Anteile. Die Schwierigkeit ist damit präzise benannt: Wir benötigen Beispiele der Modellverteilung, verfügen praktisch aber zunächst über die Ergebnisse eines endlichen Erzeugungsverfahrens. Wie gut beides übereinstimmt, muss untersucht werden.",
+        "knowledge_refs": [
+          "f12",
+          "f13"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_049",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_a",
+        "text": "Damit schließt sich die Trainingsschleife. Beim aktuellen Modell erzeugen wir Kandidaten durch solche Sampling-Schritte. Dann halten wir die ausgewählten Beispiele und die Trainingsdaten fest, bestimmen an ihnen die Beiträge zur Parameteränderung und verändern das Modell. Anschließend brauchen wir Modellbeispiele für diese veränderte Bewertung. Die Bewegung der Kandidaten und die Veränderung der Parameter sind also miteinander verzahnt, bleiben aber verschiedene Vorgänge. Eine unzureichende Auswahl der Modellbeispiele kann die geschätzte Lernrichtung verfälschen.",
+        "knowledge_refs": [
+          "f12",
+          "f13"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_050",
+        "scene_id": "ep_001_sc_07",
+        "chapter_id": "ep_001_sc_07",
+        "speaker_id": "host_b",
+        "text": "Unser Problem vom Anfang reicht deshalb tiefer als die Wahl einer scharfen statt verschwommenen Fortsetzung. Sobald wir verschiedene Möglichkeiten in angemessenen Anteilen erzeugen wollen, gehört die Zuverlässigkeit dieser Erzeugung zum Lernen selbst. Der Durchschnitt über Modellbeispiele soll wiedergeben, was das Modell bevorzugt, damit seine nächste Korrektur begründet ist. Die offene Frage lautet nun: Woran erkennen wir, ob die erzeugten Beispiele tatsächlich diese Verteilung vertreten? Ansprechende einzelne Ergebnisse beantworten sie noch nicht.",
+        "knowledge_refs": [
+          "f12",
+          "f13"
+        ],
+        "pause_after_ms": 900
+      }
+    ]
+  }
+}

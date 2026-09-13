@@ -1,0 +1,454 @@
+{
+  "date": "2026-09-13",
+  "polish_version": "dialogue_polish.v1",
+  "original": {
+    "schema_version": "1.0",
+    "episode_id": "ep_001",
+    "title": "Möglichkeiten bewerten, Ausgaben suchen, Bewertungen lernen",
+    "purpose": "deep_dive",
+    "chapters": [
+      {
+        "chapter_id": "ep_001_sc_05",
+        "title": "Warum gutes Bewerten eine Gegenkraft braucht"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "seg_029a",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_b",
+        "text": "Für die konkrete Lernrechnung brauchen wir eine festgelegte Fehlergröße. Wir nehmen für jede Beobachtung den natürlichen Logarithmus ihrer Modellwahrscheinlichkeit, kehren das Vorzeichen um und mitteln über die Beobachtungen. Diesen mittleren negativen Logarithmus nennen wir im Folgenden Lernfehler. Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte. Der Logarithmus erhält die Rangfolge: Eine höhere Wahrscheinlichkeit hat einen höheren Logarithmus. Durch das umgekehrte Vorzeichen wird daraus ein kleinerer Fehler. Seine Minimierung verfolgt somit das Maximum-Likelihood-Ziel. Das Mitteln gewichtet häufig beobachtete Ergebnisse stärker, weil sie öfter in die Rechnung eingehen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_030",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Der Logarithmus macht dabei aus Verhältnissen Differenzen. Verdoppelt sich eine Wahrscheinlichkeit, wächst ihr Logarithmus um denselben Betrag, unabhängig vom Ausgangswert. Bei sehr kleinen Änderungen erfasst er die Änderung relativ zum bisherigen Wert. Auf unsere normierte Wahrscheinlichkeit angewendet trennt er deshalb den Beitrag des eigenen Gewichts vom Beitrag der gemeinsamen Gewichtssumme. Mit umgekehrtem Vorzeichen entsteht der Lernfehler aus der Datenenergie und dem Logarithmus dieser Summe, wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht. Damit können wir beide Wirkungen einer Parameteränderung getrennt verfolgen und anschließend zusammenführen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_031",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Verfolgen wir deshalb eine kleine Parameteränderung mit beiden Wirkungen. Zuerst verändert sie die Energie eines beobachteten Beispiels. Sinkt diese, steigt dessen Gewicht, was für seine Wahrscheinlichkeit hilfreich ist. Gleichzeitig bewertet derselbe Parameter auch andere Möglichkeiten. Deren Gewichte können sich ebenfalls verändern, und damit die gemeinsame Gewichtssumme. Steigt diese stark, nimmt sie den Vorteil des beobachteten Beispiels teilweise oder vollständig wieder weg. Beides muss in die Entscheidung über die Parameteränderung eingehen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 350
+      }
+    ]
+  },
+  "polished": {
+    "schema_version": "1.0",
+    "episode_id": "ep_001",
+    "title": "Möglichkeiten bewerten, Ausgaben suchen, Bewertungen lernen",
+    "purpose": "deep_dive",
+    "chapters": [
+      {
+        "chapter_id": "ep_001_sc_05",
+        "title": "Warum gutes Bewerten eine Gegenkraft braucht"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "seg_029a",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Für die konkrete Lernrechnung müssen wir festlegen, woran wir den Fehler messen. Dazu nehmen wir für jede Beobachtung die Wahrscheinlichkeit, die das Modell ihr gibt, und berechnen deren natürlichen Logarithmus. Dann kehren wir das Vorzeichen um und mitteln über alle Beobachtungen. Diesen mittleren negativen Logarithmus nennen wir im Folgenden Lernfehler. Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte. Warum passt das zu unserem Ziel? Der Logarithmus erhält die Rangfolge: Eine höhere Wahrscheinlichkeit hat auch einen höheren Logarithmus. Das umgekehrte Vorzeichen macht daraus einen kleineren Fehler. Wenn wir diesen Lernfehler minimieren, verfolgen wir also das Maximum-Likelihood-Ziel. Und häufig beobachtete Ergebnisse gehen öfter in die Rechnung ein. Durch das Mitteln erhalten sie damit mehr Gewicht.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_030",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Der Logarithmus hilft uns außerdem, die Rechnung auseinanderzunehmen. Er macht aus Verhältnissen Differenzen. Verdoppelt sich eine Wahrscheinlichkeit, wächst ihr Logarithmus immer um denselben Betrag, unabhängig vom Ausgangswert. Bei sehr kleinen Änderungen erfasst er die Änderung relativ zum bisherigen Wert. Unsere normierte Wahrscheinlichkeit ist ja das eigene Gewicht geteilt durch die gemeinsame Gewichtssumme. Der Logarithmus trennt diesen Quotienten in zwei Beiträge: den Logarithmus des eigenen Gewichts minus den Logarithmus der gemeinsamen Summe. Kehren wir nun das Vorzeichen um, ergibt sich die Datenenergie plus der Logarithmus dieser Summe. Das gilt, wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht. Für den Lernfehler mitteln wir wieder über die Beobachtungen. So können wir die beiden Wirkungen einer Parameteränderung erst getrennt verfolgen und dann zusammenführen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_031b",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_b",
+        "text": "Wenn ich nur auf das beobachtete Beispiel schaue, wäre die Richtung doch klar: Seine Energie soll sinken, damit sein Gewicht steigt. Aber ob dadurch auch seine Wahrscheinlichkeit steigt, hängt offenbar noch an der gemeinsamen Summe.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 250
+      },
+      {
+        "segment_id": "seg_031",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Ja. Verfolgen wir eine kleine Parameteränderung: Sie senkt die Energie des beobachteten Beispiels. Dadurch steigt dessen Gewicht, was seiner Wahrscheinlichkeit zunächst zugutekommt. Derselbe Parameter bewertet aber auch andere Möglichkeiten. Deren Gewichte können sich ebenfalls verändern, und damit verändert sich die gemeinsame Gewichtssumme. Steigt diese stark, nimmt sie den Vorteil für das beobachtete Beispiel teilweise oder vollständig wieder weg. Das größere eigene Gewicht allein reicht also noch nicht, um die Wirkung zu beurteilen. In die Entscheidung über die Parameteränderung müssen beide Beiträge eingehen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 350
+      }
+    ]
+  },
+  "positive_review": {
+    "version": "dialogue_polish.v1",
+    "status": "passed",
+    "host_roles": {
+      "host_a": "The expert: calm, precise and analytical. Develop mechanisms and relevant details, explain why each step follows and acknowledge uncertainty. Respond to the partner's actual objection.",
+      "host_b": "The curious, thoughtful conversation partner: voice questions that arise while listening, test assumptions and connect details to the larger significance. Bring a reasonable alternative or deduction rather than ask for the next definition. Do not act unintelligent or merely praise the expert."
+    },
+    "original_digest": "15a4caa3269f13acd20aeb2a555e1c05ddd9c5d6fac6cbe4d6029ccd86ab21b4",
+    "polished_digest": "cff90f5717251faf9994686b2a9230563f57b1d92c73f3822af95b11e21c7f37",
+    "repairs": 0,
+    "review": {
+      "checks": [
+        {
+          "criterion": "meaning",
+          "verdict": "pass",
+          "reason": "Die Aussagen bleiben erhalten: Definition des Lernfehlers, Maximum-Likelihood-Ziel, relative Wirkung des Logarithmus und Zusammenspiel von eigenem Gewicht und Gewichtssumme. Die explizite Quotientenzerlegung erläutert den vorhandenen Zusammenhang. Die Bedingung zum Skalierungsfaktor und die Unsicherheit über Änderungen anderer Gewichte bleiben bestehen.",
+          "before": [
+            {
+              "segment_id": "seg_030",
+              "quote": "wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht"
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Steigt diese stark, nimmt sie den Vorteil des beobachteten Beispiels teilweise oder vollständig wieder weg."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_030",
+              "quote": "Das gilt, wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht."
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Steigt diese stark, nimmt sie den Vorteil für das beobachtete Beispiel teilweise oder vollständig wieder weg."
+            }
+          ]
+        },
+        {
+          "criterion": "completeness",
+          "verdict": "pass",
+          "reason": "Alle sachlichen Schritte und Einschränkungen sind vorhanden: natürlicher Logarithmus, Vorzeichenwechsel, Mittelung, Dichte bei kontinuierlichen Werten, Rangfolge und Lernziel, Häufigkeitsgewichtung, Verdopplung und relative kleine Änderungen, Zerlegung samt Skalierungsbedingung sowie beide Wirkungen einer Parameteränderung einschließlich möglicher Aufhebung des Vorteils.",
+          "before": [
+            {
+              "segment_id": "seg_029a",
+              "quote": "Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte."
+            },
+            {
+              "segment_id": "seg_029a",
+              "quote": "Das Mitteln gewichtet häufig beobachtete Ergebnisse stärker, weil sie öfter in die Rechnung eingehen."
+            },
+            {
+              "segment_id": "seg_030",
+              "quote": "Bei sehr kleinen Änderungen erfasst er die Änderung relativ zum bisherigen Wert."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_029a",
+              "quote": "Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte."
+            },
+            {
+              "segment_id": "seg_029a",
+              "quote": "Und häufig beobachtete Ergebnisse gehen öfter in die Rechnung ein. Durch das Mitteln erhalten sie damit mehr Gewicht."
+            },
+            {
+              "segment_id": "seg_030",
+              "quote": "Bei sehr kleinen Änderungen erfasst er die Änderung relativ zum bisherigen Wert."
+            }
+          ]
+        },
+        {
+          "criterion": "speaker_roles",
+          "verdict": "pass",
+          "reason": "Die Definition übernimmt nun der Experte. Der Partner formuliert eine relevante Schlussfolgerung mit Einschränkung: Ein höheres eigenes Gewicht garantiert noch keine höhere Wahrscheinlichkeit. Die anschließende Erklärung greift genau diese Einschränkung auf und erklärt die Wirkung der gemeinsamen Summe.",
+          "before": [
+            {
+              "segment_id": "seg_029a",
+              "quote": "Für die konkrete Lernrechnung brauchen wir eine festgelegte Fehlergröße."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_031b",
+              "quote": "Aber ob dadurch auch seine Wahrscheinlichkeit steigt, hängt offenbar noch an der gemeinsamen Summe."
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Derselbe Parameter bewertet aber auch andere Möglichkeiten. Deren Gewichte können sich ebenfalls verändern, und damit verändert sich die gemeinsame Gewichtssumme."
+            }
+          ]
+        },
+        {
+          "criterion": "spoken_language",
+          "verdict": "pass",
+          "reason": "Die Erklärung lässt sich beim ersten Hören verfolgen: Rechenschritte werden einzeln entwickelt, der Quotient wird sprachlich ausgeschrieben und die Skalierungsbedingung erhält einen eigenen Satz. Der Partnerbeitrag unterstützt den Gedankengang ohne Füllgespräch.",
+          "before": [
+            {
+              "segment_id": "seg_030",
+              "quote": "Auf unsere normierte Wahrscheinlichkeit angewendet trennt er deshalb den Beitrag des eigenen Gewichts vom Beitrag der gemeinsamen Gewichtssumme."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_030",
+              "quote": "Unsere normierte Wahrscheinlichkeit ist ja das eigene Gewicht geteilt durch die gemeinsame Gewichtssumme."
+            },
+            {
+              "segment_id": "seg_029a",
+              "quote": "Dann kehren wir das Vorzeichen um und mitteln über alle Beobachtungen."
+            }
+          ]
+        }
+      ],
+      "limitations": [
+        "Bewertet wurde die Erhaltung gegenüber dem Original; eine unabhängige Prüfung anhand fachlicher Quellen erfolgte nicht."
+      ]
+    },
+    "human_reviewed": false
+  },
+  "negative_candidate": {
+    "schema_version": "1.0",
+    "episode_id": "ep_001",
+    "title": "Möglichkeiten bewerten, Ausgaben suchen, Bewertungen lernen",
+    "purpose": "deep_dive",
+    "chapters": [
+      {
+        "chapter_id": "ep_001_sc_05",
+        "title": "Warum gutes Bewerten eine Gegenkraft braucht"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "seg_029a",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_b",
+        "text": "Für die konkrete Lernrechnung brauchen wir eine festgelegte Fehlergröße. Wir nehmen für jede Beobachtung den natürlichen Logarithmus ihrer Modellwahrscheinlichkeit, kehren das Vorzeichen um und mitteln über die Beobachtungen. Diesen mittleren negativen Logarithmus nennen wir im Folgenden Lernfehler. Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte. Der Logarithmus erhält die Rangfolge: Eine höhere Wahrscheinlichkeit hat einen höheren Logarithmus. Durch das umgekehrte Vorzeichen wird daraus ein kleinerer Fehler. Seine Minimierung verfolgt somit das Maximum-Likelihood-Ziel. Das Mitteln gewichtet häufig beobachtete Ergebnisse stärker, weil sie öfter in die Rechnung eingehen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_030",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Der Logarithmus macht dabei aus Verhältnissen Differenzen. Verdoppelt sich eine Wahrscheinlichkeit, wächst ihr Logarithmus um denselben Betrag, unabhängig vom Ausgangswert. Bei sehr kleinen Änderungen erfasst er die Änderung relativ zum bisherigen Wert. Auf unsere normierte Wahrscheinlichkeit angewendet trennt er deshalb den Beitrag des eigenen Gewichts vom Beitrag der gemeinsamen Gewichtssumme. Mit umgekehrtem Vorzeichen entsteht der Lernfehler aus der Datenenergie und dem Logarithmus dieser Summe, wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht. Damit können wir beide Wirkungen einer Parameteränderung getrennt verfolgen und anschließend zusammenführen.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "seg_031",
+        "scene_id": "ep_001_sc_05",
+        "chapter_id": "ep_001_sc_05",
+        "speaker_id": "host_a",
+        "text": "Verfolgen wir deshalb eine kleine Parameteränderung mit beiden Wirkungen. Zuerst verändert sie die Energie eines beobachteten Beispiels. Sinkt diese, steigt dessen Gewicht, was für seine Wahrscheinlichkeit hilfreich ist. Gleichzeitig bewertet derselbe Parameter auch andere Möglichkeiten. Deren Gewichte können sich ebenfalls verändern, und damit die gemeinsame Gewichtssumme. Steigt diese stark, nimmt sie den Vorteil des beobachteten Beispiels teilweise oder vollständig wieder weg. Beides muss in die Entscheidung über die Parameteränderung eingehen. Insgesamt gilt aber: Eine kleine Parameteränderung wirkt immer nur auf das beobachtete Beispiel. Alle anderen Gewichte bleiben unverändert. Ein größeres eigenes Gewicht garantiert deshalb eine höhere Wahrscheinlichkeit, unabhängig davon, was mit der gemeinsamen Gewichtssumme passiert.",
+        "knowledge_refs": [
+          "f09",
+          "f10"
+        ],
+        "pause_after_ms": 350
+      }
+    ]
+  },
+  "negative_review": {
+    "expected_reject": true,
+    "actual_reject": true,
+    "review": {
+      "checks": [
+        {
+          "criterion": "meaning",
+          "verdict": "fail",
+          "reason": "Der Zusatz widerspricht dem ursprünglichen Mechanismus: Eine Parameteränderung betrifft nun angeblich ausschließlich das beobachtete Beispiel, und ein größeres eigenes Gewicht garantiert dessen höhere Wahrscheinlichkeit. Damit werden mögliche Änderungen anderer Gewichte und die Gegenwirkung der Normierung ausgeschlossen. Korrektur: Die drei angehängten Sätze ab „Insgesamt gilt aber“ streichen.",
+          "before": [
+            {
+              "segment_id": "seg_031",
+              "quote": "Deren Gewichte können sich ebenfalls verändern, und damit die gemeinsame Gewichtssumme."
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Steigt diese stark, nimmt sie den Vorteil des beobachteten Beispiels teilweise oder vollständig wieder weg."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_031",
+              "quote": "Eine kleine Parameteränderung wirkt immer nur auf das beobachtete Beispiel. Alle anderen Gewichte bleiben unverändert."
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Ein größeres eigenes Gewicht garantiert deshalb eine höhere Wahrscheinlichkeit, unabhängig davon, was mit der gemeinsamen Gewichtssumme passiert."
+            }
+          ]
+        },
+        {
+          "criterion": "completeness",
+          "verdict": "pass",
+          "reason": "Alle ursprünglichen Ausführungen bleiben wortgleich erhalten: Definition und Mittelung des Lernfehlers, Dichte bei kontinuierlichen Werten, Rangfolge und Maximum-Likelihood-Ziel, relative Änderungen durch den Logarithmus, Zerlegung einschließlich Skalierungsbedingung sowie beide Wirkungen einer Parameteränderung. Der widersprüchliche Zusatz ist ein Bedeutungsfehler, keine Auslassung.",
+          "before": [
+            {
+              "segment_id": "seg_029a",
+              "quote": "Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte."
+            },
+            {
+              "segment_id": "seg_030",
+              "quote": "Mit umgekehrtem Vorzeichen entsteht der Lernfehler aus der Datenenergie und dem Logarithmus dieser Summe, wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht."
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Beides muss in die Entscheidung über die Parameteränderung eingehen."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_029a",
+              "quote": "Bei kontinuierlichen Werten verwenden wir entsprechend die Dichte."
+            },
+            {
+              "segment_id": "seg_030",
+              "quote": "Mit umgekehrtem Vorzeichen entsteht der Lernfehler aus der Datenenergie und dem Logarithmus dieser Summe, wenn die Energie ohne zusätzlichen Skalierungsfaktor in die Gewichtung eingeht."
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Beides muss in die Entscheidung über die Parameteränderung eingehen."
+            }
+          ]
+        },
+        {
+          "criterion": "speaker_roles",
+          "verdict": "fail",
+          "reason": "Host B übernimmt ausschließlich fachliche Definition und Herleitung; eine relevante Frage, Prüfung einer Annahme oder Verbindung zur Bedeutung fehlt im Ausschnitt. Korrektur: Die Definition Host A zuordnen und Host B etwa fragen lassen, warum das erhöhte Gewicht eines Beispiels nicht genügt. Host A kann darauf mit der vorhandenen Erklärung der gemeinsamen Gewichtssumme eingehen. Die aufeinanderfolgenden Expertensegmente sind an sich unproblematisch.",
+          "before": [
+            {
+              "segment_id": "seg_029a",
+              "quote": "Diesen mittleren negativen Logarithmus nennen wir im Folgenden Lernfehler."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_029a",
+              "quote": "Diesen mittleren negativen Logarithmus nennen wir im Folgenden Lernfehler."
+            }
+          ]
+        },
+        {
+          "criterion": "spoken_language",
+          "verdict": "fail",
+          "reason": "Der Ablauf mit eigenem Gewicht und gemeinsamer Summe ist zunächst gut hörbar erklärt. Der abschließende, kategorische Gegenschluss macht den Gedankengang jedoch beim ersten Hören unauflösbar: Zuerst können sich andere Gewichte ändern, unmittelbar danach bleiben sie angeblich unverändert. Korrektur: Den widersprüchlichen Zusatz entfernen; zusätzliche Sprecherwechsel oder Füllsätze sind dafür nicht nötig.",
+          "before": [
+            {
+              "segment_id": "seg_031",
+              "quote": "Gleichzeitig bewertet derselbe Parameter auch andere Möglichkeiten. Deren Gewichte können sich ebenfalls verändern, und damit die gemeinsame Gewichtssumme."
+            }
+          ],
+          "after": [
+            {
+              "segment_id": "seg_031",
+              "quote": "Deren Gewichte können sich ebenfalls verändern, und damit die gemeinsame Gewichtssumme."
+            },
+            {
+              "segment_id": "seg_031",
+              "quote": "Alle anderen Gewichte bleiben unverändert."
+            }
+          ]
+        }
+      ],
+      "limitations": [
+        "Bewertet wurde ausschließlich der vorgelegte Ausschnitt. Der Originaltext dient als Erhaltungsbaseline; seine sachliche Richtigkeit wurde nicht anhand externer Quellen geprüft."
+      ]
+    },
+    "human_learning_validated": false,
+    "full_source_review": false
+  },
+  "calls": [
+    {
+      "provider": "codex_cli",
+      "auth_mode": "chatgpt",
+      "requested_model": null,
+      "cli_version": "codex-cli 0.154.0-alpha.6.2",
+      "prompt_version": "dialogue_polish.v1",
+      "usage": {
+        "input_tokens": 13529,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 933,
+        "reasoning_output_tokens": 0
+      },
+      "separately_billed_cost": null,
+      "research_performed": false,
+      "web_search_events": 0,
+      "web_search_requests": 0
+    },
+    {
+      "provider": "codex_cli",
+      "auth_mode": "chatgpt",
+      "requested_model": null,
+      "cli_version": "codex-cli 0.154.0-alpha.6.2",
+      "prompt_version": "dialogue_polish_review.v1",
+      "usage": {
+        "input_tokens": 14017,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1109,
+        "reasoning_output_tokens": 37
+      },
+      "separately_billed_cost": null,
+      "research_performed": false,
+      "web_search_events": 0,
+      "web_search_requests": 0
+    },
+    {
+      "provider": "codex_cli",
+      "auth_mode": "chatgpt",
+      "requested_model": null,
+      "cli_version": "codex-cli 0.154.0-alpha.6.2",
+      "prompt_version": "dialogue_polish_review.v1",
+      "usage": {
+        "input_tokens": 13865,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1147,
+        "reasoning_output_tokens": 0
+      },
+      "separately_billed_cost": null,
+      "research_performed": false,
+      "web_search_events": 0,
+      "web_search_requests": 0
+    }
+  ],
+  "full_source_review": false,
+  "human_reviewed": false,
+  "audio_generated": false,
+  "note": "One live excerpt transformation and one intentionally false control; not a full episode or a measure of human learning."
+}

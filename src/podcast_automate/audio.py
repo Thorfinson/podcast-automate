@@ -23,8 +23,10 @@ def run_tts(config: TopicBrief, script: EpisodeScript, root: Path, work: Path) -
     request, response = work / "tts_request.json", work / "tts_report.json"
     write_json(request, {
         "runtime": config.runtime.model_dump(), "voices": config.voice_profile,
+        "language": {"de-DE": "German", "en-US": "English"}[config.language],
         "segments": [s.model_dump() for s in script.segments],
         "cache_dir": str(root / "cache/audio"),
+        "progress_file": str(work / "tts_progress.json"),
     })
     response.unlink(missing_ok=True)
     result = run_process(
@@ -87,7 +89,7 @@ def audio_info(path: Path) -> dict:
 
 
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
-             *, max_seconds: float = 1800) -> list[Path]:
+             *, max_seconds: float = 1800, language: str = "de-DE", voices: dict | None = None) -> list[Path]:
     if len(paths) != len(script.segments):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
     output.mkdir(parents=True, exist_ok=True)
@@ -172,9 +174,15 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         "sample_rate": 44100, "channels": 2, "target_lufs": -16,
         "input_loudness": levels, "speech_quality_verified": False,
     })
-    lines = [f"# {script.title}", "", "Technische Hörprobe; keine recherchierte Podcastfolge.", ""]
+    if script.purpose == "technical_probe":
+        notice = ("Technical voice sample; not a researched podcast episode." if language == "en-US"
+                  else "Technische Hörprobe; keine recherchierte Podcastfolge.")
+    else:
+        notice = ("First audio version for listening review." if language == "en-US"
+                  else "Erste Audiofassung zur Hörprüfung.")
+    lines = [f"# {script.title}", "", notice, ""]
     for segment in script.segments:
-        lines.extend([f"**{segment.speaker_id}:** {segment.text}", ""])
+        lines.extend([f"**{(voices or {}).get(segment.speaker_id, segment.speaker_id)}:** {segment.text}", ""])
     atomic_text(output / "transcript.md", "\n".join(lines))
     return [output / name for name in (
         "audio.mp3", "chapters.json", "timeline.json", "audio_report.json", "transcript.md")]

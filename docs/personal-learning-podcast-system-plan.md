@@ -1,8 +1,8 @@
 # Implementierungsplan: Deep-Dive-Serien
 
-Stand: 2026-09-10. Dieser Plan konkretisiert [SPEC.md](../SPEC.md). Version 0.1 enthält jetzt das Grundgerüst und technische Proben. [Windows-Anleitung und verfügbare Befehle](windows-quickstart.md).
+Stand: 2026-09-13. Dieser Plan konkretisiert [SPEC.md](../SPEC.md). Version 0.1 enthält das Grundgerüst, technische Proben und einen echten Recherchepass bis zum belegten Dossier. [Windows-Anleitung und verfügbare Befehle](windows-quickstart.md).
 
-Meilenstein 0 ist als ausführbarer Codex-Test und lokale Qwen-Hörprobe vorbereitet; die tatsächlichen Abo- und Radeon-Versuche stehen noch aus. Aus Meilenstein 1 sind CLI, erste Datenverträge, Dateiverwaltung, Prozessadapter, Status und Wiederaufnahme implementiert. Quellen-/Wissens-/Serienmodelle und die nachfolgenden Meilensteine sind noch offen. Die FFmpeg-Montage wurde mit Testsignalen ausgeführt; fachliche und stimmliche Qualität sind dadurch nicht belegt.
+Beim [Windows-Versuch am 13.09.2026](windows-pilot.md) bestanden echte Abo-Aufrufe, lokale Qwen-Hörproben und Wiederaufnahme. Nach dem Vergleich aller neun Stimmen wurden Aiden und Vivian gewählt. Der echte Such-/Quellenabruf wurde anschließend mit `pla research` implementiert und nachgewiesen: ein Thema führt zu heruntergeladenen Quellen, Abschnittsreferenzen, einem Dossier und einem Quellenreview. 62 Tests bestanden einschließlich FFmpeg. CLI, Quellenverträge, Dateiverwaltung, Prozessadapter, Status und Wiederaufnahme sind vorhanden. Ein kompaktes Wissensmodell, Serienentwurf und geprüfte Dialogskripte sind mit pla script umgesetzt. Vollständige Serienproduktion und Hörabnahme bleiben offen. Recherche wird somit vor dem vollständigen Quellen-zu-Audio-Pilot umgesetzt; ein vorbereitetes Testdossier ersetzt die reale Suche nicht.
 
 ## Ziel und feststehende Entscheidungen
 
@@ -41,7 +41,7 @@ Die erste Implementierung verwendet argparse statt des zunächst vorgeschlagenen
 
 Codex unterstützt Abo-Anmeldung sowie nichtinteraktive Aufrufe mit strukturierten Ausgaben. Darauf basiert der erste Adapter. Er nutzt die offizielle CLI und deren Anmeldung. Ein späterer Claude-Adapter verwendet denselben internen Auftrag-/Ergebnisvertrag; beide Adapter müssen nicht gleichzeitig gebaut werden. Quellen: [Codex-Anmeldung](https://learn.chatgpt.com/docs/auth), [Codex für Skripte](https://learn.chatgpt.com/docs/non-interactive-mode), [Claude Code für Skripte](https://code.claude.com/docs/en/headless).
 
-Qwen3-TTS unterstützt Deutsch und bietet unterschiedliche Modellgrößen. Ob die konkrete Kombination aus Modell, PyTorch und AMD-Laufzeit auf diesem Rechner zuverlässig funktioniert und angenehm klingt, ist noch nicht getestet. Die Windows-Installation folgt der zum Testzeitpunkt passenden AMD-Anleitung; eine Unterstützung der Grafikkarte allein beweist noch keine Kompatibilität des TTS-Pakets. Quellen: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS), [AMD-Kompatibilitätsmatrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html).
+Qwen3-TTS unterstützt Deutsch und bietet unterschiedliche Modellgrößen. Die 0.6B-CustomVoice-Variante wurde auf diesem Rechner mit AMD-PyTorch 2.9.1/ROCm 7.2.1 erfolgreich ausgeführt; [Versionen und Einrichtung](qwen-windows.md) sowie [Messwerte](windows-pilot.md) sind dokumentiert. Hörqualität, längere Folgen und Robustheit bei wiederholter Produktion bleiben zu bewerten. Quellen: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS), [AMD-Kompatibilitätsmatrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html).
 
 ## Geplanter Bedienablauf
 
@@ -178,11 +178,12 @@ Die technische Testsuite läuft ohne bezahlte Modellaufrufe. Echte Abo-, GPU- un
 
 Die Produktrichtung und das Zielbetriebssystem sind entschieden. Für den Beginn ist keine weitere Grundsatzentscheidung des Nutzers nötig.
 
-| Offener Punkt | Wie er geklärt wird |
+| Punkt | Stand / nächster Nachweis |
 | --- | --- |
-| Exakte Windows-, Treiber- und Laufzeitversionen | Beim Machbarkeitstest auf dem Zielrechner erfassen |
-| Qwen-Modellvariante und zwei geeignete Stimmen | Hörprobe, Speicherbedarf und Renderzeit vergleichen |
-| Verfügbare Suche im gewählten Abo-CLI | Echten Such- und Quellenabruf im ersten Test nachweisen |
+| Exakte Windows-, Treiber- und Laufzeitversionen | Im Windows-Versuchsprotokoll erfasst |
+| Qwen-Modellvariante und zwei geeignete Stimmen | 0.6B-CustomVoice erprobt; Aiden und Vivian nach deutschem und englischem Stimmenvergleich gewählt |
+| Verfügbare Suche im gewählten Abo-CLI | Echte Suchereignisse und sechs lokal eingelesene Quellen nachgewiesen |
+| Verständliche Erklärweise | Ohne Vorwissen, mit zusammenhängenden mentalen Bildern und erklärten Grenzen; im späteren Hördialog prüfen |
 | Nutzen automatischer Rücktranskription | Mit bekannten Fehlerfällen aus dem Audiopilot bewerten |
 
-Als Nächstes werden die implementierten Proben auf dem Windows-Zielrechner ausgeführt und die Quellen-/Wissensverarbeitung für den kleinen vollständigen Durchlauf ergänzt. Erst nach einem echten Versuch auf dem Zielrechner lässt sich der lokale Audioweg als bestätigt bezeichnen. Claude-Unterstützung, zusätzliche Audioanbieter und weitere Oberflächen folgen nur bei konkretem Bedarf.
+`pla script` verarbeitet das vorhandene Recherchedossier zu einem kompakten Wissensmodell, einem Serienentwurf und belegten Dialogskripten. Der Nutzer liest zunächst die erste Folge mit Aiden und Vivian. Audio wartet ausdrücklich auf seinen anschließenden Auftrag. Die Verbindung geprüfter Skripte mit der Audio-Produktion sowie der vollständige Review über alle Folgengrenzen sind die nächsten Ausbauschritte. Offene Recherchefragen bleiben sichtbar und dürfen nicht durch erfundene Details geschlossen werden. Claude-Unterstützung, zusätzliche Audioanbieter und weitere Oberflächen folgen nur bei konkretem Bedarf.

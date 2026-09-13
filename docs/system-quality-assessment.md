@@ -4,7 +4,7 @@
 
 Der priorisierte Hauptfall ist eine quellengebundene Podcastserie, deren Umfang sich aus dem Thema und der gewünschten Tiefe ergibt. Gesamtdauer und Folgenzahl sind nicht fest vorgegeben; jede Folge dauert höchstens 30 Minuten. Bewertet werden Recherche, Erklärungstiefe, Aufbau über mehrere Folgen und Hörqualität.
 
-Version 0.1 enthält eine technische CLI mit Codex-Probe, Qwen-Worker, Wiederaufnahme und automatischer Audio-Montage. Die Tests prüfen simulierte Modellantworten und echte FFmpeg-Verarbeitung von Testsignalen. Es gibt noch keine vollständige Recherchepipeline, fachlichen Pilotoutputs oder gemessene Hörqualität auf dem Radeon-Zielrechner. Frühere Zahlenbewertungen des Definitionsstands sind keine nachgewiesenen Produkteigenschaften und werden durch konkrete Prüfkriterien ersetzt.
+Version 0.1 enthält eine CLI mit echter Themenrecherche, Quellenabruf, belegtem Dossier, Serienplanung, quellengeprüften Dialogskripten, Codex-Probe, Qwen-Worker, Wiederaufnahme und automatischer Audio-Montage für Proben. Die Tests prüfen simulierte Modellantworten und echte FFmpeg-Verarbeitung von Testsignalen. Zusätzlich wurden am 13.09.2026 lokale Qwen-Hörproben auf der RX 9070 XT sowie echte Recherche- und Skriptläufe abgeschlossen; [Nachweise](windows-pilot.md) sind dokumentiert. Der Nutzer hat die bisherigen Skripte trotz bestandener Modellreviews als zu oberflächlich zurückgewiesen. Quellen- und Strukturprüfungen belegen deshalb keine ausreichende Erklärungstiefe. Die überarbeitete redaktionelle Prüfung muss den gewünschten Anspruch und die tatsächliche Argumentation berücksichtigen. Vertonung und Hörabnahme der recherchierten Folge stehen noch aus.
 
 Tutor-Pädagogik, Quiz, Lernstandsdiagnostik und Wiederholungsplanung sind außerhalb dieser MVP-Bewertung. Verständliche Erklärungen und sinnvoll aufgebaute Grundlagen bleiben entscheidend.
 
@@ -15,6 +15,8 @@ Tutor-Pädagogik, Quiz, Lernstandsdiagnostik und Wiederholungsplanung sind auße
 | Themenabdeckung | Priorisierte Fragen haben begründete Antworten oder sichtbare Grenzen. | Ein langes Skript lässt zentrale Teile der Leitfrage aus. |
 | Recherche | Konkrete Quellenabschnitte tragen die Aussagen; Herkunft und Gegenpositionen werden eingeordnet. | Suchausschnitte, Quellenlisten oder bekannte Namen ersetzen die Prüfung der Aussagen. |
 | Erklärungstiefe | Begriffe, Voraussetzungen und Erklärschritte führen zu einem nachvollziehbaren Zusammenhang. | Mehrere Definitionen werden genannt, ohne das Wie und Warum zu erklären. |
+| Verständlichkeit ohne Vorwissen | Vertraute Bilder und kleine Erklärschritte machen die Idee verständlich; notwendige Begriffe folgen danach. | Fach- oder Mathematiksprache setzt nicht erklärte Kenntnisse voraus. |
+| Mentale Bilder | Wenige zusammenhängende Metaphern erklären einen Mechanismus und nennen die Grenze des Vergleichs. | Ein Bild ersetzt die Erklärung, führt in die Irre oder wird als tatsächlicher Forschungsbefund dargestellt. |
 | Beispiele | Ein konkretes Beispiel wird Schritt für Schritt durchgearbeitet und mit der Erklärung verbunden. | Beispiele bleiben kurze Stichworte oder schmückende Anekdoten. |
 | Evidenz und Grenzen | Befunde, Interpretation, Hypothesen und Unsicherheit werden unterschieden. | Eine einzelne Perspektive wird als gesicherter Gesamtstand ausgegeben. |
 | Serienaufbau | Folgen beantworten unterschiedliche Fragen und bauen auf bereits eingeführten Grundlagen auf. | Jede Folge beginnt erneut mit demselben Überblick. |
@@ -64,7 +66,7 @@ Diese Piloten sind Rechercheaufträge, keine bereits geprüften fachlichen Ergeb
 
 ## Früher Audiotest und automatische Prüfungen
 
-Vor dem Aufbau der vollständigen Recherchepipeline wird auf Windows 11 mit der Radeon RX 9070 XT eine deutsche Hörprobe automatisch erzeugt und montiert. Sie enthält beide Stimmen, längere Erklärpassagen, Sprecherwechsel, Fachbegriffe, Zahlen und Einheiten. Qwen3-TTS ist der erste Kandidat; seine Eignung auf diesem Rechner ist noch nicht nachgewiesen.
+Vor dem Aufbau der vollständigen Recherchepipeline wurde auf Windows 11 mit der Radeon RX 9070 XT eine deutsche Qwen-Hörprobe automatisch erzeugt und montiert. Sie enthält beide Stimmen, längere Erklärpassagen, Sprecherwechsel, Fachbegriffe, Zahlen und Einheiten. Die technische Ausführung ist nachgewiesen; die redaktionelle Bewertung ihrer Eignung steht noch aus.
 
 Der Test dokumentiert Modell- und Laufzeitversionen, Speicherbedarf, Erzeugungsdauer, Verständlichkeit, Stimmenkonstanz und Aussprache. Eine kurze Hörprobe dient der anfänglichen Auswahl von Modell und Stimmen. Sie ist kein wiederkehrender manueller Schnittschritt.
 
@@ -74,7 +76,7 @@ Eine ergänzende lokale Rücktranskription wird anhand bekannter Auslassungen un
 
 ## Vorgehen zur Abnahme
 
-1. Ein kleines Quelldossier und erwartete Kerninhalte redaktionell festlegen.
+1. Aus tatsächlicher Recherche ein belegtes Dossier erstellen und dessen Kerninhalte sowie Lücken redaktionell prüfen.
 2. Einen Gesamtplan und eine zentrale Folge prüfen, bevor die vollständige Serie produziert wird.
 3. Erkannte Lücken in Wissensmodell, Plan und Skript korrigieren.
 4. Die vollständige Skriptserie gegen Quellen, Abdeckung und Zusammenhang prüfen.

@@ -68,6 +68,16 @@ def render(request: dict, report: dict) -> dict:
     from qwen_tts import Qwen3TTSModel
 
     config = request["runtime"]
+    progress_file = request.get("progress_file")
+
+    def progress(state, results, current=None):
+        if progress_file:
+            save(Path(progress_file), {"status": state, "completed": len(results),
+                "total": len(request["segments"]), "current_segment": current,
+                "segments": results})
+
+    progress("loading_model", [])
+    language = request.get("language", "German")
     device = config["tts_device"]
     if device != "cpu" and not torch.cuda.is_available():
         raise RuntimeError("GPU_UNAVAILABLE")
@@ -89,10 +99,11 @@ def render(request: dict, report: dict) -> dict:
     cache.mkdir(parents=True, exist_ok=True)
     results = []
     for segment in request["segments"]:
+        progress("rendering", results, segment["segment_id"])
         voice = request["voices"][segment["speaker_id"]]
         settings = {
             "worker_version": 1, "model": config["tts_model"], "revision": revision,
-            "voice": voice, "text": segment["text"], "language": "German",
+            "voice": voice, "text": segment["text"], "language": language,
             "device": device, "attention": config["tts_attention"], "seed": config["seed"],
             "packages": report["packages"], "hip_version": report.get("hip_version"),
         }
@@ -105,7 +116,7 @@ def render(request: dict, report: dict) -> dict:
             started = time.perf_counter()
             with torch.inference_mode():
                 waves, rate = model.generate_custom_voice(
-                    text=segment["text"], language="German", speaker=voice)
+                    text=segment["text"], language=language, speaker=voice)
             samples = np.asarray(waves[0], dtype=np.float32)
             if samples.ndim != 1 or not samples.size or not np.isfinite(samples).all():
                 raise RuntimeError("INVALID_AUDIO")
@@ -130,6 +141,8 @@ def render(request: dict, report: dict) -> dict:
             "segment_id": segment["segment_id"], "path": str(wav),
             "cache_hit": hit, **data,
         })
+        progress("rendering", results)
+    progress("completed", results)
     return {
         **report, "model_revision": revision, "model_load_seconds": load_seconds,
         "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated() if device != "cpu" else None,

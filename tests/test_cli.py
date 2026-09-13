@@ -28,7 +28,7 @@ class CliTests(unittest.TestCase):
             schemas = Path(temporary) / "schemas"
             code, _ = self.invoke("schemas", str(schemas), "--json")
             self.assertEqual(code, 0)
-            self.assertEqual(len(list(schemas.glob("*.schema.json"))), 4)
+            self.assertEqual(len(list(schemas.glob("*.schema.json"))), 19)
 
     def test_missing_codex_returns_persisted_blocked_state(self):
         with tempfile.TemporaryDirectory() as root:
