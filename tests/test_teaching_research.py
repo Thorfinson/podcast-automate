@@ -174,7 +174,7 @@ class FoundationResearchTests(unittest.TestCase):
             self.assertEqual(adapter.reasoning_effort, "high")
             if schema in (ResearchDiscovery, FoundationSupplement, FoundationReview):
                 return self.invoke(prompt, schema, kwargs["prompt_version"], research=True, search=kwargs["search"]), {}
-            if schema is EpisodeScript and kwargs["prompt_version"] == "write_episode.v5":
+            if schema is EpisodeScript and kwargs["prompt_version"] == "write_episode.v6-framing":
                 captured.append(prompt)
                 if not paused:
                     paused = True

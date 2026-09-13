@@ -4,6 +4,8 @@ Diese Arbeitsweise ist für neue `pla script`-Läufe implementiert. Auf den Seri
 
 Ein Quellenverzeichnis und ein korrektes Dossier reichen nicht aus, um eine verständliche Lehrfolge zu erhalten. Zwischen Recherche und Dialog benötigt das Projekt eine ausgearbeitete Unterrichtsplanung. Der aktuelle Pilotentwurf liegt lokal unter `projects/windows-pilot/research/redesign/teaching_plan.md`.
 
+Zur Unterrichtsplanung gehört auch die Rahmung der Reihe: Episode 1 führt das Gesamtthema, seine Bedeutung und den aufeinander aufbauenden Themenweg ein. Die letzte Episode fasst die wesentlichen Erkenntnisse zusammen, verbindet sie zur Antwort auf die gemeinsame Ausgangsfrage und benennt bleibende Grenzen. Jede Folge hat außerdem einen gesprochenen Einstieg mit Begrüßung und einen klaren Abschluss mit Verabschiedung. Das wird im ersten beziehungsweise letzten vorhandenen Kapitel vorbereitet und am tatsächlichen Text erneut geprüft. Der Gesamtrückblick braucht zugeordnete Belege; fehlende Begrüßungen sind redaktionelle Aufgaben und lösen keine Webrecherche aus. [Intro, Outro und Prüfungen](scripts.md#erklärweise-und-leseprüfung).
+
 ## Was die Anwendung erzwingt
 
 1. Die Recherche sucht auch nach den Grundlagen, die das gewählte Publikum vor den Fachquellen benötigt.

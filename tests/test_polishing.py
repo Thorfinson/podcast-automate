@@ -4,8 +4,9 @@ from unittest.mock import patch
 
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
-from podcast_automate.models import EpisodeScript
-from podcast_automate.polishing import DialoguePolishReview, HOST_ROLES, polish_dialogue
+from podcast_automate.models import Chapter, EpisodeScript
+from podcast_automate.polishing import (DialoguePolishReview, HOST_ROLES, POLISH_PROMPT_VERSION,
+                                       polish_dialogue, validate_polish_review)
 from podcast_automate.script_models import ScriptReview
 from podcast_automate.scripting import run_script, validate_script
 from podcast_automate.storage import digest, read_yaml, write_json, write_yaml
@@ -23,7 +24,7 @@ class PolishingTests(unittest.TestCase):
         final_checks = []
         def model(prompt, output_type, directory, **kwargs):
             value, metadata = self.fixture.model(prompt, output_type, directory, **kwargs)
-            if kwargs['prompt_version'] == 'dialogue_polish.v1':
+            if kwargs['prompt_version'] == POLISH_PROMPT_VERSION:
                 payload = json.loads(prompt.splitlines()[-1])
                 self.assertEqual(payload['host_roles'], HOST_ROLES)
                 value.segments[0].speaker_id = 'host_b'
@@ -120,10 +121,10 @@ class PolishingTests(unittest.TestCase):
         folder = self.root / 'isolated'
         polish_dialogue(*args, original, None, invoke, folder, validate_script)
         polish_dialogue(*args, original, None, invoke, folder, validate_script)
-        self.assertEqual(versions.count('dialogue_polish.v1'), 1)
+        self.assertEqual(versions.count(POLISH_PROMPT_VERSION), 1)
         original.segments[1].text += ' This comparison has a stated limitation.'
         polish_dialogue(*args, original, None, invoke, folder, validate_script)
-        self.assertEqual(versions.count('dialogue_polish.v1'), 2)
+        self.assertEqual(versions.count(POLISH_PROMPT_VERSION), 2)
         report = json.loads((folder / 'result.json').read_text())
         self.assertEqual(report['original_digest'], digest(original.model_dump()))
 
@@ -145,6 +146,59 @@ class PolishingTests(unittest.TestCase):
             with self.assertRaises(AppError) as caught:
                 run_episode_audio(self.root, episode='ep_001', approve_audio=True)
             self.assertEqual(caught.exception.code, 'invalid_script')
+
+    def test_missing_intro_or_outro_is_repaired_then_compared_again(self):
+        comparisons = 0
+        def model(prompt, output_type, directory, **kwargs):
+            nonlocal comparisons
+            result, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if output_type is DialoguePolishReview:
+                comparisons += 1
+                if comparisons == 1:
+                    check = next(c for c in result.checks if c.criterion == 'episode_framing')
+                    check.verdict = 'fail'
+                    check.reason = 'The episode stops at a technical question; add the missing spoken sign-off.'
+                    check.after = []
+            return result, meta
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, 'completed')
+        self.assertEqual(comparisons, 2)
+        report = json.loads((self.root / 'runs' / run.run_id / 'polishing/ep_001/result.json').read_text())
+        self.assertEqual(report['repairs'], 1)
+        self.assertFalse(report['human_reviewed'])
+
+    def test_persistent_missing_framing_blocks_publication(self):
+        def model(prompt, output_type, directory, **kwargs):
+            result, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if output_type is DialoguePolishReview:
+                check = next(c for c in result.checks if c.criterion == 'episode_framing')
+                check.verdict = 'fail'
+                check.reason = 'There is no welcome or outro.'
+                check.after = []
+            return result, meta
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            run = run_script(self.root)
+            calls = len(self.fixture.calls)
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(run.stages['polishing'].error.code, 'dialogue_polish_failed')
+        self.assertEqual(resumed.status, 'blocked')
+        self.assertEqual(len(self.fixture.calls), calls)
+        self.assertFalse((self.root / 'episodes/ep_001/script.yaml').exists())
+
+    def test_framing_pass_needs_quotes_from_both_boundary_chapters(self):
+        script = fixtures.example_script()
+        script.chapters.append(Chapter(chapter_id='closing', title='Closing'))
+        script.segments[-1].chapter_id = script.segments[-1].scene_id = 'closing'
+        review = fixtures.polish_review(json.dumps({'original': script.model_dump(), 'candidate': script.model_dump()}))
+        framing = next(c for c in review.checks if c.criterion == 'episode_framing')
+        framing.after = framing.after[:1]
+        with self.assertRaises(AppError) as caught:
+            validate_polish_review(review, script, script)
+        self.assertEqual(caught.exception.code, 'invalid_polish_evidence')
+        from podcast_automate.teaching import Passage
+        framing.after.append(Passage(segment_id=script.segments[-1].segment_id, quote=script.segments[-1].text))
+        validate_polish_review(review, script, script)
 
 
 if __name__ == '__main__':
