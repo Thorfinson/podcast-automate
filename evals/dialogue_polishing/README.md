@@ -1,5 +1,7 @@
 # Live dialogue-polishing check
 
+The historical check below used four criteria on an excerpt. It does not validate episode intros, outros or series framing. Production now additionally requires `episode_framing`, including the overall introduction in episode 1 and a series-wide recap and synthesis in the final episode; the historical results remain unchanged.
+
 The [13 September 2026 record](2026-09-13.json) contains the actual original excerpt, rewritten dialogue, four-criterion comparison, deliberately false control and call metadata. The excerpt is the user's selected logarithm passage with its immediate neighbors from the German pilot. It assumes that energy, weights and normalization were introduced earlier; it is not a stand-alone introduction to the subject.
 
 The production `polish_dialogue` function generated and compared the positive case in two Codex calls. The expert now handles the explanation; the partner develops a relevant doubt that the following answer addresses. The comparison accepted meaning, completeness, speaker roles and spoken language, with quotations from the actual texts.

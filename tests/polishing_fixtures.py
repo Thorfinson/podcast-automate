@@ -10,5 +10,7 @@ def polish_review(prompt):
     return DialoguePolishReview.model_validate({"checks": [
         {"criterion": criterion, "verdict": "pass", "reason": "Synthetic fixture; human quality is not measured.",
          "before": [{"segment_id": before["segment_id"], "quote": before["text"]}],
-         "after": [{"segment_id": after["segment_id"], "quote": after["text"]}]} for criterion in POLISH_CRITERIA],
+         "after": [{"segment_id": segment["segment_id"], "quote": segment["text"]}
+                   for segment in ([after, data["candidate"]["segments"][-1]]
+                                   if criterion == "episode_framing" else [after])]} for criterion in POLISH_CRITERIA],
          "limitations": ["Mock response for orchestration tests only."]})

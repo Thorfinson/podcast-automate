@@ -73,6 +73,8 @@ Die Erklärungen sind deutsch; etablierte Fachbegriffe bleiben englisch (etwa Qu
 
 Zwischen Fachentwurf und abschließendem Review liegt ein eigener **Dialog-Polishing-Schritt**. Er arbeitet gesprochene Sprache und die Rollen aus: Host A erklärt ruhig und präzise; Host B hinterfragt, denkt mit und verbindet Details mit ihrer Bedeutung. Längere Monologe bleiben erlaubt. Ein separater Vorher-/Nachher-Vergleich prüft, ob Fakten, Begründungen und Einschränkungen erhalten geblieben sind. [Polishing, Rollen und gespeicherte Vergleiche](docs/scripts.md#eigener-dialog-polishing-schritt).
 
+Jede Folge braucht ein gesprochenes **Intro und Outro**. Episode 1 führt zusätzlich das Gesamtthema, seine Bedeutung und den Weg durch die Reihe ein. Die letzte Episode fasst die wichtigsten Erkenntnisse der gesamten Reihe zusammen und verbindet sie zur Antwort auf die gemeinsame Ausgangsfrage. Diese Aufgaben fließen in Planung, Schreiben, Polishing und abschließende Prüfungen ein. Bereits laufende Aufträge und vorhandene Texte werden dadurch nicht rückwirkend überarbeitet. [Vorgaben und Prüfungen](docs/scripts.md#erklärweise-und-leseprüfung).
+
 ## FFmpeg lokal installieren und Windows-Probe starten
 
 FFmpeg und ffprobe werden projektlokal unter `tools/ffmpeg/bin/` installiert. Das Setup lädt den Windows-x64-Essentials-Build von [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), einem auf der [FFmpeg-Downloadseite](https://ffmpeg.org/download.html) verlinkten Anbieter, und prüft die festgehaltene SHA-256-Prüfsumme. Version 9.0.1 ist im Setup festgelegt. Die Binärdateien, mitgelieferte Dokumentation und lokale Download-Metadaten sind über `.gitignore` ausgeschlossen; nach einem frischen Git-Checkout wird das Setup erneut ausgeführt.

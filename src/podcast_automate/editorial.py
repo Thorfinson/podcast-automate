@@ -1,5 +1,53 @@
 """Shared language and teaching requirements for generation and independent reviews."""
 
+EPISODE_FRAMING = (
+    "Every complete episode needs an audible intro and outro in its spoken segments, not only chapter "
+    "headings, a subject-matter hook or a final technical question. In the first chapter, briefly welcome "
+    "the listener, orient them to this episode's question and purpose, and lead naturally into the opening "
+    "example. A short cold open may precede that welcome; orient the listener before sustained technical "
+    "explanation. Use series_context when supplied to distinguish a first, middle, final or standalone "
+    "episode. In episode 1, introduce the overall series topic, why its central question matters and the "
+    "path from the starting ideas to the later topics in series_context.episode_path, before narrowing "
+    "to this episode. Give a connected, concise orientation, not a roll call of titles or unexplained "
+    "advanced terms. Later episodes need only the relevant connection, not the full introduction repeated. "
+    "Do not assume the listener has heard an episode that "
+    "is not a listed prerequisite. In the last chapter, bring the opening question to a supported conclusion "
+    "and give a clear, natural sign-off. If series_context.next_episode is supplied, a brief outlook may "
+    "name that planned question without pre-teaching its findings. For a final or standalone episode, "
+    "close the subject without promising another episode. At the end of the final episode of a series, "
+    "also recap the series' main insights and connect them into an answer to its overall central question: "
+    "show how the initial ideas made the later conclusions possible and which important limits remain. "
+    "Make this an earned series synthesis, not only a recap of the last episode or a list of titles. "
+    "Use the supplied substantive material; the episode_path describes planned topics, not proof of "
+    "scientific claims or of what a previous recording actually said. Do not invent past explanations. "
+    "For a standalone episode, one integrated introduction and conclusion suffice. "
+    "Without series_context, omit unverified series "
+    "numbering and next-episode promises. Neither a cliffhanger alone nor a list of facts is a complete "
+    "outro. Keep both ends concise, specific and adult; no fixed duration or compulsory speaker alternation. "
+    "Keep any effective hook and synthesis rather than repeating them in added boilerplate. No invented "
+    "show name, host biography, credentials, release date, sponsor, subscription appeal or music cue. Voice "
+    "preset names are not automatically host identities. Greeting, orientation based on supplied episode "
+    "metadata and sign-off are editorial framing, not new research claims; they may have empty "
+    "knowledge_refs. Any substantive claim, including a recap, still needs its assigned evidence. "
+    "Integrate the framing within the existing first and last chapters without changing the approved "
+    "outline or exceeding the episode's word budget. "
+)
+
+
+def episode_series_context(plan, entry):
+    """Use the full approved order, also when only one episode is being generated."""
+    index = next(i for i, episode in enumerate(plan.episodes) if episode.episode_id == entry.episode_id)
+    following = plan.episodes[index + 1] if index + 1 < len(plan.episodes) else None
+    return {"topic": plan.topic, "central_question": plan.central_question,
+            "explanation_path": plan.explanation_path,
+            "episode_path": [{"episode_id": episode.episode_id, "title": episode.title,
+                              "central_question": episode.central_question} for episode in plan.episodes],
+            "episode_number": index + 1, "episode_count": len(plan.episodes),
+            "is_first": index == 0, "is_last": index == len(plan.episodes) - 1,
+            "next_episode": {"episode_id": following.episode_id, "title": following.title,
+                             "central_question": following.central_question} if following else None}
+
+
 TERMINOLOGY = (
     "Write the surrounding explanation in the requested language, but retain established English technical "
     "terms in German prose. For machine learning use Query, Key, Value, Attention, Attention scores, "
