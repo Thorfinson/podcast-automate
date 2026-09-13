@@ -3,20 +3,24 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
 
 from .codex import CodexAdapter
 from .doctor import inspect
 from .episode_audio import run_episode_audio
 from .errors import AppError
+from .editorial import TERMINOLOGY
 from .models import now
 from .openrouter import OpenRouterAdapter
 from .research import reserve_call, run_research
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
+from .teaching_research import gaps_in
 from .speech import GeminiSpeech, selected_audio
 from .storage import load_project, project_lock, read_yaml, write_json
 from .studio import BriefProposal, TextChoice, read_json
+from .studio_progress import script_progress, watch
 from .voice_samples import generate_sample, generate_samples
 
 
@@ -60,6 +64,7 @@ def perform(root, request, sample_progress=None):
             work = root / "studio/assistant"
             number = reserve_call(work, config.research_limits)
             prompt = (
+                TERMINOLOGY +
                 "You are the editorial partner in a guided podcast studio. Respond in the user's language. "
                 "Help clarify their topic, central question, prior knowledge, desired depth, focus and exclusions. "
                 "Return a concrete revised brief proposal and a useful conversational message. The user must apply "
@@ -124,9 +129,19 @@ def main():
     request = json.loads(sys.stdin.read())
     job_path = root / "studio/job.json"
     job = read_json(job_path)
+    progress_stop = threading.Event()
+    progress_thread = None
+    if request["action"] in {"plan", "replan", "script", "revise", "resume"}:
+        progress_thread = threading.Thread(target=watch, args=(root, job["id"], progress_stop), daemon=True)
+        progress_thread.start()
 
     def update(manifest):
         job["run"] = manifest.model_dump(mode="json")
+        progress = read_json(manifest_path(root, manifest.run_id).parent / "progress.json", {})
+        if progress.get("phase") == "foundation_research":
+            job["progress"] = progress
+        elif job.get("progress", {}).get("phase") == "foundation_research":
+            job.pop("progress", None)
         write_json(job_path, job)
         if request["action"] in {"plan", "replan"}:
             write_json(root / "studio/outline.json", {"run_id": manifest.run_id})
@@ -147,13 +162,22 @@ def main():
             errors = [r["error"]["message"] for r in run["stages"].values() if r.get("error")]
             if errors:
                 job["message"] = errors[-1]
+            if any(r.get("error", {}).get("code") == "teaching_research_required"
+                   for r in run["stages"].values() if r.get("error")):
+                job["research_gaps"] = gaps_in(manifest_path(root, run["run_id"]).parent)
     except (Exception, KeyboardInterrupt) as exc:
         job["status"] = exc.status if isinstance(exc, AppError) else "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
         job["message"] = str(exc) if isinstance(exc, AppError) else "Auftrag unterbrochen oder Verarbeitung fehlgeschlagen. Gespeicherten Stand prüfen."
         if request.get("api_key"):
             job["message"] = job["message"].replace(request["api_key"], "[Key verborgen]")
     finally:
+        progress_stop.set()
+        if progress_thread:
+            progress_thread.join(timeout=3)
         run_observer.reset(token)
+        progress = script_progress(root, job.get("run"))
+        if progress:
+            job["progress"] = progress
         job["finished_at"] = now()
         write_json(job_path, job)
 

@@ -134,6 +134,9 @@ class Studio:
                         progress["completed_segments"] = min(progress["total_segments"],
                             progress["completed_segments"] + nested.get("completed_segments", nested.get("completed", 0)))
                     data["progress"] = progress
+        if data and (data.get("run") or {}).get("kind") == "script":
+            from .studio_progress import script_progress
+            data["progress"] = script_progress(root, data["run"])
         return data
 
     def detail(self, project):

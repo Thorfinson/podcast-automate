@@ -2,12 +2,16 @@
 import json
 
 from podcast_automate.teaching import (
-    CRITERIA, TeachingPlan, TeachingPlanReview, ListenerReadback, TeachingReview, EditorialReview,
+    CRITERIA, TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview,
 )
 
 
 def teaching_response(prompt, output_type):
     payload = json.loads(prompt.splitlines()[-1])
+    if output_type is TeachingPlanRepair:
+        return TeachingPlanRepair.model_validate({"design": payload["design"], "corrections": [
+            {"issue": issue, "revised_passages": [payload["design"]["opening_problem"]]}
+            for issue in payload["issues"]]})
     if output_type is TeachingPlan:
         if "design" in payload:
             return TeachingPlan.model_validate(payload["design"])

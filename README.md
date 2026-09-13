@@ -12,6 +12,11 @@ Du kannst deine Wünsche mit Codex oder OpenRouter besprechen, den vorgeschlagen
 
 [Studio starten, Ablauf und Grenzen](docs/studio.md).
 
+Der Fortschrittsbereich zeigt die aktuelle Folge, den laufenden Modellschritt und die Zahl fertiger Folgen in dieser Stufe. Geprüfte Lehrkonzepte lassen sich dort direkt aufklappen und lesen, während weitere Folgen entstehen. Die Anzeige aktualisiert sich automatisch; ein einzelner Modellaufruf kann mehrere Minuten dauern. Das gewählte Projekt bleibt beim Neuladen über die Seitenadresse erhalten.
+
+Interne Überarbeitungen des Lehrkonzepts laufen nach der Freigabe des Inhaltsverzeichnisses automatisch. Nach zwei allgemeinen Überarbeitungen werden verbleibende Erklärungslücken einmal gezielt ergänzt und erneut unabhängig geprüft. Dafür musst du nicht auf „Fortsetzen“ klicken. Offene Qualitätsmängel oder ausgeschöpfte Limits stoppen den Auftrag weiterhin mit einer konkreten Meldung; Freigaben für Inhaltsverzeichnis und Audio bleiben eigene Entscheidungen.
+
+
 ## Ausführbare Werkzeuge: Version 0.1
 
 Das Studio verbindet Projektverwaltung, Quellenrecherche, Inhaltsverzeichnis, Lehrplanung, Dialog-Polishing, Qualitätsprüfung und freigegebene Vertonung. Die folgenden Einzelbefehle dienen zusätzlich der gezielten Arbeit und Fehlersuche. [Installation und erste Proben unter Windows 11](docs/windows-quickstart.md).
@@ -54,7 +59,9 @@ Der Dialog steht anschließend in `projects/windows-pilot/episodes/ep_001/script
 
 Für einzelne Skriptläufe lässt sich OpenRouter mit `--backend openrouter --model "anbieter/modell-id" --api-key` wählen. `--api-key` ohne Wert fragt den Key verdeckt für diesen Aufruf ab. Alle Qualitätsprüfungen bleiben aktiv; OpenRouter wird über API-Guthaben abgerechnet. [Anbieterwahl, Key-Übergabe und Wiederaufnahme](docs/scripts.md#openrouter-für-einen-skriptlauf).
 
-Neue Skriptläufe enthalten vor dem Schreiben eine eigene Lehrplanung: Einstieg, Voraussetzungen, Lernziele, durchgearbeitetes Beispiel und Synthese werden gegen die Quellen geprüft. Danach prüfen ein separater Leseraufruf, eine unabhängige redaktionelle Sicht auf den gesprochenen Text und eine mit Textstellen belegte Lehrprüfung, ob der Dialog diese Ziele tatsächlich entwickelt. Fehlende Erklärgrundlagen blockieren das Schreiben; fortbestehende Lehrmängel blockieren den Export. [Produktionsworkflow und Grenzen](docs/teaching-design.md), [Regressionstests mit echten Modellaufrufen](evals/teaching_quality/README.md).
+Neue Skriptläufe enthalten vor dem Schreiben eine eigene Lehrplanung: Einstieg, Voraussetzungen, Lernziele, durchgearbeitetes Beispiel und Synthese werden gegen die Quellen geprüft. Danach prüfen ein separater Leseraufruf, eine unabhängige redaktionelle Sicht auf den gesprochenen Text und eine mit Textstellen belegte Lehrprüfung, ob der Dialog diese Ziele tatsächlich entwickelt. Fehlende Erklärgrundlagen recherchiert das Studio automatisch mit Codex nach, prüft die zusätzlichen Belege und setzt den freigegebenen Plan ohne weiteren Klick fort. Bleibt die Lücke offen, zeigt es die konkreten Fragen; fortbestehende Lehrmängel blockieren den Export. [Produktionsworkflow und Grenzen](docs/teaching-design.md), [Regressionstests mit echten Modellaufrufen](evals/teaching_quality/README.md).
+
+Die Erklärungen sind deutsch; etablierte Fachbegriffe bleiben englisch (etwa Query, Key, Value und Attention) und werden bei Bedarf kurz erklärt. Das gilt durchgängig bis zum Polishing und den Prüfberichten.
 
 Zwischen Fachentwurf und abschließendem Review liegt ein eigener **Dialog-Polishing-Schritt**. Er arbeitet gesprochene Sprache und die Rollen aus: Host A erklärt ruhig und präzise; Host B hinterfragt, denkt mit und verbindet Details mit ihrer Bedeutung. Längere Monologe bleiben erlaubt. Ein separater Vorher-/Nachher-Vergleich prüft, ob Fakten, Begründungen und Einschränkungen erhalten geblieben sind. [Polishing, Rollen und gespeicherte Vergleiche](docs/scripts.md#eigener-dialog-polishing-schritt).
 
