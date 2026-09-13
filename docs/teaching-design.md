@@ -29,6 +29,10 @@ Vorhandene abgeschlossene Recherchen können als Quelle für einen neuen Skriptl
 
 ## Vom Lernziel zur Recherche
 
+Die Lehrplanung jeder Folge bekommt die geprüften Begriffe, Lernziele und ausgearbeiteten Beispiele ihrer vorausgesetzten Folgen aus demselben Lauf. Diese Übergabe liegt pro Folge unter `teaching/<episode_id>/continuity.json` und erreicht auch Skriptautor und Quellenprüfung. Ungeprüfte Entwürfe und spätere Folgen werden nicht als etablierter Inhalt übernommen. Liegt nur ein früherer Gliederungspunkt vor, wird das ausdrücklich kenntlich gemacht. Geänderter Vorgängerkontext erfordert eine neue Prüfung des davon abhängigen Lehrkonzepts.
+
+Die Prüfung unterscheidet fehlende externe Evidenz von fehlendem redaktionellem Anschluss. Der Wortlaut eines eigenen Beispiels kann nicht im Web recherchiert werden. Eine für die nächste Erklärung benötigte Markierung oder illustrative Darstellung darf innerhalb desselben Beispiels ergänzt werden; erfundene Token-Grenzen dürfen dabei nicht als Ausgabe eines realen Tokenizers erscheinen. Solche Aufgaben gehen in die automatische Überarbeitung. Nur fehlende wissenschaftliche Belege gehen in die Nachrecherche. Frühere Lehrkonzepte dienen dem Zusammenhang der Serie und ersetzen keine wissenschaftlichen Quellen.
+
 Zuerst festlegen, was der Hörer nach der Folge erklären, vorhersagen, vergleichen oder an einem neuen Fall entscheiden können soll. Danach die dafür erforderlichen Voraussetzungen erfassen. Erst daraus folgen die Fragen an die Literatur. Das [Eberly Center](https://www.cmu.edu/teaching/designteach/design/learningobjectives.html) beschreibt diese Abstimmung von Zielen, Aufgaben und Unterricht.
 
 Eine Quellenstelle kann fachlich passend und didaktisch zu fortgeschritten sein. Deshalb zusätzlich fragen, welche Begriffe, Darstellungen oder früheren Lektionen die Quelle voraussetzt. Solche Voraussetzungen sind Rechercheaufgaben, wenn der Hörer sie noch nicht mitbringt.

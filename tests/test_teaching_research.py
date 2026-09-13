@@ -27,6 +27,15 @@ class FoundationResearchTests(unittest.TestCase):
             "episode_id": "ep_001", "questions": [{"question": "How are scores compared?", "why_needed": "The comparison needs evidence."}]})
         self.calls = []
 
+    def test_internal_editorial_questions_never_trigger_external_research(self):
+        write_json(self.work / "teaching/ep_001/research_needed.json", {
+            "episode_id": "ep_001", "questions": [{"question": "What text did our previous episode use?",
+                "why_needed": "Carry forward the internal illustration.", "kind": "editorial_context"}]})
+        self.assertEqual(gaps_in(self.work), [])
+        with self.assertRaises(AppError):
+            self.research()
+        self.assertEqual(self.calls, [])
+
     def invoke(self, prompt, schema, version, **kwargs):
         self.calls.append(schema)
         self.assertTrue(kwargs["research"])
@@ -159,8 +168,10 @@ class FoundationResearchTests(unittest.TestCase):
     def test_approved_script_automatically_recovers_then_resumes_with_same_evidence(self):
         first_review, paused = True, False
         captured = []
-        def model(prompt, schema, directory, **kwargs):
+        def model(adapter, prompt, schema, directory, **kwargs):
             nonlocal first_review, paused
+            self.assertEqual(adapter.settings.codex_model, "gpt-5.6-sol")
+            self.assertEqual(adapter.reasoning_effort, "high")
             if schema in (ResearchDiscovery, FoundationSupplement, FoundationReview):
                 return self.invoke(prompt, schema, kwargs["prompt_version"], research=True, search=kwargs["search"]), {}
             if schema is EpisodeScript and kwargs["prompt_version"] == "write_episode.v5":
@@ -173,9 +184,9 @@ class FoundationResearchTests(unittest.TestCase):
                 first_review = False
                 value.research_gaps = [ResearchGap(question="How are scores compared?", why_needed="The comparison needs evidence.")]
             return value, meta
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
+        with patch("podcast_automate.scripting.CodexAdapter.structured", autospec=True, side_effect=model), \
              patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
-            plan = run_script(self.root, plan_only=True)
+            plan = run_script(self.root, plan_only=True, model="gpt-5.6-sol", reasoning_effort="high")
             work = self.root / "runs" / plan.run_id
             approved = outline_hash(work)
             original = {p.name: file_hash(p) for p in work.glob("*.json") if p.name != "budget.json"}

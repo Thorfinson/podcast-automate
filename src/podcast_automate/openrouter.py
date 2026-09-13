@@ -15,6 +15,7 @@ from pydantic import SecretStr, ValidationError
 
 from .errors import AppError
 from .storage import write_json
+from .text_settings import validate_reasoning
 
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 ADAPTER_VERSION = "openrouter.v1"
@@ -61,7 +62,7 @@ def api_failure(code):
         return AppError("OpenRouter hat die Anfrage abgewiesen. Key-Berechtigungen und Anbieterregeln prüfen.",
                         code="openrouter_forbidden", status="blocked")
     if code in {400, 404, 413, 422}:
-        return AppError("OpenRouter-Anfrage nicht unterstützt. Modell-ID, JSON-Schema-Unterstützung und "
+        return AppError("OpenRouter-Anfrage nicht unterstützt. Modell-ID, Reasoning-Stufe, JSON-Schema-Unterstützung und "
                         "Kontext-/Ausgabelimit prüfen; geänderte Modelleinstellungen benötigen einen neuen script-Lauf.",
                         code="openrouter_request", status="blocked")
     return AppError("OpenRouter vorübergehend nicht erreichbar oder ohne passenden Anbieter. Später pla resume verwenden.",
@@ -70,7 +71,7 @@ def api_failure(code):
 
 class OpenRouterAdapter:
     def __init__(self, settings, *, model: str, api_key: str | None = None,
-                 max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS):
+                 max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning_effort=None):
         if not model or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", model) or "/" not in model or "://" in model:
             raise AppError("OpenRouter benötigt --model mit einer Modell-ID wie anbieter/modell.",
                            code="invalid_backend", status="blocked")
@@ -87,6 +88,7 @@ class OpenRouterAdapter:
         self.settings = settings
         self.model = model
         self.max_output_tokens = max_output_tokens
+        self.reasoning_effort = validate_reasoning(reasoning_effort)
 
     def require_key(self):
         if not self._key.get_secret_value():
@@ -111,6 +113,8 @@ class OpenRouterAdapter:
             "provider": {"require_parameters": True, "sort": "throughput"},
             "max_tokens": self.max_output_tokens,
         }
+        if self.reasoning_effort is not None:
+            payload["reasoning"] = {"effort": self.reasoning_effort, "exclude": True}
         request = Request(ENDPOINT, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Authorization": "Bearer " + secret, "Content-Type": "application/json",
                      "X-OpenRouter-Title": "Podcast Automate"}, method="POST")
@@ -165,6 +169,7 @@ class OpenRouterAdapter:
         metadata = {
             "provider": "openrouter", "auth_mode": "api_key", "adapter_version": ADAPTER_VERSION,
             "requested_model": self.model, "actual_model": envelope.get("model") if isinstance(envelope.get("model"), str) else None,
+            "requested_reasoning_effort": self.reasoning_effort,
             "generation_id": envelope.get("id") if isinstance(envelope.get("id"), str) else None,
             "upstream_provider": envelope.get("provider") if isinstance(envelope.get("provider"), str) else None,
             "prompt_version": prompt_version, "usage": usage,

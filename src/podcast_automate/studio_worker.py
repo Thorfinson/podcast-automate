@@ -20,7 +20,7 @@ from .teaching_research import gaps_in
 from .speech import GeminiSpeech, selected_audio
 from .storage import load_project, project_lock, read_yaml, write_json
 from .studio import BriefProposal, TextChoice, read_json
-from .studio_progress import script_progress, watch
+from .studio_progress import safe_script_progress, watch
 from .voice_samples import generate_sample, generate_samples
 
 
@@ -56,9 +56,10 @@ def perform(root, request, sample_progress=None):
         with project_lock(root):
             conversation = read_json(root / "studio/chat.json", [])
             adapter = (OpenRouterAdapter(config.runtime, model=choice.model, api_key=request.get("api_key"),
-                                         max_output_tokens=choice.max_output_tokens)
+                                         max_output_tokens=choice.max_output_tokens, reasoning_effort=kwargs["reasoning_effort"])
                        if choice.provider == "openrouter" else
-                       CodexAdapter(config.runtime.model_copy(update={"codex_model": choice.model})))
+                       CodexAdapter(config.runtime.model_copy(update={"codex_model": kwargs["model"]}),
+                                    reasoning_effort=kwargs["reasoning_effort"]))
             if isinstance(adapter, OpenRouterAdapter):
                 adapter.require_key()
             work = root / "studio/assistant"
@@ -83,7 +84,8 @@ def perform(root, request, sample_progress=None):
             write_json(root / "studio/chat.json", conversation)
             return {"proposal": proposal.model_dump()}
     if action == "research":
-        run = run_research(root)
+        research_choice = {key: kwargs[key] for key in ("model", "reasoning_effort")} if choice.provider == "codex_cli" else {}
+        run = run_research(root, **research_choice)
     elif action == "plan":
         run = run_script(root, plan_only=True, **kwargs)
     elif action == "replan":
@@ -175,7 +177,7 @@ def main():
         if progress_thread:
             progress_thread.join(timeout=3)
         run_observer.reset(token)
-        progress = script_progress(root, job.get("run"))
+        progress = safe_script_progress(root, job.get("run"))
         if progress:
             job["progress"] = progress
         job["finished_at"] = now()

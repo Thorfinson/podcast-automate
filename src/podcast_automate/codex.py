@@ -13,6 +13,7 @@ from .errors import AppError
 from .models import RuntimeSettings, TextProbeOutput
 from .process import run_process
 from .storage import write_json
+from .text_settings import validate_model, validate_reasoning
 
 
 def windows_codex_installation() -> Path | None:
@@ -74,8 +75,10 @@ def classify_failure(message: str) -> AppError:
 
 
 class CodexAdapter:
-    def __init__(self, settings: RuntimeSettings):
+    def __init__(self, settings: RuntimeSettings, *, reasoning_effort=None):
         self.settings = settings
+        validate_model(settings.codex_model)
+        self.reasoning_effort = validate_reasoning(reasoning_effort)
 
     def command(self) -> list[str]:
         return executable_command(self.settings.codex_executable)
@@ -125,6 +128,8 @@ class CodexAdapter:
         ]
         if self.settings.codex_model:
             args.extend(["--model", self.settings.codex_model])
+        if self.reasoning_effort is not None:
+            args.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
         args.append("-")
         result = run_process(args, input_text=prompt, cwd=directory,
                              timeout=self.settings.text_timeout_seconds, env=subscription_environment())
@@ -169,6 +174,7 @@ class CodexAdapter:
         metadata = {
             "provider": "codex_cli", "auth_mode": "chatgpt",
             "requested_model": self.settings.codex_model,
+            "requested_reasoning_effort": self.reasoning_effort,
             "cli_version": cli_version,
             "prompt_version": prompt_version, "usage": terminal[-1].get("usage"),
             "separately_billed_cost": None, "research_performed": bool(search_requests),

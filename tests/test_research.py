@@ -130,6 +130,25 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(self.download.call_count, 1)
         self.assertTrue(all(stage.attempts == 1 for stage in second.stages.values()))
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
+
+    def test_selected_research_model_is_bound_to_run_and_preserved_on_resume(self):
+        original = (self.root / "project.yaml").read_bytes()
+        selections = []
+
+        def selected(adapter, *args, **kwargs):
+            selections.append((adapter.settings.codex_model, adapter.reasoning_effort))
+            return self.model(*args, **kwargs)
+
+        with patch("podcast_automate.research.CodexAdapter.structured", autospec=True, side_effect=selected):
+            first = run_research(self.root, model="gpt-6-astra", reasoning_effort="xhigh")
+            second = run_research(self.root, resume=True, run_id=first.run_id)
+            with self.assertRaises(AppError) as changed:
+                run_research(self.root, resume=True, run_id=first.run_id, reasoning_effort="low")
+        self.assertEqual(changed.exception.code, "inputs_changed")
+        self.assertEqual(first.status, "completed")
+        self.assertEqual(second.status, "completed")
+        self.assertEqual(selections, [("gpt-6-astra", "xhigh")] * 3)
+        self.assertEqual((self.root / "project.yaml").read_bytes(), original)
         report = json.loads((self.root / "reports/research_quality.json").read_text())
         self.assertEqual(report["sources"], 1)
         self.assertFalse(report["human_reviewed"])

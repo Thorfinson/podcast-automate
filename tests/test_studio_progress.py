@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from podcast_automate.studio_progress import script_progress, watch
+from podcast_automate.studio_progress import read, script_progress, watch
 from podcast_automate.storage import write_json
 
 
@@ -36,6 +36,60 @@ class StudioProgressTests(unittest.TestCase):
         self.assertIn("geprüft", progress["activity"])
         self.assertIn("accepted teaching design", progress["episodes"][0]["teaching_preview"])
         self.assertEqual(progress["episodes"][1]["teaching_preview"], "")
+
+    def test_refresh_is_distinct_from_model_activity_and_saved_results(self):
+        first = script_progress(self.root, self.run)
+        second = script_progress(self.root, self.run)
+        self.assertGreaterEqual(second["updated_at"], first["updated_at"])
+        self.assertEqual(second["model_call_started_at"], first["activity_started_at"])
+        self.assertIsNone(first["last_result_at"])
+        write_json(self.work / "calls/call_004/response.json", {"issues": []})
+        completed = script_progress(self.root, self.run)
+        self.assertIsNone(completed["model_call_started_at"])
+        self.assertIsNotNone(completed["last_result_at"])
+        self.assertEqual(completed["activity_started_at"], first["activity_started_at"])
+
+    def test_publisher_recovers_from_transient_job_read_and_progress_io_failures(self):
+        job_path = self.root / "studio/job.json"
+        job = {"id": "job_one", "status": "running", "run": self.run}
+        write_json(job_path, job)
+        attempts = []
+
+        def flaky_read(path, default=None):
+            if path == job_path and not attempts:
+                attempts.append("job read")
+                return default
+            return read(path, default)
+
+        def flaky_progress(*args):
+            attempts.append("progress")
+            if len(attempts) == 2:
+                raise PermissionError("temporarily locked")
+            return script_progress(*args)
+
+        def flaky_write(path, data):
+            attempts.append("write")
+            if attempts.count("write") == 1:
+                raise PermissionError("temporarily locked")
+            write_json(path, data)
+
+        def tick(_):
+            if (self.work / "progress.json").exists():
+                self.assertEqual(json.loads(job_path.read_text()), job)
+                write_json(job_path, {**job, "status": "completed"})
+
+        with patch("podcast_automate.studio_progress.read", side_effect=flaky_read), \
+             patch("podcast_automate.studio_progress.script_progress", side_effect=flaky_progress), \
+             patch("podcast_automate.studio_progress.write_json", side_effect=flaky_write), \
+             patch("time.sleep", side_effect=tick) as sleep:
+            watch(self.root, "job_one")
+        self.assertEqual(sleep.call_count, 4)
+        self.assertEqual(json.loads((self.work / "progress.json").read_text())["model_calls"], 4)
+
+    def test_publisher_exits_if_job_stays_unreadable(self):
+        with patch("time.sleep") as sleep:
+            watch(self.root, "job_one")
+        self.assertEqual(sleep.call_count, 29)
 
     def test_stale_accepted_file_does_not_mark_pending_review_complete(self):
         write_json(self.work / "teaching/ep_001/checkpoint.json", {"design": {"episode_id": "ep_001"}, "review": None})

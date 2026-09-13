@@ -1,5 +1,7 @@
 # Vom Dossier zum lesbaren Dialog
 
+Im Studio lassen sich Textmodell und Reasoning-Stufe unter **Auftrag & Stimmen** wählen. Für einen neuen Codex-Skriptlauf per Einzelbefehl entsprechen dem `--model gpt-6-astra --reasoning-effort xhigh`; angeboten werden `low`, `medium`, `high` und `xhigh`. Beide Werte werden gespeichert und beim Fortsetzen übernommen. Eine abweichende Auswahl benötigt einen neuen Lauf. Bei OpenRouter ist die Reasoning-Stufe optional und muss vom gewählten Modell unterstützt werden. [Modellauswahl im Studio](studio.md#textmodell-und-denkaufwand-auswählen).
+
 `pla script` erstellt aus einem abgeschlossenen Recherchelauf einen Serienentwurf, quellengeprüfte Lehrpläne und Dialogskripte. Die Stufen sind `planning`, `teaching`, `writing`, `polishing`, `review` und `publish`. Der Befehl endet beim lesbaren Text. Audio wird nicht erzeugt. [Lehrplanung und verbindliche Qualitätsprüfungen](teaching-design.md).
 
 ```powershell

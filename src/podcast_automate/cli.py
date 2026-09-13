@@ -72,6 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--backend", choices=("codex_cli", "openrouter"),
                              help="Textanbieter für Skripte und Reviews; Standard codex_cli, bei resume gespeicherter Anbieter")
         command.add_argument("--model", help="Modell-ID des Textanbieters; für OpenRouter erforderlich")
+        command.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"),
+                             help="Denkaufwand für Textmodellaufrufe; bei resume bleibt die gespeicherte Stufe erhalten")
         command.add_argument("--api-key", nargs="?", const="", default=None, metavar="KEY",
                              help="OpenRouter-Key nur für diesen Aufruf; ohne Wert verdeckt abfragen, alternativ OPENROUTER_API_KEY")
         command.add_argument("--max-output-tokens", type=int,
@@ -150,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.command == "resume" and
                 read_yaml(manifest_path(args.project_dir.resolve(), args.run_id)).get("kind") == "research")
             if not script_run and any(getattr(args, name, None) is not None
-                                      for name in ("backend", "model", "api_key", "max_output_tokens")):
+                                      for name in ("backend", "model", "api_key", "max_output_tokens", "reasoning_effort")):
                 raise AppError("Textanbieter-Optionen gelten nur für script und die Wiederaufnahme eines Skriptlaufs.",
                                code="invalid_backend", status="blocked")
             if episode_audio_run:
@@ -171,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
                                       revise=getattr(args, "revise", None), feedback=getattr(args, "feedback", ""),
                                       resume=args.command == "resume", run_id=getattr(args, "run_id", None),
                                       backend=args.backend, model=args.model, api_key=api_key,
-                                      max_output_tokens=args.max_output_tokens)
+                                      max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort)
             elif research_run:
                 manifest = run_research(args.project_dir, resume=args.command == "resume",
                                         run_id=getattr(args, "run_id", None),

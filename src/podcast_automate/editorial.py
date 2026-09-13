@@ -29,3 +29,17 @@ TEACHING_SCOPE = (
     "ask for terminology and evidence-availability corrections in the generated design or dialogue, "
     "not edits to input objects that the output schema cannot change. "
 )
+
+CONTINUITY = (
+    "The prerequisite_context contains prior episode material for editorial continuity, not new scientific "
+    "evidence. Reuse the concrete example text and already established meanings when the outline carries "
+    "them forward. A teaching plan describes what will be taught; it is not an already recorded transcript. "
+    "If a marked position, illustrative values or a representation needed now were not specified earlier, "
+    "choose and explain them in this episode within the same example. This is an editorial construction, "
+    "not missing external research and not a scope change. Distinguish illustrative token boundaries from "
+    "the output of a real model's tokenizer; never claim invented splits or outputs were measured. If only "
+    "a prerequisite outline is supplied, do not invent a quotation or claim an earlier episode already used "
+    "a particular text. Introduce the current illustration honestly within the approved scope. Preserve "
+    "concrete inherited details and explicitly explain any necessary change of representation or task. "
+    "Keep scientific claims grounded in the assigned findings and source passages. "
+)
