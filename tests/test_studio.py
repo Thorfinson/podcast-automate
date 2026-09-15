@@ -10,12 +10,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from podcast_automate.errors import AppError
-from podcast_automate.models import TopicBrief
+from podcast_automate.models import RunManifest, StageRecord, TopicBrief
 from podcast_automate.runner import manifest_path, outputs_valid
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import digest, file_hash, init_project, read_yaml, write_json, write_yaml
-from podcast_automate.studio import BriefProposal, Studio, make_server
+from podcast_automate.studio import BriefProposal, Studio, make_server, record_interruption
 from podcast_automate.studio_worker import perform
 from tests import test_scripting as fixtures
 from tests.test_scripting import example_plan, example_script
@@ -418,6 +418,47 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/projects/example/stop", {})[0], 200)
         self.assertIsNotNone(process.poll())
         self.assertEqual(self.app.job(self.root)["status"], "interrupted")
+
+    def test_stopped_run_preserves_checkpoints_budget_and_readable_drafts(self):
+        run = RunManifest(run_id="run_stopped", kind="script", status="running", project_hash="config",
+            input_hash="approved-inputs", stages={"writing": StageRecord(status="completed", attempts=1,
+                outputs={"saved-file": "saved-hash"}), "polishing": StageRecord(status="running", attempts=2),
+                "review": StageRecord()})
+        work = manifest_path(self.root, run.run_id).parent
+        write_yaml(work / "run_manifest.yaml", run.model_dump(mode="json"))
+        write_json(work / "series_plan.json", example_plan().model_dump())
+        write_json(work / "script_request.json", {"episode": None})
+        draft = work / "drafts/ep_001.json"
+        write_json(draft, example_script().model_dump())
+        write_json(draft.with_suffix(".checkpoint.json"), {"sha256": file_hash(draft)})
+        write_json(work / "budget.json", {"model_calls": 74, "search_rounds": 2})
+        write_json(work / "plan_approval.json", {"plan_hash": "approved-outline"})
+        write_json(work / "polishing/ep_001/checkpoint.json", {"candidate": {}, "repairs": 1})
+        preserved = {p: p.read_bytes() for p in work.rglob("*.json")}
+        write_json(self.root / "studio/job.json", {"id": "owned", "status": "running", "run": run.model_dump(mode="json")})
+        job = record_interruption(self.root, expected_job_id="owned")
+        saved = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
+        self.assertEqual(job["status"], "interrupted")
+        self.assertEqual(saved.status, "pending")
+        self.assertEqual(saved.stages["writing"], run.stages["writing"])
+        self.assertEqual(saved.stages["polishing"].status, "pending")
+        self.assertEqual(saved.stages["polishing"].attempts, 2)
+        self.assertEqual(saved.stages["polishing"].error.code, "interrupted")
+        self.assertEqual(saved.input_hash, run.input_hash)
+        self.assertEqual(job["run"], saved.model_dump(mode="json"))
+        self.assertIsNone(job["progress"]["model_call_started_at"])
+        self.assertEqual(job["progress"]["script_previews"][0]["script"], example_script().model_dump())
+        self.assertEqual({p: p.read_bytes() for p in preserved}, preserved)
+        with self.assertRaises(AppError):
+            record_interruption(self.root, expected_job_id="another-job")
+
+    def test_stop_record_does_not_overwrite_a_just_completed_job(self):
+        completed = {"id": "finished", "status": "completed", "message": "Ready"}
+        path = self.root / "studio/job.json"
+        write_json(path, completed)
+        before = path.read_bytes()
+        self.assertEqual(record_interruption(self.root), completed)
+        self.assertEqual(path.read_bytes(), before)
 
 
 if __name__ == "__main__":

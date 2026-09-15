@@ -51,6 +51,8 @@ Ein bereits laufender Studio-Server muss die neue Backend-Version erst laden. Di
 
 „Auftrag anhalten“ stoppt den vom Studio gestarteten Arbeitsprozess einschließlich seiner Unterprozesse unter Windows. Fertige Stufen und Qwen-Abschnitte bleiben gespeichert; der gerade laufende Modellaufruf oder Abschnitt muss möglicherweise wiederholt werden. „Fortsetzen“ verwendet die gespeicherten Eingaben. Eine unterbrochene Planung erteilt dadurch keine Skriptfreigabe. Ein unterbrochener Audiolauf benötigt weiterhin seine bereits erteilte passende Freigabe.
 
+Nach dem Ende des Arbeitsprozesses wird auch die laufende Stufe als unterbrochen und fortsetzbar gespeichert. Vollständige Skriptentwürfe und Polishing-Fassungen bleiben unter **Skripte lesen** verfügbar. Die Anzeige behauptet dann keinen weiterlaufenden Modellaufruf. Budgetzähler, Freigaben und abgeschlossene Zwischenergebnisse bleiben erhalten; das Öffnen des Studios startet den Auftrag nicht erneut.
+
 Die Stimmenbibliothek wird über „Fehlende Hörproben erzeugen · API“ fortgesetzt. Der Button überspringt alle vollständigen Aufnahmen. Nach einem Anbieterfehler werden keine weiteren Stimmen automatisch angefragt.
 
 Das Studio startet jeweils einen Auftrag. Zusätzlich verhindert die vorhandene Projektsperre Kollisionen mit außerhalb des Studios gestarteten Läufen. Der Stoppknopf steuert ausschließlich eigene Studio-Aufträge. Browser schließen beendet keinen Auftrag. Server beenden hält seinen aktiven Auftrag an; beim nächsten Start bleibt er fortsetzbar. Projekt- und Jobzustände sind unter dem jeweiligen Projekt gespeichert. Für ältere Projekte erscheinen vorhandene Recherche, Skripte und veröffentlichte Audiodateien; ein separat zu prüfender Plan entsteht mit „Inhaltsverzeichnis entwerfen“.

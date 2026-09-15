@@ -288,7 +288,7 @@ function renderProductionDetails() {
   const readable=readableScripts().length;
   if(!finished&&readable)html+=`<section class="panel tinted"><h2>${readable} ${readable===1?"Folge ist bereits lesbar":"Folgen sind bereits lesbar"}.</h2><p>Du kannst die gespeicherten Texte jetzt lesen. Der Prüfstand steht bei jeder Folge; die Ausarbeitung läuft weiter.</p><button data-step="${PAGE.scripts}">Skripte jetzt lesen →</button></section>`;
   const issues=project?.job?.progress?.review_issues||[];
-  if(issues.length)html+=`<section class="panel"><h2>Was noch erklärt werden muss</h2><ul>${issues.map(issue=>`<li>${escape(issue)}</li>`).join("")}</ul></section>`;
+  if(issues.length)html+=`<section class="panel"><h2>${project?.job?.progress?.stage==="review"?"Offene Punkte der Qualitätsprüfung":"Was noch erklärt werden muss"}</h2><ul>${issues.map(issue=>`<li>${escape(typeof issue==="string"?issue:issue.reason||"Offener Prüfpunkt")}</li>`).join("")}</ul></section>`;
   if(project?.job?.research_gaps?.length)html+=`<section class="panel"><h2>Offene Erklärfragen</h2><ul>${project.job.research_gaps.map(g=>`<li><strong>${escape(g.question)}</strong><p>${escape(g.why_needed)}</p></li>`).join("")}</ul><button class="secondary" data-step="${PAGE.research}">Bisherige Recherche ansehen</button></section>`;
   if(finished)html+=`<section class="panel tinted"><h2>Die Skripte sind bereit.</h2><p>Lies die Folgen und gib bei Bedarf Rückmeldung. Anschließend entscheidest du über die Vertonung.</p><button data-step="${PAGE.scripts}">Skripte lesen →</button></section>`;
   else if(active)html+=`<p class="hint">Du kannst währenddessen andere Seiten ansehen. Der Auftrag läuft weiter.</p>`;

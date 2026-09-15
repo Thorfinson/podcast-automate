@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from podcast_automate.errors import AppError
-from podcast_automate.editorial import TERMINOLOGY, TEACHING_SCOPE
+from podcast_automate.editorial import TERMINOLOGY, TEACHING_SCOPE, episode_series_context
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.storage import read_yaml, write_json
 from podcast_automate.scripting import run_script
@@ -336,7 +336,7 @@ class TeachingTests(unittest.TestCase):
         self.assertEqual(set(captured[0]), {"audience", "prior_knowledge", "script", "questions"})
         self.assertEqual(set(captured[0]["questions"][0]), {"objective_id", "question"})
 
-    def test_editorial_review_is_blind_to_plan_and_can_override_other_passes(self):
+    def test_editorial_review_has_series_metadata_but_no_teaching_answers_and_can_override_other_passes(self):
         captured = []
         def model(prompt, output_type, directory, **kwargs):
             result, meta = self.model(prompt, output_type, directory, **kwargs)
@@ -348,7 +348,9 @@ class TeachingTests(unittest.TestCase):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root)
         self.assertEqual(run.stages["review"].error.code, "script_review_failed")
-        self.assertEqual(set(captured[0]), {"audience", "prior_knowledge", "depth", "script"})
+        self.assertEqual(set(captured[0]), {"audience", "prior_knowledge", "depth", "series_context", "script"})
+        plan = fixtures.example_plan()
+        self.assertEqual(captured[0]["series_context"], episode_series_context(plan, plan.episodes[0]))
         self.assertFalse((self.root / "episodes/ep_001/script.md").exists())
 
     def test_reported_gap_cannot_be_silently_dropped_by_examiner(self):
@@ -396,6 +398,38 @@ class TeachingTests(unittest.TestCase):
         script.segments[-1].text += " A changed explanation."
         assess_teaching(script, design, invoke, directory, **args)
         self.assertEqual(calls.count(ListenerReadback), 2)
+
+    def test_changed_editorial_policy_rechecks_only_its_cached_verdict(self):
+        calls = []
+        def invoke(prompt, output_type, version):
+            calls.append(output_type)
+            return teaching_response(prompt, output_type)
+        script, design = fixtures.example_script(), self.design()
+        args = dict(audience="Adults", prior_knowledge="None", depth="Explain the comparison")
+        folder = self.root / "editorial_cache"
+        assess_teaching(script, design, invoke, folder, **args)
+        calls.clear()
+        with patch("podcast_automate.teaching.EDITORIAL_REVIEW_VERSION", "changed-editorial-policy"):
+            assess_teaching(script, design, invoke, folder, **args)
+            assess_teaching(script, design, invoke, folder, **args)
+        self.assertEqual(calls, [EditorialReview])
+
+    def test_legacy_checks_without_prompt_binding_are_not_reused(self):
+        calls = []
+        def invoke(prompt, output_type, version):
+            calls.append(output_type)
+            return teaching_response(prompt, output_type)
+        script, design = fixtures.example_script(), self.design()
+        args = dict(audience="Adults", prior_knowledge="None", depth="Explain the comparison")
+        folder = self.root / "legacy_editorial_cache"
+        assess_teaching(script, design, invoke, folder, **args)
+        for path in folder.glob("*/*.checkpoint.json"):
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            saved.pop("prompt_hash")
+            write_json(path, saved)
+        calls.clear()
+        assess_teaching(script, design, invoke, folder, **args)
+        self.assertEqual(calls, [ListenerReadback, EditorialReview, TeachingReview])
 
     def test_damaged_teaching_artifact_blocks_audio_even_with_approval(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):

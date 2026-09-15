@@ -112,6 +112,10 @@ def script_progress(root, run):
     if stage == "teaching" and current and run.get("status") == "blocked":
         checkpoint = read(work / "teaching" / current["episode_id"] / "checkpoint.json", {})
         issues = (checkpoint.get("review") or {}).get("issues", [])
+    elif stage == "review" and current and run.get("status") == "blocked":
+        checkpoint = read(work / "reviews" / f"{current['episode_id']}_checkpoint.json", {})
+        review = checkpoint.get("review") or read(work / "reviews" / f"{current['episode_id']}.json", {})
+        issues = review.get("issues", [])
     model_call_limit = None
     try:
         snapshot = read_yaml(work / "project_snapshot.yaml")

@@ -20,7 +20,7 @@ from urllib.request import urlopen
 from pydantic import Field
 
 from .errors import AppError
-from .models import Contract, EpisodeScript, RuntimeSettings, TopicBrief, now
+from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, now
 from .runner import manifest_path
 from .scripting import outline_hash, script_metrics
 from .speech import AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, selected_audio
@@ -31,6 +31,37 @@ from .text_settings import (CODEX_MODELS, DEFAULT_CODEX_MODEL, DEFAULT_REASONING
                             REASONING_EFFORTS, validate_model, validate_reasoning)
 
 VOICES = QWEN_VOICES
+
+
+def record_interruption(root, *, expected_job_id=None):
+    """Persist an interruption after the owned worker and its children have exited."""
+    with project_lock(root):
+        job = read_json(root / "studio/job.json")
+        if expected_job_id is not None and job.get("id") != expected_job_id:
+            raise AppError("Der Studio-Auftrag hat sich geändert.", code="job_changed")
+        if job.get("status") not in {"running", "interrupted"}:
+            return job  # A worker may have saved its final result just before exiting.
+        run = job.get("run")
+        if run:
+            path = manifest_path(root, run["run_id"])
+            if path.is_file():
+                manifest = RunManifest.model_validate(read_yaml(path))
+                if manifest.status == "running":
+                    manifest.status = "pending"
+                    for stage in manifest.stages.values():
+                        if stage.status == "running":
+                            stage.status = "pending"
+                            stage.error = Failure(code="interrupted", message="Angehalten. Gespeicherten Stand fortsetzen.")
+                    manifest.updated_at = now()
+                    write_yaml(path, manifest.model_dump(mode="json"))
+                job["run"] = manifest.model_dump(mode="json")
+        job.update(status="interrupted", finished_at=now(), message="Angehalten. Fertige Arbeit bleibt gespeichert.")
+        from .studio_progress import safe_script_progress
+        progress = safe_script_progress(root, job.get("run"))
+        if progress:
+            job["progress"] = progress
+        write_json(root / "studio/job.json", job)
+        return job
 
 
 def read_json(path, default=None):
@@ -346,10 +377,7 @@ class Studio:
         else:
             process.send_signal(signal.SIGINT)
         process.wait(timeout=20)
-        job = read_json(root / "studio/job.json")
-        job.update(status="interrupted", message="Angehalten. Fertige Arbeit bleibt gespeichert.")
-        write_json(root / "studio/job.json", job)
-        return job
+        return record_interruption(root)
 
     def media(self, project, relative):
         root = self.root(project)
