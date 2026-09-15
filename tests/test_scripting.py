@@ -14,7 +14,7 @@ from podcast_automate.research_models import DossierReview, ResearchDiscovery, R
 from podcast_automate.runner import status
 from podcast_automate.script_models import (Dependency, EpisodePlan, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan)
 from podcast_automate.scripting import run_script, validate_plan, validate_script
-from podcast_automate.storage import init_project, read_yaml, write_yaml
+from podcast_automate.storage import init_project, read_yaml, write_json, write_yaml
 from tests.test_research import HTML, discovery, dossier_from_prompt
 from tests.teaching_fixtures import teaching_response
 from tests.polishing_fixtures import polish_review
@@ -192,6 +192,36 @@ class ScriptingTests(unittest.TestCase):
         self.assertEqual(resumed.status, "blocked")
         self.assertEqual(len(self.calls), calls)
         self.assertFalse((self.root / "episodes/ep_001/script.md").exists())
+
+    def test_review_policy_fix_rechecks_latest_draft_without_resetting_used_repairs(self):
+        def rejected(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is EpisodeScript and kwargs['prompt_version'] == 'script_review_repair.v1':
+                value.segments[-1].text += ' This saved correction must remain.'
+            if output_type is ScriptReview:
+                value.issues = [ScriptIssue(category='depth', segment_ids=['seg_001'], reason='Missing series metadata.')]
+            return value, meta
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=rejected):
+            first = run_script(self.root)
+        self.assertEqual(first.status, 'blocked')
+        checkpoint = self.root / 'runs' / first.run_id / 'reviews/ep_001_checkpoint.json'
+        saved = json.loads(checkpoint.read_text(encoding='utf-8'))
+        self.assertEqual(saved['repairs'], 3)
+        last_draft = saved['draft']
+        saved.pop('editorial_review_version')  # A checkpoint made by the previous implementation.
+        write_json(checkpoint, saved)
+        captured = []
+        def repaired_policy(prompt, output_type, directory, **kwargs):
+            self.assertIsNot(output_type, EpisodeScript)
+            if output_type is ScriptReview:
+                captured.append(json.loads(prompt.splitlines()[-1])['script'])
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=repaired_policy):
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(resumed.status, 'completed')
+        self.assertEqual(captured, [last_draft])
+        self.assertEqual(json.loads(checkpoint.read_text(encoding='utf-8'))['repairs'], 3)
+        self.assertEqual(read_yaml(self.root / 'episodes/ep_001/script.yaml'), last_draft)
 
     def test_changed_project_requires_new_script_run(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):

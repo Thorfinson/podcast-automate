@@ -19,7 +19,8 @@ from .research_models import ResearchDiscovery, ResearchDossier, SourceIndex
 from .runner import execute_stages, manifest_path, outputs_valid, run_observer
 from .run_budget import effective_limits
 from .script_models import EpisodePlan, KnowledgeModel, ScriptReview, SeriesPlan
-from .teaching import TeachingPlan, assess_teaching, build_teaching_plan, prerequisite_context, TEACHING_VERSION, DESIGN_VERSION
+from .teaching import (TeachingPlan, assess_teaching, build_teaching_plan, prerequisite_context,
+                       TEACHING_VERSION, DESIGN_VERSION, EDITORIAL_REVIEW_VERSION)
 from .teaching_research import apply_foundations, research_foundations
 from .storage import (atomic_text, digest, file_hash, load_project, project_lock,
                       read_yaml, write_json, write_yaml)
@@ -605,12 +606,17 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                         draft = EpisodeScript.model_validate(saved["draft"])
                         repairs = saved["repairs"]
                         result = ScriptReview.model_validate(saved["review"]) if saved["review"] else None
+                        # Reassess an older verdict after a review-policy fix, keeping the
+                        # latest corrected script and consumed repair allowance intact.
+                        if saved.get("editorial_review_version") != EDITORIAL_REVIEW_VERSION:
+                            result = None
                         if validate_script(draft, entry):
                             raise AppError("Gespeicherter Review-Entwurf ist ungültig.", code="invalid_script", status="blocked")
 
                 def save():
                     write_json(checkpoint, {"input_hash": signature, "draft": draft.model_dump(),
-                                           "review": result.model_dump() if result else None, "repairs": repairs})
+                                           "review": result.model_dump() if result else None, "repairs": repairs,
+                                           "editorial_review_version": EDITORIAL_REVIEW_VERSION})
 
                 def check():
                     reviewed = invoke(

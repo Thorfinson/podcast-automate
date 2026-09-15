@@ -80,6 +80,8 @@ Die Dateien liegen im privaten Projektordner und sind von Git ausgeschlossen. `r
 
 Nach `writing` verarbeitet ein neuer Modellaufruf den vollständigen Entwurf. Er erhält Text, Lehrplan, Publikum und Rollenverteilung. Seine Aufgabe ist die sprachliche und dramaturgische Ausarbeitung: verständliche Sätze, passende Reaktionen und Übergänge, die aus dem Gedankengang entstehen. Er darf keine zusätzlichen Fakten, Zahlen oder Beispiele erfinden und keine notwendige Herleitung oder Einschränkung streichen.
 
+Die ursprünglichen Absatzgrenzen und Sprecherzuordnungen sind dabei veränderbar. Der Polishing-Aufruf soll zunächst den Gesprächsfluss eines ganzen Kapitels beurteilen und dichte Erklärungen bei Bedarf neu gruppieren. Viele umformulierte Sätze allein belegen keine gute Überarbeitung. Der Vergleich prüft auch schwierige Passagen und Übergänge auf unklare Bezüge, bloßes Nebeneinander von Erklärungen und inhaltsleere Wiederholungen. Es gibt weiterhin keine Quote für neue Segmente oder Sprecherwechsel.
+
 Die Rollen werden unabhängig von der TTS-Stimme festgelegt:
 
 - `host_a`: der ruhige, präzise Experte. Er entwickelt Mechanismen, liefert relevante Details und beantwortet den konkreten Einwand.
@@ -94,6 +96,8 @@ Unter `runs/<run_id>/polishing/<episode_id>/` stehen `before.md`, `after.md`, `s
 Danach prüfen Quellenreview, Leser und Lehrprüfer den tatsächlich überarbeiteten Text. Der Quellenreview sieht zusätzlich den ursprünglichen Entwurf und die Rollen, damit auch spätere Reparaturen die Erklärungen und Gesprächsführung erhalten. Ein bestandener Vorher-/Nachher-Vergleich behauptet keine fachliche Wahrheit des ursprünglichen Texts. Diese wird weiterhin gegen die Quellen geprüft. Der abschließende Export setzt die Audiofreigabe wieder auf ausstehend.
 
 Die Intro-/Outro-Vorgaben gelten für neu ausgeführte Schritte. Ein bereits laufender Prozess verwendet seinen geladenen Code weiter; ein alter bestandener Vergleich gilt nicht nachträglich als Prüfung der Rahmung. Bestehende Texte benötigen dafür eine gezielte Überarbeitung mit erneuter Prüfung. `result.json` nennt die verwendete Promptversion. Die Eingaben und Freigaben laufender Aufträge werden durch diese Ergänzung nicht umgeschrieben.
+
+Nach einer Korrektur der redaktionellen Prüfversion wird ein gespeichertes Urteil beim Fortsetzen neu geprüft. Der zuletzt überarbeitete Text und die bereits verbrauchten Korrekturrunden bleiben erhalten. Die einzelnen Lese- und Lehrprüfungen sind an ihren jeweiligen Prompt gebunden; alte Urteile ohne diese Bindung werden nicht übernommen. Das erzeugt keine automatische Freigabe und setzt weder Versuchszähler noch Modellbudget zurück. Konkrete Einwände der Abschlussprüfung stehen im Studio unter **Ausarbeitung**.
 
 Bestehende Skriptfassungen werden nicht automatisch umgeschrieben. Für die neue Stufe einen neuen `script`-Lauf oder `--revise` verwenden. Ältere Skriptläufe können nach dem Versionswechsel nicht durch `resume` nachträglich als poliert gelten. Bereits gestartete Audioaufträge bleiben an ihren gespeicherten Text gebunden.
 

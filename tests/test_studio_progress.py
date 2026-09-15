@@ -114,6 +114,15 @@ class StudioProgressTests(unittest.TestCase):
         self.assertEqual(progress["review_issues"], ["Explain the missing mechanism."])
         self.assertTrue(progress["episodes"][0]["teaching_preview"])
 
+    def test_blocked_final_review_exposes_actual_issues(self):
+        issues = [{"category": "depth", "segment_ids": ["seg_001"], "reason": "Explain the conclusion."}]
+        write_json(self.work / "reviews/ep_001_checkpoint.json", {"review": {"issues": issues}})
+        run = {**self.run, "status": "blocked", "stages": {
+            "review": {"status": "blocked", "error": {"code": "script_review_failed"}}}}
+        progress = script_progress(self.root, run)
+        self.assertEqual(progress["current_episode"], "ep_001")
+        self.assertEqual(progress["review_issues"], issues)
+
     def test_compatibility_publisher_never_modifies_job_or_run_and_exits_on_job_change(self):
         job_path = self.root / "studio/job.json"
         job = {"id": "job_one", "status": "running", "run": self.run}

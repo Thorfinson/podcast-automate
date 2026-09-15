@@ -67,7 +67,8 @@ class EpisodeFramingTests(unittest.TestCase):
             expected = episode_series_context(plan, selected)
             for version in ('teaching_design.v1', 'teaching_design_review.v4-framing', 'write_episode.v6-framing',
                             'dialogue_polish.v2-framing', 'dialogue_polish_review.v2-framing',
-                            'script_review.v7-framing', 'teaching_review.v3-framing'):
+                            'script_review.v7-framing', 'teaching_review.v3-framing',
+                            'editorial_review.v3-series-context'):
                 self.assertEqual(captured[version], expected)
             self.assertFalse((fixture.root / 'audio').exists())
 

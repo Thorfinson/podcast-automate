@@ -75,6 +75,15 @@ test('a stopped teaching review shows its concrete issues instead of a path and 
   assert.ok(!html.includes('C:/private'));
   assert.ok(!html.includes('data-action="resume"'));
 });
+test('a blocked final review displays readable escaped findings',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'blocked',action:'resume',progress:{phase:'script',stage:'review',episodes:[],review_issues:[{category:'depth',segment_ids:['seg_001'],reason:'Explain the <missing> connection.'}]},run:{kind:'script',stages:{review:{status:'blocked',error:{code:'script_review_failed'}}}}}};step=PAGE.production;renderJob();`);
+  const html=app.elements.get('production-progress').innerHTML;
+  assert.ok(html.includes('Offene Punkte der Qualitätsprüfung'));
+  assert.ok(html.includes('Explain the &lt;missing&gt; connection.'));
+  assert.ok(!html.includes('[object Object]'));
+});
+
 test('foundation research runs without a retry button and exposes real unresolved questions',()=>{
   const app=studio();
   app.run(`project={id:'test',job:{status:'running',action:'resume',started_at:new Date().toISOString(),progress:{phase:'foundation_research'},run:{stages:{teaching:{status:'running'}}}}};renderJob();`);
