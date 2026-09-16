@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -66,34 +67,63 @@ def inside(root: Path, relative: str) -> Path:
 
 
 @contextmanager
-def project_lock(root: Path):
-    """OS locks are released even after process death; the lock file may remain."""
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / ".pla.lock").open("a+b") as stream:
-        if stream.tell() == 0:
-            stream.write(b"\0")
-            stream.flush()
-        stream.seek(0)
-        try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise AppError("Für dieses Projekt läuft bereits ein Auftrag.",
-                           code="project_busy", status="blocked") from exc
+def file_lock(path: Path, *, shared=False, timeout=0):
+    """Process-safe reader/writer lock, also released when a worker is killed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            class Overlapped(ctypes.Structure):
+                _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
+                            ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                            ("hEvent", wintypes.HANDLE)]
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                         wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(Overlapped)]
+            kernel.LockFileEx.restype = wintypes.BOOL
+            kernel.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                           wintypes.DWORD, ctypes.POINTER(Overlapped)]
+            kernel.UnlockFileEx.restype = wintypes.BOOL
+            handle, offset = msvcrt.get_osfhandle(stream.fileno()), Overlapped()
+
+            def acquire():
+                if not kernel.LockFileEx(handle, 1 | (0 if shared else 2), 0, 1, 0, ctypes.byref(offset)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+
+            def release():
+                if not kernel.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(offset)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            import fcntl
+
+            def acquire():
+                fcntl.flock(stream, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+
+            def release():
+                fcntl.flock(stream, fcntl.LOCK_UN)
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                acquire()
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise AppError("Für dieses Projekt oder diesen Abschnitt läuft bereits ein Auftrag.",
+                                   code="project_busy", status="blocked") from exc
+                time.sleep(0.05)
         try:
             yield
         finally:
-            stream.seek(0)
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream, fcntl.LOCK_UN)
+            release()
+
+
+def project_lock(root: Path, *, shared=False):
+    return file_lock(root / ".pla.lock", shared=shared)
 
 
 def init_project(root: Path, config: TopicBrief) -> None:

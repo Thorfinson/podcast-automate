@@ -41,7 +41,9 @@ def inspect(settings: RuntimeSettings, *, include_tts=True) -> dict:
             if result.returncode or not tts or "error" in tts:
                 raise AppError("TTS-Python-Umgebung ist nicht lauffähig.", code="tts_environment")
             packages_ok = all(tts["packages"].get(name) for name in ("torch", "qwen-tts", "soundfile"))
-            device_ok = settings.tts_device == "cpu" or tts["gpu_available"]
+            device_ok = settings.tts_device in {"auto", "cpu"} or (
+                tts.get("mps_available", False) if settings.tts_device == "mps"
+                else tts.get("cuda_available", False))
             checks.append({"name": "tts_environment", "ok": packages_ok and device_ok,
                            "detail": "Pakete und Gerät verfügbar" if packages_ok and device_ok
                            else "Qwen/PyTorch-Pakete oder konfiguriertes GPU-Gerät fehlen"})

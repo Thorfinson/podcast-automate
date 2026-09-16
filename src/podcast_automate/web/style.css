@@ -8,6 +8,11 @@
 .voice-library { display:grid; grid-template-columns:repeat(auto-fit,minmax(205px,1fr)); gap:0 20px; margin:18px 0 24px; }
 .sample-row { display:flex; justify-content:space-between; align-items:center; gap:12px; min-height:58px; padding:8px 0; border-bottom:1px solid #dce3dc; }
 .sample-row strong { overflow-wrap:anywhere; }
+.podcast-episode { margin-top:24px; padding-top:10px; border-top:1px solid var(--line); }
+#overview-projects { margin-top:28px; }
+.audio-job + .audio-job { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
+#overview-projects .tag { white-space:normal; text-align:right; }
+@media(max-width:650px) { #project-overview { display:block; } }
 .sample-row button { flex-shrink:0; min-width:90px; }
 .sample-row button[aria-pressed="true"] { background:#e1eee7; border-color:#2b6950; }
 .sample-playback { position:sticky; bottom:0; margin-left:250px; padding:14px 28px; background:#fff; border-top:1px solid #bdcec2; box-shadow:0 -3px 18px #163c2714; display:flex; align-items:center; justify-content:center; gap:24px; z-index:5; }

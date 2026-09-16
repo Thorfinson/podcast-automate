@@ -83,7 +83,8 @@ def script_progress(root, run):
     stage = stage or next((name for name, state in stages.items() if state.get("error")), None)
     stage = stage or ("publish" if run.get("status") == "completed" else "planning")
     plan = read(work / "series_plan.json", {})
-    requested = read(work / "script_request.json", {}).get("episode")
+    request = read(work / "script_request.json", {})
+    requested = request.get("episode")
     entries = [e for e in plan.get("episodes", []) if isinstance(e.get("episode_id"), str)
                and re.fullmatch(r"[a-z][a-z0-9_]*", e["episode_id"])
                and (not requested or e["episode_id"] == requested)]
@@ -95,6 +96,8 @@ def script_progress(root, run):
         rows.append({"episode_id": identifier, "title": entry["title"], "completed": ready,
                      "teaching_preview": text_at(folder / "plan.md") if teaching_ready(folder) else ""})
     current = next((row for row in rows if not row["completed"]), None)
+    active_episodes = [row["episode_id"] for row in rows if run.get("status") == "running" and
+                       read(work / "stage_activity" / stage / (row["episode_id"] + ".json"), {}).get("status") == "running"]
     calls = sorted((work / "calls").glob("call_*/output_schema.json"))
     schema = read(calls[-1], {}).get("title") if calls else None
     activity = ACTIVITIES.get(schema, "Gespeicherte Ergebnisse werden verarbeitet")
@@ -133,6 +136,8 @@ def script_progress(root, run):
             "completed_segments": sum(row["completed"] for row in rows), "total_segments": len(rows),
             "model_calls": read(work / "budget.json", {}).get("model_calls", 0),
             "model_call_limit": model_call_limit, "episodes": rows,
+            "execution": request.get("execution", {"text": "sequential", "audio": "sequential"}),
+            "active_episodes": active_episodes,
             "script_previews": script_previews(root, run),
             "review_issues": issues}
 

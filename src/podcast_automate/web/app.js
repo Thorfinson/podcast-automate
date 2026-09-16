@@ -1,7 +1,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const steps = ["Auftrag & Stimmen", "Recherche", "Inhaltsverzeichnis", "Ausarbeitung", "Skripte lesen", "Audio & Export"];
+const steps = ["Auftrag & Stimmen", "Recherche", "Inhaltsverzeichnis", "Ausarbeitung", "Skripte lesen", "Vertonung"];
 const pageKeys = ["brief", "research", "outline", "production", "scripts", "audio"];
 const PAGE = Object.fromEntries(pageKeys.map((key,index)=>[key,index]));
 const productionStages = [
@@ -26,11 +26,13 @@ const actionNames = {
   check: "Verbindungen werden geprüft",
 };
 let boot, project = null, step = 0, episodeIndex = 0, submitting = false, lastJobSignature = "";
-let voiceDrafts = {};
 let lastJobView = "";
 let playingSample = null;
 let followWorkflow = true;
 let scriptEpisodeId=null, readingSnapshot=null;
+let overviewPage=false, overviewData={projects:[],trash:[]};
+let navigationEpoch=0;
+let setupSending=false;
 const scriptStateLabels={draft:"Entwurf",polished:"Dialog überarbeitet",reviewed:"Prüfungen bestanden",published:"Fertig zur Durchsicht"};
 const voiceSamples = () => project?.voice_samples || boot.voice_samples || {};
 const savedSample = (voice, language) => voiceSamples()[language]?.[voice];
@@ -44,8 +46,18 @@ const speechHint = provider => provider === "openrouter_gemini_tts"
 const currentAudio = () => project?.audio_settings || {provider:"qwen3_local",voices:(project?.config||boot.defaults).voice_profile};
 const audioCatalog = () => boot.audio_catalog || {qwen3_local:{label:"Qwen · auf diesem Computer",voices:boot.voices,defaults:boot.defaults.voice_profile}};
 const mediaUrl = path => "/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
-const running = () => submitting || project?.job?.status === "running";
+const running = () => submitting || project?.job?.status === "running" || (project?.audio_jobs||[]).some(j=>j.status==="running");
 const disabled = () => running() ? "disabled" : "";
+function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.episode_id) {
+  if(submitting)return "Der Auftrag wird gestartet.";
+  if(!boot.capabilities?.parallel_audio||currentAudio().provider!=="openrouter_gemini_tts")
+    return running()?"Ein Auftrag läuft bereits.":"";
+  const active=(project.audio_jobs||[]).filter(j=>j.status==="running");
+  if(active.some(j=>j.episode===episode))return "Diese Folge wird bereits vertont.";
+  if(project.job?.status==="running"&&!active.some(j=>j.id===project.job.id))return "Zuerst den laufenden Auftrag abschließen oder anhalten.";
+  if(project.audio_capacity?.available===0)return "Alle Plätze sind belegt. Sobald eine Folge fertig ist, kannst du die nächste starten.";
+  return "";
+}
 function notice(message) { $("notice").textContent = message; $("notice").hidden = !message; }
 async function api(path, data) {
   const options = data === undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json","X-Studio-Token":boot.token},body:JSON.stringify(data)};
@@ -57,7 +69,6 @@ async function api(path, data) {
 async function attempt(action) { try { notice(""); await action(); } catch(error) { notice(error.message); } }
 function textInput(id,label,value,type="text") { return `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${escape(value)}"></div>`; }
 function area(id,label,value,rows=3) { return `<div class="field"><label for="${id}">${label}</label><textarea id="${id}" rows="${rows}">${escape(value)}</textarea></div>`; }
-function options(values,current) { return values.map(v=>`<option value="${escape(v)}" ${v===current?"selected":""}>${escape(v.replaceAll("_"," "))}</option>`).join(""); }
 function heading(n,title,subtitle) { return `<div class="eyebrow">${String(n).padStart(2,"0")} / ${steps[n-1].toUpperCase()}</div><h1>${title}</h1><p class="intro">${subtitle}</p>`; }
 function empty(title,body,button,target) { return `<section class="empty"><h2>${title}</h2><p>${body}</p><button data-step="${target}">${button}</button></section>`; }
 const currentRun = (p=project) => p?.job?.run || p?.run;
@@ -100,7 +111,7 @@ function recommendedPage(p=project) {
       revise:PAGE.production,audio:PAGE.audio}[job.action]??PAGE.brief);
   }
   if(job?.run&&runPage(job.run,p)!==null)return runPage(job.run,p);
-  if((p.episodes||[]).some(e=>e.audio_current&&e.audio?.length))return PAGE.audio;
+  if((p.episodes||[]).some(e=>e.audio?.length))return PAGE.audio;
   if(readableScripts(p).length)return PAGE.scripts;
   const destination=runPage(run,p);
   if(destination!==null)return destination;
@@ -127,23 +138,22 @@ function navigationStates() {
   return rows;
 }
 function updatePageUrl(push=false) {
-  const url=project?`/?project=${encodeURIComponent(project.id)}&step=${pageKeys[step]}`:"/";
+  const url=overviewPage?"/":project?`/?project=${encodeURIComponent(project.id)}&step=${pageKeys[step]}`:"/?new=1";
   const history=window.history;
   if(push&&history?.pushState)history.pushState(null,"",url);
   else history?.replaceState(null,"",url);
 }
 function navigatePage(target,{automatic=false,push=true}={}) {
   if(!Number.isInteger(target)||target<0||target>=steps.length)return;
-  step=target;followWorkflow=automatic;updatePageUrl(push);render();
+  navigationEpoch++;
+  overviewPage=false;step=target;followWorkflow=automatic;updatePageUrl(push);render();
 }
 function renderNavigation() {
+  $("steps").hidden=overviewPage;
+  if(overviewPage){$("project-title").textContent="Alle Projekte & Podcasts";return;}
   const states=navigationStates();
   $("steps").innerHTML = steps.map((name,i)=>`<button class="step ${states[i][1]}" data-step="${i}" ${i===step?'aria-current="page"':""}><span class="step-number" aria-hidden="true">${states[i][1]==="done"?"✓":i+1}</span><span class="step-label">${name}<small>${states[i][0]}</small></span></button>`).join("");
   $("project-title").textContent = project?.config.topic || "Neues Podcast-Projekt";
-}
-function voice(role, title, description, audio) {
-  const label=sampleButtonLabel(audio.provider,audio.voices[role],(project?.config||boot.defaults).language);
-  return `<div class="voice"><div class="voice-label"><div><strong>${title}</strong><span>${description}</span></div></div><div class="actions"><label class="sr-only" for="${role}">Stimme für ${title}</label><select id="${role}">${options(audioCatalog()[audio.provider].voices,audio.voices[role])}</select><button type="button" class="secondary small" data-sample="${role}">${label}</button></div></div>`;
 }
 function renderVoiceLibrary(language) {
   const voices=audioCatalog().openrouter_gemini_tts?.voices||[], ready=voices.filter(v=>savedSample(v,language)).length;
@@ -161,13 +171,10 @@ function syncPlayButtons() {
   }
 }
 function refreshVoiceLibrary() {
-  if(step!==0||!$("voice-library-panel"))return;
-  const remote=$("tts-provider").value==="openrouter_gemini_tts", language=$("language").value;
-  $("voice-library-panel").hidden=!remote;
-  if(remote)$("voice-library-panel").innerHTML=renderVoiceLibrary(language);
-  for(const button of document.querySelectorAll("[data-sample]")){
-    button.textContent=sampleButtonLabel($("tts-provider").value,$(button.dataset.sample).value,language);
-  }
+  if(step!==PAGE.brief)return;
+  const {config,audio}=setupSelection();
+  if($("voice-library-panel")&&audio.provider==="openrouter_gemini_tts")
+    $("voice-library-panel").innerHTML=renderVoiceLibrary(config.language);
   syncPlayButtons();
 }
 async function playSample(voice, language, provider="openrouter_gemini_tts") {
@@ -180,71 +187,57 @@ async function playSample(voice, language, provider="openrouter_gemini_tts") {
   $("sample-playing-label").textContent=`Hörprobe: ${voice} · ${language==="de-DE"?"Deutsch":"English"}`;
   try{await player.play();syncPlayButtons();}catch{throw new Error("Die Hörprobe konnte nicht abgespielt werden. Prüfe, ob die Aufnahme noch vorhanden ist.");}
 }
-let textDrafts={};
 function defaultTextChoice(provider="codex_cli") {
   return provider==="codex_cli"?{provider,model:"gpt-6-astra",reasoning_effort:"xhigh",max_output_tokens:32768}:
     {provider,model:"",reasoning_effort:null,max_output_tokens:32768};
-}
-function readTextChoice(validate=true) {
-  // Old servers reject new fields. Keep their existing selection until the server is updated.
-  if(!boot.capabilities?.text_reasoning_selection)return project?.text||{provider:"codex_cli",model:null,max_output_tokens:32768};
-  const model=$("model").value.trim();
-  if(validate&&!model)throw new Error("Bitte ein Textmodell auswählen oder eine Modell-ID eingeben.");
-  return {provider:$("provider").value,model:model||null,
-    reasoning_effort:$("reasoning-effort").value||null,max_output_tokens:Number($("max_output_tokens").value)};
-}
-function renderTextModelFields(t) {
-  const codex=t.provider==="codex_cli", model=t.model||(codex?"gpt-6-astra":"");
-  const presets=boot.text_catalog?.codex_models||{"gpt-6-astra":"GPT-6 Astra"};
-  const custom=codex&&!Object.hasOwn(presets,model);
-  const effort=t.reasoning_effort||(codex?"xhigh":"");
-  const labels={low:"low · Weniger Denkaufwand",medium:"medium · Mittlerer Denkaufwand",high:"high · Hoher Denkaufwand",xhigh:"xhigh · Sehr hoher Denkaufwand"};
-  return `${codex?`<div class="field"><label for="model-preset">Textmodell</label><select id="model-preset">${Object.entries(presets).map(([id,label])=>`<option value="${escape(id)}" ${id===model?"selected":""}>${escape(label)}</option>`).join("")}<option value="custom" ${custom?"selected":""}>Eigene Modell-ID</option></select></div>`:""}
-    <div id="custom-model" ${codex&&!custom?"hidden":""}>${textInput("model",codex?"Eigene Codex-Modell-ID":"OpenRouter-Textmodell · anbieter/modell",model)}</div>
-    <div class="field"><label for="reasoning-effort">Denkaufwand · Reasoning</label><select id="reasoning-effort">${!codex?'<option value="">Standard des gewählten Modells</option>':""}${Object.entries(labels).map(([id,label])=>`<option value="${id}" ${id===effort?"selected":""}>${label}</option>`).join("")}</select></div>
-    <p class="hint">Mehr Denkaufwand gibt dem Modell mehr Zeit zum Prüfen seiner Antwort und kann länger dauern. ${codex?"Modell und Stufe werden ausdrücklich an Codex übergeben.":"Die gewählte Stufe muss vom OpenRouter-Modell unterstützt werden; sie wird im API-Aufruf angefordert."}</p>`;
-}
-function changeTextProvider() {
-  const provider=$("provider"), previous=provider.dataset.previous||project?.text?.provider||"codex_cli";
-  textDrafts[previous]={...readTextChoice(false),provider:previous};
-  const selected=textDrafts[provider.value]||defaultTextChoice(provider.value);
-  $("text-model-settings").innerHTML=renderTextModelFields(selected);
-  $("max_output_tokens").value=selected.max_output_tokens;
-  provider.dataset.previous=provider.value;
 }
 function renderRunTextChoice(job) {
   if(!["script","research"].includes(job?.run?.kind))return "";
   const t=job.text_generation;
   return `<p class="hint">Für diesen Auftrag gespeichert: ${t?.model?escape(t.model):"Modell nicht festgelegt"} · Reasoning: ${t?.reasoning_effort?escape(t.reasoning_effort):"nicht festgelegt"}.</p>`;
 }
+function setupSelection() {
+  const proposal=[...(project?.chat||[])].reverse().find(m=>m.role==="assistant");
+  const draft=project?.proposal_applied?null:proposal;
+  const config={...(project?.config||boot.defaults),...Object.fromEntries(Object.entries(draft||{}).filter(([key,value])=>value!==null||key==="target_total_minutes"))};
+  return {proposal,config,text:draft?.text||project?.text||boot.text_defaults||defaultTextChoice(),
+    audio:draft?.audio_settings||currentAudio(),
+    execution:draft?.execution||project?.execution||{text:"sequential",audio:"sequential"}};
+}
+function setupSummary() {
+  const {proposal,config:c,text:t,audio:a,execution:x}=setupSelection();
+  if(!project)return "";
+  const mode=value=>value==="parallel"?"Parallel · bis zu 3 Folgen":"Sequenziell";
+  return `<section class="panel"><div class="panel-title"><h2>${proposal&&!project.proposal_applied?"Deine Auswahl · Vorschlag":"Dein gespeicherter Auftrag"}</h2></div>
+    <dl><dt>Thema</dt><dd>${escape(c.topic)}</dd><dt>Leitfrage</dt><dd>${escape(c.central_question||"Noch zu klären")}</dd>
+    <dt>Sprache und Umfang</dt><dd>${c.language==="en-US"?"English":"Deutsch"} · ${c.target_total_minutes?escape(c.target_total_minutes)+" Minuten":"Länge nach Erklärbedarf"}</dd>
+    <dt>Vorwissen und Tiefe</dt><dd>${escape(c.prior_knowledge||"Keine besonderen Vorkenntnisse")} · ${escape(c.depth_request)}</dd>
+    ${c.focus_questions?.length?`<dt>Schwerpunkte</dt><dd>${c.focus_questions.map(escape).join(" · ")}</dd>`:""}
+    ${c.excluded_topics?.length?`<dt>Ausgenommen</dt><dd>${c.excluded_topics.map(escape).join(" · ")}</dd>`:""}
+    ${c.seed_urls?.length?`<dt>Quellenlinks</dt><dd>${c.seed_urls.map(escape).join(" · ")}</dd>`:""}
+    <dt>Textmodell</dt><dd>${t.provider==="codex_cli"?"Codex · Abo":"OpenRouter · API"} · ${escape(t.model||"Standard")} · Reasoning: ${escape(t.reasoning_effort||"Standard")}</dd>
+    <dt>Stimmen</dt><dd>${a.provider==="qwen3_local"?"Qwen · lokal":"Gemini · OpenRouter"} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
+    <dt>Textausarbeitung</dt><dd>${mode(x.text)}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio)}</dd></dl>
+    <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing und Prüfung; Recherche und Lehrkonzept bleiben in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
+    ${proposal&&!project.proposal_applied?`<button data-action="apply-proposal" ${running()||!boot.capabilities?.conversational_setup?"disabled":""}>Diese Auswahl übernehmen</button><p class="hint">Das speichert den Auftrag. Recherche, Plan- und Audiofreigabe erfolgen weiterhin auf den folgenden Seiten.</p>`:""}
+    </section>`;
+}
 function renderBrief() {
-  const c = project?.config || boot.defaults, t = project?.text || boot.text_defaults || defaultTextChoice();
-  const a=currentAudio(), remote=a.provider==="openrouter_gemini_tts";
-  const chat = project?.chat || [], proposal = [...chat].reverse().find(m=>m.role==="assistant");
+  const {proposal,config:c,audio:a}=setupSelection(), chat=project?.chat||[];
+  const compatible=boot.capabilities?.conversational_setup;
   const nextPage=recommendedPage()===PAGE.brief?PAGE.research:recommendedPage();
-  return heading(1,"Ein gutes Gespräch beginnt mit einer Frage.","Lege fest, was du wirklich verstehen möchtest. Dein redaktioneller Partner hilft dir, daraus einen tragfähigen Podcast-Auftrag zu machen.") +
-  `<div class="two-col"><div><form id="brief-form"><fieldset ${disabled()}><section class="panel"><div class="panel-title"><h2>Dein Thema</h2><span class="tag">Von Grund auf, mit Tiefe</span></div>
-  ${textInput("topic","Worum soll es gehen?",project?c.topic:"")}${area("central_question","Welche Frage soll der Podcast beantworten?",project?c.central_question:"")}
-  <div class="row"><div class="field"><label for="language">Sprache</label><select id="language"><option value="de-DE" ${c.language==="de-DE"?"selected":""}>Deutsch</option><option value="en-US" ${c.language==="en-US"?"selected":""}>English</option></select></div>${textInput("target_total_minutes","Gewünschte Gesamtlänge, optional",c.target_total_minutes||"","number")}</div>
-  ${area("prior_knowledge","Was weißt du schon?",c.prior_knowledge,2)}
-  <details><summary>Tiefe, Schwerpunkte und Quellen</summary>${area("depth_request","Wie soll erklärt werden?",c.depth_request,6)}${area("focus_questions","Schwerpunkte · eine Frage pro Zeile",c.focus_questions.join("\n"))}${area("excluded_topics","Was soll außen vor bleiben?",c.excluded_topics.join("\n"),2)}${area("seed_urls","Eigene Quellenlinks · ein Link pro Zeile",c.seed_urls.join("\n"),2)}<p class="hint">Längere Themen werden auf mehrere Folgen verteilt. Eine Audiodatei dauert höchstens 30 Minuten.</p></details>
-  </section><section class="panel"><h2>Wer spricht deinen Podcast?</h2><div class="field"><label for="tts-provider">Audioanbieter</label><select id="tts-provider" data-previous="${a.provider}">${Object.entries(audioCatalog()).map(([id,entry])=>`<option value="${id}" ${id===a.provider?"selected":""}>${escape(entry.label)}</option>`).join("")}</select></div><p class="hint">Rollen geben dem Gespräch Richtung. Längere Erklärungen dürfen zusammenhängend bleiben.</p>
-  ${voice("host_a","Der Experte","Ruhig, präzise. Erklärt Zusammenhänge und Mechanismen.",a)}${voice("host_b","Die neugierige Gesprächspartnerin","Hinterfragt, denkt weiter und fragt nach der Bedeutung.",a)}
-  <p class="hint" id="speech-hint">${speechHint(a.provider)}</p><p class="hint">Hörproben verwenden die oben gewählte Sprache. Die Audioauswahl lässt sich auch nach dem Schreiben ändern.</p></section>
-  <section class="panel"><h2>Wer schreibt mit?</h2>${!boot.capabilities?.text_reasoning_selection?'<p class="note">Die neue Modellauswahl benötigt einen Studio-Neustart. Lass den laufenden Auftrag fertigarbeiten, beende dann das Studio und öffne es erneut.</p>':""}<fieldset ${!boot.capabilities?.text_reasoning_selection?"disabled":""}><div class="field"><label for="provider">Anbieter für Redaktion, Inhaltsverzeichnis und Skript</label><select id="provider" data-previous="${escape(t.provider)}"><option value="codex_cli" ${t.provider==="codex_cli"?"selected":""}>Codex · bestehendes ChatGPT-Abo</option><option value="openrouter" ${t.provider==="openrouter"?"selected":""}>OpenRouter · API-Key</option></select></div>
-  <div id="text-model-settings">${renderTextModelFields(t)}</div>
-  <div id="router-settings" ${t.provider!=="openrouter"?"hidden":""}>${textInput("max_output_tokens","Maximale Antwortlänge pro Textmodellaufruf (Tokens)",t.max_output_tokens,"number")}<p class="hint">Ein Skript benötigt mehrere Schreib- und Prüfdurchgänge.</p></div>
-  </fieldset>
-  <div id="key-settings" ${t.provider!=="openrouter"&&!remote?"hidden":""}>${textInput("api-key","OpenRouter-Key · für Gemini-Audio und optionale Textaufrufe","","password")}<p class="hint" id="key-status">${boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Der Key bleibt nur für die Sitzung im Speicher."}</p><p class="hint">Gemini-Audio wird über dein OpenRouter-Guthaben abgerechnet. Codex kann unabhängig davon das Skript schreiben.</p><button type="button" class="secondary small" data-action="forget-key">Sitzungs-Key entfernen</button></div>
-  <p class="hint">Diese Auswahl gilt für neue Aufträge: Redaktion, Inhaltsverzeichnis, Lehrkonzept, Skript, Dialog-Polishing und Qualitätsprüfungen. Fortsetzen verwendet die im Auftrag gespeicherte Auswahl. Die Web-Recherche nutzt Codex: bei Codex mit derselben Auswahl, bei OpenRouter-Text mit den bisherigen Codex-Rechercheeinstellungen. Audioanbieter und Stimmen sind unabhängig davon.</p>
-  <div class="actions"><button type="submit">${project?"Änderungen speichern":"Projekt anlegen"}</button>${project?'<button type="button" class="secondary" data-action="check">Verbindungen prüfen</button>':""}</div>
-  ${project?'<p class="hint">Änderungen am Thema oder an Quellen benötigen eine neue Recherche. Ein geändertes Skript benötigt eine neue Freigabe.</p>':""}</section></fieldset></form>
-  <section class="panel" id="voice-library-panel" ${remote?"":"hidden"}>${renderVoiceLibrary(c.language)}</section>
-  ${project?`<button data-step="${nextPage}" class="secondary">Weiter: ${steps[nextPage]} →</button>`:""}</div>
-  <aside class="panel tinted"><div class="panel-title"><h2>Dein redaktioneller Partner</h2><span class="tag">KI</span></div><p>Was soll am Ende wirklich klar sein? Beschreibe deine Wünsche in eigenen Worten.</p>
-  <div class="conversation">${chat.length?chat.map(m=>`<div class="chat-message ${m.role=== "user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<p class="hint">Zum Beispiel: „Ich möchte verstehen, warum Samsung EUV-Maschinen nicht einfach selbst baut. Fang bei der Chipfertigung an und arbeite dich zu den technischen und wirtschaftlichen Hürden vor.“</p>'}</div>
-  ${proposal?`<div class="proposal"><strong>Vorschlag für deinen Auftrag</strong><dl><dt>Thema</dt><dd>${escape(proposal.topic)}</dd><dt>Leitfrage</dt><dd>${escape(proposal.central_question)}</dd></dl><button class="secondary small" data-action="apply-proposal" ${disabled()}>In die Felder übernehmen</button><p class="hint">Du kannst den Vorschlag vor dem Speichern bearbeiten.</p></div>`:""}
-  <form id="chat-form"><fieldset ${!project||running()?"disabled":""}>${area("chat-message","Dein Wunsch", "",4)}<button type="submit">Mit der Redaktion besprechen</button></fieldset></form>${!project?'<p class="hint">Lege links dein Projekt an, dann beginnt das Gespräch.</p>':""}</aside></div>`;
+  const voices=audioCatalog()[a.provider]?.voices||[];
+  return heading(1,"Dein redaktioneller Partner.","Beschreibe deinen Wunsch. Dein Partner fragt nach, bis Thema, Tiefe, Stimmen und Arbeitsweise passen.")+
+    `${!compatible?'<p class="note">Die Gesprächseinrichtung benötigt einen Studio-Neustart. Lass den laufenden Auftrag fertigarbeiten, beende dann das Studio und öffne es erneut.</p>':""}
+    <section class="panel"><div class="conversation">${chat.length?chat.map(m=>`<div class="chat-message ${m.role==="user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<div class="chat-message"><strong>Redaktion</strong><p>Worum soll dein Podcast gehen – und was möchtest du danach besser verstehen? Du kannst direkt auch Wünsche zu Sprache, Tiefe oder Stimmen nennen.</p></div>'}</div>
+    ${!running()&&proposal?.suggested_replies?.length?`<div class="actions">${proposal.suggested_replies.map(reply=>`<button class="secondary small" data-setup-reply="${escape(reply)}">${escape(reply)}</button>`).join("")}</div>`:""}
+    <form id="chat-form"><fieldset ${running()||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}<button type="submit">Senden</button></fieldset></form></section>
+    ${setupSummary()}
+    <details class="panel"><summary>Stimmen anhören</summary><p class="hint">${a.provider==="qwen3_local"?"Qwen":"Gemini"} · ${c.language==="en-US"?"English":"Deutsch"}. Sag dem Partner anschließend, welche beiden Stimmen du möchtest. Neue Gemini-Proben nutzen dein API-Guthaben.</p><div class="voice-library">${voices.map(v=>`<div class="sample-row"><strong>${escape(v)}</strong><button class="secondary small" data-preview-voice="${escape(v)}" data-preview-provider="${a.provider}" data-language="${c.language}" ${a.provider!=="qwen3_local"&&!savedSample(v,c.language)&&running()?"disabled":""}>${sampleButtonLabel(a.provider,v,c.language)}</button></div>`).join("")}</div>
+    ${a.provider==="openrouter_gemini_tts"?`<div id="voice-library-panel">${renderVoiceLibrary(c.language)}</div>`:""}</details>
+    <details class="panel"><summary>Geschützter OpenRouter-Key-Eingang</summary><p class="hint">Falls du OpenRouter wählst, hinterlege den Key hier. Er wird nicht an den redaktionellen Partner gesendet und bleibt nur im Sitzungsspeicher.</p>
+    ${textInput("api-key","OpenRouter-Key","","password")}<p id="key-status" class="hint">${boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt."}</p><div class="actions"><button class="secondary small" data-action="store-key">Key hinterlegen</button><button class="secondary small" data-action="forget-key">Sitzungs-Key entfernen</button></div></details>
+    ${project?`<div class="actions"><button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button><button data-step="${nextPage}" ${proposal&&!project.proposal_applied?"disabled":""}>Weiter: ${steps[nextPage]} →</button></div>`:""}`;
 }
 function renderResearch() {
   let html = heading(2,"Erst verstehen. Dann erzählen.","Die Recherche sammelt belastbare Quellen, erklärt die Grundlagen und macht offene Fragen sichtbar. Sie ist die Grundlage für den roten Faden.");
@@ -338,11 +331,98 @@ function renderAudio() {
   if(!project?.episodes?.length) return html+empty("Zuerst braucht es ein fertiges Skript.","Deine Freigabe gehört immer zu dem Text, den du tatsächlich gelesen hast.","Zu den Skripten",PAGE.scripts);
   episodeIndex=Math.min(episodeIndex,project.episodes.length-1);
   const e=project.episodes[episodeIndex];
-  const a=currentAudio(),remote=a.provider==="openrouter_gemini_tts";
-  html+=episodePicker()+`<section class="panel"><div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${remote?"Gemini 3.1 Flash TTS · OpenRouter":"Qwen · lokal"}</span></div><p>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"}</p><p class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</p><button class="secondary small" data-step="0">Audioanbieter oder Stimmen ändern</button><label class="approval"><input id="audio-approval" type="checkbox" ${disabled()}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label><div class="actions"><button id="audio-start" data-action="audio" disabled>Audio erzeugen</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div></section>`;
-  if(e.audio.length) html+=`<section class="panel"><h2>Anhören und herunterladen</h2>${!e.audio_current?'<p class="note">Diese Aufnahme gehört zu einem früheren Skript- oder Stimmenstand.</p>':""}${e.audio.map((path,i)=>{const url="/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");return `<div class="audio-track"><strong>Audiodatei ${i+1}</strong><audio controls preload="none" src="${url}"></audio><a href="${url}" download>MP3 herunterladen</a><p>${escape(path.split("/").slice(-2).join(" / "))}</p></div>`;}).join("")}</section>`;
+  const a=currentAudio(),remote=a.provider==="openrouter_gemini_tts",blocked=audioBlockReason();
+  html+=episodePicker()+`<section class="panel"><div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${remote?"Gemini 3.1 Flash TTS · OpenRouter":"Qwen · lokal"}</span></div><p>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"}</p><p class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</p><button class="secondary small" data-step="0">Audioanbieter oder Stimmen ändern</button><label class="approval"><input id="audio-approval" type="checkbox" ${blocked?"disabled":""}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label><div class="actions"><button id="audio-start" data-action="audio" disabled>Audio erzeugen</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div></section>`;
+  if(blocked)html+=`<p class="hint">${escape(blocked)}</p>`;
+  if(remote)html+=boot.capabilities?.parallel_audio?`<p class="hint">${project.execution?.audio==="parallel"?"Parallel":"Sequenziell"} · ${project.audio_capacity?.active||0} von ${project.audio_capacity?.limit||1} Plätzen belegt. Weitere gelesene Folgen kannst du oben auswählen und einzeln freigeben.</p>`:'<p class="note">Parallele Vertonung benötigt einen Studio-Neustart nach Ende des laufenden Auftrags.</p>';
+  if(project.episodes.some(e=>e.audio.length))html+='<button class="secondary" data-action="overview">Alle fertigen Folgen anhören →</button>';
   return html;
 }
+function overviewStatus(p) {
+  if(p.unavailable)return "Projekt konnte nicht gelesen werden.";
+  const active=[p.job,...(p.audio_jobs||[])].filter((j,i,all)=>j?.status==="running"&&all.findIndex(other=>other?.id===j.id)===i);
+  if(active.length)return active.length>1?`${active.length} Vertonungen laufen`:(active[0].progress?.activity||actionNames[active[0].action]||"Auftrag läuft");
+  if(["blocked","failed","interrupted","waiting_for_quota","pending"].includes(p.job?.status))return "Auftrag angehalten · gespeicherten Stand öffnen";
+  if(p.episodes?.some(e=>e.audio?.length))return "Podcast verfügbar";
+  if(p.script_count)return `${p.script_count} Skripte fertig`;
+  return p.has_outline?"Inhaltsverzeichnis vorhanden":p.has_research?"Recherche vorhanden":"Auftrag vorbereiten";
+}
+function podcastCard(p,e,index) {
+  const url=path=>"/media/"+encodeURIComponent(p.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
+  return `<article class="podcast-episode" id="podcast-${escape(p.id)}-${escape(e.episode_id)}" data-audio-version="${escape(JSON.stringify(e.audio))}"><h3>Folge ${index+1}: ${escape(e.title)}</h3>
+    <p class="hint" id="recording-status-${escape(p.id)}-${escape(e.episode_id)}">${e.audio_current?"":"Aufnahme eines früheren Skript- oder Stimmenstands."}</p>
+    ${e.audio.map((path,i)=>`<div class="audio-track"><strong>${e.audio.length>1?"Teil "+(i+1)+" von "+e.audio.length:"Podcast abspielen"}</strong><audio controls preload="none" src="${url(path)}"></audio><a href="${url(path)}" download>MP3 herunterladen</a></div>`).join("")}</article>`;
+}
+function overviewCard(p) {
+  return `<section class="panel" id="project-card-${escape(p.id)}" data-project-card="${escape(p.id)}"><div class="panel-title"><h2>${escape(p.topic)}</h2><span class="tag" id="project-state-${escape(p.id)}">${escape(overviewStatus(p))}</span></div>
+    <div class="actions"><button data-open-project="${escape(p.id)}">Projekt öffnen</button><button class="secondary small" data-delete-project="${escape(p.id)}" ${p.unavailable||p.job?.status==="running"||(p.audio_jobs||[]).some(j=>j.status==="running")||!boot.capabilities?.project_overview?"disabled":""}>Projekt löschen</button></div>
+    <div id="podcasts-${escape(p.id)}">${(p.episodes||[]).map((e,i)=>e.audio?.length?podcastCard(p,e,i):"").join("")}</div>
+    <p class="hint" id="project-audio-count-${escape(p.id)}">${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.</p></section>`;
+}
+function trashMarkup() {
+  return overviewData.trash?.length?`<details class="panel"><summary>Papierkorb · ${overviewData.trash.length} Projekte</summary>${overviewData.trash.map(p=>`<div class="sample-row"><span>${escape(p.topic)}</span><button class="secondary small" data-restore-project="${escape(p.id)}">Wiederherstellen</button></div>`).join("")}</details>`:"";
+}
+function renderOverview() {
+  return `<div class="eyebrow">DEIN PODCAST STUDIO</div><h1>Deine Projekte &amp; Podcasts.</h1><p class="intro">Arbeitsstände verfolgen, weiterarbeiten und fertige Folgen anhören – auch während die nächste Folge entsteht.</p>
+    <button data-new-project>＋ Neues Projekt</button>
+    <div id="overview-projects">${overviewData.projects.length?overviewData.projects.map(overviewCard).join(""):'<p id="overview-empty" class="hint">Dein erstes Projekt beginnt mit einem Gespräch.</p>'}</div><div id="overview-trash">${trashMarkup()}</div>`;
+}
+async function loadOverview() {
+  if(boot.capabilities?.project_overview)return await api("/api/projects");
+  const details=await Promise.all(boot.projects.map(p=>api("/api/projects/"+encodeURIComponent(p.id))));
+  return {projects:details.map(p=>({id:p.id,topic:p.config.topic,job:p.job,script_count:p.episodes.length,has_research:!!p.research,has_outline:!!p.outline,
+    episodes:p.episodes.map(e=>({...e,episode_id:e.script.episode_id,title:e.script.title}))})),trash:[]};
+}
+async function showOverview() {
+  const epoch=++navigationEpoch,data=await loadOverview();if(epoch!==navigationEpoch)return;
+  overviewData=data;overviewPage=true;project=null;followWorkflow=false;
+  $("project-select").value="";updatePageUrl();render();
+}
+function refreshOverview() {
+  const container=$("overview-projects");
+  if(!container)return;
+  for(const card of container.querySelectorAll("[data-project-card]"))
+    if(!overviewData.projects.some(p=>p.id===card.dataset.projectCard))card.remove();
+  if(overviewData.projects.length&&$("overview-empty"))$("overview-empty").hidden=true;
+  for(const p of overviewData.projects){
+    const card=$("project-card-"+p.id);
+    if(!card){container.insertAdjacentHTML("beforeend",overviewCard(p));continue;}
+    $("project-state-"+p.id).textContent=overviewStatus(p);
+    const button=card.querySelector("[data-delete-project]");
+    if(button)button.disabled=p.unavailable||p.job?.status==="running"||(p.audio_jobs||[]).some(j=>j.status==="running")||!boot.capabilities?.project_overview;
+    $("project-audio-count-"+p.id).textContent=`${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.`;
+    (p.episodes||[]).forEach((e,i)=>{
+      if(!e.audio?.length)return;
+      const audioCard=$("podcast-"+p.id+"-"+e.episode_id);
+      if(!audioCard){
+        const following=p.episodes.slice(i+1).map(next=>$("podcast-"+p.id+"-"+next.episode_id)).find(Boolean);
+        if(following)following.insertAdjacentHTML("beforebegin",podcastCard(p,e,i));
+        else $("podcasts-"+p.id).insertAdjacentHTML("beforeend",podcastCard(p,e,i));
+        return;
+      }
+      const label=$("recording-status-"+p.id+"-"+e.episode_id);
+      if(label)label.textContent=e.audio_current?"":"Aufnahme eines früheren Skript- oder Stimmenstands.";
+      if(audioCard.dataset.audioVersion!==JSON.stringify(e.audio)&&
+          ![...audioCard.querySelectorAll("audio")].some(audio=>!audio.paused))audioCard.outerHTML=podcastCard(p,e,i);
+    });
+  }
+  const trash=$("overview-trash"),content=trashMarkup();
+  if(trash.innerHTML!==content)trash.innerHTML=content;
+}
+function renderAudioJobs() {
+  const jobs=project?.audio_jobs||[];
+  const labels={running:"Wird vertont",completed:"Fertig zum Anhören",interrupted:"Angehalten",pending:"Angehalten",blocked:"Braucht Aufmerksamkeit",failed:"Fehlgeschlagen",waiting_for_quota:"Anbieterlimit"};
+  return jobs.map(j=>{
+    const e=project.episodes?.find(e=>e.script.episode_id===j.episode),p=j.progress,active=j.status==="running";
+    const canResume=!active&&j.status!=="completed"&&j.run;
+    return `<section class="audio-job"><div class="job-top"><strong>${escape(e?.script.title||j.episode)} · ${escape(labels[j.status]||j.status)}</strong>
+    ${active?`<button class="danger small" data-action="stop" data-job-id="${escape(j.id)}">Diese Folge anhalten</button>`:canResume?`<button class="secondary small" data-action="resume" data-run-id="${escape(j.run.run_id)}" data-episode="${escape(j.episode)}" ${audioBlockReason(j.episode)?"disabled":""}>Diese Folge fortsetzen</button>`:""}</div>
+    ${j.message?`<p>${escape(j.message)}</p>`:""}
+    ${active&&p?.total_segments!==undefined?`<p>${Number(p.completed_segments)} von ${Number(p.total_segments)} Sprechabschnitten fertig</p><progress value="${Number(p.completed_segments)}" max="${Number(p.total_segments)}"></progress>`:""}
+    ${j.status==="completed"?'<button class="secondary small" data-action="overview">Podcast anhören</button>':""}</section>`;
+  }).join("");
+}
+
 function renderScriptProgress(p, active) {
   if(p?.phase!=="script")return "";
   active=active&&!progressStale(p);
@@ -366,6 +446,13 @@ function renderProgressTiming(p, active) {
 }
 function renderJob() {
   const j=project?.job, box=$("job-status");
+  if(overviewPage){box.hidden=true;return;}
+  if(project?.audio_jobs?.some(job=>job.id===j?.id)){
+    box.hidden=false;
+    const view=JSON.stringify({audio_jobs:project.audio_jobs,capacity:project.audio_capacity,submitting});
+    if(view!==lastJobView){box.innerHTML=renderAudioJobs();lastJobView=view;}
+    return;
+  }
   const details=step===PAGE.production?$("production-progress"):null;
   if(details) {
     const opened=new Set(Array.from(details.querySelectorAll?.("details[open][data-progress-episode]")||[],el=>el.dataset.progressEpisode));
@@ -402,146 +489,158 @@ function renderJob() {
     box.innerHTML+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}</p>`;
   box.innerHTML+=renderProgressTiming(j?.progress,active);
   box.innerHTML+=renderRunTextChoice(j);
+  if(j?.progress?.execution?.text==="parallel"){
+    const activeEpisodes=j.progress.active_episodes||[];
+    box.innerHTML+=`<p class="hint">Textmodus: Parallel · bis zu 3 Folgen je Skript-, Polishing- oder Prüfstufe.${activeEpisodes.length?` In Bearbeitung: ${activeEpisodes.map(id=>escape(j.progress.episodes?.find(e=>e.episode_id===id)?.title||id)).join(", ")}.`:""}</p>`;
+  }
 }
-function render() { renderNavigation(); $("content").innerHTML=[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step](); renderJob(); syncPlayButtons(); }
+function render() { renderNavigation(); $("content").innerHTML=overviewPage?renderOverview():[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step](); renderJob(); syncPlayButtons(); }
 async function refreshProjects() {
   boot=await api("/api/bootstrap");
   $("project-select").innerHTML='<option value="">Neues Projekt</option>'+boot.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.topic)}</option>`).join("");
   $("project-select").value=project?.id||"";
 }
 async function selectProject(id, loaded=null, requestedPage=null) {
-  project=id?(loaded||await api("/api/projects/"+encodeURIComponent(id))):null;
+  const epoch=++navigationEpoch;
+  const selected=id?(loaded||await api("/api/projects/"+encodeURIComponent(id))):null;
+  if(epoch!==navigationEpoch)return;
+  overviewPage=false;
+  project=selected;
   $("project-select").value=id||"";
-  voiceDrafts={};textDrafts={};episodeIndex=0;scriptEpisodeId=null;readingSnapshot=null;followWorkflow=requestedPage===null;
+  episodeIndex=0;scriptEpisodeId=null;readingSnapshot=null;followWorkflow=requestedPage===null;
   step=requestedPage===null?recommendedPage():requestedPage;
-  lastJobSignature=jobSignature(project?.job);updatePageUrl();render();
-}
-function configFromForm() {
-  const c=structuredClone(project?.config||boot.defaults);
-  for(const name of ["topic","central_question","prior_knowledge","depth_request","language"]) c[name]=$(name).value.trim();
-  for(const name of ["focus_questions","excluded_topics","seed_urls"]) c[name]=$(name).value.split("\n").map(x=>x.trim()).filter(Boolean);
-  c.target_total_minutes=$("target_total_minutes").value?Number($("target_total_minutes").value):null;
-  return c;
+  lastJobSignature=projectJobSignature(project);updatePageUrl();render();
 }
 async function storeKey() {
   const key=$("api-key")?.value.trim();
-  if(key){const value=await api("/api/key",{key});boot.key_available=value.key_available;$("api-key").value="";}
+  if(key){const value=await api("/api/key",{key});boot.key_available=value.key_available;$("api-key").value="";
+    $("key-status").textContent=boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt.";}
 }
-async function saveBrief() {
-  await storeKey();
-  const data={config:configFromForm(),text:readTextChoice(),config_hash:project?.config_hash,
-    audio_settings:{provider:$("tts-provider").value,voices:{host_a:$("host_a").value,host_b:$("host_b").value}},audio_hash:project?.audio_hash};
-  let id=project?.id;
-  if(id) await api(`/api/projects/${id}/save`,data);
-  else id=(await api("/api/projects",data)).id;
-  project=await api(`/api/projects/${id}`);await refreshProjects();updatePageUrl();render();notice("Auftrag gespeichert.");
+async function sendSetupMessage(message) {
+  message=message.trim();
+  if(!message||running()||setupSending)return;
+  if(/sk-or-[A-Za-z0-9_-]{12,}/.test(message))throw new Error("Bitte den geschützten OpenRouter-Key-Eingang verwenden. Keys gehören nicht in den Chat.");
+  setupSending=true;
+  try{
+    if(!project){
+      const config={...structuredClone(boot.defaults),topic:message.slice(0,500)};
+      const created=await api("/api/projects",{config,text:boot.text_defaults||defaultTextChoice(),
+        execution:{text:"sequential",audio:"sequential"}});
+      project=await api("/api/projects/"+created.id);await refreshProjects();updatePageUrl();
+    }
+    await start("assistant",{message});
+  }finally{setupSending=false;}
+}
+async function applySetupProposal() {
+  await api(`/api/projects/${project.id}/apply_proposal`,{proposal_hash:project.proposal_hash,
+    config_hash:project.config_hash,audio_hash:project.audio_hash,execution_hash:project.execution_hash});
+  project=await api(`/api/projects/${project.id}`);await refreshProjects();render();notice("Deine Auswahl ist gespeichert.");
 }
 async function start(action, extra={}) {
   if(!project) throw new Error("Lege zuerst dein Projekt an.");
-  if(running()) throw new Error("Ein Auftrag läuft bereits.");
+  const parallelAudio=action==="audio"||(action==="resume"&&extra.episode);
+  if(parallelAudio?audioBlockReason(extra.episode):running()) throw new Error(parallelAudio?audioBlockReason(extra.episode):"Ein Auftrag läuft bereits.");
   const id=project.id;
   submitting=true;
-  try { await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=jobSignature(project.job); }
+  try { await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project); }
   finally { submitting=false; }
   navigatePage(recommendedPage(),{automatic:true,push:false});
 }
 function jobSignature(job) { return job?`${job.id}:${job.status}`:""; }
+function projectJobSignature(p) { return [jobSignature(p?.job),...(p?.audio_jobs||[]).map(jobSignature)].join("|"); }
 document.addEventListener("submit",event=>{
   event.preventDefault();attempt(async()=>{
-    if(event.target.id==="brief-form")await saveBrief();
-    if(event.target.id==="chat-form") { const message=$("chat-message").value;await saveBrief();await start("assistant",{message}); }
+    if(event.target.id==="chat-form")await sendSetupMessage($("chat-message").value);
   });
 });
 document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="project-select")await selectProject(event.target.value);
-  if(event.target.id==="provider")changeTextProvider();
-  if(event.target.id==="model-preset"){
-    const custom=event.target.value==="custom";
-    $("custom-model").hidden=!custom;$("model").value=custom?"":event.target.value;
-    if(custom)$("model").focus();
-  }
-  if(event.target.id==="tts-provider"){
-    const select=event.target,old=select.dataset.previous||currentAudio().provider;
-    voiceDrafts[old]={host_a:$("host_a").value,host_b:$("host_b").value};
-    const entry=audioCatalog()[select.value],voices=voiceDrafts[select.value]||entry.defaults;
-    for(const role of ["host_a","host_b"])$(role).innerHTML=options(entry.voices,voices[role]);
-    select.dataset.previous=select.value;
-    $("speech-hint").textContent=speechHint(select.value);
-  }
-  if(["provider","tts-provider"].includes(event.target.id)){
-    $("router-settings").hidden=$("provider").value!=="openrouter";
-    $("key-settings").hidden=$("provider").value!=="openrouter"&&$("tts-provider").value!=="openrouter_gemini_tts";
-  }
   if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
-  if(["tts-provider","language","host_a","host_b"].includes(event.target.id))refreshVoiceLibrary();
-  if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||running();
+  if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason();
 }));
 document.addEventListener("click",event=>{
   const button=event.target.closest("button");if(!button)return;
   attempt(async()=>{
-    if(button.id==="new-project"){await selectProject("");$("project-select").value="";}
+    if(button.id==="new-project"||button.hasAttribute("data-new-project")){await selectProject("");return;}
+    if(button.id==="project-overview"||button.dataset.action==="overview"){await showOverview();return;}
+    if(button.dataset.openProject){await selectProject(button.dataset.openProject);return;}
+    if(button.dataset.deleteProject){
+      const p=overviewData.projects.find(p=>p.id===button.dataset.deleteProject);
+      if(p&&window.confirm(`„${p.topic}“ mit Recherche, Skripten und Audio in den lokalen Papierkorb verschieben?`)){
+        await api(`/api/projects/${p.id}/delete`,{confirm_id:p.id,config_hash:p.config_hash});
+        await refreshProjects();overviewData=await loadOverview();refreshOverview();notice("Projekt im Papierkorb. Du kannst es unten wiederherstellen.");
+      }return;
+    }
+    if(button.dataset.restoreProject){await api("/api/restore",{trash_id:button.dataset.restoreProject});await refreshProjects();overviewData=await loadOverview();refreshOverview();return;}
+    if(button.dataset.setupReply){await sendSetupMessage(button.dataset.setupReply);return;}
     if(button.dataset.step!==undefined){navigatePage(Number(button.dataset.step));$("main").focus();window.scrollTo(0,0);return;}
-    if(button.dataset.sample){
-      const voice=$(button.dataset.sample).value,language=$("language").value;
-      if($("tts-provider").value==="openrouter_gemini_tts"&&!savedSample(voice,language)){await saveBrief();await start("audio_sample",{voice,language,approve_sample:true});}
-      else await playSample(voice,language,$("tts-provider").value);
+    if(button.dataset.previewVoice){
+      const voice=button.dataset.previewVoice,language=button.dataset.language,provider=button.dataset.previewProvider;
+      if(provider==="openrouter_gemini_tts"&&!savedSample(voice,language)){
+        await storeKey();await start("audio_sample",{voice,language,approve_sample:true});
+      }else await playSample(voice,language,provider);
+      return;
     }
     if(button.dataset.playVoice)await playSample(button.dataset.playVoice,button.dataset.language);
     const action=button.dataset.action;if(!action)return;
     if(action==="refresh-script"){readingSnapshot=null;$("content").innerHTML=renderScript();return;}
-    if(action==="quit"){await api("/api/quit",{});project=null;$("job-status").hidden=true;$("content").innerHTML='<section class="empty"><h1>Bis zum nächsten Gespräch.</h1><p>Das Studio ist beendet. Mit einem Doppelklick auf Podcast-Studio.cmd startest du es wieder.</p></section>';return;}
-    if(action==="apply-proposal") { const p=[...project.chat].reverse().find(m=>m.role==="assistant");for(const k of ["topic","central_question","prior_knowledge","depth_request","focus_questions","excluded_topics"])$(k).value=Array.isArray(p[k])?p[k].join("\n"):p[k];notice("Vorschlag übernommen. Prüfe die Felder und speichere den Auftrag.");return; }
+    if(action==="quit"){await api("/api/quit",{});project=null;$("job-status").hidden=true;$("content").innerHTML='<section class="empty"><h1>Bis zum nächsten Gespräch.</h1><p>Das Studio ist beendet. Öffne den Podcast-Studio-Starter in deinem Projektordner, um es wieder zu starten.</p></section>';return;}
+    if(action==="apply-proposal"){await applySetupProposal();return;}
+    if(action==="store-key"){await storeKey();notice("Key im Sitzungsspeicher hinterlegt.");return;}
     if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
-    if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{});project=await api(`/api/projects/${project.id}`);render();return;}
+    if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
     const extra={};
     if(action==="audio_samples"){
-      extra.language=$("language").value;extra.approve_samples=true;
-      await storeKey();if(!project)await saveBrief();
+      extra.language=setupSelection().config.language;extra.approve_samples=true;
+      await storeKey();
     }
     if(action==="replan")extra.message=$("outline-feedback").value;
     if(action==="script")extra.plan_hash=project.outline.hash;
     if(action==="revise"){extra.message=$("script-feedback").value;extra.episode=project.episodes[episodeIndex].script.episode_id;}
-    if(action==="resume")extra.run_id=project.job?.run?.run_id||project.run?.run_id;
+    if(action==="resume"){extra.run_id=button.dataset.runId||project.job?.run?.run_id||project.run?.run_id;if(button.dataset.episode)extra.episode=button.dataset.episode;}
     if(action==="audio"){const e=project.episodes[episodeIndex];Object.assign(extra,{episode:e.script.episode_id,approve_audio:$("audio-approval").checked,script_hash:e.hash,readable_hash:e.readable_hash,config_hash:project.config_hash,audio_hash:project.audio_hash});}
-    if(action==="check")await saveBrief();
     await start(action,extra);
   });
 });
 async function poll() {
   try {
+    if(overviewPage){const next=await loadOverview();if(overviewPage){overviewData=next;refreshOverview();}return;}
     if(!project||submitting)return;
     const id=project.id,next=await api(`/api/projects/${id}`);
     if(project?.id!==id)return;
-    const changed=jobSignature(next.job)!==lastJobSignature;
+    const changed=projectJobSignature(next)!==lastJobSignature;
     const destination=followWorkflow?recommendedPage(next):step;
     const scriptsChanged=scriptCollectionKey(project)!==scriptCollectionKey(next);
     const readerOpen=step===PAGE.scripts&&readingSnapshot;
     // Keep unfinished form edits and the script being reviewed stable during polling.
     const samplesChanged=JSON.stringify(project.voice_samples)!==JSON.stringify(next.voice_samples);
+    const chatChanged=JSON.stringify(project.chat)!==JSON.stringify(next.chat);
     project.job=next.job;project.run=next.run;project.voice_samples=next.voice_samples;
+    project.chat=next.chat;project.proposal_hash=next.proposal_hash;project.proposal_applied=next.proposal_applied;
+    project.audio_jobs=next.audio_jobs;project.audio_capacity=next.audio_capacity;
     project.episodes=next.episodes;project.script_previews=next.script_previews;renderNavigation();renderJob();
     if(samplesChanged)refreshVoiceLibrary();
-    if(changed||destination!==step){lastJobSignature=jobSignature(next.job);project=next;
+    if(changed||destination!==step){lastJobSignature=projectJobSignature(next);project=next;
       if(followWorkflow){step=destination;updatePageUrl();}
       if(readerOpen&&step===PAGE.scripts){renderNavigation();renderJob();refreshScriptReader();}
       else render();
       if(next.job?.status==="completed"&&next.job.sample)$("job-status").scrollIntoView({block:"nearest"});
     }else if(scriptsChanged&&step===PAGE.scripts)refreshScriptReader();
+    else if(chatChanged&&step===PAGE.brief){const draft=$("chat-message")?.value;render();if(draft)$("chat-message").value=draft;}
   }catch(error){renderJob();notice("Verbindung zum Studio unterbrochen. Ist das Studio-Fenster noch geöffnet?");}
 }
 attempt(async()=>{
+  const startupEpoch=navigationEpoch;
   await refreshProjects();
+  if(startupEpoch!==navigationEpoch)return;
   const params=window.location?new URLSearchParams(window.location.search):null;
   const requested=params?.get("project"), requestedStep=pageKeys.indexOf(params?.get("step"));
   if(requested&&boot.projects.some(p=>p.id===requested))await selectProject(requested,null,requestedStep<0?null:requestedStep);
-  else {
-    const saved=await Promise.all(boot.projects.map(p=>api("/api/projects/"+encodeURIComponent(p.id)).catch(()=>null)));
-    const active=saved.find(p=>p?.job?.status==="running")||saved.filter(p=>p?.job?.started_at).sort((a,b)=>Date.parse(b.job.started_at)-Date.parse(a.job.started_at))[0];
-    if(active)await selectProject(active.id,active);else render();
-  }
-  setInterval(poll,2500);
+  else if(params?.has("new"))await selectProject("");
+  else await showOverview();
 });
+setInterval(poll,2500);
 for(const event of ["play","pause","ended"])$("sample-player").addEventListener(event,syncPlayButtons);
 window.addEventListener("popstate",()=>attempt(async()=>{
   const params=new URLSearchParams(window.location.search), id=params.get("project");
@@ -549,7 +648,8 @@ window.addEventListener("popstate",()=>attempt(async()=>{
   if(id&&boot.projects.some(p=>p.id===id)) {
     if(project?.id===id)navigatePage(index<0?recommendedPage():index,{push:false});
     else await selectProject(id,null,index<0?null:index);
-  } else await selectProject("");
+  } else if(params.has("new"))await selectProject("");
+  else await showOverview();
 }));
 
 // A small optional agent surface shares the visible navigation. It cannot approve generation.
