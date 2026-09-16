@@ -32,7 +32,7 @@ class RuntimeSettings(Contract):
     tts_python: NonEmpty = Field(default_factory=lambda: sys.executable)
     tts_model: NonEmpty = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
     tts_revision: NonEmpty = "main"
-    tts_device: Literal["cuda:0", "cpu"] = "cuda:0"
+    tts_device: Literal["auto", "cuda:0", "mps", "cpu"] = "auto"
     tts_attention: Literal["eager", "sdpa"] = "eager"
     tts_timeout_seconds: int = Field(default=3600, gt=0)
     seed: int = Field(default=42, ge=0, lt=2**32)

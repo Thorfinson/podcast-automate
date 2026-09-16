@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 import wave
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from .runner import execute_stages, manifest_path, outputs_valid
 from .script_models import SeriesPlan
 from .scripting import load_research, validate_script
 from .speech import AudioChoice, GEMINI_MODEL, SPEECH_VERSION, check_gemini_rows, run_gemini_tts
-from .storage import (atomic_text, digest, file_hash, inside, load_project, project_lock,
+from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_lock,
                       read_yaml, write_json, write_yaml)
 
 
@@ -129,9 +130,10 @@ def check_rows(root, script, report, config):
 
 def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval_note="",
                       resume=False, run_id=None, expected_script_hash=None, expected_readable_hash=None,
-                      expected_config_hash=None, audio_choice=None, api_key=None, expected_audio_hash=None):
+                      expected_config_hash=None, audio_choice=None, api_key=None, expected_audio_hash=None,
+                      parallel_remote=False):
     root = root.resolve()
-    with project_lock(root):
+    with project_lock(root, shared=parallel_remote), ExitStack() as locks:
         config = load_project(root)
         if resume:
             path = manifest_path(root, run_id)
@@ -143,6 +145,17 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 raise AppError("Audioanbieter oder Stimmen geändert. Fortsetzen nutzt die gespeicherte Auswahl.", code="inputs_changed", status="blocked")
             audio_choice = saved_choice
         choice = AudioChoice.model_validate(audio_choice) if audio_choice is not None else AudioChoice(voices=config.voice_profile)
+        if parallel_remote and not choice.remote:
+            raise AppError("Lokales Qwen wird einzeln ausgeführt.", code="invalid_parallel_audio", status="blocked")
+        episode_folder = inside(root / "episodes", episode)
+        locks.enter_context(file_lock(episode_folder / ".audio.lock"))
+
+        def save_decision(decision):
+            # Each episode owns its decision. The old series-level file is only
+            # a compatibility pointer to the most recently updated decision.
+            write_yaml(episode_folder / "audio_review.yaml", decision)
+            write_yaml(root / "episodes/audio_review.yaml", decision)
+
         if expected_audio_hash is not None and expected_audio_hash != digest(choice.model_dump()):
             raise AppError("Audioauswahl seit der Freigabe geändert.", code="inputs_changed", status="blocked")
         script_manifest, script, script_hash = reviewed_episode(root, config, episode)
@@ -176,7 +189,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                     "script_sha256": script_hash, "script_run_id": script_manifest.run_id,
                     "input_hash": manifest.input_hash, "voices": choice.voices,
                     "authorization": approval_note or "Explicit --approve-audio on resume."})
-                write_yaml(root / "episodes/audio_review.yaml", {
+                save_decision({
                     "script_run_id": script_manifest.run_id, "audio_run_id": manifest.run_id,
                     "status": "audio_generation_approved", "audio_approved": True,
                     "scripts": {episode: script_hash},
@@ -185,7 +198,8 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
         else:
             identifier = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
             path = manifest_path(root, identifier)
-            decision = read_yaml(root / "episodes/audio_review.yaml")
+            decision_path = episode_folder / "audio_review.yaml"
+            decision = read_yaml(decision_path if decision_path.exists() else root / "episodes/audio_review.yaml")
             approved = approve_audio or (decision.get("audio_approved") is True and
                                           decision.get("scripts", {}).get(episode) == script_hash and
                                           decision.get("audio_generation") == inputs.get("audio_generation"))
@@ -199,7 +213,11 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             raise AppError("Audio-Freigabe fehlt.", code="audio_approval_required", status="blocked")
         work = path.parent
         if not resume:
-            migrate_review_ownership(root, script_manifest)
+            with file_lock(root / ".pla.audio-metadata.lock", timeout=30):
+                # Re-read under the short metadata lock: another episode may
+                # already have migrated their shared script manifest.
+                owner = RunManifest.model_validate(read_yaml(manifest_path(root, script_manifest.run_id)))
+                migrate_review_ownership(root, owner)
             write_json(work / "inputs.json", inputs)
             write_json(work / "approved_script.json", script.model_dump())
             write_yaml(work / "project_snapshot.yaml", config.model_dump(mode="json"))
@@ -208,7 +226,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 "authorization": approval_note or "Explicit --approve-audio or matching saved approval.",
                 "voices": choice.voices, "audio_generation": inputs.get("audio_generation"),
                 "editorial_quality_accepted": False})
-            write_yaml(root / "episodes/audio_review.yaml", {
+            save_decision({
                 "script_run_id": script_manifest.run_id, "audio_run_id": manifest.run_id,
                 "status": "audio_generation_approved", "audio_approved": True,
                 "audio_generation": inputs.get("audio_generation"),
@@ -237,7 +255,11 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                         report = None
                 if report is None:
                     if choice.remote:
-                        run_gemini_tts(config, batch, root, folder, choice, api_key)
+                        if parallel_remote:
+                            from .parallel_speech import run_parallel_gemini_tts
+                            run_parallel_gemini_tts(config, batch, root, folder, choice, api_key)
+                        else:
+                            run_gemini_tts(config, batch, root, folder, choice, api_key)
                     else:
                         run_tts(audio_config, batch, root, folder)
                     report = json.loads(report_file.read_text(encoding="utf-8"))
@@ -297,7 +319,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 "status": "awaiting_listening_review", **parts}
             write_json(root / "reports" / f"{episode}_audio.json", report)
             write_json(root / "episodes" / episode / "audio_latest.json", report)
-            write_yaml(root / "episodes/audio_review.yaml", {"script_run_id": script_manifest.run_id,
+            save_decision({"script_run_id": script_manifest.run_id,
                 "audio_run_id": manifest.run_id, "status": "awaiting_listening_review", "audio_approved": True,
                 "audio_generation": inputs.get("audio_generation"),
                 "scripts": {episode: script_hash}, "human_listening_reviewed": False})

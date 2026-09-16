@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .codex import CodexAdapter
 from .errors import AppError
+from .execution import ExecutionChoice, run_episode_stage, selected_execution
 from .editorial import TERMINOLOGY, TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING, episode_series_context
 from .models import EpisodeScript, RunManifest, StageRecord
 from .openrouter import OpenRouterAdapter, ADAPTER_VERSION, DEFAULT_MAX_OUTPUT_TOKENS
@@ -265,9 +266,11 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             manifest = RunManifest.model_validate(read_yaml(path))
             request = json.loads((path.parent / "script_request.json").read_text(encoding="utf-8"))
             saved_backend = request.get("text_generation")
+            execution = ExecutionChoice.model_validate(request.get("execution", {}))
             episode = request["episode"]
             revision = json.loads((path.parent / "inputs.json").read_text(encoding="utf-8")).get("revision")
         else:
+            execution = selected_execution(root)
             if revise:
                 try:
                     pointer = root / "episodes" / revise / "latest.json"
@@ -336,6 +339,7 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                                    input_hash=input_hash, stages={name: StageRecord() for name in
                                    ("planning", "teaching", "writing", "polishing", "review", "publish")})
             write_json(work / "script_request.json", {"research_run": research_id, "episode": episode,
+                                                     "execution": execution.model_dump(),
                                                      "text_generation": text_generation,
                                                      "require_plan_approval": plan_only})
             write_json(work / "inputs.json", inputs)
@@ -549,8 +553,7 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
 
         def writing_stage():
             plan, entries = selected()
-            outputs = []
-            for entry in entries:
+            def episode_task(entry):
                 destination = work / "drafts" / f"{entry.episode_id}.json"
                 stamp = destination.with_suffix(".checkpoint.json")
                 prompt = writing_prompt(plan, entry)
@@ -558,8 +561,7 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                 if stamp.exists() and destination.exists():
                     saved = json.loads(stamp.read_text(encoding="utf-8"))
                     if saved == {"input_hash": signature, "sha256": file_hash(destination)}:
-                        outputs.extend([destination, stamp])
-                        continue
+                        return [destination, stamp]
                 draft = invoke(prompt, EpisodeScript, "write_episode.v6-framing")
                 errors = validate_script(draft, entry)
                 if errors:
@@ -572,13 +574,12 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                     raise AppError("Skript verletzt Struktur- oder Quellenzuordnung.", code="invalid_script", status="blocked")
                 write_json(destination, draft.model_dump())
                 write_json(stamp, {"input_hash": signature, "sha256": file_hash(destination)})
-                outputs.extend([destination, stamp])
-            return outputs
+                return [destination, stamp]
+            return run_episode_stage(entries, episode_task, workers=execution.text_workers, work=work, stage="writing")
 
         def polishing_stage():
             plan, entries = selected()
-            outputs = []
-            for entry in entries:
+            def episode_task(entry):
                 original = EpisodeScript.model_validate_json(
                     (work / "drafts" / f"{entry.episode_id}.json").read_text(encoding="utf-8"))
                 folder = work / "polishing" / entry.episode_id
@@ -587,13 +588,12 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                                                    series_context=episode_series_context(plan, entry))
                 atomic_text(folder / "before.md", render_script(original, config.voice_profile))
                 atomic_text(folder / "after.md", render_script(candidate, config.voice_profile))
-                outputs.extend([*files, folder / "before.md", folder / "after.md"])
-            return outputs
+                return [*files, folder / "before.md", folder / "after.md"]
+            return run_episode_stage(entries, episode_task, workers=execution.text_workers, work=work, stage="polishing")
 
         def review_stage():
             plan, entries = selected()
-            outputs = []
-            for entry in entries:
+            def episode_task(entry):
                 draft_file = work / "polishing" / entry.episode_id / "script.json"
                 original_draft = json.loads((work / "drafts" / f"{entry.episode_id}.json").read_text(encoding="utf-8"))
                 draft = EpisodeScript.model_validate_json(draft_file.read_text(encoding="utf-8"))
@@ -710,8 +710,8 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                 teaching_report_file = work / "reviews" / f"{entry.episode_id}_teaching.json"
                 write_json(teaching_report_file, teaching_report)
                 write_json(reviewed_file, draft.model_dump())
-                outputs.extend([reviewed_file, report, teaching_report_file, *teaching_outputs])
-            return outputs
+                return [reviewed_file, report, teaching_report_file, *teaching_outputs]
+            return run_episode_stage(entries, episode_task, workers=execution.text_workers, work=work, stage="review")
 
         def publish_stage():
             plan, entries = selected()

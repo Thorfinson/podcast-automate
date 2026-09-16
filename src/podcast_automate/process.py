@@ -1,22 +1,60 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 from pathlib import Path
 
 from .errors import AppError
 
 
-def _stop_tree(process: subprocess.Popen) -> None:
+def stop_process_tree(process: subprocess.Popen) -> None:
+    """Stop only this owned worker and its descendants, including new sessions."""
+    if process.poll() is not None:
+        return
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                        capture_output=True, timeout=10, check=False)
     else:
+        import psutil
+
+        stopped = []
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+            parent = psutil.Process(process.pid)
+            # Model calls can run in multiple threads and separate sessions;
+            # killing the Studio process group alone would leave those alive.
+            pending = [parent]
+            while pending:
+                child = pending.pop()
+                try:
+                    child.suspend()
+                    stopped.append(child)
+                    # Enumerate after suspending: this parent cannot create
+                    # another child between enumeration and termination.
+                    pending.extend(child.children())
+                except psutil.NoSuchProcess:
+                    pass
+            for child in reversed(stopped):
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            psutil.wait_procs(stopped[1:], timeout=5)
+        except psutil.NoSuchProcess:
             pass
+        except psutil.AccessDenied as exc:
+            # Never leave surviving processes frozen after a failed stop.
+            for child in stopped:
+                try:
+                    child.resume()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            raise AppError("Der Arbeitsprozess konnte nicht angehalten werden. Zugriffsrechte prüfen.",
+                           code="worker_stop") from exc
+    process.wait(timeout=10)
+
+
+def _stop_tree(process: subprocess.Popen) -> None:
+    stop_process_tree(process)
     process.communicate()
 
 

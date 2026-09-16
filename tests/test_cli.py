@@ -31,6 +31,12 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(list(schemas.glob("*.schema.json"))), 20)
             self.assertTrue((schemas / "teaching_plan_repair.schema.json").is_file())
 
+    def test_doctor_can_skip_optional_local_tts_for_remote_audio(self):
+        with patch("podcast_automate.cli.inspect", return_value={"ready": True, "checks": []}) as inspect:
+            code, _ = self.invoke("doctor", "--skip-tts", "--json")
+        self.assertEqual(code, 0)
+        self.assertFalse(inspect.call_args.kwargs["include_tts"])
+
     def test_missing_codex_returns_persisted_blocked_state(self):
         with tempfile.TemporaryDirectory() as root:
             self.invoke("init", root, "--topic", "Thema", "--json")

@@ -22,6 +22,7 @@ from .script_models import SCRIPT_SCHEMAS
 from .teaching import TEACHING_SCHEMAS
 from .scripting import run_script
 from .storage import init_project, load_project, read_yaml, write_json
+from .platforms import configure_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--tts-python", help="Python der separaten Qwen-Umgebung")
     doctor = commands.add_parser("doctor", help="Installation und Abo-Anmeldung prüfen; kein Modellaufruf")
     doctor.add_argument("project_dir", type=Path, nargs="?")
+    doctor.add_argument("--skip-tts", action="store_true", help="Lokales Qwen überspringen, etwa bei Gemini-Audio")
     state = commands.add_parser("status", help="Fortschritt und Fehler des letzten Laufs anzeigen")
     state.add_argument("project_dir", type=Path)
     state.add_argument("--run-id")
@@ -113,6 +115,7 @@ def emit(data: dict, as_json: bool):
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    configure_path(Path.cwd())
     try:
         if args.command == "studio":
             from .studio import serve
@@ -130,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             code = 0
         elif args.command == "doctor":
             runtime = load_project(args.project_dir).runtime if args.project_dir else RuntimeSettings()
-            data = inspect(runtime)
+            data = inspect(runtime, include_tts=not args.skip_tts)
             code = 0 if data["ready"] else 1
         elif args.command == "status":
             data = status(args.project_dir.resolve(), args.run_id)

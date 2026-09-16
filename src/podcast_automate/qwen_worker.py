@@ -34,7 +34,8 @@ def hash_file(path: Path) -> str:
 
 def environment_report() -> dict:
     report = {"python": platform.python_version(), "system": platform.system(),
-              "os_version": platform.version(), "packages": {}, "gpu_available": False}
+              "os_version": platform.version(), "packages": {}, "gpu_available": False,
+              "cuda_available": False, "mps_available": False}
     for name in ("torch", "qwen-tts", "soundfile", "transformers"):
         try:
             report["packages"][name] = importlib.metadata.version(name)
@@ -43,11 +44,37 @@ def environment_report() -> dict:
     if importlib.util.find_spec("torch"):
         import torch
         report["hip_version"] = getattr(torch.version, "hip", None)
-        report["gpu_available"] = torch.cuda.is_available()
-        if report["gpu_available"]:
+        report["cuda_available"] = torch.cuda.is_available()
+        report["mps_available"] = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+        report["gpu_available"] = report["cuda_available"] or report["mps_available"]
+        if report["cuda_available"]:
             report["gpu_name"] = torch.cuda.get_device_name(0)
             report["gpu_memory_bytes"] = torch.cuda.get_device_properties(0).total_memory
+        elif report["mps_available"]:
+            report["gpu_name"] = "Apple Metal (MPS)"
     return report
+
+
+def select_device(torch, requested: str) -> str:
+    cuda = torch.cuda.is_available()
+    mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+    if requested == "auto":
+        return "cuda:0" if cuda else "mps" if mps else "cpu"
+    if requested == "cuda:0" and not cuda:
+        raise RuntimeError("CUDA_UNAVAILABLE")
+    if requested == "mps" and not mps:
+        raise RuntimeError("MPS_UNAVAILABLE")
+    if requested not in {"cuda:0", "mps", "cpu"}:
+        raise RuntimeError("INVALID_DEVICE")
+    return requested
+
+
+def model_dtype(torch, device: str):
+    # MPS uses float32 for broader operator compatibility; do not call CUDA
+    # memory or precision APIs on Apple GPUs or the CPU.
+    if device != "cuda:0":
+        return torch.float32
+    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
 
 def cached_segment(wav: Path, meta: Path) -> dict | None:
@@ -78,9 +105,8 @@ def render(request: dict, report: dict) -> dict:
 
     progress("loading_model", [])
     language = request.get("language", "German")
-    device = config["tts_device"]
-    if device != "cpu" and not torch.cuda.is_available():
-        raise RuntimeError("GPU_UNAVAILABLE")
+    device = select_device(torch, config["tts_device"])
+    dtype = model_dtype(torch, device)
     if Path(config["tts_model"]).is_dir():
         raise RuntimeError("USE_PINNED_HUGGINGFACE_MODEL")
     # Load processor and model from the same immutable downloaded snapshot.
@@ -89,11 +115,11 @@ def render(request: dict, report: dict) -> dict:
     start = time.perf_counter()
     model = Qwen3TTSModel.from_pretrained(
         snapshot, device_map=device,
-        dtype=torch.float32 if device == "cpu" else torch.bfloat16,
+        dtype=dtype,
         attn_implementation=config["tts_attention"],
     )
     load_seconds = time.perf_counter() - start
-    if device != "cpu":
+    if device == "cuda:0":
         torch.cuda.reset_peak_memory_stats()
     cache = Path(request["cache_dir"])
     cache.mkdir(parents=True, exist_ok=True)
@@ -102,9 +128,10 @@ def render(request: dict, report: dict) -> dict:
         progress("rendering", results, segment["segment_id"])
         voice = request["voices"][segment["speaker_id"]]
         settings = {
-            "worker_version": 1, "model": config["tts_model"], "revision": revision,
+            "worker_version": 2, "model": config["tts_model"], "revision": revision,
             "voice": voice, "text": segment["text"], "language": language,
-            "device": device, "attention": config["tts_attention"], "seed": config["seed"],
+            "device": config["tts_device"], "resolved_device": device, "dtype": str(dtype),
+            "attention": config["tts_attention"], "seed": config["seed"],
             "packages": report["packages"], "hip_version": report.get("hip_version"),
         }
         key = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
@@ -145,7 +172,8 @@ def render(request: dict, report: dict) -> dict:
     progress("completed", results)
     return {
         **report, "model_revision": revision, "model_load_seconds": load_seconds,
-        "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated() if device != "cpu" else None,
+        "selected_device": device,
+        "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated() if device == "cuda:0" else None,
         "segments": results,
     }
 
@@ -166,7 +194,9 @@ def main() -> int:
         return 0
     except Exception as exc:
         messages = {
-            "GPU_UNAVAILABLE": "PyTorch erkennt keine GPU. Passende AMD-PyTorch-Installation prüfen.",
+            "CUDA_UNAVAILABLE": "PyTorch erkennt keine CUDA-/ROCm-GPU. Passenden PyTorch-Build und Treiber prüfen.",
+            "MPS_UNAVAILABLE": "PyTorch erkennt kein MPS-Gerät. Apple-Silicon-Mac und passenden PyTorch-Build prüfen.",
+            "INVALID_DEVICE": "Als Qwen-Gerät auto, cuda:0, mps oder cpu einstellen.",
             "USE_PINNED_HUGGINGFACE_MODEL": "Für die Probe einen Hugging-Face-Modellnamen verwenden.",
             "INVALID_AUDIO": "Das Modell lieferte ungültige Audiodaten.",
             "EMPTY_AUDIO": "Das Modell lieferte nur Stille.",

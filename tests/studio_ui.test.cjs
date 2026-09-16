@@ -120,66 +120,47 @@ function workflowProject(app) {
     job:{id:'job-one',action:'resume',status:'running',started_at:new Date().toISOString(),run:{kind:'script',status:'running',stages:{planning:{status:'completed',attempts:1},teaching:{status:'running',attempts:1},writing:{status:'pending'},polishing:{status:'pending'},review:{status:'pending'},publish:{status:'pending'}}}}})`);
 }
 
-test('text model presets and reasoning are explicit with custom model support',()=>{
-  const app=studio();
-  app.run(`boot.capabilities={text_reasoning_selection:true};boot.text_catalog={codex_models:{'gpt-6-astra':'GPT-6 Astra','gpt-5.6-sol':'GPT-5.6 Sol'}};`);
+test('the conversational summary shows model, reasoning and independent execution preferences',()=>{
+  const app=studio(),p=workflowProject(app);p.job.status='completed';
+  p.text={provider:'codex_cli',model:'custom-model',reasoning_effort:'high'};
+  p.execution={text:'parallel',audio:'sequential'};
+  app.run(`boot.capabilities={conversational_setup:true};project=${JSON.stringify(p)};`);
   const html=app.run('renderBrief()');
-  assert.ok(html.includes('id="model-preset"'));
-  assert.ok(html.includes('value="gpt-6-astra" selected'));
-  assert.ok(html.includes('value="xhigh" selected'));
-  assert.ok(html.includes('Denkaufwand'));
-  assert.ok(!html.includes('benötigt einen Studio-Neustart'));
-  const custom=app.run(`renderTextModelFields({provider:'codex_cli',model:'custom-model',reasoning_effort:'low'})`);
-  assert.ok(custom.includes('value="custom" selected'));
-  assert.ok(custom.includes('value="custom-model"'));
-  assert.ok(custom.includes('value="low" selected'));
-  const remote=app.run(`renderTextModelFields({provider:'openrouter',model:'vendor/model',reasoning_effort:null})`);
-  assert.ok(remote.includes('Standard des gewählten Modells'));
-  assert.ok(!remote.includes('id="model-preset"'));
+  assert.ok(html.includes('custom-model'));
+  assert.ok(html.includes('Reasoning: high'));
+  assert.ok(html.includes('Parallel · bis zu 3 Folgen'));
+  assert.ok(!html.includes('id="model-preset"'));
 });
 
-test('switching text providers keeps model and reasoning drafts separate',()=>{
-  const app=studio();
-  app.run(`boot.capabilities={text_reasoning_selection:true};`);
-  for(const [id,value] of Object.entries({provider:'openrouter',model:'gpt-6-astra','reasoning-effort':'xhigh',max_output_tokens:'32768'})){
-    app.run(`$('${id}').value=${JSON.stringify(value)}`);
-  }
-  app.run(`$('provider').dataset={previous:'codex_cli'};changeTextProvider();`);
-  assert.ok(app.elements.get('text-model-settings').innerHTML.includes('OpenRouter-Textmodell'));
-  app.run(`$('provider').value='codex_cli';$('model').value='vendor/remote';$('reasoning-effort').value='low';changeTextProvider();`);
-  assert.ok(app.elements.get('text-model-settings').innerHTML.includes('value="xhigh" selected'));
-  assert.equal(app.run('textDrafts.openrouter.model'),'vendor/remote');
-  assert.equal(app.run('textDrafts.openrouter.reasoning_effort'),'low');
-  assert.equal(app.run('textDrafts.codex_cli.model'),'gpt-6-astra');
-  app.run(`$('model').value='';`);
-  assert.throws(()=>app.run('readTextChoice()'),/Textmodell auswählen/);
-  app.run(`$('provider').dataset.previous='openrouter';changeTextProvider();`);
-  assert.ok(app.elements.get('text-model-settings').innerHTML.includes('value="xhigh" selected'));
+test('unapplied chat proposals render without changing saved project settings',()=>{
+  const app=studio(),p=workflowProject(app);p.job.status='completed';
+  p.text={provider:'codex_cli',model:'saved',reasoning_effort:'xhigh'};
+  p.chat=[{role:'assistant',message:'Choose this?',text:{provider:'openrouter',model:'vendor/new',reasoning_effort:'low'},execution:{text:'parallel',audio:'parallel'}}];
+  app.run(`project=${JSON.stringify(p)};`);
+  const html=app.run('renderBrief()');
+  assert.ok(html.includes('vendor/new'));
+  assert.ok(html.includes('data-action="apply-proposal"'));
+  assert.equal(app.run('project.text.model'),'saved');
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 
-test('saving the brief sends the visible model and reasoning and reloads the stored values',async()=>{
-  const app=studio(), p=workflowProject(app);
-  p.job.status='completed';
-  app.run(`boot.capabilities={text_reasoning_selection:true};project=${JSON.stringify(p)};`);
-  const values={provider:'codex_cli',model:'gpt-6-astra','reasoning-effort':'xhigh',max_output_tokens:'32768',
-    topic:'Topic',central_question:'Why?',prior_knowledge:'',depth_request:'Deep',language:'de-DE',focus_questions:'',
-    excluded_topics:'',seed_urls:'',target_total_minutes:'',host_a:'Aiden',host_b:'Vivian','tts-provider':'qwen3_local','api-key':''};
-  for(const [id,value] of Object.entries(values))app.run(`$(${JSON.stringify(id)}).value=${JSON.stringify(value)}`);
-  p.text={provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh',max_output_tokens:32768};
+test('applying a chat proposal sends only its review hashes and reloads saved preferences',async()=>{
+  const app=studio(),p=workflowProject(app);p.job.status='completed';
+  Object.assign(p,{proposal_hash:'proposal',config_hash:'config',audio_hash:'audio',execution_hash:'execution'});
+  app.run(`project=${JSON.stringify(p)};`);
+  p.text={provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'};
+  p.proposal_applied=true;
   app.responses.set('/api/projects/test',p);
-  await app.run('saveBrief()');
-  const request=app.requests.find(r=>r.path==='/api/projects/test/save');
-  assert.deepEqual(JSON.parse(request.options.body).text,p.text);
+  await app.run('applySetupProposal()');
+  const request=app.requests.find(r=>r.path==='/api/projects/test/apply_proposal');
+  assert.deepEqual(JSON.parse(request.options.body),{proposal_hash:'proposal',config_hash:'config',audio_hash:'audio',execution_hash:'execution'});
   assert.equal(app.run('project.text.reasoning_effort'),'xhigh');
-  assert.ok(app.run('renderBrief()').includes('value="xhigh" selected'));
 });
 
 test('old servers announce a restart and old runs never claim the new default model',()=>{
   const app=studio(), p=workflowProject(app);
   app.run(`project=${JSON.stringify(p)};`);
   assert.ok(app.run('renderBrief()').includes('benötigt einen Studio-Neustart'));
-  assert.ok(!Object.hasOwn(app.run('readTextChoice()'),'reasoning_effort'));
   let html=app.run('renderRunTextChoice(project.job)');
   assert.ok(html.includes('Modell nicht festgelegt'));
   assert.ok(!html.includes('gpt-6-astra'));
@@ -360,11 +341,13 @@ test('polling the production page keeps a teaching preview open at its reading p
   assert.equal(detail.open,true);
   assert.equal(preview.scrollTop,180);
 });
-test('the initial screen exposes a real brief, provider and both voice controls',()=>{
+test('setup starts with a conversation and a protected key entry, without configuration forms',()=>{
   const app=studio(),html=app.run('renderBrief()');
-  for(const id of ['brief-form','topic','central_question','provider','model','api-key','host_a','host_b']) assert.ok(html.includes(`id="${id}"`));
-  assert.ok(html.includes('Projekt anlegen'));
-  assert.ok(html.includes('Codex · bestehendes ChatGPT-Abo'));
+  assert.ok(html.includes('id="chat-message"'));
+  assert.ok(html.includes('Worum soll dein Podcast gehen'));
+  assert.ok(html.includes('id="api-key"'));
+  for(const id of ['brief-form','topic','central_question','provider','model','host_a','host_b'])
+    assert.ok(!html.includes(`id="${id}"`));
 });
 test('a plan is readable and approval is an explicit action, with hostile model text escaped',()=>{
   const app=studio();
@@ -382,8 +365,10 @@ test('audio starts disabled, names selected voices and marks an old recording',(
   assert.ok(html.includes('id="audio-start" data-action="audio" disabled'));
   assert.ok(html.includes('id="audio-approval" type="checkbox"'));
   assert.ok(html.includes('Aiden & Vivian'));
-  assert.ok(html.includes('früheren Skript- oder Stimmenstand'));
-  assert.ok(html.includes('/media/test/exports/ep_001/run_test/audio.mp3'));
+  assert.ok(html.includes('Alle fertigen Folgen anhören'));
+  const player=app.run("podcastCard({id:'test'},{episode_id:'ep_001',title:'Episode',audio:['exports/ep_001/run_test/audio.mp3'],audio_current:false},0)");
+  assert.ok(player.includes('früheren Skript- oder Stimmenstands'));
+  assert.ok(player.includes('/media/test/exports/ep_001/run_test/audio.mp3'));
 });
 test('optional agent navigation uses visible state and cannot approve a job',async()=>{
   const app=studio();
@@ -404,18 +389,16 @@ test('API mutations carry the session token and no key is persisted by browser s
   assert.ok(!source.includes('localStorage'));
   assert.ok(!source.includes('sessionStorage'));
 });
-test('Gemini audio offers its own voices while Codex remains the writer',()=>{
+test('chat summary and previews distinguish Gemini audio from the Codex writer',()=>{
   const app=studio();
-  app.run(`boot.audio_catalog={qwen3_local:{label:'Qwen',voices:['Aiden','Vivian'],defaults:{host_a:'Aiden',host_b:'Vivian'}},openrouter_gemini_tts:{label:'Gemini 3.1 Flash TTS · OpenRouter',voices:['Sadaltager','Aoede','Charon'],defaults:{host_a:'Sadaltager',host_b:'Aoede'}}};
-    project={config:boot.defaults,text:{provider:'codex_cli',model:null,max_output_tokens:32768},audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},chat:[]};`);
+  app.run(`boot.audio_catalog={qwen3_local:{label:'Qwen',voices:['Aiden','Vivian'],defaults:{host_a:'Aiden',host_b:'Vivian'}},openrouter_gemini_tts:{label:'Gemini',voices:['Sadaltager','Aoede','Charon'],defaults:{host_a:'Sadaltager',host_b:'Aoede'}}};
+    project={config:boot.defaults,text:{provider:'codex_cli',model:'gpt-6-astra'},audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},chat:[]};`);
   const html=app.run('renderBrief()');
-  assert.ok(html.includes('id="tts-provider"'));
-  assert.ok(html.includes('value="openrouter_gemini_tts" selected'));
-  assert.ok(html.includes('value="Sadaltager" selected'));
-  assert.ok(html.includes('value="Aoede" selected'));
-  assert.ok(html.includes('value="codex_cli" selected'));
+  assert.ok(html.includes('Codex · Abo'));
+  assert.ok(html.includes('Sadaltager &amp; Aoede'));
+  assert.ok(html.includes('data-preview-voice="Charon"'));
   assert.ok(html.includes('Hörprobe erzeugen · API'));
-  assert.ok(!html.includes('id="key-settings" hidden'));
+  assert.ok(!html.includes('id="tts-provider"'));
 });
 test('Gemini approval names the remote provider, chosen voices and API charge',()=>{
   const app=studio();
@@ -475,5 +458,74 @@ test('Play and Pause reuse the recording without a generation request or key, in
   await app.run(`playSample('Aoede','de-DE')`);
   assert.equal(player.paused,true);
   await assert.rejects(app.run(`playSample('Puck','de-DE')`));
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('remote audio enables a different reviewed episode, but blocks duplicates and full capacity',()=>{
+  const app=studio();
+  app.run(`boot.capabilities={parallel_audio:true};project={id:'test',config:boot.defaults,
+    audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},
+    execution:{audio:'parallel'},audio_capacity:{limit:3,active:1,available:2},
+    episodes:[{script:{episode_id:'ep_001',title:'First'},audio:[]},{script:{episode_id:'ep_002',title:'Second'},audio:[]}],
+    audio_jobs:[{id:'a',episode:'ep_001',status:'running'}],job:{id:'a',action:'audio',status:'running'}};`);
+  assert.match(app.run('audioBlockReason("ep_001")'),/bereits vertont/);
+  assert.equal(app.run('audioBlockReason("ep_002")'),'');
+  app.run('episodeIndex=1');
+  assert.ok(!app.run('renderAudio()').includes('id="audio-approval" type="checkbox" disabled'));
+  assert.ok(app.run('renderAudio()').includes('id="audio-start" data-action="audio" disabled'));
+  app.run('project.audio_capacity.available=0');
+  assert.match(app.run('audioBlockReason("ep_002")'),/Plätze/);
+  app.run('project.audio_settings.provider="qwen3_local";project.audio_capacity.available=2');
+  assert.match(app.run('audioBlockReason("ep_002")'),/Auftrag läuft/);
+});
+
+test('independent audio cards target their own stop or resume action',()=>{
+  const app=studio();
+  app.run(`boot.capabilities={parallel_audio:true};project={id:'test',config:boot.defaults,episodes:[],
+    audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},audio_capacity:{available:2},
+    audio_jobs:[{id:'one',episode:'ep_001',status:'running',progress:{completed_segments:2,total_segments:8}},
+      {id:'two',episode:'ep_002',status:'blocked',run:{run_id:'run_two'},message:'<blocked>'}],job:{id:'one',status:'running'}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('data-job-id="one"'));
+  assert.ok(html.includes('data-run-id="run_two" data-episode="ep_002"'));
+  assert.ok(html.includes('&lt;blocked&gt;'));
+  assert.ok(html.includes('2 von 8'));
+});
+
+test('the overview includes every available episode while another episode is being rendered',()=>{
+  const app=studio();
+  app.run(`boot.capabilities={project_overview:true};overviewData={projects:[{id:'test',topic:'Topic <one>',
+    job:{status:'running',action:'audio'},episodes:[
+      {episode_id:'ep_001',title:'First',audio:['exports/ep_001/one.mp3'],audio_current:true},
+      {episode_id:'ep_002',title:'Second',audio:['exports/ep_002/two.mp3','exports/ep_002/three.mp3'],audio_current:true},
+      {episode_id:'ep_003',title:'Third',audio:[]}]}],trash:[]};`);
+  const html=app.run('renderOverview()');
+  assert.equal((html.match(/<audio /g)||[]).length,3);
+  assert.ok(html.includes('Topic &lt;one&gt;'));
+  assert.ok(html.includes('Audio entsteht'));
+  assert.ok(html.includes('data-open-project="test"'));
+  assert.ok(html.includes('data-delete-project="test" disabled'));
+  assert.equal(app.run('steps.length'),6);
+});
+
+test('overview polling preserves an existing audio element and adds the next finished episode',()=>{
+  const app=studio();
+  app.run(`overviewData={projects:[{id:'test',topic:'Topic',episodes:[
+    {episode_id:'ep_001',title:'First',audio:['one.mp3'],audio_current:true},
+    {episode_id:'ep_002',title:'Second',audio:['two.mp3'],audio_current:true}]}],trash:[]};
+    $('overview-projects').querySelectorAll=()=>[];
+    $('project-card-test').querySelector=()=>null;
+    $('podcast-test-ep_001').dataset={audioVersion:JSON.stringify(['one.mp3'])};
+    $('podcast-test-ep_001').innerHTML='playing at 123 seconds';
+    $('podcast-test-ep_002').dataset={audioVersion:JSON.stringify([])};
+    $('podcast-test-ep_002').querySelectorAll=()=>[];
+    refreshOverview();`);
+  assert.equal(app.elements.get('podcast-test-ep_001').innerHTML,'playing at 123 seconds');
+  assert.ok(app.elements.get('podcast-test-ep_002').outerHTML.includes('two.mp3'));
+});
+
+test('credential-like chat text is rejected before project creation or model calls',async()=>{
+  const app=studio();
+  await assert.rejects(app.run(`sendSetupMessage('sk-or-abcdefghijklmnopqrstuvwxyz')`),/Keys gehören nicht/);
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });

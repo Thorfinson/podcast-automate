@@ -1,0 +1,6 @@
+# Shared Qwen packages. Install hardware-appropriate PyTorch separately.
+qwen-tts==0.1.1
+transformers==4.57.3
+accelerate==1.12.0
+huggingface-hub==0.36.2
+gradio==6.17.3
