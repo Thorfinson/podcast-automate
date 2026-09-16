@@ -23,6 +23,8 @@ from .speech import GeminiSpeech, audio_catalog, selected_audio
 from .storage import digest, load_project, project_lock, read_yaml, write_json
 from .studio import BriefProposal, TextChoice, audio_job_path, read_json
 from .studio_progress import safe_script_progress, watch
+from .status_summary import start_monitor
+from .process import stop_process_tree
 from .voice_samples import generate_sample, generate_samples
 from .text_settings import CODEX_MODELS, OPENROUTER_MODELS, OPENROUTER_EFFORTS, REASONING_EFFORTS
 
@@ -187,14 +189,19 @@ def main():
     job = read_json(job_path)
     progress_stop = threading.Event()
     progress_thread = None
-    if request["action"] in {"plan", "replan", "script", "revise", "resume"} and not request.get("audio_job_id"):
+    summary_process = None
+    if request["action"] in {"research", "plan", "replan", "script", "revise", "resume"} and not request.get("audio_job_id"):
         progress_thread = threading.Thread(target=watch, args=(root, job["id"], progress_stop), daemon=True)
         progress_thread.start()
+        try:
+            summary_process = start_monitor(root, job["id"], request.get("api_key"))
+        except OSError:
+            pass
 
     def update(manifest):
         job["run"] = manifest.model_dump(mode="json")
         progress = read_json(manifest_path(root, manifest.run_id).parent / "progress.json", {})
-        if progress.get("phase") == "foundation_research":
+        if progress.get("phase") in {"foundation_research", "research"}:
             job["progress"] = progress
         elif job.get("progress", {}).get("phase") == "foundation_research":
             job.pop("progress", None)
@@ -228,6 +235,11 @@ def main():
         if request.get("api_key"):
             job["message"] = job["message"].replace(request["api_key"], "[Key verborgen]")
     finally:
+        if summary_process is not None:
+            try:
+                stop_process_tree(summary_process)
+            except Exception:
+                pass  # An optional monitor must not prevent saving the final job state.
         progress_stop.set()
         if progress_thread:
             progress_thread.join(timeout=3)

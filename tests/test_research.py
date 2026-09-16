@@ -13,6 +13,9 @@ from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.models import TopicBrief
 from podcast_automate.research import run_research, validate_dossier
+from podcast_automate.research_quality import ResearchAssessment, RequirementAssessment
+from podcast_automate.research_patches import DossierPatch
+from podcast_automate.research_review import SourceReview, SourceReviewIssue
 from podcast_automate.research_models import (DossierReview, Evidence, Finding, QuestionCoverage,
     ResearchDiscovery, ResearchDossier, ResearchQuestion, ReviewIssue, SourceCandidate)
 from podcast_automate.runner import status
@@ -40,12 +43,20 @@ def discovery(topic="Test topic", count=1):
 def dossier_from_prompt(prompt):
     payload = json.loads(prompt.splitlines()[-1])
     sources = payload["retrieved_sources"]
-    section = next(s for source in sources for s in source["sections"] if "Models assign an energy" in s["text"])
+    section = next(s for source in sources if source.get("url") for s in source["sections"] if "Models assign an energy" in s["text"])
     return ResearchDossier(topic=payload["topic"], scope_note="Bounded fixture dossier.", findings=[
         Finding(id="f_energy", kind="definition", statement="Configurations are assigned energies.",
                 evidence=[Evidence(reference=section["reference"], excerpt="Models assign an energy")])],
         coverage=[QuestionCoverage(question_id="q_energy", status="answered", finding_ids=["f_energy"], gap="")],
-        open_questions=["Which training objective should be used?"])
+        open_questions=[])
+
+
+def assessment_from_prompt(prompt):
+    payload = json.loads(prompt.splitlines()[-1])
+    return ResearchAssessment(requirements=[RequirementAssessment(requirement_id=r["id"],
+        finding_ids=["f_energy"], direct_answer=True, explanation=True, evidence=True,
+        cross_check=True, boundaries=True, reason="The synthetic fixture meets this bounded requirement.",
+        missing=[], search_queries=[]) for r in payload["brief"]["requirements"]], issues=[])
 
 
 class SourceTests(unittest.TestCase):
@@ -115,9 +126,16 @@ class ResearchTests(unittest.TestCase):
         if output_type is ResearchDossier:
             self.assertFalse(kwargs["search"])
             return dossier_from_prompt(prompt), {}
-        if output_type is DossierReview:
+        if output_type is DossierPatch:
             self.assertFalse(kwargs["search"])
-            return DossierReview(issues=[], limitations=["Model review is not human verification."]), {}
+            return DossierPatch(updates=[], additions=[], coverage_updates=[],
+                                resolved_open_questions=[], new_open_questions=[]), {}
+        if output_type is SourceReview:
+            self.assertFalse(kwargs["search"])
+            return SourceReview(issues=[], limitations=["Model review is not human verification."]), {}
+        if output_type is ResearchAssessment:
+            self.assertFalse(kwargs["search"])
+            return assessment_from_prompt(prompt), {}
         self.fail("Unexpected output type")
 
     def test_topic_to_downloaded_sources_and_dossier_then_resume(self):
@@ -126,7 +144,7 @@ class ResearchTests(unittest.TestCase):
             second = run_research(self.root, resume=True)
         self.assertEqual(first.status, "completed")
         self.assertEqual(first.run_id, second.run_id)
-        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(self.calls), 4)
         self.assertEqual(self.download.call_count, 1)
         self.assertTrue(all(stage.attempts == 1 for stage in second.stages.values()))
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
@@ -147,12 +165,13 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(changed.exception.code, "inputs_changed")
         self.assertEqual(first.status, "completed")
         self.assertEqual(second.status, "completed")
-        self.assertEqual(selections, [("gpt-6-astra", "xhigh")] * 3)
+        self.assertEqual(selections, [("gpt-6-astra", "xhigh")] * 4)
         self.assertEqual((self.root / "project.yaml").read_bytes(), original)
         report = json.loads((self.root / "reports/research_quality.json").read_text())
         self.assertEqual(report["sources"], 1)
         self.assertFalse(report["human_reviewed"])
-        self.assertFalse(report["complete_topic_coverage"])
+        self.assertTrue(report["complete_topic_coverage"])
+        self.assertEqual(report["coverage_scope"], "agreed_brief")
         self.assertIn("Models assign an energy", (self.root / "research/research_briefing.md").read_text(encoding="utf-8"))
 
     def test_style_revision_reuses_verified_sources_without_search_or_download(self):
@@ -173,7 +192,7 @@ class ResearchTests(unittest.TestCase):
         report = json.loads((self.root / "reports/research_quality.json").read_text())
         self.assertEqual(report["source_provenance"]["reused_from_run"], original.run_id)
         self.assertFalse(report["source_provenance"]["new_web_search"])
-        self.assertEqual(report["budget"], {"model_calls": 2, "search_rounds": 0})
+        self.assertEqual(report["budget"], {"model_calls": 3, "search_rounds": 0})
 
     def test_source_reuse_rejects_changed_scope(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
@@ -183,7 +202,7 @@ class ResearchTests(unittest.TestCase):
             with self.assertRaises(AppError) as raised:
                 run_research(self.root, reuse_sources=original.run_id)
         self.assertEqual(raised.exception.code, "inputs_changed")
-        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(self.calls), 4)
 
     def test_source_reuse_rejects_corrupt_snapshot(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
@@ -248,6 +267,42 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(result.stages["discovery"].attempts, 1)
         self.assertEqual(result.stages["retrieval"].attempts, 2)
         self.assertEqual(self.download.call_count, 2)
+
+    def test_timeout_can_resume_with_longer_deadline_without_researching_again(self):
+        self.config.runtime.text_timeout_seconds = 600
+        write_yaml(self.root / "project.yaml", self.config.model_dump(mode="json"))
+        deadlines = []
+
+        def interrupted(adapter, prompt, output_type, directory, **kwargs):
+            deadlines.append(adapter.settings.text_timeout_seconds)
+            if output_type is ResearchDossier and adapter.settings.text_timeout_seconds == 600:
+                raise AppError("Timeout", code="timeout")
+            return self.model(prompt, output_type, directory, **kwargs)
+
+        with patch("podcast_automate.research.CodexAdapter.structured", autospec=True, side_effect=interrupted):
+            first = run_research(self.root, model="gpt-6-astra", reasoning_effort="xhigh")
+            self.assertEqual(first.status, "failed")
+            self.config.runtime.text_timeout_seconds = 1800
+            # A timeout change must not mask a changed research scope.
+            changed = self.config.model_dump(mode="json")
+            changed["focus_questions"] = ["An added topic"]
+            write_yaml(self.root / "project.yaml", changed)
+            with self.assertRaises(AppError) as error:
+                run_research(self.root, resume=True, run_id=first.run_id)
+            self.assertEqual(error.exception.code, "inputs_changed")
+            write_yaml(self.root / "project.yaml", self.config.model_dump(mode="json"))
+            resumed = run_research(self.root, resume=True, run_id=first.run_id)
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(resumed.run_id, first.run_id)
+        self.assertEqual(resumed.input_hash, first.input_hash)
+        self.assertEqual(resumed.stages["discovery"].attempts, 1)
+        self.assertEqual(resumed.stages["retrieval"].attempts, 1)
+        self.assertEqual(resumed.stages["dossier"].attempts, 2)
+        self.assertEqual(self.download.call_count, 1)
+        self.assertEqual(deadlines, [600, 600, 1800, 1800, 1800])
+        work = self.root / "runs" / first.run_id
+        self.assertEqual(json.loads((work / "budget.json").read_text())["model_calls"], 5)
+        self.assertEqual(status(self.root)["invalid_completed_stages"], [])
 
     def test_parser_upgrade_reuses_download_and_rebuilds_dossier(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
@@ -333,8 +388,9 @@ class ResearchTests(unittest.TestCase):
 
         def model(prompt, output_type, directory, **kwargs):
             nonlocal original_dossier
-            if output_type is DossierReview:
-                return DossierReview(issues=[ReviewIssue(finding_id="f_energy", reason="Claim is overstated")], limitations=[]), {}
+            if output_type is SourceReview:
+                return SourceReview(issues=[SourceReviewIssue(finding_id="f_energy", reason="Claim is overstated",
+                    resolution="revise", search_queries=[])], limitations=[]), {}
             if output_type is ResearchDossier and original_dossier is not None:
                 return original_dossier, {}
             result = self.model(prompt, output_type, directory, **kwargs)
@@ -367,15 +423,21 @@ class ResearchTests(unittest.TestCase):
                     draft = draft.model_copy(deep=True)
                     draft.findings[0].statement = "The model scores possible configurations."
                 return draft, {}
-            if output_type is DossierReview:
+            if output_type is DossierPatch:
+                draft = draft.model_copy(deep=True)
+                draft.findings[0].statement = "The model scores possible configurations."
+                return DossierPatch(updates=draft.findings, additions=[], coverage_updates=[],
+                                    resolved_open_questions=[], new_open_questions=[]), {}
+            if output_type is SourceReview:
                 review_calls += 1
                 if review_calls == 1:
-                    return DossierReview(issues=[ReviewIssue(finding_id="f_energy", reason="Clarify the idea")], limitations=[]), {}
+                    return SourceReview(issues=[SourceReviewIssue(finding_id="f_energy", reason="Clarify the idea",
+                        resolution="revise", search_queries=[])], limitations=[]), {}
                 payload = json.loads(prompt.splitlines()[-1])
                 self.assertEqual(payload["dossier"]["findings"][0]["statement"], "The model scores possible configurations.")
                 if review_calls == 2:
                     raise AppError("Quota", code="quota_exhausted", status="waiting_for_quota")
-                return DossierReview(issues=[], limitations=[]), {}
+                return SourceReview(issues=[], limitations=[]), {}
             return self.model(prompt, output_type, directory, **kwargs)
 
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
@@ -383,7 +445,7 @@ class ResearchTests(unittest.TestCase):
             self.assertEqual(interrupted.status, "waiting_for_quota")
             finished = run_research(self.root, resume=True)
         self.assertEqual(finished.status, "completed")
-        self.assertEqual(synthesis_calls, 2)
+        self.assertEqual(synthesis_calls, 1)
         self.assertEqual(review_calls, 3)
         self.assertEqual(self.download.call_count, 1)
         self.assertIn("The model scores possible configurations.",

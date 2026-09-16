@@ -27,15 +27,15 @@ class Contract(BaseModel):
 
 
 class ResearchLimits(Contract):
-    search_rounds: int = Field(default=3, gt=0)
-    sources: int = Field(default=30, gt=0)
+    search_rounds: int = Field(default=12, gt=0)
+    sources: int = Field(default=60, gt=0)
     model_calls: int = Field(default=150, gt=0)
 
 
 class RuntimeSettings(Contract):
     codex_executable: NonEmpty = "codex"
     codex_model: str | None = None
-    text_timeout_seconds: int = Field(default=600, gt=0)
+    text_timeout_seconds: int = Field(default=1800, gt=0)
     tts_python: NonEmpty = Field(default_factory=lambda: sys.executable)
     tts_model: NonEmpty = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
     tts_revision: NonEmpty = "main"

@@ -18,6 +18,8 @@ Du kannst deine Wünsche mit Codex oder OpenRouter besprechen, den vorgeschlagen
 
 Neue Projekte starten mit **150 Modellaufrufen je Recherche- oder Skriptlauf**. Bestehende Projekte behalten ihr gespeichertes Limit. Widersprüche im Inhaltsverzeichnis werden bis zu dreimal automatisch am vorhandenen Entwurf korrigiert; Quellenprüfung und deine anschließende Freigabe bleiben erforderlich.
 
+Die Recherche prüft jede ursprüngliche Leitfrage auf vollständige Antwort, Erklärungstiefe, gelesene Belege, unabhängige Gegenprüfung und Grenzen. Fehlende Grundlagen werden automatisch nachrecherchiert; sie dürfen den Serienumfang nicht unbemerkt verkleinern. Studio zeigt den Prüfstand je Leitfrage. Erst nach bestandener Prüfung entsteht das Inhaltsverzeichnis. Neue Rechercheläufe haben standardmäßig bis zu 12 Suchrunden und 60 Quellenkandidaten innerhalb des Aufrufbudgets. [Qualitätsmerkmale und Wiederaufnahme](docs/research.md).
+
 **Sequenziell oder parallel wählst du pro Projekt im Gespräch**, getrennt für Text und Audio. Zum Beispiel: „Text parallel, Vertonung sequenziell“. Parallel bedeutet höchstens drei Folgen gleichzeitig innerhalb von Skripterstellung, Dialog-Polishing oder Qualitätsprüfung – auch bei Codex über das Abo. Recherche und Lehrkonzept bleiben in Reihenfolge, damit gemeinsame Belege und vorausgesetzte Beispiele konsistent bleiben. Der Modus wird beim Start eines Textauftrags gespeichert; Fortsetzen behält ihn bei. Bestehende Projekte und ältere Aufträge bleiben zunächst sequenziell. Anbieterlimits und das genehmigte Modellaufrufbudget gelten weiter.
 
 Bei Gemini über OpenRouter können bis zu drei ausdrücklich freigegebene Folgen gleichzeitig vertont werden. Jede hat ihren eigenen Fortschritt sowie Anhalten/Fortsetzen. Qwen bleibt wegen der lokalen GPU einzeln. Die Projektübersicht aktualisiert Arbeitsstände und ergänzt fertige Aufnahmen, ohne vorhandene Player beim Polling neu aufzubauen. Löschen verschiebt ein ruhendes Projekt nach `.studio/trash/`; dort ist es über die Übersicht wiederherstellbar. Laufende Projekte können nicht gelöscht werden.
@@ -71,6 +73,8 @@ Nach Aktualisierung der Controller-Installation:
 ```
 
 `research` verwendet das bestehende ChatGPT-Abo für echte Websuche. Die Anwendung lädt die ausgewählten Quellen selbst, speichert Rohdateien und referenzierbare Textabschnitte, erstellt ein Dossier und prüft dessen Belege. Ein fehlgeschlagener Abruf wird als Lücke protokolliert. Das Ergebnis steht unter `research/research_briefing.md`; mit `pla resume` kann derselbe unveränderte Auftrag fortgesetzt werden. Dieser Befehl erzeugt ein Dossier, noch keine Podcastfolge. [Recherche bedienen, Ergebnisse und Grenzen](docs/research.md).
+
+Offene Fragen werden zuerst gezielt in den bereits gespeicherten Dokumenten nachgeschlagen. Ergänzungen und Korrekturen ändern einzelne Befunde, statt das gesamte Dossier neu schreiben zu lassen. Quellenprüfung und Abnahme aller ursprünglichen Leitfragen bleiben verbindlich; Such- und Korrekturschritte sind gespeichert und wiederaufnehmbar.
 
 ## Das erste Skript lesen
 

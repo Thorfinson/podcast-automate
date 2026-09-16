@@ -5,6 +5,122 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('src/podcast_automate/web/app.js', 'utf8');
 
+test('research progress displays missing requirements safely and does not report speech segments',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'running',action:'research',started_at:new Date().toISOString(),
+    run:{kind:'research',status:'running',stages:{completeness:{status:'running'}}},
+    progress:{phase:'research',activity:'Offene Leitfragen werden recherchiert',model_calls:8,model_call_limit:150,
+      total_segments:3,completed_segments:1,search_rounds:2,search_round_limit:12,
+      research_quality:{closed:1,total:3,requirements:[{question:'<script>Question</script>',passed:false,reason:'Actual text missing',missing:['Read full chapter']}],blocking_gaps:['A further gap']}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('1 von 3 Leitfragen'));
+  assert.ok(html.includes('2 von 12'));
+  assert.ok(html.includes('Read full chapter'));
+  assert.ok(html.includes('A further gap'));
+  assert.ok(html.includes('&lt;script&gt;Question'));
+  assert.ok(!html.includes('<script>Question'));
+  assert.ok(!html.includes('Sprechabschnitten'));
+});
+
+test('evidence-first research labels the overall assessment as pending',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'running',action:'research',started_at:new Date().toISOString(),
+    progress:{phase:'research',activity:'Quellen werden gesucht',research_quality:{closed:0,total:10,
+      assessment_status:'pending_after_source_review',requirements:[],blocking_gaps:['Missing <chapter>']}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Gesamtbewertung folgt'));
+  assert.ok(html.includes('bisherigen Leitfragenbewertungen'));
+  assert.ok(html.includes('Missing &lt;chapter&gt;'));
+  assert.ok(!html.includes('0 von 10 Leitfragen erfüllen'));
+});
+
+test('new unfinished research cannot offer planning based on the previous dossier',()=>{
+  const app=studio();
+  app.run(`project={id:'test',config:boot.defaults,research:'The previous dossier',
+    job:{status:'blocked',action:'research',run:{kind:'research',status:'blocked',stages:{completeness:{status:'blocked'}}}}};`);
+  const html=app.run('renderResearch()');
+  assert.ok(html.includes('Bisheriges Dossier'));
+  assert.ok(html.includes('noch nicht abgeschlossen'));
+  assert.ok(!html.includes('data-action="plan"'));
+});
+
+test('status digests are escaped, distinguish stale evidence, and name the chosen reporter',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{id:'j1',status:'running',action:'research',started_at:new Date().toISOString(),progress:{phase:'research',status_summary:{job_id:'j1',status:'unchanged',summary:'A draft <script>bad()</script>',provider:'openrouter',model:'deepseek/deepseek-v4.1-flash',calls:2,call_limit:100,generated_at:new Date().toISOString(),live_events_available:false,history:[{text:'Old <img src=x>',at:new Date().toISOString()},{text:'Latest'}]}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Kurz erklärt'));
+  assert.ok(html.includes('DeepSeek 4.1 Flash · OpenRouter'));
+  assert.ok(html.includes('keine neuen protokollierten'));
+  assert.ok(html.includes('keine öffentlichen Live-Meldungen'));
+  assert.ok(html.includes('zusätzlich zum Produktionsbudget'));
+  assert.ok(html.includes('&lt;script&gt;bad()'));
+  assert.ok(!html.includes('<script>')&&!html.includes('<img'));
+  app.run("project.job.progress.status_summary.job_id='old'");
+  assert.equal(app.run('renderStatusSummary(project.job)'),'');
+  app.run("project.job.progress.status_summary.job_id='j1';project.job.progress.status_summary.provider='codex_cli'");
+  assert.ok(app.run('renderStatusSummary(project.job)').includes('Luna · Codex-Abo'));
+});
+
+test('current and previous dossiers render readable Markdown without changing their contents',()=>{
+  const app=studio();
+  const dossier='# Ein Thema\n\nEin **belegter** Befund mit *Grenzen*.\n\n## Quellen\n\n- [Studie](https://example.org/paper?a=1&b=2) (`src_one#sec_two`)\n- [Meine Notiz](../sources/raw/note.txt)';
+  app.run(`project={id:'test',config:boot.defaults,research:${JSON.stringify(dossier)},job:{action:'research',run:{kind:'research',status:'running'}}};`);
+  let html=app.run('renderResearch()');
+  assert.ok(html.includes('Bisheriges Dossier · wird neu recherchiert'));
+  assert.ok(html.includes('<article class="markdown-document"><h3>Ein Thema</h3>'));
+  assert.ok(html.includes('<strong>belegter</strong>'));
+  assert.ok(html.includes('<em>Grenzen</em>'));
+  assert.ok(html.includes('<h4>Quellen</h4>'));
+  assert.ok(html.includes('<ul><li><p><a href="https://example.org/paper?a=1&amp;b=2"'));
+  assert.ok(html.includes('<code>src_one#sec_two</code>'));
+  assert.ok(html.includes('<li><p>Meine Notiz</p></li>'));
+  assert.ok(!html.includes('<pre class="document">'));
+  assert.equal(app.run('project.research'),dossier);
+  app.run("project.job.run.status='completed'");
+  html=app.run('renderResearch()');
+  assert.ok(html.includes('Dein Recherche-Dossier'));
+  assert.ok(html.includes('<h3>Ein Thema</h3>'));
+});
+
+test('dossier Markdown preserves code, quoted passages and nested numbered lists',()=>{
+  const app=studio();
+  const markdown='3. Eine **Frage**\n   - Ein Beleg\n   - Noch ein Beleg\n4. Die Grenze\n\n> Ein Zitat mit `**Originaltext**`.\n\n```html\n<script>unsafe()</script>\n```\n\n---\n\nEin Absatz\nauf zwei Zeilen.';
+  const html=app.run(`renderMarkdown(${JSON.stringify(markdown)})`);
+  assert.ok(html.includes('<ol start="3"><li><p>Eine <strong>Frage</strong></p>\n<ul>'));
+  assert.ok(html.includes('</ul></li><li><p>Die Grenze</p></li></ol>'));
+  assert.ok(html.includes('<blockquote><p>Ein Zitat mit <code>**Originaltext**</code>.</p></blockquote>'));
+  assert.ok(html.includes('<pre><code>&lt;script&gt;unsafe()&lt;/script&gt;</code></pre>'));
+  assert.ok(html.includes('<hr>'));
+  assert.ok(html.includes('<p>Ein Absatz\nauf zwei Zeilen.</p>'));
+});
+
+test('Markdown source links handle parentheses and plain source URLs',()=>{
+  const app=studio();
+  const markdown='[Paper](https://example.org/paper_(2026)?a=1&b=2). Quelle: https://example.org/paper_(2026).';
+  const html=app.run(`renderMarkdown(${JSON.stringify(markdown)})`);
+  assert.ok(html.includes('href="https://example.org/paper_(2026)?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">Paper</a>.'));
+  assert.ok(html.includes('href="https://example.org/paper_(2026)"'));
+  assert.ok(html.endsWith('</a>.</p>'));
+});
+
+test('Markdown cannot inject HTML, load images or create unsafe or local links',()=>{
+  const app=studio();
+  const markdown='<script>alert(1)</script>\n\n<img src=x onerror="alert(1)">\n\n[Bad](javascript:alert(1)) [File](file:///C:/secret) [Data](data:text/html,evil) [Encoded](jav&#x61;script:evil) [Local](../secret) [Relative](//evil.example) ![Tracking](https://evil.example/pixel) [Attribute](https://example.org/"onclick="evil)';
+  const html=app.run(`renderMarkdown(${JSON.stringify(markdown)})`);
+  assert.ok(!/<script|<img|<a\b|onclick="/.test(html));
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+  assert.ok(html.includes('Bad File Data Encoded Local Relative Tracking Attribute'));
+});
+
+test('Markdown escapes link labels and leaves malformed syntax readable',()=>{
+  const app=studio();
+  const markdown='[<img onerror="evil">](https://example.org/)\n\nAn unfinished [link](target and **bold, `code, src_some_id.';
+  const html=app.run(`renderMarkdown(${JSON.stringify(markdown)})`);
+  assert.ok(html.includes('&lt;img onerror=&quot;evil&quot;&gt;</a>'));
+  assert.ok(html.includes('An unfinished [link](target and **bold, `code, src_some_id.'));
+  assert.ok(!html.includes('<img'));
+});
+
 test('model presets remain distinct and sending one carries its explicit choice to the partner',async()=>{
   const app=studio();
   const p=app.run(`({id:'test',config:boot.defaults,chat:[]})`);
@@ -208,7 +324,7 @@ function studio() {
     return elements.get(id);
   };
   const defaults = {topic:'New project',central_question:'Why?',voice_profile:{host_a:'Aiden',host_b:'Vivian'},language:'de-DE',prior_knowledge:'',depth_request:'Deep',focus_questions:[],excluded_topics:[],seed_urls:[]};
-  const context = vm.createContext({console,structuredClone,AbortController,encodeURIComponent,URLSearchParams,btoa,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
+  const context = vm.createContext({console,structuredClone,AbortController,encodeURIComponent,URL,URLSearchParams,btoa,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
     document:{getElementById:element,querySelectorAll(){return [];},addEventListener(){},modelContext:{registerTool(tool){registered.set(tool.name,tool);}}},
     fetch:async(path,options)=>{requests.push({path,options});const data=responses.get(path)??{token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults};return{ok:true,json:async()=>structuredClone(data)};}});
   vm.runInContext(source, context);

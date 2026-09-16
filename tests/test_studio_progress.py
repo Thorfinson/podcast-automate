@@ -37,6 +37,21 @@ class StudioProgressTests(unittest.TestCase):
         self.assertIn("accepted teaching design", progress["episodes"][0]["teaching_preview"])
         self.assertEqual(progress["episodes"][1]["teaching_preview"], "")
 
+    def test_research_progress_exposes_quality_and_preserves_real_call_timing(self):
+        write_json(self.work / "research_activity.json", {"phase": "research", "activity": "Read new evidence",
+                   "model_call_limit": 150, "search_round_limit": 12})
+        write_json(self.work / "research_quality_gate.json", {"closed": 1, "total": 3, "passed": False,
+                   "requirements": [{"question": "Why?", "missing": ["Missing full chapter"]}]})
+        write_json(self.work / "budget.json", {"model_calls": 4, "search_rounds": 2})
+        run = {**self.run, "kind": "research", "status": "running"}
+        progress = script_progress(self.root, run)
+        self.assertEqual(progress["phase"], "research")
+        self.assertEqual(progress["research_quality"]["closed"], 1)
+        self.assertEqual(progress["search_rounds"], 2)
+        self.assertIsNotNone(progress["model_call_started_at"])
+        stopped = script_progress(self.root, {**run, "status": "pending"})
+        self.assertIsNone(stopped["model_call_started_at"])
+
     def test_refresh_is_distinct_from_model_activity_and_saved_results(self):
         first = script_progress(self.root, self.run)
         second = script_progress(self.root, self.run)

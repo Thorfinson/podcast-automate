@@ -203,6 +203,28 @@ class CodexTests(unittest.TestCase):
             run_process([sys.executable, "-c", "import time; time.sleep(20)"], timeout=1)
         self.assertEqual(error.exception.code, "timeout")
 
+    def test_model_timeout_reports_call_limit_and_discards_partial_response(self):
+        import json
+        directory = self.root / "timed out"
+
+        def expire(*args, **kwargs):
+            self.assertEqual(kwargs["timeout"], 3)
+            (directory / "response.pending.json").write_text('{"partial":"test-only-secret"}')
+            raise AppError("test-only-secret", code="timeout")
+
+        with patch.object(self.adapter, "check_login"), \
+                patch("podcast_automate.codex.run_process", side_effect=expire), \
+                self.assertRaises(AppError) as error:
+            self.adapter.probe("Thema", directory)
+        self.assertEqual(error.exception.code, "timeout")
+        self.assertIn("3 Sekunden", str(error.exception))
+        self.assertIn("einzelne Codex-Aufruf", str(error.exception))
+        self.assertFalse((directory / "response.pending.json").exists())
+        self.assertFalse((directory / "response.json").exists())
+        receipt = (directory / "failure.json").read_text(encoding="utf-8")
+        self.assertEqual(json.loads(receipt)["timeout_seconds"], 3)
+        self.assertNotIn("test-only-secret", receipt)
+
 
 if __name__ == "__main__":
     unittest.main()

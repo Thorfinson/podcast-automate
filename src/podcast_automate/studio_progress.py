@@ -75,6 +75,8 @@ ACTIVITIES = {
 
 
 def script_progress(root, run):
+    if run and run.get("kind") == "research":
+        return research_progress(root, run)
     if not run or run.get("kind") != "script":
         return None
     work = manifest_path(root, run["run_id"]).parent
@@ -142,6 +144,24 @@ def script_progress(root, run):
             "review_issues": issues}
 
 
+def research_progress(root, run):
+    work = manifest_path(root, run["run_id"]).parent
+    data = read(work / "research_activity.json", {})
+    if not data:
+        return None
+    report = read(work / "research_quality_gate.json", data.get("research_quality"))
+    calls = sorted((work / "calls").glob("call_*/output_schema.json"))
+    responses = list((work / "calls").glob("call_*/response.json"))
+    pending = bool(calls and not calls[-1].with_name("response.json").exists() and run.get("status") == "running")
+    budget = read(work / "budget.json", {})
+    return {**data, "phase": "research", "unit": "questions", "research_quality": report,
+            "total_segments": report["total"] if report else 0, "completed_segments": report["closed"] if report else 0,
+            "model_calls": budget.get("model_calls", 0), "search_rounds": budget.get("search_rounds", 0),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "model_call_started_at": datetime.fromtimestamp(calls[-1].stat().st_mtime, timezone.utc).isoformat() if pending else None,
+            "last_result_at": datetime.fromtimestamp(max(p.stat().st_mtime for p in responses), timezone.utc).isoformat() if responses else None}
+
+
 def watch(root, job_id, stop=None):
     """Compatibility publisher for an existing server; exits with its one original job."""
     import time
@@ -175,7 +195,13 @@ def watch(root, job_id, stop=None):
 def safe_script_progress(root, run):
     """Progress is optional: concurrent file access must not break a job or its API."""
     try:
-        return script_progress(root, run)
+        progress = script_progress(root, run)
+        if progress and run:
+            from .status_summary import summary_view
+            summary = summary_view(manifest_path(root, run["run_id"]).parent)
+            if summary:
+                progress["status_summary"] = summary
+        return progress
     except (OSError, ValueError, KeyError, TypeError):
         logging.getLogger(__name__).warning("Progress temporarily unavailable; retaining the previous snapshot.")
         return None

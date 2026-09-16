@@ -17,6 +17,7 @@ from .openrouter import OpenRouterAdapter, ADAPTER_VERSION, DEFAULT_MAX_OUTPUT_T
 from .polishing import HOST_ROLES, POLISH_VERSION, polish_dialogue
 from .research import PLAIN_LANGUAGE, reserve_call, validate_dossier
 from .research_models import ResearchDiscovery, ResearchDossier, SourceIndex
+from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
 from .runner import execute_stages, manifest_path, outputs_valid, run_observer
 from .run_budget import effective_limits
 from .script_models import EpisodePlan, KnowledgeModel, ScriptReview, SeriesPlan
@@ -260,6 +261,10 @@ def load_research(root: Path, config):
     except (OSError, ValueError, KeyError) as exc:
         raise AppError("Zuerst mit pla research ein geprüftes Dossier erstellen.",
                        code="research_required", status="blocked") from exc
+    active = root / "research/active.json"
+    if active.exists() and json.loads(active.read_text(encoding="utf-8")).get("run_id") != run_id:
+        raise AppError("Die aktuelle Recherche ist noch nicht abgeschlossen. Ihre Qualitätsprüfung abwarten oder den Recherchelauf fortsetzen.",
+                       code="research_coverage_incomplete", status="blocked")
     work = manifest_path(root, run_id).parent
     manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
     if manifest.kind != "research" or manifest.status != "completed" or any(
@@ -272,9 +277,16 @@ def load_research(root: Path, config):
         "topic", "central_question", "focus_questions", "excluded_topics", "seed_people", "seed_urls", "local_sources"
     )):
         raise AppError("Rechercheauftrag geändert; zuerst erneut recherchieren.", code="inputs_changed", status="blocked")
-    dossier = ResearchDossier.model_validate_json((work / "reviewed_dossier.json").read_text(encoding="utf-8"))
-    discovery = ResearchDiscovery.model_validate_json((work / "discovery.json").read_text(encoding="utf-8"))
-    sources = SourceIndex.model_validate_json((work / "source_index.json").read_text(encoding="utf-8"))
+    if "completeness" not in manifest.stages:
+        raise AppError("Das bisherige Dossier wurde noch nicht gegen alle Leitfragen geprüft. Bitte die Recherche neu starten.",
+                       code="research_coverage_incomplete", status="blocked")
+    discovery, sources, context, dossier = load_complete_research(work)
+    quality = json.loads((work / "research_quality_gate.json").read_text(encoding="utf-8"))
+    if (quality.get("version") != QUALITY_VERSION or not quality.get("passed") or
+            quality.get("dossier_hash") != digest(dossier.model_dump()) or
+            quality.get("brief_hash") != digest(requirements_for(config))):
+        raise AppError("Die Recherche deckt den ursprünglichen Auftrag noch nicht vollständig ab. Zuerst die offenen Leitfragen recherchieren.",
+                       code="research_coverage_incomplete", status="blocked")
     for relative in config.local_sources:
         local = (root / relative).resolve()
         source_id = "src_" + hashlib.sha256(str(local).encode()).hexdigest()[:16]
@@ -282,7 +294,6 @@ def load_research(root: Path, config):
         if not saved_source or not local.is_file() or file_hash(local) != saved_source.raw_hash:
             raise AppError("Lokale Quelle seit der Recherche geändert oder nicht eingelesen.",
                            code="inputs_changed", status="blocked")
-    context = json.loads((work / "source_context.json").read_text(encoding="utf-8"))
     if validate_dossier(dossier, discovery, context):
         raise AppError("Dossier verletzt Quellenprüfung.", code="invalid_evidence", status="blocked")
     return run_id, dossier, discovery, sources, context
