@@ -221,7 +221,7 @@ class Studio:
                         progress["completed_segments"] = min(progress["total_segments"],
                             progress["completed_segments"] + nested.get("completed_segments", nested.get("completed", 0)))
                     data["progress"] = progress
-        if data and (data.get("run") or {}).get("kind") == "script":
+        if data and (data.get("run") or {}).get("kind") in {"script", "research"}:
             from .studio_progress import safe_script_progress
             progress = safe_script_progress(root, data["run"])
             if progress:

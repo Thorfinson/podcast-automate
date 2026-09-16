@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .errors import AppError
+from .call_activity import CallActivity
 from .models import RuntimeSettings, TextProbeOutput
 from .process import run_process
 from .storage import write_json
@@ -79,10 +80,11 @@ def classify_failure(message: str) -> AppError:
 
 
 class CodexAdapter:
-    def __init__(self, settings: RuntimeSettings, *, reasoning_effort=None):
+    def __init__(self, settings: RuntimeSettings, *, reasoning_effort=None, cancel_check=None):
         self.settings = settings
         validate_model(settings.codex_model)
         self.reasoning_effort = validate_reasoning(reasoning_effort)
+        self.cancel_check = cancel_check
 
     def command(self) -> list[str]:
         return executable_command(self.settings.codex_executable)
@@ -135,8 +137,29 @@ class CodexAdapter:
         if self.reasoning_effort is not None:
             args.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
         args.append("-")
-        result = run_process(args, input_text=prompt, cwd=directory,
-                             timeout=self.settings.text_timeout_seconds, env=subscription_environment())
+        activity = CallActivity(directory, output_type.__name__, self.settings.codex_model)
+        try:
+            result = run_process(args, input_text=prompt, cwd=directory,
+                                 timeout=self.settings.text_timeout_seconds, env=subscription_environment(),
+                                 on_stdout_line=activity.observe, cancel_check=self.cancel_check)
+        except AppError as exc:
+            activity.finish(exc.code)
+            response_file.unlink(missing_ok=True)
+            if exc.code != "timeout":
+                raise
+            seconds = self.settings.text_timeout_seconds
+            duration = f"{seconds // 60} Minuten" if seconds % 60 == 0 else f"{seconds} Sekunden"
+            failure = AppError(
+                f"Der einzelne Codex-Aufruf wurde nach {duration} durch das lokale Zeitlimit beendet. "
+                "Fertige Schritte sind gespeichert. Fortsetzen wiederholt den unterbrochenen Aufruf; "
+                "bei erneutem Abbruch runtime.text_timeout_seconds im Projekt erhöhen.", code="timeout")
+            write_json(directory / "failure.json", {"code": failure.code, "message": str(failure),
+                       "timeout_seconds": seconds, "model": self.settings.codex_model,
+                       "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version})
+            raise failure from exc
+        except BaseException:
+            activity.finish("interrupted")
+            raise
         events = []
         for line in result.stdout.splitlines():
             try:
@@ -157,6 +180,7 @@ class CodexAdapter:
         # Tool events, not an assertion in generated JSON, establish that browsing happened.
         write_json(directory / "search_events.json", search_items)
         if result.returncode or not terminal or terminal[-1]["type"] != "turn.completed":
+            activity.finish("failed")
             response_file.unlink(missing_ok=True)
             failure = classify_failure(json.dumps(failures) + result.stderr)
             # Keep a useful failure receipt without persisting raw provider output or prompts.
@@ -167,11 +191,13 @@ class CodexAdapter:
         try:
             output = output_type.model_validate_json(response_file.read_text(encoding="utf-8"))
         except (OSError, ValueError, ValidationError) as exc:
+            activity.finish("invalid_model_output")
             raise AppError("Codex hat keine gültige strukturierte Antwort geliefert.",
                            code="invalid_model_output") from exc
         finally:
             response_file.unlink(missing_ok=True)
         if search and not search_requests:
+            activity.finish("search_not_observed")
             raise AppError("Kein Websuch-Ereignis im Codex-Lauf nachgewiesen. Recherche nicht übernommen.",
                            code="search_not_observed", status="blocked")
         try:
@@ -184,6 +210,7 @@ class CodexAdapter:
             "provider": "codex_cli", "auth_mode": "chatgpt",
             "requested_model": self.settings.codex_model,
             "requested_reasoning_effort": self.reasoning_effort,
+            "timeout_seconds": self.settings.text_timeout_seconds,
             "cli_version": cli_version,
             "prompt_version": prompt_version, "usage": terminal[-1].get("usage"),
             "separately_billed_cost": None, "research_performed": bool(search_requests),
@@ -192,6 +219,7 @@ class CodexAdapter:
         }
         write_json(directory / "metadata.json", metadata)
         write_json(directory / "response.json", output.model_dump(mode="json"))
+        activity.finish("completed")
         return output, metadata
 
     def probe(self, topic: str, directory: Path) -> tuple[TextProbeOutput, dict]:

@@ -15,7 +15,8 @@ from podcast_automate.runner import status
 from podcast_automate.script_models import (Dependency, EpisodePlan, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan)
 from podcast_automate.scripting import run_script, validate_plan, validate_script
 from podcast_automate.storage import init_project, read_yaml, write_json, write_yaml
-from tests.test_research import HTML, discovery, dossier_from_prompt
+from tests.test_research import HTML, discovery, dossier_from_prompt, assessment_from_prompt
+from podcast_automate.research_quality import ResearchAssessment
 from tests.teaching_fixtures import teaching_response
 from tests.polishing_fixtures import polish_review
 from podcast_automate.polishing import DialoguePolishReview
@@ -53,6 +54,8 @@ class ScriptingTests(unittest.TestCase):
                 return discovery(), {"research_performed": True}
             if output_type is ResearchDossier:
                 return dossier_from_prompt(prompt), {}
+            if output_type is ResearchAssessment:
+                return assessment_from_prompt(prompt), {}
             return DossierReview(issues=[], limitations=[]), {}
 
         with patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")), \

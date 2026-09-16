@@ -11,7 +11,7 @@ const productionStages = [
   ["review", "Qualitätsprüfung", "Quellen, Erklärungstiefe und Verständlichkeit prüfen und überarbeiten."],
   ["publish", "Zur Durchsicht bereitstellen", "Geprüfte Skripte zum Lesen bereitstellen."],
 ];
-const stageNames = {discovery:"Quellensuche",retrieval:"Quellen lesen",dossier:"Dossier",planning:"Inhaltsverzeichnis",teaching:"Lehrkonzept",writing:"Skript",polishing:"Dialog-Polishing",review:"Qualitätsprüfung",publish:"Bereitstellen",synthesis:"Vertonung",assembly:"Audio zusammenfügen"};
+const stageNames = {discovery:"Quellensuche",retrieval:"Quellen lesen",dossier:"Dossier",completeness:"Leitfragen vollständig klären",planning:"Inhaltsverzeichnis",teaching:"Lehrkonzept",writing:"Skript",polishing:"Dialog-Polishing",review:"Qualitätsprüfung",publish:"Bereitstellen",synthesis:"Vertonung",assembly:"Audio zusammenfügen"};
 const actionNames = {
   assistant: "Redaktion denkt nach",
   research: "Recherche läuft",
@@ -285,12 +285,127 @@ function renderBrief() {
     ${textInput("api-key","OpenRouter-Key","","password")}<p id="key-status" class="hint">${boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt."}</p><div class="actions"><button class="secondary small" data-action="store-key">Key hinterlegen</button><button class="secondary small" data-action="forget-key">Sitzungs-Key entfernen</button></div></details>
     ${project?`<div class="actions"><button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button><button data-step="${nextPage}" ${proposal&&!project.proposal_applied?"disabled":""}>Weiter: ${steps[nextPage]} →</button></div>`:""}`;
 }
+// Render the Markdown used by dossiers, escaping all source text. Raw HTML and
+// embedded images stay inert; only explicit HTTP(S) destinations become links.
+function markdownLink(label, destination) {
+  if (!/^https?:\/\//i.test(destination) || /[\s<>"'\\\u0000-\u001f\u007f]/.test(destination)) return label;
+  try {
+    const url = new URL(destination);
+    if (!url.hostname || url.username || url.password) return label;
+    return `<a href="${escape(url.href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  } catch { return label; }
+}
+function markdownInline(value, depth=0, links=true) {
+  const text=String(value);
+  if (depth>8) return escape(text);
+  const tokens=/\\[\\`*{}\[\]()#+.!_>~-]|`+|!?\[[^\]\n]*\]\(|\*\*|__|\*|_|https?:\/\/[^\s<>]+/g;
+  let html="", cursor=0, match;
+  while ((match=tokens.exec(text))) {
+    const token=match[0], start=match.index;
+    html+=escape(text.slice(cursor,start));
+    let end=tokens.lastIndex, rendered=escape(token);
+    if (token.startsWith("\\")) rendered=escape(token.slice(1));
+    else if (token.startsWith("`")) {
+      const close=text.indexOf(token,end);
+      if (close>=0) { rendered=`<code>${escape(text.slice(end,close))}</code>`; end=close+token.length; }
+    } else if (/^!?\[/.test(token)) {
+      let nesting=1, close=end;
+      for (;close<text.length && nesting;close++) {
+        if (text[close]==="\\") { close++; continue; }
+        if (text[close]==="(") nesting++;
+        if (text[close]===")") nesting--;
+      }
+      if (!nesting) {
+        const isImage=token.startsWith("!"), label=token.slice(isImage?2:1,-2);
+        const destination=text.slice(end,close-1).trim();
+        rendered=markdownInline(label,depth+1,false);
+        if (links && !isImage) rendered=markdownLink(rendered,destination);
+        end=close;
+      }
+    } else if (/^https?:\/\//i.test(token)) {
+      // Sentence punctuation and an unmatched closing parenthesis are not URL content.
+      let url=token.replace(/[.,;:!?]+$/, "");
+      while (url.endsWith(")") && (url.match(/\)/g)||[]).length>(url.match(/\(/g)||[]).length) url=url.slice(0,-1);
+      rendered=links?markdownLink(escape(url),url):escape(url);
+      end=start+url.length;
+    } else {
+      const close=text.indexOf(token,end);
+      const inWord=token.includes("_") && /[\p{L}\p{N}]/u.test(text[start-1]||"");
+      if (!inWord && close>end && !/^\s|\s$/.test(text.slice(end,close))) {
+        const tag=token.length===2?"strong":"em";
+        rendered=`<${tag}>${markdownInline(text.slice(end,close),depth+1,links)}</${tag}>`;
+        end=close+token.length;
+      }
+    }
+    html+=rendered; cursor=end; tokens.lastIndex=end;
+  }
+  return html+escape(text.slice(cursor));
+}
+function renderMarkdown(value, depth=0) {
+  if (depth>16) return `<p>${escape(value)}</p>`;
+  const lines=String(value??"").replace(/\r\n?/g,"\n").split("\n"), blocks=[];
+  const listItem=line=>line.match(/^( *)([-+*]|\d+[.)])\s+(.*)$/);
+  const blockStart=line=>/^\s*$|^ {0,3}(#{1,6}\s|`{3,}|~{3,}|>|(?:-\s*){3,}$|(?:\*\s*){3,}$|(?:_\s*){3,}$)/.test(line)||listItem(line);
+  let i=0;
+  while (i<lines.length) {
+    const line=lines[i];
+    if (!line.trim()) { i++; continue; }
+    const fence=line.match(/^ {0,3}(`{3,}|~{3,})[^`]*$/);
+    if (fence) {
+      const code=[], closing=new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
+      i++;
+      while(i<lines.length && !closing.test(lines[i])) code.push(lines[i++]);
+      if(i<lines.length)i++;
+      blocks.push(`<pre><code>${escape(code.join("\n"))}</code></pre>`); continue;
+    }
+    const heading=line.match(/^ {0,3}(#{1,6})\s+(.+?)\s*#*$/);
+    if (heading) {
+      // The dossier lives inside a section with its own h2.
+      const level=Math.min(6,heading[1].length+2);
+      blocks.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`); i++; continue;
+    }
+    if (/^ {0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(line)) { blocks.push("<hr>"); i++; continue; }
+    if (/^ {0,3}>/.test(line)) {
+      const quote=[];
+      while(i<lines.length && /^ {0,3}>/.test(lines[i])) quote.push(lines[i++].replace(/^ {0,3}> ?/,""));
+      blocks.push(`<blockquote>${renderMarkdown(quote.join("\n"),depth+1)}</blockquote>`); continue;
+    }
+    const first=listItem(line);
+    if (first) {
+      const ordered=/^\d/.test(first[2]), indent=first[1].length, items=[];
+      while(i<lines.length) {
+        const item=listItem(lines[i]);
+        if (!item || item[1].length!==indent || /^\d/.test(item[2])!==ordered) break;
+        const content=[item[3]], contentIndent=lines[i].length-item[3].length;
+        i++;
+        while(i<lines.length) {
+          if (!lines[i].trim()) {
+            let next=i+1;
+            while(next<lines.length && !lines[next].trim()) next++;
+            if(next<lines.length && lines[next].startsWith(" ".repeat(contentIndent))) {content.push("");i=next;continue;}
+            i=next; break;
+          }
+          if (!lines[i].startsWith(" ".repeat(contentIndent))) break;
+          content.push(lines[i++].slice(contentIndent));
+        }
+        items.push(`<li>${renderMarkdown(content.join("\n"),depth+1)}</li>`);
+      }
+      const tag=ordered?"ol":"ul", start=ordered?` start="${Number.parseInt(first[2],10)||1}"`:"";
+      blocks.push(`<${tag}${start}>${items.join("")}</${tag}>`); continue;
+    }
+    const paragraph=[line]; i++;
+    while(i<lines.length && !blockStart(lines[i])) paragraph.push(lines[i++]);
+    blocks.push(`<p>${markdownInline(paragraph.join("\n"))}</p>`);
+  }
+  return blocks.join("\n");
+}
 function renderResearch() {
-  let html = heading(2,"Erst verstehen. Dann erzählen.","Die Recherche sammelt belastbare Quellen, erklärt die Grundlagen und macht offene Fragen sichtbar. Sie ist die Grundlage für den roten Faden.");
+  let html = heading(2,"Erst verstehen. Dann erzählen.","Jede Leitfrage braucht eine belegte Antwort, nachvollziehbare Erklärungen und eine Gegenprüfung. Fehlende Grundlagen werden automatisch nachrecherchiert, bevor das Inhaltsverzeichnis entsteht.");
   if(!project) return html+empty("Ein Thema fehlt noch.","Lege zuerst deinen Podcast-Auftrag an.","Zur Idee",0);
+  const run=currentRun(), researching=run?.kind==="research"&&run.status!=="completed";
   if(project.attachments?.length)html+=`<section class="panel"><h2>Deine Ausgangsmaterialien</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">Diese Dateien werden als lokale Quellen eingelesen. Aussagen aus deinen Notizen werden anhand weiterer Quellen geprüft. Sehr kurze Notizen dienen vor allem der Projektbeschreibung.</p></section>`;
-  html += `<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">Recherche mit Codex</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${project.research?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen.</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen und das Dossier prüfen läuft nach dem Start automatisch.</p>'}</section>`;
-  if(project.research) html+=`<section class="panel"><h2>Dein Recherche-Dossier</h2><pre class="document">${escape(project.research)}</pre></section>`;
+  html += `<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">Recherche mit Codex</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht oben; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${project.research?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen.</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
+  if(project.research) html+=`<section class="panel"><h2>${researching?"Bisheriges Dossier · wird neu recherchiert":"Dein Recherche-Dossier"}</h2><article class="markdown-document">${renderMarkdown(project.research)}</article></section>`;
   return html;
 }
 function renderOutline() {
@@ -500,12 +615,30 @@ function progressStale(p) {
   return !!p?.updated_at&&Date.now()-Date.parse(p.updated_at)>30000;
 }
 function renderProgressTiming(p, active) {
-  if(!active||p?.phase!=="script")return "";
+  if(!active||!["script","research"].includes(p?.phase))return "";
   const stale=progressStale(p);
   const call=p.model_call_started_at?`<p class="hint">${stale?"Zuletzt gemeldeter Modellaufruf gestartet vor":"Aktueller Modellaufruf: seit"} ${progressAge(p.model_call_started_at)}</p>`:"";
   const result=p.last_result_at?`<p class="hint">Letztes gespeichertes Modellergebnis: vor ${progressAge(p.last_result_at)}</p>`:"";
   const freshness=stale?`<p class="note" role="status">Fortschrittsanzeige seit ${progressAge(p.updated_at)} nicht aktualisiert. Ob das Modell weiterarbeitet, lässt sich daraus nicht erkennen. Die Verbindung wird automatisch erneut geprüft.</p>`:p.updated_at?`<p class="hint">Fortschrittsdaten vor ${progressAge(p.updated_at)} aktualisiert.</p>`:"";
   return call+result+freshness;
+}
+function renderStatusSummary(job) {
+  const report=job?.progress?.status_summary;
+  if(!report || report.job_id!==job.id)return "";
+  const active=job.status==="running";
+  const model=report.provider==="openrouter"?"DeepSeek 4.1 Flash · OpenRouter":"Luna · Codex-Abo";
+  const messages={summarizing:"Eine kurze Zusammenfassung wird erstellt.",
+    unchanged:"Seit dem letzten Bericht gibt es keine neuen protokollierten Ergebnisse oder Zwischenmeldungen. Daraus lässt sich nicht erkennen, wie weit der aktuelle Modellaufruf ist.",
+    unavailable:"Die Zusammenfassung ist gerade nicht verfügbar. Der eigentliche Auftrag läuft unabhängig davon weiter.",
+    paused:"Die automatischen Statusberichte pausieren nach wiederholten Fehlern oder erreichtem Berichtslimit. Der eigentliche Auftrag läuft weiter."};
+  const history=(report.history||[]).slice(0,-1).slice(-4).reverse();
+  return `<section class="status-summary" aria-label="Kurz erklärt"><strong>Kurz erklärt · Arbeitsstand</strong>
+    ${report.summary?`<p>${escape(report.summary)}</p>`:""}
+    ${active&&messages[report.status]?`<p class="hint">${messages[report.status]}</p>`:""}
+    ${report.generated_at?`<p class="hint">Bericht vor ${progressAge(report.generated_at)} · ${model}</p>`:`<p class="hint">${model}</p>`}
+    ${active&&!report.live_events_available?'<p class="hint">Dieser Stand basiert auf gespeicherten Ergebnissen. Für den aktuellen Aufruf liegen noch keine öffentlichen Live-Meldungen vor.</p>':""}
+    <p class="hint">${active?"Prüfung etwa alle 3 Minuten; neuer Bericht nur bei Änderungen. ":""}Statusberichte: ${Number(report.calls||0)} von ${Number(report.call_limit||100)} · zusätzlich zum Produktionsbudget${report.provider==="openrouter"?", über dein OpenRouter-Guthaben":", über dein Codex-Abo"}.</p>
+    ${history.length?`<details class="status-history"><summary>Bisherige Kurzberichte</summary>${history.map(row=>`<p>${escape(row.text)}<small>Vor ${progressAge(row.at)}</small></p>`).join("")}</details>`:""}</section>`;
 }
 function renderJob() {
   const j=project?.job, box=$("job-status");
@@ -528,6 +661,8 @@ function renderJob() {
   box.hidden=!j&&!legacy;
   if(box.hidden){box.innerHTML="";lastJobView="";return;}
   const r=j?.run||legacy, active=j?.status==="running", state=j?.status||legacy.status;
+  const researchOpen=box.querySelector?.(".research-quality")?.open;
+  const summaryOpen=box.querySelector?.(".status-history")?.open;
   const isScript=r?.kind==="script"||j?.progress?.phase==="script";
   const view=JSON.stringify({project:project?.id,job:j,legacy,
     progressClock:active&&isScript?Math.floor(Date.now()/10000):null,
@@ -541,7 +676,7 @@ function renderJob() {
   const title=designBlocked?"Lehrkonzept angehalten: Erklärung noch unvollständig":foundationResearch?"Fehlende Erklärgrundlagen werden automatisch recherchiert":missingFoundation?"Automatische Recherche konnte noch nicht abgeschlossen werden":active?(isScript?"Ausarbeitung läuft":actionNames[j.action]):({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
   const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked;
   const message=designBlocked&&j?.progress?.review_issues?.length?"Die automatische Überarbeitung hat noch nicht alle Kritikpunkte gelöst. Der bisherige Stand ist gespeichert.":missingFoundation&&/research_needed\.md/.test(j?.message||"")?"Der Abgleich zwischen Quellen und Lehrkonzept ist noch offen. Der bisherige Auftrag bleibt gespeichert.":j?.message;
-  box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r&&!isScript?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${j?.progress?.phase!=="script"&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
+  box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r&&!isScript?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
   if(isScript&&j?.progress?.current_episode)box.innerHTML+=`<p>Folge ${Number(j.progress.episode_number)} von ${Number(j.progress.total_segments)} · ${escape(j.progress.activity)}</p>`;
   const destination=state==="completed"?runPage(r):jobPage();
   const links=["Auftrag ansehen","Recherche ansehen","Inhaltsverzeichnis prüfen","Ausarbeitung ansehen","Skripte lesen","Audio ansehen"];
@@ -550,11 +685,23 @@ function renderJob() {
   if(j?.action==="audio_samples"&&j?.progress?.current_voice&&active)box.innerHTML+=`<p>Aktuelle Stimme: ${escape(j.progress.current_voice)}</p>`;
   if(Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0)
     box.innerHTML+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}</p>`;
+  if(j?.progress?.phase==="research"){
+    const quality=j.progress.research_quality;
+    box.innerHTML+=`<p>${escape(j.progress.activity)}</p><p class="hint">Rechercherunden: ${Number(j.progress.search_rounds||0)} von ${Number(j.progress.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
+    if(quality){
+      const pending=quality.assessment_status==="pending_after_source_review";
+      box.innerHTML+=`<details class="research-quality"${researchOpen?" open":""}><summary>${pending?"Quellenlücken werden gezielt geschlossen · Gesamtbewertung folgt":`${Number(quality.closed)} von ${Number(quality.total)} Leitfragen erfüllen alle Qualitätsmerkmale`}</summary>${pending?"<p>Zuerst werden die fehlenden Belege gesucht und gelesen. Die bisherigen Leitfragenbewertungen unten werden danach erneuert.</p>":""}<p>Geprüft werden vollständige Antworten, nachvollziehbare Erklärungen, gelesene Belege, unabhängige Gegenprüfung und Grenzen.</p>${(quality.requirements||[]).map(row=>`<p><strong>${pending?"·":row.passed?"✓":"○"} ${escape(row.question)}</strong></p><p>${escape(row.reason)}</p>${(row.missing||[]).length?`<ul>${row.missing.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}`).join("")}${quality.blocking_gaps?.length?`<p>Weitere offene Punkte:</p><ul>${quality.blocking_gaps.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}</details>`;
+    }
+  }
+  box.innerHTML+=renderStatusSummary(j);
+  const history=box.querySelector?.(".status-history");
+  if(history)history.open=!!summaryOpen;
   box.innerHTML+=renderProgressTiming(j?.progress,active);
   box.innerHTML+=renderRunTextChoice(j);
   if(j?.progress?.execution?.text==="parallel"){
     const activeEpisodes=j.progress.active_episodes||[];
     box.innerHTML+=`<p class="hint">Textmodus: Parallel · bis zu 3 Folgen je Skript-, Polishing- oder Prüfstufe.${activeEpisodes.length?` In Bearbeitung: ${activeEpisodes.map(id=>escape(j.progress.episodes?.find(e=>e.episode_id===id)?.title||id)).join(", ")}.`:""}</p>`;
+    if(j.progress.stage==="teaching")box.innerHTML+=`<p class="hint">Die Lehrkonzepte werden nacheinander ausgearbeitet, damit spätere Folgen auf den Erklärungen und Beispielen der früheren aufbauen können. Sobald alle Lehrkonzepte fertig sind, beginnt die parallele Skripterstellung.</p>`;
   }
 }
 function render() { renderNavigation(); $("content").innerHTML=overviewPage?renderOverview():[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step](); renderJob(); syncPlayButtons(); }

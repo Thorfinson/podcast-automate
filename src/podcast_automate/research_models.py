@@ -23,7 +23,7 @@ class SourceCandidate(Contract):
 
 class ResearchDiscovery(Contract):
     topic: NonEmpty
-    questions: list[ResearchQuestion] = Field(min_length=1, max_length=8)
+    questions: list[ResearchQuestion] = Field(min_length=1, max_length=32)
     candidates: list[SourceCandidate] = Field(min_length=1)
     limitations: list[str]
 
@@ -100,7 +100,7 @@ class ResearchDossier(Contract):
     schema_version: Literal["1.0"] = "1.0"
     topic: NonEmpty
     scope_note: NonEmpty
-    findings: list[Finding] = Field(min_length=1, max_length=20)
+    findings: list[Finding] = Field(min_length=1, max_length=120)
     coverage: list[QuestionCoverage]
     open_questions: list[NonEmpty]
 
