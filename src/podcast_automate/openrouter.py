@@ -88,7 +88,7 @@ class OpenRouterAdapter:
         self.settings = settings
         self.model = model
         self.max_output_tokens = max_output_tokens
-        self.reasoning_effort = validate_reasoning(reasoning_effort)
+        self.reasoning_effort = validate_reasoning(reasoning_effort, provider="openrouter", model=model)
 
     def require_key(self):
         if not self._key.get_secret_value():

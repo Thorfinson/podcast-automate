@@ -10,9 +10,13 @@ Die Erklärungen setzen kein Fach- oder Mathematikwissen voraus. Vertraute Situa
 
 Einrichtung: [Windows](docs/windows-quickstart.md) · [macOS und Linux](docs/macos-linux.md). Auf macOS/Linux nach Installation von Python ab 3.12 und FFmpeg einmal `sh scripts/setup.sh` ausführen. Gemini über OpenRouter benötigt keine lokale Qwen-Installation; für Qwen gibt es eine separate Einrichtung mit CPU, CUDA/ROCm oder MPS.
 
+In der Projektübersicht lädt **Gesamten Podcast herunterladen** alle fertigen Folgen als ZIP mit einzelnen MP3s. Das ZIP trägt einen kurzen Podcasttitel; darin heißen die Dateien `Folge 01 - Episodentitel.mp3`, bei mehreren Teilen zusätzlich mit Teilnummer. So bleiben auch die Pfade beim Entpacken unter Windows kurz. Einzeldownloads enthalten zusätzlich einen gekürzten Podcasttitel. Solange Folgen fehlen, heißt der Download **Fertige Folgen herunterladen** und nennt den Umfang. Einzelne MP3s lassen sich weiterhin direkt neben ihrem Player laden.
+
 Du kannst deine Wünsche mit Codex oder OpenRouter besprechen, den vorgeschlagenen Auftrag bearbeiten und das Inhaltsverzeichnis vor dem Schreiben freigeben. Das fertige Skript liest du vor einer getrennten Audio-Freigabe. **Für Audio wählst du unabhängig davon lokales Qwen oder Gemini 3.1 Flash TTS über OpenRouter mit seinen 30 Stimmen.** Bei Gemini sind Sadaltager und Aoede vorbelegt. **Alle 30 Hörproben lassen sich je Sprache einmal erzeugen und danach über ▶ Play neben jeder Stimme vergleichen.** Die gemeinsame Bibliothek bleibt über Projektwechsel und Neustarts erhalten; Abspielen braucht keinen API-Key und erzeugt keine neuen Aufnahmen. Bestehende Skripte können ohne Neuschreiben mit dem anderen Anbieter vertont werden. Fortschritt, Anhalten, Fortsetzen und MP3-Download sind in derselben Oberfläche erreichbar. Die belegte Web-Recherche verwendet derzeit weiterhin Codex. API-Keys bleiben nur für die Sitzung im Speicher. [Gemini-Audio einrichten und Grenzen](docs/gemini-audio.md).
 
 [Studio starten, Ablauf und Grenzen](docs/studio.md).
+
+Neue Projekte starten mit **150 Modellaufrufen je Recherche- oder Skriptlauf**. Bestehende Projekte behalten ihr gespeichertes Limit. Widersprüche im Inhaltsverzeichnis werden bis zu dreimal automatisch am vorhandenen Entwurf korrigiert; Quellenprüfung und deine anschließende Freigabe bleiben erforderlich.
 
 **Sequenziell oder parallel wählst du pro Projekt im Gespräch**, getrennt für Text und Audio. Zum Beispiel: „Text parallel, Vertonung sequenziell“. Parallel bedeutet höchstens drei Folgen gleichzeitig innerhalb von Skripterstellung, Dialog-Polishing oder Qualitätsprüfung – auch bei Codex über das Abo. Recherche und Lehrkonzept bleiben in Reihenfolge, damit gemeinsame Belege und vorausgesetzte Beispiele konsistent bleiben. Der Modus wird beim Start eines Textauftrags gespeichert; Fortsetzen behält ihn bei. Bestehende Projekte und ältere Aufträge bleiben zunächst sequenziell. Anbieterlimits und das genehmigte Modellaufrufbudget gelten weiter.
 
@@ -31,6 +35,10 @@ Aufeinander aufbauende Folgen erhalten die geprüften Lehrkonzepte und konkreten
 
 Eine ausdrücklich freigegebene Erhöhung des Modellaufruflimits gilt nur für den gewählten Skriptlauf. Sie wird unter `runs/<run_id>/budget_approval.json` an dessen Eingaben gebunden. Verbrauchte Aufrufe zählen weiter; Projektkonfiguration, Inhaltsverzeichnis-Freigabe und Rechercherundenlimit bleiben erhalten. Das Studio zeigt Verbrauch und wirksames Aufruflimit an.
 
+
+Unter **Auftrag & Stimmen → Dateien anhängen** kannst du mehrere **MD-, TXT- und DOCX-Dateien** mit deiner Nachricht senden – auch ohne vorher ein Thema einzutippen. Der Partner nutzt den Text für Projektidee, Lernziele und Umfang. Die Dateien werden außerdem als lokale Ausgangsmaterialien der Recherche gespeichert; ihre Aussagen gelten noch nicht als unabhängig belegt. DOCX übernimmt Haupttext und Tabellen, keine Bilder, Kopf-/Fußzeilen oder Fußnoten. Details und Grenzen stehen in der [Studio-Anleitung](docs/studio.md#eigene-dateien-als-projektidee-und-recherchematerial).
+
+Unter dem Chat stehen direkte **Modell-Auswahlknöpfe**: Astra über das Codex-Abo sowie über OpenRouter **Astra**, **Astra Pro**, **Claude Fable 5.1** und **DeepSeek V4.1 Flash mit max**. Die Auswahl kommt in den Vorschlag und gilt nach **Diese Auswahl übernehmen** für Gespräch, Inhaltsverzeichnis, Lehrkonzept, Skripte, Polishing und Reviews. Der Key gehört in den geschützten Eingang. Live-Recherche und Nachrecherche nutzen weiterhin Codex; OpenRouter-Text wird separat abgerechnet. Die Stimmenauswahl bleibt unabhängig. Details und die exakten Modell-IDs stehen in der [Studio-Anleitung](docs/studio.md#textmodell-auswählen).
 
 ## Ausführbare Werkzeuge: Version 0.1
 

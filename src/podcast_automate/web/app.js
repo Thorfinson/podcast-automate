@@ -33,6 +33,7 @@ let scriptEpisodeId=null, readingSnapshot=null;
 let overviewPage=false, overviewData={projects:[],trash:[]};
 let navigationEpoch=0;
 let setupSending=false;
+let pendingAttachments=[], readingAttachments=false;
 const scriptStateLabels={draft:"Entwurf",polished:"Dialog überarbeitet",reviewed:"Prüfungen bestanden",published:"Fertig zur Durchsicht"};
 const voiceSamples = () => project?.voice_samples || boot.voice_samples || {};
 const savedSample = (voice, language) => voiceSamples()[language]?.[voice];
@@ -216,14 +217,56 @@ function setupSummary() {
     ${c.excluded_topics?.length?`<dt>Ausgenommen</dt><dd>${c.excluded_topics.map(escape).join(" · ")}</dd>`:""}
     ${c.seed_urls?.length?`<dt>Quellenlinks</dt><dd>${c.seed_urls.map(escape).join(" · ")}</dd>`:""}
     <dt>Textmodell</dt><dd>${t.provider==="codex_cli"?"Codex · Abo":"OpenRouter · API"} · ${escape(t.model||"Standard")} · Reasoning: ${escape(t.reasoning_effort||"Standard")}</dd>
+    ${t.provider==="openrouter"?'<dt>Live-Recherche</dt><dd>Weiterhin Codex · Textarbeit wird separat über OpenRouter abgerechnet.</dd>':""}
     <dt>Stimmen</dt><dd>${a.provider==="qwen3_local"?"Qwen · lokal":"Gemini · OpenRouter"} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
     <dt>Textausarbeitung</dt><dd>${mode(x.text)}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio)}</dd></dl>
     <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing und Prüfung; Recherche und Lehrkonzept bleiben in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
-    ${proposal&&!project.proposal_applied?`<button data-action="apply-proposal" ${running()||!boot.capabilities?.conversational_setup?"disabled":""}>Diese Auswahl übernehmen</button><p class="hint">Das speichert den Auftrag. Recherche, Plan- und Audiofreigabe erfolgen weiterhin auf den folgenden Seiten.</p>`:""}
+    ${proposal&&!project.proposal_applied?`<button data-action="apply-proposal" ${running()||setupSending||pendingAttachments.length||project.proposal_current===false||!boot.capabilities?.conversational_setup?"disabled":""}>Diese Auswahl übernehmen</button><p class="hint">${project.proposal_current===false?"Die Anhänge haben sich geändert. Bitte den Partner im Chat die Zusammenfassung aktualisieren lassen.":"Das speichert den Auftrag. Recherche, Plan- und Audiofreigabe erfolgen weiterhin auf den folgenden Seiten."}</p>`:""}
     </section>`;
 }
+function renderAttachments() {
+  const saved=project?.attachments||[];
+  return `<ul class="attachment-list">${saved.map(row=>`<li><span><strong>${escape(row.name)}</strong><small>Gespeichert · Projektidee & Recherche${row.characters<200?" · kurze Notiz":""}</small></span><button type="button" class="secondary small" data-remove-attachment="${escape(row.id)}" ${disabled()} aria-label="${escape(row.name)} aus den aktiven Anhängen entfernen">Entfernen</button></li>`).join("")}
+    ${pendingAttachments.map((row,index)=>`<li><span><strong>${escape(row.name)}</strong><small>Wird mit deiner Nachricht hochgeladen</small></span><button type="button" class="secondary small" data-remove-pending="${index}" aria-label="${escape(row.name)} nicht hochladen">Entfernen</button></li>`).join("")}</ul>`;
+}
+function refreshAttachmentComposer() {
+  if(step!==PAGE.brief||overviewPage)return;
+  const draft=$("chat-message")?.value||"";
+  render();
+  $("chat-message").value=draft;
+}
+async function queueAttachments(files) {
+  if(running()||setupSending||readingAttachments)return;
+  if(!boot.capabilities?.project_attachments)throw new Error("Bitte das Studio nach Ende laufender Aufträge neu starten, um Dateien anzuhängen.");
+  const limits=boot.attachment_limits||{files:10,file_bytes:262144,docx_bytes:2097152,transfer_bytes:4194304,total_bytes:1048576};
+  const selected=Array.from(files), epoch=navigationEpoch;
+  if(!selected.length)return;
+  if(pendingAttachments.length+selected.length>limits.files)throw new Error("Bitte höchstens 10 Dateien auf einmal auswählen.");
+  if(selected.some(file=>! /\.(md|txt|docx)$/i.test(file.name)||!file.size||file.size>(/\.docx$/i.test(file.name)?limits.docx_bytes:limits.file_bytes)))
+    throw new Error("Bitte .md, .txt (bis 256 KiB) oder .docx (bis 2 MiB) mit lesbarem Text wählen.");
+  if(pendingAttachments.reduce((sum,file)=>sum+file.bytes,0)+selected.reduce((sum,file)=>sum+file.size,0)>limits.transfer_bytes)
+    throw new Error("Bitte höchstens 4 MiB auf einmal anhängen.");
+  readingAttachments=true;refreshAttachmentComposer();
+  try{
+    const added=[];
+    for(const file of selected){
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      let binary="";
+      for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+      added.push({name:file.name,base64:btoa(binary),bytes:file.size});
+    }
+    if(epoch===navigationEpoch)pendingAttachments.push(...added);
+  }finally{readingAttachments=false;refreshAttachmentComposer();}
+}
+async function removeAttachment(id) {
+  if(running()||setupSending)return;
+  const projectId=project.id;
+  await api(`/api/projects/${projectId}/remove_attachment`,{id});
+  const updated=await api(`/api/projects/${projectId}`);
+  if(project?.id===projectId){project=updated;refreshAttachmentComposer();}
+}
 function renderBrief() {
-  const {proposal,config:c,audio:a}=setupSelection(), chat=project?.chat||[];
+  const {proposal,config:c,audio:a,text:t}=setupSelection(), chat=project?.chat||[];
   const compatible=boot.capabilities?.conversational_setup;
   const nextPage=recommendedPage()===PAGE.brief?PAGE.research:recommendedPage();
   const voices=audioCatalog()[a.provider]?.voices||[];
@@ -231,7 +274,10 @@ function renderBrief() {
     `${!compatible?'<p class="note">Die Gesprächseinrichtung benötigt einen Studio-Neustart. Lass den laufenden Auftrag fertigarbeiten, beende dann das Studio und öffne es erneut.</p>':""}
     <section class="panel"><div class="conversation">${chat.length?chat.map(m=>`<div class="chat-message ${m.role==="user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<div class="chat-message"><strong>Redaktion</strong><p>Worum soll dein Podcast gehen – und was möchtest du danach besser verstehen? Du kannst direkt auch Wünsche zu Sprache, Tiefe oder Stimmen nennen.</p></div>'}</div>
     ${!running()&&proposal?.suggested_replies?.length?`<div class="actions">${proposal.suggested_replies.map(reply=>`<button class="secondary small" data-setup-reply="${escape(reply)}">${escape(reply)}</button>`).join("")}</div>`:""}
-    <form id="chat-form"><fieldset ${running()||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}<button type="submit">Senden</button></fieldset></form></section>
+    <form id="chat-form"><fieldset ${running()||setupSending||readingAttachments||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}
+    ${boot.text_catalog?.presets?.length?`<div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${boot.text_catalog.presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Live-Recherche bleibt bei Codex; Stimmen wählst du separat.</p></div>`:""}
+    ${boot.capabilities?.project_attachments?`<div class="attachment-picker"><label for="chat-files">Dateien anhängen · .md / .txt / .docx</label><input id="chat-files" type="file" accept=".md,.txt,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple aria-describedby="attachment-hint"><p id="attachment-hint" class="hint">Für deine Projektidee und als Ausgangsmaterial der Recherche. Bis zu 10 Dateien: Text je 256 KiB, DOCX je 2 MiB, insgesamt 1 MiB eingelesener Text. DOCX übernimmt Text und Tabellen, keine Bilder. Mit „Senden“ erhält dein Textmodell den Inhalt; bei langen Dateien zunächst gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein.</p><div id="attachment-list">${renderAttachments()}</div></div>`:'<p class="hint">Dateianhänge benötigen einen Studio-Neustart nach Ende laufender Aufträge.</p>'}
+    <button type="submit">${setupSending?"Wird gesendet …":readingAttachments?"Dateien werden eingelesen …":"Senden"}</button></fieldset></form></section>
     ${setupSummary()}
     <details class="panel"><summary>Stimmen anhören</summary><p class="hint">${a.provider==="qwen3_local"?"Qwen":"Gemini"} · ${c.language==="en-US"?"English":"Deutsch"}. Sag dem Partner anschließend, welche beiden Stimmen du möchtest. Neue Gemini-Proben nutzen dein API-Guthaben.</p><div class="voice-library">${voices.map(v=>`<div class="sample-row"><strong>${escape(v)}</strong><button class="secondary small" data-preview-voice="${escape(v)}" data-preview-provider="${a.provider}" data-language="${c.language}" ${a.provider!=="qwen3_local"&&!savedSample(v,c.language)&&running()?"disabled":""}>${sampleButtonLabel(a.provider,v,c.language)}</button></div>`).join("")}</div>
     ${a.provider==="openrouter_gemini_tts"?`<div id="voice-library-panel">${renderVoiceLibrary(c.language)}</div>`:""}</details>
@@ -242,6 +288,7 @@ function renderBrief() {
 function renderResearch() {
   let html = heading(2,"Erst verstehen. Dann erzählen.","Die Recherche sammelt belastbare Quellen, erklärt die Grundlagen und macht offene Fragen sichtbar. Sie ist die Grundlage für den roten Faden.");
   if(!project) return html+empty("Ein Thema fehlt noch.","Lege zuerst deinen Podcast-Auftrag an.","Zur Idee",0);
+  if(project.attachments?.length)html+=`<section class="panel"><h2>Deine Ausgangsmaterialien</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">Diese Dateien werden als lokale Quellen eingelesen. Aussagen aus deinen Notizen werden anhand weiterer Quellen geprüft. Sehr kurze Notizen dienen vor allem der Projektbeschreibung.</p></section>`;
   html += `<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">Recherche mit Codex</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${project.research?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen.</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen und das Dossier prüfen läuft nach dem Start automatisch.</p>'}</section>`;
   if(project.research) html+=`<section class="panel"><h2>Dein Recherche-Dossier</h2><pre class="document">${escape(project.research)}</pre></section>`;
   return html;
@@ -349,13 +396,26 @@ function overviewStatus(p) {
 }
 function podcastCard(p,e,index) {
   const url=path=>"/media/"+encodeURIComponent(p.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
-  return `<article class="podcast-episode" id="podcast-${escape(p.id)}-${escape(e.episode_id)}" data-audio-version="${escape(JSON.stringify(e.audio))}"><h3>Folge ${index+1}: ${escape(e.title)}</h3>
+  const download=path=>boot.capabilities?.podcast_downloads?"/download/"+encodeURIComponent(p.id)+"/file/"+path.split("/").map(encodeURIComponent).join("/"):url(path);
+  const number=Number(/^ep_(\d+)$/.exec(e.episode_id)?.[1])||index+1;
+  const shortName=(text,max)=>Array.from(String(text).normalize("NFC").replace(/[<>:"/\\|?*\x00-\x1f]/g," ").replace(/\s+/g," ").trim()).slice(0,max).join("").replace(/[ .-]+$/,"")||"Podcast";
+  const fallbackName=i=>`${shortName(p.topic||"Podcast",32)} - Folge ${String(number).padStart(2,"0")} - ${shortName(e.title,56)}${e.audio.length>1?` - Teil ${i+1}`:""}.mp3`;
+  return `<article class="podcast-episode" id="podcast-${escape(p.id)}-${escape(e.episode_id)}" data-audio-version="${escape(JSON.stringify(e.audio))}"><h3>Folge ${number}: ${escape(e.title)}</h3>
     <p class="hint" id="recording-status-${escape(p.id)}-${escape(e.episode_id)}">${e.audio_current?"":"Aufnahme eines früheren Skript- oder Stimmenstands."}</p>
-    ${e.audio.map((path,i)=>`<div class="audio-track"><strong>${e.audio.length>1?"Teil "+(i+1)+" von "+e.audio.length:"Podcast abspielen"}</strong><audio controls preload="none" src="${url(path)}"></audio><a href="${url(path)}" download>MP3 herunterladen</a></div>`).join("")}</article>`;
+    ${e.audio.map((path,i)=>`<div class="audio-track"><strong>${e.audio.length>1?"Teil "+(i+1)+" von "+e.audio.length:"Podcast abspielen"}</strong><audio controls preload="none" src="${url(path)}"></audio><a href="${download(path)}" download="${escape(fallbackName(i))}">Folge ${number}${e.audio.length>1?` · Teil ${i+1}`:""} als MP3 laden</a></div>`).join("")}</article>`;
+}
+function podcastDownload(p) {
+  const finished=(p.episodes||[]).filter(e=>e.audio?.length).length,total=p.episode_count||p.episodes?.length||0;
+  if(!finished)return '<p class="hint">Sobald eine Folge fertig vertont ist, kannst du sie hier herunterladen.</p>';
+  if(!boot.capabilities?.podcast_downloads)return '<p class="hint">Für den ZIP-Download das Studio nach Ende laufender Aufträge einmal neu starten. Einzelne Folgen kannst du bereits laden.</p>';
+  const complete=finished===total;
+  return `<a class="download-all" href="/download/${encodeURIComponent(p.id)}/podcast.zip" download>${complete?"Gesamten Podcast herunterladen":"Fertige Folgen herunterladen"} <span>ZIP · ${complete?finished:`${finished} von ${total}`} Folgen</span></a>
+    <p class="hint">${complete?"Alle Folgen":"Die bisher fertigen Folgen"} als einzelne MP3s mit kurzen Dateinamen: Folgennummer und Episodentitel.${(p.episodes||[]).some(e=>e.audio?.length&&!e.audio_current)?" Enthält auch die unten gekennzeichneten älteren Aufnahmen.":""}</p>`;
 }
 function overviewCard(p) {
   return `<section class="panel" id="project-card-${escape(p.id)}" data-project-card="${escape(p.id)}"><div class="panel-title"><h2>${escape(p.topic)}</h2><span class="tag" id="project-state-${escape(p.id)}">${escape(overviewStatus(p))}</span></div>
     <div class="actions"><button data-open-project="${escape(p.id)}">Projekt öffnen</button><button class="secondary small" data-delete-project="${escape(p.id)}" ${p.unavailable||p.job?.status==="running"||(p.audio_jobs||[]).some(j=>j.status==="running")||!boot.capabilities?.project_overview?"disabled":""}>Projekt löschen</button></div>
+    <div class="podcast-download" id="project-download-${escape(p.id)}">${podcastDownload(p)}</div>
     <div id="podcasts-${escape(p.id)}">${(p.episodes||[]).map((e,i)=>e.audio?.length?podcastCard(p,e,i):"").join("")}</div>
     <p class="hint" id="project-audio-count-${escape(p.id)}">${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.</p></section>`;
 }
@@ -374,8 +434,9 @@ async function loadOverview() {
     episodes:p.episodes.map(e=>({...e,episode_id:e.script.episode_id,title:e.script.title}))})),trash:[]};
 }
 async function showOverview() {
+  if(setupSending)throw new Error("Die Nachricht wird gerade gesendet. Bitte kurz warten.");
   const epoch=++navigationEpoch,data=await loadOverview();if(epoch!==navigationEpoch)return;
-  overviewData=data;overviewPage=true;project=null;followWorkflow=false;
+  overviewData=data;overviewPage=true;project=null;followWorkflow=false;pendingAttachments=[];
   $("project-select").value="";updatePageUrl();render();
 }
 function refreshOverview() {
@@ -391,6 +452,8 @@ function refreshOverview() {
     const button=card.querySelector("[data-delete-project]");
     if(button)button.disabled=p.unavailable||p.job?.status==="running"||(p.audio_jobs||[]).some(j=>j.status==="running")||!boot.capabilities?.project_overview;
     $("project-audio-count-"+p.id).textContent=`${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.`;
+    const download=$("project-download-"+p.id),downloadContent=podcastDownload(p);
+    if(download&&download.innerHTML!==downloadContent)download.innerHTML=downloadContent;
     (p.episodes||[]).forEach((e,i)=>{
       if(!e.audio?.length)return;
       const audioCard=$("podcast-"+p.id+"-"+e.episode_id);
@@ -501,10 +564,12 @@ async function refreshProjects() {
   $("project-select").value=project?.id||"";
 }
 async function selectProject(id, loaded=null, requestedPage=null) {
+  if(setupSending)throw new Error("Die Nachricht wird gerade gesendet. Bitte kurz warten.");
   const epoch=++navigationEpoch;
   const selected=id?(loaded||await api("/api/projects/"+encodeURIComponent(id))):null;
   if(epoch!==navigationEpoch)return;
   overviewPage=false;
+  pendingAttachments=[];
   project=selected;
   $("project-select").value=id||"";
   episodeIndex=0;scriptEpisodeId=null;readingSnapshot=null;followWorkflow=requestedPage===null;
@@ -516,20 +581,27 @@ async function storeKey() {
   if(key){const value=await api("/api/key",{key});boot.key_available=value.key_available;$("api-key").value="";
     $("key-status").textContent=boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt.";}
 }
-async function sendSetupMessage(message) {
+async function sendSetupMessage(message, presetId=null) {
   message=message.trim();
-  if(!message||running()||setupSending)return;
+  if((!message&&!pendingAttachments.length)||running()||setupSending||readingAttachments)return;
   if(/sk-or-[A-Za-z0-9_-]{12,}/.test(message))throw new Error("Bitte den geschützten OpenRouter-Key-Eingang verwenden. Keys gehören nicht in den Chat.");
-  setupSending=true;
+  const initialTopic=message||pendingAttachments[0]?.name.replace(/\.(md|txt|docx)$/i,"");
+  message=message||"Bitte leite aus meinen angehängten Dateien einen Vorschlag für das neue Podcast-Projekt ab und nutze sie als Ausgangsmaterial für die Recherche.";
+  setupSending=true;refreshAttachmentComposer();
   try{
     if(!project){
-      const config={...structuredClone(boot.defaults),topic:message.slice(0,500)};
+      const config={...structuredClone(boot.defaults),topic:initialTopic.slice(0,500)};
       const created=await api("/api/projects",{config,text:boot.text_defaults||defaultTextChoice(),
         execution:{text:"sequential",audio:"sequential"}});
       project=await api("/api/projects/"+created.id);await refreshProjects();updatePageUrl();
     }
-    await start("assistant",{message});
-  }finally{setupSending=false;}
+    if(pendingAttachments.length){
+      await api(`/api/projects/${project.id}/upload`,{files:pendingAttachments.map(({name,base64})=>({name,base64}))});
+      pendingAttachments=[];
+      project=await api(`/api/projects/${project.id}`);
+    }
+    await start("assistant",{message,...(presetId?{text_preset:presetId}:{})});
+  }finally{setupSending=false;refreshAttachmentComposer();}
 }
 async function applySetupProposal() {
   await api(`/api/projects/${project.id}/apply_proposal`,{proposal_hash:project.proposal_hash,
@@ -554,6 +626,7 @@ document.addEventListener("submit",event=>{
   });
 });
 document.addEventListener("change",event=>attempt(async()=>{
+  if(event.target.id==="chat-files")await queueAttachments(event.target.files);
   if(event.target.id==="project-select")await selectProject(event.target.value);
   if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
@@ -562,6 +635,14 @@ document.addEventListener("change",event=>attempt(async()=>{
 document.addEventListener("click",event=>{
   const button=event.target.closest("button");if(!button)return;
   attempt(async()=>{
+    if(button.dataset.textPreset){
+      const p=boot.text_catalog.presets.find(row=>row.id===button.dataset.textPreset);
+      if(!p)throw new Error("Bitte die Modellauswahl neu laden.");
+      const draft=$("chat-message")?.value.trim();
+      await sendSetupMessage(`${draft?draft+"\n\n":""}Nutze für die Textarbeit ${p.label} (Modell ${p.model}${p.reasoning_effort?", Reasoning "+p.reasoning_effort:""}).`,p.id);return;
+    }
+    if(button.dataset.removePending!==undefined){if(!setupSending){pendingAttachments.splice(Number(button.dataset.removePending),1);refreshAttachmentComposer();}return;}
+    if(button.dataset.removeAttachment){await removeAttachment(button.dataset.removeAttachment);return;}
     if(button.id==="new-project"||button.hasAttribute("data-new-project")){await selectProject("");return;}
     if(button.id==="project-overview"||button.dataset.action==="overview"){await showOverview();return;}
     if(button.dataset.openProject){await selectProject(button.dataset.openProject);return;}
@@ -606,7 +687,7 @@ document.addEventListener("click",event=>{
 async function poll() {
   try {
     if(overviewPage){const next=await loadOverview();if(overviewPage){overviewData=next;refreshOverview();}return;}
-    if(!project||submitting)return;
+    if(!project||submitting||setupSending||readingAttachments)return;
     const id=project.id,next=await api(`/api/projects/${id}`);
     if(project?.id!==id)return;
     const changed=projectJobSignature(next)!==lastJobSignature;
@@ -616,8 +697,10 @@ async function poll() {
     // Keep unfinished form edits and the script being reviewed stable during polling.
     const samplesChanged=JSON.stringify(project.voice_samples)!==JSON.stringify(next.voice_samples);
     const chatChanged=JSON.stringify(project.chat)!==JSON.stringify(next.chat);
+    const attachmentsChanged=JSON.stringify(project.attachments)!==JSON.stringify(next.attachments);
     project.job=next.job;project.run=next.run;project.voice_samples=next.voice_samples;
     project.chat=next.chat;project.proposal_hash=next.proposal_hash;project.proposal_applied=next.proposal_applied;
+    project.attachments=next.attachments;project.proposal_current=next.proposal_current;
     project.audio_jobs=next.audio_jobs;project.audio_capacity=next.audio_capacity;
     project.episodes=next.episodes;project.script_previews=next.script_previews;renderNavigation();renderJob();
     if(samplesChanged)refreshVoiceLibrary();
@@ -627,7 +710,7 @@ async function poll() {
       else render();
       if(next.job?.status==="completed"&&next.job.sample)$("job-status").scrollIntoView({block:"nearest"});
     }else if(scriptsChanged&&step===PAGE.scripts)refreshScriptReader();
-    else if(chatChanged&&step===PAGE.brief){const draft=$("chat-message")?.value;render();if(draft)$("chat-message").value=draft;}
+    else if((chatChanged||attachmentsChanged)&&step===PAGE.brief){refreshAttachmentComposer();}
   }catch(error){renderJob();notice("Verbindung zum Studio unterbrochen. Ist das Studio-Fenster noch geöffnet?");}
 }
 attempt(async()=>{

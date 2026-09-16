@@ -14,6 +14,38 @@ Unter Windows findet das Studio Codex zunächst im `PATH`. Fehlt dieser Eintrag 
 
 ## Der geführte Ablauf
 
+### Eigene Dateien als Projektidee und Recherchematerial
+
+Bei **Neues Projekt → Auftrag & Stimmen** kannst du unter dem Nachrichtenfeld mehrere **.md**, **.txt** oder **.docx** anhängen. Beschreibe bei Bedarf, wie sie verwendet werden sollen, und klicke **Senden**. Ohne Begleittext schlägt der Partner anhand der Dateien ein Projekt vor. Er berücksichtigt bereits enthaltene Wünsche und fragt fehlende Angaben nach. Die Zusammenfassung prüfst du weiterhin vor **Diese Auswahl übernehmen**.
+
+Die aktiven Anhänge sind nach dem Neuladen sowie unter **Recherche** sichtbar. **Entfernen** nimmt eine Datei aus den aktiven Eingaben; frühere Modellaufrufe und Recherche-Snapshots bleiben nachvollziehbar. Nach veränderten Anhängen muss der Partner seine Zusammenfassung vor der Übernahme aktualisieren. Ein erneuter Upload derselben Datei erzeugt keine zweite aktive Kopie. Änderungen sind während laufender Aufträge gesperrt.
+
+Bis zu **10 Anhänge pro Projekt**, Textdateien jeweils bis **256 KiB**, DOCX bis **2 MiB**, insgesamt bis **1 MiB eingelesener Text**. Eine Sendung darf bis 4 MiB Dateien enthalten. TXT/MD benötigen UTF-8 (mit oder ohne BOM) oder UTF-16 mit BOM. DOCX wird lokal ohne Word-Installation als Haupttext einschließlich Tabellen ausgelesen; Bilder, Layout, Kopf-/Fußzeilen und Fußnoten werden nicht übernommen. Passwortgeschützte Dateien bitte vorher als normale DOCX oder TXT speichern.
+
+Der Server legt UTF-8-Textkopien unter `inputs/uploads/` mit kurzen, selbst erzeugten Namen ab, behält die Originalnamen im Verzeichnis `inputs/attachments.json` und registriert die Kopien in `local_sources`. Die Originaldateien auf deinem Rechner bleiben unverändert. Alle Anhänge fließen in den Setup-Kontext ein; bei zusammen mehr als 60.000 Zeichen verwendet der Partner ausdrücklich gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein und wählt daraus wie bei anderen Quellen relevante Abschnitte für die Auswertung. Sehr kurze Notizen eignen sich für den Auftrag, können aber unter der Mindestlänge der Quellenextraktion liegen. Behauptungen aus Notizen oder gewünschten Ergebnissen müssen durch unabhängige Quellen gestützt oder als offen behandelt werden.
+
+**Senden** übermittelt den Text an das ausgewählte Textmodell (Codex oder OpenRouter). Ein Upload allein startet weder Web-Recherche noch Vertonung. Zugangsdaten gehören nicht in Dateien; erkannte OpenRouter-Keys und der hinterlegte Sitzungs-Key werden abgewiesen. Nach diesem Update den Studio-Server neu starten, sobald keine Arbeit läuft; Browser-Neuladen allein lädt das neue Backend nicht.
+
+### Textmodell auswählen
+
+Unter dem Nachrichtenfeld stehen Modell-Auswahlknöpfe. Ein Klick sendet den Modellwunsch zusammen mit deinem eingegebenen Text und ausgewählten Anhängen an den Partner. Der aktuelle Gesprächsanbieter formuliert den Vorschlag; das ausgewählte Modell wird mit **Diese Auswahl übernehmen** für künftige Gesprächsaufrufe, Inhaltsverzeichnis, Lehrkonzept, Skripte, Polishing und Qualitätsprüfung gespeichert. Die exakte Auswahl wird serverseitig in den Vorschlag übernommen, auch wenn die Modellantwort einen anderen Textanbieter vorschlagen sollte.
+
+| Auswahl | Anbieter | Modell-ID | Denkstufe der Vorauswahl |
+| --- | --- | --- | --- |
+| Astra | Codex-Abo | `gpt-6-astra` | `xhigh` |
+| [Astra](https://openrouter.ai/openai/gpt-6-astra) | OpenRouter | `openai/gpt-6-astra` | Modellstandard |
+| [Astra Pro](https://openrouter.ai/openai/gpt-6-astra-pro) | OpenRouter | `openai/gpt-6-astra-pro` | Modellstandard |
+| [Claude Fable 5.1](https://openrouter.ai/anthropic/claude-fable-5.1) | OpenRouter | `anthropic/claude-fable-5.1` | Modellstandard |
+| [DeepSeek V4.1 Flash · max](https://openrouter.ai/deepseek/deepseek-v4.1-flash) | OpenRouter | `deepseek/deepseek-v4.1-flash` | `max` |
+
+Andere Wünsche kannst du weiterhin im Chat äußern. Die Pro-Modell-ID bleibt erhalten und wird nicht durch normales Astra mit höherem Denkaufwand ersetzt. DeepSeek verwendet `reasoning.effort=max`, keinen erfundenen Modellzusatz. Laut [öffentlichem API-Katalog](https://openrouter.ai/api/v1/models), geprüft am 16.09.2026, unterstützt dieses DeepSeek-Modell `low`, `high`, `max`; die drei anderen OpenRouter-Vorauswahlen außerdem `medium` und `xhigh`. Die API meldet für alle vier Modelle `structured_outputs` und `response_format`; das Studio verlangt passende Anbieter und prüft jede Antwort weiterhin lokal gegen das erwartete Datenformat. Abweichende nicht unterstützte Einstellungen werden nicht still ersetzt.
+
+Live-Recherche und zusätzliche Web-Recherche laufen weiterhin über Codex. OpenRouter-Text nutzt dein API-Guthaben; der Key kommt in den geschützten Eingang. Qwen/Gemini und Stimmen werden getrennt gewählt. Bestehende Aufträge behalten ihre gespeicherte Modellauswahl beim Fortsetzen.
+
+Die Projektübersicht bietet **Gesamten Podcast herunterladen** als ZIP mit einzelnen MP3s in Folgenreihenfolge. Es enthält die zuletzt veröffentlichten Aufnahmen einschließlich aller Teile, ohne erneute Spracherzeugung oder Umwandlung. Das ZIP trägt einen gekürzten Podcasttitel. Darin heißen Dateien `Folge 01 - Episodentitel.mp3`, bei mehreren Teilen ergänzt um `Teil 01 von 02`. Der Podcasttitel wird darin nicht wiederholt, damit ZIP-Ordner und Dateiname zusammen beim Entpacken unter Windows kurz bleiben. Einzeldownloads erhalten zusätzlich einen kurzen Podcasttitel. Lange Titel werden möglichst an Wortgrenzen gekürzt; Umlaute bleiben erhalten, Auslassungszeichen werden nicht angehängt.
+
+Bei einer unvollständigen Serie zeigt der Link **Fertige Folgen herunterladen · ZIP · 2 von 6 Folgen**. Ältere Skript-/Stimmenstände bleiben als solche gekennzeichnet. Fehlt eine Datei innerhalb einer veröffentlichten Folge, bricht der ZIP-Download mit einer verständlichen Meldung ab, statt Teile still auszulassen. Das ZIP entsteht nur für den Download und wird danach wieder aus dem temporären Speicher entfernt. Nach einem Studio-Update benötigt ein bereits laufender Server einen Neustart, bevor der neue Gesamtdownload verfügbar ist.
+
 1. **Auftrag & Stimmen:** Ein einzelner redaktioneller Partner fragt im Chat nach den benötigten Angaben und schlägt konkrete Einstellungen vor. Du kannst Thema, Vorwissen, Tiefe, Sprache, Stimmen, Textmodell und sequenzielle oder parallele Ausführung in eigenen Worten wählen. **Diese Auswahl übernehmen** speichert die überprüfte Zusammenfassung. Der Chat erteilt keine Plan- oder Audiofreigabe. Gespeicherte Hörproben bleiben über die aufklappbare Stimmenbibliothek erreichbar; Zugangsdaten gehören ausschließlich in den geschützten Key-Eingang.
 2. **Recherche:** Quellen suchen, herunterladen, auswerten und das Dossier prüfen läuft nach dem Start automatisch. Das Ergebnis ist hier lesbar. Danach entsteht das Inhaltsverzeichnis; ein vorhandener Plan lässt sich direkt öffnen. Eine neue Recherche ist als eigener Neustart gekennzeichnet.
 3. **Inhaltsverzeichnis:** Folgen, Kapitel, Leitfragen und Erklärungsschritte prüfen und bei Bedarf überarbeiten lassen. „Plan freigeben & Skripte schreiben“ gibt genau diesen Planstand frei und startet die Ausarbeitung. Ein bereits freigegebener Plan führt zur laufenden Ausarbeitung, statt erneut eine Freigabe zu verlangen.
@@ -48,6 +80,10 @@ Codex erhält `--model` und `-c model_reasoning_effort=…` ausdrücklich. Die b
 Ein bereits laufender Studio-Server muss die neue Backend-Version erst laden. Die Oberfläche zeigt dafür einen Hinweis und deaktiviert die neue Modellauswahl. Nach Abschluss des laufenden Auftrags **Studio beenden**, anschließend `Podcast-Studio.cmd` erneut öffnen. Ein Neuladen der Browserseite allein reicht für diese Backend-Änderung nicht. Ein nur im Serverspeicher hinterlegter API-Key muss danach erneut eingegeben werden.
 
 ## Anhalten und Fortsetzen
+
+Neue Projekte haben standardmäßig **150 Modellaufrufe je Recherche- oder Skriptlauf**. Gespeicherte Projekte behalten ihr ausdrücklich gesetztes Limit. Eine genehmigte Erhöhung für einen bestehenden Skriptlauf erhält den Verbrauch, die Zwischenergebnisse und die Freigaben.
+
+Bei einem widersprüchlichen Inhaltsverzeichnis korrigiert Studio den vorhandenen Entwurf automatisch bis zu dreimal. Die Korrektur erhält konkrete Angaben zu vertauschten Grundlagen und Szenen; Quellenprüfung und Reihenfolge bleiben verbindlich. Entwurf und Korrekturstand werden gespeichert, sodass Fortsetzen nach einer Unterbrechung daran anknüpft und die Korrekturgrenze nicht zurücksetzt.
 
 „Auftrag anhalten“ stoppt den vom Studio gestarteten Arbeitsprozess einschließlich seiner Unterprozesse auf Windows, macOS und Linux. Auch parallel gestartete Modellprozesse gehören dazu; andere Aufträge werden nicht beendet. Fertige Stufen und Qwen-Abschnitte bleiben gespeichert; der gerade laufende Modellaufruf oder Abschnitt muss möglicherweise wiederholt werden. „Fortsetzen“ verwendet die gespeicherten Eingaben. Eine unterbrochene Planung erteilt dadurch keine Skriptfreigabe. Ein unterbrochener Audiolauf benötigt weiterhin seine bereits erteilte passende Freigabe.
 

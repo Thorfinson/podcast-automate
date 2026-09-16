@@ -8,8 +8,8 @@ from .research_models import Finding
 
 
 class Dependency(Contract):
-    before: Identifier
-    after: Identifier
+    before: Identifier = Field(description="Dossier finding ID introduced first; never an episode or scene ID.")
+    after: Identifier = Field(description="Dossier finding ID that needs 'before'; first introduced in the same or a later scene.")
     reason: NonEmpty
 
 
@@ -32,7 +32,7 @@ class EpisodePlan(Contract):
     title: NonEmpty
     central_question: NonEmpty
     target_minutes: float = Field(gt=0, le=30)
-    prerequisite_episodes: list[Identifier]
+    prerequisite_episodes: list[Identifier] = Field(description="Earlier episode IDs; finding dependencies belong in SeriesPlan.dependencies.")
     finding_ids: list[Identifier] = Field(min_length=1)
     scenes: list[ScenePlan] = Field(min_length=1)
     deferred_questions: list[NonEmpty]

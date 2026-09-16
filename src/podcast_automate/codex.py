@@ -63,6 +63,10 @@ def subscription_environment() -> dict[str, str]:
 
 def classify_failure(message: str) -> AppError:
     lower = message.lower()
+    if "invalid_json_schema" in lower or "invalid schema for response_format" in lower:
+        return AppError("Das Studio hat ein nicht unterstütztes Antwortformat an Codex gesendet. "
+                        "Das ist ein Fehler der Studio-Anbindung; eine neue Anmeldung behebt ihn nicht.",
+                        code="invalid_output_schema")
     if any(marker in lower for marker in (
             "usage limit", "usage_limit", "rate limit", "rate_limit", "quota", "429")):
         return AppError("Abo-Kontingent oder Anfragelimit erreicht. Später mit 'pla resume' fortsetzen.",
@@ -154,7 +158,12 @@ class CodexAdapter:
         write_json(directory / "search_events.json", search_items)
         if result.returncode or not terminal or terminal[-1]["type"] != "turn.completed":
             response_file.unlink(missing_ok=True)
-            raise classify_failure(json.dumps(failures) + result.stderr)
+            failure = classify_failure(json.dumps(failures) + result.stderr)
+            # Keep a useful failure receipt without persisting raw provider output or prompts.
+            write_json(directory / "failure.json", {"code": failure.code, "message": str(failure),
+                       "exit_code": result.returncode, "model": self.settings.codex_model,
+                       "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version})
+            raise failure
         try:
             output = output_type.model_validate_json(response_file.read_text(encoding="utf-8"))
         except (OSError, ValueError, ValidationError) as exc:
