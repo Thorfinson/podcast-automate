@@ -33,6 +33,9 @@ if mode == "timeout":
 if mode == "quota":
     print(json.dumps({"type": "turn.failed", "error": {"message": "usage_limit_reached"}}))
     sys.exit(1)
+if mode == "schema":
+    print(json.dumps({"type": "turn.failed", "error": {"message": "invalid_json_schema: propertyNames is not permitted. test-only-secret"}}))
+    sys.exit(1)
 topic = json.loads(sys.stdin.read().splitlines()[-1])["topic"]
 schema = json.loads(pathlib.Path(args[args.index("--output-schema")+1]).read_text())
 assert schema["additionalProperties"] is False
@@ -124,6 +127,16 @@ class CodexTests(unittest.TestCase):
         with patch.dict(os.environ, {"PLA_TEST_MODE": "retry"}):
             result, _ = self.adapter.probe("Thema", self.root / "request")
         self.assertEqual(result.topic, "Thema")
+
+    def test_schema_error_is_actionable_and_failure_receipt_does_not_copy_provider_details(self):
+        import json
+        with patch.dict(os.environ, {"PLA_TEST_MODE": "schema"}), self.assertRaises(AppError) as error:
+            self.adapter.probe("Thema", self.root / "request")
+        self.assertEqual(error.exception.code, "invalid_output_schema")
+        self.assertIn("Studio-Anbindung", str(error.exception))
+        receipt = (self.root / "request/failure.json").read_text(encoding="utf-8")
+        self.assertNotIn("test-only-secret", receipt)
+        self.assertEqual(json.loads(receipt)["exit_code"], 1)
 
     def test_windows_npm_shim_is_resolved_without_shell(self):
         shim = self.root / "codex.cmd"

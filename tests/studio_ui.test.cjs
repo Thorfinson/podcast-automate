@@ -4,6 +4,108 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('src/podcast_automate/web/app.js', 'utf8');
+
+test('model presets remain distinct and sending one carries its explicit choice to the partner',async()=>{
+  const app=studio();
+  const p=app.run(`({id:'test',config:boot.defaults,chat:[]})`);
+  await app.run(`selectProject('test',${JSON.stringify(p)})`);
+  const presets=[{id:'codex_astra',label:'Astra · Codex-Abo',provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'},
+    {id:'openrouter_astra',label:'Astra · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra',reasoning_effort:null},
+    {id:'openrouter_astra_pro',label:'Astra Pro · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra-pro',reasoning_effort:null},
+    {id:'openrouter_fable',label:'Claude Fable 5.1 · OpenRouter',provider:'openrouter',model:'anthropic/claude-fable-5.1',reasoning_effort:null},
+    {id:'openrouter_deepseek',label:'DeepSeek V4.1 Flash · max · OpenRouter',provider:'openrouter',model:'deepseek/deepseek-v4.1-flash',reasoning_effort:'max'}];
+  app.run(`boot.capabilities={conversational_setup:true};boot.text_catalog={presets:${JSON.stringify(presets)}};`);
+  const html=app.run('renderBrief()');
+  for(const preset of presets)assert.ok(html.includes(`data-text-preset="${preset.id}"`));
+  assert.ok(html.includes('Live-Recherche bleibt bei Codex'));
+  app.responses.set('/api/projects/test',p);
+  await app.run(`sendSetupMessage('Nutze DeepSeek mit max','openrouter_deepseek')`);
+  const request=app.requests.find(r=>r.path==='/api/projects/test/start');
+  assert.equal(JSON.parse(request.options.body).text_preset,'openrouter_deepseek');
+  assert.ok(!app.requests.some(r=>r.path.endsWith('/save')||r.path.endsWith('/apply_proposal')));
+});
+
+test('attachment picker supports text and DOCX with escaped names and no configuration forms',async()=>{
+  const app=studio();
+  await app.run(`selectProject('test',{id:'test',config:boot.defaults,chat:[],attachments:[{id:'abc',name:'<b>Notizen</b>.md',characters:150}]})`);
+  app.run('boot.capabilities={conversational_setup:true,project_attachments:true};');
+  const html=app.run('renderBrief()');
+  assert.ok(html.includes('id="chat-files"'));
+  assert.ok(html.includes('.md,.txt,.docx'));
+  assert.ok(html.includes('multiple'));
+  assert.ok(html.includes('&lt;b&gt;Notizen&lt;/b&gt;.md'));
+  assert.ok(!html.includes('<b>Notizen</b>'));
+  assert.ok(html.includes('dein Textmodell den Inhalt'));
+  assert.ok(app.run('renderResearch()').includes('&lt;b&gt;Notizen'));
+});
+
+test('file-only new project uploads before the assistant starts and preserves source selection',async()=>{
+  const app=studio();
+  await app.run(`selectProject('')`);
+  app.run('boot.capabilities={conversational_setup:true,project_attachments:true};');
+  app.responses.set('/api/bootstrap',app.run('structuredClone(boot)'));
+  app.responses.set('/api/projects',{id:'new-podcast'});
+  const p=app.run(`({id:'new-podcast',config:structuredClone(boot.defaults),chat:[],attachments:[{id:'abc',name:'Idee.docx',characters:300}]})`);
+  app.responses.set('/api/projects/new-podcast',p);
+  await app.run(`queueAttachments([{name:'Idee.docx',size:3,arrayBuffer:async()=>new Uint8Array([65,66,67]).buffer}])`);
+  assert.equal(app.run('pendingAttachments[0].base64'),'QUJD');
+  await app.run(`sendSetupMessage('')`);
+  const sent=app.requests.filter(r=>r.options?.method==='POST');
+  assert.deepEqual(sent.map(r=>r.path),['/api/projects','/api/projects/new-podcast/upload','/api/projects/new-podcast/start']);
+  assert.equal(JSON.parse(sent[0].options.body).config.topic,'Idee');
+  assert.deepEqual(JSON.parse(sent[1].options.body).files,[{name:'Idee.docx',base64:'QUJD'}]);
+  assert.equal(JSON.parse(sent[2].options.body).action,'assistant');
+  assert.ok(JSON.parse(sent[2].options.body).message.includes('angehängten Dateien'));
+  assert.equal(app.run('pendingAttachments.length'),0);
+  assert.equal(app.run('setupSending'),false);
+});
+
+test('failed upload keeps pending files and message and never starts the model',async()=>{
+  const app=studio();
+  await app.run(`selectProject('test',{id:'test',config:boot.defaults,chat:[]})`);
+  app.run(`boot.capabilities={conversational_setup:true,project_attachments:true};
+    pendingAttachments=[{name:'Notizen.txt',base64:'QUJD',bytes:3}];
+    $('chat-message').value='Meine Wünsche';
+    const baseFetch=fetch;fetch=async(path,options)=>path.endsWith('/upload')?{ok:false,json:async()=>({error:'Upload fehlgeschlagen'})}:baseFetch(path,options);`);
+  await assert.rejects(app.run(`sendSetupMessage('Meine Wünsche')`),/Upload fehlgeschlagen/);
+  assert.equal(app.run('pendingAttachments.length'),1);
+  assert.equal(app.run('setupSending'),false);
+  assert.equal(app.elements.get('chat-message').value,'Meine Wünsche');
+  assert.ok(!app.requests.some(r=>r.path.endsWith('/start')));
+});
+
+test('pending file content survives render but cannot leak into another project',async()=>{
+  const app=studio();
+  await app.run(`selectProject('test',{id:'test',config:boot.defaults,chat:[]})`);
+  app.run(`boot.capabilities={conversational_setup:true,project_attachments:true};`);
+  await app.run(`queueAttachments([{name:'Notizen.md',size:3,arrayBuffer:async()=>new Uint8Array([65,66,67]).buffer}])`);
+  app.run('render();render();');
+  assert.equal(app.run('pendingAttachments.length'),1);
+  await app.run(`selectProject('other',{id:'other',config:boot.defaults,chat:[]})`);
+  assert.equal(app.run('pendingAttachments.length'),0);
+  app.run('setupSending=true;');
+  await assert.rejects(app.run(`selectProject('')`),/gerade gesendet/);
+  await assert.rejects(app.run('showOverview()'),/gerade gesendet/);
+});
+
+test('invalid extensions and oversized text are rejected before reading file contents',async()=>{
+  const app=studio();
+  await app.run(`selectProject('')`);
+  for(const file of [{name:'run.exe',size:1},{name:'long.txt',size:262145},{name:'huge.docx',size:2097153}]){
+    app.run('boot.capabilities={project_attachments:true};');
+    await assert.rejects(app.run(`queueAttachments([{...${JSON.stringify(file)},arrayBuffer(){throw new Error('must not read');}}])`),/lesbarem Text/);
+  }
+  assert.equal(app.run('pendingAttachments.length'),0);
+});
+
+test('a proposal based on outdated attachments cannot be applied from the summary',async()=>{
+  const app=studio();
+  await app.run(`selectProject('test',{id:'test',config:boot.defaults,chat:[{role:'assistant',message:'Old proposal'}],proposal_current:false,proposal_applied:false})`);
+  app.run('boot.capabilities={conversational_setup:true,project_attachments:true};');
+  const html=app.run('setupSummary()');
+  assert.ok(html.includes('data-action="apply-proposal" disabled'));
+  assert.ok(html.includes('Anhänge haben sich geändert'));
+});
 test('script progress shows the active episode and readable results without audio counts',()=>{
   const app=studio();
   app.run(`project={id:'test',job:{status:'running',action:'resume',started_at:new Date().toISOString(),progress:{phase:'script',stage:'teaching',current_episode:'ep_002',episode_number:2,episode_title:'Attention',activity:'Lehrkonzept wird geprüft',activity_started_at:new Date().toISOString(),completed_segments:1,total_segments:6,episodes:[{episode_id:'ep_001',title:'Introduction',completed:true,teaching_preview:'A safe <script> excerpt'},{episode_id:'ep_002',title:'Attention',completed:false,teaching_preview:''}]},run:{stages:{teaching:{status:'running'}}}}};renderJob();`);
@@ -106,7 +208,7 @@ function studio() {
     return elements.get(id);
   };
   const defaults = {topic:'New project',central_question:'Why?',voice_profile:{host_a:'Aiden',host_b:'Vivian'},language:'de-DE',prior_knowledge:'',depth_request:'Deep',focus_questions:[],excluded_topics:[],seed_urls:[]};
-  const context = vm.createContext({console,structuredClone,AbortController,encodeURIComponent,URLSearchParams,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
+  const context = vm.createContext({console,structuredClone,AbortController,encodeURIComponent,URLSearchParams,btoa,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
     document:{getElementById:element,querySelectorAll(){return [];},addEventListener(){},modelContext:{registerTool(tool){registered.set(tool.name,tool);}}},
     fetch:async(path,options)=>{requests.push({path,options});const data=responses.get(path)??{token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults};return{ok:true,json:async()=>structuredClone(data)};}});
   vm.runInContext(source, context);
@@ -528,4 +630,55 @@ test('credential-like chat text is rejected before project creation or model cal
   const app=studio();
   await assert.rejects(app.run(`sendSetupMessage('sk-or-abcdefghijklmnopqrstuvwxyz')`),/Keys gehören nicht/);
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('complete podcast download is a single ZIP link while episode playback stays inline',()=>{
+  const app=studio();
+  app.run('boot.capabilities={podcast_downloads:true}');
+  const p={id:'test',topic:'Topic',episode_count:2,episodes:[
+    {episode_id:'ep_001',title:'First',audio:['exports/ep_001/one.mp3'],audio_current:true},
+    {episode_id:'ep_002',title:'Second',audio:['exports/ep_002/two.mp3'],audio_current:true}]};
+  const html=app.run(`overviewCard(${JSON.stringify(p)})`);
+  assert.ok(html.includes('Gesamten Podcast herunterladen'));
+  assert.ok(html.includes('href="/download/test/podcast.zip" download'));
+  assert.ok(html.includes('href="/download/test/file/exports/ep_001/one.mp3"'));
+  assert.ok(html.includes('src="/media/test/exports/ep_001/one.mp3"'));
+  assert.ok(html.includes('download="Topic - Folge 02 - Second.mp3"'));
+});
+
+test('partial downloads are labelled honestly and update without replacing players',()=>{
+  const app=studio();
+  app.run(`boot.capabilities={podcast_downloads:true};overviewData={projects:[{id:'test',topic:'Topic',episode_count:3,episodes:[
+    {episode_id:'ep_002',title:'Second',audio:['two.mp3'],audio_current:true}]}],trash:[]};
+    $('overview-projects').querySelectorAll=()=>[];
+    $('project-card-test').querySelector=()=>null;
+    $('podcast-test-ep_002').dataset={audioVersion:JSON.stringify(['two.mp3'])};
+    $('podcast-test-ep_002').innerHTML='playing at 123 seconds';refreshOverview();`);
+  const html=app.elements.get('project-download-test').innerHTML;
+  assert.ok(html.includes('Fertige Folgen herunterladen'));
+  assert.ok(html.includes('1 von 3'));
+  assert.ok(!html.includes('Gesamten Podcast'));
+  assert.equal(app.elements.get('podcast-test-ep_002').innerHTML,'playing at 123 seconds');
+  const episode=app.run('podcastCard(overviewData.projects[0],overviewData.projects[0].episodes[0],0)');
+  assert.ok(episode.includes('Folge 2: Second'));
+});
+
+test('old servers keep named individual downloads and explain how to enable ZIP',()=>{
+  const app=studio();
+  app.run('boot.capabilities={}');
+  const html=app.run(`overviewCard({id:'test',topic:'Topic',episodes:[{episode_id:'ep_001',title:'First',audio:['one.mp3']}]})`);
+  assert.ok(html.includes('Studio nach Ende laufender Aufträge einmal neu starten'));
+  assert.ok(html.includes('download="Topic - Folge 01 - First.mp3"'));
+  assert.ok(!html.includes('href="/download/'));
+});
+
+test('individual download fallback names stay short even before a server restart',()=>{
+  const app=studio();
+  app.run('boot.capabilities={}');
+  const topic='Ein besonders langer Podcasttitel '.repeat(10),title='Eine sehr lange Erklärung mit Umlauten '.repeat(10);
+  const html=app.run(`podcastCard({id:'test',topic:${JSON.stringify(topic)}},{episode_id:'ep_012',title:${JSON.stringify(title)},audio:['one.mp3']},0)`);
+  const name=/ download="([^"]+)"/.exec(html)[1];
+  assert.ok(name.length<120);
+  assert.ok(name.includes('Folge 12'));
+  assert.ok(!name.includes('…'));
 });

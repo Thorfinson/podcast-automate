@@ -107,6 +107,22 @@ class OpenRouterTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "openrouter_rate_limit")
         self.assertNotIn(KEY, str(caught.exception))
 
+    def test_requested_models_keep_exact_ids_and_deepseek_max_in_schema_requests(self):
+        for model, effort in (("openai/gpt-6-astra", None), ("openai/gpt-6-astra-pro", "xhigh"),
+                              ("anthropic/claude-fable-5.1", None), ("deepseek/deepseek-v4.1-flash", "max")):
+            with self.subTest(model=model):
+                self.adapter = OpenRouterAdapter(RuntimeSettings(), model=model, api_key=KEY, reasoning_effort=effort)
+                _, metadata = self.call(envelope(model=model))
+                body = json.loads(self.requests[-1][0].data)
+                self.assertEqual(body["model"], model)
+                self.assertEqual(body["response_format"]["type"], "json_schema")
+                self.assertEqual(body["provider"]["require_parameters"], True)
+                self.assertEqual(metadata["requested_model"], model)
+                if effort:
+                    self.assertEqual(body["reasoning"]["effort"], effort)
+        with self.assertRaises(AppError):
+            OpenRouterAdapter(RuntimeSettings(), model="deepseek/deepseek-v4.1-flash", api_key=KEY, reasoning_effort="xhigh")
+
     def test_invalid_truncated_refused_and_incomplete_responses_are_rejected(self):
         cases = [b"not JSON", [], {"choices": []}, {"choices": [None]}, {"choices": ["invalid"]},
                  envelope('{"unknown":"value"}'),

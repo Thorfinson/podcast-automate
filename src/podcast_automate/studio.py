@@ -20,6 +20,7 @@ from urllib.request import urlopen
 from pydantic import Field
 
 from .errors import AppError
+from . import attachments
 from .execution import ExecutionChoice, MAX_PARALLEL, selected_execution
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, now
 from .runner import manifest_path
@@ -28,10 +29,12 @@ from .speech import AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, sele
 from .storage import digest, file_hash, init_project, inside, load_project, project_lock, read_yaml, write_json, write_yaml
 from .voice_samples import ready_sample, sample_inventory
 from .studio_scripts import script_previews
+from .downloads import disposition, podcast_download, podcast_zip
 from .studio_trash import has_artifacts, move_contents
 from .platforms import configure_path, venv_python
 from .process import stop_process_tree
-from .text_settings import (CODEX_MODELS, DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT,
+from .text_settings import (CODEX_MODELS, OPENROUTER_MODELS, OPENROUTER_EFFORTS, TEXT_PRESETS, text_preset,
+                            provider_model, DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT,
                             REASONING_EFFORTS, validate_model, validate_reasoning)
 
 VOICES = QWEN_VOICES
@@ -112,10 +115,10 @@ class TextChoice(Contract):
     def kwargs(self):
         if self.provider not in {"codex_cli", "openrouter"}:
             raise AppError("Textanbieter auswählen.", code="invalid_backend")
-        model = self.model or (DEFAULT_CODEX_MODEL if self.provider == "codex_cli" else None)
+        model = provider_model(self.provider, self.model) or (DEFAULT_CODEX_MODEL if self.provider == "codex_cli" else None)
         effort = self.reasoning_effort or (DEFAULT_REASONING_EFFORT if self.provider == "codex_cli" else None)
         validate_model(model)
-        validate_reasoning(effort)
+        validate_reasoning(effort, provider=self.provider, model=model)
         return {"backend": self.provider, "model": model, "reasoning_effort": effort,
                 "max_output_tokens": self.max_output_tokens if self.provider == "openrouter" else None}
 
@@ -177,10 +180,16 @@ class Studio:
                 continue
         return {"app": "podcast-studio", "workspace": str(self.workspace),
                 "capabilities": {"text_reasoning_selection": True, "parallel_audio": True,
-                                 "project_execution": True, "conversational_setup": True, "project_overview": True},
+                                 "project_execution": True, "conversational_setup": True, "project_overview": True,
+                                 "podcast_downloads": True, "project_attachments": True},
+                "attachment_limits": {"files": attachments.MAX_FILES, "file_bytes": attachments.MAX_FILE_BYTES,
+                                      "docx_bytes": attachments.MAX_DOCX_BYTES, "transfer_bytes": attachments.MAX_TRANSFER_BYTES,
+                                      "total_bytes": attachments.MAX_TOTAL_BYTES},
                 "parallel_limit": MAX_PARALLEL,
                 "text_defaults": TextChoice().normalized(),
-                "text_catalog": {"codex_models": CODEX_MODELS, "reasoning_efforts": REASONING_EFFORTS},
+                "text_catalog": {"codex_models": CODEX_MODELS, "openrouter_models": OPENROUTER_MODELS,
+                                 "openrouter_efforts": OPENROUTER_EFFORTS, "presets": TEXT_PRESETS,
+                                 "reasoning_efforts": REASONING_EFFORTS},
                 "token": self.token, "projects": projects, "voices": VOICES,
                 "audio_catalog": audio_catalog(),
                 "voice_samples": sample_inventory(self.projects),
@@ -244,6 +253,8 @@ class Studio:
                 projects.append({"id": data["id"], "topic": data["config"]["topic"],
                     "config_hash": data["config_hash"], "job": data["job"], "audio_jobs": data["audio_jobs"],
                     "has_research": bool(data["research"]), "has_outline": bool(data["outline"]),
+                    "episode_count": len({e["script"]["episode_id"] for e in data["episodes"]} |
+                        {e["episode_id"] for e in (data["outline"] or {}).get("plan", {}).get("episodes", [])}),
                     "script_count": len(data["episodes"]), "episodes": [
                         {"episode_id": e["script"]["episode_id"], "title": e["script"]["title"],
                          "audio": e["audio"], "audio_current": e["audio_current"]} for e in data["episodes"]]})
@@ -320,11 +331,13 @@ class Studio:
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
                     "available": max(0, min(limit - active_here, MAX_PARALLEL - len(active_audio)))},
                 "chat": read_json(root / "studio/chat.json", []), "job": latest_job,
+                "attachments": attachments.inventory(root),
                 "outline": None, "episodes": [], "research": None, "run": None}
         proposal = next((item for item in reversed(data["chat"]) if item.get("role") == "assistant"), None)
         data["proposal_hash"] = digest(proposal) if proposal else None
+        data["proposal_current"] = attachments.proposal_current(root, proposal)
         applied = read_json(root / "studio/applied_proposal.json", {})
-        data["proposal_applied"] = bool(proposal and all(applied.get(key) == data[key] for key in
+        data["proposal_applied"] = bool(proposal and data["proposal_current"] and all(applied.get(key) == data[key] for key in
             ("proposal_hash", "config_hash", "audio_hash", "execution_hash")) and applied.get("text_hash") == digest(data["text"]))
         pointer = read_json(root / "studio/outline.json")
         if pointer:
@@ -367,7 +380,7 @@ class Studio:
         choice.kwargs()
         if choice.provider == "openrouter":
             from .openrouter import OpenRouterAdapter
-            OpenRouterAdapter(config.runtime, model=choice.model, api_key=self.key or None,
+            OpenRouterAdapter(config.runtime, model=choice.kwargs()["model"], api_key=self.key or None,
                               max_output_tokens=choice.max_output_tokens, reasoning_effort=choice.reasoning_effort)
         slug = re.sub(r"[^a-z0-9]+", "-", config.topic.lower()).strip("-")[:40] or "podcast"
         slug += "-" + uuid.uuid4().hex[:6]
@@ -393,7 +406,7 @@ class Studio:
         choice.kwargs()
         if choice.provider == "openrouter":
             from .openrouter import OpenRouterAdapter
-            OpenRouterAdapter(load_project(root).runtime, model=choice.model, api_key=self.key or None,
+            OpenRouterAdapter(load_project(root).runtime, model=choice.kwargs()["model"], api_key=self.key or None,
                               max_output_tokens=choice.max_output_tokens, reasoning_effort=choice.reasoning_effort)
         write_json(root / "studio/text.json", choice.normalized())
 
@@ -429,6 +442,9 @@ class Studio:
                          if item.get("role") == "assistant"), None)
         if not proposal or data.get("proposal_hash") != digest(proposal):
             raise AppError("Der Vorschlag hat sich geändert. Bitte die aktuelle Zusammenfassung prüfen.", code="proposal_changed")
+        if not attachments.proposal_current(root, proposal):
+            raise AppError("Die Anhänge haben sich geändert. Bitte den Partner die Zusammenfassung aktualisieren lassen.",
+                           code="proposal_changed")
         chosen = BriefProposal.model_validate({key: value for key, value in proposal.items() if key != "role"})
         config = load_project(root).model_dump(mode="json")
         for key in ("topic", "central_question", "prior_knowledge", "depth_request", "focus_questions", "excluded_topics"):
@@ -451,12 +467,29 @@ class Studio:
             "text_hash": digest(read_json(root / "studio/text.json"))})
         return result
 
+    def upload(self, project, data):
+        root = self.root(project)
+        self.idle(root)
+        with project_lock(root):
+            rows = attachments.add(root, data.get("files"),
+                                   secrets=(self.key, os.environ.get("OPENROUTER_API_KEY", "")))
+        return {"attachments": rows}
+
+    def remove_attachment(self, project, data):
+        root = self.root(project)
+        self.idle(root)
+        with project_lock(root):
+            rows = attachments.remove(root, data.get("id"))
+        return {"attachments": rows}
+
     def start(self, project, data):
         root = self.root(project)
         action = data.get("action")
         if action not in {"assistant", "research", "plan", "replan", "script", "revise", "audio", "audio_sample", "audio_samples", "resume", "check"}:
             raise AppError("Unbekannter Arbeitsschritt.", code="invalid_action")
         payload = {"action": action, "message": str(data.get("message", ""))[:12000]}
+        if action == "assistant" and data.get("text_preset") is not None:
+            payload["requested_text"] = text_preset(data["text_preset"])
         if (self.key and self.key in payload["message"]) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}", payload["message"]):
             raise AppError("Den OpenRouter-Key bitte über den geschützten Key-Eingang hinterlegen, nicht im Chat.", code="credential_in_prompt")
         remote_episode = None
@@ -623,7 +656,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     raise AppError("JSON-Anfrage erwartet.", code="invalid_request")
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 128000:
+                limit = attachments.MAX_BODY_BYTES if re.fullmatch(r"/api/projects/[^/]+/upload", path) else 128000
+                if not 0 < size <= limit:
                     raise AppError("Anfrage zu groß oder leer.", code="invalid_request")
                 data = json.loads(self.rfile.read(size))
                 if not isinstance(data, dict):
@@ -645,7 +679,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                     elif path == "/api/restore":
                         result = app.restore(data)
                     else:
-                        match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete)", path)
+                        match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload|remove_attachment)", path)
                         if not match:
                             raise AppError("Seite nicht gefunden.", code="not_found")
                         project, action = match.groups()
@@ -666,6 +700,18 @@ class StudioHandler(BaseHTTPRequestHandler):
             elif (match := re.fullmatch(r"/media/([^/]+)/(.*)", path)):
                 self.send_audio(app.media(match[1], match[2]))
                 return
+            elif (match := re.fullmatch(r"/download/([^/]+)/podcast.zip", path)):
+                with podcast_zip(app.root(match[1])) as (archive, filename):
+                    self.send_file(archive, "application/zip", filename, allow_ranges=False)
+                return
+            elif (match := re.fullmatch(r"/download/([^/]+)/file/(.*)", path)):
+                root = app.root(match[1])
+                with project_lock(root, shared=True):
+                    recording = next((r for r in podcast_download(root, selected_path=match[2]).recordings if r.relative == match[2]), None)
+                    if recording is None:
+                        raise AppError("Aufnahme nicht mehr in der aktuellen Auswahl. Übersicht neu laden.", code="missing_audio")
+                    self.send_file(recording.path, "audio/mpeg", recording.filename)
+                return
             elif (match := re.fullmatch(r"/samples/(de-DE|en-US)/([a-z_]+)", path)):
                 if match[2] not in {v.lower() for v in VOICES}:
                     raise AppError("Stimme nicht gefunden.", code="not_found")
@@ -681,6 +727,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             else:
                 raise AppError("Seite nicht gefunden.", code="not_found")
             self.send_data(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return  # A cancelled download still exits its context and cleans up.
         except (AppError, ValueError, KeyError, TypeError, OSError) as exc:
             code = exc.code if isinstance(exc, AppError) else "invalid_request"
             message = str(exc) if isinstance(exc, AppError) else "Daten konnten nicht verarbeitet werden. Eingaben prüfen und Ansicht neu laden."
@@ -690,10 +738,15 @@ class StudioHandler(BaseHTTPRequestHandler):
                            json.dumps({"error": message, "code": code}, ensure_ascii=False).encode("utf-8"))
 
     def send_audio(self, path):
+        self.send_file(path, "audio/mpeg")
+
+    def send_file(self, path, kind, filename=None, *, allow_ranges=True):
         size = path.stat().st_size
         start, end, status = 0, size - 1, 200
-        headers = {"Accept-Ranges": "bytes"}
-        requested = self.headers.get("Range")
+        headers = {"Accept-Ranges": "bytes" if allow_ranges else "none"}
+        if filename:
+            headers["Content-Disposition"] = disposition(filename)
+        requested = self.headers.get("Range") if allow_ranges else None
         if requested:
             match = re.fullmatch(r"bytes=(\d+)-(\d*)", requested)
             if not match or int(match[1]) >= size:
@@ -706,7 +759,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             status = 206
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         self.send_response(status)
-        for key, value in {"Content-Type": "audio/mpeg", "Content-Length": str(end - start + 1),
+        for key, value in {"Content-Type": kind, "Content-Length": str(end - start + 1),
                            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", **headers}.items():
             self.send_header(key, value)
         self.end_headers()

@@ -28,6 +28,7 @@ from .storage import (atomic_text, digest, file_hash, load_project, project_lock
 from .text_settings import validate_reasoning
 
 SCRIPT_VERSION = "script.v5-dialogue-polish"
+MAX_PLAN_REPAIRS = 3
 
 SPOKEN_DIALOGUE = (
     "Write language meant to be heard: vary sentence length, use concrete verbs and give a dense idea "
@@ -42,7 +43,8 @@ SPOKEN_DIALOGUE = (
 
 
 def text_generation_settings(config, *, backend=None, model=None, max_output_tokens=None, reasoning_effort=None, saved=None):
-    validate_reasoning(reasoning_effort)
+    validate_reasoning(reasoning_effort, provider=backend or (saved or {}).get("provider") or config.text_backend,
+                       model=model or (saved or {}).get("model"))
     if saved is not None:
         if ((backend is not None and backend != saved["provider"]) or
                 (model is not None and model != saved["model"]) or
@@ -116,6 +118,97 @@ def validate_plan(plan: SeriesPlan, dossier: ResearchDossier) -> list[str]:
                                              positions[dependency.before] > positions[dependency.after]):
             errors.append(f"Explain {dependency.before} before {dependency.after}.")
     return errors
+
+
+def plan_dependency_conflicts(plan, dossier):
+    """Locate the first introduction of each claim, including repeats in later episodes."""
+    positions = {}
+    for episode_number, episode in enumerate(plan.episodes, 1):
+        for scene_number, scene in enumerate(episode.scenes, 1):
+            for finding in scene.finding_ids:
+                positions.setdefault(finding, {"episode": episode_number, "episode_id": episode.episode_id,
+                    "scene": scene_number, "scene_id": scene.scene_id, "title": scene.title})
+    statements = {f.id: f.statement for f in dossier.findings}
+    conflicts = []
+    for dependency in plan.dependencies:
+        before, after = positions.get(dependency.before), positions.get(dependency.after)
+        if after and (not before or (before["episode"], before["scene"]) > (after["episode"], after["scene"])):
+            conflicts.append({"before": dependency.before, "after": dependency.after,
+                "reason": dependency.reason, "before_statement": statements.get(dependency.before),
+                "after_statement": statements.get(dependency.after),
+                "before_first_introduction": before, "after_first_introduction": after})
+    return conflicts
+
+
+def plan_failure_message(conflicts):
+    message = "Das Inhaltsverzeichnis enthält nach der automatischen Korrektur noch einen Widerspruch. "
+    if conflicts:
+        conflict = conflicts[0]
+        before, after = conflict["before_first_introduction"], conflict["after_first_introduction"]
+        if before:
+            return (message + f'„{before["title"]}“ (Folge {before["episode"]}, Abschnitt {before["scene"]}) '
+                    f'muss vor „{after["title"]}“ (Folge {after["episode"]}, Abschnitt {after["scene"]}) '
+                    "eingeführt werden. Der Entwurf und die Prüfdetails sind gespeichert.")
+        return (message + f'Die Grundlage für „{after["title"]}“ in Folge {after["episode"]} fehlt im Plan. '
+                "Der Entwurf und die Prüfdetails sind gespeichert.")
+    return message + "Die Zuordnung der Rechercheergebnisse oder der Aufbau ist noch ungültig. Entwurf und Prüfdetails sind gespeichert."
+
+
+def load_plan_checkpoint(work, signature, *, allow_legacy=False):
+    checkpoint = work / "planning_checkpoint.json"
+    if checkpoint.exists():
+        saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if saved.get("input_hash") == signature:
+            return SeriesPlan.model_validate(saved["draft"]), saved["repairs"]
+        return None, 0
+    # Older runs saved structured responses but not an explicit planning checkpoint.
+    # The caller has already checked the run's full input hash. Never adopt an old
+    # response for an editorial revision with different instructions.
+    plan, repairs = None, 0
+    if allow_legacy:
+        for path in sorted((work / "calls").glob("call_*/metadata.json")):
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+            version = metadata.get("prompt_version", "")
+            response = path.with_name("response.json")
+            if not response.exists():
+                continue
+            if version.startswith("series_plan."):
+                plan, repairs = SeriesPlan.model_validate_json(response.read_text(encoding="utf-8")), 0
+            elif version.startswith("series_plan_repair.") and plan is not None:
+                plan = SeriesPlan.model_validate_json(response.read_text(encoding="utf-8"))
+                repairs += 1
+    return plan, repairs
+
+
+def checked_series_plan(work, prompt, invoke, dossier, central_question, signature, *, allow_legacy=False):
+    plan, repairs = load_plan_checkpoint(work, signature, allow_legacy=allow_legacy)
+    if plan is None:
+        plan = invoke(prompt, SeriesPlan, "series_plan.v3-framing")
+    while True:
+        errors = validate_plan(plan, dossier)
+        if plan.central_question != central_question:
+            errors.append("Keep the project's central_question unchanged.")
+        conflicts = plan_dependency_conflicts(plan, dossier)
+        # Save every result before the next paid call. Resume keeps both the draft
+        # and the repair count, including when quota/budget stops a correction.
+        write_json(work / "planning_checkpoint.json", {"input_hash": signature,
+                   "draft": plan.model_dump(), "repairs": repairs})
+        write_json(work / "plan_errors.json", errors)
+        write_json(work / "plan_repair_details.json", {"errors": errors, "dependency_conflicts": conflicts})
+        if not errors:
+            return plan
+        if repairs >= MAX_PLAN_REPAIRS:
+            raise AppError(plan_failure_message(conflicts), code="invalid_plan", status="blocked")
+        repair = ("\nRepair only the invalid parts of this existing outline; preserve its scope, facts and valid scenes. "
+                  "Dependencies must use dossier finding IDs, never episode IDs. For each dependency, compare the "
+                  "FIRST scene introducing each finding across the whole series. A later recap does not fix an "
+                  "earlier forward reference. Move the actual explanation of the prerequisite before its use, "
+                  "adapting transitions and episode prerequisites as needed. Do not merely relabel finding IDs, "
+                  "attach a prerequisite ID to an unrelated scene or remove a genuine dependency to pass validation. "
+                  "Check every dependency after the edit. Return the complete corrected plan.\n")
+        plan = invoke(prompt + repair + json.dumps({"errors": errors, "dependency_conflicts": conflicts,
+                      "draft": plan.model_dump()}, ensure_ascii=False), SeriesPlan, "series_plan_repair.v2")
+        repairs += 1
 
 
 def script_metrics(script: EpisodeScript) -> dict:
@@ -410,7 +503,9 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                       "A standalone episode combines these duties in one introduction and conclusion. "
                       "Do not promise results missing from the dossier. Outline each "
                       "episode as ordered scenes, each becoming one chapter. Cover each finding or give a concrete "
-                      "reason for omission. Dependencies use finding IDs and must be acyclic. Prerequisite episodes "
+                      "reason for omission. Dependencies use dossier finding IDs (never episode IDs) and must be acyclic. "
+                      "For each dependency, introduce 'before' in the same or an earlier scene than the FIRST use of 'after' "
+                      "anywhere in the series; later recaps do not satisfy this ordering. Prerequisite episodes "
                       "must come earlier. All scenes' finding IDs together must equal their episode's findings. "
                       "Include a worked_example scene per episode. Write in " + config.language + ". " + PLAIN_LANGUAGE +
                       "Here illustration and limits are planning instructions, not separate schema fields.\n" +
@@ -419,19 +514,9 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             if previous_outline is not None:
                 prompt += "\nRevise the previous outline according to this editorial feedback; remain evidence-bound.\n" + json.dumps(
                     {"previous_outline": previous_outline, "feedback": outline_feedback}, ensure_ascii=False)
-            plan = invoke(prompt, SeriesPlan, "series_plan.v3-framing")
-            errors = validate_plan(plan, dossier)
-            if plan.central_question != central_question:
-                errors.append("Keep the project's central_question unchanged.")
-            if errors:
-                plan = invoke(prompt + "\nRepair these plan errors:\n" + json.dumps(
-                    {"errors": errors, "draft": plan.model_dump()}, ensure_ascii=False), SeriesPlan, "series_plan_repair.v1")
-                errors = validate_plan(plan, dossier)
-                if plan.central_question != central_question:
-                    errors.append("Central question changed.")
-            if errors:
-                write_json(work / "plan_errors.json", errors)
-                raise AppError("Serienplan verletzt Quellenzuordnung oder Struktur.", code="invalid_plan", status="blocked")
+            signature = digest({"input": input_hash, "previous_outline": previous_outline, "feedback": outline_feedback})
+            plan = checked_series_plan(work, prompt, invoke, dossier, central_question, signature,
+                                       allow_legacy=resume and previous_outline is None)
             if episode and episode not in {e.episode_id for e in plan.episodes}:
                 raise AppError("Gewünschte Folge kommt im Serienplan nicht vor.", code="unknown_episode", status="blocked")
             knowledge = KnowledgeModel(research_run_id=research_id, topic=dossier.topic,

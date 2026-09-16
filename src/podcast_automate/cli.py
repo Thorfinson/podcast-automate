@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--backend", choices=("codex_cli", "openrouter"),
                              help="Textanbieter für Skripte und Reviews; Standard codex_cli, bei resume gespeicherter Anbieter")
         command.add_argument("--model", help="Modell-ID des Textanbieters; für OpenRouter erforderlich")
-        command.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"),
+        command.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"),
                              help="Denkaufwand für Textmodellaufrufe; bei resume bleibt die gespeicherte Stufe erhalten")
         command.add_argument("--api-key", nargs="?", const="", default=None, metavar="KEY",
                              help="OpenRouter-Key nur für diesen Aufruf; ohne Wert verdeckt abfragen, alternativ OPENROUTER_API_KEY")

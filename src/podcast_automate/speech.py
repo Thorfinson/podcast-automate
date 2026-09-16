@@ -16,7 +16,7 @@ from urllib.request import Request, build_opener
 from pydantic import Field, SecretStr, model_validator
 
 from .errors import AppError
-from .models import Contract, NonEmpty
+from .models import Contract, HostVoices
 from .openrouter import NoRedirect, api_failure
 from .storage import digest, file_hash, inside, write_json
 
@@ -33,7 +33,7 @@ GEMINI_VOICES = ("Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "
 
 class AudioChoice(Contract):
     provider: Literal["qwen3_local", "openrouter_gemini_tts"] = "qwen3_local"
-    voices: dict[Literal["host_a", "host_b"], NonEmpty] = Field(
+    voices: HostVoices = Field(
         default_factory=lambda: {"host_a": "Aiden", "host_b": "Vivian"})
 
     @model_validator(mode="after")

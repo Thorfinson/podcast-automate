@@ -219,7 +219,8 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
         published_date=metadata.get("published_date") or candidate.published_date,
         imported_at=now(), url=candidate.url if not local else "", final_url=final_url,
         language=metadata.get("language", "unknown"),
-        reliability_note=f"Search selection (not independently certified): {candidate.rationale}",
+        reliability_note=("User-supplied local material; provenance and factual claims have not been independently verified. "
+                          if local else "Search selection (not independently certified): ") + candidate.rationale,
         uncertainties=["Publication metadata may come from search results; verify bibliographic details.",
                        "Automatic text extraction can omit images, tables and mathematical notation."],
         raw_path=raw_path.relative_to(root).as_posix(), raw_hash=file_hash(raw_path),

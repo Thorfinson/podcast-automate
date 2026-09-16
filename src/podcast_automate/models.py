@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
 NonEmpty = Annotated[str, Field(min_length=1)]
 State = Literal["pending", "running", "completed", "waiting_for_quota", "blocked", "failed"]
+
+
+class HostVoices(TypedDict):
+    """Two named fields, also representable in providers' strict JSON schemas."""
+
+    host_a: NonEmpty
+    host_b: NonEmpty
 
 
 def now() -> str:
@@ -22,7 +29,7 @@ class Contract(BaseModel):
 class ResearchLimits(Contract):
     search_rounds: int = Field(default=3, gt=0)
     sources: int = Field(default=30, gt=0)
-    model_calls: int = Field(default=40, gt=0)
+    model_calls: int = Field(default=150, gt=0)
 
 
 class RuntimeSettings(Contract):
@@ -64,7 +71,7 @@ class TopicBrief(Contract):
     research_limits: ResearchLimits = Field(default_factory=ResearchLimits)
     text_backend: Literal["codex_cli"] = "codex_cli"
     tts_backend: Literal["qwen3_local"] = "qwen3_local"
-    voice_profile: dict[Literal["host_a", "host_b"], NonEmpty] = Field(
+    voice_profile: HostVoices = Field(
         default_factory=lambda: {"host_a": "Ryan", "host_b": "Serena"})
     style_profile_id: Literal["de_calm_deep"] = "de_calm_deep"
     export_context: Literal["private_learning"] = "private_learning"

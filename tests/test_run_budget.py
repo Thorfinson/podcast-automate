@@ -6,7 +6,7 @@ from podcast_automate.errors import AppError
 from podcast_automate.research import reserve_call
 from podcast_automate.run_budget import approve_model_call_limit, effective_limits
 from podcast_automate.scripting import outline_hash, run_script
-from podcast_automate.storage import file_hash, read_yaml, write_json
+from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
 from podcast_automate.studio_progress import script_progress
 from podcast_automate.teaching import TeachingPlan
 from tests import test_scripting as fixtures
@@ -18,6 +18,9 @@ class RunBudgetTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.root = self.fixture.root
+        # An existing project retains its explicit older allowance after a default change.
+        self.fixture.config.research_limits.model_calls = 40
+        write_yaml(self.root / "project.yaml", self.fixture.config.model_dump(mode="json"))
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
             self.run = run_script(self.root, plan_only=True)
         self.work = self.root / "runs" / self.run.run_id
@@ -78,6 +81,11 @@ class RunBudgetTests(unittest.TestCase):
             with self.subTest(limit=limit), self.assertRaises(AppError):
                 approve_model_call_limit(self.root, self.run.run_id, limit)
         self.assertFalse((self.work / "budget_approval.json").exists())
+
+    def test_new_projects_default_to_150_without_overwriting_explicit_limits(self):
+        from podcast_automate.models import TopicBrief
+        self.assertEqual(TopicBrief(topic="New project").research_limits.model_calls, 150)
+        self.assertEqual(TopicBrief(topic="Existing project", research_limits={"model_calls": 40}).research_limits.model_calls, 40)
 
 
 if __name__ == "__main__":
