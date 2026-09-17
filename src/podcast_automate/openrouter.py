@@ -13,13 +13,109 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import SecretStr, ValidationError
 
+from .call_activity import CallActivity
 from .errors import AppError
+from .models import now
 from .storage import write_json
 from .text_settings import validate_reasoning
 
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 ADAPTER_VERSION = "openrouter.v1"
 DEFAULT_MAX_OUTPUT_TOKENS = 32768
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+
+
+def stream_response(response, activity, secret, deadline):
+    """Consume SSE incrementally; assemble only the final text needed for validation."""
+    first = response.readline(MAX_RESPONSE_BYTES + 1)
+    if first.lstrip().startswith((b"{", b"[")):
+        raw = first + response.read(MAX_RESPONSE_BYTES + 1 - min(len(first), MAX_RESPONSE_BYTES))
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ValueError("Response too large")
+        return json.loads(raw)
+    envelope, content, finish, data = {}, [], None, []
+    size = 0
+    tails = {}
+
+    def guard(text, lane):
+        combined = tails.get(lane, "") + text
+        if secret in combined:
+            raise AppError("OpenRouter-Antwort enthält Zugangsdaten und wird nicht gespeichert.",
+                           code="credential_in_response", status="blocked")
+        tails[lane] = combined[-len(secret):]
+
+    def consume(payload):
+        nonlocal finish
+        if payload == "[DONE]":
+            return True
+        chunk = json.loads(payload)
+        if not isinstance(chunk, dict):
+            raise ValueError("Expected stream object")
+        if secret in json.dumps(chunk, ensure_ascii=False):
+            raise AppError("OpenRouter-Antwort enthält Zugangsdaten und wird nicht gespeichert.",
+                           code="credential_in_response", status="blocked")
+        if chunk.get("error"):
+            error = chunk["error"]
+            code = error.get("code", 502) if isinstance(error, dict) else 502
+            activity.diagnostic("provider_error", str(code))
+            raise api_failure(int(code) if str(code).isdigit() else 502)
+        for key in ("id", "model", "provider", "usage"):
+            if key in chunk:
+                envelope[key] = chunk[key]
+        for choice in chunk.get("choices", []):
+            if choice.get("index", 0) != 0:
+                continue
+            delta = choice.get("delta") or {}
+            text = delta.get("content")
+            if isinstance(text, str) and text:
+                guard(text, "content")
+                content.append(text)
+                activity.trace.append("text", text, "content")
+                activity.content_received()
+            details = delta.get("reasoning_details") or []
+            visible = [part for part in details if isinstance(part, dict)
+                       and part.get("type") in {"reasoning.summary", "reasoning.text"}]
+            if visible:
+                for part in visible:
+                    text = part.get("summary") if part["type"] == "reasoning.summary" else part.get("text")
+                    if isinstance(text, str):
+                        lane = "reasoning_" + str(part.get("index", 0))
+                        guard(text, lane)
+                        activity.trace.append("reasoning", text, lane)
+                        activity.content_received()
+            else:
+                text = delta.get("reasoning") or delta.get("reasoning_content")
+                if isinstance(text, str) and text:
+                    guard(text, "reasoning")
+                    activity.trace.append("reasoning", text, "reasoning")
+                    activity.content_received()
+            if choice.get("finish_reason") is not None:
+                finish = choice["finish_reason"]
+        activity.diagnostics["last_stream_event_at"] = now()
+        activity._save_diagnostics()
+        return False
+
+    line = first
+    while line:
+        if time.monotonic() > deadline:
+            raise TimeoutError()
+        size += len(line)
+        if size > MAX_RESPONSE_BYTES:
+            raise ValueError("Response too large")
+        text = line.decode("utf-8").rstrip("\r\n")
+        if not text:
+            if data and consume("\n".join(data)):
+                envelope["choices"] = [{"finish_reason": finish, "message": {"content": "".join(content)}}]
+                return envelope
+            data = []
+        elif text.startswith("data:"):
+            data.append(text[5:].lstrip(" "))
+        # SSE comments are keepalives, not evidence of model progress.
+        line = response.readline(MAX_RESPONSE_BYTES + 1)
+    if data and consume("\n".join(data)):
+        envelope["choices"] = [{"finish_reason": finish, "message": {"content": "".join(content)}}]
+        return envelope
+    raise ValueError("Stream ended before DONE")
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -98,6 +194,28 @@ class OpenRouterAdapter:
     def structured(self, prompt: str, output_type, directory: Path, *,
                    prompt_version: str, search: bool = False):
         self.require_key()
+        activity = CallActivity(directory, output_type.__name__, self.model,
+                                secrets=(self._key.get_secret_value(),))
+        activity.diagnostic("request", prompt_chars=len(prompt), prompt_bytes=len(prompt.encode("utf-8")),
+                            timeout_seconds=self.settings.text_timeout_seconds,
+                            reasoning_effort=self.reasoning_effort)
+        try:
+            result = self._structured(prompt, output_type, directory, activity,
+                                      prompt_version=prompt_version, search=search)
+        except AppError as exc:
+            activity.diagnostic("failure", exc.code, code=exc.code)
+            activity.finish(exc.code)
+            write_json(directory / "failure.json", {"code": exc.code, "message": str(exc),
+                       "model": self.model, "prompt_version": prompt_version})
+            raise
+        except BaseException:
+            activity.finish("interrupted")
+            raise
+        activity.finish("completed")
+        return result
+
+    def _structured(self, prompt, output_type, directory, activity, *, prompt_version, search):
+        self.require_key()
         if search:
             raise AppError("Dieser OpenRouter-Adapter erzeugt Skripte und Reviews; Live-Recherche erfolgt separat.",
                            code="openrouter_search_unsupported", status="blocked")
@@ -106,7 +224,7 @@ class OpenRouterAdapter:
             raise AppError("Ein API-Key darf nicht Teil des Modellprompts sein.", code="credential_in_prompt", status="blocked")
         schema = strict_schema(output_type)
         payload = {
-            "model": self.model, "stream": False,
+            "model": self.model, "stream": True,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": output_type.__name__, "strict": True, "schema": schema}},
@@ -114,14 +232,15 @@ class OpenRouterAdapter:
             "max_tokens": self.max_output_tokens,
         }
         if self.reasoning_effort is not None:
-            payload["reasoning"] = {"effort": self.reasoning_effort, "exclude": True}
+            payload["reasoning"] = {"effort": self.reasoning_effort, "exclude": False}
         request = Request(ENDPOINT, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Authorization": "Bearer " + secret, "Content-Type": "application/json",
                      "X-OpenRouter-Title": "Podcast Automate"}, method="POST")
         start = time.monotonic()
+        write_json(directory / "output_schema.json", schema)
         try:
             with build_opener(NoRedirect()).open(request, timeout=self.settings.text_timeout_seconds) as response:
-                raw = response.read()
+                envelope = stream_response(response, activity, secret, start + self.settings.text_timeout_seconds)
         except HTTPError as exc:
             code = exc.code
             exc.close()
@@ -129,8 +248,10 @@ class OpenRouterAdapter:
         except (TimeoutError, URLError, OSError, HTTPException):
             raise AppError("OpenRouter-Verbindung unterbrochen oder Zeitlimit erreicht. Mit pla resume fortsetzen.",
                            code="openrouter_connection", status="blocked") from None
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            raise AppError("OpenRouter hat keinen vollständigen gültigen Antwortstream geliefert; Entwurf nicht übernommen.",
+                           code="invalid_model_output", status="blocked") from None
         try:
-            envelope = json.loads(raw)
             if not isinstance(envelope, dict):
                 raise ValueError("Expected an object")
             if envelope.get("error"):

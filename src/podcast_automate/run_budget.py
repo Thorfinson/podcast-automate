@@ -35,15 +35,15 @@ def effective_limits(work, limits, input_hash):
 
 
 def approve_model_call_limit(root, run_id, model_calls):
-    """Call only after the user explicitly approves this limit for this script run.
+    """Call only after the user explicitly approves this limit for this text run.
 
     The separate atomic receipt can be written while the worker is busy. Its counters,
     checkpoints, project configuration and outline/audio approvals remain untouched.
     """
     work = manifest_path(root.resolve(), run_id).parent
     manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
-    if manifest.kind != "script":
-        raise AppError("Diese Erhöhung gilt nur für einen Skriptauftrag.", code="invalid_budget_approval")
+    if manifest.kind not in {"script", "research"}:
+        raise AppError("Diese Erhöhung gilt nur für einen Recherche- oder Skriptauftrag.", code="invalid_budget_approval")
     limits = effective_limits(work, load_project(root).research_limits, manifest.input_hash)
     if type(model_calls) is not int or model_calls < limits.model_calls:
         raise AppError("Das neue Aufruflimit muss eine ganze Zahl mindestens in Höhe des bisherigen Limits sein.",

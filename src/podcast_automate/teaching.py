@@ -254,6 +254,7 @@ def design_prompt(config, entry, dossier, sources, continuity=None, *, series_co
                       "prior_knowledge": config.prior_knowledge, "depth": config.depth_request},
             "episode": entry.model_dump(), "series_context": series_context,
             "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
+            "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(entry.finding_ids)],
             "sources": sources, **({"prerequisite_context": continuity} if continuity else {})}, ensure_ascii=False))
 
 

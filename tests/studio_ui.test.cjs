@@ -5,6 +5,146 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('src/podcast_automate/web/app.js', 'utf8');
 
+test('live model traces show only the last twenty escaped lines beside the summary',()=>{
+  const app=studio();
+  const rows=Array.from({length:25},(_,i)=>({at:new Date().toISOString(),call:'call_'+i,model:'Astra',kind:'reasoning',text:'line-'+i+' <script>untrusted</script>'}));
+  app.run(`project={id:'test',job:{id:'j1',status:'running',progress:{phase:'research',model_trace:{updated_at:new Date().toISOString(),lines:${JSON.stringify(rows)}}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Gerade in Arbeit'));
+  assert.ok(html.includes('Öffentliche Reasoning-Zusammenfassung'));
+  assert.ok(html.includes('line-24 &lt;script&gt;'));
+  assert.ok(!html.includes('line-4 &lt;script&gt;'));
+  assert.ok(!html.includes('<script>untrusted'));
+  app.run("project.job.status='failed';renderJob()");
+  assert.ok(app.elements.get('job-status').innerHTML.includes('Letzte Arbeitsschritte'));
+  app.run("project.job.progress.model_trace=null;renderJob()");
+  assert.ok(app.elements.get('job-status').innerHTML.includes('Noch keine Meldungen verfügbar'));
+});
+
+test('live panel identifies current question and does not imply old text belongs to this call',()=>{
+  const app=studio();
+  app.run(`project={job:{status:'running',progress:{phase:'research',model_call_started_at:'2026-09-16T12:00:00Z',
+    research_questions:{active_task:'q1',questions:[{id:'q1',question:'Wie wirkt <Kontext>?',activity:'Belege vergleichen'}]},
+    model_trace:{lines:[{kind:'text',at:'2026-09-16T11:00:00Z',text:'Frühere Suche'}]}}}};`);
+  const html=app.run('renderModelTrace(project.job)');
+  assert.ok(html.includes('Wie wirkt &lt;Kontext&gt;?'));
+  assert.ok(html.includes('Belege vergleichen'));
+  assert.ok(html.includes('Inhaltliche Zwischenmeldungen liegen dafür noch nicht vor'));
+  assert.ok(!html.includes('<pre>'));
+});
+
+test('research work explanation separates saved input, waiting, and checked progress',()=>{
+  const app=studio();
+  app.run(`project={job:{status:'running',progress:{phase:'research',updated_at:new Date().toISOString(),work_insight:{
+    basis:'saved_state',question:'Causation <script>',assignment:'Definitionen anhand der Quellen prüfen.',
+    last_step:'Gemeinsamer Einfluss fehlt.',feedback:['Vergleich erklären.'],criteria:['Definition prüfen.'],
+    material:{section_count:6,source_count:2,sources:[{title:'Original <paper>',sections:3,pages:[6]}]},candidate_count:48,
+    signals:{state:'running',started_at:new Date(Date.now()-900000).toISOString(),last_event_at:new Date(Date.now()-900000).toISOString(),last_content_at:null,timeout_seconds:1800}
+  }}}};`);
+  let html=app.run('renderModelTrace(project.job)');
+  for(const text of ['Causation &lt;script&gt;','Gemeinsamer Einfluss fehlt.','Vergleich erklären.',
+    '6 Textstellen aus 2 Quellen','48 Suchtreffer','Seit 15 Min. noch keine inhaltliche Zwischenmeldung',
+    'Aus dem gespeicherten Recherchestand rekonstruiert','30 Min.'])assert.ok(html.includes(text),text);
+  assert.ok(html.includes('work-signals quiet'));
+  assert.ok(html.includes('<details class="model-events" open>'));
+  assert.ok(html.includes('Live-Ausgabe · letzte 20 Meldungen'));
+  assert.ok(!html.includes('Das Modell ist abgestürzt'));
+  assert.ok(!html.includes('<script>'));
+  app.run("project.job.status='interrupted'");
+  html=app.run('renderModelTrace(project.job)');
+  assert.ok(html.includes('der Auftrag läuft derzeit nicht'));
+  assert.ok(!html.includes('work-signals quiet'));
+  assert.ok(!html.includes('Seit 15 Min. noch keine'));
+});
+
+test('continued hidden output is distinguished from readable text even with an older worker',()=>{
+  const app=studio();
+  app.run(`project={job:{status:'running',progress:{phase:'research',work_insight:{assignment:'Nächste Lesestelle auswählen.',
+    signals:{call:'call_033',state:'running',started_at:new Date(Date.now()-300000).toISOString(),
+      last_content_at:new Date().toISOString()}},model_trace:{lines:[
+        {call:'call_033',kind:'text',text:'Weitere Quellenabschnitte lesen',at:new Date(Date.now()-240000).toISOString()}
+      ]}}}};`);
+  let html=app.run('renderModelTrace(project.job)');
+  assert.ok(html.includes('Seit 4 Min. kein neuer lesbarer Modelltext'));
+  assert.ok(html.includes('Ausgabe kommt weiter an, aber ohne neuen lesbaren Text'));
+  assert.ok(html.includes('Empfang allein belegt keinen Recherchefortschritt'));
+  assert.ok(html.includes('Letztes empfangenes Fragment: vor 0 Sek.'));
+  app.run("project.job.progress.work_insight.signals.last_content_at=new Date(Date.now()-120000).toISOString()");
+  html=app.run('renderModelTrace(project.job)');
+  assert.ok(!html.includes('Ausgabe kommt weiter an, aber ohne neuen lesbaren Text'));
+  app.run("project.job.status='interrupted'");
+  html=app.run('renderModelTrace(project.job)');
+  assert.ok(!html.includes('Letztes empfangenes Fragment'));
+});
+
+test('question research shows fixed criteria, verified answers and specific blocks safely',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'interrupted',action:'research',progress:{phase:'research',
+    research_questions:{closed:1,total:2,phase:'questions',active_task:'empirical',questions:[
+      {id:'definition',question:'Definition <script>',status:'verified',activity:'Geprüft',steps:2,read_sections:4,
+       acceptance:['Describe <scope>'],answer:'**Supported answer**',limits:['Limited scope'],findings:[]},
+      {id:'empirical',question:'Independent test?',status:'blocked',steps:3,read_sections:5,
+       acceptance:['Find original test'],answer:'Unverified must stay hidden',reason:'Missing original study',findings:[]}]},
+    research_quality:{closed:0,total:1,requirements:[],blocking_gaps:[]}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('1 von 2 Teilfragen geprüft abgeschlossen'));
+  assert.ok(html.includes('<strong>Supported answer</strong>'));
+  assert.ok(html.includes('Missing original study'));
+  assert.ok(html.includes('Describe &lt;scope&gt;'));
+  assert.ok(html.includes('Definition &lt;script&gt;'));
+  assert.ok(html.includes('Gesamtbewertung folgt'));
+  assert.ok(!html.includes('Unverified must stay hidden'));
+});
+
+test('expanded question remains open in the regenerated status panel',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'interrupted',progress:{phase:'research',research_questions:{
+    closed:0,total:1,phase:'questions',questions:[{id:'q_one',question:'One',status:'researching',
+    steps:1,read_sections:2,acceptance:['Explain']} ]}}}};renderJob();`);
+  app.elements.get('job-status').querySelectorAll=()=>[{dataset:{researchQuestion:'q_one'}}];
+  app.run('project.job.progress.research_questions.questions[0].steps=2;renderJob();');
+  assert.ok(app.elements.get('job-status').innerHTML.includes('data-research-question="q_one" open'));
+});
+
+test('evidence status distinguishes automated support, empirical testing and supported uncertainty',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'running',action:'research',progress:{phase:'research',
+    research_questions:{closed:1,total:1,phase:'questions',questions:[
+      {id:'task_one',question:'What remains unresolved?',status:'verified',steps:2,read_sections:3,
+       acceptance:['Explain limits'],answer:'Supported uncertainty',findings:[],outcome:'supported_uncertainty',
+       support:{findings:[{empirical_status:'tested_in_source'},{empirical_status:'independently_tested'}]}}]}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Textbelege vorhanden'));
+  assert.ok(html.includes('Inhalt automatisch je Befund geprüft'));
+  assert.ok(html.includes('1 Befunde mit dokumentierter unabhängiger empirischer Prüfung'));
+  assert.ok(html.includes('Belegte wissenschaftliche Unsicherheit'));
+});
+
+test('research call projection explains completion reserve and insufficient allowance',()=>{
+  const app=studio();
+  const ledger={closed:1,total:77,phase:'questions',questions:[],budget_projection:{
+    minimum_remaining_calls:174,closing_calls:22,remaining:217,shortfall:0,feasible:true}};
+  let html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)})`);
+  assert.ok(html.includes('Mindestens 174 weitere Modellaufrufe'));
+  assert.ok(html.includes('22 für Dossier und Abschlussprüfung; 217 verfügbar'));
+  assert.ok(html.includes('können mehr benötigen'));
+  ledger.budget_projection={minimum_remaining_calls:157,closing_calls:3,remaining:147,shortfall:10,feasible:false};
+  html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)})`);
+  assert.ok(html.includes('um mindestens 10 Aufrufe nicht aus'));
+  assert.ok(html.includes('Antworten und Umfang bleiben erhalten'));
+  assert.ok(html.includes('ausdrückliche Genehmigung'));
+});
+
+test('exhausted research questions explain the block without a futile resume button',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'blocked',action:'research',run:{kind:'research',stages:{}},
+    progress:{phase:'research',research_questions:{closed:1,total:2,phase:'blocked',questions:[]}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
+  assert.ok(html.includes('Auftrag ansehen'));
+  assert.ok(!html.includes('data-action="resume"'));
+});
+
 test('research progress displays missing requirements safely and does not report speech segments',()=>{
   const app=studio();
   app.run(`project={id:'test',job:{status:'running',action:'research',started_at:new Date().toISOString(),

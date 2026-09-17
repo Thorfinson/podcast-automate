@@ -54,11 +54,22 @@ class SetupSchemaTests(unittest.TestCase):
             self.assert_voice_fields(schema)
             Path(args[args.index("--output-last-message")+1]).write_text(proposal.model_dump_json(), encoding="utf-8")
             return CompletedProcess(args, 0, '{"type":"turn.completed","usage":{}}', "")
-        with tempfile.TemporaryDirectory() as folder, patch.object(CodexAdapter, "command", return_value=["codex"]), \
-             patch("podcast_automate.codex.run_process", side_effect=respond):
-            output, _ = CodexAdapter(RuntimeSettings()).structured("Propose setup.", BriefProposal, Path(folder),
-                                                                  prompt_version="regression")
-        self.assertEqual(output.audio_settings.voices, {"host_a": "Aiden", "host_b": "Vivian"})
+        def stream(args, **kwargs):
+            self.assert_supported(kwargs["schema"])
+            self.assert_voice_fields(kwargs["schema"])
+            kwargs["response_file"].write_text(proposal.model_dump_json(), encoding="utf-8")
+            return CompletedProcess(args, 0, '{"type":"turn.completed","usage":{}}', "")
+        for transport in (None, "exec"):
+            with self.subTest(transport=transport or "default"), tempfile.TemporaryDirectory() as folder, \
+                 patch.object(CodexAdapter, "command", return_value=["codex-test-fixture"]), \
+                 patch("podcast_automate.codex.run_process", side_effect=respond), \
+                 patch("podcast_automate.codex.run_app_server", side_effect=stream) as app_server, \
+                 patch("subprocess.Popen", side_effect=AssertionError("Unit tests must not start real providers")):
+                adapter = CodexAdapter(RuntimeSettings(), **({"transport": transport} if transport else {}))
+                output, _ = adapter.structured("Propose setup.", BriefProposal, Path(folder),
+                                                prompt_version="regression")
+                self.assertEqual(output.audio_settings.voices, {"host_a": "Aiden", "host_b": "Vivian"})
+                self.assertEqual(app_server.call_count, 0 if transport == "exec" else 1)
 
     def test_voice_dictionaries_keep_their_stored_shape_and_validation(self):
         valid = {"host_a": "Aiden", "host_b": "Vivian"}

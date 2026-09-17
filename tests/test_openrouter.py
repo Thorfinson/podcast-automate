@@ -17,7 +17,7 @@ from podcast_automate.openrouter import OpenRouterAdapter, NoRedirect, ENDPOINT
 from podcast_automate.script_models import ScriptReview
 from podcast_automate.scripting import run_script
 from podcast_automate.storage import file_hash, read_yaml
-from tests import test_scripting as fixtures
+from tests import script_fixtures as fixtures
 
 
 KEY = "test-only-openrouter-credential-12345"
@@ -61,6 +61,7 @@ class OpenRouterTests(unittest.TestCase):
         output, meta = self.call(envelope())
         request, timeout = self.requests[0]
         body = json.loads(request.data)
+        self.assertTrue(body["stream"])
         self.assertEqual(request.full_url, ENDPOINT)
         self.assertEqual(request.get_header("Authorization"), "Bearer " + KEY)
         self.assertEqual(timeout, 7)
@@ -98,7 +99,7 @@ class OpenRouterTests(unittest.TestCase):
         self.adapter = OpenRouterAdapter(RuntimeSettings(), model="vendor/test-model", api_key=KEY,
                                          reasoning_effort="high")
         _, metadata = self.call(envelope())
-        self.assertEqual(json.loads(self.requests[-1][0].data)["reasoning"], {"effort": "high", "exclude": True})
+        self.assertEqual(json.loads(self.requests[-1][0].data)["reasoning"], {"effort": "high", "exclude": False})
         self.assertEqual(metadata["requested_reasoning_effort"], "high")
 
     def test_http_200_error_body_is_not_treated_as_completed_work(self):
@@ -138,7 +139,49 @@ class OpenRouterTests(unittest.TestCase):
             with self.assertRaises(AppError) as caught:
                 self.call(value)
             self.assertEqual(caught.exception.code, "credential_in_response")
-        self.assertEqual(list(self.root.rglob("*.json")), [])
+        self.assertFalse((self.root / "call/response.json").exists())
+        for path in self.root.rglob("*.json"):
+            self.assertNotIn(KEY, path.read_text(encoding="utf-8"))
+
+    def test_streaming_text_reasoning_usage_and_keepalives(self):
+        chunks = [
+            {"id": "gen-stream", "model": "vendor/test-model", "choices": [{"delta": {
+                "reasoning_details": [{"type": "reasoning.summary", "summary": "Compare the evidence.\n"},
+                                      {"type": "reasoning.encrypted", "data": "DO-NOT-SAVE"}]}}]},
+            {"choices": [{"delta": {"content": '{"detail":{"text":"Grü'}}]},
+            {"choices": [{"delta": {"content": 'ße","count":2}}'}, "finish_reason": "stop"}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 7, "cost": 0.002}}]
+        raw = b": OPENROUTER PROCESSING\n\n" + b"".join(
+            ("data: " + json.dumps(c, ensure_ascii=False) + "\n\n").encode() for c in chunks) + b"data: [DONE]\n\n"
+        result, metadata = self.call(raw)
+        self.assertEqual(result.detail.text, "Grüße")
+        self.assertEqual(metadata["separately_billed_cost"], 0.002)
+        trace = (self.root / "call/model_trace.json").read_text(encoding="utf-8")
+        self.assertIn("Compare the evidence", trace)
+        self.assertIn("Grüße", trace)
+        self.assertNotIn("DO-NOT-SAVE", trace)
+
+    def test_stream_failure_keeps_trace_but_never_publishes_partial_answer(self):
+        raw = ('data: {"choices":[{"delta":{"reasoning":"A visible interim note.\\n"}}]}\n\n'
+               'data: {"error":{"code":"server_error","message":"private-raw-error"}}\n\n').encode()
+        with self.assertRaises(AppError) as caught:
+            self.call(raw)
+        self.assertEqual(caught.exception.code, "openrouter_unavailable")
+        self.assertFalse((self.root / "call/response.json").exists())
+        self.assertIn("A visible interim note", (self.root / "call/model_trace.json").read_text())
+        self.assertNotIn("private-raw-error", "".join(p.read_text() for p in self.root.rglob("*.json")))
+
+    def test_truncated_sse_and_secret_split_between_chunks_are_rejected(self):
+        with self.assertRaises(AppError):
+            self.call(b'data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\n\n')
+        raw = b"".join(("data: " + json.dumps({"choices": [{"delta": {"reasoning": part}}]}) + "\n\n").encode()
+                       for part in (KEY[:12], KEY[12:])) + b"data: [DONE]\n\n"
+        with self.assertRaises(AppError) as caught:
+            self.call(raw)
+        self.assertEqual(caught.exception.code, "credential_in_response")
+        saved = "".join(p.read_text() for p in self.root.rglob("*.json"))
+        self.assertNotIn(KEY, saved)
+        self.assertNotIn(KEY[:12], saved)
 
     def test_network_failure_is_resumable_and_redirect_does_not_forward_authorization(self):
         with self.assertRaises(AppError) as caught:
@@ -177,9 +220,7 @@ class OpenRouterTests(unittest.TestCase):
 
 class OpenRouterScriptTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = fixtures.ScriptingTests()
-        self.fixture.setUp()
-        self.addCleanup(self.fixture.doCleanups)
+        self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
 
     def test_cli_hidden_key_runs_all_quality_stages_without_changing_project_or_spawning_codex(self):
@@ -190,7 +231,7 @@ class OpenRouterScriptTests(unittest.TestCase):
              patch("podcast_automate.cli.getpass.getpass", return_value=KEY), contextlib.redirect_stdout(output):
             code = main(["script", str(self.root), "--backend", "openrouter", "--model", "vendor/test-model", "--api-key", "--json"])
         self.assertEqual(code, 0)
-        self.assertEqual(len(self.fixture.calls), 10)
+        self.assertEqual(len(self.fixture.calls), 11)
         self.assertEqual(before, file_hash(self.root / "project.yaml"))
         self.assertNotIn(KEY, output.getvalue())
         for path in self.root.rglob("*"):

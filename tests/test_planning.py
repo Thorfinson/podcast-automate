@@ -10,7 +10,7 @@ from podcast_automate.script_models import Dependency, ScenePlan
 from podcast_automate.scripting import (checked_series_plan, load_plan_checkpoint,
     plan_dependency_conflicts, validate_plan)
 from podcast_automate.storage import write_json
-from tests.test_scripting import example_plan
+from tests.script_fixtures import example_plan
 
 
 class PlanningRepairTests(unittest.TestCase):

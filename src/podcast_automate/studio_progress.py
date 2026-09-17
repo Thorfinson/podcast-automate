@@ -1,7 +1,6 @@
 """Read-only progress derived from saved results, without exposing prompts or credentials."""
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -12,14 +11,8 @@ from .run_budget import effective_limits
 from .errors import AppError
 from .models import ResearchLimits
 from .storage import file_hash, read_yaml, write_json
+from .storage import read_optional_json as read
 from .studio_scripts import script_previews
-
-
-def read(path, default=None):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return default
 
 
 def text_at(path):
@@ -68,6 +61,7 @@ ACTIVITIES = {
     "FoundationReview": "Zusätzliche Belege werden geprüft",
     "DialoguePolishReview": "Dialogüberarbeitung wird geprüft",
     "ScriptReview": "Fakten und Erklärungen werden geprüft",
+    "SeriesReview": "Zusammenhang und Vollständigkeit der gesamten Skriptserie werden geprüft",
     "ListenerReadback": "Verständlichkeit wird anhand des Skripts geprüft",
     "EditorialReview": "Erzählung und Gespräch werden geprüft",
     "TeachingReview": "Lernziele und Erklärungstiefe werden geprüft",
@@ -150,13 +144,22 @@ def research_progress(root, run):
     if not data:
         return None
     report = read(work / "research_quality_gate.json", data.get("research_quality"))
+    questions = read(work / "research_questions.json")
     calls = sorted((work / "calls").glob("call_*/output_schema.json"))
     responses = list((work / "calls").glob("call_*/response.json"))
     pending = bool(calls and not calls[-1].with_name("response.json").exists() and run.get("status") == "running")
     budget = read(work / "budget.json", {})
+    snapshot = read_yaml(work / "project_snapshot.yaml") if (work / "project_snapshot.yaml").exists() else {}
+    limits = ResearchLimits.model_validate(snapshot.get("research_limits", {}))
+    model_call_limit = effective_limits(work, limits, run.get("input_hash")).model_calls
+    counts = questions or report or {}
+    from .research_status import work_insight
     return {**data, "phase": "research", "unit": "questions", "research_quality": report,
-            "total_segments": report["total"] if report else 0, "completed_segments": report["closed"] if report else 0,
+            "work_insight": work_insight(work, run),
+            "research_questions": questions,
+            "total_segments": counts.get("total", 0), "completed_segments": counts.get("closed", 0),
             "model_calls": budget.get("model_calls", 0), "search_rounds": budget.get("search_rounds", 0),
+            "model_call_limit": model_call_limit,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "model_call_started_at": datetime.fromtimestamp(calls[-1].stat().st_mtime, timezone.utc).isoformat() if pending else None,
             "last_result_at": datetime.fromtimestamp(max(p.stat().st_mtime for p in responses), timezone.utc).isoformat() if responses else None}
@@ -184,6 +187,14 @@ def watch(root, job_id, stop=None):
             if progress:
                 try:
                     write_json(manifest_path(root, run["run_id"]).parent / "progress.json", progress)
+                    # Older running Studio servers carry research envelope fields
+                    # through unchanged. Keep the live tail visible without restart.
+                    if progress.get("phase") == "research":
+                        activity_path = manifest_path(root, run["run_id"]).parent / "research_activity.json"
+                        activity = read(activity_path, {})
+                        if activity:
+                            write_json(activity_path, {**activity, "model_trace": progress.get("model_trace"),
+                                                      "work_insight": progress.get("work_insight")})
                 except OSError:
                     logging.getLogger(__name__).warning("Progress file temporarily unavailable; retrying.")
         if stop is None:
@@ -201,6 +212,8 @@ def safe_script_progress(root, run):
             summary = summary_view(manifest_path(root, run["run_id"]).parent)
             if summary:
                 progress["status_summary"] = summary
+            from .model_trace import trace_view
+            progress["model_trace"] = trace_view(manifest_path(root, run["run_id"]).parent)
         return progress
     except (OSError, ValueError, KeyError, TypeError):
         logging.getLogger(__name__).warning("Progress temporarily unavailable; retaining the previous snapshot.")

@@ -130,6 +130,8 @@ Die vollständigen Verträge werden schrittweise als validierbare Schemas umgese
 
 ### 5.2 SourceDocument
 
+Der folgende Rechtevertrag beschreibt das Ausbauziel. Version 0.1 verwendet derzeit nur `license_status: unknown`, `allowed_usage: private_learning` und `private: true`. Diese Werte kennzeichnen den privaten Arbeitsraum; sie implementieren noch keine individuelle Exportsperre für einzelne Quellen. Abschnitt 11 trennt den aktuellen Umfang von den noch fehlenden Kontrollen.
+
 Jede Quelle enthält:
 
 - `id`, `type`, `title`, `author`, `published_date`, `imported_at`, `language`, `url`,
@@ -289,10 +291,11 @@ Die Abo-Kontingente gelten auch für automatisierte Aufrufe. Fertige Stufenergeb
 | `research_coverage_check` | Ja bei wesentlichen Lücken | Teilfragen und Grundlagen sind abgedeckt oder mit begründeten Folgen für den Umfang markiert. |
 | `depth_check` | Ja | Zentrale Fragen werden anhand von Erklärschritten, ausgearbeiteten Beispielen, Evidenz und Grenzen substanziell beantwortet. |
 | `series_planning_check` | Ja | Fragen, Claims und Voraussetzungen sind Folgen zugeordnet; vertagte Kerninhalte gehen nicht verloren. |
+| `series_script_check` | Ja für neue vollständige Skriptläufe | Die finalen Texte aller geplanten Folgen werden gemeinsam auf Abdeckung, Voraussetzungen, Fortschritt, vertagte Kernfragen und Synthese geprüft. Teilaufträge und ältere Läufe erhalten keine nachträgliche Gesamtfreigabe. |
 | `continuity_check` | Ja bei Verständnisbruch | Reihenfolge und Übergänge funktionieren; Begriffe werden vor ihrer notwendigen Verwendung erklärt. |
 | `redundancy_check` | Warnung | Unnötige Wiederholungen innerhalb und zwischen Folgen ersetzen keine Vertiefung. |
 | `duration_check` | Ja | Geplante und geschätzte Laufzeit bleiben je Folge bei höchstens 30 Minuten; vor Audio-Export gilt zusätzlich die gemessene Dauer. |
-| `rights_check` | Ja | Export berücksichtigt Quellenrechte, Zitatgrenzen, `private` und `no_export`. |
+| `rights_check` | Geplantes Gate | Individuelle Rechtezustände und Exportsperren sind noch nicht implementiert. Aktuell gelten ausschließlich private Nutzung und die deterministischen Dossier-Zitatgrenzen; siehe Abschnitt 11. |
 | `audio_readiness_check` | Ja vor Rendern | Sprecher, gesprochener Text, Pausen und Kapitel sind eindeutig. |
 | `audio_output_check` | Ja vor finalem Audioexport | Alle Segmente sind vorhanden und technisch gültig; Montage, gemessene Dauer und Kapitel stimmen überein. |
 
@@ -302,14 +305,21 @@ Ein Bericht speichert die Hashes der geprüften Quellen-, Modell-, Plan- und Skr
 
 ## 11. Rechte und Datenschutz
 
-- Importierte Quellen haben zunächst den Rechtezustand `unknown`.
-- Quellen mit `unknown` können privat analysiert werden, dürfen aber nicht in öffentlich gedachte Show Notes gelangen.
-- `private: true` und `allowed_usage: no_export` schließen Quellen aus Skript- und Audioexporten aus.
-- `restricted` erlaubt keine direkten Zitate; Nutzungsstatus und Zitatlimits werden beim Export geprüft.
-- Paraphrasen sind der Standard; kurze Zitate bleiben ihrer Quelle zugeordnet.
-- Projektdateien werden lokal gespeichert. Logs enthalten keine vollständigen Quellentexte. Personenbezogene Daten werden vor Modellaufrufen in einer Redaction-Stufe behandelt.
+Implementiert in Version 0.1:
 
-Die bestehende Transparenznotiz bleibt Bestandteil der Exporte:
+- `export_context` ist auf `private_learning` begrenzt. Die Anwendung bietet keinen öffentlichen Veröffentlichungsworkflow und erteilt keine Rechtefreigabe für Weiterveröffentlichung.
+- Alle importierten Quellen speichern `license_status: unknown`, `allowed_usage: private_learning` und `private: true`. Das sind feste Kennzeichnungen, keine individuell einstellbaren Rechte oder Exportsperren. Private Skripte, Show Notes und Audio dürfen diese Quellen verwenden.
+- Paraphrasen sind der Standard; kurze Zitate bleiben ihrer Quelle zugeordnet. Das Dossier begrenzt direkte Zitate und zugerechnete Paraphrasen pro Quelle. Dies ersetzt keine Prüfung sämtlicher späterer gesprochener Formulierungen auf Nutzungsrechte.
+- Projektdateien, Originalquellen und Recherchekontexte werden lokal gespeichert. Ausgewählte Inhalte werden für die beauftragte Verarbeitung an Codex beziehungsweise OpenRouter übertragen. Gemini-Audio verwendet ebenfalls OpenRouter.
+- Zugangsdaten bleiben außerhalb von Prompts und gespeicherten Auftragsdaten; technische Diagnosen und Live-Anzeigen bereinigen bekannte Zugangsdaten. Eine allgemeine Erkennung und Entfernung personenbezogener Daten ist noch nicht implementiert.
+
+Geplant, vor Erweiterung auf öffentliche Exporte:
+
+- Einstellbare Rechtezustände einschließlich `restricted`, `no_export` und quellenspezifischer Exportsperren mit verbindlicher Prüfung vor Skript-, Audio- und Show-Notes-Export.
+- Kein öffentlicher Export von Quellen mit ungeklärten Rechten; keine direkten Zitate aus als `restricted` markierten Quellen.
+- Eine ausdrücklich konfigurierte Redaction-Stufe für personenbezogene Inhalte vor Modellaufrufen.
+
+Als Ausbauziel soll die folgende Transparenznotiz in die Exporte aufgenommen werden:
 
 > Dieser Output ist eine quellengebundene Synthese. Er ersetzt keine fachliche, rechtliche, medizinische oder wissenschaftliche Begutachtung. Unsichere oder widersprüchliche Quellenlagen werden markiert.
 

@@ -1,82 +1,28 @@
 import contextlib
 import io
 import json
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
-from podcast_automate.models import Chapter, EpisodeScript, Segment, TopicBrief
-from podcast_automate.research import run_research
-from podcast_automate.research_models import DossierReview, ResearchDiscovery, ResearchDossier
+from podcast_automate.models import Chapter, EpisodeScript
+from podcast_automate.research_models import ResearchDossier
 from podcast_automate.runner import status
-from podcast_automate.script_models import (Dependency, EpisodePlan, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan)
+from podcast_automate.script_models import Dependency, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan
 from podcast_automate.scripting import run_script, validate_plan, validate_script
-from podcast_automate.storage import init_project, read_yaml, write_json, write_yaml
-from tests.test_research import HTML, discovery, dossier_from_prompt, assessment_from_prompt
-from podcast_automate.research_quality import ResearchAssessment
+from podcast_automate.storage import read_yaml, write_json, write_yaml
+from tests import script_fixtures as fixtures
+from tests.script_fixtures import example_plan, example_script
 from tests.teaching_fixtures import teaching_response
 from tests.polishing_fixtures import polish_review
+from tests.question_fixtures import script_checks
+from podcast_automate.series_review import SeriesReview
 from podcast_automate.polishing import DialoguePolishReview
-from podcast_automate.teaching import TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview
+from podcast_automate.teaching import TeachingPlan, TeachingPlanReview, ListenerReadback, TeachingReview, EditorialReview
 
 
-def example_plan():
-    return SeriesPlan(topic="Test topic", central_question="Test topic", explanation_path="Start with a concrete comparison.",
-        scope_note="A bounded test plan.", dependencies=[], omitted_findings=[], episodes=[EpisodePlan(
-            episode_id="ep_001", title="A model compares possibilities", central_question="How are possibilities compared?",
-            target_minutes=0.12, prerequisite_episodes=[], finding_ids=["f_energy"], deferred_questions=["Training remains open."],
-            scenes=[ScenePlan(scene_id="scene_example", title="A concrete comparison", question="What is scored?",
-                purpose="worked_example", finding_ids=["f_energy"], explanation_steps=["Compare two possibilities.", "Explain the limit."])])])
-
-
-def example_script():
-    return EpisodeScript(episode_id="ep_001", title="A model compares possibilities", purpose="deep_dive",
-        chapters=[Chapter(chapter_id="scene_example", title="A concrete comparison")],
-        segments=[Segment(segment_id="seg_001", scene_id="scene_example", chapter_id="scene_example",
-                          speaker_id="host_a", text="What does this model compare?", knowledge_refs=["f_energy"]),
-                  Segment(segment_id="seg_002", scene_id="scene_example", chapter_id="scene_example",
-                          speaker_id="host_b", text="It scores possibilities. Here a lower score represents a better fit.", knowledge_refs=["f_energy"])])
-
-
-class ScriptingTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "Projekt mit Leerzeichen"
-        self.config = TopicBrief(topic="Test topic", voice_profile={"host_a": "Aiden", "host_b": "Vivian"})
-        init_project(self.root, self.config)
-
-        def research_model(prompt, output_type, directory, **kwargs):
-            if output_type is ResearchDiscovery:
-                return discovery(), {"research_performed": True}
-            if output_type is ResearchDossier:
-                return dossier_from_prompt(prompt), {}
-            if output_type is ResearchAssessment:
-                return assessment_from_prompt(prompt), {}
-            return DossierReview(issues=[], limitations=[]), {}
-
-        with patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")), \
-             patch("podcast_automate.research.CodexAdapter.structured", side_effect=research_model):
-            self.research = run_research(self.root)
-        self.assertEqual(self.research.status, "completed")
-        self.calls = []
-
-    def model(self, prompt, output_type, directory, **kwargs):
-        self.calls.append(output_type)
-        self.assertFalse(kwargs["search"])
-        if output_type is DialoguePolishReview:
-            return polish_review(prompt), {}
-        if output_type in (TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview):
-            return teaching_response(prompt, output_type), {}
-        if output_type is SeriesPlan:
-            return example_plan(), {}
-        if output_type is EpisodeScript:
-            return example_script(), {}
-        return ScriptReview(issues=[], limitations=["A fixture is not a real editorial review."]), {}
-
+class ScriptingTests(fixtures.ScriptProjectCase):
     def test_model_and_effort_apply_to_every_text_stage_and_resume_keeps_them(self):
         selections = []
         def selected(adapter, *args, **kwargs):
@@ -90,7 +36,7 @@ class ScriptingTests(unittest.TestCase):
                 run_script(self.root, resume=True, run_id=first.run_id, reasoning_effort="low")
         self.assertEqual(second.status, "completed")
         self.assertEqual(changed.exception.code, "inputs_changed")
-        self.assertEqual(selections, [("gpt-6-astra", "xhigh")] * 10)
+        self.assertEqual(selections, [("gpt-6-astra", "xhigh")] * 11)
         request = json.loads((self.root / "runs" / first.run_id / "script_request.json").read_text(encoding="utf-8"))
         self.assertEqual(request["text_generation"]["reasoning_effort"], "xhigh")
 
@@ -119,7 +65,8 @@ class ScriptingTests(unittest.TestCase):
         self.assertEqual(first.status, "completed")
         self.assertEqual(resumed.run_id, first.run_id)
         self.assertEqual(self.calls, [SeriesPlan, TeachingPlan, TeachingPlanReview, EpisodeScript,
-                                     EpisodeScript, DialoguePolishReview, ScriptReview, ListenerReadback, EditorialReview, TeachingReview])
+                                     EpisodeScript, DialoguePolishReview, ScriptReview, ListenerReadback, EditorialReview, TeachingReview,
+                                     SeriesReview])
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
         self.assertTrue(all(s.attempts == 1 for s in resumed.stages.values()))
         text = (self.root / "episodes/ep_001/script.md").read_text(encoding="utf-8")
@@ -132,7 +79,7 @@ class ScriptingTests(unittest.TestCase):
         report = read_yaml(self.root / "reports/script_quality.yaml")
         self.assertFalse(report["audio_generated"])
         self.assertFalse(report["human_reviewed"])
-        self.assertFalse(report["complete_series_review"])
+        self.assertTrue(report["complete_series_review"])
         approval = read_yaml(self.root / "episodes/audio_review.yaml")
         self.assertFalse(approval["audio_approved"])
         self.assertEqual(approval["status"], "awaiting_user_script_review")
@@ -185,7 +132,7 @@ class ScriptingTests(unittest.TestCase):
                 return teaching_response(prompt, output_type), {}
             if output_type is ScriptReview:
                 return ScriptReview(issues=[ScriptIssue(category="depth", segment_ids=["seg_002"],
-                                                       reason="The example is not worked through.")], limitations=[]), {}
+                                                       reason="The example is not worked through.")], limitations=[], claim_checks=script_checks(prompt)), {}
             return (example_plan() if output_type is SeriesPlan else example_script()), {}
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root)
@@ -241,7 +188,7 @@ class ScriptingTests(unittest.TestCase):
             (self.root / "episodes/ep_001/script.md").write_text("broken", encoding="utf-8")
             resumed = run_script(self.root, resume=True)
         self.assertEqual(resumed.status, "completed")
-        self.assertEqual(len(self.calls), 10)
+        self.assertEqual(len(self.calls), 11)
         self.assertIn("**Aiden:**", (self.root / "episodes/ep_001/script.md").read_text(encoding="utf-8"))
 
     def test_resume_preserves_manual_changes_to_canonical_script(self):
@@ -256,7 +203,7 @@ class ScriptingTests(unittest.TestCase):
                 run_script(self.root, resume=True)
         self.assertEqual(raised.exception.code, "script_edited")
         self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(len(self.calls), 10)
+        self.assertEqual(len(self.calls), 11)
 
     def test_revision_keeps_plan_and_snapshots_feedback_then_resumes(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
@@ -286,7 +233,7 @@ class ScriptingTests(unittest.TestCase):
             with self.assertRaises(AppError) as raised:
                 run_script(self.root, revise="ep_001", feedback="Tighter.")
         self.assertEqual(raised.exception.code, "invalid_revision")
-        self.assertEqual(len(self.calls), 10)
+        self.assertEqual(len(self.calls), 11)
 
     def test_plan_rejects_cycles_and_forward_prerequisites(self):
         dossier = ResearchDossier.model_validate(read_yaml(self.root / "research/dossier.yaml"))
@@ -297,6 +244,22 @@ class ScriptingTests(unittest.TestCase):
         plan.episodes[0].prerequisite_episodes = ["ep_002"]
         self.assertTrue(any("earlier" in item for item in validate_plan(plan, dossier)))
 
+    def test_revision_can_repair_an_existing_script_that_is_too_short(self):
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            self.assertEqual(run_script(self.root, episode="ep_001").status, "completed")
+            path = self.root / "episodes/ep_001/script.yaml"
+            original = read_yaml(path)
+            for segment in original["segments"]:
+                segment["text"] = "Short."
+            write_yaml(path, original)
+            self.calls.clear()
+            revised = run_script(self.root, revise="ep_001", feedback="Develop the missing explanation.")
+        self.assertEqual(revised.status, "completed")
+        self.assertNotIn(SeriesPlan, self.calls)
+        self.assertEqual(len(self.calls), 10)
+
+
+class ScriptValidationTests(unittest.TestCase):
     def test_script_rejects_spoken_metadata_and_excess_duration(self):
         script = example_script()
         script.segments[0].text = "See https://example.org/source"
@@ -311,20 +274,6 @@ class ScriptingTests(unittest.TestCase):
         self.assertTrue(any("85%" in item for item in validate_script(script, entry)))
         script.segments[0].text = "word " * 3750
         self.assertEqual(validate_script(script, entry), [])
-
-    def test_revision_can_repair_an_existing_script_that_is_too_short(self):
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
-            self.assertEqual(run_script(self.root, episode="ep_001").status, "completed")
-            path = self.root / "episodes/ep_001/script.yaml"
-            original = read_yaml(path)
-            for segment in original["segments"]:
-                segment["text"] = "Short."
-            write_yaml(path, original)
-            self.calls.clear()
-            revised = run_script(self.root, revise="ep_001", feedback="Develop the missing explanation.")
-        self.assertEqual(revised.status, "completed")
-        self.assertNotIn(SeriesPlan, self.calls)
-        self.assertEqual(len(self.calls), 9)
 
     def test_later_scenes_can_build_on_earlier_findings_without_allowing_forward_references(self):
         entry = example_plan().episodes[0]

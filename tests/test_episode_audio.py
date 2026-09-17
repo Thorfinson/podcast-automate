@@ -13,15 +13,13 @@ from podcast_automate.runner import manifest_path, outputs_valid
 from podcast_automate.script_models import ScenePlan, SeriesPlan
 from podcast_automate.scripting import run_script
 from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
-from tests import test_scripting as fixtures
+from tests import script_fixtures as fixtures
 from tests.test_audio import tone
 
 
 class EpisodeAudioTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = fixtures.ScriptingTests()
-        self.fixture.setUp()
-        self.addCleanup(self.fixture.doCleanups)
+        self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
         self.calls = []
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):

@@ -5,10 +5,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 from podcast_automate.studio_progress import read, script_progress, watch
+from podcast_automate.studio_progress import safe_script_progress
+from podcast_automate.model_trace import ModelTrace
 from podcast_automate.storage import write_json
 
 
 class StudioProgressTests(unittest.TestCase):
+    def test_trace_is_available_independently_of_optional_status_summary(self):
+        trace = ModelTrace(self.work / "calls/call_004", "test")
+        trace.record("reasoning", "A provider-visible progress note")
+        trace.finish()
+        progress = safe_script_progress(self.root, self.run)
+        self.assertEqual(progress["model_trace"]["lines"][0]["text"], "A provider-visible progress note")
+        self.assertNotIn("status_summary", progress)
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -63,6 +73,17 @@ class StudioProgressTests(unittest.TestCase):
         self.assertIsNone(completed["model_call_started_at"])
         self.assertIsNotNone(completed["last_result_at"])
         self.assertEqual(completed["activity_started_at"], first["activity_started_at"])
+
+    def test_research_progress_uses_question_ledger_instead_of_stale_global_score(self):
+        write_json(self.work / "research_activity.json", {"activity": "Eine Frage wird geprüft"})
+        write_json(self.work / "research_quality_gate.json", {"closed": 0, "total": 2})
+        ledger = {"closed": 3, "total": 7, "phase": "questions", "questions": [
+            {"id": "definition", "status": "verified", "answer": "A supported definition"}]}
+        write_json(self.work / "research_questions.json", ledger)
+        progress = script_progress(self.root, {**self.run, "kind": "research"})
+        self.assertEqual((progress["completed_segments"], progress["total_segments"]), (3, 7))
+        self.assertEqual(progress["research_questions"], ledger)
+        self.assertEqual(progress["research_quality"]["closed"], 0)
 
     def test_publisher_recovers_from_transient_job_read_and_progress_io_failures(self):
         job_path = self.root / "studio/job.json"

@@ -62,4 +62,6 @@ project/sources/raw/
 # Temporary files
 tmp/
 temp/
+.tmp/
 .cache/
+.evidence-*.txt

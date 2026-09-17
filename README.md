@@ -1,5 +1,7 @@
 # Podcast Automate: Deep-Dive-Serien
 
+Das Studio erklärt unter **Aktueller Rechercheauftrag** die bearbeitete Frage, den Auftrag an das Modell, zuletzt festgehaltene Lücken sowie bereitgestellte Quellen und Prüfpunkte. Es unterscheidet gespeicherte Arbeitsaufträge von echten Modellrückmeldungen und zeigt deren Alter, technische Fehler und wiederholte Schritte ohne neue Belege. Die Auswertung benötigt keine zusätzlichen Modellaufrufe. Codex streamt über seinen lokalen App Server Textfragmente und verfügbare öffentliche Reasoning-Zusammenfassungen; die letzten 20 lesbaren Meldungen sind direkt sichtbar. Auch noch unvollständige JSON-Antworten zeigen bereits ihren lesbaren Inhalt. Bereinigte technische Fehlerdiagnosen bleiben bei Abbrüchen gespeichert. Neue Recherchefragen werden vor der Bearbeitung separat auf einen klar begrenzten Umfang geprüft. [Live-Anzeige und Diagnose](docs/studio.md) · [Rechercheablauf](docs/research.md)
+
 Ein persönliches Recherche-zu-Podcast-System: Ein Thema vorgeben und daraus eine zusammenhängende, quellengebundene Deep-Dive-Serie entwickeln. Themenumfang und gewünschte Tiefe bestimmen, wie viele Folgen nötig sind. Die Gesamtdauer und Folgenzahl haben keine feste Vorgabe; einzelne Folgen dauern höchstens 30 Minuten.
 
 Die Erklärungen setzen kein Fach- oder Mathematikwissen voraus. Vertraute Situationen, klare mentale Bilder und Schritt-für-Schritt-Beispiele machen die Zusammenhänge hörbar. Nötige Fachbegriffe werden erst nach der Idee erklärt; Metaphern erhalten eine verständliche Grenze.
@@ -18,6 +20,8 @@ Du kannst deine Wünsche mit Codex oder OpenRouter besprechen, den vorgeschlagen
 
 Neue Projekte starten mit **150 Modellaufrufen je Recherche- oder Skriptlauf**. Bestehende Projekte behalten ihr gespeichertes Limit. Widersprüche im Inhaltsverzeichnis werden bis zu dreimal automatisch am vorhandenen Entwurf korrigiert; Quellenprüfung und deine anschließende Freigabe bleiben erforderlich.
 
+Die Recherche arbeitet mit **festen Teilfragen und Abschlusskriterien**. Das Modell kann in gespeicherten Originalquellen gezielt suchen, nachlesen und erst bei fehlenden Belegen neue Quellen anfordern. Jede Antwort wird separat geprüft und gespeichert; konkrete Einwände der abschließenden Gesamtprüfung öffnen nur betroffene Fragen wieder. Studio zeigt Fortschritt, Kriterien, fertige Antworten und Blockaden pro Teilfrage. Angehaltene ältere Läufe übernehmen beim Fortsetzen ihre Quellen, Entwürfe und den bisherigen Budgetverbrauch. [Ablauf, Grenzen und Wiederaufnahme](docs/research.md).
+
 Die Recherche prüft jede ursprüngliche Leitfrage auf vollständige Antwort, Erklärungstiefe, gelesene Belege, unabhängige Gegenprüfung und Grenzen. Fehlende Grundlagen werden automatisch nachrecherchiert; sie dürfen den Serienumfang nicht unbemerkt verkleinern. Studio zeigt den Prüfstand je Leitfrage. Erst nach bestandener Prüfung entsteht das Inhaltsverzeichnis. Neue Rechercheläufe haben standardmäßig bis zu 12 Suchrunden und 60 Quellenkandidaten innerhalb des Aufrufbudgets. [Qualitätsmerkmale und Wiederaufnahme](docs/research.md).
 
 **Sequenziell oder parallel wählst du pro Projekt im Gespräch**, getrennt für Text und Audio. Zum Beispiel: „Text parallel, Vertonung sequenziell“. Parallel bedeutet höchstens drei Folgen gleichzeitig innerhalb von Skripterstellung, Dialog-Polishing oder Qualitätsprüfung – auch bei Codex über das Abo. Recherche und Lehrkonzept bleiben in Reihenfolge, damit gemeinsame Belege und vorausgesetzte Beispiele konsistent bleiben. Der Modus wird beim Start eines Textauftrags gespeichert; Fortsetzen behält ihn bei. Bestehende Projekte und ältere Aufträge bleiben zunächst sequenziell. Anbieterlimits und das genehmigte Modellaufrufbudget gelten weiter.
@@ -35,7 +39,7 @@ Unter **Skripte lesen** ist jede Folge schon ab dem vollständig gespeicherten E
 
 Aufeinander aufbauende Folgen erhalten die geprüften Lehrkonzepte und konkreten Beispiele ihrer vorausgesetzten Folgen. Fehlender Beispieltext, eine noch auszuwählende Position oder ein Übergang sind redaktionelle Aufgaben und lösen keine Web-Recherche aus. Echte wissenschaftliche Beleglücken bleiben davon getrennt.
 
-Eine ausdrücklich freigegebene Erhöhung des Modellaufruflimits gilt nur für den gewählten Skriptlauf. Sie wird unter `runs/<run_id>/budget_approval.json` an dessen Eingaben gebunden. Verbrauchte Aufrufe zählen weiter; Projektkonfiguration, Inhaltsverzeichnis-Freigabe und Rechercherundenlimit bleiben erhalten. Das Studio zeigt Verbrauch und wirksames Aufruflimit an.
+Eine ausdrücklich freigegebene Erhöhung des Modellaufruflimits gilt nur für den gewählten Recherche- oder Skriptlauf. Sie wird unter `runs/<run_id>/budget_approval.json` an dessen Eingaben gebunden und vor jedem weiteren Modellaufruf berücksichtigt. Verbrauchte Aufrufe zählen weiter; Projektkonfiguration, Inhaltsverzeichnis-Freigabe und Rechercherundenlimit bleiben erhalten. Das Studio zeigt Verbrauch und wirksames Aufruflimit an.
 
 
 Unter **Auftrag & Stimmen → Dateien anhängen** kannst du mehrere **MD-, TXT- und DOCX-Dateien** mit deiner Nachricht senden – auch ohne vorher ein Thema einzutippen. Der Partner nutzt den Text für Projektidee, Lernziele und Umfang. Die Dateien werden außerdem als lokale Ausgangsmaterialien der Recherche gespeichert; ihre Aussagen gelten noch nicht als unabhängig belegt. DOCX übernimmt Haupttext und Tabellen, keine Bilder, Kopf-/Fußzeilen oder Fußnoten. Details und Grenzen stehen in der [Studio-Anleitung](docs/studio.md#eigene-dateien-als-projektidee-und-recherchematerial).
@@ -188,7 +192,11 @@ Ein einzelner Befehl `pla run` für die gesamte Pipeline ist noch nicht implemen
 
 ## Entwicklungsstand
 
-Das Grundgerüst, technische Proben, der Rechercheweg bis zum belegten Dossier sowie Serienentwurf und Dialogskripte sind implementiert. Der Code verwendet Python ab 3.12, argparse, Pydantic, YAML und pypdf mit Font-Unterstützung. Die Tests prüfen unter anderem Abo-Pausen, Quellenabruf, Belegvalidierung, Skriptprüfung, Wiederaufnahme und Audio-Montage. Die Vertonung freigegebener Skripte ist implementiert, einschließlich lokalem Qwen, Gemini über OpenRouter und wiederverwendbaren Hörproben. Die fachliche Hörabnahme und die Prüfung vollständiger Serien bleiben weitere Arbeitsschritte.
+Neue Skriptläufe prüfen nach den einzelnen Folgen auch die vollständige Skriptserie: Themenabdeckung, Voraussetzungen, Fortschritt zwischen Folgen, aufgeschobene Kernfragen und abschließende Synthese. Ein konkreter Einwand blockiert die Bereitstellung. Das Urteil ist an sämtliche geprüften Texte gebunden; Teilaufträge und ältere Läufe behaupten keine ungeprüfte Gesamtfreigabe. Die Prüfung benötigt bei vollständigem Umfang einen zusätzlichen Aufruf aus dem Produktionsbudget. Sie ersetzt keine menschliche Text- oder Hörabnahme.
+
+Die Rechtefelder kennzeichnen derzeit ausschließlich private Nutzung. Individuelle Quellenlizenzen, Exportsperren und allgemeine Anonymisierung sind noch nicht implementiert; [SPEC.md, Abschnitt 11](SPEC.md#11-rechte-und-datenschutz) trennt den aktuellen Umfang vom Ausbauziel.
+
+Das Grundgerüst, technische Proben, der Rechercheweg bis zum belegten Dossier sowie Serienentwurf und Dialogskripte sind implementiert. Der Code verwendet Python ab 3.12, argparse, Pydantic, YAML und pypdf mit Font-Unterstützung. Die Tests prüfen unter anderem Abo-Pausen, Quellenabruf, Belegvalidierung, Skriptprüfung, Wiederaufnahme und Audio-Montage. Die Vertonung freigegebener Skripte ist implementiert, einschließlich lokalem Qwen, Gemini über OpenRouter und wiederverwendbaren Hörproben. Die fachliche Hörabnahme und die menschliche Abnahme vollständiger Serien bleiben weitere Arbeitsschritte.
 
 ## Dokumentation
 

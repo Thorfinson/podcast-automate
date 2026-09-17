@@ -5,6 +5,7 @@ from pydantic import Field
 
 from .models import Contract, Identifier, NonEmpty
 from .research_models import Finding
+from .evidence_models import SegmentClaimCheck, SourceAssessment, SynthesisRelation
 
 
 class Dependency(Contract):
@@ -61,6 +62,8 @@ class KnowledgeModel(Contract):
     dependencies: list[Dependency]
     uncertainties: list[str]
     editorial_priorities: str
+    synthesis: list[SynthesisRelation] = Field(default_factory=list)
+    source_assessments: list[SourceAssessment] = Field(default_factory=list)
 
 
 class ScriptIssue(Contract):
@@ -72,6 +75,7 @@ class ScriptIssue(Contract):
 class ScriptReview(Contract):
     issues: list[ScriptIssue]
     limitations: list[str]
+    claim_checks: list[SegmentClaimCheck] = Field(default_factory=list)
 
 
 SCRIPT_SCHEMAS = {

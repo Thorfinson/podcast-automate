@@ -1,4 +1,5 @@
 import base64
+import http.client
 import json
 import io
 import tempfile
@@ -12,10 +13,10 @@ from podcast_automate.errors import AppError
 from podcast_automate.models import TopicBrief
 from podcast_automate.research_models import SourceCandidate
 from podcast_automate.sources import import_source
-from podcast_automate.storage import init_project, load_project, write_json
+from podcast_automate.storage import init_project, load_project
 from podcast_automate.studio import BriefProposal
 from podcast_automate.studio_worker import perform
-from tests import test_research, test_studio
+from tests import research_fixtures, test_studio
 
 
 def upload(name="Ideen.md", text="# Ziel\nWir wollen verstehen, wie Energie gespeichert wird.", encoding="utf-8"):
@@ -180,7 +181,15 @@ class AttachmentHttpTests(unittest.TestCase):
     def test_large_upload_uses_separate_limit_and_busy_projects_reject_changes(self):
         payload = {"files": [upload("long.txt", "a" * 180000)]}
         self.assertEqual(self.request("/api/projects/example/upload", payload)[0], 200)
-        self.assertEqual(self.request("/api/key", payload)[0], 400)
+        # Check rejection from Content-Length without racing the early response
+        # against a large body that this endpoint must never read.
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        self.addCleanup(connection.close)
+        connection.request("POST", "/api/key", headers={"X-Studio-Token": self.app.token,
+            "Content-Length": str(len(json.dumps(payload)))})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 400)
+        response.read()
         self.app.process = Mock()
         self.app.process.poll.return_value = None
         self.assertEqual(self.request("/api/projects/example/upload", {"files": [upload()]})[0], 400)
@@ -189,9 +198,7 @@ class AttachmentHttpTests(unittest.TestCase):
         self.assertEqual(len(attachments.inventory(self.root)), 1)
 
 
-class AttachmentResearchTests(unittest.TestCase):
-    setUp = test_research.ResearchTests.setUp
-    model = test_research.ResearchTests.model
+class AttachmentResearchTests(research_fixtures.ResearchProjectCase):
 
     def test_research_receives_uploaded_leads_and_imports_the_named_local_source(self):
         from podcast_automate.research import run_research
@@ -203,14 +210,13 @@ class AttachmentResearchTests(unittest.TestCase):
             if output_type is ResearchDiscovery:
                 self.assertEqual(payload["attachments"][0]["name"], "Eigene Notizen.md")
                 self.assertIn("verify", prompt)
-            elif output_type is ResearchDossier:
-                source = next(s for s in payload["retrieved_sources"] if s["title"] == "Eigene Notizen.md")
-                self.assertIn("not been independently verified", source["reliability_note"])
-                self.assertIn("storage foundations", source["sections"][0]["text"])
             return self.model(prompt, output_type, directory, **kwargs)
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
             result = run_research(self.root)
         self.assertEqual(result.status, "completed")
         index = json.loads((manifest_path(self.root, result.run_id).parent / "source_index.json").read_text())
         self.assertEqual(len(index["sources"]), 2)
+        source = next(s for s in index["sources"] if s["title"] == "Eigene Notizen.md")
+        self.assertIn("not been independently verified", source["reliability_note"])
+        self.assertIn("storage foundations", source["sections"][0]["text"])
         self.assertEqual(load_project(self.root).local_sources, [rows[0]["path"]])

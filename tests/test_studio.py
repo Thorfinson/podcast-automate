@@ -17,14 +17,11 @@ from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import digest, file_hash, init_project, read_yaml, write_json, write_yaml
 from podcast_automate.studio import BriefProposal, Studio, make_server, record_interruption
 from podcast_automate.studio_worker import perform
-from tests import test_scripting as fixtures
-from tests.test_scripting import example_plan, example_script
+from tests import script_fixtures as fixtures
+from tests.script_fixtures import example_plan, example_script
 
 
-class OutlineGateTests(unittest.TestCase):
-    setUp = fixtures.ScriptingTests.setUp
-    model = fixtures.ScriptingTests.model
-
+class OutlineGateTests(fixtures.ScriptProjectCase):
     def test_plan_stops_before_writing_and_cannot_be_resumed_without_approval(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
             planned = run_script(self.root, plan_only=True)
@@ -41,9 +38,9 @@ class OutlineGateTests(unittest.TestCase):
             self.assertEqual(stale.exception.code, "plan_changed")
             completed = run_script(self.root, resume=True, approved_plan_hash=outline_hash(work))
             self.assertEqual(completed.status, "completed")
-            self.assertEqual(len(self.calls), 10)
+            self.assertEqual(len(self.calls), 11)
             run_script(self.root, resume=True)
-            self.assertEqual(len(self.calls), 10)
+            self.assertEqual(len(self.calls), 11)
 
     def test_outline_feedback_changes_reviewed_hash_without_writing(self):
         def revised(prompt, output_type, directory, **kwargs):

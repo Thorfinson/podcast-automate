@@ -41,9 +41,6 @@ const sampleButtonLabel = (provider, voice, language) =>
   provider === "openrouter_gemini_tts" && !savedSample(voice, language)
     ? "Hörprobe erzeugen · API"
     : "▶ Anhören";
-const speechHint = provider => provider === "openrouter_gemini_tts"
-  ? "30 Gemini-Stimmen. Neue Hörproben nutzen dein OpenRouter-Guthaben; gespeicherte Proben werden wiederverwendet."
-  : "Qwen verwendet die installierte Spracherzeugung auf deinem Computer. Vorhandene Hörproben werden direkt abgespielt.";
 const currentAudio = () => project?.audio_settings || {provider:"qwen3_local",voices:(project?.config||boot.defaults).voice_profile};
 const audioCatalog = () => boot.audio_catalog || {qwen3_local:{label:"Qwen · auf diesem Computer",voices:boot.voices,defaults:boot.defaults.voice_profile}};
 const mediaUrl = path => "/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
@@ -633,12 +630,98 @@ function renderStatusSummary(job) {
     paused:"Die automatischen Statusberichte pausieren nach wiederholten Fehlern oder erreichtem Berichtslimit. Der eigentliche Auftrag läuft weiter."};
   const history=(report.history||[]).slice(0,-1).slice(-4).reverse();
   return `<section class="status-summary" aria-label="Kurz erklärt"><strong>Kurz erklärt · Arbeitsstand</strong>
+    ${!active?'<p class="hint">Gespeicherter Kurzbericht aus dem bisherigen Lauf; keine aktuelle Tätigkeitsmeldung.</p>':""}
     ${report.summary?`<p>${escape(report.summary)}</p>`:""}
     ${active&&messages[report.status]?`<p class="hint">${messages[report.status]}</p>`:""}
     ${report.generated_at?`<p class="hint">Bericht vor ${progressAge(report.generated_at)} · ${model}</p>`:`<p class="hint">${model}</p>`}
     ${active&&!report.live_events_available?'<p class="hint">Dieser Stand basiert auf gespeicherten Ergebnissen. Für den aktuellen Aufruf liegen noch keine öffentlichen Live-Meldungen vor.</p>':""}
     <p class="hint">${active?"Prüfung etwa alle 3 Minuten; neuer Bericht nur bei Änderungen. ":""}Statusberichte: ${Number(report.calls||0)} von ${Number(report.call_limit||100)} · zusätzlich zum Produktionsbudget${report.provider==="openrouter"?", über dein OpenRouter-Guthaben":", über dein Codex-Abo"}.</p>
     ${history.length?`<details class="status-history"><summary>Bisherige Kurzberichte</summary>${history.map(row=>`<p>${escape(row.text)}<small>Vor ${progressAge(row.at)}</small></p>`).join("")}</details>`:""}</section>`;
+}
+function renderWorkInsight(job) {
+  const info=job?.progress?.work_insight;
+  if(!info)return "";
+  const signal=info.signals||{},active=job.status==="running"&&signal.state==="running";
+  const material=info.material||{};
+  const visibleRows=(job.progress.model_trace?.lines||[]).filter(row=>["text","reasoning"].includes(row.kind)&&row.call===signal.call&&signal.call);
+  const visibleAt=signal.last_visible_at||visibleRows.map(row=>row.at).filter(Boolean).sort().at(-1);
+  // Also works with an already-running worker whose last_content_at counts
+  // every delta, including the JSON fields hidden from the readable panel.
+  const receivedAt=signal.last_received_at||signal.last_content_at;
+  const since=visibleAt||(signal.call?signal.started_at:signal.last_content_at||signal.started_at);
+  const quiet=active&&since?Math.max(0,(Date.now()-Date.parse(since))/1000):0;
+  const receiving=active&&receivedAt&&Date.now()-Date.parse(receivedAt)<15000;
+  const hiddenOutput=receiving&&quiet>=60&&Date.parse(receivedAt)>Date.parse(since);
+  const warning=quiet>=180;
+  const categories={connection:"Verbindungsprobleme",retry:"Verbindungsversuche",timeout:"Zeitlimits",rate_limit:"Anfragelimits",server_error:"Anbieterfehler",authentication:"Anmeldeprobleme",quota:"Nutzungslimits"};
+  return `${info.question?`<p class="trace-focus">${escape(info.question)}</p>`:""}
+    <p class="work-label">Auftrag an das Modell</p><p>${escape(info.assignment)}</p>
+    ${info.last_step?`<p class="work-label">Im letzten Ergebnis festgehalten</p><p>${escape(info.last_step)}</p>`:""}
+    ${info.feedback?.length?`<p class="work-label">Zuletzt bemängelt</p><ul>${info.feedback.map(t=>`<li>${escape(t)}</li>`).join("")}</ul>`:""}
+    <details class="work-material"><summary>Material und Prüfpunkte für diesen Schritt</summary>
+      <p>${Number(material.section_count||0)} Textstellen aus ${Number(material.source_count||0)} Quellen bereitgestellt${info.candidate_count?`; zusätzlich ${Number(info.candidate_count)} Suchtreffer, die noch keine gelesenen Belege sind`:""}.</p>
+      ${material.unresolved_sections?'<p class="hint">Ein Teil der Quellenangaben ist gerade nicht verfügbar.</p>':""}
+      ${material.sources?.length?`<ul>${material.sources.map(s=>`<li>${escape(s.title)} · ${Number(s.sections)} Textstellen${s.pages?.length?` · Seiten ${s.pages.map(Number).join(", ")}`:""}</li>`).join("")}</ul>`:""}
+      ${material.source_count>6?`<p>Weitere ${Number(material.source_count)-6} Quellen.</p>`:""}
+      ${info.queries?.length?`<p>Suchbegriffe: ${info.queries.map(escape).join("; ")}</p>`:""}
+      ${info.criteria?.length?`<p>Diese Punkte soll die Antwort klären:</p><ul>${info.criteria.map(t=>`<li>${escape(t)}</li>`).join("")}</ul>`:""}
+    </details>
+    <div class="work-signals${warning?" quiet":""}">
+      ${active&&since?`<p><strong>${visibleAt||(!signal.call&&signal.last_content_at)?`Seit ${progressAge(since)} kein neuer lesbarer Modelltext.`:`Seit ${progressAge(since)} noch keine inhaltliche Zwischenmeldung zum aktuellen Aufruf.`}</strong></p>`:""}
+      ${hiddenOutput?'<p class="note"><strong>Ausgabe kommt weiter an, aber ohne neuen lesbaren Text.</strong> Unser Anzeigefilter blendet Teile der strukturierten Antwort aus. Das kann auch Formatdaten oder eine Ausgabe-Schleife verbergen. Empfang allein belegt keinen Recherchefortschritt; die Antwort ist noch nicht abgeschlossen.</p>':""}
+      ${active&&receivedAt?`<p class="hint">Letztes empfangenes Fragment: vor ${progressAge(receivedAt)}${signal.stream_deltas!=null?` · ${Number(signal.stream_deltas)} Fragmente empfangen`:""}.</p>`:""}
+      ${active?'<p class="hint">Der Auftrag zeigt, was bearbeitet werden soll. Ohne neue Rückmeldung ist nicht erkennbar, ob das Modell weiterkommt oder festhängt.</p>':`<p>${escape(job.status!=="running"?"Gespeicherter Stand; der Auftrag läuft derzeit nicht.":signal.state==="completed"?"Die Modellantwort ist gespeichert; die Verarbeitung folgt.":"Der letzte Modellaufruf meldet einen Fehler.")}</p>`}
+      ${signal.last_event_at?`<p class="hint">Letzte Meldung der Modellanbindung: vor ${progressAge(signal.last_event_at)}${!signal.last_content_at?" · bisher nur Status-/Technikmeldungen.":""}</p>`:""}
+      ${signal.last_result_at?`<p class="hint">Letzte gespeicherte Modellantwort im Auftrag: vor ${progressAge(signal.last_result_at)}</p>`:""}
+      ${active&&signal.timeout_seconds?`<p class="hint">Automatisches Zeitlimit für diesen Aufruf: ${Math.ceil(Number(signal.timeout_seconds)/60)} Min.</p>`:""}
+      ${Object.entries(signal.categories||{}).filter(([key])=>categories[key]).map(([key,n])=>`<p>${categories[key]} bei diesem Aufruf: ${Number(n)}.</p>`).join("")}
+      ${info.warning?`<p class="note">${escape(info.warning)}</p>`:""}
+    </div><p class="hint">${info.basis==="request"?"Aus dem tatsächlich gesendeten Arbeitsauftrag":"Aus dem gespeicherten Recherchestand rekonstruiert"}; keine zusätzliche Modellabfrage.</p>`;
+}
+function renderModelTrace(job) {
+  if(!["research","script"].includes(job?.progress?.phase))return "";
+  const trace=job.progress.model_trace,rows=(trace?.lines||[]).slice(-20);
+  const kinds={reasoning:"Öffentliche Reasoning-Zusammenfassung",text:"Live-Text",status:"Arbeitsschritt",diagnostic:"Technischer Hinweis"};
+  const active=job.status==="running";
+  const ledger=job.progress.research_questions;
+  const current=(ledger?.questions||[]).find(row=>row.id===ledger.active_task);
+  const started=job.progress.model_call_started_at;
+  const currentContent=rows.some(row=>["text","reasoning"].includes(row.kind)&&(!started||Date.parse(row.at)>=Date.parse(started)));
+  const insight=renderWorkInsight(job);
+  return `<section class="model-trace" aria-label="Live-Ausgabe des Modells"><strong>${insight?(active?"Aktueller Rechercheauftrag":"Letzter Rechercheauftrag"):(active?"Gerade in Arbeit":"Letzte Arbeitsschritte")}</strong>
+    ${insight|| (current?`<p class="trace-focus">${escape(current.question)}</p><p>${escape(current.activity)}</p>`:"")}
+    ${!insight&&active&&started&&!currentContent?'<p class="hint">Der aktuelle Modellaufruf läuft. Inhaltliche Zwischenmeldungen liegen dafür noch nicht vor.</p>':""}
+    ${insight?'<details class="model-events" open><summary>Live-Ausgabe · letzte 20 Meldungen</summary>':""}
+    <p class="hint">Neue Textfragmente und öffentliche Reasoning-Zusammenfassungen erscheinen während des Aufrufs. Aussagen des Modells sind noch ungeprüft.</p>
+    ${trace?.updated_at?`<p class="hint">Letzte Meldung: vor ${progressAge(trace.updated_at)}</p>`:""}
+    ${rows.length?`<ol class="trace-lines">${rows.map(row=>`<li><small>${escape(row.at?new Date(row.at).toLocaleTimeString("de-DE"):"")} · ${escape(kinds[row.kind]||"Meldung")}</small><p>${escape(row.text)}</p></li>`).join("")}</ol>`:`<p class="hint">Noch keine Meldungen verfügbar. Manche Anbieter senden Text erst am Ende des Aufrufs.</p>`}
+    ${insight?"</details>":""}</section>`;
+}
+function renderResearchQuestions(ledger, opened=new Set()) {
+  const budget=ledger.budget_projection;
+  const budgetNote=budget?`<p class="${budget.feasible?"hint":"notice"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar. ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>`:"";
+  const states={pending:"Wartet",researching:"Wird untersucht",reviewing:"Antwort wird geprüft",verified:"Geprüft abgeschlossen",blocked:"Beleg fehlt"};
+  const phases={questions:"Einzelne Fragen untersuchen und prüfen",synthesis:"Dossier aus geprüften Antworten erstellen",audit:"Gesamtdossier prüfen",completed:"Recherche abgeschlossen",blocked:"Offene Belegfragen"};
+  const rows=(ledger.questions||[]).map(row=>{
+    const answer=row.status==="verified"&&row.answer?`
+      <div class="prose">${renderMarkdown(row.answer)}</div>
+      ${(row.findings||[]).map(f=>`<p>${escape(f.statement)}</p>`).join("")}
+      ${row.sources?.length?`<p>Gelesene Belege:</p><ul>${row.sources.map(source=>`<li>${markdownLink(escape(source.title),source.url)}${source.page?`, Seite ${Number(source.page)}`:""}</li>`).join("")}</ul>`:""}
+      ${row.limits?.length?`<p>Grenzen der Antwort:</p><ul>${row.limits.map(l=>`<li>${escape(l)}</li>`).join("")}</ul>`:""}`:"";
+    return `<details data-research-question="${escape(row.id)}"${opened.has(row.id)?" open":""}>
+      <summary>${row.status==="verified"?"✓":row.id===ledger.active_task?"●":"○"} ${escape(row.question)} · ${escape(states[row.status]||row.status)}</summary>
+      <p>${escape(row.activity)}</p>
+      <p class="hint">${Number(row.read_sections)} Abschnitte gelesen · ${Number(row.steps)} Bearbeitungsschritte${row.reopened?` · ${Number(row.reopened)} Mal mit Einwand wieder geöffnet`:""}</p>
+      ${row.support?`<p class="hint">Textbelege vorhanden · Inhalt automatisch je Befund geprüft · ${row.support.findings.filter(f=>f.empirical_status==="independently_tested").length} Befunde mit dokumentierter unabhängiger empirischer Prüfung</p>`:""}
+      ${row.outcome?`<p class="hint">Ergebnis: ${escape(({supported_answer:"Belegte Antwort",supported_uncertainty:"Belegte wissenschaftliche Unsicherheit",access_block:"Quelle nicht zugänglich",extraction_block:"Text nicht zuverlässig extrahiert",search_block:"Suche ohne ausreichenden Abschluss",budget_block:"Recherchebudget ausgeschöpft",evidence_block:"Beleg fehlt",prerequisite_block:"Voraussetzung noch offen"})[row.outcome]||row.outcome)}</p>`:""}
+      <p>Abschlusskriterien:</p><ul>${(row.acceptance||[]).map(c=>`<li>${escape(c)}</li>`).join("")}</ul>
+      ${row.reason?`<p><strong>Noch offen:</strong> ${escape(row.reason)}</p>`:""}${answer}</details>`;
+  }).join("");
+  return `<section class="research-questions">
+    <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen</strong></p>
+    <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}"></progress>
+    <p>${escape(phases[ledger.phase]||"")}</p>${budgetNote}
+    <p class="hint">Die Abschlusskriterien bleiben fest. Eine geprüfte Antwort wird nur bei einem konkreten Einwand aus der Gesamtprüfung erneut geöffnet.</p>${rows}</section>`;
 }
 function renderJob() {
   const j=project?.job, box=$("job-status");
@@ -662,10 +745,16 @@ function renderJob() {
   if(box.hidden){box.innerHTML="";lastJobView="";return;}
   const r=j?.run||legacy, active=j?.status==="running", state=j?.status||legacy.status;
   const researchOpen=box.querySelector?.(".research-quality")?.open;
+  const questionOpen=new Set(Array.from(box.querySelectorAll?.("[data-research-question][open]")||[],el=>el.dataset.researchQuestion));
   const summaryOpen=box.querySelector?.(".status-history")?.open;
+  const materialOpen=box.querySelector?.(".work-material")?.open;
+  const eventsOpen=box.querySelector?.(".model-events")?.open;
+  const previousTrace=box.querySelector?.(".trace-lines");
+  const traceAtEnd=!previousTrace||previousTrace.scrollHeight-previousTrace.scrollTop-previousTrace.clientHeight<32;
+  const traceScroll=previousTrace?.scrollTop||0;
   const isScript=r?.kind==="script"||j?.progress?.phase==="script";
   const view=JSON.stringify({project:project?.id,job:j,legacy,
-    progressClock:active&&isScript?Math.floor(Date.now()/10000):null,
+    progressClock:active&&["script","research"].includes(j?.progress?.phase)?Math.floor(Date.now()/10000):null,
     page:j?.sample?null:step,minute:active?Math.floor((Date.now()-Date.parse(j.started_at))/60000):null});
   // Preserve the audio element and its playback position during status polling.
   if(view===lastJobView)return;
@@ -674,9 +763,10 @@ function renderJob() {
   const designBlocked=!active&&Object.values(r?.stages||{}).some(v=>v.error?.code==="teaching_design_failed");
   const foundationResearch=active&&j?.progress?.phase==="foundation_research";
   const title=designBlocked?"Lehrkonzept angehalten: Erklärung noch unvollständig":foundationResearch?"Fehlende Erklärgrundlagen werden automatisch recherchiert":missingFoundation?"Automatische Recherche konnte noch nicht abgeschlossen werden":active?(isScript?"Ausarbeitung läuft":actionNames[j.action]):({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
-  const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked;
+  const researchBlocked=!active&&j?.progress?.research_questions?.phase==="blocked";
+  const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked&&!researchBlocked;
   const message=designBlocked&&j?.progress?.review_issues?.length?"Die automatische Überarbeitung hat noch nicht alle Kritikpunkte gelöst. Der bisherige Stand ist gespeichert.":missingFoundation&&/research_needed\.md/.test(j?.message||"")?"Der Abgleich zwischen Quellen und Lehrkonzept ist noch offen. Der bisherige Auftrag bleibt gespeichert.":j?.message;
-  box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r&&!isScript?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
+  box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r&&!isScript&&!j?.progress?.research_questions?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
   if(isScript&&j?.progress?.current_episode)box.innerHTML+=`<p>Folge ${Number(j.progress.episode_number)} von ${Number(j.progress.total_segments)} · ${escape(j.progress.activity)}</p>`;
   const destination=state==="completed"?runPage(r):jobPage();
   const links=["Auftrag ansehen","Recherche ansehen","Inhaltsverzeichnis prüfen","Ausarbeitung ansehen","Skripte lesen","Audio ansehen"];
@@ -685,15 +775,20 @@ function renderJob() {
   if(j?.action==="audio_samples"&&j?.progress?.current_voice&&active)box.innerHTML+=`<p>Aktuelle Stimme: ${escape(j.progress.current_voice)}</p>`;
   if(Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0)
     box.innerHTML+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}</p>`;
+  box.innerHTML+=`<div class="model-observability">${renderStatusSummary(j)}${renderModelTrace(j)}</div>`;
   if(j?.progress?.phase==="research"){
     const quality=j.progress.research_quality;
+    const ledger=j.progress.research_questions;
+    if(ledger){
+      box.innerHTML+=renderResearchQuestions(ledger,questionOpen);
+      if(researchBlocked)box.innerHTML+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht; die konkrete Beleglücke oder der Rechercheauftrag muss geklärt werden.</p><button class="secondary small" data-step="${PAGE.brief}">Auftrag ansehen</button>`;
+    }
     box.innerHTML+=`<p>${escape(j.progress.activity)}</p><p class="hint">Rechercherunden: ${Number(j.progress.search_rounds||0)} von ${Number(j.progress.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
     if(quality){
-      const pending=quality.assessment_status==="pending_after_source_review";
-      box.innerHTML+=`<details class="research-quality"${researchOpen?" open":""}><summary>${pending?"Quellenlücken werden gezielt geschlossen · Gesamtbewertung folgt":`${Number(quality.closed)} von ${Number(quality.total)} Leitfragen erfüllen alle Qualitätsmerkmale`}</summary>${pending?"<p>Zuerst werden die fehlenden Belege gesucht und gelesen. Die bisherigen Leitfragenbewertungen unten werden danach erneuert.</p>":""}<p>Geprüft werden vollständige Antworten, nachvollziehbare Erklärungen, gelesene Belege, unabhängige Gegenprüfung und Grenzen.</p>${(quality.requirements||[]).map(row=>`<p><strong>${pending?"·":row.passed?"✓":"○"} ${escape(row.question)}</strong></p><p>${escape(row.reason)}</p>${(row.missing||[]).length?`<ul>${row.missing.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}`).join("")}${quality.blocking_gaps?.length?`<p>Weitere offene Punkte:</p><ul>${quality.blocking_gaps.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}</details>`;
+      const pending=quality.assessment_status==="pending_after_source_review"||(ledger&&ledger.phase!=="completed");
+      box.innerHTML+=`<details class="research-quality"${researchOpen?" open":""}><summary>${pending?(ledger?"Gesamtbewertung folgt nach den Einzelantworten":"Quellenlücken werden gezielt geschlossen · Gesamtbewertung folgt"):`${Number(quality.closed)} von ${Number(quality.total)} Leitfragen erfüllen alle Qualitätsmerkmale`}</summary>${pending?(ledger?"<p>Der aktuelle Stand steht bei den einzelnen Recherchefragen. Die bisherigen Leitfragenbewertungen unten werden vor der Freigabe erneuert.</p>":"<p>Zuerst werden die fehlenden Belege gesucht und gelesen. Die bisherigen Leitfragenbewertungen unten werden danach erneuert.</p>"):""}<p>Geprüft werden vollständige Antworten, nachvollziehbare Erklärungen, gelesene Belege, unabhängige Gegenprüfung und Grenzen.</p>${(quality.requirements||[]).map(row=>`<p><strong>${pending?"·":row.passed?"✓":"○"} ${escape(row.question)}</strong></p><p>${escape(row.reason)}</p>${(row.missing||[]).length?`<ul>${row.missing.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}`).join("")}${quality.blocking_gaps?.length?`<p>Weitere offene Punkte:</p><ul>${quality.blocking_gaps.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}</details>`;
     }
   }
-  box.innerHTML+=renderStatusSummary(j);
   const history=box.querySelector?.(".status-history");
   if(history)history.open=!!summaryOpen;
   box.innerHTML+=renderProgressTiming(j?.progress,active);
@@ -703,6 +798,11 @@ function renderJob() {
     box.innerHTML+=`<p class="hint">Textmodus: Parallel · bis zu 3 Folgen je Skript-, Polishing- oder Prüfstufe.${activeEpisodes.length?` In Bearbeitung: ${activeEpisodes.map(id=>escape(j.progress.episodes?.find(e=>e.episode_id===id)?.title||id)).join(", ")}.`:""}</p>`;
     if(j.progress.stage==="teaching")box.innerHTML+=`<p class="hint">Die Lehrkonzepte werden nacheinander ausgearbeitet, damit spätere Folgen auf den Erklärungen und Beispielen der früheren aufbauen können. Sobald alle Lehrkonzepte fertig sind, beginnt die parallele Skripterstellung.</p>`;
   }
+  const traceList=box.querySelector?.(".trace-lines");
+  const materialDetail=box.querySelector?.(".work-material"),eventsDetail=box.querySelector?.(".model-events");
+  if(materialDetail)materialDetail.open=!!materialOpen;
+  if(eventsDetail)eventsDetail.open=!!eventsOpen;
+  if(traceList)traceList.scrollTop=traceAtEnd?traceList.scrollHeight:traceScroll;
 }
 function render() { renderNavigation(); $("content").innerHTML=overviewPage?renderOverview():[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step](); renderJob(); syncPlayButtons(); }
 async function refreshProjects() {

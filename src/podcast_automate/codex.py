@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .errors import AppError
 from .call_activity import CallActivity
+from .codex_stream import run_app_server
 from .models import RuntimeSettings, TextProbeOutput
 from .process import run_process
 from .storage import write_json
@@ -69,7 +70,7 @@ def classify_failure(message: str) -> AppError:
                         "Das ist ein Fehler der Studio-Anbindung; eine neue Anmeldung behebt ihn nicht.",
                         code="invalid_output_schema")
     if any(marker in lower for marker in (
-            "usage limit", "usage_limit", "rate limit", "rate_limit", "quota", "429")):
+            "usage limit", "usage_limit", "usagelimit", "rate limit", "rate_limit", "ratelimit", "quota", "429")):
         return AppError("Abo-Kontingent oder Anfragelimit erreicht. Später mit 'pla resume' fortsetzen.",
                         code="quota_exhausted", status="waiting_for_quota")
     if any(marker in lower for marker in ("unauthorized", "not logged in", "authentication", "401")):
@@ -80,11 +81,14 @@ def classify_failure(message: str) -> AppError:
 
 
 class CodexAdapter:
-    def __init__(self, settings: RuntimeSettings, *, reasoning_effort=None, cancel_check=None):
+    def __init__(self, settings: RuntimeSettings, *, reasoning_effort=None, cancel_check=None, transport="app_server"):
         self.settings = settings
         validate_model(settings.codex_model)
         self.reasoning_effort = validate_reasoning(reasoning_effort)
         self.cancel_check = cancel_check
+        if transport not in {"app_server", "exec"}:
+            raise ValueError("Unknown Codex transport")
+        self.transport = transport
 
     def command(self) -> list[str]:
         return executable_command(self.settings.codex_executable)
@@ -138,10 +142,20 @@ class CodexAdapter:
             args.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
         args.append("-")
         activity = CallActivity(directory, output_type.__name__, self.settings.codex_model)
+        activity.diagnostic("request", prompt_chars=len(prompt), prompt_bytes=len(prompt.encode("utf-8")),
+                            timeout_seconds=self.settings.text_timeout_seconds,
+                            reasoning_effort=self.reasoning_effort, transport=self.transport)
         try:
-            result = run_process(args, input_text=prompt, cwd=directory,
-                                 timeout=self.settings.text_timeout_seconds, env=subscription_environment(),
-                                 on_stdout_line=activity.observe, cancel_check=self.cancel_check)
+            if self.transport == "app_server":
+                result = run_app_server(self.command(), prompt=prompt, schema=schema, response_file=response_file,
+                    cwd=directory.resolve(), timeout=self.settings.text_timeout_seconds,
+                    env=subscription_environment(), model=self.settings.codex_model, effort=self.reasoning_effort,
+                    search=search, activity=activity, cancel_check=self.cancel_check)
+            else:
+                result = run_process(args, input_text=prompt, cwd=directory,
+                                     timeout=self.settings.text_timeout_seconds, env=subscription_environment(),
+                                     on_stdout_line=activity.observe, on_stderr_line=activity.observe_stderr,
+                                     cancel_check=self.cancel_check)
         except AppError as exc:
             activity.finish(exc.code)
             response_file.unlink(missing_ok=True)
@@ -152,7 +166,7 @@ class CodexAdapter:
             failure = AppError(
                 f"Der einzelne Codex-Aufruf wurde nach {duration} durch das lokale Zeitlimit beendet. "
                 "Fertige Schritte sind gespeichert. Fortsetzen wiederholt den unterbrochenen Aufruf; "
-                "bei erneutem Abbruch runtime.text_timeout_seconds im Projekt erhöhen.", code="timeout")
+                "bereinigte technische Hinweise stehen in diagnostics.json und im Studio.", code="timeout")
             write_json(directory / "failure.json", {"code": failure.code, "message": str(failure),
                        "timeout_seconds": seconds, "model": self.settings.codex_model,
                        "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version})
@@ -208,6 +222,7 @@ class CodexAdapter:
             cli_version = None
         metadata = {
             "provider": "codex_cli", "auth_mode": "chatgpt",
+            "transport": self.transport,
             "requested_model": self.settings.codex_model,
             "requested_reasoning_effort": self.reasoning_effort,
             "timeout_seconds": self.settings.text_timeout_seconds,
@@ -216,6 +231,10 @@ class CodexAdapter:
             "separately_billed_cost": None, "research_performed": bool(search_requests),
             "web_search_events": len(search_items),
             "web_search_requests": len(search_requests),
+            "observed_search_queries": list(dict.fromkeys(q for item in search_requests
+                for q in ([item["query"]] if isinstance(item.get("query"), str) else
+                          [item["action"]["query"]] if isinstance(item.get("action", {}).get("query"), str) else
+                          item.get("action", {}).get("queries", [])) if isinstance(q, str))),
         }
         write_json(directory / "metadata.json", metadata)
         write_json(directory / "response.json", output.model_dump(mode="json"))

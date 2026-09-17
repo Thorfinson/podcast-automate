@@ -1,0 +1,182 @@
+{
+  "version": "evidence.v1",
+  "mode": "scripted_gate_replay",
+  "annotation_status": "Agent-authored synthetic labels; independent human adjudication pending.",
+  "model": null,
+  "model_calls": 0,
+  "human_correction_minutes": null,
+  "corpus_hash": "7d56244f04e74200169b081157641ba8450932e63dc5ffa57c11245d2b6410ad",
+  "prompt_hash": "570e8370515e17999bb1ff9dbf11c0627b7022bf38da1cd7e50e5290829ef8d6",
+  "schema_hash": "9fed33231d5c90b87ebc6e9e4e502bea928f424ad44da8b91952950b04cc4604",
+  "baseline": "Previous empty-issue-list acceptance; same supplied receipts, no historical model calls.",
+  "metrics": {
+    "development": {
+      "baseline": {
+        "unsupported_acceptances": 5,
+        "invalid_cases": 5,
+        "valid_false_blocks": 0,
+        "valid_cases": 3,
+        "missing_explanations": 0,
+        "unjustified_reopenings": 0,
+        "semantic_drift_acceptances": 1
+      },
+      "current": {
+        "unsupported_acceptances": 0,
+        "invalid_cases": 5,
+        "valid_false_blocks": 0,
+        "valid_cases": 3,
+        "missing_explanations": 0,
+        "unjustified_reopenings": 0,
+        "semantic_drift_acceptances": 0
+      }
+    },
+    "heldout": {
+      "baseline": {
+        "unsupported_acceptances": 3,
+        "invalid_cases": 3,
+        "valid_false_blocks": 0,
+        "valid_cases": 3,
+        "missing_explanations": 0,
+        "unjustified_reopenings": 1,
+        "semantic_drift_acceptances": 1
+      },
+      "current": {
+        "unsupported_acceptances": 0,
+        "invalid_cases": 3,
+        "valid_false_blocks": 0,
+        "valid_cases": 3,
+        "missing_explanations": 0,
+        "unjustified_reopenings": 0,
+        "semantic_drift_acceptances": 0
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "definition_clean",
+      "scenario": "support",
+      "split": "development",
+      "valid": true,
+      "baseline_accepted": true,
+      "accepted": true,
+      "explanation": "All supplied gate receipts passed."
+    },
+    {
+      "id": "anchor_plus_invention",
+      "scenario": "support",
+      "split": "development",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "f_one: partially_supported; Scripted annotation of the full synthetic claim.; Appropriate to this fictional assertion.; increases efficiency by forty percent"
+    },
+    {
+      "id": "duplicate_study",
+      "scenario": "independence",
+      "split": "development",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "f_one: independent testing is not established by distinct evidence families and works."
+    },
+    {
+      "id": "independent_studies",
+      "scenario": "independence",
+      "split": "development",
+      "valid": true,
+      "baseline_accepted": true,
+      "accepted": true,
+      "explanation": "All supplied gate receipts passed."
+    },
+    {
+      "id": "association_to_causation",
+      "scenario": "script",
+      "split": "development",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "category='grounding' segment_ids=['seg_one'] reason='Claim drift (relation, scope): Synthetic annotation compares research scope, strength and numerical meaning.'"
+    },
+    {
+      "id": "time_scale_mismatch",
+      "scenario": "synthesis",
+      "split": "development",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "A direct contradiction requires comparable populations, measurements and time scales."
+    },
+    {
+      "id": "documented_uncertainty",
+      "scenario": "uncertainty",
+      "split": "development",
+      "valid": true,
+      "baseline_accepted": true,
+      "accepted": true,
+      "explanation": "All supplied gate receipts passed."
+    },
+    {
+      "id": "missing_explanation",
+      "scenario": "support",
+      "split": "development",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "1 validation error for SourceReview\nfinding_support.0.reason\n  String should have at least 1 character [type=string_too_short, input_value='', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_too_short"
+    },
+    {
+      "id": "heldout_definition",
+      "scenario": "support",
+      "split": "heldout",
+      "valid": true,
+      "baseline_accepted": true,
+      "accepted": true,
+      "explanation": "All supplied gate receipts passed."
+    },
+    {
+      "id": "heldout_population_loss",
+      "scenario": "script",
+      "split": "heldout",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "category='grounding' segment_ids=['seg_one'] reason='Claim drift (scope, qualifications): Synthetic annotation compares research scope, strength and numerical meaning.'"
+    },
+    {
+      "id": "heldout_spoken_number",
+      "scenario": "script",
+      "split": "heldout",
+      "valid": true,
+      "baseline_accepted": true,
+      "accepted": true,
+      "explanation": "All supplied gate receipts passed."
+    },
+    {
+      "id": "heldout_version_duplicate",
+      "scenario": "independence",
+      "split": "heldout",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "f_one: independent testing is not established by distinct evidence families and works."
+    },
+    {
+      "id": "heldout_conditional_difference",
+      "scenario": "synthesis",
+      "split": "heldout",
+      "valid": true,
+      "baseline_accepted": true,
+      "accepted": true,
+      "explanation": "All supplied gate receipts passed."
+    },
+    {
+      "id": "heldout_unjustified_reopen",
+      "scenario": "objection",
+      "split": "heldout",
+      "valid": false,
+      "baseline_accepted": true,
+      "accepted": false,
+      "explanation": "An objection cannot reopen a task solely because it shares a broad question."
+    }
+  ]
+}

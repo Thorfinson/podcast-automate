@@ -41,6 +41,14 @@ def write_json(path: Path, data: object) -> None:
     atomic_text(path, json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
 
 
+def read_optional_json(path: Path, default=None):
+    """Read a best-effort status snapshot; missing or unreadable data is optional."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
 def write_yaml(path: Path, data: object) -> None:
     atomic_text(path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
 
