@@ -9,14 +9,12 @@ from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
 from podcast_automate.studio_progress import script_progress
 from podcast_automate.teaching import TeachingPlan
-from tests import test_scripting as fixtures
+from tests import script_fixtures as fixtures
 
 
 class RunBudgetTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = fixtures.ScriptingTests()
-        self.fixture.setUp()
-        self.addCleanup(self.fixture.doCleanups)
+        self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
         # An existing project retains its explicit older allowance after a default change.
         self.fixture.config.research_limits.model_calls = 40

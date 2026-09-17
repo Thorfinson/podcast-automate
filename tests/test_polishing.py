@@ -10,14 +10,12 @@ from podcast_automate.polishing import (DialoguePolishReview, HOST_ROLES, POLISH
 from podcast_automate.script_models import ScriptReview
 from podcast_automate.scripting import run_script, validate_script
 from podcast_automate.storage import digest, read_yaml, write_json, write_yaml
-from tests import test_scripting as fixtures
+from tests import script_fixtures as fixtures
 
 
 class PolishingTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = fixtures.ScriptingTests()
-        self.fixture.setUp()
-        self.addCleanup(self.fixture.doCleanups)
+        self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
 
     def test_separate_pass_reaches_final_checks_with_original_and_preserves_voice_selection(self):

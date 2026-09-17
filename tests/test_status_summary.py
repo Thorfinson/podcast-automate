@@ -125,6 +125,26 @@ class StatusSummaryTests(unittest.TestCase):
         self.assertIn("Original comparison is missing", text)
         self.assertNotIn("0 von 10", text)
 
+    def test_question_progress_and_new_sources_replace_stale_global_summary_facts(self):
+        write_json(self.work / "source_index.json", {"sources": [1], "failures": []})
+        ledger = {"closed": 2, "total": 4, "phase": "questions", "active_task": "task_test", "source_count": 7,
+            "source_failures": 1, "questions": [{"id": "task_test", "question": "Independent test?",
+            "status": "researching", "activity": "Read the original experiment", "read_sections": 6}]}
+        write_json(self.work / "research_questions.json", ledger)
+        write_json(self.work / "research_quality_gate.json", {"closed": 0, "total": 10,
+            "requirements": [{"passed": False, "question": "STALE GAP"}]})
+        snapshot = evidence_snapshot(self.root, self.job["run"])
+        text = json.dumps(snapshot, ensure_ascii=False)
+        self.assertIn("2 von 4 Teilfragen", text)
+        self.assertIn("7 Quellen eingelesen", text)
+        self.assertIn("Read the original experiment", text)
+        self.assertNotIn("STALE GAP", text)
+        self.assertNotIn("0 von 10", text)
+        with patch("podcast_automate.status_summary.CodexAdapter.structured", autospec=True, side_effect=self.result):
+            self.update()
+        envelope = json.loads((self.work / "research_activity.json").read_text())
+        self.assertEqual(envelope["research_questions"], ledger)
+
     def test_public_events_are_allowlisted_redacted_and_visible_before_completion(self):
         directory = self.work / "calls/call_004"
         activity = CallActivity(directory, "ResearchDossier", "gpt-6-astra")

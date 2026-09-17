@@ -28,7 +28,8 @@ class CliTests(unittest.TestCase):
             schemas = Path(temporary) / "schemas"
             code, _ = self.invoke("schemas", str(schemas), "--json")
             self.assertEqual(code, 0)
-            self.assertEqual(len(list(schemas.glob("*.schema.json"))), 20)
+            self.assertEqual(len(list(schemas.glob("*.schema.json"))), 21)
+            self.assertTrue((schemas / "series_review.schema.json").is_file())
             self.assertTrue((schemas / "teaching_plan_repair.schema.json").is_file())
 
     def test_doctor_can_skip_optional_local_tts_for_remote_audio(self):

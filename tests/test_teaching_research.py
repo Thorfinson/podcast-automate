@@ -10,15 +10,14 @@ from podcast_automate.storage import file_hash, read_yaml, write_json
 from podcast_automate.teaching import ResearchGap, TeachingPlanReview
 from podcast_automate.teaching_research import (FoundationSupplement, FoundationReview,
     apply_foundations, research_foundations, gaps_in)
-from tests.test_research import HTML, discovery
-from tests import test_scripting as fixtures
+from tests.research_fixtures import HTML, discovery
+from tests import script_fixtures as fixtures
+from tests.question_fixtures import claim_contract, support_receipts
 
 
 class FoundationResearchTests(unittest.TestCase):
     def setUp(self):
-        fixture = self.fixture = fixtures.ScriptingTests()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
+        fixture = self.fixture = fixtures.script_project(self)
         self.root, self.config = fixture.root, fixture.config
         _, self.dossier, _, self.sources, self.context = load_research(self.root, self.config)
         self.entry = fixtures.example_plan().episodes[0]
@@ -43,12 +42,14 @@ class FoundationResearchTests(unittest.TestCase):
             self.assertTrue(kwargs["search"])
             return discovery()
         if schema is FoundationReview:
-            return FoundationReview(issues=[], scope_change_required=False)
+            data = json.loads(prompt.splitlines()[-1])
+            return FoundationReview(issues=[], scope_change_required=False, **support_receipts(data["findings"], data["sources"]))
         data = json.loads(prompt.splitlines()[-1])
         section = next(s for source in data["sources"] for s in source["sections"] if "Lower energy" in s["text"])
         return FoundationSupplement(explanations=[{
             "questions": data["questions"], "finding_ids": ["f_energy"],
             "explanation": "A lower score represents a better match in this example.",
+            "claim_contract": claim_contract(),
             "evidence": [{"reference": section["reference"], "excerpt": "Lower energy represents compatibility"}]}], remaining_gaps=[])
 
     def research(self, invoke=None):

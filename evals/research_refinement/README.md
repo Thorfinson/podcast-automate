@@ -1,31 +1,32 @@
-# Gezielte Recherche und Dossierkorrekturen
+# Gezielte Recherche und Wiederaufnahme
 
-Diese Prüfung deckt die Änderungen an Abschnittssuche, gezielten Dossieränderungen und Wiederaufnahme ab. Sie ersetzt keine fachliche Abnahme eines fertigen Podcasts und keinen Laufzeitvergleich mit echten Modellen.
+Die produktive Recherche verwendet feste Teilfragen, gezieltes Nachlesen, unabhängige Antwortprüfungen und gespeicherte Einzelabschlüsse. Der frühere Runden-Controller wurde entfernt. Alte Rechercheläufe werden weiterhin über `bootstrap_legacy` eingelesen und mit dem aktuellen Ablauf fortgesetzt; Quellen, gültige Entwürfe und verbrauchte Aufrufe bleiben erhalten.
 
-## Automatisierte Prüfungen
+## Automatisierte Regressionen
 
 ```powershell
-.\.venv\Scripts\python.exe -B -m unittest tests.test_research tests.test_research_quality tests.test_research_refinement tests.test_studio_progress tests.test_scripting -q
+.\.venv\Scripts\python.exe -B -m unittest tests.test_research tests.test_question_research tests.test_research_quality tests.test_research_refinement tests.test_research_invariants tests.test_research_migration -v
+node --test tests/studio_ui.test.cjs
 ```
 
-Geprüft werden insbesondere:
+Alle Python-Fälle gehören auch zur regulären Testsuite. Sie prüfen mit temporären Projekten und simulierten Modellen insbesondere:
 
-- Eine fehlende Definition wird unter 187 gespeicherten Abschnitten gefunden, einschließlich Seitenbezug und benachbartem Kontext. Deutsche Beugungen technischer Begriffe können zu englischen Originalbegriffen passen.
-- Lokales Nachlesen benötigt keinen Download und kann auch nach Erreichen des Quellen- oder Web-Suchlimits eine Frage beantworten. Modellaufrufe bleiben budgetiert.
-- Unbeteiligte Befunde bleiben unverändert; unbekannte IDs, doppelte Änderungen und nicht erlaubte Eingriffe werden abgewiesen.
-- Gezielt reparierte Belege werden erneut validiert. Ein Treffer oder formal gültiger Beleg allein genügt nicht zum Bestehen der Quellen- und Vollständigkeitsprüfung.
-- Gespeicherte Änderungen werden nach einer Unterbrechung wiederverwendet; veränderte Eingaben oder beschädigte Zwischenstände verhindern falsche Wiederverwendung.
-- Abgeschlossene alte Prüfrunden bleiben wiederaufnehmbar. Ein alter Lauf, der nach Suche und Download vor dem nächsten Dossier angehalten wurde, übernimmt die Quellen und verwendet anschließend gezielte Änderungen.
-- Aktuelle Quellen-Einwände ersetzen überholte Einwände. Veraltete Gesamtbewertungen erzeugen währenddessen keine zusätzliche Aufgabenliste; die ursprünglichen Leitfragen werden vor Freigabe vollständig neu geprüft.
+- Auffindbarkeit gespeicherter Abschnitte, Seitenangaben, Nachbarkontext und Leselimits.
+- Schutz unbeteiligter Befunde und erneute Prüfung geänderter Belege.
+- Quellen- und Aufruflimits sowie Wiederaufnahme ohne wiederholte Suchen oder Downloads.
+- Vollständigkeit der ursprünglichen Leitfragen, unabhängige Prüfung und begrenztes Wiederöffnen.
+- Import historischer Entwurfs- und Reparaturformate, unveränderte Quellen und Prüfsummen sowie das Fortsetzen vor und nach der alten Review-Stufe.
 
-Stand 16.09.2026: **86 Tests bestanden**, Modelle und Downloads simuliert. Ausgeführt mit Python 3.12 in der Sandbox, Pydantic 2.13.5 und der Projektversion von pypdf 6.18.1. Die normale Projektlaufzeit Python 3.13 war in der Sandbox nicht ausführbar; die automatische Freigabe eines erhöhten Teststarts scheiterte an der Auslastung des Prüfmodells.
+Migrationstests erzeugen die historischen Dateien direkt. Eine zweite ausführbare Recherchepipeline und Tests ihrer inzwischen ungenutzten Steuerungslogik sind dafür nicht erforderlich. Die [Analyse vom 17.09.2026](../../docs/research-analysis.md) enthält den Hintergrund der ursprünglichen Fehler; das separate Akzeptanzskript wurde in die Invariantentests aufgenommen.
 
-Ein zusätzlicher Gesamtlauf von 316 Tests war **nicht vollständig grün**: Er meldete zwei Fehlschläge und acht Fehlerausgaben, unter anderem fehlende Paketpfade in Kindprozessen, Timeouts beim Beenden von Testprozessen und abgebrochene lokale HTTP-Verbindungen. Einige Fehlerausgaben betreffen Aufräumarbeiten desselben Tests. Diese Ergebnisse aus der Ersatzlaufzeit belegen keine fehlerfreie Gesamtsuite; die unveränderten Prozess-/HTTP-Bereiche wurden in dieser Änderung nicht repariert.
+## Kontrolle mit einem gespeicherten Quellenbestand
 
-## Kontrollprüfung an gespeicherten Recherchequellen
+`check_saved_reader.py` arbeitet ausschließlich lesend: keine Modellaufrufe, Downloads oder Änderungen am Forschungsauftrag.
 
-Zusätzlich wurde die neue Suche ohne Modell- oder Netzwerkaufruf gegen die vorhandenen Dateien des Recherchelaufs `run_20260916_121103_388868_a082fa2a`, Runde 002, ausgeführt. Eingaben waren der gespeicherte Quellenindex, der damalige Modellausschnitt und die tatsächliche offene Frage nach singulären und synergischen Satisfier-Typen sowie Verhaltensstudien.
+```powershell
+.\.venv\Scripts\python.exe evals/research_refinement/check_saved_reader.py projects/mir-gehts-um-die-inhalte-der-doumente-di-c85f45 run_20260916_121103_388868_a082fa2a --query "Max-Neef Human Scale Development singular satisfiers synergic satisfiers definitions" --key-term "singular satisfiers" --key-term "synergic satisfiers" --expect-reference "src_6622dc67b5fea004#sec_f1dc13c2699a5406"
+```
 
-Ergebnis: Die zuvor nicht vorgelegte Definition `src_6622dc67b5fea004#sec_f1dc13c2699a5406` wurde gefunden. Die Auswahl ergänzte sechs Abschnitte mit insgesamt 4.460 Textzeichen. Der bestehende Ausschnitt dieser Quelle hatte vier von 187 Abschnitten enthalten. Der Forschungsauftrag und seine Dateien wurden dabei nicht verändert.
+Der gespeicherte Prüffall enthält **37 Quellen und 4.275 Abschnitte**. Die erwartete Originaldefinition auf Seite 24 erreicht **Rang 1**; das Nachlesen liefert sie mit zwei Nachbarabschnitten. Der Import übernimmt den letzten formal gültigen Entwurf mit **86 Befunden** aus `round_003/dossier_patch_applied.json`.
 
-Damit ist die Auffindbarkeit der Definition nachgewiesen. Ob zusätzliche Verhaltensstudien die weitergehenden Aussagen tragen, bleibt eine gesonderte fachliche Prüfung. Aus dieser Kontrolle lässt sich noch keine prozentuale Beschleunigung eines vollständigen Recherchelaufs ableiten.
+Diese Kontrolle belegt die Auffindbarkeit dieser Passage und die Lesbarkeit des historischen Bestands. Simulierte Tests und gespeicherte Quellen ersetzen keinen vollständigen Lauf mit echten Modellen oder die fachliche Abnahme einer fertigen Serie. Eine prozentuale Laufzeitverbesserung oder allgemeine Forschungsqualität lässt sich daraus nicht ableiten.

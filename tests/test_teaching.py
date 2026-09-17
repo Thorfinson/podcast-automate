@@ -9,15 +9,13 @@ from podcast_automate.storage import read_yaml, write_json
 from podcast_automate.scripting import run_script
 from podcast_automate.teaching import (TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview,
     ResearchGap, assess_teaching, build_teaching_plan, validate_teaching_plan)
-from tests import test_scripting as fixtures
+from tests import script_fixtures as fixtures
 from tests.teaching_fixtures import teaching_response
 
 
 class TeachingTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = fixtures.ScriptingTests()
-        self.fixture.setUp()
-        self.addCleanup(self.fixture.doCleanups)
+        self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
 
     def model(self, prompt, output_type, directory, **kwargs):

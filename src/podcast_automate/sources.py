@@ -150,8 +150,20 @@ def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, l
             if reader.is_encrypted or len(reader.pages) > 300:
                 raise ValueError("Encrypted PDF or more than 300 pages")
             blocks, size = [], 0
+            coverage = {"pages_total": len(reader.pages), "pages_with_text": 0, "empty_pages": [],
+                        "suspected_image_pages": [], "suspected_table_pages": [], "suspected_equation_pages": [],
+                        "notes": ["Heuristic coverage only; table structure and equations have not been visually verified."]}
             for number, page in enumerate(reader.pages, 1):
                 text = page.extract_text() or ""
+                if text.strip():
+                    coverage["pages_with_text"] += 1
+                else:
+                    coverage["empty_pages"].append(number)
+                    coverage["suspected_image_pages"].append(number)
+                if re.search(r"\b(table|tabelle)\s*\d|(?:\S+[ \t]{3,}){3}", text, re.I):
+                    coverage["suspected_table_pages"].append(number)
+                if re.search(r"[=∑∫√]|\b(equation|gleichung)\s*\d", text, re.I):
+                    coverage["suspected_equation_pages"].append(number)
                 size += len(text)
                 if size > MAX_TEXT:
                     raise ValueError("PDF text too large")
@@ -159,6 +171,7 @@ def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, l
             if reader.metadata:
                 metadata = {"title": str(reader.metadata.title or ""),
                             "authors": [str(reader.metadata.author)] if reader.metadata.author else []}
+            metadata["extraction_coverage"] = coverage
             return "pdf", ".pdf", metadata, sections_from_blocks(blocks)
         except AppError:
             raise
@@ -225,6 +238,7 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
                        "Automatic text extraction can omit images, tables and mathematical notation."],
         raw_path=raw_path.relative_to(root).as_posix(), raw_hash=file_hash(raw_path),
         text_hash=hashlib.sha256("\n".join(s.text for s in sections).encode()).hexdigest(), sections=sections,
+        extraction_coverage=metadata.get("extraction_coverage"),
     )
     processed = root / "sources/processed" / run_id / f"{source_id}.json"
     write_json(processed, document.model_dump(mode="json"))

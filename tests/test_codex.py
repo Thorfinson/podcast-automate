@@ -66,7 +66,7 @@ class CodexTests(unittest.TestCase):
         self.root.mkdir()
         fake = self.root / "codex fake.py"
         fake.write_text(FAKE_CODEX, encoding="utf-8")
-        self.adapter = CodexAdapter(RuntimeSettings(text_timeout_seconds=3))
+        self.adapter = CodexAdapter(RuntimeSettings(text_timeout_seconds=3), transport="exec")
         self.command = patch.object(self.adapter, "command", return_value=[sys.executable, str(fake)])
         self.command.start()
         self.addCleanup(self.command.stop)
@@ -209,6 +209,7 @@ class CodexTests(unittest.TestCase):
 
         def expire(*args, **kwargs):
             self.assertEqual(kwargs["timeout"], 3)
+            kwargs["on_stderr_line"]("TLS connection reset; retrying; token=test-only-secret")
             (directory / "response.pending.json").write_text('{"partial":"test-only-secret"}')
             raise AppError("test-only-secret", code="timeout")
 
@@ -224,6 +225,9 @@ class CodexTests(unittest.TestCase):
         receipt = (directory / "failure.json").read_text(encoding="utf-8")
         self.assertEqual(json.loads(receipt)["timeout_seconds"], 3)
         self.assertNotIn("test-only-secret", receipt)
+        diagnostics = (directory / "diagnostics.json").read_text(encoding="utf-8")
+        self.assertIn('"category": "connection"', diagnostics)
+        self.assertNotIn("test-only-secret", diagnostics)
 
 
 if __name__ == "__main__":

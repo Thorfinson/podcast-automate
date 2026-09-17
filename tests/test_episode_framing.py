@@ -6,7 +6,7 @@ from podcast_automate.editorial import episode_series_context
 from podcast_automate.models import EpisodeScript
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.scripting import run_script
-from tests import test_scripting as fixtures
+from tests import script_fixtures as fixtures
 
 
 class EpisodeFramingTests(unittest.TestCase):
@@ -41,9 +41,7 @@ class EpisodeFramingTests(unittest.TestCase):
         self.assertIsNone(context['next_episode'])
 
     def test_selected_episode_keeps_series_context_through_writing_polishing_and_reviews(self):
-        fixture = fixtures.ScriptingTests()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
+        fixture = fixtures.script_project(self)
         plan = self.series()
         captured = {}
 
@@ -67,7 +65,7 @@ class EpisodeFramingTests(unittest.TestCase):
             expected = episode_series_context(plan, selected)
             for version in ('teaching_design.v1', 'teaching_design_review.v4-framing', 'write_episode.v6-framing',
                             'dialogue_polish.v2-framing', 'dialogue_polish_review.v2-framing',
-                            'script_review.v7-framing', 'teaching_review.v3-framing',
+                            'script_review.v8-evidence', 'teaching_review.v3-framing',
                             'editorial_review.v3-series-context'):
                 self.assertEqual(captured[version], expected)
             self.assertFalse((fixture.root / 'audio').exists())

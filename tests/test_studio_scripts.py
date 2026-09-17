@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +5,7 @@ from pathlib import Path
 from podcast_automate.scripting import script_review_signature
 from podcast_automate.studio_scripts import script_previews
 from podcast_automate.storage import digest, file_hash, write_json
-from tests.test_scripting import example_plan, example_script
+from tests.script_fixtures import example_plan, example_script
 
 
 class StudioScriptPreviewTests(unittest.TestCase):

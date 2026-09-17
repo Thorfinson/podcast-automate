@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from .models import Contract, Identifier, NonEmpty
+from .evidence_models import ClaimContract, ExtractionCoverage, SourceAssessment, SynthesisRelation
 
 
 class ResearchQuestion(Contract):
@@ -61,6 +62,7 @@ class SourceDocument(Contract):
     raw_hash: str
     text_hash: str
     sections: list[SourceSection] = Field(min_length=1)
+    extraction_coverage: ExtractionCoverage | None = None
 
 
 class SourceIndex(Contract):
@@ -81,6 +83,8 @@ class Finding(Contract):
     evidence: list[Evidence] = Field(min_length=1)
     illustration: str = ""
     illustration_limit: str = ""
+    claim_contract: ClaimContract | None = None  # Legacy documents remain readable, never implicitly upgraded.
+    supporting_contracts: list[ClaimContract] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def explain_illustration_limits(self):
@@ -103,6 +107,9 @@ class ResearchDossier(Contract):
     findings: list[Finding] = Field(min_length=1, max_length=120)
     coverage: list[QuestionCoverage]
     open_questions: list[NonEmpty]
+    evidence_version: str = ""
+    source_assessments: list[SourceAssessment] = Field(default_factory=list)
+    synthesis: list[SynthesisRelation] = Field(default_factory=list, max_length=40)
 
 
 class ReviewIssue(Contract):

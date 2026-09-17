@@ -8,7 +8,7 @@ from urllib.parse import unquote
 from podcast_automate.downloads import episode_filename, podcast_download, podcast_zip
 from podcast_automate.errors import AppError
 from podcast_automate.storage import digest, write_json, write_yaml
-from tests.test_scripting import example_script
+from tests.script_fixtures import example_script
 from tests import test_studio
 
 

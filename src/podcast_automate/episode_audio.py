@@ -13,6 +13,7 @@ from .errors import AppError
 from .models import EpisodeScript, RunManifest, StageRecord
 from .runner import execute_stages, manifest_path, outputs_valid
 from .script_models import SeriesPlan
+from .series_review import load_series_review, require_passing_series, reviewed_scripts
 from .scripting import load_research, validate_script
 from .speech import AudioChoice, GEMINI_MODEL, SPEECH_VERSION, check_gemini_rows, run_gemini_tts
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_lock,
@@ -36,6 +37,10 @@ def reviewed_episode(root, config, episode):
     ):
         raise AppError("Ein vollständig geprüftes Skript wird benötigt.", code="invalid_script", status="blocked")
     plan = SeriesPlan.model_validate_json((work / "series_plan.json").read_text(encoding="utf-8"))
+    if inputs.get("series_review_version"):
+        request = json.loads((work / "script_request.json").read_text(encoding="utf-8"))
+        require_passing_series(load_series_review(work, plan, reviewed_scripts(work, plan, request.get("episode")),
+                                                  manifest.input_hash))
     entry = next((e for e in plan.episodes if e.episode_id == episode), None)
     if entry is None or episode not in latest["episode_ids"]:
         raise AppError("Für diese Folge fehlt ein geprüftes Skript.", code="unknown_episode", status="blocked")

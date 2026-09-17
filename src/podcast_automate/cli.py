@@ -19,6 +19,7 @@ from .runner import manifest_path
 from .research import run_research
 from .research_models import RESEARCH_SCHEMAS
 from .script_models import SCRIPT_SCHEMAS
+from .series_review import SeriesReview
 from .teaching import TEACHING_SCHEMAS
 from .scripting import run_script
 from .storage import init_project, load_project, read_yaml, write_json
@@ -140,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             code = 0
         elif args.command == "schemas":
             for name, model in (SCHEMAS | RESEARCH_SCHEMAS | SCRIPT_SCHEMAS | TEACHING_SCHEMAS |
-                                {"dialogue_polish_review": DialoguePolishReview}).items():
+                                {"dialogue_polish_review": DialoguePolishReview, "series_review": SeriesReview}).items():
                 write_json(args.output_dir / f"{name}.schema.json", model.model_json_schema())
             data = {"status": "completed", "message": f"Schemas exportiert: {args.output_dir.resolve()}"}
             code = 0

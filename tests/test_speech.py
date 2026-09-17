@@ -12,13 +12,12 @@ from pydantic import ValidationError
 
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
-from podcast_automate.runner import manifest_path
 from podcast_automate.scripting import run_script
 from podcast_automate.speech import (AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech,
                                     SPEECH_ENDPOINT, audio_catalog, split_input)
 from podcast_automate.storage import file_hash, write_json
 from podcast_automate.studio_worker import perform
-from tests import test_scripting as fixtures
+from tests import script_fixtures as fixtures
 from tests.test_audio import tone
 
 
@@ -133,9 +132,7 @@ class SpeechTests(unittest.TestCase):
 
 class GeminiEpisodeTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = fixtures.ScriptingTests()
-        self.fixture.setUp()
-        self.addCleanup(self.fixture.doCleanups)
+        self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
             run_script(self.root)
