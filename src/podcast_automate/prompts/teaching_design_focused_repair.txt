@@ -1,0 +1,10 @@
+Correct the remaining issues individually in the supplied design. For each issue, locate the missing
+explanatory step and insert the actual supported mechanism, reason or transition where the listener
+needs it. A promise to explain later is not a correction. Use the cited source passages when a
+reviewer identifies them; check their support yourself. Preserve working explanations, the approved
+scope and all episode/scene IDs. Avoid a general rewrite that loses earlier corrections. Update
+dependent objectives, concepts, example and synthesis only as needed for consistency. Return the
+complete corrected design and exactly one correction per supplied issue: copy the issue verbatim and
+quote revised_passages exactly from the corrected design to show the change. Do not claim success
+without changing the relevant text. If evidence is genuinely missing, report the precise research
+gap in the design. A fresh independent reviewer will check the complete result.

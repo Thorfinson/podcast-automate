@@ -126,3 +126,16 @@ Ein separater Modellaufruf prüft das tatsächliche Gesagte gegen die zugeordnet
 Zusätzlich beantwortet ein frischer Leseraufruf die Lernfragen nur aus dem Dialog, ohne Musterlösungen. Eine getrennte redaktionelle Prüfung erhält ausschließlich Publikum, Anspruch und Text; sie sieht weder Lehrplan noch Urteile der anderen Prüfer. Ein weiterer Prüfer bewertet alle sieben Lehrkriterien und jedes Lernziel anhand tatsächlicher Textbelege und ordnet jede vom Leser gemeldete Lücke ausdrücklich ein. Die Anwendung kontrolliert die Belege und die Vollständigkeit der Prüfungen. Ein fehlender erforderlicher Erklärungsschritt oder negatives Urteil führt zur Überarbeitung und bei fortbestehenden Problemen zur Blockierung. Fehlende Quellen für notwendige Grundlagen werden bereits vor dem Schreiben als konkrete Recherchefragen gespeichert.
 
 Die Sprechzeit ist eine Schätzung aus Wortzahl und geplanten Pausen: Planungswert 130 Wörter pro Minute, zusätzlich eine langsame Vergleichsschätzung mit 100. Ein Skript unter 85 Prozent seiner geplanten Dauer wird zur inhaltlichen Überarbeitung zurückgegeben. Diese Prüfung erkennt ein grobes Verfehlen des Umfangs; sie beweist keine Erklärungstiefe. Die tatsächliche Länge steht erst nach der Spracherzeugung fest und muss vor einem späteren Audioexport separat gegen die 30-Minuten-Grenze geprüft werden. Die langsame Vergleichsschätzung ist keine gemessene Dauer und begrenzt den Text nicht zusätzlich. Ein bestandener Modellreview ersetzt weder die Leseprüfung noch die Hörprüfung. Der Serienentwurf ist eine redaktionelle Planung; die zusätzliche Gesamtprüfung bewertet die finalen Skripte, nicht die Hörwirkung der produzierten Serie. Die menschliche Abnahme bleibt ein weiterer Arbeitsschritt. Ein öffentliches Veröffentlichen findet nicht statt.
+
+## Modellaufrufe je Folge
+
+Ein Skriptlauf benötigt ohne Reparaturen mindestens einen Aufruf für das Inhaltsverzeichnis, neun Aufrufe je Folge und bei vollständigen Serien einen Aufruf für die Serienprüfung:
+
+| Stufe | Aufrufe je Folge | Zweck |
+| --- | --- | --- |
+| `teaching` | 2 | Lehrkonzept und unabhängige Prüfung des Konzepts |
+| `writing` | 1 | Dialogentwurf |
+| `polishing` | 2 | Sprachliche Überarbeitung und Vorher-/Nachher-Vergleich |
+| `review` | 4 | Quellenprüfung, Leseprüfung, redaktionelle Prüfung, Lehrprüfung |
+
+Jede zurückgewiesene Fassung kostet weitere Aufrufe: bis zu drei Skriptreparaturen mit erneuter Prüfung, zwei Polishing-Korrekturen, zwei Lehrplan-Überarbeitungen und eine gezielte Korrekturrunde sowie bis zu drei Nachrecherchen je Folge. Vor jeder kostenpflichtigen Stufe berechnet der Lauf die Mindestzahl verbleibender Aufrufe aus den noch nicht fertigen Folgen und speichert sie unter `runs/<run_id>/budget_projection.json`. Reicht das genehmigte Limit dafür nicht, stoppt der Lauf mit `script_budget_insufficient`, bevor Geld ausgegeben wird; fertige Zwischenstände bleiben erhalten, und nach einer ausdrücklichen Erhöhung des Aufruflimits setzt `resume` fort. Das Studio zeigt die Prognose neben dem Zähler der Modellaufrufe an. Der Standard von 150 Aufrufen je Lauf reicht damit für etwa zwölf Folgen ohne Reparaturen; längere Serien oder viele Korrekturen benötigen ein höheres Limit.

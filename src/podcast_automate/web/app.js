@@ -773,8 +773,11 @@ function renderJob() {
   if(destination!==null&&destination!==undefined&&destination!==step)box.innerHTML+=`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`;
   if(j?.sample)box.innerHTML+=`<p>Hörprobe: ${escape(j.sample.voice)} · ${escape(j.sample.language)}</p><audio controls preload="none" src="${mediaUrl(j.sample.audio)}"></audio><div class="actions"><a href="${mediaUrl(j.sample.audio)}" target="_blank" rel="noopener">Hörprobe separat öffnen</a><a href="${mediaUrl(j.sample.audio)}" download>MP3 herunterladen</a></div>`;
   if(j?.action==="audio_samples"&&j?.progress?.current_voice&&active)box.innerHTML+=`<p>Aktuelle Stimme: ${escape(j.progress.current_voice)}</p>`;
-  if(Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0)
-    box.innerHTML+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}</p>`;
+  if(Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0){
+    const projection=j.progress.budget_projection;
+    const outlook=Number.isSafeInteger(projection?.minimum_remaining_calls)?` · mindestens ${projection.minimum_remaining_calls} weitere nötig${projection.feasible===false?" – Limit reicht nicht":""}`:"";
+    box.innerHTML+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}${escape(outlook)}</p>`;
+  }
   box.innerHTML+=`<div class="model-observability">${renderStatusSummary(j)}${renderModelTrace(j)}</div>`;
   if(j?.progress?.phase==="research"){
     const quality=j.progress.research_quality;

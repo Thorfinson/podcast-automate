@@ -12,6 +12,7 @@ from . import __version__
 from .doctor import inspect
 from .errors import AppError
 from .episode_audio import run_episode_audio
+from .logs import configure_logging, logger, release_logging
 from .models import RuntimeSettings, SCHEMAS, TopicBrief
 from .polishing import DialoguePolishReview
 from .runner import run_probe, status
@@ -112,11 +113,23 @@ def emit(data: dict, as_json: bool):
         print("Projektkonfiguration geändert; für neue Eingaben eine neue Probe starten.")
     if data.get("invalid_completed_stages"):
         print("Artefakte fehlen oder wurden geändert: " + ", ".join(data["invalid_completed_stages"]))
+    if data.get("failure_records"):
+        print("Technische Fehlerprotokolle: " + ", ".join(data["failure_records"]))
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_path(Path.cwd())
+    project_dir = getattr(args, "project_dir", None)
+    log_path = project_dir / "logs/pla.log" if isinstance(project_dir, Path) and project_dir.is_dir() else None
+    configure_logging(log_path)
+    try:
+        return run_command(args)
+    finally:
+        release_logging(log_path)
+
+
+def run_command(args) -> int:
     try:
         if args.command == "studio":
             from .studio import serve
@@ -201,7 +214,8 @@ def main(argv: list[str] | None = None) -> int:
         emit({"status": "blocked", "code": "invalid_configuration",
               "message": f"Ungültige Daten: {errors}"}, args.json_output)
         return 1
-    except OSError:
+    except OSError as exc:
+        logger("cli").error("Dateizugriff fehlgeschlagen: %s", exc, exc_info=exc)
         emit({"status": "failed", "code": "filesystem_error",
               "message": "Dateizugriff fehlgeschlagen; Pfad und Schreibrechte prüfen."}, args.json_output)
         return 1

@@ -1,0 +1,4 @@
+Account for the approved call allowance: each task needs at least an answer and independent review,
+with further calls for scope review, synthesis and final audits. Keep coherent obligations together,
+but never omit obligations or weaken criteria to fit the allowance. An infeasible plan will be saved
+and blocked before answering.

@@ -1,0 +1,4 @@
+This is an editorial revision of the existing script below. Preserve the episode's subject, chapter
+order, supported findings and useful example; apply the user's feedback and current explanation
+style. Do not replan the series, add research or pad toward the old target duration. Keep stable IDs
+where useful; remove redundant segments if needed.

@@ -71,7 +71,7 @@ class TeachingTests(unittest.TestCase):
                 result.research_gaps = [ResearchGap(question="How is the score learned?", why_needed="The requested learning mechanism has no evidence.")]
             return result, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
-             patch("podcast_automate.scripting.research_foundations", side_effect=AppError(
+             patch("podcast_automate.script_pipeline.research_foundations", side_effect=AppError(
                  "No additional evidence found.", code="teaching_research_required", status="blocked")):
             run = run_script(self.root)
             call_count = len(self.fixture.calls)
@@ -101,7 +101,7 @@ class TeachingTests(unittest.TestCase):
                     assessment.kind = "editorial_context"
             return result, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
-             patch("podcast_automate.scripting.research_foundations", side_effect=AssertionError("No web search for internal context")):
+             patch("podcast_automate.script_pipeline.research_foundations", side_effect=AssertionError("No web search for internal context")):
             run = run_script(self.root)
         self.assertEqual(run.status, "completed")
         self.assertEqual(reviews, 2)

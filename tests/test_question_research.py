@@ -248,7 +248,7 @@ class QuestionResearchTests(unittest.TestCase):
                 raise KeyboardInterrupt("Power interruption between downloads")
             downloaded.append(candidate.url)
             return import_source(candidate, *args)
-        with patch("podcast_automate.question_research.import_source", side_effect=interrupted):
+        with patch("podcast_automate.question_answering.import_source", side_effect=interrupted):
             with self.assertRaises(KeyboardInterrupt):
                 engine.research_task(task)
         used = self.download.call_count

@@ -14,6 +14,7 @@ from . import __version__
 from .audio import assemble, run_tts
 from .codex import CodexAdapter
 from .errors import AppError
+from .logs import failure_records, logger, record_failure
 from .models import EpisodeScript, Failure, RunManifest, StageRecord, now
 from .storage import (digest, file_hash, inside, load_project, project_lock,
                       read_yaml, write_json, write_yaml)
@@ -54,7 +55,8 @@ def status(root: Path, run_id: str | None = None) -> dict:
     config = load_project(root)
     if run_id is None and not (root / "runs/latest.json").exists():
         return {"topic": config.topic, "status": "not_started", "run": None}
-    manifest = RunManifest.model_validate(read_yaml(manifest_path(root, run_id)))
+    path = manifest_path(root, run_id)
+    manifest = RunManifest.model_validate(read_yaml(path))
     return {
         "topic": config.topic, "status": manifest.status,
         "project_changed": manifest.project_hash != digest(config.model_dump(mode="json")),
@@ -63,6 +65,7 @@ def status(root: Path, run_id: str | None = None) -> dict:
             name for name, record in manifest.stages.items()
             if record.status == "completed" and not outputs_valid(root, record)
         ],
+        "failure_records": [f"runs/{manifest.run_id}/failures/{name}" for name in failure_records(path.parent)],
     }
 
 
@@ -175,9 +178,15 @@ def execute_stages(root: Path, manifest: RunManifest, path: Path, actions: dict,
             save()
             raise
         except (AppError, OSError, ValueError, KeyError, TypeError, ValidationError) as exc:
-            error = exc if isinstance(exc, AppError) else AppError(
-                "Lokale Verarbeitung fehlgeschlagen; Eingaben und Dateien prüfen.",
-                code="invalid_local_data")
+            receipt = record_failure(path.parent, f"{name}_{record.attempts}", exc)
+            location = f" Technische Details: {receipt.relative_to(root).as_posix()}" if receipt else ""
+            if isinstance(exc, AppError):
+                error = exc
+                logger("runner").warning("Stufe %s angehalten (%s): %s", name, exc.code, exc)
+            else:
+                error = AppError("Lokale Verarbeitung fehlgeschlagen; Eingaben und Dateien prüfen." + location,
+                                 code="invalid_local_data")
+                logger("runner").error("Stufe %s fehlgeschlagen: %s: %s", name, type(exc).__name__, exc, exc_info=exc)
             record.status = manifest.status = error.status
             record.error = Failure(code=error.code, message=str(error))
             save()

@@ -1,0 +1,7 @@
+Repair only the invalid parts of this existing outline; preserve its scope, facts and valid scenes.
+Dependencies must use dossier finding IDs, never episode IDs. For each dependency, compare the FIRST
+scene introducing each finding across the whole series. A later recap does not fix an earlier
+forward reference. Move the actual explanation of the prerequisite before its use, adapting
+transitions and episode prerequisites as needed. Do not merely relabel finding IDs, attach a
+prerequisite ID to an unrelated scene or remove a genuine dependency to pass validation. Check every
+dependency after the edit. Return the complete corrected plan.

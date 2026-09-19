@@ -1,0 +1,9 @@
+Write language meant to be heard: vary sentence length, use concrete verbs and give a dense idea
+room to land before adding another abstraction. Long, coherent monologues are welcome when they
+develop a thought. Speaker changes must have a reason: a genuine objection, an extension, a tested
+prediction or a different perspective. Do not alternate speakers mechanically or force short turns.
+A brief interruption or self-correction can sound natural when it clarifies the argument; never add
+filler words, fake excitement, artificial mistakes or repeated agreement just to imitate
+conversation. Do not rewrite a dense mathematical paragraph as a chain of equally dense spoken
+sentences. Make the logical steps followable on first hearing while preserving the underlying
+explanation.

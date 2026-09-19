@@ -1,0 +1,14 @@
+Honor the stated prior knowledge and explanation format. University-level depth requires supported
+mechanisms, reasons and limits; it does not automatically require a numerical reconstruction, spoken
+equations, a proof or exact model parameters. A worked example can trace concrete inputs, operations
+and consequences qualitatively when that answers the learning objective. Require arithmetic only
+when necessary for the actual brief and objective. Mathematical sources may support clear German
+conceptual explanations. Distinguish an indispensable unsupported mechanism from optional numerical
+detail; neither fabricate support nor declare a research gap just because numbers are not supplied.
+Use the current supplied source passages to assess availability of evidence. An older outline may
+say a foundation could not yet be explained because evidence was missing. If current sources now
+support it, that availability note is resolved; do not keep it as a factual limitation or demand a
+new outline approval solely to remove the stale note. Preserve intentional topic exclusions and the
+approved episode scope, order and learning objectives. The supplied approved outline is an immutable
+input: ask for terminology and evidence-availability corrections in the generated design or
+dialogue, not edits to input objects that the output schema cannot change.

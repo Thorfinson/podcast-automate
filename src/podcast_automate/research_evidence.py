@@ -2,39 +2,14 @@
 from collections import Counter
 import re
 
+from .prompts import fragment
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .storage import digest
 
-EVIDENCE_INSTRUCTIONS = (
-    "For every finding supply a claim_contract: distinguish source definitions/theory, empirical evidence and "
-    "our editorial synthesis; preserve relation strength, population/setting/time scope, qualifications and "
-    "normalized quantities with units and direction. No invented measurements. For uncertainty give the "
-    "supported unresolved scientific question, not an access or extraction failure. "
-    "In a review return finding_support exactly once for EVERY finding, even when there are no issues. "
-    "Judge every clause against the full passages, not just the short anchor. List unsupported clauses and "
-    "explain source suitability for this particular assertion. contract_preserved checks the statement, "
-    "claim_contract and any verified answer/before version together, including attribution and numerical meaning. "
-    "Return one source_assessment for each cited source. Ground roles, work identity/version, shared study or "
-    "dataset, methodology, group, population, geography and period in evidence_refs. Use empty strings/unknown "
-    "for unavailable properties; a different URL, publisher or author list does not establish independence. "
-    "An original definition can support terminology without an empirical test; a theory's own exposition "
-    "does not establish its empirical validity. Only mark independently_tested with cited distinct works and "
-    "known independent evidence families. A source can be useful without a DOI. "
-    "Inspect extraction_coverage: missing pages or uncertain tables/equations are operational limitations, "
-    "not evidence of absence. Do not infer precise results from incomplete extraction. "
-)
+EVIDENCE_INSTRUCTIONS = fragment("evidence_instructions")
 
-SYNTHESIS_INSTRUCTIONS = (
-    "Populate synthesis only for material comparisons needed by the brief (bounded, not every pair). Name "
-    "actual finding IDs, the comparison dimension, population/time/measurement conditions and evidence_refs. "
-    "Distinguish contradiction, conditional_difference, no_material_conflict and insufficient_overlap. "
-    "Declare comparability: only same_conditions supports a direct contradiction; different populations, "
-    "time scales or measurements call for conditional_difference or insufficient_overlap. "
-    "Do not manufacture controversy. Label our comparison editorial_synthesis unless a source actually "
-    "performs it. Preserve unresolved scientific disagreements as synthesis relations and qualified findings; "
-    "open_questions is for missing work required by this brief, not all remaining scientific uncertainty. "
-)
+SYNTHESIS_INSTRUCTIONS = fragment("synthesis_instructions")
 
 PROFILES = {
     "definition": "Original definition, conceptual scope and distinctions; no artificial empirical test.",

@@ -5,6 +5,8 @@ from unittest.mock import patch
 from podcast_automate.errors import AppError
 from podcast_automate.research import reserve_call
 from podcast_automate.run_budget import approve_model_call_limit, effective_limits
+from podcast_automate.script_budget import calls_per_episode
+from podcast_automate.script_models import ScriptIssue, ScriptReview
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
 from podcast_automate.studio_progress import script_progress
@@ -28,7 +30,8 @@ class RunBudgetTests(unittest.TestCase):
         write_json(self.work / "budget.json", {"model_calls": 40, "search_rounds": 2})
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
             blocked = run_script(self.root, resume=True, approved_plan_hash=plan_hash)
-            self.assertEqual(blocked.stages["teaching"].error.code, "research_budget_exhausted")
+            # The used allowance equals the limit: the run stops before the first paid teaching call.
+            self.assertEqual(blocked.stages["teaching"].error.code, "script_budget_insufficient")
             protected = [self.root / "project.yaml", self.work / "plan_approval.json", self.work / "inputs.json",
                          self.work / "script_request.json", self.work / "budget.json"]
             before = {p: file_hash(p) for p in protected}
@@ -40,20 +43,58 @@ class RunBudgetTests(unittest.TestCase):
         counts = json.loads((self.work / "budget.json").read_text())
         self.assertGreater(counts["model_calls"], 40)
         self.assertEqual(counts["search_rounds"], 2)
+        # Independent check of the projection table: the no-repair fixture spends exactly the projected
+        # minimum per episode plus one series review. A new model call in any stage must update STAGE_CALLS.
+        episodes = len(json.loads((self.work / "series_plan.json").read_text(encoding="utf-8"))["episodes"])
+        self.assertEqual(counts["model_calls"], 40 + calls_per_episode() * episodes + 1)
         self.assertFalse(read_yaml(self.root / "episodes/audio_review.yaml")["audio_approved"])
         self.assertEqual(script_progress(self.root, completed.model_dump(mode="json"))["model_call_limit"], 120)
         fresh = self.root / "runs/run_fresh"
         self.assertEqual(effective_limits(fresh, self.fixture.config.research_limits, "0" * 64).model_calls, 40)
 
-    def test_running_worker_reads_new_allowance_before_its_next_call(self):
+    def test_insufficient_allowance_blocks_before_any_paid_call_and_resumes_after_raise(self):
         write_json(self.work / "budget.json", {"model_calls": 39, "search_rounds": 0})
+        calls = []
+        def model(prompt, schema, directory, **kwargs):
+            calls.append(schema.__name__)
+            return self.fixture.model(prompt, schema, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            blocked = run_script(self.root, resume=True, approved_plan_hash=outline_hash(self.work))
+        self.assertEqual(blocked.stages["teaching"].error.code, "script_budget_insufficient")
+        self.assertEqual(calls, [], "no model call may be spent when the remaining allowance cannot finish the episodes")
+        projection = json.loads((self.work / "budget_projection.json").read_text(encoding="utf-8"))
+        self.assertFalse(projection["feasible"])
+        self.assertEqual(projection["remaining"], 1)
+        self.assertGreaterEqual(projection["minimum_remaining_calls"], 9)
+        self.assertIn("Mindestens", blocked.stages["teaching"].error.message)
+        self.assertEqual(json.loads((self.work / "budget.json").read_text())["model_calls"], 39)
+        approve_model_call_limit(self.root, self.run.run_id, 120)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root, resume=True, run_id=self.run.run_id)
+        self.assertEqual(run.status, "completed")
+        self.assertIn("TeachingPlan", calls)
+        self.assertGreater(json.loads((self.work / "budget.json").read_text())["model_calls"], 40)
+        self.assertTrue(json.loads((self.work / "budget_projection.json").read_text(encoding="utf-8"))["feasible"])
+
+    def test_running_worker_reads_a_raised_allowance_before_its_next_call(self):
+        # 30 of 40 used leaves exactly the projected minimum (one episode plus the series review), so the
+        # pre-stage gate passes. One review repair then needs more calls than the projection promised;
+        # the allowance raised during the first teaching call must be honoured without a restart.
+        write_json(self.work / "budget.json", {"model_calls": 30, "search_rounds": 0})
+        reviews = []
         def model(prompt, schema, directory, **kwargs):
             if schema is TeachingPlan:
                 approve_model_call_limit(self.root, self.run.run_id, 120)
-            return self.fixture.model(prompt, schema, directory, **kwargs)
+            value, meta = self.fixture.model(prompt, schema, directory, **kwargs)
+            if schema is ScriptReview:
+                reviews.append(schema)
+                if len(reviews) == 1:
+                    value.issues = [ScriptIssue(category="depth", segment_ids=["seg_002"], reason="Repair once.")]
+            return value, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root, resume=True, approved_plan_hash=outline_hash(self.work))
         self.assertEqual(run.status, "completed")
+        self.assertEqual(len(reviews), 2)
         self.assertGreater(json.loads((self.work / "budget.json").read_text())["model_calls"], 40)
 
     def test_approval_cannot_be_reused_for_another_run_and_does_not_raise_search_limit(self):

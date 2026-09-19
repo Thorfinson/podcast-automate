@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .runner import manifest_path
+from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-exported for callers)
 from .run_budget import effective_limits
 from .errors import AppError
 from .models import ResearchLimits
-from .storage import file_hash, read_yaml, write_json
+from .storage import read_yaml, write_json
 from .storage import read_optional_json as read
 from .studio_scripts import script_previews
 
@@ -20,35 +21,6 @@ def text_at(path):
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
-
-
-def teaching_ready(folder):
-    checkpoint = read(folder / "checkpoint.json", {})
-    review = read(folder / "review.json")
-    plan = read(folder / "plan.json")
-    return bool(plan and review is not None and not review.get("issues") and not review.get("research_gaps")
-                and checkpoint.get("design") == plan and checkpoint.get("review") == review)
-
-
-def finished(work, episode, stage):
-    if stage == "teaching":
-        return teaching_ready(work / "teaching" / episode)
-    if stage == "writing":
-        path = work / "drafts" / f"{episode}.json"
-        stamp = read(path.with_suffix(".checkpoint.json"), {})
-        return bool(path.is_file() and stamp.get("sha256") == file_hash(path))
-    if stage == "polishing":
-        folder = work / "polishing" / episode
-        result = read(folder / "result.json", {})
-        checkpoint = read(folder / "checkpoint.json", {})
-        return bool(result.get("status") == "passed" and read(folder / "script.json")
-                    and read(folder / "script.json") == checkpoint.get("candidate"))
-    if stage == "review":
-        report = read(work / "reviews" / f"{episode}.json")
-        checked = read(work / "reviewed" / f"{episode}.json")
-        checkpoint = read(work / "reviews" / f"{episode}_checkpoint.json", {})
-        return bool(checked and report is not None and not report.get("issues") and checkpoint.get("draft") == checked)
-    return False
 
 
 ACTIVITIES = {
@@ -132,6 +104,7 @@ def script_progress(root, run):
             "completed_segments": sum(row["completed"] for row in rows), "total_segments": len(rows),
             "model_calls": read(work / "budget.json", {}).get("model_calls", 0),
             "model_call_limit": model_call_limit, "episodes": rows,
+            "budget_projection": read(work / "budget_projection.json"),
             "execution": request.get("execution", {"text": "sequential", "audio": "sequential"}),
             "active_episodes": active_episodes,
             "script_previews": script_previews(root, run),

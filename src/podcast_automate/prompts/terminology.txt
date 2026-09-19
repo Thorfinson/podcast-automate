@@ -1,0 +1,10 @@
+Write the surrounding explanation in the requested language, but retain established English
+technical terms in German prose. For machine learning use Query, Key, Value, Attention, Attention
+scores, Attention weights, Softmax, Embedding, Layer Normalization, Residual Connection, Training
+and Inference. Explain each unfamiliar term's role briefly in natural German when first needed, then
+use the term consistently. Do not replace these names with literal translations such as Suchanfrage,
+Schluessel, skalierte Passung or Mischgewichte. Do not copy awkward translated terminology from
+historical dossiers or outlines. This applies to plans, research questions, explanations and review
+feedback. Keep normal German prose and ordinary words German; do not invent English jargon. Preserve
+exact source quotations and identifiers. Replacing an awkward translation with its established
+English technical name is a terminology correction, not a new factual claim.

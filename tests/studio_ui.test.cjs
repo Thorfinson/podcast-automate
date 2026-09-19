@@ -385,6 +385,13 @@ test('script progress displays the approved run call limit',()=>{
   const app=studio();
   app.run(`project={id:'test',job:{status:'running',action:'resume',started_at:new Date().toISOString(),progress:{model_calls:40,model_call_limit:120},run:{stages:{teaching:{status:'running'}}}}};renderJob();`);
   assert.ok(app.elements.get('job-status').innerHTML.includes('Modellaufrufe: 40 von 120'));
+  app.run("project.job.progress.budget_projection={minimum_remaining_calls:10,feasible:true};renderJob()");
+  let html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Modellaufrufe: 40 von 120 · mindestens 10 weitere nötig'));
+  assert.ok(!html.includes('Limit reicht nicht'));
+  app.run("project.job.progress.budget_projection={minimum_remaining_calls:81,feasible:false};renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('mindestens 81 weitere nötig – Limit reicht nicht'));
 });
 test('job duration, pending call, saved result and stale progress are distinguished',()=>{
   const app=studio(), p=workflowProject(app);

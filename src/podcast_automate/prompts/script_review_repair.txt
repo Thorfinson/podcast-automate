@@ -1,0 +1,5 @@
+Fix the concrete review issues with the smallest necessary changes. Preserve successful
+explanations, examples, limits and IDs elsewhere; do not regress earlier corrections. A scene may
+reference its assigned findings and those introduced in earlier scenes. For a finding first
+introduced in a later scene, move its explanation there. All plan and reference constraints still
+apply.
