@@ -30,7 +30,7 @@ from .research_quality import load_complete_research, requirements_for
 from .question_research import run_question_research
 from .research_ledger import read_value
 from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source
-from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash, project_lock,
+from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash, project_lock, read_text,
                       read_optional_json, read_yaml, write_json, write_yaml)
 from .text_settings import validate_model, validate_reasoning
 
@@ -434,7 +434,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 if question_path.exists():
                     # Existing Studio processes also read this envelope. Keep the new
                     # ledger visible without restarting a server holding session keys.
-                    data["research_questions"] = json.loads(question_path.read_text(encoding="utf-8"))
+                    # A search call reports from outside the ledger lock while another worker may be
+                    # saving the ledger; the read outlasts that rename.
+                    data["research_questions"] = json.loads(read_text(question_path))
                 if round_number is not None:
                     data["research_round"] = round_number
                 write_json(work / "research_activity.json", data)

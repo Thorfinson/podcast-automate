@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from statistics import median
 
 from .errors import AppError
-from .storage import digest, read_optional_json, write_json
+from .storage import digest, read_optional_json, read_text, write_json
 
 # Measured cost of an ordinary task with evidence contracts: reading decisions, an answer, one or
 # two reviews and the rejected shapes in between. The earlier 5 came from the Codex pipeline
@@ -195,7 +195,8 @@ def remaining_calls(state, folder):
 
 def budget_projection(work, state, limits, request=None, *, root=None):
     path = work / "budget.json"
-    used = json.loads(path.read_text(encoding="utf-8")).get("model_calls", 0) if path.exists() else 0
+    # Another worker's call reservation may be rewriting the file at this instant.
+    used = json.loads(read_text(path)).get("model_calls", 0) if path.exists() else 0
     questions, closing = remaining_calls(state, work / "question_research")
     minimum = len(questions | closing | ({request} if request else set()))
     remaining = max(0, limits.model_calls - used)

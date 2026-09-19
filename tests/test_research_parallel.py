@@ -8,6 +8,7 @@ from collections import Counter
 from unittest.mock import patch
 
 from podcast_automate.errors import AppError
+from podcast_automate.execution import MAX_PARALLEL
 from podcast_automate.question_research import QuestionResearch
 from podcast_automate.question_scope import QuestionScopeReview, pending_task
 from podcast_automate.research import run_research
@@ -66,6 +67,9 @@ class ParallelResearchCase(fixtures.ResearchProjectCase):
 
     def setUp(self):
         super().setUp()
+        # The plan is sized to the worker cap: a rendezvous of every task needs a worker each, and a cap
+        # that no longer matches must fail here, not as a barrier timeout five seconds into a test.
+        self.assertEqual(len(TASKS), MAX_PARALLEL, "resize TASKS together with MAX_PARALLEL")
         write_json(self.root / "studio/execution.json", PARALLEL)
         self.work = self.root / "runs/run_test"
         self.index = None
@@ -143,7 +147,7 @@ class IndependentTasksTests(ParallelResearchCase):
         with patch(MODEL, side_effect=self.model):
             run = run_research(self.root)
         self.assertEqual(run.status, "completed", run.model_dump())
-        self.assertEqual(self.probe.peak, 3)
+        self.assertEqual(self.probe.peak, MAX_PARALLEL, "every worker of the cap was inside the model at once")
         work = self.work_of(run)
         # Discovery, plan and scope; one reading decision and one review per task; dossier, source review, assessment.
         self.assertEqual(len(self.calls), 3 + 2 * 3 + 3)
@@ -229,7 +233,7 @@ class SequentialModeTests(ParallelResearchCase):
         with patch(MODEL, side_effect=self.model):
             parallel = run_research(other)
         self.assertEqual(parallel.status, "completed", parallel.model_dump())
-        self.assertEqual(self.probe.peak, 3)
+        self.assertEqual(self.probe.peak, len(TASKS))
         self.assertEqual(len(self.calls), 12)
         self.assertEqual(self.receipts(other / "runs" / parallel.run_id), self.receipts(work))
 
@@ -360,7 +364,7 @@ class PlanGateTests(ParallelResearchCase):
         with patch(MODEL, side_effect=self.model):
             resumed = run_research(self.root, resume=True, plan_review="required")
         self.assertEqual((resumed.status, resumed.run_id), ("completed", first.run_id))
-        self.assertEqual(self.probe.peak, 3)
+        self.assertEqual(self.probe.peak, len(TASKS))
         self.assertEqual(len(self.calls), 12)
 
 
