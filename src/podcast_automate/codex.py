@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .prompts import instructions
 from .errors import AppError
-from .call_activity import CallActivity
+from .call_activity import CallActivity, parsed_json, write_rejected_output
 from .codex_stream import run_app_server
 from .models import RuntimeSettings, TextProbeOutput
 from .process import STALL_TIMEOUT_SECONDS, run_process
@@ -212,12 +212,18 @@ class CodexAdapter:
                        "exit_code": result.returncode, "model": self.settings.codex_model,
                        "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version})
             raise failure
+        text = None
         try:
-            output = output_type.model_validate_json(response_file.read_text(encoding="utf-8"))
+            text = response_file.read_text(encoding="utf-8")
+            output = output_type.model_validate_json(text)
         except (OSError, ValueError, ValidationError) as exc:
             activity.finish("invalid_model_output")
-            raise AppError("Codex hat keine gültige strukturierte Antwort geliefert.",
-                           code="invalid_model_output") from exc
+            failure = AppError("Codex hat keine gültige strukturierte Antwort geliefert.", code="invalid_model_output")
+            write_rejected_output(directory, exc, {
+                "code": failure.code, "message": str(failure), "exit_code": result.returncode,
+                "model": self.settings.codex_model, "reasoning_effort": self.reasoning_effort,
+                "prompt_version": prompt_version}, payload=parsed_json(text), text=text)
+            raise failure from exc
         finally:
             response_file.unlink(missing_ok=True)
         if search and not search_requests:

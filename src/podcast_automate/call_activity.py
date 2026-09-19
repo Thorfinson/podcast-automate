@@ -5,6 +5,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from pydantic import ValidationError
+
 from .model_trace import ModelTrace
 from .models import now
 from .storage import write_json
@@ -276,3 +278,36 @@ class CallActivity:
         self.diagnostics.update(status=status, ended_at=now())
         self._save_diagnostics(force=True)
         self.trace.finish()
+
+
+def parsed_json(text):
+    """The JSON value in ``text``, or None when there is none to keep."""
+    if not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def validation_details(error):
+    """Field paths and messages of a schema rejection; never the rejected values or provider text."""
+    if isinstance(error, ValidationError):
+        return [{"loc": [str(part) for part in item.get("loc", ())], "msg": str(item.get("msg", "")),
+                 "type": str(item.get("type", ""))}
+                for item in error.errors(include_url=False, include_context=False, include_input=False)]
+    return [{"loc": [], "msg": str(error), "type": type(error).__name__}]
+
+
+def write_rejected_output(directory, error, receipt, *, payload=None, text=None):
+    """The receipts of a schema-rejected model answer, so the defect can be diagnosed after the run.
+
+    ``failure.json`` carries the receipt plus the offending fields; the answer itself goes to
+    ``rejected_output.json`` (parsed) or ``rejected_output.txt`` (unparseable). It is the model's
+    output, kept exactly as an accepted answer is kept in ``response.json``; provider text stays out.
+    """
+    write_json(directory / "failure.json", {**receipt, "validation_errors": validation_details(error)})
+    if payload is not None:
+        write_json(directory / "rejected_output.json", payload)
+    elif text:
+        (directory / "rejected_output.txt").write_text(text, encoding="utf-8")
