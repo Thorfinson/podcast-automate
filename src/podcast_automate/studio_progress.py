@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .runner import manifest_path
 from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-exported for callers)
-from .run_budget import effective_limits
+from .run_budget import accepted_gaps, effective_limits
 from .errors import AppError
 from .models import ResearchLimits
 from .storage import read_yaml, write_json
@@ -124,7 +124,21 @@ def research_progress(root, run):
     budget = read(work / "budget.json", {})
     snapshot = read_yaml(work / "project_snapshot.yaml") if (work / "project_snapshot.yaml").exists() else {}
     limits = ResearchLimits.model_validate(snapshot.get("research_limits", {}))
-    model_call_limit = effective_limits(work, limits, run.get("input_hash")).model_calls
+    effective = effective_limits(work, limits, run.get("input_hash"))
+    if questions and isinstance(questions.get("questions"), list):
+        # An approval written while no worker runs is shown at once; the ledger adopts it on resume.
+        try:
+            approved = accepted_gaps(work, run.get("input_hash"))
+        except AppError:
+            approved = {}
+        if approved:
+            for row in questions["questions"]:
+                if row.get("id") in approved and row.get("status") == "blocked" and not row.get("accepted_gap"):
+                    row.update(accepted_gap=True, accepted_reason=approved[row["id"]].get("reason", ""), outcome="accepted_gap")
+            questions["blocked"] = sum(r.get("status") == "blocked" and not r.get("accepted_gap") for r in questions["questions"])
+            questions["accepted"] = sum(bool(r.get("accepted_gap")) for r in questions["questions"])
+            if questions.get("phase") == "blocked" and not questions["blocked"]:
+                questions["phase"] = "questions"
     counts = questions or report or {}
     from .research_status import work_insight
     return {**data, "phase": "research", "unit": "questions", "research_quality": report,
@@ -132,7 +146,7 @@ def research_progress(root, run):
             "research_questions": questions,
             "total_segments": counts.get("total", 0), "completed_segments": counts.get("closed", 0),
             "model_calls": budget.get("model_calls", 0), "search_rounds": budget.get("search_rounds", 0),
-            "model_call_limit": model_call_limit,
+            "model_call_limit": effective.model_calls, "search_round_limit": effective.search_rounds,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "model_call_started_at": datetime.fromtimestamp(calls[-1].stat().st_mtime, timezone.utc).isoformat() if pending else None,
             "last_result_at": datetime.fromtimestamp(max(p.stat().st_mtime for p in responses), timezone.utc).isoformat() if responses else None}

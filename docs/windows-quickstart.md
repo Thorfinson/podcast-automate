@@ -15,7 +15,7 @@ py -3.12 -m venv .venv
 
 Die TTS-Umgebung wird in Schritt 3 eingerichtet. Der Projektordner enthält bereits ihre geplante Python-Adresse. Ein erneutes init überschreibt kein vorhandenes Projekt.
 
-## 2. Codex-Abo prüfen
+## 2. Abos prüfen: Codex und Claude
 
 Codex CLI installieren und mit dem vorhandenen ChatGPT-Konto anmelden. Die Anwendung verwendet den offiziellen CLI-Anmeldestatus; sie liest keine Zugangstokens aus. [Codex-Anmeldung](https://learn.chatgpt.com/docs/auth)
 
@@ -24,6 +24,17 @@ codex login
 .\.venv\Scripts\pla.exe text-probe .\projects\energy-models
 .\.venv\Scripts\pla.exe status .\projects\energy-models
 ~~~
+
+Als zweites Abo kann Claude Code mit einem Claude-Max-Abo dienen. Nach der Installation mit `claude auth login` über claude.ai anmelden; `claude auth status --json` muss `authMethod: "claude.ai"` zeigen. Eine API-Key-Anmeldung wird abgewiesen, weil sie einzeln abrechnen würde. Geprüft ist Claude Code 2.1.92.
+
+~~~powershell
+claude auth login
+claude auth status --json
+.\.venv\Scripts\pla.exe quota
+.\.venv\Scripts\pla.exe text-probe .\projects\energy-models --backend claude_code
+~~~
+
+`pla quota` zeigt ohne Modellaufruf das Codex-Fenster in Prozent mit Reset-Zeitpunkt und den Claude-Stand (Anmeldung, gegebenenfalls vermerkte Sperre). Im Studio und mit `--backend auto` wird vor jedem Modellaufruf so entschieden: Codex, solange es Kontingent hat, sonst Claude, sonst Pause bis zum frühesten Reset.
 
 Die Probe übergibt das Thema an Codex und erwartet validiertes JSON mit möglichen Vertiefungsfragen. Sie prüft die Anbindung und verbraucht Abo-Kontingent. Sie führt noch keine Recherche durch. Ergebnis und verfügbare Nutzungsmetadaten liegen unter probes/text/<run_id>/.
 

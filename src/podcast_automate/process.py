@@ -8,6 +8,10 @@ from pathlib import Path
 
 from .errors import AppError
 
+# A streaming model call that sends nothing for this long is treated as hung and stopped, well
+# before the absolute deadline; the caller repeats it once. Absolute deadlines stay in project.yaml.
+STALL_TIMEOUT_SECONDS = 600
+
 
 def stop_process_tree(process: subprocess.Popen) -> None:
     """Stop only this owned worker and its descendants, including new sessions."""
@@ -60,10 +64,22 @@ def _stop_tree(process: subprocess.Popen) -> None:
     process.communicate()
 
 
+def stall_error(seconds) -> AppError:
+    minutes = seconds // 60
+    duration = f"{minutes} Minuten" if seconds % 60 == 0 else f"{seconds} Sekunden"
+    return AppError(f"Der Modellaufruf hat {duration} lang keine Ausgabe geliefert und wurde als hängend beendet.",
+                    code="stall")
+
+
 def run_process(args: list[str], *, timeout: int, cwd: Path | None = None,
                 input_text: str | None = None, env: dict | None = None,
-                on_stdout_line=None, on_stderr_line=None, cancel_check=None) -> subprocess.CompletedProcess:
-    """Never pass prompts or project paths through a shell."""
+                on_stdout_line=None, on_stderr_line=None, cancel_check=None,
+                stall_timeout: int | None = None) -> subprocess.CompletedProcess:
+    """Never pass prompts or project paths through a shell.
+
+    ``stall_timeout`` applies only to processes that stream their progress on stdout: when no line
+    arrives for that long the process is stopped with ``AppError(code="stall")``.
+    """
     try:
         process = subprocess.Popen(
             args, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -74,8 +90,9 @@ def run_process(args: list[str], *, timeout: int, cwd: Path | None = None,
     except OSError as exc:
         raise AppError(f"Programm konnte nicht gestartet werden: {args[0]}",
                        code="missing_executable", status="blocked") from exc
-    if on_stdout_line is not None or on_stderr_line is not None or cancel_check is not None:
-        return _stream_process(process, input_text, timeout, args, on_stdout_line, cancel_check, on_stderr_line)
+    if any(value is not None for value in (on_stdout_line, on_stderr_line, cancel_check, stall_timeout)):
+        return _stream_process(process, input_text, timeout, args, on_stdout_line, cancel_check, on_stderr_line,
+                               stall_timeout)
     try:
         stdout, stderr = process.communicate(input_text, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -88,14 +105,18 @@ def run_process(args: list[str], *, timeout: int, cwd: Path | None = None,
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
 
-def _stream_process(process, input_text, timeout, args, callback, cancel_check, stderr_callback=None):
+def _stream_process(process, input_text, timeout, args, callback, cancel_check, stderr_callback=None,
+                    stall_timeout=None):
     """Drain both pipes while reporting JSONL events before the process completes."""
     stdout, stderr = [], []
+    last_output = [time.monotonic()]
 
-    def receive(pipe, chunks, observer=None):
+    def receive(pipe, chunks, observer=None, track=False):
         try:
             for line in pipe:
                 chunks.append(line)
+                if track:
+                    last_output[0] = time.monotonic()
                 if observer is not None:
                     try:
                         observer(line)
@@ -113,7 +134,7 @@ def _stream_process(process, input_text, timeout, args, callback, cancel_check, 
         finally:
             process.stdin.close()
 
-    threads = [threading.Thread(target=receive, args=(process.stdout, stdout, callback), daemon=True),
+    threads = [threading.Thread(target=receive, args=(process.stdout, stdout, callback, True), daemon=True),
                threading.Thread(target=receive, args=(process.stderr, stderr, stderr_callback), daemon=True),
                threading.Thread(target=send, daemon=True)]
     deadline = time.monotonic() + timeout
@@ -126,6 +147,8 @@ def _stream_process(process, input_text, timeout, args, callback, cancel_check, 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AppError("Zeitlimit erreicht; der Auftrag kann wiederaufgenommen werden.", code="timeout")
+            if stall_timeout is not None and time.monotonic() - last_output[0] > stall_timeout:
+                raise stall_error(stall_timeout)
             try:
                 process.wait(timeout=min(1, remaining))
                 break

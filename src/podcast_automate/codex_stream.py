@@ -9,11 +9,11 @@ import threading
 import time
 
 from .errors import AppError
-from .process import stop_process_tree
+from .process import stall_error, stop_process_tree
 
 
 def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
-                   model, effort, search, activity, cancel_check=None):
+                   model, effort, search, activity, cancel_check=None, stall_timeout=None):
     args = command + ["app-server", "--listen", "stdio://",
                       "-c", 'model_provider="openai"', "-c", "features.shell_tool=false",
                       "-c", "features.hooks=false", "-c", "features.apps=false"]
@@ -25,8 +25,10 @@ def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
     except OSError as exc:
         raise AppError("Codex App Server konnte nicht gestartet werden.", code="missing_executable") from exc
     inbox = queue.Queue(maxsize=256)
+    outbox = queue.Queue()
     stopped = threading.Event()
     deadline = time.monotonic() + timeout
+    last_event = time.monotonic()
     events, messages = [], {}
     thread_id = turn_id = None
     usage = None
@@ -55,16 +57,27 @@ def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
         for line in process.stderr:
             activity.observe_stderr(line)
 
-    workers = [threading.Thread(target=receive, daemon=True), threading.Thread(target=errors, daemon=True)]
+    def write():
+        # Writes happen off the event loop: a server that stops reading its stdin cannot block
+        # the deadline and stall checks with a large turn request.
+        while True:
+            value = outbox.get()
+            if value is None:
+                return
+            try:
+                process.stdin.write(json.dumps(value, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+            except (OSError, ValueError):
+                enqueue({"pla_writer_closed": True})
+                return
+
+    workers = [threading.Thread(target=receive, daemon=True), threading.Thread(target=errors, daemon=True),
+               threading.Thread(target=write, daemon=True)]
     for worker in workers:
         worker.start()
 
     def send(value):
-        try:
-            process.stdin.write(json.dumps(value, ensure_ascii=False) + "\n")
-            process.stdin.flush()
-        except (OSError, ValueError) as exc:
-            raise AppError("Codex-Stream wurde vorzeitig geschlossen.", code="codex_failed") from exc
+        outbox.put(value)
 
     def emit(value):
         events.append(value)
@@ -84,12 +97,17 @@ def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AppError("Zeitlimit des einzelnen Codex-Aufrufs erreicht.", code="timeout")
+            if stall_timeout is not None and time.monotonic() - last_event > stall_timeout:
+                raise stall_error(stall_timeout)
             try:
                 event = inbox.get(timeout=min(.2, remaining))
             except queue.Empty:
                 continue
+            last_event = time.monotonic()
             if event is None:
                 return failure({"message": "Codex app-server stream closed before turn completion"})
+            if event.get("pla_writer_closed"):
+                return failure({"message": "Codex-Stream wurde vorzeitig geschlossen."})
             # Never retain raw protocol payloads (prompts, account data, raw reasoning).
             method, params = event.get("method"), event.get("params") or {}
             if "id" in event and method:
@@ -189,6 +207,94 @@ def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
         # The process belongs to this call only. Never leave an idle app-server
         # or a cancelled model turn running after the caller has returned.
         stopped.set()
+        outbox.put(None)
+        try:
+            process.stdin.close()
+            process.wait(timeout=2)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            stop_process_tree(process)
+        for worker in workers:
+            worker.join(timeout=2)
+        process.stdout.close()
+        process.stderr.close()
+
+
+def read_rate_limits(command, *, env, timeout=20):
+    """Account type and rate-limit windows from an ephemeral app-server; no thread and no model call.
+
+    Returns ``{"account": ..., "rate_limits": ...}`` with the raw public RPC results. Raises
+    ``AppError`` when the CLI cannot start, closes the stream early or does not answer in time.
+    """
+    args = command + ["app-server", "--listen", "stdio://",
+                      "-c", 'model_provider="openai"', "-c", "features.shell_tool=false",
+                      "-c", "features.hooks=false", "-c", "features.apps=false"]
+    try:
+        process = subprocess.Popen(args, env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
+    except OSError as exc:
+        raise AppError("Codex App Server konnte nicht gestartet werden.", code="missing_executable") from exc
+    inbox = queue.Queue()
+
+    def receive():
+        try:
+            for line in process.stdout:
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    inbox.put(value)
+        finally:
+            inbox.put(None)
+
+    def drain_errors():
+        for _ in process.stderr:
+            pass
+
+    workers = [threading.Thread(target=receive, daemon=True), threading.Thread(target=drain_errors, daemon=True)]
+    for worker in workers:
+        worker.start()
+
+    def send(value):
+        try:
+            process.stdin.write(json.dumps(value, ensure_ascii=False) + "\n")
+            process.stdin.flush()
+        except (OSError, ValueError) as exc:
+            raise AppError("Codex-Stream wurde vorzeitig geschlossen.", code="codex_failed") from exc
+
+    results = {}
+    deadline = time.monotonic() + timeout
+    try:
+        send({"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "podcast_automate", "title": "Podcast Studio", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True}}})
+        while not {2, 3} <= set(results):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AppError("Codex hat den Kontingentstand nicht rechtzeitig gemeldet.", code="timeout")
+            try:
+                event = inbox.get(timeout=min(.2, remaining))
+            except queue.Empty:
+                continue
+            if event is None:
+                raise AppError("Codex app-server stream closed before the account data arrived.", code="codex_failed")
+            if "id" in event and event.get("method"):
+                send({"id": event["id"], "error": {"code": -32601, "message": "Unsupported client request"}})
+                continue
+            if "id" not in event:
+                continue
+            if "error" in event:
+                raise AppError("Codex hat die Kontingentabfrage abgewiesen.", code="codex_failed")
+            if event["id"] == 1:
+                send({"method": "initialized", "params": {}})
+                send({"id": 2, "method": "account/read", "params": {}})
+                send({"id": 3, "method": "account/rateLimits/read", "params": {}})
+            elif event["id"] in {2, 3}:
+                results[event["id"]] = event.get("result") or {}
+        return {"account": results[2].get("account") or {}, "rate_limits": results[3]}
+    finally:
         try:
             process.stdin.close()
             process.wait(timeout=2)

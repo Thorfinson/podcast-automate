@@ -14,7 +14,7 @@ from .errors import AppError
 from .call_activity import CallActivity
 from .codex_stream import run_app_server
 from .models import RuntimeSettings, TextProbeOutput
-from .process import run_process
+from .process import STALL_TIMEOUT_SECONDS, run_process
 from .storage import write_json
 from .text_settings import validate_model, validate_reasoning
 
@@ -58,8 +58,10 @@ def executable_command(executable: str) -> list[str]:
 
 
 def subscription_environment() -> dict[str, str]:
+    """A child environment that can only use the CLI's subscription login, never an API key."""
     environment = os.environ.copy()
-    for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY"):
+    for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY",
+                "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
         environment.pop(key, None)
     return environment
 
@@ -143,15 +145,17 @@ class CodexAdapter:
             args.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
         args.append("-")
         activity = CallActivity(directory, output_type.__name__, self.settings.codex_model)
+        # The exec transport reports items only when they complete, so silence is not a stall there.
+        stall_timeout = STALL_TIMEOUT_SECONDS if self.transport == "app_server" else None
         activity.diagnostic("request", prompt_chars=len(prompt), prompt_bytes=len(prompt.encode("utf-8")),
-                            timeout_seconds=self.settings.text_timeout_seconds,
+                            timeout_seconds=self.settings.text_timeout_seconds, stall_timeout_seconds=stall_timeout,
                             reasoning_effort=self.reasoning_effort, transport=self.transport)
         try:
             if self.transport == "app_server":
                 result = run_app_server(self.command(), prompt=prompt, schema=schema, response_file=response_file,
                     cwd=directory.resolve(), timeout=self.settings.text_timeout_seconds,
                     env=subscription_environment(), model=self.settings.codex_model, effort=self.reasoning_effort,
-                    search=search, activity=activity, cancel_check=self.cancel_check)
+                    search=search, activity=activity, cancel_check=self.cancel_check, stall_timeout=stall_timeout)
             else:
                 result = run_process(args, input_text=prompt, cwd=directory,
                                      timeout=self.settings.text_timeout_seconds, env=subscription_environment(),
@@ -160,16 +164,21 @@ class CodexAdapter:
         except AppError as exc:
             activity.finish(exc.code)
             response_file.unlink(missing_ok=True)
-            if exc.code != "timeout":
+            if exc.code not in {"timeout", "stall"}:
                 raise
-            seconds = self.settings.text_timeout_seconds
+            seconds = self.settings.text_timeout_seconds if exc.code == "timeout" else stall_timeout
             duration = f"{seconds // 60} Minuten" if seconds % 60 == 0 else f"{seconds} Sekunden"
-            failure = AppError(
-                f"Der einzelne Codex-Aufruf wurde nach {duration} durch das lokale Zeitlimit beendet. "
-                "Fertige Schritte sind gespeichert. Fortsetzen wiederholt den unterbrochenen Aufruf; "
-                "bereinigte technische Hinweise stehen in diagnostics.json und im Studio.", code="timeout")
+            if exc.code == "timeout":
+                message = (f"Der einzelne Codex-Aufruf wurde nach {duration} durch das lokale Zeitlimit beendet. "
+                           "Fertige Schritte sind gespeichert. Fortsetzen wiederholt den unterbrochenen Aufruf; "
+                           "bereinigte technische Hinweise stehen in diagnostics.json und im Studio.")
+            else:
+                message = (f"Der Codex-Aufruf hat {duration} lang keine Ausgabe geliefert und wurde als hängend beendet. "
+                           "Der Aufruf wird nicht angerechnet und einmal automatisch wiederholt; danach mit Fortsetzen.")
+            failure = AppError(message, code=exc.code)
             write_json(directory / "failure.json", {"code": failure.code, "message": str(failure),
-                       "timeout_seconds": seconds, "model": self.settings.codex_model,
+                       "timeout_seconds": self.settings.text_timeout_seconds, "stall_timeout_seconds": stall_timeout,
+                       "model": self.settings.codex_model,
                        "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version})
             raise failure from exc
         except BaseException:

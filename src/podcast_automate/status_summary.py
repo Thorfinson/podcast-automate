@@ -13,10 +13,11 @@ from pydantic import Field
 
 from .prompts import instructions
 from .call_activity import clean_status
-from .codex import CodexAdapter, subscription_environment
+from .codex import CodexAdapter, subscription_environment  # noqa: F401  (tests patch CodexAdapter.structured here)
 from .errors import AppError
 from .models import Contract
 from .openrouter import OpenRouterAdapter
+from .provider_pool import AdapterPool
 from .runner import manifest_path
 from .storage import digest, file_lock, load_project, write_json
 from .storage import read_optional_json as read
@@ -24,6 +25,21 @@ from .storage import read_optional_json as read
 INTERVAL_SECONDS = 180
 MAX_CALLS = 100
 SUMMARY_TIMEOUT = 90
+# The cheap status model per provider; never the production model of the run.
+STATUS_MODELS = {"codex_cli": "gpt-5.6-luna", "claude_code": "claude-haiku-4-5",
+                 "openrouter": "deepseek/deepseek-v4.1-flash"}
+
+
+def status_generation(choice):
+    """The status model of the run's provider; ``auto`` keeps both subscriptions as candidates."""
+    provider = choice.get("provider", "codex_cli")
+    if provider == "auto":
+        return {"provider": "auto", "prefer": choice.get("prefer", "codex_cli"), "candidates": {
+            "codex_cli": {"model": STATUS_MODELS["codex_cli"], "reasoning_effort": "low"},
+            "claude_code": {"model": STATUS_MODELS["claude_code"], "reasoning_effort": "low"}}}
+    if provider == "claude_code":
+        return {"provider": "claude_code", "model": STATUS_MODELS["claude_code"], "reasoning_effort": "low"}
+    return {"provider": "codex_cli", "model": STATUS_MODELS["codex_cli"], "reasoning_effort": "low"}
 
 
 class ProgressDigest(Contract):
@@ -204,11 +220,11 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
     request = read(work / ("research_request.json" if research else "script_request.json"), {})
     choice = request.get("text_generation") or read(root / "studio/text.json", {})
     provider = choice.get("provider", "codex_cli")
-    model = "deepseek/deepseek-v4.1-flash" if provider == "openrouter" else "gpt-5.6-luna"
+    model = STATUS_MODELS.get(provider)
     state.update(provider=provider, model=model, status="summarizing", calls=state.get("calls", 0) + 1)
     publish(work, state, research)
     directory = work / "status_reports" / f"summary_{state['calls']:03d}"
-    settings = load_project(root).runtime.model_copy(update={"codex_model": model, "text_timeout_seconds": SUMMARY_TIMEOUT})
+    settings = load_project(root).runtime.model_copy(update={"text_timeout_seconds": SUMMARY_TIMEOUT})
     prompt = (
         instructions("studio_status") + "\n" + json.dumps(snapshot, ensure_ascii=False))
     try:
@@ -216,8 +232,14 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
             adapter = OpenRouterAdapter(settings, model=model, api_key=api_key,
                                         max_output_tokens=1500, reasoning_effort="low")
         else:
-            adapter = CodexAdapter(settings, reasoning_effort="low", cancel_check=lambda: not active_job(root, job["id"]))
-        result, _ = adapter.structured(prompt, ProgressDigest, directory, prompt_version="studio_status.v1", search=False)
+            adapter = AdapterPool(settings, status_generation(choice),
+                                  cancel_check=lambda: not active_job(root, job["id"]), max_budget_usd=1.0)
+        result, metadata = adapter.structured(prompt, ProgressDigest, directory, prompt_version="studio_status.v1", search=False)
+        if provider != "openrouter" and isinstance(metadata, dict):
+            # An automatic run reports the subscription that actually wrote this digest.
+            provider = metadata.get("provider") or provider
+            model = metadata.get("requested_model") or model
+            state.update(provider=provider, model=model)
         known = {fact["id"] for fact in snapshot["facts"]}
         if not set(result.evidence_ids) <= known:
             raise AppError("Statusbericht nennt unbekannte Belege.", code="invalid_status_summary")

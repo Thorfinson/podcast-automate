@@ -199,6 +199,39 @@ test('status digests are escaped, distinguish stale evidence, and name the chose
   assert.equal(app.run('renderStatusSummary(project.job)'),'');
   app.run("project.job.progress.status_summary.job_id='j1';project.job.progress.status_summary.provider='codex_cli'");
   assert.ok(app.run('renderStatusSummary(project.job)').includes('Luna · Codex-Abo'));
+  app.run("project.job.progress.status_summary.provider='claude_code'");
+  const claude=app.run('renderStatusSummary(project.job)');
+  assert.ok(claude.includes('Haiku 4.5 · Claude-Abo'));
+  assert.ok(claude.includes('über dein Claude-Abo'));
+});
+
+test('automatic subscription choice shows both models, the current provider and a switch',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.text={provider:'auto',model:null,reasoning_effort:null};
+  p.job.text_generation={provider:'auto',candidates:{codex_cli:{model:'gpt-6-astra',reasoning_effort:'xhigh'},claude_code:{model:'claude-opus-5',reasoning_effort:'high'}}};
+  p.job.provider_choice={call:'call_003',provider:'claude_code',model:'claude-opus-5',mode:'auto',reason:'codex_exhausted_until x; claude_available',
+    snapshots:{codex_cli:{available:false,usable:true,resets_at:'2026-09-22T20:31:18+00:00',windows:[{window_minutes:10080,used_percent:100}]},claude_code:{available:true,usable:true}},
+    switch:{from:'codex_cli',to:'claude_code',error_code:'quota_exhausted'}};
+  app.run(`boot.capabilities={conversational_setup:true};boot.text_catalog={auto_candidates:{codex_cli:{model:'gpt-6-astra',reasoning_effort:'xhigh'},claude_code:{model:'claude-opus-5',reasoning_effort:'high'}}};project=${JSON.stringify(p)};`);
+  const brief=app.run('renderBrief()');
+  assert.ok(brief.includes('Automatisch · Codex-Abo, sonst Claude-Abo'));
+  assert.ok(brief.includes('claude-opus-5 (high)'));
+  assert.ok(brief.includes('gpt-6-astra (xhigh)'));
+  const status=app.run('renderRunTextChoice(project.job)');
+  assert.ok(status.includes('Automatische Abo-Wahl'));
+  assert.ok(status.includes('Aktueller Anbieter: Claude · claude-opus-5'));
+  assert.ok(status.includes('Wechsel von Codex zu Claude'));
+  assert.ok(status.includes('Codex ohne Kontingent (Wochenfenster 100 %)'));
+  assert.ok(status.includes('Reset '));
+  assert.ok(status.includes('Claude bereit'));
+  app.run("project.job.provider_choice.provider='<script>x</script>';project.job.provider_choice.model='<b>m</b>';project.job.provider_choice.switch=null;project.job.provider_choice.snapshots={}");
+  const hostile=app.run('renderRunTextChoice(project.job)');
+  assert.ok(!hostile.includes('<script>')&&!hostile.includes('<b>'));
+  assert.ok(hostile.includes('&lt;script&gt;'));
+  app.run("project.job.provider_choice={provider:'codex_cli',model:'gpt-6-astra',mode:'fixed'}");
+  assert.ok(app.run('renderRunTextChoice(project.job)').includes('Aktueller Anbieter: Codex · gpt-6-astra (fest gewählt)'));
+  app.run("project.job.provider_choice=null");
+  assert.ok(!app.run('renderRunTextChoice(project.job)').includes('Aktueller Anbieter'));
 });
 
 test('current and previous dossiers render readable Markdown without changing their contents',()=>{
@@ -265,7 +298,9 @@ test('model presets remain distinct and sending one carries its explicit choice 
   const app=studio();
   const p=app.run(`({id:'test',config:boot.defaults,chat:[]})`);
   await app.run(`selectProject('test',${JSON.stringify(p)})`);
-  const presets=[{id:'codex_astra',label:'Astra · Codex-Abo',provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'},
+  const presets=[{id:'auto_subscriptions',label:'Automatisch · Codex, sonst Claude',provider:'auto',model:null,reasoning_effort:null},
+    {id:'codex_astra',label:'Astra · Codex-Abo',provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'},
+    {id:'claude_opus_sub',label:'Opus 5 · Claude-Abo',provider:'claude_code',model:'claude-opus-5',reasoning_effort:'high'},
     {id:'openrouter_astra',label:'Astra · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra',reasoning_effort:null},
     {id:'openrouter_astra_pro',label:'Astra Pro · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra-pro',reasoning_effort:null},
     {id:'openrouter_fable',label:'Claude Fable 5.1 · OpenRouter',provider:'openrouter',model:'anthropic/claude-fable-5.1',reasoning_effort:null},
@@ -273,7 +308,8 @@ test('model presets remain distinct and sending one carries its explicit choice 
   app.run(`boot.capabilities={conversational_setup:true};boot.text_catalog={presets:${JSON.stringify(presets)}};`);
   const html=app.run('renderBrief()');
   for(const preset of presets)assert.ok(html.includes(`data-text-preset="${preset.id}"`));
-  assert.ok(html.includes('Live-Recherche bleibt bei Codex'));
+  assert.ok(html.includes('Live-Recherche läuft über das gewählte Abo'));
+  assert.ok(html.includes('springt bei leerem Kontingent auf Claude um'));
   app.responses.set('/api/projects/test',p);
   await app.run(`sendSetupMessage('Nutze DeepSeek mit max','openrouter_deepseek')`);
   const request=app.requests.find(r=>r.path==='/api/projects/test/start');
@@ -944,4 +980,48 @@ test('individual download fallback names stay short even before a server restart
   assert.ok(name.length<120);
   assert.ok(name.includes('Folge 12'));
   assert.ok(!name.includes('…'));
+});
+
+test('blocked research questions offer an explicit gap approval only while no job runs',()=>{
+  const app=studio();
+  const ledger={closed:1,total:2,accepted:0,phase:'blocked',active_task:null,
+    budget_projection:{feasible:true,used:5,remaining:10,minimum_remaining_calls:2,closing_calls:2,expected_remaining_calls:7,expected_calls_per_task:5},
+    questions:[{id:'task_definition',question:'Was ist Energie?',status:'verified',activity:'ok',steps:2,read_sections:3,acceptance:['x'],answer:'Antwort',findings:[],sources:[],limits:[],reopened:0},
+      {id:'task_empirical',question:'Gibt es <Belege>?',status:'blocked',outcome:'budget_block',reason:'Das Web-Suchbudget ist ausgeschöpft.',activity:'Beleg fehlt',steps:4,read_sections:2,acceptance:['y'],reopened:0}]};
+  app.run(`project={id:'p',job:{id:'j1',status:'blocked',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12,model_call_limit:150,model_calls:5}}};renderJob();`);
+  let html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('data-action="accept-gap"'));
+  assert.ok(html.includes('data-task-id="task_empirical"'));
+  assert.ok(html.includes('data-run-id="run_x"'));
+  assert.ok(html.includes('Suchrunden auf 18 erhöhen'));
+  assert.ok(html.includes('Erfahrungsgemäß etwa 7 Aufrufe'));
+  assert.ok(html.includes('Gibt es &lt;Belege&gt;?'));
+  assert.ok(!html.includes('<Belege>'));
+  assert.ok(!html.includes('>Fortsetzen<'));
+  app.run("project.job.status='running';renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(!html.includes('data-action="accept-gap"'));
+  app.run("project.job.status='blocked';const q=project.job.progress.research_questions;q.questions[1].accepted_gap=true;q.questions[1].accepted_reason='Nicht nötig';q.accepted=1;q.blocked=0;q.phase='questions';renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Als Lücke akzeptiert'));
+  assert.ok(html.includes('1 als Lücke akzeptiert'));
+  assert.ok(html.includes('Nicht nötig'));
+  assert.ok(!html.includes('data-action="accept-gap"'));
+  assert.ok(html.includes('>Fortsetzen<'));
+  app.run("project.job.progress.research_questions.budget_projection.feasible=false;project.job.progress.research_questions.budget_projection.shortfall=3;renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('data-action="approve-calls"'));
+  assert.ok(html.includes('Aufruflimit auf 12 erhöhen'));
+});
+
+test('a paused job announces its automatic resume and a silent worker is flagged',()=>{
+  const app=studio();
+  app.run("project={id:'p',job:{id:'j2',status:'waiting_for_quota',started_at:new Date().toISOString(),run:{run_id:'run_y',kind:'research',stages:{}},auto_resume_at:'2026-09-22T20:31:18+00:00'}};renderJob();");
+  assert.ok(app.elements.get('job-status').innerHTML.includes('Automatische Fortsetzung geplant'));
+  app.run("project.job.status='running';project.job.auto_resume_at=null;project.job.heartbeat_age_seconds=900;renderJob();");
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('seit 15 Min. keinen Fortschritt'));
+  assert.ok(!html.includes('Automatische Fortsetzung'));
+  app.run("project.job.heartbeat_age_seconds=4;renderJob();");
+  assert.ok(!app.elements.get('job-status').innerHTML.includes('keinen Fortschritt'));
 });

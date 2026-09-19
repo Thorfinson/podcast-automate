@@ -2,18 +2,20 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import ipaddress
+import json
+import os
 import re
 import socket
+import subprocess
+import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
-
-from pypdf import PdfReader
 
 from .errors import AppError
 from .models import now
@@ -23,6 +25,10 @@ from .storage import file_hash, write_json
 MAX_BYTES = 20 * 1024 * 1024
 MAX_TEXT = 1_000_000
 EXTRACTION_VERSION = "sources.v2-fonts"
+# Parsing untrusted PDFs happens in a child process with a wall-clock limit (see pdf_text).
+PDF_TIMEOUT_SECONDS = 120
+# Name resolution has no timeout of its own; a hung resolver must not hang the worker.
+DNS_TIMEOUT_SECONDS = 10
 
 
 def canonical_url(url: str) -> str:
@@ -34,15 +40,33 @@ def canonical_url(url: str) -> str:
     return urllib.parse.urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, ""))
 
 
+def resolve(host: str):
+    """Address records for ``host`` within ``DNS_TIMEOUT_SECONDS``; a lookup that never returns
+    keeps only its own daemon thread, never the caller."""
+    outcome = []
+
+    def lookup():
+        try:
+            outcome.append(socket.getaddrinfo(host, None, type=socket.SOCK_STREAM))
+        except OSError as exc:
+            outcome.append(exc)
+
+    thread = threading.Thread(target=lookup, daemon=True)
+    thread.start()
+    thread.join(DNS_TIMEOUT_SECONDS)
+    if not outcome:
+        raise AppError("Quellenserver nicht erreichbar (DNS-Zeitlimit).", code="source_download_failed")
+    if isinstance(outcome[0], Exception):
+        raise AppError("Quellenserver nicht erreichbar (DNS).", code="source_download_failed") from outcome[0]
+    return outcome[0]
+
+
 def public_url(url: str) -> str:
     url = canonical_url(url)
     host = urllib.parse.urlsplit(url).hostname
-    try:
-        addresses = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
-            raise AppError("Die Quellenadresse verweist nicht auf einen öffentlichen Server.", code="invalid_source_url")
-    except socket.gaierror as exc:
-        raise AppError("Quellenserver nicht erreichbar (DNS).", code="source_download_failed") from exc
+    addresses = resolve(host)
+    if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
+        raise AppError("Die Quellenadresse verweist nicht auf einen öffentlichen Server.", code="invalid_source_url")
     return url
 
 
@@ -72,6 +96,9 @@ def download(url: str) -> tuple[bytes, str, str]:
                     raise AppError("Quelle überschreitet Abrufgrenzen.", code="source_too_large")
                 chunks.append(chunk)
             return b"".join(chunks), response.headers.get("Content-Type", ""), response.geturl()
+    except urllib.error.HTTPError as exc:
+        raise AppError(f"Quellenabruf fehlgeschlagen (HTTP {exc.code}).", code="source_download_failed",
+                       details={"http_status": exc.code}) from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         raise AppError(f"Quellenabruf fehlgeschlagen ({type(exc).__name__}).", code="source_download_failed") from exc
 
@@ -142,41 +169,70 @@ def sections_from_blocks(blocks: list[tuple[str, int | None]]) -> list[SourceSec
     return result
 
 
+def extract_pdf_isolated(raw: bytes) -> dict:
+    """Run the PDF parser in its own process; a hung or crashing parse is one unreadable source."""
+    command = [sys.executable, "-m", "podcast_automate.pdf_text"]
+    try:
+        completed = subprocess.run(command, input=raw, capture_output=True, timeout=PDF_TIMEOUT_SECONDS,
+                                   env=os.environ.copy(),
+                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    except subprocess.TimeoutExpired as exc:
+        raise AppError(f"PDF konnte nicht innerhalb von {PDF_TIMEOUT_SECONDS} Sekunden als Text eingelesen werden.",
+                       code="source_unreadable") from exc
+    except OSError as exc:
+        raise AppError("Der PDF-Leseprozess konnte nicht gestartet werden.", code="source_unreadable") from exc
+    if completed.returncode != 0:
+        raise pdf_failure(completed.stdout)
+    try:
+        result = json.loads(completed.stdout.decode("utf-8"))
+        if not isinstance(result, dict) or "blocks" not in result:
+            raise ValueError("unexpected parser result")
+    except ValueError as exc:
+        raise AppError("PDF konnte nicht zuverlässig als Text eingelesen werden.", code="source_unreadable") from exc
+    return result
+
+
+PDF_LIMITS = {
+    "encrypted": ("PDF ist verschlüsselt und kann nicht als Text eingelesen werden.", "source_unreadable"),
+    "too_many_pages": ("PDF hat mehr als 300 Seiten und wird nicht eingelesen.", "source_too_large"),
+    "text_too_large": ("PDF-Text überschreitet die Importgrenze von 1 MiB.", "source_too_large"),
+}
+
+
+def pdf_failure(stdout: bytes) -> AppError:
+    """The child's verdict as one actionable error: a reader limit by name, otherwise the parser's error class."""
+    try:
+        verdict = json.loads(stdout.decode("utf-8"))
+    except ValueError:
+        verdict = {}
+    if not isinstance(verdict, dict):
+        verdict = {}
+    if (message := PDF_LIMITS.get(verdict.get("reason"))):
+        return AppError(message[0], code=message[1], details={"pdf_reason": verdict["reason"]})
+    error = verdict.get("error")
+    if isinstance(error, str) and re.fullmatch(r"\w{1,64}", error):
+        return AppError(f"PDF konnte nicht zuverlässig als Text eingelesen werden ({error}).",
+                        code="source_unreadable", details={"parser_error": error})
+    return AppError("PDF konnte nicht zuverlässig als Text eingelesen werden.", code="source_unreadable")
+
+
 def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, list[SourceSection]]:
     metadata = {}
     if raw.startswith(b"%PDF-"):
+        result = extract_pdf_isolated(raw)
+        metadata = result.get("metadata") or {}
         try:
-            reader = PdfReader(io.BytesIO(raw))
-            if reader.is_encrypted or len(reader.pages) > 300:
-                raise ValueError("Encrypted PDF or more than 300 pages")
-            blocks, size = [], 0
-            coverage = {"pages_total": len(reader.pages), "pages_with_text": 0, "empty_pages": [],
-                        "suspected_image_pages": [], "suspected_table_pages": [], "suspected_equation_pages": [],
-                        "notes": ["Heuristic coverage only; table structure and equations have not been visually verified."]}
-            for number, page in enumerate(reader.pages, 1):
-                text = page.extract_text() or ""
-                if text.strip():
-                    coverage["pages_with_text"] += 1
-                else:
-                    coverage["empty_pages"].append(number)
-                    coverage["suspected_image_pages"].append(number)
-                if re.search(r"\b(table|tabelle)\s*\d|(?:\S+[ \t]{3,}){3}", text, re.I):
-                    coverage["suspected_table_pages"].append(number)
-                if re.search(r"[=∑∫√]|\b(equation|gleichung)\s*\d", text, re.I):
-                    coverage["suspected_equation_pages"].append(number)
-                size += len(text)
-                if size > MAX_TEXT:
-                    raise ValueError("PDF text too large")
-                blocks.append((text, number))
-            if reader.metadata:
-                metadata = {"title": str(reader.metadata.title or ""),
-                            "authors": [str(reader.metadata.author)] if reader.metadata.author else []}
-            metadata["extraction_coverage"] = coverage
-            return "pdf", ".pdf", metadata, sections_from_blocks(blocks)
-        except AppError:
-            raise
-        except Exception as exc:
-            raise AppError("PDF konnte nicht zuverlässig als Text eingelesen werden.", code="source_unreadable") from exc
+            sections = sections_from_blocks([(text, page) for text, page in result["blocks"]])
+        except AppError as exc:
+            coverage = metadata.get("extraction_coverage") or {}
+            if exc.code != "source_unreadable" or "pages_total" not in coverage:
+                raise
+            # Pages without a text layer are the signature of a scan; say so instead of guessing at logins.
+            raise AppError(f"PDF enthält zu wenig lesbaren Text: {coverage.get('pages_with_text', 0)} von "
+                           f"{coverage['pages_total']} Seiten haben eine Textebene; vermutlich gescannt, OCR nötig.",
+                           code="source_unreadable", details={"pages_total": coverage["pages_total"],
+                           "pages_with_text": coverage.get("pages_with_text", 0)}) from exc
+        return "pdf", ".pdf", metadata, sections
     match = re.search(r"charset\s*=\s*[\"']?([\w-]+)", content_type, flags=re.I)
     encoding = match.group(1) if match else "utf-8"
     try:
@@ -206,6 +262,12 @@ def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, l
     if sum(len(block) for block, _ in blocks) > MAX_TEXT:
         raise AppError("Extrahierter Text überschreitet die Importgrenze.", code="source_too_large")
     return kind, suffix, metadata, sections_from_blocks(blocks)
+
+
+def import_failure(address, exc):
+    """One failure row of the source index: the address, the reason shown to the user and a stable code
+    (``source_unreadable``, ``source_download_failed``, ...) that a later step can select on."""
+    return {"source": address, "reason": str(exc), "code": getattr(exc, "code", "import_failed")}
 
 
 def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local: Path | None = None,

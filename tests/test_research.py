@@ -69,6 +69,36 @@ class SourceTests(unittest.TestCase):
 
 
 class ResearchTests(fixtures.ResearchProjectCase):
+    def test_every_failed_import_is_recorded_with_its_cause_and_code(self):
+        """The retrieval report distinguishes an unreadable file from a duplicate, by code and by wording."""
+        from podcast_automate.research_models import ResearchDiscovery
+
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is ResearchDiscovery:
+                self.calls.append(output_type)
+                return fixtures.discovery(count=3), {"research_performed": True, "web_search_events": 1}
+            return self.model(prompt, output_type, directory, **kwargs)
+        self.download.side_effect = [
+            (fixtures.HTML, "text/html", "https://example.org/paper0"),
+            AppError("PDF enthält zu wenig lesbaren Text: 0 von 12 Seiten haben eine Textebene; vermutlich gescannt, OCR nötig.",
+                     code="source_unreadable", details={"pages_total": 12, "pages_with_text": 0}),
+            (fixtures.HTML, "text/html", "https://example.org/paper2")]
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            manifest = run_research(self.root)
+        self.assertEqual(manifest.status, "completed")
+        index = json.loads((self.root / "runs" / manifest.run_id / "source_index.json").read_text(encoding="utf-8"))
+        self.assertEqual([s["url"] for s in index["sources"]], ["https://example.org/paper0"])
+        self.assertEqual(index["failures"], [
+            {"source": "https://example.org/paper1", "code": "source_unreadable",
+             "reason": "PDF enthält zu wenig lesbaren Text: 0 von 12 Seiten haben eine Textebene; vermutlich gescannt, OCR nötig."},
+            {"source": "https://example.org/paper2", "code": "duplicate_source",
+             "reason": "Identischer Quellentext bereits eingelesen."}])
+        # The briefing's access-problem list keeps the wording a reader needs to act on.
+        briefing = (self.root / "runs" / manifest.run_id / "research_briefing.md").read_text(encoding="utf-8")
+        problems = briefing.split("## Zugriffsprobleme")[1].split("## Quellenverzeichnis")[0]
+        self.assertIn("- https://example.org/paper1: PDF enthält zu wenig lesbaren Text: 0 von 12 Seiten", problems)
+        self.assertIn("- https://example.org/paper2: Identischer Quellentext bereits eingelesen.", problems)
+
     def test_topic_to_downloaded_sources_and_dossier_then_resume(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
             first = run_research(self.root)
@@ -123,7 +153,7 @@ class ResearchTests(fixtures.ResearchProjectCase):
         report = json.loads((self.root / "reports/research_quality.json").read_text())
         self.assertEqual(report["source_provenance"]["reused_from_run"], original.run_id)
         self.assertFalse(report["source_provenance"]["new_web_search"])
-        self.assertEqual(report["budget"], {"model_calls": 7, "search_rounds": 0})
+        self.assertEqual(report["budget"], {"model_calls": 7, "search_rounds": 0, "sequence": 7})
 
     def test_source_reuse_rejects_changed_scope(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
@@ -232,7 +262,10 @@ class ResearchTests(fixtures.ResearchProjectCase):
         self.assertEqual(self.download.call_count, 1)
         self.assertEqual(deadlines, [600] * 6 + [1800] * 3)
         work = self.root / "runs" / first.run_id
-        self.assertEqual(json.loads((work / "budget.json").read_text())["model_calls"], 9)
+        # The timed-out call produced no response: its reservation is refunded, while its
+        # directory number stays unique so the repeated call gets a fresh receipt folder.
+        budget = json.loads((work / "budget.json").read_text())
+        self.assertEqual((budget["model_calls"], budget["sequence"], budget["refunded"]), (8, 9, [6]))
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
 
     def test_parser_upgrade_reuses_download_and_rebuilds_dossier(self):

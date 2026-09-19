@@ -16,11 +16,11 @@ from .question_dependencies import prerequisite_answers
 from .question_sources import reserve_source, restore_attempts, source_identity
 from .research_evidence import EVIDENCE_INSTRUCTIONS, PROFILES, evidence_summary, support_errors
 from .research_ledger import check_sources, read_value, save_value
-from .research_models import ResearchDiscovery, SourceIndex
+from .research_models import ResearchDiscovery, SourceDocument, SourceIndex
 from .research_reader import source_catalog
 from .research_retrieval import references
 from .research_tasks import AnswerReview, QuestionAnswer, QuestionSearch, ReaderWindow, ResearchDecision
-from .sources import canonical_url, clean, import_source
+from .sources import canonical_url, clean, import_failure, import_source
 from .storage import digest
 
 
@@ -70,8 +70,11 @@ class TaskResearchMixin:
         results = [self.reader.search(q, key_terms=spec.key_terms, source_id=source_id, offset=offset,
                                       include_notes=include_notes) for q in ([query] if query else spec.queries)]
         row["catalog"] = (row["catalog"] + results)[-8:]
+        # The receipt records what was searched and which passages surfaced; previews stay in the
+        # bounded catalog above, so a long-running task does not grow the ledger by the hit texts.
         row.setdefault("search_receipts", []).extend({"lane": "local", "task_id": spec.id,
-            "query": q, "source_id": source_id, "offset": offset, "result": result}
+            "query": q, "source_id": source_id, "offset": offset, "total": result["total"],
+            "next_offset": result["next_offset"], "candidate_refs": [c["reference"] for c in result["candidates"]]}
             for q, result in zip(([query] if query else spec.queries), results))
         row["candidate_refs"] = list(dict.fromkeys([*row.get("candidate_refs", []),
             *(c["reference"] for result in results for c in result["candidates"])]))
@@ -128,15 +131,22 @@ class TaskResearchMixin:
     def verify(self, spec, row):
         answer = QuestionAnswer.model_validate(row["answer"])
         refs = [e.reference for f in answer.findings for e in f.evidence]
+        passages = read_context(self.reader, refs)
         prompt = (TERMINOLOGY + EVIDENCE_INSTRUCTIONS +
             instructions("question_verify") + "\n" + json.dumps({
                 "task": spec.model_dump(), "answer": answer.model_dump(),
                 "evidence_profile": PROFILES[spec.kind],
                 "prerequisite_answers": prerequisite_answers(spec, self.state),
-                "sources": read_context(self.reader, refs)}, ensure_ascii=False))
+                "sources": passages}, ensure_ascii=False))
+
+        def well_formed(verdict, final):
+            # Shape defects are corrected by a repeated call; substantive non-passes are feedback.
+            review_passes(verdict, spec)
+            support_errors(answer.findings, verdict, passages)
+
         verdict = self.call(self.task_folder(spec, row),
-                            f"review_{row['step']:03d}", AnswerReview, prompt)
-        semantic_errors = support_errors(answer.findings, verdict, read_context(self.reader, refs))
+                            f"review_{row['step']:03d}", AnswerReview, prompt, validate=well_formed)
+        semantic_errors = support_errors(answer.findings, verdict, passages)
         if review_passes(verdict, spec) and not semantic_errors:
             row.update(status="verified", activity="Antwort und Belege geprüft", reason="", feedback=[], no_progress=0)
             row["outcome"] = answer.outcome
@@ -158,6 +168,32 @@ class TaskResearchMixin:
         path = self.folder / "tasks" / spec.id / f"attempt_{len(row['reopenings'])}"
         return path / f"dependency_{row['dependency_revision']}" if row.get("dependency_revision") else path
 
+    def receipt_index(self, result):
+        """The index a download receipt describes: a whole copy (older receipts) or the current index
+        plus the documents this search added. The receipt must build on the index the ledger holds."""
+        if "index" in result:
+            return SourceIndex.model_validate(result["index"])
+        if result.get("base") != self.state["index_hash"]:
+            raise AppError("Der gespeicherte Abrufbeleg passt nicht zum aktuellen Quellenindex.",
+                           code="invalid_research_checkpoint", status="blocked")
+        restored = SourceIndex.model_validate(self.index.model_dump())
+        known = {s.id for s in restored.sources}
+        for row in result.get("added", []):
+            document = SourceDocument.model_validate(row)
+            if document.id not in known:
+                restored.sources.append(document)
+                known.add(document.id)
+        restored.failures.extend(f for f in result.get("failures", []) if f not in restored.failures)
+        return restored
+
+    def receipt_value(self, result, restored):
+        if "index" in result:
+            return {**result, "index": restored.model_dump()}
+        base_sources, base_failures = len(self.index.sources), len(self.index.failures)
+        return {**result, "base": self.state["index_hash"],
+                "added": [s.model_dump(mode="json") for s in restored.sources[base_sources:]],
+                "failures": restored.failures[base_failures:]}
+
     def web_search(self, spec, row, queries):
         budget_path = self.work / "budget.json"
         budget = json.loads(budget_path.read_text(encoding="utf-8")) if budget_path.exists() else {}
@@ -173,8 +209,9 @@ class TaskResearchMixin:
             row["outcome"] = "budget_block"
             return False
         # A completed search may still have downloads to restore even when the search budget is now exhausted.
-        if budget.get("search_rounds", 0) >= self.config.research_limits.search_rounds and not (folder / "search.json").exists():
-            row["reason"] = "Das Web-Suchbudget ist ausgeschöpft; diese konkrete Frage bleibt unbelegt."
+        if budget.get("search_rounds", 0) >= self.limits().search_rounds and not (folder / "search.json").exists():
+            row["reason"] = ("Das Web-Suchbudget ist ausgeschöpft; diese konkrete Frage bleibt unbelegt. Ein höheres "
+                             "Suchrundenlimit kann ausdrücklich genehmigt werden.")
             row["outcome"] = "budget_block"
             return False
         if (folder / "search.json").exists() and not request_path.exists():
@@ -191,15 +228,19 @@ class TaskResearchMixin:
             prompt, maximum = request["prompt"], request["maximum"]
         else:
             save_value(request_path, {"prompt": prompt, "maximum": maximum})
-        extra = self.call(folder, "search", QuestionSearch, prompt, search=True)
-        if not extra.executed_queries or not extra.counterevidence:
-            raise AppError("Search must record executed queries and counterevidence outcome.",
-                           code="invalid_search_receipt", status="blocked")
-        if len(extra.candidates) > maximum or any(not c.primary_source for c in extra.candidates):
-            raise AppError("Die Suche überschreitet ihren Quellenauftrag.", code="invalid_model_output", status="blocked")
-        result = read_value(receipt) if receipt.exists() else {"processed": [], "attempted": [], "index": self.index.model_dump()}
+
+        def well_formed(extra, final):
+            if not extra.executed_queries or not extra.counterevidence:
+                raise AppError("Search must record executed queries and counterevidence outcome.",
+                               code="invalid_search_receipt", status="blocked")
+            if len(extra.candidates) > maximum or any(not c.primary_source for c in extra.candidates):
+                raise AppError("Die Suche überschreitet ihren Quellenauftrag.", code="invalid_model_output", status="blocked")
+
+        extra = self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed)
+        result = read_value(receipt) if receipt.exists() else {
+            "processed": [], "attempted": [], "base": self.state["index_hash"], "added": [], "failures": []}
         result.setdefault("attempted", [source_identity(url) for url in result["processed"]])
-        restored = SourceIndex.model_validate(result["index"])
+        restored = self.receipt_index(result)
         check_sources(self.root, restored)
         before = {s.text_hash for s in self.index.sources}
         known = {canonical_url(url) for s in restored.sources for url in (s.url, s.final_url) if url}
@@ -218,13 +259,14 @@ class TaskResearchMixin:
                             s.text_hash == doc.text_hash and not s.url for s in restored.sources):
                         restored.sources.append(doc)
                     else:
-                        restored.failures.append({"source": candidate.url, "reason": "Identischer Quellentext bereits eingelesen."})
+                        restored.failures.append({"source": candidate.url, "reason": "Identischer Quellentext bereits eingelesen.",
+                                                  "code": "duplicate_source"})
                     known.add(address)
                     if doc.final_url:
                         known.add(canonical_url(doc.final_url))
             except (AppError, OSError, ValueError) as exc:
-                restored.failures.append({"source": candidate.url, "reason": str(exc)})
-            result = {**result, "processed": [*result["processed"], candidate.url], "index": restored.model_dump()}
+                restored.failures.append(import_failure(candidate.url, exc))
+            result = self.receipt_value({**result, "processed": [*result["processed"], candidate.url]}, restored)
             save_value(receipt, result)
         self.set_index(restored)
         row.setdefault("search_receipts", []).append({"lane": "web", "task_id": spec.id,

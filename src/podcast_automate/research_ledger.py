@@ -1,14 +1,16 @@
 """Checksummed question ledger and conservative import of earlier research runs."""
 from __future__ import annotations
 
+import hashlib
 import json
 
 from .errors import AppError
-from .research_models import ResearchDiscovery, ResearchDossier, SourceIndex
+from .research_models import ResearchDiscovery, ResearchDossier, SourceDocument, SourceIndex
 from .research_retrieval import merge_context
 from .storage import digest, file_hash, inside, write_json
 
 VERSION = "question_research.v1"
+INDEX_MANIFEST = "index_manifest.v1"
 
 
 def save_value(path, value):
@@ -27,6 +29,61 @@ def check_sources(root, index):
         path = inside(root, source.raw_path)
         if not path.is_file() or file_hash(path) != source.raw_hash:
             raise AppError("Ein gespeicherter Originalbeleg wurde verändert.", code="invalid_source_snapshot", status="blocked")
+
+
+def section_id(page, text):
+    return "sec_" + hashlib.sha256(f"{page}:{text}".encode()).hexdigest()[:16]
+
+
+def save_index(root, run_id, path, index):
+    """Store an index as document metadata plus a reference to each processed text.
+
+    Sections are the bulk of an index; they are reloaded from the processed document and verified
+    through the saved text hash, so every copy of a large index costs a few lines, not a book. A
+    source without a processed file of the same text is embedded whole.
+    """
+    if path.exists():
+        return
+    rows = []
+    for source in index.sources:
+        processed = root / "sources/processed" / run_id / f"{source.id}.json"
+        row = {"id": source.id, "document": source.model_dump(mode="json", exclude={"sections"})}
+        if processed.is_file():
+            row["processed"] = processed.relative_to(root).as_posix()
+            row["sections_hash"] = digest([[s.id, s.page] for s in source.sections])
+        else:
+            row["sections"] = [s.model_dump(mode="json") for s in source.sections]
+        rows.append(row)
+    save_value(path, {"format": INDEX_MANIFEST, "sources": rows, "failures": index.failures})
+
+
+def load_index(root, path):
+    """The index a signature file describes, whether stored whole (older runs) or as a manifest."""
+    saved = read_value(path)
+    if not isinstance(saved, dict) or saved.get("format") != INDEX_MANIFEST:
+        return SourceIndex.model_validate(saved)
+    sources = []
+    for row in saved["sources"]:
+        document = dict(row["document"])
+        if "sections" in row:
+            document["sections"] = row["sections"]
+        else:
+            processed = inside(root, row["processed"])
+            try:
+                stored = SourceDocument.model_validate_json(processed.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise AppError("Ein gespeicherter Quellentext fehlt oder ist unlesbar.",
+                               code="invalid_source_snapshot", status="blocked") from exc
+            # The processed file may have been rewritten by a later import of the same text; the
+            # sections count as intact only when texts, pages and section ids are exactly the saved ones.
+            texts = "\n".join(s.text for s in stored.sections)
+            if (hashlib.sha256(texts.encode()).hexdigest() != document["text_hash"] or
+                    digest([[s.id, s.page] for s in stored.sections]) != row["sections_hash"] or
+                    any(s.id != section_id(s.page, s.text) for s in stored.sections)):
+                raise AppError("Ein gespeicherter Quellentext wurde verändert.", code="invalid_source_snapshot", status="blocked")
+            document["sections"] = [s.model_dump(mode="json") for s in stored.sections]
+        sources.append(SourceDocument.model_validate(document))
+    return SourceIndex(sources=sources, failures=saved["failures"])
 
 
 def validate_context(index, context):
@@ -94,12 +151,14 @@ def public_ledger(state, index=None):
     for spec in state["plan"]["tasks"]:
         task = state["tasks"][spec["id"]]
         answer = task.get("answer") if task["status"] == "verified" else None
+        accepted = task.get("accepted_gap") or None
         rows.append({"id": spec["id"], "question": spec["question"], "kind": spec["kind"],
                      "requirement_ids": spec["requirement_ids"], "acceptance": spec["acceptance"],
                      "status": task["status"], "activity": task["activity"], "steps": task["step"],
                      "depends_on": spec.get("depends_on", []), "outcome": task.get("outcome"),
+                     "accepted_gap": bool(accepted), "accepted_reason": (accepted or {}).get("reason", ""),
                      "support": task.get("verification", {}).get("support_summary") if answer else None,
-                     "search_receipts": task.get("search_receipts", []),
+                     "search_count": len(task.get("search_receipts", [])),
                      "read_sections": len(task["read_refs"]), "reason": task.get("reason", ""),
                      "answer": answer["summary"] if answer else "", "limits": answer["limits"] if answer else [],
                      "findings": answer["findings"] if answer else [],
@@ -108,8 +167,12 @@ def public_ledger(state, index=None):
                                  for ref in dict.fromkeys(e["reference"] for f in answer["findings"] for e in f["evidence"])
                                  if ref in sections] if answer else [],
                      "reopened": len(task["reopenings"])})
+    blocked = [r for r in rows if r["status"] == "blocked" and not r["accepted_gap"]]
+    phase = state["phase"]
+    if phase == "blocked" and not blocked:
+        phase = "questions"
     return {"version": VERSION, "total": len(rows), "closed": sum(r["status"] == "verified" for r in rows),
-            "blocked": sum(r["status"] == "blocked" for r in rows), "phase": state["phase"],
+            "blocked": len(blocked), "accepted": sum(r["accepted_gap"] for r in rows), "phase": phase,
             "source_count": len(index.sources) if index else None,
             "source_failures": len(index.failures) if index else None,
             "source_attempt_count": state.get("source_attempt_count"),

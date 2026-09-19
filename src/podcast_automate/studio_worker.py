@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from .prompts import instructions
-from .codex import CodexAdapter
+from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.studio_worker.CodexAdapter.structured)
 from . import attachments
 from .doctor import inspect
 from .episode_audio import run_episode_audio
@@ -16,19 +16,21 @@ from .execution import selected_execution
 from .editorial import TERMINOLOGY
 from .logs import configure_logging, logger, record_failure
 from .models import now
-from .openrouter import OpenRouterAdapter
+from .provider_pool import AdapterPool, text_generation_settings
 from .research import reserve_call, run_research
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
 from .speech import GeminiSpeech, audio_catalog, selected_audio
 from .storage import digest, load_project, project_lock, read_yaml, write_json
+from .subscriptions import quota_retry_at
 from .studio import BriefProposal, TextChoice, audio_job_path, read_json
 from .studio_progress import safe_script_progress, watch
 from .status_summary import start_monitor
 from .process import stop_process_tree
 from .voice_samples import generate_sample, generate_samples
-from .text_settings import CODEX_MODELS, OPENROUTER_MODELS, OPENROUTER_EFFORTS, REASONING_EFFORTS
+from .text_settings import (CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, EFFORT_EQUIVALENTS, OPENROUTER_EFFORTS,
+                            OPENROUTER_MODELS, PROVIDER_NOTES, REASONING_EFFORTS)
 
 
 def perform(root, request, sample_progress=None):
@@ -64,13 +66,9 @@ def perform(root, request, sample_progress=None):
             conversation = read_json(root / "studio/chat.json", [])
             user_message = {"role": "user", "message": request["message"]}
             write_json(root / "studio/chat.json", [*conversation, user_message])
-            adapter = (OpenRouterAdapter(config.runtime, model=kwargs["model"], api_key=request.get("api_key"),
-                                         max_output_tokens=choice.max_output_tokens, reasoning_effort=kwargs["reasoning_effort"])
-                       if choice.provider == "openrouter" else
-                       CodexAdapter(config.runtime.model_copy(update={"codex_model": kwargs["model"]}),
-                                    reasoning_effort=kwargs["reasoning_effort"]))
-            if isinstance(adapter, OpenRouterAdapter):
-                adapter.require_key()
+            selection = text_generation_settings(config, **{key: value for key, value in kwargs.items() if key != "api_key"})
+            adapter = AdapterPool(config.runtime, selection, api_key=kwargs["api_key"])
+            adapter.require_key()
             work = root / "studio/assistant"
             number = reserve_call(work, config.research_limits)
             prompt = (
@@ -85,7 +83,9 @@ def perform(root, request, sample_progress=None):
                                        "execution": selected_execution(root).model_dump()},
                     "audio_catalog": audio_catalog(), "attachments": attachments.context(root),
                     "text_catalog": {"codex_models": CODEX_MODELS, "openrouter_models": OPENROUTER_MODELS,
-                                     "openrouter_efforts": OPENROUTER_EFFORTS},
+                                     "openrouter_efforts": OPENROUTER_EFFORTS, "claude_models": CLAUDE_MODELS,
+                                     "claude_efforts": CLAUDE_EFFORTS, "effort_equivalents": EFFORT_EQUIVALENTS,
+                                     "providers": PROVIDER_NOTES},
                     "reasoning_efforts": REASONING_EFFORTS, "requested_text": request.get("requested_text"),
                     "conversation": conversation[-16:], "user_message": request["message"]}, ensure_ascii=False))
             proposal, _ = adapter.structured(prompt, BriefProposal, work / f"call_{number:03d}",
@@ -101,7 +101,13 @@ def perform(root, request, sample_progress=None):
                        "attachments_hash": digest(attachments.inventory(root))})
             return {"proposal": proposal.model_dump()}
     if action == "research":
-        research_choice = {key: kwargs[key] for key in ("model", "reasoning_effort")} if choice.provider == "codex_cli" else {}
+        if choice.provider == "codex_cli":
+            research_choice = {key: kwargs[key] for key in ("model", "reasoning_effort")}
+        elif choice.provider in {"claude_code", "auto"}:
+            research_choice = {"backend": choice.provider, "model": kwargs["model"], "reasoning_effort": kwargs["reasoning_effort"]}
+        else:
+            # OpenRouter has no web tools; research runs on the subscriptions with the automatic rule.
+            research_choice = {"backend": "auto"}
         run = run_research(root, **research_choice)
     elif action == "plan":
         run = run_script(root, plan_only=True, **kwargs)
@@ -184,6 +190,11 @@ def main():
         job.update(result)
         run = result.get("run")
         job["status"] = run["status"] if run else "completed"
+        if run and run["status"] == "waiting_for_quota":
+            # The Studio scheduler resumes a paused job once the named reset has passed.
+            quota_error = next((r["error"] for r in run["stages"].values() if r.get("error")), None)
+            job["retry_at"] = quota_retry_at(AppError(quota_error["message"] if quota_error else "",
+                                                      code=(quota_error or {}).get("code", "quota")))
         if run and run["kind"] == "script" and run["status"] == "pending" and run["stages"]["planning"]["status"] == "completed":
             job["status"] = "review_ready"
         if run:
@@ -199,6 +210,8 @@ def main():
         job["message"] = str(exc) if isinstance(exc, AppError) else "Auftrag unterbrochen oder Verarbeitung fehlgeschlagen. Gespeicherten Stand prüfen."
         if isinstance(exc, AppError):
             logger("worker").warning("Auftrag %s angehalten (%s): %s", job.get("id"), exc.code, exc)
+            if exc.status == "waiting_for_quota":
+                job["retry_at"] = quota_retry_at(exc)
         elif not isinstance(exc, KeyboardInterrupt):
             receipt = record_failure(root / "studio", "worker", exc, secrets=(request.get("api_key") or "",))
             logger("worker").error("Auftrag %s fehlgeschlagen: %s", job.get("id"), type(exc).__name__, exc_info=exc)

@@ -1,0 +1,3 @@
+Your previous response to this exact task was rejected by deterministic checks. Correct precisely
+the listed defects and keep everything else unchanged; do not broaden scope, invent evidence or
+drop obligations to satisfy a check. Rejections:

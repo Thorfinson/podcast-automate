@@ -16,8 +16,11 @@ from .codex import CodexAdapter
 from .errors import AppError
 from .logs import failure_records, logger, record_failure
 from .models import EpisodeScript, Failure, RunManifest, StageRecord, now
+from .provider_pool import AdapterPool, subscription_selection
 from .storage import (digest, file_hash, inside, load_project, project_lock,
-                      read_yaml, write_json, write_yaml)
+                      read_optional_json, read_yaml, write_json, write_yaml)
+
+PROBE_BACKENDS = ("codex_cli", "claude_code", "auto")
 
 # Optional observer in the isolated Studio worker; no global project state.
 run_observer = ContextVar("run_observer", default=None)
@@ -71,7 +74,7 @@ def status(root: Path, run_id: str | None = None) -> dict:
 
 def run_probe(root: Path, *, kind: str | None = None,
               resume: bool = False, run_id: str | None = None,
-              approve_audio: bool = False) -> RunManifest:
+              approve_audio: bool = False, backend: str | None = None) -> RunManifest:
     root = root.resolve()
     config = load_project(root)
     script = probe_script(config.language)
@@ -81,7 +84,16 @@ def run_probe(root: Path, *, kind: str | None = None,
             path = manifest_path(root, run_id)
             manifest = RunManifest.model_validate(read_yaml(path))
             kind = manifest.kind
+            saved_backend = read_optional_json(path.parent / "probe_request.json", {}).get("backend", "codex_cli")
+            if backend is not None and backend != saved_backend:
+                raise AppError("Textanbieter geändert. Fortsetzen verwendet den gespeicherten Anbieter der Probe.",
+                               code="inputs_changed", status="blocked")
+            backend = saved_backend
         else:
+            backend = backend or "codex_cli"
+            if backend not in PROBE_BACKENDS:
+                raise AppError("Für die Textprobe stehen codex_cli, claude_code und auto zur Verfügung.",
+                               code="invalid_backend", status="blocked")
             if kind not in {"text_probe", "audio_probe"}:
                 raise AppError("Unbekannter Probentyp.", code="invalid_probe")
             if kind == "audio_probe" and not approve_audio:
@@ -99,6 +111,7 @@ def run_probe(root: Path, *, kind: str | None = None,
             "project": config_hash, "pipeline": __version__, "kind": kind,
             "prompt": "text_probe.v1",
             "script": script.model_dump(mode="json") if kind == "audio_probe" else None,
+            **({"backend": backend} if kind == "text_probe" and backend != "codex_cli" else {}),
         })
         if resume and manifest.input_hash != current_hash:
             raise AppError("Eingaben oder Programmversion wurden geändert. Bitte eine neue Probe starten.",
@@ -112,10 +125,16 @@ def run_probe(root: Path, *, kind: str | None = None,
         work.mkdir(parents=True, exist_ok=True)
         if not resume:
             write_yaml(work / "project_snapshot.yaml", config.model_dump(mode="json"))
+            if kind == "text_probe" and backend != "codex_cli":
+                write_json(work / "probe_request.json", {"backend": backend})
         write_json(root / "runs/latest.json", {"run_id": manifest.run_id})
 
         def text_stage():
-            output, metadata = CodexAdapter(config.runtime).probe(config.topic, work / "codex")
+            if backend == "codex_cli":
+                output, metadata = CodexAdapter(config.runtime).probe(config.topic, work / "codex")
+            else:
+                pool = AdapterPool(config.runtime, subscription_selection(config, backend))
+                output, metadata = pool.probe(config.topic, work / "text")
             directory = root / "probes/text" / manifest.run_id
             write_json(directory / "result.json", output.model_dump())
             write_json(directory / "metadata.json", metadata)

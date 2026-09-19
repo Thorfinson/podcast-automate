@@ -8,16 +8,14 @@ from __future__ import annotations
 
 import json
 
-from .codex import CodexAdapter
 from .editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, TERMINOLOGY, episode_series_context
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .execution import run_episode_stage
 from .models import EpisodeScript
-from .openrouter import OpenRouterAdapter
 from .polishing import HOST_ROLES, polish_dialogue
 from .prompts import fragment, instructions
-from .research import PLAIN_LANGUAGE, reserve_call
+from .research import PLAIN_LANGUAGE, refund_call, reserve_call, unanswered
 from .run_budget import effective_limits
 from .runner import run_observer
 from .script_artifacts import publish_scripts, render_script, script_metrics
@@ -56,14 +54,20 @@ class ScriptRun:
         return effective_limits(self.work, self.config.research_limits, self.input_hash)
 
     def invoke(self, prompt, output_type, version, *, search=False, research=False):
-        # With Codex selected, supplementary research uses the same saved model and effort.
-        current = (CodexAdapter(self.config.runtime) if (research or search) and isinstance(self.adapter, OpenRouterAdapter)
-                   else self.adapter)
-        if isinstance(current, OpenRouterAdapter):
-            current.require_key()
+        # The pool applies the saved choice per call; supplementary research follows the subscription rule.
+        self.adapter.require_key()
         number = reserve_call(self.work, self.limits(), search=search)
-        return current.structured(prompt, output_type, self.work / "calls" / f"call_{number:03d}",
-                                  prompt_version=version, search=search)[0]
+        try:
+            return self.adapter.structured(prompt, output_type, self.work / "calls" / f"call_{number:03d}",
+                                           prompt_version=version, search=search, research=research)[0]
+        except AppError as exc:
+            # A call without any model response is not charged; rejected model work stays charged.
+            if unanswered(exc):
+                refund_call(self.work, number, search=search)
+            raise
+        except BaseException:
+            refund_call(self.work, number, search=search)
+            raise
 
     def selected(self):
         plan = SeriesPlan.model_validate_json((self.work / "series_plan.json").read_text(encoding="utf-8"))

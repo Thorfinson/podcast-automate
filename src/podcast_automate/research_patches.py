@@ -1,4 +1,11 @@
-"""Bounded dossier edits with immutable unrelated findings and resumable receipts."""
+"""Bounded dossier edits with immutable unrelated findings and resumable receipts.
+
+``cached_call`` is the single receipt store for question-workflow model calls. A receipt is written
+only after the caller's deterministic checks accepted the output; a rejected output is kept as a
+numbered ``<name>_rejected_NN.json`` receipt and the call is repeated with those rejections named,
+at most ``MAX_REJECTIONS`` times. Resume replays validated receipts without a call and never retries
+a call whose rejections are exhausted, so a malformed answer cannot poison a run or loop forever.
+"""
 from __future__ import annotations
 
 import json
@@ -14,9 +21,11 @@ from .research_models import Finding, QuestionCoverage, ResearchDossier
 from .research_retrieval import references, select_context
 from .storage import digest, write_json
 from .evidence_models import SynthesisRelation
-from .research_evidence import EVIDENCE_INSTRUCTIONS, SYNTHESIS_INSTRUCTIONS, claim_changes
+from .research_evidence import EVIDENCE_INSTRUCTIONS, SYNTHESIS_INSTRUCTIONS, claim_changes, validate_synthesis
 
 PATCH_VERSION = "research_patch.v1"
+# Initial attempt plus this many corrections with the rejection named; then an explicit block.
+MAX_REJECTIONS = 2
 
 
 class DossierPatch(Contract):
@@ -29,18 +38,84 @@ class DossierPatch(Contract):
     removed_synthesis_ids: list[NonEmpty] = Field(default_factory=list)
 
 
-def cached_call(folder, name, schema, prompt, generate):
-    path = folder / f"{name}.json"
-    signature = digest({"prompt": prompt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
-    if path.exists():
+def rejected_receipts(folder, name):
+    rows = []
+    for number in range(MAX_REJECTIONS + 1):
+        path = folder / f"{name}_rejected_{number:02d}.json"
+        if not path.exists():
+            break
         saved = json.loads(path.read_text(encoding="utf-8"))
-        if saved.get("input_hash") != signature or saved.get("sha256") != digest(saved.get("value")):
-            raise AppError("Gespeicherte Rechercheänderung passt nicht zu ihren Eingaben.",
+        if saved.get("sha256") != digest(saved.get("value")):
+            raise AppError("Gespeicherte abgewiesene Modellantwort wurde verändert.",
                            code="invalid_research_checkpoint", status="blocked")
-        return schema.model_validate(saved["value"])
-    value = generate(prompt, schema)
-    write_json(path, {"input_hash": signature, "sha256": digest(value.model_dump()), "value": value.model_dump()})
-    return value
+        rows.append(saved)
+    return rows
+
+
+def rejected_prompt(prompt, rejections):
+    """The same task with every earlier rejection named; the JSON payload stays the last line."""
+    if not rejections:
+        return prompt
+    head, data = prompt.rsplit("\n", 1)
+    notes = " ".join(f"({n + 1}) {row['message']}" for n, row in enumerate(rejections))
+    return head + " " + prompt_instructions("rejected_response") + " " + notes + "\n" + data
+
+
+def call_signature(folder, name, schema, prompt):
+    attempt = rejected_prompt(prompt, rejected_receipts(folder, name))
+    return digest({"prompt": attempt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
+
+
+def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=True):
+    """Return the validated receipt for this exact prompt, calling the model only when none exists.
+
+    ``validate(value, final)`` raises ``AppError`` for a deterministic rejection; ``final`` is true on
+    the last permitted attempt so advisory checks can stand down. A saved receipt that no longer passes
+    validation is retired as a rejection and the call is repeated when ``heal`` is set; otherwise the
+    stored rejection is raised unchanged.
+    """
+    path = folder / f"{name}.json"
+    while True:
+        rejections = rejected_receipts(folder, name)
+        attempt = rejected_prompt(prompt, rejections)
+        signature = digest({"prompt": attempt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
+        if path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("input_hash") != signature or saved.get("sha256") != digest(saved.get("value")):
+                raise AppError("Gespeicherte Rechercheänderung passt nicht zu ihren Eingaben.",
+                               code="invalid_research_checkpoint", status="blocked")
+            value = schema.model_validate(saved["value"])
+            if validate is None:
+                return value
+            try:
+                validate(value, len(rejections) >= MAX_REJECTIONS)
+                return value
+            except AppError as exc:
+                if not heal:
+                    raise
+                # A receipt written before this check existed: retire it instead of replaying the defect.
+                _reject(folder, name, len(rejections), signature, exc, value)
+                path.unlink()
+                continue
+        if len(rejections) > MAX_REJECTIONS:
+            last = rejections[-1]
+            raise AppError(f"{last['message']} Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; "
+                           "die abgewiesenen Antworten sind gespeichert.", code=last["code"], status="blocked")
+        value = generate(attempt, schema)
+        if validate is not None:
+            try:
+                validate(value, len(rejections) >= MAX_REJECTIONS)
+            except AppError as exc:
+                _reject(folder, name, len(rejections), signature, exc, value)
+                continue
+        write_json(path, {"input_hash": signature, "sha256": digest(value.model_dump()), "value": value.model_dump()})
+        return value
+
+
+def _reject(folder, name, number, signature, error, value):
+    write_json(folder / f"{name}_rejected_{number:02d}.json", {
+        "input_hash": signature, "code": error.code, "message": str(error),
+        "sha256": digest(value.model_dump()), "value": value.model_dump()})
 
 
 def apply_patch(dossier, patch, allowed_ids, *, allow_additions=True, coverage_ids=None, allow_questions=True):
@@ -124,27 +199,46 @@ def patch_prompt(dossier, discovery, context, config, *, targets, instructions,
 
 
 def edit_dossier(folder, name, dossier, discovery, context, config, generate, *, targets, instructions,
-                 extra_context=(), allow_additions=True, coverage_ids=None, allow_questions=True, legacy_targets=None):
+                 extra_context=(), allow_additions=True, coverage_ids=None, allow_questions=True, legacy_targets=None,
+                 check=None):
+    """Apply one bounded patch; ``check(result)`` may raise to reject an applied patch deterministically."""
     options = dict(instructions=instructions, extra_context=extra_context, allow_additions=allow_additions,
                    coverage_ids=coverage_ids, allow_questions=allow_questions)
     prompt = patch_prompt(dossier, discovery, context, config, targets=targets, **options)
     path = folder / f"{name}.json"
+    legacy = False
     if path.exists() and legacy_targets is not None:
-        signature = digest({"prompt": prompt, "schema": DossierPatch.model_json_schema(), "version": PATCH_VERSION})
         saved = json.loads(path.read_text(encoding="utf-8"))
-        if saved.get("input_hash") != signature:
+        if saved.get("input_hash") != call_signature(folder, name, DossierPatch, prompt):
             # A pre-ownership receipt may be replayed only if its exact old
             # prompt still matches AND its actual changes obey today's boundary.
             prompt = patch_prompt(dossier, discovery, context, config, targets=legacy_targets, **options)
-    patch = cached_call(folder, name, DossierPatch, prompt, generate)
+            legacy = True
+    coverage = coverage_ids if coverage_ids is not None else [q.id for q in discovery.questions]
+
+    def validate(patch, final):
+        result = apply_patch(dossier, patch, targets, allow_additions=allow_additions,
+                             coverage_ids=coverage, allow_questions=allow_questions)
+        preserve_unrelated(dossier, result, targets)
+        validate_synthesis(result, context)
+        if check is not None:
+            check(result)
+
+    patch = cached_call(folder, name, DossierPatch, prompt, generate, validate=validate, heal=not legacy)
     result = apply_patch(dossier, patch, targets, allow_additions=allow_additions,
-                         coverage_ids=coverage_ids if coverage_ids is not None else [q.id for q in discovery.questions],
-                         allow_questions=allow_questions)
+                         coverage_ids=coverage, allow_questions=allow_questions)
     write_json(folder / f"{name}_applied.json", {"base_hash": digest(dossier.model_dump()),
                "dossier_hash": digest(result.model_dump()), "updated_ids": [f.id for f in patch.updates],
                "claim_changes": claim_changes(dossier.findings, result.findings),
                "added_ids": [f.id for f in patch.additions], "dossier": result.model_dump()})
     return result
+
+
+def preserve_unrelated(before, after, targets):
+    actual = {f.id: digest(f.model_dump()) for f in after.findings}
+    if any(actual.get(f.id) != digest(f.model_dump()) for f in before.findings if f.id not in targets):
+        raise AppError("Die Dossieränderung verändert einen Befund einer unveränderten Recherchefrage.",
+                       code="invalid_research_patch", status="blocked")
 
 
 def repair_references(folder, name, dossier, discovery, context, config, generate, *, allowed_ids=None):
@@ -163,9 +257,17 @@ def repair_references(folder, name, dossier, discovery, context, config, generat
         if targets and not passages:
             # The erroneous reference may even invent the source ID.
             passages = context
+
+        def repaired(result):
+            remaining = validate_dossier(result, discovery, context)
+            if remaining:
+                write_json(folder / f"{name}_errors.json", {"errors": remaining})
+                raise AppError("Die gezielte Dossierkorrektur enthält noch ungültige Quellenbezüge; Prüfdetails sind gespeichert. "
+                               + " ".join(remaining), code="invalid_evidence", status="blocked")
+
         dossier = edit_dossier(folder, name, dossier, discovery, context, config, generate,
             targets=targets, instructions={"reference_errors": errors}, extra_context=passages,
-            allow_additions=False, coverage_ids=questions, allow_questions=False)
+            allow_additions=False, coverage_ids=questions, allow_questions=False, check=repaired)
         errors = validate_dossier(dossier, discovery, context)
     if errors:
         write_json(folder / f"{name}_errors.json", {"errors": errors})

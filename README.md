@@ -27,7 +27,7 @@ Jeder Schritt ist wiederaufnehmbar. Fertige Ergebnisse werden per Hash gebunden;
 
 ## Anbieter und Kosten
 
-- **Text**: Codex-Abo (Standard GPT-6 Astra, Reasoning `xhigh`) oder OpenRouter-Modelle für Inhaltsverzeichnis, Lehrkonzept, Skripte, Polishing und Prüfungen. Die Web-Recherche verwendet immer Codex. Die Kataloge stehen in `text_settings.py`; `pla doctor` nennt ihr Prüfdatum.
+- **Text**: Codex-Abo (GPT-6 Astra, Reasoning `xhigh`), Claude-Max-Abo über Claude Code (Claude Opus 5, Effort `high`) oder OpenRouter-Modelle für Inhaltsverzeichnis, Lehrkonzept, Skripte, Polishing und Prüfungen. Die Vorauswahl **Automatisch** prüft vor jedem Modellaufruf das Codex-Kontingent, nimmt sonst Claude und pausiert erst, wenn beide Abos leer sind. Die Web-Recherche läuft über das gewählte Abo. Die Kataloge stehen in `text_settings.py`; `pla doctor` nennt ihr Prüfdatum, `pla quota` den Kontingentstand beider Abos. [Plan und Umsetzungsstand](docs/claude-backend-plan.md).
 - **Audio**: lokales Qwen3-TTS (Windows mit AMD-GPU erprobt) oder Gemini 3.1 Flash TTS über OpenRouter mit 30 Stimmen und gemeinsamer Hörprobenbibliothek.
 - **Budget**: Ein Recherche- oder Skriptlauf hat standardmäßig 150 Modellaufrufe. Ein Skriptlauf braucht ohne Reparaturen mindestens einen Aufruf für das Inhaltsverzeichnis und neun je Folge; die Prognose steht vor jeder kostenpflichtigen Stufe im Studio, und ein zu knappes Limit stoppt den Lauf, bevor Aufrufe verbraucht werden. [Aufrufe je Folge](docs/scripts.md#modellaufrufe-je-folge).
 
@@ -37,12 +37,13 @@ Jeder Schritt ist wiederaufnehmbar. Fertige Ergebnisse werden per Hash gebunden;
 | --- | --- |
 | `pla studio` | Studio im Browser öffnen |
 | `pla init <projekt> --topic "…"` | Projekt mit validiertem Auftrag anlegen |
-| `pla doctor [<projekt>] [--skip-tts]` | Installation, Codex-Anmeldung, TTS-Umgebung und Katalogalter prüfen |
+| `pla doctor [<projekt>] [--skip-tts]` | Installation, Codex- und Claude-Anmeldung, Abo-Kontingent, TTS-Umgebung und Katalogalter prüfen |
+| `pla quota` | Kontingent beider Abos ohne Modellaufruf anzeigen |
 | `pla research <projekt>` | Belegtes Dossier erstellen |
-| `pla script <projekt> [--episode ep_001] [--backend openrouter --model …]` | Serienplan, Lehrkonzepte und geprüfte Skripte |
+| `pla script <projekt> [--episode ep_001] [--backend auto\|claude_code\|openrouter …]` | Serienplan, Lehrkonzepte und geprüfte Skripte |
 | `pla audio <projekt> --episode ep_001 --approve-audio` | Freigegebenes Skript vertonen |
 | `pla status <projekt>` / `pla resume <projekt>` | Fortschritt, Fehlerprotokolle, Wiederaufnahme |
-| `pla text-probe` / `pla audio-probe --approve-audio` | Technische Proben ohne Recherche |
+| `pla text-probe [--backend claude_code]` / `pla audio-probe --approve-audio` | Technische Proben ohne Recherche |
 | `pla schemas <ordner>` | Alle 21 Datenverträge als JSON-Schema exportieren |
 
 Unter Windows: `.\.venv\Scripts\pla.exe …`, unter macOS/Linux: `.venv/bin/pla …`.
@@ -55,7 +56,7 @@ projects/<projekt>/
   studio/                 gewählter Textanbieter, Audioanbieter, Ausführungsmodus, Chat, Auftragsstatus
   research/, models/      Dossier, Quellenindex, Serienplan, Wissensmodell
   episodes/<ep>/          script.yaml, script.md, Lehrplan, Show Notes, Audio-Freigabe
-  runs/<run_id>/          Manifest, Zwischenstände, Modellaufrufe, budget_projection.json, failures/
+  runs/<run_id>/          Manifest, Zwischenstände, Modellaufrufe (je Aufruf provider_choice.json), budget_projection.json, failures/
   exports/<ep>/<run_id>/  MP3, Kapitel, Transkript
 src/podcast_automate/
   prompts/                alle Modellanweisungen als Textdateien (siehe prompts/README.md)
@@ -84,7 +85,7 @@ Modellantworten werden simuliert; FFmpeg wird echt aufgerufen. Regressionen mit 
 - [docs/studio.md](docs/studio.md), [docs/windows-quickstart.md](docs/windows-quickstart.md), [docs/macos-linux.md](docs/macos-linux.md), [docs/qwen-windows.md](docs/qwen-windows.md), [docs/gemini-audio.md](docs/gemini-audio.md)
 - [docs/research.md](docs/research.md), [docs/research-evidence.md](docs/research-evidence.md), [docs/scripts.md](docs/scripts.md), [docs/teaching-design.md](docs/teaching-design.md)
 - [docs/quality-verification.md](docs/quality-verification.md), [docs/system-quality-assessment.md](docs/system-quality-assessment.md), [docs/windows-pilot.md](docs/windows-pilot.md)
-- [SPEC.md](SPEC.md), [Implementierungsplan](docs/personal-learning-podcast-system-plan.md), [Entwicklungsnotizen](docs/entwicklungsnotizen.md) (ausführliche Funktionsnotizen der bisherigen README)
+- [SPEC.md](SPEC.md), [Implementierungsplan](docs/personal-learning-podcast-system-plan.md), [Plan: Claude Code als zweiter Abo-Anbieter](docs/claude-backend-plan.md), [Entwicklungsnotizen](docs/entwicklungsnotizen.md) (ausführliche Funktionsnotizen der bisherigen README)
 
 ## Lizenz
 

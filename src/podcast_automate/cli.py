@@ -42,14 +42,17 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--topic", required=True)
     init.add_argument("--total-minutes", type=float, default=None)
     init.add_argument("--tts-python", help="Python der separaten Qwen-Umgebung")
-    doctor = commands.add_parser("doctor", help="Installation und Abo-Anmeldung prüfen; kein Modellaufruf")
+    doctor = commands.add_parser("doctor", help="Installation, Abo-Anmeldungen (Codex, Claude) und Kontingent prüfen; kein Modellaufruf")
     doctor.add_argument("project_dir", type=Path, nargs="?")
     doctor.add_argument("--skip-tts", action="store_true", help="Lokales Qwen überspringen, etwa bei Gemini-Audio")
     state = commands.add_parser("status", help="Fortschritt und Fehler des letzten Laufs anzeigen")
     state.add_argument("project_dir", type=Path)
     state.add_argument("--run-id")
-    text_probe = commands.add_parser("text-probe", help="Strukturierte Codex-Abo-Verbindungsprobe")
+    text_probe = commands.add_parser("text-probe", help="Strukturierte Abo-Verbindungsprobe (Codex oder Claude Code)")
     text_probe.add_argument("project_dir", type=Path)
+    text_probe.add_argument("--backend", choices=("codex_cli", "claude_code", "auto"),
+                            help="Abo-Anbieter der Probe; Standard codex_cli")
+    quota = commands.add_parser("quota", help="Kontingent beider Abos (Codex, Claude) ohne Modellaufruf anzeigen")
     audio_probe = commands.add_parser("audio-probe", help="Deutsche oder englische Qwen-Hörprobe montieren")
     audio_probe.add_argument("project_dir", type=Path)
     audio_probe.add_argument("--approve-audio", action="store_true")
@@ -57,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("project_dir", type=Path)
     research.add_argument("--reuse-sources", metavar="RUN_ID",
                           help="Gespeicherte Quellen für einen neuen Dossiertext wiederverwenden")
+    research.add_argument("--backend", choices=("codex_cli", "claude_code", "auto"),
+                          help="Abo-Anbieter der Recherche; Standard codex_cli, auto wechselt bei leerem Kontingent")
+    research.add_argument("--model", help="Modell-ID des festen Abo-Anbieters")
+    research.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"),
+                          help="Denkaufwand für Recherche-Modellaufrufe des festen Anbieters")
     script = commands.add_parser("script", help="Geprüftes Dossier in Serienentwurf und Dialogskripte umsetzen")
     script.add_argument("project_dir", type=Path)
     script.add_argument("--episode", help="Nur die gewählte Folge schreiben, zum Beispiel ep_001")
@@ -73,8 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--approve-audio", action="store_true")
     resume.add_argument("--approval-note", default="", help="Rückmeldung zur erneuten Audio-Freigabe")
     for command in (script, resume):
-        command.add_argument("--backend", choices=("codex_cli", "openrouter"),
-                             help="Textanbieter für Skripte und Reviews; Standard codex_cli, bei resume gespeicherter Anbieter")
+        command.add_argument("--backend", choices=("codex_cli", "openrouter", "claude_code", "auto"),
+                             help="Textanbieter für Skripte und Reviews; Standard codex_cli, auto wählt je Aufruf Codex oder "
+                                  "Claude nach Kontingent, bei resume gespeicherter Anbieter")
         command.add_argument("--model", help="Modell-ID des Textanbieters; für OpenRouter erforderlich")
         command.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"),
                              help="Denkaufwand für Textmodellaufrufe; bei resume bleibt die gespeicherte Stufe erhalten")
@@ -82,9 +91,18 @@ def build_parser() -> argparse.ArgumentParser:
                              help="OpenRouter-Key nur für diesen Aufruf; ohne Wert verdeckt abfragen, alternativ OPENROUTER_API_KEY")
         command.add_argument("--max-output-tokens", type=int,
                              help="OpenRouter-Ausgabelimit pro Modellaufruf; Standard 32768")
+    approve = commands.add_parser("approve", help="Ausdrückliche Freigabe für einen Lauf: höheres Aufruf- oder "
+                                                   "Suchrundenlimit oder eine blockierte Teilfrage als Lücke akzeptieren")
+    approve.add_argument("project_dir", type=Path)
+    approve.add_argument("--run-id", help="Standard: der letzte Lauf des Projekts")
+    approve.add_argument("--model-calls", type=int, help="Neues Limit für Modellaufrufe dieses Laufs")
+    approve.add_argument("--search-rounds", type=int, help="Neues Limit für Web-Suchrunden dieses Laufs")
+    approve.add_argument("--accept-gap", metavar="TASK_ID",
+                         help="Blockierte Teilfrage, die im Dossier als Lücke dokumentiert bleibt")
+    approve.add_argument("--reason", default="", help="Kurze Begründung der akzeptierten Lücke")
     schemas = commands.add_parser("schemas", help="Implementierte JSON-Schemas exportieren")
     schemas.add_argument("output_dir", type=Path)
-    for command in (init, doctor, state, text_probe, audio_probe, research, script, audio, resume, schemas):
+    for command in (init, doctor, state, text_probe, audio_probe, research, script, audio, resume, schemas, quota, approve):
         command.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
@@ -97,6 +115,11 @@ def emit(data: dict, as_json: bool):
         for check in data["checks"]:
             print(f"{'OK' if check['ok'] else 'FEHLT'} {check['name']}: {check['detail']}")
         print("Modell-Inferenz ist erst mit audio-probe geprüft.")
+        return
+    if "lines" in data and "codex_cli" in data:
+        for line in data["lines"]:
+            print(line)
+        print(f"Geprüft: {data['checked_at']}")
         return
     print(data.get("message", f"Status: {data.get('status', 'ok')}"))
     run = data.get("run")
@@ -152,6 +175,28 @@ def run_command(args) -> int:
         elif args.command == "status":
             data = status(args.project_dir.resolve(), args.run_id)
             code = 0
+        elif args.command == "quota":
+            from .subscriptions import quota_overview
+            overview = quota_overview(RuntimeSettings(), refresh=True)
+            data = {"status": "ready" if overview["any_available"] else
+                    "waiting_for_quota" if overview["any_usable"] else "blocked", **overview}
+            code = 0 if overview["any_available"] else 2 if overview["any_usable"] else 1
+        elif args.command == "approve":
+            from .run_budget import approve_model_call_limit, approve_research_gap
+            root = args.project_dir.resolve()
+            run_id = manifest_path(root, args.run_id).parent.name
+            if args.model_calls is None and args.search_rounds is None and not args.accept_gap:
+                raise AppError("Freigabe angeben: --model-calls, --search-rounds oder --accept-gap.",
+                               code="invalid_request", status="blocked")
+            data = {"status": "approved", "run_id": run_id}
+            if args.model_calls is not None or args.search_rounds is not None:
+                approval = approve_model_call_limit(root, run_id, args.model_calls, search_rounds=args.search_rounds)
+                data["budget_approval"] = approval.model_dump(mode="json")
+            if args.accept_gap:
+                gap = approve_research_gap(root, run_id, args.accept_gap, args.reason)
+                data["gap_approval"] = gap.model_dump(mode="json")
+            data["message"] = "Freigabe gespeichert. Der Lauf übernimmt sie beim nächsten Aufruf oder mit pla resume."
+            code = 0
         elif args.command == "schemas":
             for name, model in (SCHEMAS | RESEARCH_SCHEMAS | SCRIPT_SCHEMAS | TEACHING_SCHEMAS |
                                 {"dialogue_polish_review": DialoguePolishReview, "series_review": SeriesReview}).items():
@@ -168,9 +213,13 @@ def run_command(args) -> int:
             research_run = args.command == "research" or (
                 args.command == "resume" and
                 read_yaml(manifest_path(args.project_dir.resolve(), args.run_id)).get("kind") == "research")
-            if not script_run and any(getattr(args, name, None) is not None
-                                      for name in ("backend", "model", "api_key", "max_output_tokens", "reasoning_effort")):
-                raise AppError("Textanbieter-Optionen gelten nur für script und die Wiederaufnahme eines Skriptlaufs.",
+            text_options = ("backend", "model", "api_key", "max_output_tokens", "reasoning_effort")
+            given = {name for name in text_options if getattr(args, name, None) is not None}
+            allowed = (set(text_options) if script_run else {"backend", "model", "reasoning_effort"} if research_run
+                       else {"backend"} if args.command == "text-probe" else set())
+            if given - allowed:
+                raise AppError("Textanbieter-Optionen gelten für script, research, text-probe und die Wiederaufnahme "
+                               "eines Skript- oder Rechercheaufs; --api-key und --max-output-tokens nur für script.",
                                code="invalid_backend", status="blocked")
             if episode_audio_run:
                 manifest = run_episode_audio(args.project_dir, episode=getattr(args, "episode", None),
@@ -194,13 +243,15 @@ def run_command(args) -> int:
             elif research_run:
                 manifest = run_research(args.project_dir, resume=args.command == "resume",
                                         run_id=getattr(args, "run_id", None),
-                                        reuse_sources=getattr(args, "reuse_sources", None))
+                                        reuse_sources=getattr(args, "reuse_sources", None),
+                                        backend=getattr(args, "backend", None), model=getattr(args, "model", None),
+                                        reasoning_effort=getattr(args, "reasoning_effort", None))
             else:
                 manifest = run_probe(
                     args.project_dir,
                     kind={"text-probe": "text_probe", "audio-probe": "audio_probe"}.get(args.command),
                     resume=args.command == "resume", run_id=getattr(args, "run_id", None),
-                    approve_audio=getattr(args, "approve_audio", False))
+                    approve_audio=getattr(args, "approve_audio", False), backend=getattr(args, "backend", None))
             data = {"status": manifest.status, "run": manifest.model_dump(mode="json")}
             code = 0 if manifest.status == "completed" else 2 if manifest.status == "waiting_for_quota" else 1
         emit(data, args.json_output)
