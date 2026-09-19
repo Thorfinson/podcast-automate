@@ -18,6 +18,8 @@ from pydantic import Field, SecretStr, model_validator
 from .errors import AppError
 from .models import Contract, HostVoices
 from .openrouter import NoRedirect, api_failure
+from .qwen_worker import spoken_settings
+from .spoken_forms import SpokenForms, spoken_text
 from .storage import digest, file_hash, inside, write_json
 
 GEMINI_MODEL = "google/gemini-3.1-flash-tts-preview"
@@ -32,10 +34,18 @@ GEMINI_VOICES = ("Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "
     "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat")
 
 
+class PausePolicy(Contract):
+    """Minimum silence at a transition, in milliseconds; a longer planned pause is kept."""
+    same_speaker_ms: int = Field(default=250, ge=0, le=10000)
+    speaker_change_ms: int = Field(default=450, ge=0, le=10000)
+    chapter_break_ms: int = Field(default=900, ge=0, le=10000)
+
+
 class AudioChoice(Contract):
     provider: Literal["qwen3_local", "openrouter_gemini_tts"] = "qwen3_local"
     voices: HostVoices = Field(
         default_factory=lambda: {"host_a": "Aiden", "host_b": "Vivian"})
+    pauses: PausePolicy = Field(default_factory=PausePolicy)
 
     @model_validator(mode="after")
     def validate_voices(self):
@@ -65,10 +75,38 @@ def audio_catalog():
     }
 
 
-def speech_settings(text, voice, language):
+def speech_settings(text, voice, language, spoken=None):
+    """``text`` is the reviewed script; ``spoken_text`` is what was sent, present only when it differs.
+
+    The dict is the cache key and the stored record. A segment without a spoken form keeps the
+    exact composition it had before spoken forms existed, so earlier cache entries stay valid.
+    """
     return {"provider": "openrouter_gemini_tts", "model": GEMINI_MODEL,
             "adapter_version": SPEECH_VERSION, "voice": voice, "language": language,
-            "text": text, "format": "pcm", "sample_rate": 24000, "channels": 1, "sample_width": 2}
+            "text": text, "format": "pcm", "sample_rate": 24000, "channels": 1, "sample_width": 2,
+            **spoken_settings(text, spoken)}
+
+
+def audio_generation_record(choice):
+    """The stored form of a choice: a default pause policy is left out, so it hashes as before.
+
+    ``same_audio_generation`` reads a record without ``pauses`` as today's defaults; a policy
+    that differs from the defaults is stored and therefore changes the input hash.
+    """
+    data = choice.model_dump()
+    if choice.pauses == PausePolicy():
+        data.pop("pauses")
+    return data
+
+
+def same_audio_generation(stored, current):
+    """A choice saved before the pause policy existed means today's default pauses."""
+    if stored == current:
+        return True
+    try:
+        return AudioChoice.model_validate(stored).model_dump() == AudioChoice.model_validate(current).model_dump()
+    except (ValueError, TypeError):
+        return False
 
 
 def split_input(text, limit=6000):
@@ -107,17 +145,19 @@ class GeminiSpeech:
             raise AppError("Für Gemini-Audio den OpenRouter-Key im Studio hinterlegen.",
                            code="openrouter_key_required", status="blocked")
 
-    def synthesize(self, text, voice, language, cache):
-        if voice not in GEMINI_VOICES or language not in {"de-DE", "en-US"} or not text.strip():
+    def synthesize(self, text, voice, language, cache, spoken=None):
+        """``text`` is the script and names the cache entry; ``spoken`` is what the engine hears."""
+        heard = spoken if spoken is not None else text
+        if voice not in GEMINI_VOICES or language not in {"de-DE", "en-US"} or not text.strip() or not heard.strip():
             raise AppError("Ungültiger Text, Sprache oder Gemini-Stimme.", code="invalid_speech")
         secret = self._key.get_secret_value()
-        if secret and secret in text:
+        if secret and (secret in text or secret in heard):
             raise AppError("Der API-Key darf nicht im gesprochenen Text stehen.", code="credential_in_prompt", status="blocked")
-        settings = speech_settings(text, voice, language)
+        settings = speech_settings(text, voice, language, spoken)
         path = cache / (digest(settings) + ".wav")
         if cached_audio(path, settings):
             return path
-        parts = split_input(text)
+        parts = split_input(heard)
         if len(parts) > 1:
             children = [self.synthesize(part, voice, language, cache) for part in parts]
             cache.mkdir(parents=True, exist_ok=True)
@@ -134,7 +174,7 @@ class GeminiSpeech:
                 "parts": [child.name for child in children], "speech_quality_verified": False})
             return path
         self.require_key()
-        payload = {"model": GEMINI_MODEL, "input": text, "voice": voice, "response_format": "pcm"}
+        payload = {"model": GEMINI_MODEL, "input": heard, "voice": voice, "response_format": "pcm"}
         request = Request(SPEECH_ENDPOINT, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Authorization": "Bearer " + secret, "Content-Type": "application/json",
                      "X-OpenRouter-Title": "Podcast Automate"}, method="POST")
@@ -189,30 +229,34 @@ class GeminiSpeech:
         return path
 
 
-def run_gemini_tts(config, script, root, work, choice, api_key=None):
+def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None):
     engine = GeminiSpeech(api_key, timeout=config.runtime.tts_timeout_seconds)
+    table = table if table is not None else SpokenForms()
     rows, paths = [], []
     for segment in script.segments:
         write_json(work / "tts_progress.json", {"completed_segments": len(rows),
             "total_segments": len(script.segments), "current_segment": segment.segment_id})
         voice = choice.voices[segment.speaker_id]
-        path = engine.synthesize(segment.text, voice, config.language, root / "cache/audio/gemini")
+        spoken = spoken_text(segment, table, overrides)
+        path = engine.synthesize(segment.text, voice, config.language, root / "cache/audio/gemini", spoken=spoken)
         paths.append(path)
         rows.append({"segment_id": segment.segment_id, "path": path.relative_to(root / "cache/audio").as_posix(),
-            "sha256": file_hash(path), "settings": speech_settings(segment.text, voice, config.language)})
+            "sha256": file_hash(path), "settings": speech_settings(segment.text, voice, config.language, spoken)})
     write_json(work / "tts_report.json", {"segments": rows})
     write_json(work / "tts_progress.json", {"completed_segments": len(rows), "total_segments": len(rows)})
     return paths
 
 
-def check_gemini_rows(root, script, report, choice, language):
+def check_gemini_rows(root, script, report, choice, language, *, table=None, overrides=None):
     rows = report.get("segments", [])
+    table = table if table is not None else SpokenForms()
     if [row.get("segment_id") for row in rows] != [s.segment_id for s in script.segments]:
         raise AppError("Gemini-Audio passt nicht zum Skript.", code="invalid_audio")
     paths = []
     for row, segment in zip(rows, script.segments, strict=True):
         path = inside(root / "cache/audio", row["path"])
-        expected = speech_settings(segment.text, choice.voices[segment.speaker_id], language)
+        expected = speech_settings(segment.text, choice.voices[segment.speaker_id], language,
+                                   spoken_text(segment, table, overrides))
         if row.get("settings") != expected or file_hash(path) != row.get("sha256"):
             raise AppError("Gemini-Text, Stimme oder Audiodatei geändert.", code="invalid_audio")
         paths.append(path)

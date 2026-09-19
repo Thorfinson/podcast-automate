@@ -11,3 +11,19 @@ For the negative control, an added assertion wrongly says that changing a parame
 All three calls used the Codex subscription path. These are small development checks, not a held-out benchmark, a source review or a human listening test. The rest of the production pipeline still checks source support and teaching quality after polishing. A role assignment does not establish expertise, and a model comparison does not prove that listeners will understand the result.
 
 Local readable views and raw call files are under `projects/dialogue-polish-check/`. The canonical pilot and its approved audio inputs were not changed. Automated regression tests for interruption, bounded repairs, fabricated evidence, changed inputs and audio gating are in `tests/test_polishing.py`.
+
+## Fixed cases from 19 September 2026
+
+`run.py` replays the production comparison on the cases under `cases/` plus the seasons dialogue as a
+positive control. Offline it only validates the archive and the review contract; `--live` spends one
+subscription call per case.
+
+`cases/ep002_dense_passage.json` holds chapter 4 of episode 2 of the sample series: the original draft
+segments 030 to 034 as `original`, the published polished text as `candidate`. A human read of
+19 September 2026 found the polished passage keeps four chained referents alive at once, and the
+13 September comparison passed `spoken_language` on it anyway. Expected verdict under the
+`dialogue_polish_review.v3-density` prompt: `spoken_language` fails, with `ep_002_seg_031` or
+`ep_002_seg_032` among the named demanding passages.
+
+The expected label is one person's reading, not a measured listener test. A live run that reproduces
+it shows the review now names the passage; it does not establish that listeners were confused.

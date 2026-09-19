@@ -77,6 +77,33 @@ def model_dtype(torch, device: str):
     return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
 
+def spoken_settings(text: str, spoken) -> dict:
+    """The spoken form belongs to a segment's settings only when it differs from the script text.
+
+    Both engines, both verifiers and both cache keys use this one rule: a segment without a
+    spoken form is stored and keyed exactly as it was before spoken forms existed, so every
+    earlier cache entry stays valid. ``text`` is always the reviewed script.
+    """
+    return {} if spoken is None or spoken == text else {"spoken_text": spoken}
+
+
+def segment_settings(segment: dict, *, voice: str, language: str, config: dict, revision: str,
+                     device: str, dtype: str, packages: dict, hip_version) -> dict:
+    """Everything that decides what a rendered segment sounds like; the cache key hashes it."""
+    return {
+        "worker_version": 2, "model": config["tts_model"], "revision": revision,
+        "voice": voice, "text": segment["text"], "language": language,
+        "device": config["tts_device"], "resolved_device": device, "dtype": dtype,
+        "attention": config["tts_attention"], "seed": config["seed"],
+        "packages": packages, "hip_version": hip_version,
+        **spoken_settings(segment["text"], segment.get("spoken_text")),
+    }
+
+
+def cache_key(settings: dict) -> str:
+    return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
+
+
 def cached_segment(wav: Path, meta: Path) -> dict | None:
     try:
         data = json.loads(meta.read_text(encoding="utf-8"))
@@ -127,14 +154,11 @@ def render(request: dict, report: dict) -> dict:
     for segment in request["segments"]:
         progress("rendering", results, segment["segment_id"])
         voice = request["voices"][segment["speaker_id"]]
-        settings = {
-            "worker_version": 2, "model": config["tts_model"], "revision": revision,
-            "voice": voice, "text": segment["text"], "language": language,
-            "device": config["tts_device"], "resolved_device": device, "dtype": str(dtype),
-            "attention": config["tts_attention"], "seed": config["seed"],
-            "packages": report["packages"], "hip_version": report.get("hip_version"),
-        }
-        key = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
+        spoken = segment.get("spoken_text") or segment["text"]
+        settings = segment_settings(segment, voice=voice, language=language, config=config,
+                                    revision=revision, device=device, dtype=str(dtype),
+                                    packages=report["packages"], hip_version=report.get("hip_version"))
+        key = cache_key(settings)
         wav, meta = cache / f"{key}.wav", cache / f"{key}.json"
         data = cached_segment(wav, meta)
         hit = data is not None
@@ -143,7 +167,7 @@ def render(request: dict, report: dict) -> dict:
             started = time.perf_counter()
             with torch.inference_mode():
                 waves, rate = model.generate_custom_voice(
-                    text=segment["text"], language=language, speaker=voice)
+                    text=spoken, language=language, speaker=voice)
             samples = np.asarray(waves[0], dtype=np.float32)
             if samples.ndim != 1 or not samples.size or not np.isfinite(samples).all():
                 raise RuntimeError("INVALID_AUDIO")

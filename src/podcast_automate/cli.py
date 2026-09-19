@@ -70,6 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
     script.add_argument("--episode", help="Nur die gewählte Folge schreiben, zum Beispiel ep_001")
     script.add_argument("--revise", metavar="EPISODE_ID", help="Vorhandenes Skript mit seinem bisherigen Plan überarbeiten")
     script.add_argument("--feedback", default="", help="Redaktionelle Rückmeldung für --revise")
+    series = commands.add_parser("series-review",
+        help="Veröffentlichte Skripte eines Laufs als Serie prüfen, ohne den Lauf zu verändern")
+    series.add_argument("project_dir", type=Path)
+    series.add_argument("--run", dest="run_id", help="Skriptlauf; Standard ist der zuletzt veröffentlichte")
+    series.add_argument("--backend", choices=("codex_cli", "claude_code", "auto"))
+    series.add_argument("--model", help="Modell-ID des festen Abo-Anbieters")
+    series.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"))
     audio = commands.add_parser("audio", help="Geprüfte Folge mit Qwen vertonen und zur Hörprüfung montieren")
     audio.add_argument("project_dir", type=Path)
     audio.add_argument("--episode", required=True)
@@ -102,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--reason", default="", help="Kurze Begründung der akzeptierten Lücke")
     schemas = commands.add_parser("schemas", help="Implementierte JSON-Schemas exportieren")
     schemas.add_argument("output_dir", type=Path)
-    for command in (init, doctor, state, text_probe, audio_probe, research, script, audio, resume, schemas, quota, approve):
+    for command in (init, doctor, state, text_probe, audio_probe, research, script, series, audio, resume, schemas, quota, approve):
         command.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
@@ -203,6 +210,18 @@ def run_command(args) -> int:
                 write_json(args.output_dir / f"{name}.schema.json", model.model_json_schema())
             data = {"status": "completed", "message": f"Schemas exportiert: {args.output_dir.resolve()}"}
             code = 0
+        elif args.command == "series-review":
+            from .scripting import run_series_review, series_review_target
+            manifest = run_series_review(args.project_dir, run_id=args.run_id, backend=args.backend,
+                                         model=args.model, reasoning_effort=args.reasoning_effort)
+            target = series_review_target(args.project_dir, manifest.run_id)
+            verdict = ("Serienprüfung abgeschlossen." if manifest.status == "completed"
+                       else "Serienprüfung meldet Einwände; Bericht prüfen.")
+            location = (" Das Urteil steht in reports/script_quality.yaml." if target["report_mirrored"] else
+                        f" Der geprüfte Lauf {target['script_run_id']} ist nicht der veröffentlichte Stand; "
+                        f"das Urteil steht nur unter runs/{manifest.run_id}/series_review.json.")
+            data = {"status": manifest.status, "run_id": manifest.run_id, **target, "message": verdict + location}
+            code = 0 if manifest.status == "completed" else 1
         else:
             episode_audio_run = args.command == "audio" or (
                 args.command == "resume" and
@@ -213,6 +232,11 @@ def run_command(args) -> int:
             research_run = args.command == "research" or (
                 args.command == "resume" and
                 read_yaml(manifest_path(args.project_dir.resolve(), args.run_id)).get("kind") == "research")
+            if (args.command == "resume" and
+                    read_yaml(manifest_path(args.project_dir.resolve(), args.run_id)).get("kind") == "series_review"):
+                # A review run holds one verdict and nothing to continue; it never becomes a probe.
+                raise AppError("Ein Serienprüflauf ist nicht fortsetzbar; pla series-review erneut aufrufen.",
+                               code="invalid_run", status="blocked")
             text_options = ("backend", "model", "api_key", "max_output_tokens", "reasoning_effort")
             given = {name for name in text_options if getattr(args, name, None) is not None}
             allowed = (set(text_options) if script_run else {"backend", "model", "reasoning_effort"} if research_run

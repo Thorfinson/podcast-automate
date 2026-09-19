@@ -10,6 +10,8 @@ statements to 150 paraphrased words; source_usage includes unchanged findings. R
 anchors when suitable. A relevant search hit is not proof: check the whole claim and all causal
 steps. User uploads alone cannot independently verify a claim. Resolve an open question only when
 its requested answer is actually supported; do not hide missing evidence by narrowing the scope or
-declaring scientific uncertainty. Leave a gap open when these passages do not answer it. Coverage
+declaring scientific uncertainty. Leave a gap open when these passages do not answer it. Give every
+coverage update that is not answered gap_terms: three to eight search words in the language of the
+stored sources that a section answering the gap would contain; empty when answered. Coverage
 updates must be justified by findings and must refer to original question IDs. Omit unchanged
 entries from all patch lists. Write in {language}.

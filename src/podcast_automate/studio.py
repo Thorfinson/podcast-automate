@@ -24,15 +24,19 @@ from .errors import AppError
 from . import attachments
 from .execution import ExecutionChoice, MAX_PARALLEL, selected_execution
 from .logs import configure_logging, logger
-from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, now
+from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, host_labels, now
+from .episode_audio import saved_approval
 from .runner import manifest_path
 from .run_budget import approve_model_call_limit, approve_research_gap
 from .subscriptions import parse_iso
-from .scripting import outline_hash, script_metrics
-from .speech import AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, selected_audio
-from .storage import digest, file_hash, init_project, inside, load_project, project_lock, read_yaml, write_json, write_yaml
+from .scripting import outline_hash, script_metrics, style_notes
+from .speech import (AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
+                     same_audio_generation)
+from .storage import (atomic_text, digest, file_hash, init_project, inside, load_project, project_hash, project_lock,
+                      read_yaml, write_json, write_yaml)
 from .voice_samples import ready_sample, sample_inventory
-from .studio_scripts import script_previews
+from .spoken_forms import SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report
+from .studio_scripts import review_notes, script_previews
 from .downloads import disposition, podcast_download, podcast_zip
 from .studio_trash import has_artifacts, move_contents
 from .platforms import configure_path, venv_python
@@ -373,7 +377,7 @@ class Studio:
             raise AppError("Laufende Aufträge dieses Projekts zuerst abschließen oder anhalten.", code="project_busy")
         with project_lock(root):
             config = load_project(root)
-            if data.get("config_hash") != digest(config.model_dump(mode="json")):
+            if data.get("config_hash") != project_hash(config):
                 raise AppError("Projekt inzwischen geändert. Übersicht neu laden.", code="inputs_changed")
             trash_id = uuid.uuid4().hex
             destination = inside(self.workspace / ".studio/trash", trash_id)
@@ -419,10 +423,14 @@ class Studio:
         active_audio = self.active_audio()
         active_here = sum(value[1] == root for value in active_audio.values())
         limit = MAX_PARALLEL if execution.audio == "parallel" and audio.remote else 1
+        table = load_forms(root)
         data = {"id": project, "config": config.model_dump(mode="json"),
-                "config_hash": digest(config.model_dump(mode="json")),
+                "config_hash": project_hash(config), "host_labels": host_labels(config),
                 "text": read_json(root / "studio/text.json", TextChoice().model_dump()),
                 "audio_settings": audio.model_dump(), "audio_hash": digest(audio.model_dump()),
+                "style_notes": style_notes(root), "style_notes_hash": digest(style_notes(root)),
+                "spoken_forms": table.model_dump(),
+                "spoken_forms_hash": digest(table.model_dump()),
                 "voice_samples": sample_inventory(self.projects),
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
@@ -448,18 +456,32 @@ class Studio:
             data["research"] = (root / "research/dossier.yaml").read_text(encoding="utf-8")
         if (root / "runs/latest.json").exists():
             data["run"] = read_yaml(manifest_path(root))
+        quality = read_yaml(root / "reports/script_quality.yaml") if (root / "reports/script_quality.yaml").is_file() else {}
+        reported = quality.get("episodes") if isinstance(quality, dict) else None
         for folder in sorted((root / "episodes").glob("ep_*")):
             if not (folder / "script.yaml").exists():
                 continue
             script = EpisodeScript.model_validate(read_yaml(folder / "script.yaml"))
             report = read_json(folder / "audio_latest.json", {})
+            # The audio decision, not the last run report, holds what the operator set by hand.
+            decision = read_yaml(folder / "audio_review.yaml") if (folder / "audio_review.yaml").is_file() else {}
+            overrides = {k: v for k, v in (decision.get("spoken_overrides") or {}).items()
+                         if isinstance(k, str) and isinstance(v, str) and v.strip()}
             audio_paths = [part["audio"] for part in report.get("parts", [])
                            if inside(root, part["audio"]).is_file()]
             data["episodes"].append({"script": script.model_dump(), "hash": file_hash(folder / "script.yaml"),
                 "readable_hash": file_hash(folder / "script.md"), "metrics": script_metrics(script),
                 "audio": audio_paths, "audio_current": report.get("script_sha256") == file_hash(folder / "script.yaml")
                 and report.get("voices") == audio.voices
-                and report.get("audio_generation", {"provider": "qwen3_local", "voices": report.get("voices")}) == audio.model_dump()})
+                and same_audio_generation(report.get("audio_generation",
+                    {"provider": "qwen3_local", "voices": report.get("voices")}), audio.model_dump()),
+                "review_notes": review_notes((reported or {}).get(folder.name)),
+                "spoken_overrides": overrides,
+                # Computed from the published text, the table and the overrides, with no model
+                # call, so a reader sees the difficult tokens before the first audio run.
+                "pronunciation": pronunciation_report(script, table, language=config.language, overrides=overrides),
+                "listening_note": decision.get("listening_note", ""),
+                "human_listening_reviewed": bool(decision.get("human_listening_reviewed"))})
         run = (data.get("job") or {}).get("run") or data.get("run")
         data["script_previews"] = script_previews(root, run)
         return data
@@ -512,7 +534,7 @@ class Studio:
         self.idle(root)
         with project_lock(root):
             old = load_project(root)
-            if data.get("config_hash") != digest(old.model_dump(mode="json")):
+            if data.get("config_hash") != project_hash(old):
                 raise AppError("Projekt wurde inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
             config = TopicBrief.model_validate(data["config"])
             config.runtime = old.runtime
@@ -526,11 +548,72 @@ class Studio:
                 if data.get("execution_hash") != digest(execution.model_dump()):
                     raise AppError("Ausführungsmodus inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
                 execution = ExecutionChoice.model_validate(data["execution"])
+            if "style_notes" in data:
+                notes = data["style_notes"]
+                if not isinstance(notes, str) or len(notes) > 20000:
+                    raise AppError("Redaktionelle Notizen sind zu lang.", code="invalid_request")
+                if data.get("style_notes_hash") != digest(style_notes(root)):
+                    raise AppError("Notizen inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
+                atomic_text(root / "style_notes.md", notes.strip() + "\n" if notes.strip() else "")
+            forms = None
+            if "spoken_forms" in data:
+                if data.get("spoken_forms_hash") != digest(load_forms(root).model_dump()):
+                    raise AppError("Sprechformen inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
+                forms = SpokenForms.model_validate(data["spoken_forms"])
             self.save_text(root, data["text"])
             write_yaml(root / "project.yaml", config.model_dump(mode="json"))
             write_json(root / "studio/audio.json", audio.model_dump())
             write_json(root / "studio/execution.json", execution.model_dump())
+            if forms is not None:
+                # Only a request that carried the table writes it; a notes or voice save leaves it alone.
+                write_json(root / "studio/spoken_forms.json", forms.model_dump())
         return {"saved": True}
+
+    def spoken_override(self, project, data):
+        """A per-segment spoken form. It changes only how a segment is read aloud."""
+        root = self.root(project)
+        episode, segment_id = data.get("episode"), data.get("segment_id")
+        spoken = data.get("spoken", "")
+        if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode):
+            raise AppError("Unbekannte Folge.", code="invalid_request")
+        if not isinstance(segment_id, str) or not isinstance(spoken, str) or len(spoken) > 4000:
+            raise AppError("Ungültige Sprechform.", code="invalid_request")
+        folder = inside(root / "episodes", episode)
+        script_file = folder / "script.yaml"
+        if not script_file.is_file():
+            raise AppError("Für diese Folge gibt es noch keinen veröffentlichten Text.", code="unknown_episode")
+        script = EpisodeScript.model_validate(read_yaml(script_file))
+        segment = next((s for s in script.segments if s.segment_id == segment_id), None)
+        if segment is None:
+            raise AppError("Dieser Abschnitt kommt in der Folge nicht vor.", code="invalid_request")
+        with project_lock(root):
+            decision = read_yaml(folder / "audio_review.yaml") if (folder / "audio_review.yaml").is_file() else {}
+            overrides = dict(decision.get("spoken_overrides") or {})
+            # The text the table already produces is not an override; storing it would freeze the
+            # segment against later table changes without changing what is heard today.
+            if spoken.strip() and spoken.strip() != apply_spoken_forms(segment.text, load_forms(root)):
+                overrides[segment_id] = spoken.strip()
+            else:
+                overrides.pop(segment_id, None)
+            write_yaml(folder / "audio_review.yaml", {**decision, "spoken_overrides": overrides})
+        return {"episode": episode, "spoken_overrides": overrides}
+
+    def listening_review(self, project, data):
+        """Record that a human listened, with their note. Nothing sets this automatically."""
+        root = self.root(project)
+        episode, note = data.get("episode"), data.get("note", "")
+        if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode):
+            raise AppError("Unbekannte Folge.", code="invalid_request")
+        if not isinstance(note, str) or len(note) > 4000 or not isinstance(data.get("reviewed"), bool):
+            raise AppError("Ungültige Hörprüfung.", code="invalid_request")
+        folder = inside(root / "episodes", episode)
+        if not (folder / "audio_review.yaml").is_file():
+            raise AppError("Für diese Folge gibt es noch keine Audioentscheidung.", code="unknown_episode")
+        with project_lock(root):
+            decision = read_yaml(folder / "audio_review.yaml")
+            write_yaml(folder / "audio_review.yaml", {**decision, "human_listening_reviewed": data["reviewed"],
+                                                     "listening_note": note.strip()})
+        return {"episode": episode, "human_listening_reviewed": data["reviewed"]}
 
     def apply_proposal(self, project, data):
         root = self.root(project)
@@ -559,7 +642,7 @@ class Studio:
             "text": text_choice.model_dump(), "audio_settings": audio.model_dump(), "audio_hash": data.get("audio_hash"),
             "execution": execution.model_dump(), "execution_hash": data.get("execution_hash")})
         write_json(root / "studio/applied_proposal.json", {"proposal_hash": digest(proposal),
-            "config_hash": digest(load_project(root).model_dump(mode="json")),
+            "config_hash": project_hash(load_project(root)),
             "audio_hash": digest(audio.model_dump()), "execution_hash": digest(execution.model_dump()),
             "text_hash": digest(read_json(root / "studio/text.json"))})
         return result
@@ -618,18 +701,26 @@ class Studio:
                 raise AppError("Folge auswählen.", code="unknown_episode")
             payload["episode"] = episode
             if action == "audio":
-                if data.get("approve_audio") is not True:
+                rerender = data.get("rerender") is True
+                if not rerender and data.get("approve_audio") is not True:
                     raise AppError("Das gelesene Skript ausdrücklich für Audio freigeben.", code="audio_approval_required")
                 for key, name in (("script_hash", "script.yaml"), ("readable_hash", "script.md")):
                     if data.get(key) != file_hash(root / "episodes" / episode / name):
                         raise AppError("Skript inzwischen geändert. Bitte erneut lesen.", code="script_edited")
                     payload[key] = data[key]
                 payload["config_hash"] = data.get("config_hash")
-                if payload["config_hash"] != digest(load_project(root).model_dump(mode="json")):
+                if payload["config_hash"] != project_hash(load_project(root)):
                     raise AppError("Stimmen oder Auftrag geändert. Bitte die aktuelle Ansicht erneut prüfen.", code="inputs_changed")
                 audio = selected_audio(root, load_project(root))
                 if data.get("audio_hash") != digest(audio.model_dump()):
                     raise AppError("Audioanbieter oder Stimmen geändert. Bitte erneut freigeben.", code="inputs_changed")
+                if rerender:
+                    # A re-render changes only spoken forms. It starts on the saved approval by the
+                    # rule the pipeline applies; without one the reader must approve the text first.
+                    if not saved_approval(root, episode, payload["script_hash"], audio_generation_record(audio)):
+                        raise AppError("Für diesen Stand liegt keine Audio-Freigabe vor. Bitte auf der Audioseite freigeben.",
+                                       code="audio_approval_required")
+                    payload["rerender"] = True
                 payload["audio_settings"] = audio.model_dump()
                 payload["audio_hash"] = data["audio_hash"]
                 if audio.remote:
@@ -778,7 +869,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                     elif path == "/api/restore":
                         result = app.restore(data)
                     else:
-                        match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload|remove_attachment|approve)", path)
+                        match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
+                                             r"|remove_attachment|approve|spoken_override|listening_review)", path)
                         if not match:
                             raise AppError("Seite nicht gefunden.", code="not_found")
                         project, action = match.groups()

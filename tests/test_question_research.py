@@ -119,6 +119,55 @@ class QuestionResearchTests(unittest.TestCase):
         public = json.loads((self.work / "research_questions.json").read_text())
         self.assertEqual((public["closed"], public["total"], public["phase"]), (1, 1, "completed"))
 
+    def seed_dossier(self, *open_questions):
+        dossier = fixtures.dossier_from_prompt(json.dumps({"topic": "Test topic", "retrieved_sources": [
+            {"source_id": s.id, "url": s.final_url, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text}
+                                                                 for x in s.sections]} for s in self.index.sources]}))
+        dossier.open_questions = list(open_questions)
+        return dossier
+
+    def probed(self, gap):
+        """Initialise with one declared gap and research its task; no run-level audit involved."""
+        context = [{"source_id": s.id, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text}
+                                                    for x in s.sections]} for s in self.index.sources]
+        engine = self.engine()
+        engine.initialise(self.discovery, self.index, self.seed_dossier(gap), context)
+        task = next(t for t in QuestionPlan.model_validate(engine.state["plan"]).tasks)
+        self.assertEqual(task.gap_ids, list(engine.state["gaps"]))
+        engine.research_task(task)
+        return engine, json.loads((self.work / "question_research/gap_probes.json").read_text(encoding="utf-8"))
+
+    def test_a_declared_gap_is_probed_and_its_hits_are_read_before_any_reader_call(self):
+        gap = "The rule that assigns an energy to each configuration is missing."
+        engine, probes = self.probed(gap)
+        self.assertEqual([row["text"] for row in probes], [gap])
+        self.assertTrue(probes[0]["hits"])
+        self.assertIn(probes[0]["status"], ("resolved", "hits_read_confirmed"))
+        row = engine.state["tasks"]["task_definition"]
+        self.assertIn(probes[0]["hits"][0]["reference"], row["read_refs"])
+        # The probe itself costs nothing; only planning and the task spend calls.
+        self.assertNotIn("gap_probe", [version for _, version in self.calls])
+
+    def test_a_gap_without_corpus_hits_never_blocks(self):
+        from podcast_automate.research_gap_probe import unread
+        engine, probes = self.probed("Which tokenizer curriculum shaped the vocabulary schedule?")
+        self.assertEqual(probes[0]["hits"], [])
+        self.assertEqual(unread(probes), [])
+        self.assertEqual(engine.state["tasks"]["task_definition"]["status"], "verified")
+
+    def test_a_blocked_task_leaves_its_gap_unread_when_the_hits_were_never_read(self):
+        from podcast_automate.research_gap_probe import unread
+        gap = "The rule that assigns an energy to each configuration is missing."
+        context = [{"source_id": s.id, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text}
+                                                    for x in s.sections]} for s in self.index.sources]
+        engine = self.engine()
+        engine.initialise(self.discovery, self.index, self.seed_dossier(gap), context)
+        task = QuestionPlan.model_validate(engine.state["plan"]).tasks[0]
+        engine.state["tasks"][task.id].update(status="blocked", read_refs=[], outcome="evidence_block")
+        engine.settle_probes(task, engine.state["tasks"][task.id])
+        self.assertEqual([row["status"] for row in engine.state["gap_probes"]], ["hits_unread"])
+        self.assertEqual(len(unread(engine.state["gap_probes"])), 1)
+
     def test_production_pipeline_publishes_and_resumes_without_more_calls(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
             first = run_research(self.root)

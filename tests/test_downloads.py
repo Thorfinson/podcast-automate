@@ -7,7 +7,7 @@ from urllib.parse import unquote
 
 from podcast_automate.downloads import episode_filename, podcast_download, podcast_zip
 from podcast_automate.errors import AppError
-from podcast_automate.storage import digest, write_json, write_yaml
+from podcast_automate.storage import project_hash, write_json, write_yaml
 from tests.script_fixtures import example_script
 from tests import test_studio
 
@@ -104,7 +104,7 @@ class DownloadTests(unittest.TestCase):
             with podcast_zip(self.root) as (path, _):
                 self.assertTrue(path.is_file())
                 with self.assertRaises(AppError):
-                    self.app.delete("example", {"confirm_id": "example", "config_hash": digest(self.config.model_dump(mode="json"))})
+                    self.app.delete("example", {"confirm_id": "example", "config_hash": project_hash(self.config)})
                 raise ConnectionResetError("client left")
         self.assertFalse(path.exists())
         self.assertTrue((self.root / "project.yaml").exists())

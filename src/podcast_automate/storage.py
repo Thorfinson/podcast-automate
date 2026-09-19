@@ -19,6 +19,19 @@ def digest(data: object) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def project_hash(config: TopicBrief) -> str:
+    """The brief's identity for run manifests, input hashes and the Studio's change gates.
+
+    A field added to the brief after runs were recorded is dropped while it is unset, so an
+    existing run still matches an unchanged project.yaml. ``host_names`` arrived on 19 September
+    2026; a brief without names hashes exactly as it did before the field existed.
+    """
+    data = config.model_dump(mode="json")
+    if data.get("host_names") is None:
+        data.pop("host_names", None)
+    return digest(data)
+
+
 def file_hash(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()

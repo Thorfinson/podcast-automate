@@ -98,6 +98,11 @@ class QuestionCoverage(Contract):
     status: Literal["answered", "partial", "unanswered"]
     finding_ids: list[Identifier]
     gap: str
+    # The corpus probe compares words, so a German gap over an English corpus finds nothing by
+    # itself. These words bridge that: the model names them in the sources' language.
+    gap_terms: list[NonEmpty] = Field(default_factory=list, description=(
+        "Three to eight search words in the language of the stored sources that a section "
+        "answering this gap would contain; empty when the question is answered."))
 
 
 class ResearchDossier(Contract):

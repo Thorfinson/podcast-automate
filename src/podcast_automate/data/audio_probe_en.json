@@ -4,33 +4,51 @@
   "title": "Podcast Automate – Technical Voice Sample",
   "purpose": "technical_probe",
   "chapters": [
-    {"chapter_id": "dialog", "title": "Voices and Conversation"},
-    {"chapter_id": "pronunciation", "title": "Technical Terms, Numbers, and Pauses"}
+    {
+      "chapter_id": "dialog",
+      "title": "Voices and Conversation"
+    },
+    {
+      "chapter_id": "pronunciation",
+      "title": "Technical Terms, Numbers, and Pauses"
+    }
   ],
   "segments": [
     {
-      "segment_id": "seg_001", "scene_id": "scene_001", "chapter_id": "dialog",
+      "segment_id": "seg_001",
+      "scene_id": "scene_001",
+      "chapter_id": "dialog",
       "speaker_id": "host_a",
       "text": "This is a technical voice sample for our podcast series. We are testing two voices, longer explanations, and the transitions between them. Listen for whether the voice stays clear even at the end of a longer sentence, and whether the pauses feel natural.",
-      "knowledge_refs": [], "pause_after_ms": 450
+      "knowledge_refs": [],
+      "pause_after_ms": 450
     },
     {
-      "segment_id": "seg_002", "scene_id": "scene_001", "chapter_id": "dialog",
+      "segment_id": "seg_002",
+      "scene_id": "scene_001",
+      "chapter_id": "dialog",
       "speaker_id": "host_b",
       "text": "And how does it sound when I ask a follow-up question? In the future series, follow-up questions should help us really understand an idea. We want to leave enough time for step-by-step explanations and examples.",
-      "knowledge_refs": [], "pause_after_ms": 800
+      "knowledge_refs": [],
+      "pause_after_ms": 800
     },
     {
-      "segment_id": "seg_003", "scene_id": "scene_002", "chapter_id": "pronunciation",
+      "segment_id": "seg_003",
+      "scene_id": "scene_002",
+      "chapter_id": "pronunciation",
       "speaker_id": "host_a",
-      "text": "Here are some words and numbers for the pronunciation test: machine learning, energy-based models, gradient methods, Alfredo Canziani, and Yann LeCun. Twelve point five milligrams per deciliter. Zero point zero two. One hundred and twenty seconds.",
-      "knowledge_refs": [], "pause_after_ms": 600
+      "text": "Here are some words and numbers for the pronunciation test: machine learning, energy-based models, gradient methods, Alfredo Canziani, and Yann LeCun. Twelve point five milligrams per deciliter. Zero point zero two. One hundred and twenty seconds. Now the difficult cases: j'ai mal aux pieds, DeepSeek-V3.2-Exp, H800 and Kullback-Leibler. Please say the numbers 2048, 1997 and 128000 clearly.",
+      "knowledge_refs": [],
+      "pause_after_ms": 600
     },
     {
-      "segment_id": "seg_004", "scene_id": "scene_002", "chapter_id": "pronunciation",
+      "segment_id": "seg_004",
+      "scene_id": "scene_002",
+      "chapter_id": "pronunciation",
       "speaker_id": "host_b",
       "text": "That brings the voice sample to an end. Those terms were test material, rather than a full explanation of the subject. Next, we will compare the clarity and consistency of the two voices.",
-      "knowledge_refs": [], "pause_after_ms": 300
+      "knowledge_refs": [],
+      "pause_after_ms": 300
     }
   ]
 }

@@ -29,6 +29,7 @@ from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_tas
 from .question_sources import restore_attempts
 from .question_synthesis import SynthesisMixin
 from .research_evidence import support_errors
+from .research_gap_probe import coverage_terms, gap_id, probe
 from .research_ledger import (VERSION, bootstrap_legacy, check_sources, load_index, public_ledger, read_value,
                               save_index, save_value)
 from .research_patches import cached_call
@@ -66,7 +67,7 @@ def _gaps(dossier, migration):
     if dossier:
         texts.extend(c.gap for c in dossier.coverage if c.gap)
     texts.extend(i["reason"] for i in (migration.get("last_review") or {}).get("issues", []))
-    return {"gap_" + digest(text)[:12]: text for text in dict.fromkeys(texts)}
+    return {gap_id(text): text for text in dict.fromkeys(texts)}
 
 
 class QuestionResearch(TaskResearchMixin, SynthesisMixin):
@@ -139,6 +140,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         if self.attempts is not None:
             self.state["source_attempt_count"] = len(self.attempts)
         save_value(self.folder / "state.json", self.state)
+        write_json(self.folder / "gap_probes.json", self.state.get("gap_probes", []))
         public = public_ledger(self.state, self.index)
         write_json(self.work / "research_questions.json", public)
         lines = ["# Recherchefragen", "", f"{public['closed']} von {public['total']} Teilfragen geprüft abgeschlossen.", ""]
@@ -302,6 +304,9 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                                  "reopenings": MAX_REOPENINGS}}
         self.set_index(index)
         self.attempts = restore_attempts(self.folder, index)
+        # Model-free: a lexical pass that asks whether each declared gap already has
+        # candidate sections in the corpus. It costs nothing and blocks nothing yet.
+        self.state["gap_probes"] = probe(index, gaps, gap_terms=coverage_terms(dossier) if dossier else {})
         self.save("Rechercheplan gespeichert – einzelne Fragen werden untersucht")
 
     def run(self, discovery, index, dossier=None, context=()):

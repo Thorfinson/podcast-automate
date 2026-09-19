@@ -13,9 +13,10 @@ from pydantic import ValidationError
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.scripting import run_script
-from podcast_automate.speech import (AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech,
-                                    SPEECH_ENDPOINT, audio_catalog, split_input)
-from podcast_automate.storage import file_hash, write_json
+from podcast_automate.speech import (AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech, PausePolicy,
+                                    SPEECH_ENDPOINT, SPEECH_VERSION, audio_catalog, audio_generation_record,
+                                    same_audio_generation, speech_settings, split_input)
+from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
 from podcast_automate.studio_worker import perform
 from tests import script_fixtures as fixtures
 from tests.test_audio import tone
@@ -122,6 +123,72 @@ class SpeechTests(unittest.TestCase):
             path = self.engine.synthesize("Hallo", "Aoede", "de-DE", self.cache)
             self.assertTrue(path.is_file())
 
+    def test_the_spoken_form_changes_the_cache_key_and_the_verifier(self):
+        from podcast_automate.errors import AppError as Error
+        from podcast_automate.models import Chapter, EpisodeScript, Segment
+        from podcast_automate.speech import check_gemini_rows
+        from podcast_automate.spoken_forms import SpokenForms
+        plain = speech_settings("Auf H800.", "Aoede", "de-DE")
+        spoken = speech_settings("Auf H800.", "Aoede", "de-DE", "Auf Ha achthundert.")
+        # Without a spoken form the settings are the exact dict the adapter hashed before spoken
+        # forms existed, so every earlier Gemini cache entry keeps its key and is not paid twice.
+        self.assertEqual(plain, {"provider": "openrouter_gemini_tts", "model": GEMINI_MODEL,
+            "adapter_version": SPEECH_VERSION, "voice": "Aoede", "language": "de-DE", "text": "Auf H800.",
+            "format": "pcm", "sample_rate": 24000, "channels": 1, "sample_width": 2})
+        self.assertEqual(plain, speech_settings("Auf H800.", "Aoede", "de-DE", "Auf H800."))
+        self.assertEqual(spoken, {**plain, "spoken_text": "Auf Ha achthundert."})
+        self.assertNotEqual(digest(plain), digest(spoken))
+        script = EpisodeScript(episode_id="ep_001", title="T", purpose="deep_dive",
+            chapters=[Chapter(chapter_id="c", title="C")],
+            segments=[Segment(segment_id="seg_001", scene_id="c", chapter_id="c",
+                              speaker_id="host_a", text="Auf H800.")])
+        table = SpokenForms(entries=[{"written": "H800", "spoken": "Ha achthundert"}])
+        wav = self.cache / "cache/audio/gemini/x.wav"
+        wav.parent.mkdir(parents=True, exist_ok=True)
+        wav.write_bytes(b"audio")
+        report = {"segments": [{"segment_id": "seg_001", "path": "gemini/x.wav", "sha256": file_hash(wav),
+                                "settings": spoken}]}
+        choice = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Aoede", "host_b": "Puck"})
+        # The verifier compares the spoken form the table produces today, not the script text.
+        with self.assertRaises(Error) as caught:
+            check_gemini_rows(self.cache, script, report, choice, "de-DE")
+        self.assertEqual(caught.exception.code, "invalid_audio")
+        # With the same table the settings agree and the row is accepted.
+        self.assertEqual(check_gemini_rows(self.cache, script, report, choice, "de-DE", table=table), [wav])
+        # A row written before spoken forms existed carries no spoken_text and stays valid while
+        # no form applies; the same table that would change the sound rejects it.
+        legacy = {"segments": [{"segment_id": "seg_001", "path": "gemini/x.wav", "sha256": file_hash(wav),
+                                "settings": plain}]}
+        self.assertEqual(check_gemini_rows(self.cache, script, legacy, choice, "de-DE"), [wav])
+        with self.assertRaises(Error):
+            check_gemini_rows(self.cache, script, legacy, choice, "de-DE", table=table)
+
+    def test_the_cache_record_keeps_the_script_text_and_the_request_carries_the_spoken_form(self):
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = lambda *a, **k: response()
+            path = self.engine.synthesize("Auf H800.", "Aoede", "de-DE", self.cache, spoken="Auf Ha achthundert.")
+            payload = json.loads(build.return_value.open.call_args.args[0].data)
+            # The same script text without the form is another cache entry, not a hit.
+            self.engine.synthesize("Auf H800.", "Aoede", "de-DE", self.cache)
+            self.assertEqual(build.return_value.open.call_count, 2)
+        self.assertEqual(payload["input"], "Auf Ha achthundert.")
+        record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["settings"]
+        self.assertEqual((record["text"], record["spoken_text"]), ("Auf H800.", "Auf Ha achthundert."))
+        self.assertEqual(path.name, digest(speech_settings("Auf H800.", "Aoede", "de-DE", "Auf Ha achthundert.")) + ".wav")
+
+    def test_a_default_pause_policy_is_left_out_of_the_stored_choice(self):
+        plain = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Aoede", "host_b": "Puck"})
+        record = audio_generation_record(plain)
+        # The record a run hashes and a decision stores is the pre-policy shape, so approvals and
+        # input hashes made before the policy existed keep matching.
+        self.assertEqual(record, {"provider": "openrouter_gemini_tts", "voices": {"host_a": "Aoede", "host_b": "Puck"}})
+        self.assertTrue(same_audio_generation(record, plain.model_dump()))
+        self.assertTrue(same_audio_generation(plain.model_dump(), record))
+        slower = plain.model_copy(update={"pauses": PausePolicy(chapter_break_ms=1800)})
+        self.assertEqual(audio_generation_record(slower)["pauses"]["chapter_break_ms"], 1800)
+        self.assertFalse(same_audio_generation(record, audio_generation_record(slower)))
+        self.assertFalse(same_audio_generation(record, None))
+
     def test_catalog_validates_provider_voices_and_has_all_thirty_gemini_choices(self):
         self.assertEqual(len(set(GEMINI_VOICES)), 30)
         self.assertEqual(audio_catalog()["openrouter_gemini_tts"]["defaults"], {"host_a":"Sadaltager","host_b":"Aoede"})
@@ -160,16 +227,20 @@ class GeminiEpisodeTests(unittest.TestCase):
             self.assertEqual(build.return_value.open.call_count, calls)
         self.assertEqual(before, file_hash(self.root / "episodes/ep_001/script.yaml"))
         report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text())
-        self.assertEqual(report["audio_generation"], self.choice)
+        # The saved choice now also carries the pause policy; the default is filled in.
+        self.assertEqual(report["audio_generation"],
+                         AudioChoice.model_validate(self.choice).model_dump())
         transcript = (self.root / report["parts"][0]["audio"]).with_name("transcript.md").read_text(encoding="utf-8")
-        self.assertIn("**Sadaltager:**", transcript)
-        self.assertIn("**Aoede:**", transcript)
+        # Voice presets are not host identities; the transcript carries the roles.
+        self.assertIn("**Host A:**", transcript)
+        self.assertIn("**Host B:**", transcript)
+        self.assertNotIn("**Sadaltager:**", transcript)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_explicit_local_choice_still_uses_qwen_and_keeps_the_script(self):
         from tests.test_episode_audio import EpisodeAudioTests
         local_fixture = EpisodeAudioTests()
-        local_fixture.calls = []
+        local_fixture.calls, local_fixture.spoken = [], []
         before = file_hash(self.root / "episodes/ep_001/script.yaml")
         local = {"provider":"qwen3_local", "voices":{"host_a":"Ryan","host_b":"Serena"}}
         with patch("podcast_automate.episode_audio.run_tts", side_effect=local_fixture.synthesize), \
@@ -179,7 +250,7 @@ class GeminiEpisodeTests(unittest.TestCase):
         self.assertEqual(len(local_fixture.calls), 1)
         self.assertEqual(before, file_hash(self.root / "episodes/ep_001/script.yaml"))
         report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text())
-        self.assertEqual(report["audio_generation"], local)
+        self.assertEqual(report["audio_generation"], AudioChoice.model_validate(local).model_dump())
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_quota_pause_reuses_finished_segment_and_rejects_changed_voice_on_resume(self):
@@ -196,8 +267,34 @@ class GeminiEpisodeTests(unittest.TestCase):
             self.assertEqual(completed.status, "completed")
             self.assertEqual(build.return_value.open.call_count, 1)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_one_override_costs_exactly_one_gemini_call_and_the_rest_come_from_cache(self):
+        segments = read_yaml(self.root / "episodes/ep_001/script.yaml")["segments"]
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = lambda *a, **k: response(self.pcm)
+            first = run_episode_audio(self.root, episode="ep_001", approve_audio=True,
+                                      audio_choice=self.choice, api_key="test-key")
+            self.assertEqual(first.status, "completed")
+            self.assertEqual(build.return_value.open.call_count, len(segments))
+            decision = read_yaml(self.root / "episodes/ep_001/audio_review.yaml")
+            write_yaml(self.root / "episodes/ep_001/audio_review.yaml",
+                       {**decision, "spoken_overrides": {segments[-1]["segment_id"]: "Es bewertet Möglichkeiten."}})
+            # The saved approval stands: no approve_audio, and exactly one segment is synthesised
+            # again while every other one is served from the cache the first run filled.
+            second = run_episode_audio(self.root, episode="ep_001", audio_choice=self.choice, api_key="test-key")
+            self.assertEqual(second.status, "completed")
+            self.assertEqual(build.return_value.open.call_count, len(segments) + 1)
+            payload = json.loads(build.return_value.open.call_args.args[0].data)
+        self.assertEqual(payload["input"], "Es bewertet Möglichkeiten.")
+        self.assertNotEqual(first.run_id, second.run_id)
+        report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["run_id"], second.run_id)
+        self.assertEqual(report["spoken_overrides"], {segments[-1]["segment_id"]: "Es bewertet Möglichkeiten."})
+        rows = json.loads((self.root / "runs" / second.run_id / "tts_report.json").read_text(encoding="utf-8"))["segments"]
+        self.assertEqual([row["settings"].get("spoken_text") for row in rows],
+                         [None] * (len(segments) - 1) + ["Es bewertet Möglichkeiten."])
+
     def test_saved_qwen_approval_does_not_authorize_paid_gemini_audio(self):
-        from podcast_automate.storage import write_yaml
         write_yaml(self.root / "episodes/audio_review.yaml", {"audio_approved":True,
             "scripts":{"ep_001":file_hash(self.root / "episodes/ep_001/script.yaml")}})
         with patch("podcast_automate.speech.build_opener") as build:

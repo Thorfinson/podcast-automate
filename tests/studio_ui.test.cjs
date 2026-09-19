@@ -621,6 +621,201 @@ test('new episodes and later polish do not replace an open script or its reading
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 
+test('the audio page offers the spoken-form table, pause fields and the pronunciation report',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.spoken_forms={schema_version:'1.0',entries:[{written:'H800',spoken:'H achthundert'}]};
+  p.spoken_forms_hash='forms-hash';
+  p.audio_settings={provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'},
+    pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900}};
+  p.episodes=[{...publishedEpisode({}),pronunciation:{applied:{H800:2},
+    flagged:{versions:[{token:'H800',count:2,segment_ids:['seg_001']}]}}}];
+  app.run(`project=${JSON.stringify(p)};episodeIndex=0;`);
+  const html=app.run('renderAudio()');
+  assert.ok(html.includes('H800 = H achthundert'));
+  assert.ok(html.includes('id="pause-same"'));
+  assert.ok(html.includes('value="450"'));
+  assert.ok(html.includes('value="900"'));
+  assert.ok(html.includes('Aussprache prüfen'));
+  assert.ok(html.includes('Versions- und Modellnamen'));
+  assert.ok(html.includes('data-action="save-speech"'));
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('a project with no flagged tokens shows no pronunciation panel',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[{...publishedEpisode({}),pronunciation:{applied:{},flagged:{}}}];
+  app.run(`project=${JSON.stringify(p)};episodeIndex=0;`);
+  assert.ok(!app.run('renderAudio()').includes('Aussprache prüfen'));
+});
+
+test('a published episode with audio offers a per-segment spoken form and a re-render',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.config={...p.config,host_names:{host_a:'Mara',host_b:'Jonas'}};
+  p.episodes=[{...publishedEpisode({}),audio:['exports/ep_001/run/audio.mp3'],
+    spoken_overrides:{seg_001:'Ganz anders <b>gesprochen</b>.'}}];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+  const html=app.run('renderScript()');
+  assert.ok(html.includes('<strong>Mara</strong>'));
+  assert.ok(!html.includes('<strong>Aiden</strong>'));
+  assert.ok(html.includes('Sprechform · gesetzt'));
+  assert.ok(html.includes('data-action="spoken-override"'));
+  assert.ok(html.includes('data-segment="seg_001"'));
+  assert.ok(html.includes('Nur diesen Abschnitt neu rendern'));
+  assert.ok(html.includes('Ganz anders &lt;b&gt;gesprochen&lt;/b&gt;.'));
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('a re-render posts the rerender flag with the session token and no fresh approval',async()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';p.config_hash='cfg';p.audio_hash='aud';
+  p.episodes=[{...publishedEpisode({}),audio:['exports/ep_001/run/audio.mp3'],spoken_overrides:{seg_001:'Anders.'}}];
+  await app.run(`selectProject('test',${JSON.stringify(p)},PAGE.scripts)`);
+  app.responses.set('/api/projects/test',p);
+  assert.ok(app.run('renderScript()').includes('data-action="audio" data-rerender="true" data-episode="ep_001"'));
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+  await app.run(`rerenderEpisode('ep_001')`);
+  const request=app.requests.find(r=>r.path==='/api/projects/test/start');
+  assert.equal(request.options.method,'POST');
+  assert.equal(request.options.headers['X-Studio-Token'],'csrf');
+  // No checkbox on the reading page: the server applies the saved approval by the pipeline's rule.
+  assert.deepEqual(JSON.parse(request.options.body),{action:'audio',episode:'ep_001',approve_audio:false,rerender:true,
+    script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
+  // The approval-page button still sends the checkbox state and no rerender flag.
+  app.run('episodeIndex=0;$("audio-approval").checked=true;');
+  assert.deepEqual(JSON.parse(JSON.stringify(app.run('audioRequest()'))),{episode:'ep_001',approve_audio:true,script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
+});
+
+test('the spoken-form field starts from the table result and an unchanged save creates no override',async()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.spoken_forms={schema_version:'1.0',entries:[{written:'checked',spoken:'geprüfte'},{written:'Final',spoken:'Finale'}]};
+  p.episodes=[{...publishedEpisode({}),audio:['exports/ep_001/run/audio.mp3'],spoken_overrides:{}}];
+  await app.run(`selectProject('test',${JSON.stringify(p)},PAGE.scripts)`);
+  assert.ok(app.run('renderScript()').includes('>Finale geprüfte dialogue.</textarea>'));
+  assert.equal(app.run(`applySpokenForms('V3.2-Exp on H800-GPUs, 1.000.000 KL.',{entries:[{written:'V3',spoken:'x'},{written:'H800',spoken:'y'},{written:'1.000',spoken:'z'},{written:'KL',spoken:'w'}]})`),
+    'V3.2-Exp on y-GPUs, 1.000.000 w.');
+  app.responses.set('/api/projects/test',p);
+  app.run(`$('spoken-seg_001').value='Finale geprüfte dialogue.'`);
+  await app.run(`saveSpokenOverride('ep_001','seg_001')`);
+  let request=app.requests.filter(r=>r.path==='/api/projects/test/spoken_override').at(-1);
+  assert.deepEqual(JSON.parse(request.options.body),{episode:'ep_001',segment_id:'seg_001',spoken:''});
+  app.run(`$('spoken-seg_001').value='Ganz anders.'`);
+  await app.run(`saveSpokenOverride('ep_001','seg_001')`);
+  request=app.requests.filter(r=>r.path==='/api/projects/test/spoken_override').at(-1);
+  assert.equal(JSON.parse(request.options.body).spoken,'Ganz anders.');
+});
+
+test('the pronunciation report stands above the approval checkbox',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[{...publishedEpisode({}),pronunciation:{applied:{},flagged:{versions:[{token:'H800',count:1,segment_ids:['seg_001']}]}}}];
+  app.run(`project=${JSON.stringify(p)};episodeIndex=0;`);
+  const html=app.run('renderAudio()');
+  const report=html.indexOf('Aussprache prüfen'), checkbox=html.indexOf('id="audio-approval"');
+  assert.ok(report>-1&&checkbox>-1,'both rendered');
+  assert.ok(report<checkbox,'the report precedes the approval');
+  assert.ok(html.includes('Prüfe sie vor der Freigabe'));
+});
+
+test('host names are edited in the speech panel and saved as a pair or not at all',async()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';p.config_hash='cfg';p.audio_hash='aud';p.spoken_forms_hash='forms';
+  p.config={...p.config,host_names:{host_a:'Mara',host_b:'Jonas'}};
+  p.episodes=[publishedEpisode({})];
+  app.run(`project=${JSON.stringify(p)};episodeIndex=0;`);
+  const html=app.run('renderAudio()');
+  assert.ok(html.includes('id="host-name-a" type="text" value="Mara"'));
+  assert.ok(html.includes('id="host-name-b" type="text" value="Jonas"'));
+  assert.ok(html.includes('Sprechformen, Pausen und Hostnamen'));
+  app.responses.set('/api/projects/test',p);
+  app.run(`$('host-name-a').value='Lena';$('host-name-b').value='Tom';$('pause-same').value='250';$('pause-change').value='450';$('pause-chapter').value='900';$('spoken-forms').value='H800 = H achthundert';`);
+  await app.run('saveSpeechSettings()');
+  let request=app.requests.filter(r=>r.path==='/api/projects/test/save').at(-1);
+  let body=JSON.parse(request.options.body);
+  assert.equal(request.options.headers['X-Studio-Token'],'csrf');
+  assert.deepEqual(body.config.host_names,{host_a:'Lena',host_b:'Tom'});
+  assert.equal(body.config.topic,'New project');
+  assert.equal(body.config_hash,'cfg');
+  assert.deepEqual(body.spoken_forms.entries,[{written:'H800',spoken:'H achthundert'}]);
+  assert.deepEqual(body.audio_settings.pauses,{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900});
+  app.run(`$('host-name-b').value='';`);
+  const before=app.requests.length;
+  await assert.rejects(app.run('saveSpeechSettings()'),/Beide Hostnamen/);
+  assert.equal(app.requests.length,before);
+  app.run(`$('host-name-a').value='';`);
+  await app.run('saveSpeechSettings()');
+  request=app.requests.filter(r=>r.path==='/api/projects/test/save').at(-1);
+  assert.equal(JSON.parse(request.options.body).config.host_names,null);
+});
+
+test('a preview and an episode without audio offer no spoken-form control',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[publishedEpisode({})];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+  assert.ok(!app.run('renderScript()').includes('data-action="spoken-override"'));
+  const preview=structuredClone(p);
+  preview.episodes=[];preview.job.status='running';preview.job.run.status='running';
+  preview.job.run.run_id='run_one';preview.job.progress={phase:'script',script_previews:[previewEpisode()]};
+  app.run(`project=${JSON.stringify(preview)};readingSnapshot=null;`);
+  assert.ok(!app.run('renderScript()').includes('data-action="spoken-override"'));
+});
+
+function publishedEpisode(notes) {
+  return {preview:false,readable_hash:'final',hash:'final',audio:[],audio_current:false,
+    script:{episode_id:'ep_001',title:'ep_001 Dialogue',chapters:[{chapter_id:'intro',title:'Introduction'}],
+      segments:[{segment_id:'seg_001',chapter_id:'intro',speaker_id:'host_a',text:'Final checked dialogue.'}]},
+    metrics:{words:3400,estimated_minutes:27},review_notes:notes};
+}
+
+test('the reading page shows every recorded review caveat under one collapsible panel',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[publishedEpisode({script_review:['Eine Modellprüfung kann Fehler übersehen.','Zwei.','Drei.','Vier.','Fünf.'],
+    teaching_review:['Die Lehrprüfung misst kein echtes Lernen.'],
+    dismissed_gaps:[{stage:'teaching_review',objective_id:'goal_one',gap:'Wie wird trainiert?',reason:'Für das Lernziel nicht nötig.'}],
+    advisories:[{code:'long_cold_open',count:157,detail:'Der erste Abschnitt hat 157 Wörter.',segment_ids:['seg_001']}]})];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+  const html=app.run('renderScript()');
+  assert.ok(html.includes('Hinweise der Prüfungen'));
+  assert.equal((html.match(/<li>/g)||[]).length,8);
+  assert.ok(html.includes('Eine Modellprüfung kann Fehler übersehen.'));
+  assert.ok(html.includes('Wie wird trainiert?'));
+  assert.ok(html.includes('long_cold_open'));
+  assert.ok(html.includes('(seg_001)'));
+  assert.ok(!html.includes('Dialogvergleich</h3>'));
+});
+
+test('a script without recorded caveats and an unpublished preview render no panel',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[publishedEpisode({})];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+  assert.ok(!app.run('renderScript()').includes('Hinweise der Prüfungen'));
+  const preview=structuredClone(p);
+  preview.episodes=[];preview.job.status='running';preview.job.run.status='running';
+  preview.job.run.run_id='run_one';preview.job.progress={phase:'script',script_previews:[previewEpisode()]};
+  app.run(`project=${JSON.stringify(preview)};readingSnapshot=null;`);
+  assert.ok(!app.run('renderScript()').includes('Hinweise der Prüfungen'));
+});
+
+test('a caveat containing markup is escaped before it reaches the reading page',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[publishedEpisode({script_review:['<script>alert(1)</script>'],
+    advisories:[{code:'<img src=x>',count:1,detail:'Ein "gefährlicher" Hinweis.',segment_ids:["<b>"]}]})];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+  const html=app.run('renderScript()');
+  assert.ok(!html.includes('<script>alert(1)'));
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+  assert.ok(html.includes('&lt;img src=x&gt;'));
+  assert.ok(html.includes('&quot;gefährlicher&quot;'));
+  assert.ok(html.includes('(&lt;b&gt;)'));
+});
+
 test('publishing the series preserves an open preview until the reader loads the final version',async()=>{
   const app=studio(), p=workflowProject(app);
   p.job.run.run_id='run_one';p.job.progress={phase:'script',script_previews:[previewEpisode()]};

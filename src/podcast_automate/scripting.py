@@ -18,9 +18,10 @@ from .execution import ExecutionChoice, selected_execution
 from .models import EpisodeScript, RunManifest, StageRecord
 from .polishing import HOST_ROLES, POLISH_VERSION
 from .provider_pool import AdapterPool, check_adapter_versions, text_generation_settings  # noqa: F401  (re-exported)
-from .research import validate_dossier
+from .research import refund_call, reserve_call, unanswered, validate_dossier
 from .research_models import ResearchDossier
 from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
+from .run_budget import effective_limits
 from .runner import execute_stages, manifest_path, outputs_valid
 from .script_artifacts import script_metrics  # noqa: F401  (re-exported; the Studio imports it from here)
 from .script_checks import (MAX_PLAN_REPAIRS, checked_series_plan, episode_sources, load_plan_checkpoint,  # noqa: F401
@@ -28,8 +29,8 @@ from .script_checks import (MAX_PLAN_REPAIRS, checked_series_plan, episode_sourc
                             script_review_signature, validate_plan, validate_script)
 from .script_models import SeriesPlan
 from .script_pipeline import SPOKEN_DIALOGUE, ScriptRun  # noqa: F401
-from .series_review import SERIES_REVIEW_VERSION
-from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json, write_yaml
+from .series_review import SERIES_REVIEW_VERSION, reviewed_scripts, series_report
+from .storage import digest, file_hash, load_project, project_hash, project_lock, read_yaml, write_json, write_yaml
 from .teaching import DESIGN_VERSION, TEACHING_VERSION
 
 SCRIPT_VERSION = "script.v5-dialogue-polish"
@@ -145,15 +146,24 @@ def build_adapter(config, text_generation, api_key):
     return AdapterPool(config.runtime, text_generation, api_key=api_key)
 
 
-def run_inputs(config, research_id, dossier, discovery, sources, context, state, text_generation):
+def style_notes(root: Path) -> str:
+    """The operator's standing editorial corrections; part of the run inputs, so a change re-runs."""
+    path = root / "style_notes.md"
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+
+def run_inputs(config, research_id, dossier, discovery, sources, context, state, text_generation, notes=""):
     """The frozen inputs whose digest binds checkpoints, approvals and resumes of this run."""
-    config_hash = digest(config.model_dump(mode="json"))
+    config_hash = project_hash(config)
     inputs = {"research_run": research_id, "dossier": dossier.model_dump(), "context": context,
               "sources": sources.model_dump(), "discovery": discovery.model_dump(),
               "project": config_hash, "version": SCRIPT_VERSION, "teaching_version": TEACHING_VERSION,
               "design_version": DESIGN_VERSION,
               "polish_version": POLISH_VERSION, "host_roles": HOST_ROLES,
               "episode": state["episode"], "text_generation": text_generation}
+    if notes:
+        # Only a project that uses style notes binds them, so existing runs keep their hash.
+        inputs["style_notes"] = notes
     if state["revision"]:
         inputs["revision"] = state["revision"]
     if state["series_review_version"]:
@@ -252,8 +262,9 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
         text_generation = text_generation_settings(config, backend=backend, model=model, max_output_tokens=max_output_tokens,
                                                    reasoning_effort=reasoning_effort, saved=state["saved_backend"])
         adapter = build_adapter(config, text_generation, api_key)
+        notes = style_notes(root)
         config_hash, inputs, input_hash = run_inputs(config, research_id, dossier, discovery, sources, context,
-                                                     state, text_generation)
+                                                     state, text_generation, notes)
         work = state["path"].parent
         manifest = bind_manifest(root, work, state, config, config_hash, inputs, input_hash, research_id,
                                  text_generation, plan_only)
@@ -265,8 +276,90 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                              sources=sources, context=context, episode=state["episode"], revision=state["revision"],
                              execution=state["execution"], plan_only=plan_only, previous_outline=previous_outline,
                              outline_feedback=outline_feedback, series_review_version=state["series_review_version"],
-                             text_generation=text_generation, resume=resume)
+                             text_generation=text_generation, resume=resume, style_notes=notes)
         if not plan_only and (work / "series_plan.json").exists():
             pipeline.refresh_foundations(pipeline.selected()[1])
         return execute_stages(root, manifest, state["path"], pipeline.stages(),
                               stop_after="planning" if plan_only else None)
+
+
+def series_review_target(root: Path, run_id: str) -> dict:
+    """Which script run a series-review run judged and whether its verdict reached the report."""
+    inputs = json.loads((manifest_path(root.resolve(), run_id).parent / "inputs.json").read_text(encoding="utf-8"))
+    return {"script_run_id": inputs["script_run_id"], "published_run_id": inputs.get("published_run_id"),
+            "report_mirrored": bool(inputs.get("mirror_report"))}
+
+
+def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reasoning_effort=None):
+    """Review a published run's scripts on their own, without touching that run's folder.
+
+    The verdict lands in a new run of kind ``series_review``. It is mirrored into
+    ``reports/script_quality.yaml`` only when the reviewed run is the one that report describes
+    (its own ``run_id``); a verdict on an older run stays in its run folder, because the report
+    speaks for the published text. The reviewed run stays byte-identical, so the resume
+    invariant holds: a later report never rewrites the evidence it judged. ``runs/latest.json``
+    keeps pointing at the last pipeline run: ``pla resume`` and ``pla status`` without a run id
+    dispatch on that pointer, and a review run has nothing to resume.
+    """
+    root = root.resolve()
+    with project_lock(root):
+        config = load_project(root)
+        published = json.loads((root / "episodes/latest.json").read_text(encoding="utf-8")) if (
+            root / "episodes/latest.json").is_file() else {}
+        source_id = run_id or published.get("run_id")
+        if not source_id:
+            raise AppError("Kein veröffentlichter Skriptlauf gefunden.", code="unknown_run", status="blocked")
+        source = manifest_path(root, source_id).parent
+        reviewed = RunManifest.model_validate(read_yaml(source / "run_manifest.yaml"))
+        if reviewed.kind != "script" or reviewed.status != "completed":
+            raise AppError("Die Serienprüfung braucht einen abgeschlossenen Skriptlauf.",
+                           code="invalid_run", status="blocked")
+        plan = SeriesPlan.model_validate_json((source / "series_plan.json").read_text(encoding="utf-8"))
+        scripts = reviewed_scripts(source, plan)
+        text_generation = text_generation_settings(config, backend=backend, model=model,
+                                                   reasoning_effort=reasoning_effort)
+        adapter = build_adapter(config, text_generation, None)
+        quality_path = root / "reports/script_quality.yaml"
+        quality = read_yaml(quality_path) if quality_path.is_file() else {}
+        published_run_id = quality.get("run_id") if isinstance(quality, dict) else None
+        identifier = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
+        path = manifest_path(root, identifier)
+        work = path.parent
+        inputs = {"version": SERIES_REVIEW_VERSION, "script_run_id": source_id,
+                  "published_run_id": published_run_id, "mirror_report": published_run_id == source_id,
+                  "scripts": [s.model_dump() for s in scripts], "plan": plan.model_dump()}
+        write_json(work / "inputs.json", inputs)
+        manifest = RunManifest(run_id=identifier, kind="series_review",
+                               project_hash=project_hash(config), input_hash=digest(inputs),
+                               stages={"review": StageRecord()})
+        limits = effective_limits(work, config.research_limits, manifest.input_hash)
+
+        def review():
+            def invoke(prompt, output_type, version, **kwargs):
+                # The one call is charged like every other: reserved against the run budget,
+                # refunded only when no model answered.
+                adapter.require_key()
+                number = reserve_call(work, limits)
+                try:
+                    return adapter.structured(prompt, output_type, work / "calls" / f"call_{number:03d}",
+                                              prompt_version=version, search=False)[0]
+                except AppError as exc:
+                    if unanswered(exc):
+                        refund_call(work, number)
+                    raise
+                except BaseException:
+                    refund_call(work, number)
+                    raise
+
+            report = series_report(config, plan, scripts, manifest.input_hash, invoke)
+            write_json(work / "series_review.json", {"report": report, "sha256": digest(report)})
+            outputs = [work / "series_review.json", work / "inputs.json"]
+            if inputs["mirror_report"]:
+                quality["series_review"] = report
+                quality["complete_series_review"] = report["status"] == "passed"
+                quality["series_review_run_id"] = identifier
+                write_yaml(quality_path, quality)
+                outputs.append(quality_path)
+            return outputs
+
+        return execute_stages(root, manifest, path, {"review": review})

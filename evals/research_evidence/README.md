@@ -19,3 +19,21 @@ The report records corpus, prompt and schema hashes; per-split unsupported accep
 For separately authorized model experiments, `--export-prompts PATH` exports source-bound review prompts and schemas without making calls. `--responses PATH` scores captured reviews. The file must contain `corpus_hash`, `model`, and a `cases` object keyed by every selected case ID, with each value a `SourceReview` or `ScriptReview` response. The scorer checks the corpus binding and keeps development and heldout metrics separate. Fixed synthesis candidates and objection-routing challenges still exercise deterministic gates; this interface is not an end-to-end discovery or routing benchmark. Record actual generation calls and timings alongside captured responses. Obtain independent annotations before making research-quality claims.
 
 Keep the corpus unchanged when comparing policies. If an annotation needs correction, version the corpus and explain the correction; do not silently retune heldout labels to a model's answers.
+
+## The false gap of 19 September 2026
+
+The audit found a declared gap whose answer stood verbatim in a stored section: ep_003 told the
+listener that V3's routing rule was missing while `src_79bf6b4435bc1b72#sec_6891d807643ea0ef`
+contains "decrease the bias term by γ if overloaded, increase it if underloaded".
+
+That case is not in `corpus.json`, because this corpus drives model review verdicts and the gap
+probe makes no model call. It lives instead in `tests/test_gap_probe.py`, which runs in CI on every
+change and pins three facts. The German gap text of finding f13 alone reports `no_hits` against the
+English corpus: a term-overlap probe cannot cross languages, and that limit stays recorded so a
+later change cannot quietly claim to have removed it. The same gap with its coverage row's
+`gap_terms` (`expert`, `load`, `balancing`, `bias`, `rule`, `overloaded`, the words a composing
+model is asked to supply in the sources' language) puts the section holding the rule at rank one
+with three whole-word matches, so the case is caught whenever the terms are present. And the count
+is of whole tokens: a section containing only "overruled" and "download" is not a hit for "rule"
+and "load". On the sample project's full index the German text still returns no candidate, while
+the gap terms rank `src_79bf6b4435bc1b72#sec_6891d807643ea0ef` first of 158.

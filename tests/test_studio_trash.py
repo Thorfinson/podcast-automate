@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from podcast_automate.errors import AppError
 from podcast_automate.models import TopicBrief
-from podcast_automate.storage import digest, init_project
+from podcast_automate.storage import init_project, project_hash
 from podcast_automate.studio import Studio
 
 
@@ -39,7 +39,7 @@ class StudioTrashTests(unittest.TestCase):
         self.root = self.workspace / "projects/pilot"
         config = TopicBrief(topic="Pilot")
         init_project(self.root, config)
-        self.request = {"confirm_id": "pilot", "config_hash": digest(config.model_dump(mode="json"))}
+        self.request = {"confirm_id": "pilot", "config_hash": project_hash(config)}
         self.app = Studio(self.workspace)
         (self.root / "cache/audio/a.wav").write_bytes(b"saved audio")
         (self.root / "cache/audio/z.wav").write_bytes(b"second recording")

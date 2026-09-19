@@ -17,7 +17,7 @@ from .errors import AppError
 from .logs import failure_records, logger, record_failure
 from .models import EpisodeScript, Failure, RunManifest, StageRecord, now
 from .provider_pool import AdapterPool, subscription_selection
-from .storage import (digest, file_hash, inside, load_project, project_lock,
+from .storage import (digest, file_hash, inside, load_project, project_hash, project_lock,
                       read_optional_json, read_yaml, write_json, write_yaml)
 
 PROBE_BACKENDS = ("codex_cli", "claude_code", "auto")
@@ -62,7 +62,7 @@ def status(root: Path, run_id: str | None = None) -> dict:
     manifest = RunManifest.model_validate(read_yaml(path))
     return {
         "topic": config.topic, "status": manifest.status,
-        "project_changed": manifest.project_hash != digest(config.model_dump(mode="json")),
+        "project_changed": manifest.project_hash != project_hash(config),
         "run": manifest.model_dump(mode="json"),
         "invalid_completed_stages": [
             name for name, record in manifest.stages.items()
@@ -79,7 +79,7 @@ def run_probe(root: Path, *, kind: str | None = None,
     config = load_project(root)
     script = probe_script(config.language)
     with project_lock(root):
-        config_hash = digest(config.model_dump(mode="json"))
+        config_hash = project_hash(config)
         if resume:
             path = manifest_path(root, run_id)
             manifest = RunManifest.model_validate(read_yaml(path))

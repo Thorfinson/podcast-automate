@@ -15,6 +15,7 @@ from .prompts import instructions
 from .question_dependencies import prerequisite_answers
 from .question_sources import reserve_source, restore_attempts, source_identity
 from .research_evidence import EVIDENCE_INSTRUCTIONS, PROFILES, evidence_summary, support_errors
+from .research_gap_probe import settle
 from .research_ledger import check_sources, read_value, save_value
 from .research_models import ResearchDiscovery, SourceDocument, SourceIndex
 from .research_reader import source_catalog
@@ -90,7 +91,12 @@ class TaskResearchMixin:
 
     def seed(self, spec, row):
         results = self.catalog(spec, row)
-        refs = list(dict.fromkeys(c["reference"] for result in results for c in result["candidates"][:2]))[:8]
+        # A corpus probe already found sections that look like this gap. They are read
+        # first, at no extra call, so a gap is never declared over an unread passage.
+        pinned = [ref for probe in self.probes_for(spec.gap_ids) for ref in
+                  (hit["reference"] for hit in probe["hits"]) if ref in self.reader.lookup]
+        refs = list(dict.fromkeys([*pinned, *(c["reference"] for result in results
+                                              for c in result["candidates"][:2])]))[:8]
         if refs:
             self.read(row, [ReaderWindow(reference=r, before=1, after=1) for r in refs])
         row["status"] = "researching"
@@ -368,4 +374,17 @@ class TaskResearchMixin:
             self.save(f"Recherchefrage: {spec.question}")
         if row["status"] == "blocked" and not row.get("outcome"):
             row["outcome"] = "search_block"
+        self.settle_probes(spec, row)
         self.save()
+
+    def probes_for(self, gap_ids):
+        wanted = set(gap_ids)
+        return [row for row in self.state.get("gap_probes", []) if row["gap_id"] in wanted]
+
+    def settle_probes(self, spec, row):
+        """Record, per gap this task owned, whether its corpus hits were actually read."""
+        wanted, read = set(spec.gap_ids), row["read_refs"]
+        resolved = row["status"] == "verified"
+        self.state["gap_probes"] = [settle(probe, read_refs=read, resolved=resolved)
+                                    if probe["gap_id"] in wanted else probe
+                                    for probe in self.state.get("gap_probes", [])]

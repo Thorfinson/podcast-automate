@@ -63,9 +63,13 @@ def check_assessment(config, dossier, assessment):
                        code="invalid_research_assessment", status="blocked")
 
 
-def quality_report(config, dossier, discovery, index, assessment, grounding_issues=(), *, accepted=None):
+def quality_report(config, dossier, discovery, index, assessment, grounding_issues=(), *, accepted=None,
+                   gap_probes=()):
     """The gate report. ``accepted`` maps task ids to explicitly accepted gaps; their coverage rows
-    are listed as accepted, not blocking. Requirement verdicts stay honest either way."""
+    are listed as accepted, not blocking. Requirement verdicts stay honest either way.
+
+    ``gap_probes`` are the corpus-probe rows. A gap whose candidate sections were never read
+    blocks; a gap confirmed after reading them does not. A hit alone is not a contradiction."""
     check_assessment(config, dossier, assessment)
     accepted = accepted or {}
     requirements = requirements_for(config)
@@ -93,7 +97,12 @@ def quality_report(config, dossier, discovery, index, assessment, grounding_issu
     gaps.extend(dossier.open_questions)
     gaps.extend(assessment.issues)
     gaps.extend(grounding_issues)
+    probes = [dict(row) for row in gap_probes]
+    gaps.extend(f"{row['text']} Dazu gibt es ungelesene Abschnitte im Korpus: "
+                + ", ".join(hit["reference"] for hit in row["hits"]) + "."
+                for row in probes if row["status"] == "hits_unread")
     return {"version": QUALITY_VERSION, "passed": all(r["passed"] for r in rows) and not gaps,
+            "gap_probes": probes,
             "criteria": CRITERIA, "requirements": rows, "closed": sum(r["passed"] for r in rows),
             "total": len(rows), "blocking_gaps": list(dict.fromkeys(gaps)),
             "accepted_gaps": [{"task_id": tid, "question": gap.get("question", ""), "reason": gap.get("reason", ""),
@@ -102,6 +111,13 @@ def quality_report(config, dossier, discovery, index, assessment, grounding_issu
             "accepted_coverage_gaps": list(dict.fromkeys(tolerated)),
             "dossier_hash": digest(dossier.model_dump()), "brief_hash": digest(requirements),
             "scope": "Alle vereinbarten Leitfragen; keine Behauptung abschließenden Wissens über das gesamte Fachgebiet."}
+
+
+PROBE_LABELS = {"no_hits": "kein passender Abschnitt gefunden",
+                "hits_unread": "Treffer noch ungelesen",
+                "hits_unowned": "Treffer in Quellen, die keine Folge nutzt",
+                "hits_read_confirmed": "Treffer gelesen, Lücke bestätigt",
+                "resolved": "in den Quellen beantwortet"}
 
 
 def render_quality(report):
@@ -123,6 +139,24 @@ def render_quality(report):
         lines += [""]
     if report["blocking_gaps"]:
         lines += ["## Weitere offene Punkte", "", *[f"- {gap}" for gap in report["blocking_gaps"]], ""]
+    rows = (report.get("advisories") or {}).get("single_group_findings") or []
+    if rows:
+        lines += ["## Befunde aus nur einer Forschungsgruppe", "",
+                  "Beschreibend, nicht blockierend: Für diese Befunde stammen alle Belege aus einer bekannten "
+                  "Gruppe, oder die Gruppe ist unbekannt. Eine unabhängige Prüfung existiert für manche "
+                  "Aussagen von 2026 noch nicht; dann ist die Grenze zu benennen, nicht eine Quelle zu erzwingen.", ""]
+        for row in rows:
+            group = row["research_group"] or "unbekannte Gruppe"
+            lines.append(f"- {row['finding_id']}: {group} ({', '.join(row['source_ids'])})")
+        lines += [""]
+    if report.get("gap_probes"):
+        lines += ["## Korpusprobe der Lücken", "",
+                  "Jede gemeldete Lücke wurde ohne Modellaufruf gegen die gespeicherten Abschnitte geprüft. "
+                  "Ein Treffer widerlegt die Lücke nicht; er benennt einen Abschnitt, der gelesen werden muss.", ""]
+        for row in report["gap_probes"]:
+            lines += [f"- {row['text']} — {PROBE_LABELS.get(row['status'], row['status'])}"
+                      + (": " + ", ".join(hit["reference"] for hit in row["hits"]) if row["hits"] else "")]
+        lines += [""]
     if report.get("accepted_gaps"):
         lines += ["## Akzeptierte Lücken", ""]
         for gap in report["accepted_gaps"]:

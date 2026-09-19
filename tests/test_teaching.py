@@ -160,6 +160,27 @@ class TeachingTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "reviewed_teaching_plan")
         self.assertEqual(rows[1]["status"], "outline_only")
         self.assertNotIn("teaching_design", rows[1])
+        self.assertEqual(rows[0]["established_terms"], ["candidate", "energy"])
+        self.assertNotIn("established_terms", rows[1])
+
+    def test_established_terms_use_the_spoken_names_and_never_reach_the_first_episode(self):
+        from podcast_automate.teaching import prerequisite_context, spoken_terms
+        plan = fixtures.example_plan()
+        second = plan.episodes[0].model_copy(deep=True)
+        second.episode_id, second.prerequisite_episodes = "ep_002", ["ep_001"]
+        plan.episodes.append(second)
+        work = self.root / "terms-test"
+        design = teaching_response(json.dumps({"episode": plan.episodes[0].model_dump()}), TeachingPlan)
+        design.concepts[0].terms = ["Kandidat", "möglicher Ausgang"]
+        review = {"issues": [], "research_gaps": [], "gap_assessments": []}
+        folder = work / "teaching/ep_001"
+        write_json(folder / "plan.json", design.model_dump())
+        write_json(folder / "review.json", review)
+        write_json(folder / "checkpoint.json", {"design": design.model_dump(), "review": review})
+        self.assertEqual(spoken_terms(design.concepts), ["Kandidat", "möglicher Ausgang", "energy"])
+        self.assertEqual(prerequisite_context(plan, plan.episodes[0], work), [])
+        rows = prerequisite_context(plan, second, work)
+        self.assertEqual(rows[0]["established_terms"], ["Kandidat", "möglicher Ausgang", "energy"])
 
     def test_changed_prerequisite_example_invalidates_the_cached_design_review(self):
         from podcast_automate.scripting import load_research
@@ -375,6 +396,73 @@ class TeachingTests(unittest.TestCase):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root)
         self.assertEqual(run.status, "completed")
+
+    def test_assess_teaching_reports_a_dismissed_gap_with_objective_and_reason(self):
+        gap = "No derivation of the hardware's electrical consumption."
+        reason = "Hardware power is unrelated to comparing candidate scores."
+        def invoke(prompt, output_type, version):
+            result = teaching_response(prompt, output_type)
+            if output_type is ListenerReadback:
+                result.answers[0].missing_explanations = [gap]
+            if output_type is TeachingReview:
+                result.objectives[0].gap_assessments[0].required_for_objective = False
+                result.objectives[0].gap_assessments[0].reason = reason
+            return result
+        args = dict(audience="Adults", prior_knowledge="None", depth="Explain the comparison")
+        issues, report, _ = assess_teaching(fixtures.example_script(), self.design(), invoke,
+                                            self.root / "dismissed", **args)
+        self.assertEqual(issues, [])
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["dismissed_gaps"], [{"stage": "teaching_review", "objective_id": "goal_compare",
+                                                    "gap": gap, "reason": reason}])
+
+    def test_build_teaching_plan_records_the_design_time_dismissal(self):
+        from podcast_automate.scripting import load_research
+        config = self.fixture.config
+        _, dossier, _, _, context = load_research(self.root, config)
+        entry = fixtures.example_plan().episodes[0]
+        question = "Is the algorithm always optimal?"
+        reason = "No general optimality claim is made or required for the stated comparison goal."
+        def invoke(prompt, schema, version):
+            result = teaching_response(prompt, schema)
+            if schema is TeachingPlan:
+                result.research_gaps = [ResearchGap(question=question, why_needed="A global guarantee is unknown.")]
+            if schema is TeachingPlanReview:
+                result.gap_assessments[0].required_for_objective = False
+                result.gap_assessments[0].reason = reason
+            return result
+        folder = self.root / "design-dismissal"
+        _, files = build_teaching_plan(config, entry, dossier, context, invoke, folder)
+        self.assertIn(folder / "dismissed_gaps.json", files)
+        self.assertEqual(json.loads((folder / "dismissed_gaps.json").read_text(encoding="utf-8")),
+                         [{"stage": "teaching_design", "objective_id": None, "gap": question, "reason": reason}])
+
+    def test_dismissed_gaps_of_both_stages_reach_the_quality_report_and_the_review_notes(self):
+        from podcast_automate.studio_scripts import review_notes
+        design_gap, design_reason = "Is the algorithm always optimal?", "No optimality claim is made."
+        listener_gap, listener_reason = "No derivation of the hardware's electrical consumption.", "Unrelated to the comparison."
+        def model(prompt, output_type, directory, **kwargs):
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is TeachingPlan:
+                result.research_gaps = [ResearchGap(question=design_gap, why_needed="A global guarantee is unknown.")]
+            if output_type is TeachingPlanReview:
+                result.gap_assessments[0].required_for_objective = False
+                result.gap_assessments[0].reason = design_reason
+            if output_type is ListenerReadback:
+                result.answers[0].missing_explanations = [listener_gap]
+            if output_type is TeachingReview:
+                result.objectives[0].gap_assessments[0].required_for_objective = False
+                result.objectives[0].gap_assessments[0].reason = listener_reason
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        expected = [{"stage": "teaching_design", "objective_id": None, "gap": design_gap, "reason": design_reason},
+                    {"stage": "teaching_review", "objective_id": "goal_compare", "gap": listener_gap,
+                     "reason": listener_reason}]
+        episode = read_yaml(self.root / "reports/script_quality.yaml")["episodes"]["ep_001"]
+        self.assertEqual(episode["dismissed_gaps"], expected)
+        self.assertEqual(review_notes(episode)["dismissed_gaps"], expected)
 
     def test_quota_after_readback_reuses_it_and_changed_text_invalidates_it(self):
         calls, pause = [], True

@@ -20,6 +20,9 @@ from .sources import canonical_url, clean, import_failure, import_source
 from .storage import digest, file_hash, inside, write_json
 
 VERSION = "teaching_research.v1"
+# The prompt tag is separate from VERSION: VERSION also binds stored supplement receipts, and a
+# wording change must not invalidate the receipts of runs that already hold one.
+PROMPT_VERSION = "teaching_research.v1-probe"
 MAX_SUPPLEMENTS = 3
 REQUIRED_FILES = ("request.json", "discovery.json", "source_index.json", "source_context.json", "evidence.json", "review.json")
 
@@ -59,10 +62,18 @@ def gaps_in(work):
         for gap in data.get("questions", []):
             if gap.get("kind", "evidence") != "evidence":
                 continue
-            row = {"episode_id": data["episode_id"], "question": gap["question"], "why_needed": gap["why_needed"]}
+            row = {"episode_id": data["episode_id"], "question": gap["question"], "why_needed": gap["why_needed"],
+                   "references": list(gap.get("references", []))}
             if row not in rows:
                 rows.append(row)
     return rows
+
+
+def probe_questions(work, entry):
+    """The routed corpus-probe gaps of an episode: each question with the sections it must read."""
+    rows = [g for g in gaps_in(work) if g["episode_id"] == entry.episode_id and g["references"]]
+    return [{"question": g["question"], "references": g["references"]}
+            for g in {g["question"]: g for g in rows}.values()]
 
 
 def binding(config, entry, dossier):
@@ -70,13 +81,20 @@ def binding(config, entry, dossier):
                    "episode": entry.model_dump(), "dossier": dossier.model_dump()})
 
 
-def validate_supplement(supplement, questions, entry, context, dossier):
+def validate_supplement(supplement, questions, entry, context, dossier, probes=()):
+    """``probes`` are the routed corpus-probe gaps. Such a gap may stand in ``remaining_gaps``,
+    but only when every section the probe found was in the supplement's context: the reader
+    must demonstrably have seen them before confirming the gap. Any other remaining gap fails."""
     errors = []
     expected = set(questions)
-    answered = [q for answer in supplement.explanations for q in answer.questions]
-    if Counter(answered) != Counter(expected) or supplement.remaining_gaps:
-        errors.append("Die zusätzlichen Belege beantworten noch nicht alle offenen Erklärfragen.")
     sections = {s["reference"]: s["text"] for source in context for s in source["sections"]}
+    routed = {row["question"]: row["references"] for row in probes}
+    answered = [q for answer in supplement.explanations for q in answer.questions]
+    confirmed = [gap for gap in supplement.remaining_gaps if gap in routed]
+    if Counter(answered) + Counter(confirmed) != Counter(expected) or len(confirmed) < len(supplement.remaining_gaps):
+        errors.append("Die zusätzlichen Belege beantworten noch nicht alle offenen Erklärfragen.")
+    if any(not set(routed[gap]) <= sections.keys() for gap in confirmed):
+        errors.append("Eine Lücke darf erst bestätigt werden, wenn alle Treffer der Korpusprobe im Quellenkontext gelesen wurden.")
     quotes, words = {}, {}
     for answer in supplement.explanations:
         if not set(answer.finding_ids) <= set(entry.finding_ids):
@@ -105,11 +123,32 @@ def supplement_directories(work, entry):
                   if p.is_dir() and re.fullmatch(r"supplement(?:_\d{2})?", p.name))
 
 
-def research_foundations(root, work, config, entry, dossier, invoke, *, current_dossier=None):
+def merge_pinned(context, pinned):
+    """Add already-retrieved sections to a supplement's context without duplicating anything."""
+    merged = copy.deepcopy(context)
+    for source in pinned:
+        existing = next((s for s in merged if s["source_id"] == source["source_id"]), None)
+        if existing is None:
+            merged.append(copy.deepcopy(source))
+            continue
+        known = {section["reference"] for section in existing["sections"]}
+        existing["sections"].extend(s for s in source["sections"] if s["reference"] not in known)
+    return merged
+
+
+def saved_supplement(directory):
+    return FoundationSupplement.model_validate(json.loads((directory / "evidence.json").read_text(encoding="utf-8"))["value"])
+
+
+def research_foundations(root, work, config, entry, dossier, invoke, *, current_dossier=None, pinned=()):
+    """Run or reload one supplement for the episode's open questions; returns the verified supplement."""
     questions = list(dict.fromkeys(g["question"] for g in gaps_in(work) if g["episode_id"] == entry.episode_id))
     if not questions:
         raise AppError("Die offene Erklärfrage fehlt im gespeicherten Auftrag.", code="invalid_research_gap", status="blocked")
     request = {"binding": binding(config, entry, dossier), "questions": questions}
+    probes = probe_questions(work, entry)
+    if probes:
+        request["probes"] = probes
     directories = supplement_directories(work, entry)
     directory = None
     for previous in directories:
@@ -129,7 +168,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
         raise AppError("Die benötigte Nachrecherche hat sich geändert. Den Erklärumfang im Plan prüfen.", code="teaching_research_required", status="blocked")
     write_json(request_path, request)
     if (directory / "receipt.json").exists():
-        return
+        return saved_supplement(directory)
     known = current_dossier if current_dossier is not None else dossier
 
     def cached(name, schema, prompt, *, search=False):
@@ -139,7 +178,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
             if saved.get("sha256") != digest(saved.get("value")):
                 raise AppError("Gespeicherte Nachrecherche wurde verändert.", code="invalid_supplement", status="blocked")
             return schema.model_validate(saved["value"])
-        result = invoke(prompt, schema, f"{VERSION}.{name}", search=search, research=True)
+        result = invoke(prompt, schema, f"{PROMPT_VERSION}.{name}", search=search, research=True)
         write_json(path, {"value": result.model_dump(), "sha256": digest(result.model_dump())})
         return result
 
@@ -174,13 +213,16 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
             raise AppError("Die zusätzlichen Quellen sind derzeit nicht abrufbar. Später fortsetzen.", code="source_download_failed", status="blocked")
         write_json(index_path, index.model_dump())
     context = source_context(index, discovery)
+    # Sections the corpus probe already matched are part of the supplement's reading material,
+    # so an answer can cite a stored passage instead of insisting the evidence is absent.
+    context = merge_pinned(context, pinned)
     write_json(directory / "source_context.json", context)
     data = {"questions": questions, "episode": entry.model_dump(), "language": config.language,
             "findings": [f.model_dump() for f in known.findings if f.id in entry.finding_ids], "sources": context}
     supplement = cached("evidence", FoundationSupplement,
         TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
         instructions("foundation_supplement") + "\n" + json.dumps(data, ensure_ascii=False))
-    errors = validate_supplement(supplement, questions, entry, context, known)
+    errors = validate_supplement(supplement, questions, entry, context, known, probes)
     if errors:
         raise AppError(" ".join(dict.fromkeys(errors)), code="teaching_research_required", status="blocked")
     review = cached("review", FoundationReview,
@@ -199,6 +241,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
     files = [directory / name for name in REQUIRED_FILES] + [inside(root, s.raw_path) for s in index.sources]
     write_json(directory / "receipt.json", {"binding": request["binding"],
         "outputs": {p.relative_to(root).as_posix(): file_hash(p) for p in files if p.name != "receipt.json"}})
+    return supplement
 
 
 def apply_foundations(root, work, config, entries, dossier, context, sources):
@@ -226,7 +269,8 @@ def apply_foundations(root, work, config, entries, dossier, context, sources):
         request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
         review = FoundationReview.model_validate(json.loads((directory / "review.json").read_text(encoding="utf-8"))["value"])
         if (request.get("binding") != receipt["binding"] or review.issues or review.scope_change_required or
-                validate_supplement(supplement, request["questions"], entry, extra_context, augmented)):
+                validate_supplement(supplement, request["questions"], entry, extra_context, augmented,
+                                    request.get("probes", []))):
             raise AppError("Die Nachrecherche hat ihre Belegprüfung nicht bestanden.", code="invalid_supplement", status="blocked")
         if dossier.evidence_version and support_errors(supplement_findings(supplement), review, extra_context):
             raise AppError("Supplement semantic support check failed.", code="invalid_supplement", status="blocked")

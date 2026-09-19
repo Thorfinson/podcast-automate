@@ -13,6 +13,35 @@ from .script_models import SeriesPlan
 from .storage import digest, inside, file_hash
 
 
+def _strings(values):
+    return [value for value in values if isinstance(value, str) and value.strip()]
+
+
+def _rows(values, keys):
+    return [{key: row.get(key) for key in keys} for row in values if isinstance(row, dict)]
+
+
+def review_notes(episode):
+    """What the reviews said but nothing acted on: caveats, dismissed gaps, advisories.
+
+    Reviews record limitations of their own verdict, the examiners dismiss gaps with a
+    reason, and the advisory counters observe patterns the prompts ask against. None of
+    it blocks, so until now none of it reached the person reading the script.
+    """
+    if not isinstance(episode, dict):
+        return {}
+    teaching = episode.get("teaching_review") or {}
+    groups = {
+        "script_review": _strings((episode.get("model_review") or {}).get("limitations") or []),
+        "teaching_review": _strings((teaching.get("review") or {}).get("limitations") or []),
+        "editorial_review": _strings((teaching.get("editorial") or {}).get("limitations") or []),
+        "dialogue_polish": _strings(((episode.get("dialogue_polish") or {}).get("review") or {}).get("limitations") or []),
+        "dismissed_gaps": _rows(episode.get("dismissed_gaps") or [], ("stage", "objective_id", "gap", "reason")),
+        "advisories": _rows(episode.get("advisories") or [], ("code", "count", "detail", "segment_ids")),
+    }
+    return {name: rows for name, rows in groups.items() if rows}
+
+
 def script_previews(root, run):
     if not run or run.get("kind") != "script" or run.get("status") == "completed":
         return []

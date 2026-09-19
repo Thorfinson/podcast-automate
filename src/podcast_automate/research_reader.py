@@ -26,6 +26,7 @@ class SourceReader:
         self.entries = [(source, n, section, Counter(terms(section.text)))
                         for source in index.sources for n, section in enumerate(source.sections)]
         self.lookup = {f"{source.id}#{section.id}": (source, n, section) for source, n, section, _ in self.entries}
+        self.term_counts = {f"{source.id}#{section.id}": counts for source, _, section, counts in self.entries}
         self.compacted = {ref: compact(section.text) for ref, (_, _, section) in self.lookup.items()}
         self.title_words = {s.id: set(terms(s.title)) for s in index.sources}
         self.frequency = Counter(word for *_, counts in self.entries for word in counts)
@@ -75,6 +76,16 @@ class SourceReader:
                                 "role": "retrieved_source" if s.url and s.final_url else "user_material",
                                 "key_term_matches": phrase_hits, "reference_list": not substantive,
                                 "preview": sec.text[:1000]} for substantive, phrase_hits, _, _, s, _, sec in selected]}
+
+    def exact_matches(self, reference, tokens):
+        """How many of ``tokens`` occur as whole tokens in the section.
+
+        ``search`` credits a key term when it appears inside a longer word ("rule" in
+        "overruled"), which is right for ranking and wrong for a threshold. The corpus probe
+        uses this count instead.
+        """
+        counts = self.term_counts.get(reference)
+        return sum(1 for token in set(tokens) if counts and token in counts)
 
     def read(self, windows, *, max_chars=36_000):
         chosen, deferred, used = {}, [], 0

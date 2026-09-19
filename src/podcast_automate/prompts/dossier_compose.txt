@@ -5,5 +5,8 @@ globally unique finding IDs and cover every discovery question exactly once. Use
 source sections, exact reference IDs and short verbatim anchors. All distinct quotes from a source
 combined must be at most 25 words and paraphrased statements at most 150 words per source; reuse
 anchors. Keep topic unchanged. Explain scientific uncertainty with evidence; missing research stays
-open. Do not introduce optional future research as blocking questions. The answers have been
-verified, but the assembled dossier will undergo an independent full review. Write in {language}.
+open. For every coverage row that is not answered, fill gap_terms with three to eight search words
+in the language of the stored sources that a section answering the gap would contain; leave it empty
+for answered questions. Do not introduce optional future research as blocking questions. The answers
+have been verified, but the assembled dossier will undergo an independent full review. Write in
+{language}.

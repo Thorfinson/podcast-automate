@@ -120,8 +120,10 @@ def perform(root, request, sample_progress=None):
     elif action == "revise":
         run = run_script(root, revise=request["episode"], feedback=request["message"], **kwargs)
     elif action == "audio":
-        run = run_episode_audio(root, episode=request["episode"], approve_audio=True,
-            approval_note="Skript in Podcast Studio gelesen und ausdrücklich für Audio freigegeben.",
+        rerender = request.get("rerender") is True
+        run = run_episode_audio(root, episode=request["episode"], approve_audio=not rerender,
+            approval_note=("Neu gerendert mit der gespeicherten Freigabe; nur Sprechformen geändert." if rerender
+                           else "Skript in Podcast Studio gelesen und ausdrücklich für Audio freigegeben."),
             expected_script_hash=request["script_hash"], expected_readable_hash=request["readable_hash"],
             expected_config_hash=request["config_hash"], audio_choice=request.get("audio_settings"),
             expected_audio_hash=request.get("audio_hash"), api_key=request.get("api_key"),

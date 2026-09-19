@@ -137,7 +137,7 @@ def load_plan_checkpoint(work, signature, *, allow_legacy=False):
 def checked_series_plan(work, prompt, invoke, dossier, central_question, signature, *, allow_legacy=False):
     plan, repairs = load_plan_checkpoint(work, signature, allow_legacy=allow_legacy)
     if plan is None:
-        plan = invoke(prompt, SeriesPlan, "series_plan.v3-framing")
+        plan = invoke(prompt, SeriesPlan, "series_plan.v4-audit")
     while True:
         errors = validate_plan(plan, dossier)
         if plan.central_question != central_question:
@@ -231,7 +231,14 @@ def outline_hash(work: Path) -> str:
                    ("series_plan.json", "knowledge_model.json", "inputs.json", "script_request.json")})
 
 
+SCRIPT_REVIEW_VERSION = "script_review.v9-gaps-notes"
+# Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
+# draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
+# discard the draft and its consumed repair allowance.
+REVIEW_SIGNATURE_VERSION = "script_review.signature.v1"
+
+
 def script_review_signature(input_hash, draft_hash, plan, entry, work):
     return digest({"input": input_hash, "draft": draft_hash, "plan": plan.model_dump(),
-                "review": "script_review.v7-framing",  # Keep the saved draft/repair allowance across policy upgrades.
+                "review": REVIEW_SIGNATURE_VERSION,
                    "continuity": prerequisite_context(plan, entry, work)})

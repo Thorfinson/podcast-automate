@@ -85,10 +85,12 @@ Der Nutzer möchte **das Skript zuerst lesen und danach über Audio entscheiden*
 | `episodes/ep_001/script.yaml` | Kanonische Sprechersegmente mit Wissensreferenzen |
 | `episodes/ep_001/script.md` | Derselbe Dialog als lesbarer Text mit den gewählten Stimmen |
 | `episodes/ep_001/show_notes.md` | Kapitel, Quellenlinks und offene Vertiefungen |
-| `reports/script_quality.yaml` | Quellen- und Strukturprüfung, Leserantworten, belegte Lehrprüfung, Wortzahl und geschätzte Sprechzeit |
+| `reports/script_quality.yaml` | Quellen- und Strukturprüfung, Leserantworten, belegte Lehrprüfung, Wortzahl und geschätzte Sprechzeit je Folge; jeder Folgeneintrag nennt unter `run_id` den Lauf, der ihn geschrieben hat |
 | `episodes/audio_review.yaml` | Skripthashes und ausstehende Leseprüfung vor Audio |
 
 Die Dateien liegen im privaten Projektordner und sind von Git ausgeschlossen. `runs/<run_id>/` hält Eingaben, Modellantworten, Entwürfe und Reviews für die Wiederaufnahme fest. Quellen werden für diese Stufe nicht erneut heruntergeladen.
+
+Der Bericht spricht für alle veröffentlichten Folgen, nicht nur für den letzten Lauf. Ein Lauf für eine einzelne Folge (`--episode`, `--revise`) ersetzt unter `episodes` nur den Eintrag dieser Folge; die Einträge der übrigen Folgen bleiben erhalten, solange ihr `script_sha256` noch zum veröffentlichten `script.yaml` passt, und tragen weiter die `run_id` des Laufs, der sie geprüft hat. Ein Eintrag, dessen Text nicht mehr auf der Platte liegt, wird verworfen. Das oberste `run_id` nennt den jüngsten Lauf. So behalten das Studio und die Leseansicht die Hinweise der Prüfungen (Einschränkungen der Prüfer, verworfene Lücken, Advisories) auch für früher veröffentlichte Folgen. Unter `gap_probes_unowned` listet der Bericht auf Serienebene die gemeldeten Lücken, deren Korpustreffer nur in Quellen liegen, die keine Folge nutzt (`gap_id`, `text`, `status`, `references`); niemand in diesem Lauf kann diese Abschnitte lesen, deshalb blockieren sie nichts und werden nur ausgewiesen.
 
 `script.md` ist die erzeugte Leseansicht; `script.yaml` ist der kanonische Text. Manuelle Änderungen am kanonischen Skript werden bei `resume` erkannt und nicht überschrieben. Sie benötigen eine erneute fachliche Prüfung vor der Fortsetzung.
 
@@ -131,7 +133,7 @@ Der Lehrplan wird auch bei `--revise` neu erstellt und geprüft. Wenn die bisher
 
 Neue Läufe speichern `series_review_version` in ihren Eingaben. Sobald alle geplanten Folgen im selben Lauf geprüft sind, prüft ein weiterer Aufruf die vollständigen finalen Texte auf Abdeckung, Voraussetzungen, Fortschritt, vertagte Kernfragen und abschließende Synthese. Alle Kriterien müssen genau einmal beurteilt sein; positive Urteile benötigen wörtliche Segmentbelege, insgesamt aus jeder Folge. Nichtblockierende Wiederholungen werden als Hinweise gespeichert. Ein substanzieller Einwand blockiert die Bereitstellung der Serie und damit ihre neue Audiofreigabe.
 
-Der Bericht unter `runs/<run_id>/series_review.json` ist mit Prüfsumme an Plan, Eingaben und alle Texte gebunden. Unterbrechungen verwenden einen gültigen Bericht erneut. Auch ein negatives Urteil bleibt gespeichert: bloßes Fortsetzen kauft kein neues Urteil. Die genannten Einwände müssen in einem neuen Skriptlauf bearbeitet werden; es gibt noch keine automatische Reparatur über mehrere Folgen hinweg. Veränderte oder fehlende Berichte verhindern Audio aus einem betroffenen neuen Lauf. Bei einem Teilauftrag nennt der Bericht fehlende Folgen und behauptet keine Gesamtprüfung; getrennt erzeugte Folgen werden nicht automatisch zu einer geprüften Gesamtsammlung zusammengeführt. Eine Ein-Folgen-Serie kann vollständig geprüft werden.
+Der Bericht unter `runs/<run_id>/series_review.json` ist mit Prüfsumme an Plan, Eingaben und alle Texte gebunden. Unterbrechungen verwenden einen gültigen Bericht erneut. Auch ein negatives Urteil bleibt gespeichert: bloßes Fortsetzen kauft kein neues Urteil. Nach einem negativen Urteil folgt genau eine gebundene Korrektur über die Folgen hinweg: Die belegten Segmente jeder betroffenen Folge werden einmal überarbeitet, das Ergebnis erhält eine eigene Belegprüfung, danach prüft die Serienprüfung erneut. Das kostet drei Aufrufe je betroffener Folge. Ein zweites negatives Urteil blockiert; die Einwände sind dann in einem neuen Skriptlauf zu bearbeiten. Polishing und Lehrprüfung werden nicht wiederholt, weil die Änderung auf benannte Segmente begrenzt bleibt und die Lernziele unverändert sind. Eine übernommene Korrektur ersetzt `reviewed/<folge>.json` und `reviews/<folge>.json`, damit `reports/script_quality.yaml` unter `model_review` die Prüfung genau des veröffentlichten Textes neben dessen `script_sha256` ausweist; die Prüfung des Textes vor der Korrektur bleibt als `reviews/<folge>_before_series_repair.json` erhalten. Eine abgelehnte Korrektur, etwa wegen einer Belegabweichung in den überarbeiteten Segmenten, ändert keine der beiden Dateien; Entwurf und Einwände stehen in `reviews/<folge>_series_repair_rejected.json`. Die Korrekturrunde selbst hält `runs/<run_id>/series_repair.json` fest, gebunden an Plan und Eingaben statt an die Texte, die sie verändert: Ein `resume` nach einer gescheiterten Korrektur kauft weder ein neues Serienurteil noch eine zweite Runde, sondern meldet den gespeicherten Fehler erneut. Die Audiofreigabe einer korrigierten Folge gilt nicht weiter, weil sie am alten Skripthash hängt. Veränderte oder fehlende Berichte verhindern Audio aus einem betroffenen neuen Lauf. Bei einem Teilauftrag nennt der Bericht fehlende Folgen und behauptet keine Gesamtprüfung; getrennt erzeugte Folgen werden nicht automatisch zu einer geprüften Gesamtsammlung zusammengeführt. Eine Ein-Folgen-Serie kann vollständig geprüft werden.
 
 Der Aufruf zählt zum normalen Produktionsbudget und verwendet das gewählte Textmodell. Die Texte werden vollständig übergeben, ohne stillschweigende Kürzung; ein Anbieter-Kontextlimit kann bei umfangreichen Serien die Prüfung blockieren. Bereits gestartete ältere Läufe behalten ihre ursprünglichen Eingaben und Freigaben. Sie werden beim Fortsetzen nicht nachträglich als seriengeprüft markiert. Menschliche Text- und Hörabnahme bleiben davon getrennt.
 
@@ -142,6 +144,28 @@ Ein separater Modellaufruf prüft das tatsächliche Gesagte gegen die zugeordnet
 Zusätzlich beantwortet ein frischer Leseraufruf die Lernfragen nur aus dem Dialog, ohne Musterlösungen. Eine getrennte redaktionelle Prüfung erhält ausschließlich Publikum, Anspruch und Text; sie sieht weder Lehrplan noch Urteile der anderen Prüfer. Ein weiterer Prüfer bewertet alle sieben Lehrkriterien und jedes Lernziel anhand tatsächlicher Textbelege und ordnet jede vom Leser gemeldete Lücke ausdrücklich ein. Die Anwendung kontrolliert die Belege und die Vollständigkeit der Prüfungen. Ein fehlender erforderlicher Erklärungsschritt oder negatives Urteil führt zur Überarbeitung und bei fortbestehenden Problemen zur Blockierung. Fehlende Quellen für notwendige Grundlagen werden bereits vor dem Schreiben als konkrete Recherchefragen gespeichert.
 
 Die Sprechzeit ist eine Schätzung aus Wortzahl und geplanten Pausen: Planungswert 130 Wörter pro Minute, zusätzlich eine langsame Vergleichsschätzung mit 100. Ein Skript unter 85 Prozent seiner geplanten Dauer wird zur inhaltlichen Überarbeitung zurückgegeben. Diese Prüfung erkennt ein grobes Verfehlen des Umfangs; sie beweist keine Erklärungstiefe. Die tatsächliche Länge steht erst nach der Spracherzeugung fest und muss vor einem späteren Audioexport separat gegen die 30-Minuten-Grenze geprüft werden. Die langsame Vergleichsschätzung ist keine gemessene Dauer und begrenzt den Text nicht zusätzlich. Ein bestandener Modellreview ersetzt weder die Leseprüfung noch die Hörprüfung. Der Serienentwurf ist eine redaktionelle Planung; die zusätzliche Gesamtprüfung bewertet die finalen Skripte, nicht die Hörwirkung der produzierten Serie. Die menschliche Abnahme bleibt ein weiterer Arbeitsschritt. Ein öffentliches Veröffentlichen findet nicht statt.
+
+## Serienprüfung eines veröffentlichten Laufs
+
+`pla series-review <projekt> [--run <run_id>]` prüft die Skripte eines abgeschlossenen Laufs
+nachträglich als Serie, mit einem Aufruf, der wie jeder andere gegen das Budget des neuen Laufs
+(`runs/<run_id>/budget.json`) zählt. Das Urteil landet in einem eigenen Lauf der Art
+`series_review`. In `reports/script_quality.yaml` wird es nur gespiegelt, wenn der geprüfte Lauf
+der veröffentlichte Stand ist, also das `run_id` des Berichts; das Urteil über einen älteren Lauf
+bleibt in dessen Prüflauf unter `series_review.json`, und die Ausgabe des Befehls sagt das
+(`report_mirrored`, `script_run_id`). Der geprüfte Lauf wird nicht angefasst: Seine Dateien
+bleiben byteweise gleich, damit ein späterer Bericht die Belege nicht verändert, über die er
+urteilt. `runs/latest.json` zeigt weiter auf den letzten Pipeline-Lauf; `pla resume` und
+`pla status` ohne Laufangabe treffen deshalb weiterhin den Skriptlauf, denn ein Prüflauf ist
+nicht fortsetzbar; `pla resume --run-id <prüflauf>` wird mit `invalid_run` abgewiesen. Mit
+`pla status <projekt> --run-id <id>` lässt sich der Prüflauf anzeigen.
+
+## Redaktionelle Notizen
+
+`projects/<id>/style_notes.md` enthält stehende Korrekturen des Betreibers. Die Datei geht als
+`style_notes` in die Eingaben eines Skriptlaufs ein und erreicht das Schreiben, das
+Dialog-Polishing sowie die Skript- und Dialogprüfung. Die Belegregeln haben Vorrang. Eine Änderung
+ändert den Eingabe-Hash und führt daher zu einem neuen Lauf.
 
 ## Modellaufrufe je Folge
 
