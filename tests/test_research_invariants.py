@@ -129,7 +129,7 @@ class ResearchInvariantTests(unittest.TestCase):
         def capture(*args, **kwargs):
             targets.extend(kwargs["targets"])
             return args[2]
-        with patch("podcast_automate.question_research.edit_dossier", side_effect=capture):
+        with patch("podcast_automate.question_synthesis.edit_dossier", side_effect=capture):
             self.engine.compose()
         self.assertEqual(set(targets), {"f_empirical", "f_new"})
 
@@ -140,7 +140,7 @@ class ResearchInvariantTests(unittest.TestCase):
         def capture(*args, **kwargs):
             seen.append(kwargs["targets"])
             return args[2]
-        with patch("podcast_automate.question_research.edit_dossier", side_effect=capture):
+        with patch("podcast_automate.question_synthesis.edit_dossier", side_effect=capture):
             self.engine.compose()
             self.engine.state["dirty_tasks"] = ["task_definition", "task_empirical"]
             self.engine.compose()
@@ -154,7 +154,7 @@ class ResearchInvariantTests(unittest.TestCase):
         def legacy(*args, **kwargs):
             kwargs["targets"] = kwargs.pop("legacy_targets")
             return edit_dossier(*args, **kwargs)
-        with patch("podcast_automate.question_research.edit_dossier", side_effect=legacy):
+        with patch("podcast_automate.question_synthesis.edit_dossier", side_effect=legacy):
             self.engine.compose()
         calls = len(self.fixture.calls)
         self.engine.compose()
@@ -168,7 +168,7 @@ class ResearchInvariantTests(unittest.TestCase):
         def legacy(*args, **kwargs):
             kwargs["targets"] = kwargs.pop("legacy_targets")
             return edit_dossier(*args, **kwargs)
-        with patch("podcast_automate.question_research.edit_dossier", side_effect=legacy):
+        with patch("podcast_automate.question_synthesis.edit_dossier", side_effect=legacy):
             with self.assertRaises(AppError):
                 self.engine.compose()
         calls = len(self.fixture.calls)
@@ -183,7 +183,7 @@ class ResearchInvariantTests(unittest.TestCase):
             changed = args[2].model_copy(deep=True)
             changed.findings[0].statement = "Unrelated rewrite through reference repair."
             return changed
-        with patch("podcast_automate.question_research.repair_references", side_effect=corrupt):
+        with patch("podcast_automate.question_synthesis.repair_references", side_effect=corrupt):
             with self.assertRaises(AppError) as caught:
                 self.engine.compose()
         self.assertEqual(caught.exception.code, "invalid_research_patch")

@@ -1,0 +1,4 @@
+Use the active attachments to suggest a topic, learning goal, scope and research questions. Do not
+ask again for information clearly supplied there. Refer to filenames when useful. Attachments
+already become local research inputs; never invent local file paths. The active attachment list is
+authoritative; removed documents in chat history are no longer inputs.

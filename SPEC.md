@@ -8,7 +8,7 @@ Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vortr�
 
 Der Standard setzt keine fachlichen oder mathematischen Vorkenntnisse voraus und erklärt auch anspruchsvolle Zusammenhänge in Alltagssprache. Klare mentale Bilder, konkrete Beispiele und kleine Erklärschritte tragen die gewünschte Tiefe. Vorwissen und Detailtiefe können im Themenauftrag angepasst werden. Zusammenhänge dürfen längere Erklärungen benötigen; die Gesprächsform erzwingt keine kurzen Sprecherantworten.
 
-Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Diese Spezifikation beschreibt den vollständigen Zielumfang. Version 0.1 implementiert Projektverwaltung, technische Text-/Audio-Proben und einen begrenzten Recherchepass bis zum belegten Dossier; der aktuelle Stand steht in der [Windows-Anleitung](docs/windows-quickstart.md) und der [Rechercheanleitung](docs/research.md).
+Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Diese Spezifikation beschreibt den vollständigen Zielumfang. Version 0.1 implementiert Projektverwaltung, das Browser-Studio, die fragengeleitete Recherche bis zum geprüften Dossier, Serienplanung, Lehrplanung, Dialogskripte mit Polishing und Prüfungen sowie die Vertonung freigegebener Skripte mit lokalem Qwen oder Gemini über OpenRouter. Der aktuelle Stand steht in der [README](README.md) und den dort verlinkten Anleitungen.
 
 ### Hauptfälle
 
@@ -109,7 +109,7 @@ Die Freigabe eines Gesamtlaufs umfasst dessen automatisch geprüfte Skripte und 
 
 ## 5. Datenverträge
 
-Die vollständigen Verträge werden schrittweise als validierbare Schemas umgesetzt. Version 0.1 exportiert über `pla schemas` dreizehn Verträge: TopicBrief, EpisodeScript, TextProbeOutput, RunManifest, ResearchDiscovery, SourceDocument, SourceIndex, ResearchDossier, DossierReview, KnowledgeModel, SeriesPlan, EpisodePlan und ScriptReview. Das kompakte Wissensmodell übernimmt die belegten Befunde unverändert und referenziert Begriffe, Mechanismen, Beispiele und Grenzen über deren IDs. Serienentwurf und Szenen sind validierbar; die in den folgenden Abschnitten beschriebenen Datenmodelle enthalten zusätzlich den noch ausstehenden Zielumfang, etwa differenzierte Konfidenz-/Evidenzbewertungen und die vollständige Serienabdeckung.
+Die vollständigen Verträge werden schrittweise als validierbare Schemas umgesetzt. `pla schemas <ordner>` exportiert den jeweils implementierten Stand als JSON-Schemas und ist die verbindliche Liste; derzeit sind es 21 Verträge: TopicBrief, EpisodeScript, TextProbeOutput, RunManifest, ResearchDiscovery, SourceDocument, SourceIndex, ResearchDossier, DossierReview, KnowledgeModel, SeriesPlan, EpisodePlan, ScriptReview, TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview, DialoguePolishReview und SeriesReview. Das kompakte Wissensmodell übernimmt die belegten Befunde unverändert und referenziert Begriffe, Mechanismen, Beispiele und Grenzen über deren IDs. Serienentwurf und Szenen sind validierbar; die in den folgenden Abschnitten beschriebenen Datenmodelle enthalten zusätzlich den noch ausstehenden Zielumfang, etwa differenzierte Konfidenz-/Evidenzbewertungen und die vollständige Serienabdeckung.
 
 ### 5.1 TopicBrief (`project.yaml`)
 
@@ -124,7 +124,7 @@ Die vollständigen Verträge werden schrittweise als validierbare Schemas umgese
 | `target_total_minutes` | Optionaler, ausdrücklich genannter Planungswunsch; standardmäßig nicht gesetzt (`null`), keine implizite Gesamtzeitgrenze |
 | `max_episode_minutes` | Harte Obergrenze 30 |
 | `research_limits` | Begrenzung für Suchrunden, Quellen und Modellaufrufe pro Arbeitslauf; keine pauschale Grenze für Serienumfang |
-| `text_backend`, `tts_backend`, `voice_profile` | Gewählter CLI-Adapter, lokaler TTS-Adapter und beständige Sprecherstimmen; keine Zugangsdaten |
+| `text_backend`, `tts_backend`, `voice_profile` | CLI-Standardadapter (`codex_cli`, `qwen3_local`) und beständige Qwen-Sprecherstimmen; keine Zugangsdaten. Die im Studio gewählten Anbieter liegen daneben in `studio/text.json` (Textmodell, Reasoning-Stufe), `studio/audio.json` (Qwen oder Gemini samt Stimmen) und `studio/execution.json` (sequenziell/parallel); Einzelbefehle übergeben sie als Optionen |
 | `style_profile_id` | Standard `de_calm_deep` |
 | `export_context` | Standard `private_learning`; öffentlicher Export bleibt außerhalb des MVP |
 
@@ -261,18 +261,7 @@ Eine Folge führt von einer konkreten Frage oder einem Fall über Kontext, Erkl�
 
 ## 9. Prompt- und Modellstrategie
 
-Prompts sind getrennte, versionierte Templates mit definierten Eingaben, Ausgaben und Validierung:
-
-1. `plan_research.v1`,
-2. `review_source_candidates.v1`,
-3. `extract_sources.v1`,
-4. `build_knowledge_model.v1`,
-5. `synthesize_research.v1`,
-6. `plan_series.v1`,
-7. `plan_episode.v1`,
-8. `write_deep_dive_script.v1`,
-9. `review_episode.v1`,
-10. `review_series.v1`.
+Prompts sind getrennte Textdateien unter `src/podcast_automate/prompts/` mit definierten Eingaben (JSON-Nutzlast als letzte Zeile), Ausgaben (Pydantic-Verträge als striktes JSON-Schema) und deterministischer Validierung. Gemeinsame Regelblöcke (Terminologie, Lehranspruch, Kontinuität, Episodenrahmung, Belegregeln) werden vor die aufgabenspezifischen Anweisungen gesetzt. Jeder Aufruf trägt im Code eine Versionsmarke wie `write_episode.v6-framing`; Zwischenstände sind an den Hash des vollständigen Prompts gebunden, sodass eine Textänderung nur die betroffenen Aufrufe wiederholt. Die Aufgabenfamilien sind Recherchesuche, Fragenplan und Umfangsprüfung, Leseentscheidung und Antwortprüfung je Teilfrage, Dossierkomposition mit Gesamtprüfung und Einwandzuordnung, Serienplan, Lehrkonzept mit Prüfung, Skriptentwurf, Dialog-Polishing mit Vergleich, Quellen-, Lese-, Redaktions- und Lehrprüfung sowie Serienprüfung; Details in [prompts/README.md](src/podcast_automate/prompts/README.md).
 
 Das erste Textbackend ist Codex CLI mit vorhandener ChatGPT-Abo-Anmeldung. Ein kleiner Adapter kapselt Aufträge, strukturierte Ausgaben, Validierung, verfügbare Nutzungsmetadaten und Fehler. Claude Code kann später denselben Vertrag bedienen. Die Anwendung verwendet die offiziellen CLI-Anmeldungen; sie implementiert keine eigenen Zugriffe mit ausgelesenen Sitzungstokens. Modell und CLI-Version werden pro Lauf festgehalten. Die dokumentierten Grundlagen stehen im [Implementierungsplan](docs/personal-learning-podcast-system-plan.md).
 

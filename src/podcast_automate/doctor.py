@@ -11,6 +11,18 @@ from .codex import CodexAdapter
 from .errors import AppError
 from .models import RuntimeSettings
 from .process import run_process
+from .speech import VOICES_VERIFIED_ON
+from .text_settings import catalog_age
+
+
+def catalog_check() -> dict:
+    """Informational: hard-coded model and voice catalogs age; a stale list never blocks work."""
+    age = catalog_age()
+    detail = (f"Textmodelle geprüft am {age['verified_on']} ({age['age_days']} Tage), "
+              f"Gemini-Stimmen am {VOICES_VERIFIED_ON}")
+    if age["stale"]:
+        detail += "; Kataloge gegen die Anbieter prüfen (text_settings.py, speech.py)"
+    return {"name": "model_catalog", "ok": True, "detail": detail, "stale": age["stale"]}
 
 
 def inspect(settings: RuntimeSettings, *, include_tts=True) -> dict:
@@ -18,6 +30,7 @@ def inspect(settings: RuntimeSettings, *, include_tts=True) -> dict:
     checks.append({"name": "python", "ok": True, "detail": platform.python_version()})
     checks.append({"name": "system", "ok": True,
                    "detail": f"{platform.system()} {platform.version()}"})
+    checks.append(catalog_check())
     for name in ("ffmpeg", "ffprobe"):
         path = shutil.which(name)
         checks.append({"name": name, "ok": path is not None, "detail": path or "Fehlt im PATH"})

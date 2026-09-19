@@ -24,7 +24,8 @@ GEMINI_MODEL = "google/gemini-3.1-flash-tts-preview"
 SPEECH_ENDPOINT = "https://openrouter.ai/api/v1/audio/speech"
 SPEECH_VERSION = "openrouter_gemini_tts.v1"
 QWEN_VOICES = ("Aiden", "Vivian", "Ryan", "Serena", "Uncle_Fu", "Ono_Anna", "Sohee", "Eric", "Dylan")
-# Verified against OpenRouter's public models API, supported_voices, 2026-09-13.
+# Verified against OpenRouter's public models API, supported_voices; see VOICES_VERIFIED_ON.
+VOICES_VERIFIED_ON = "2026-09-13"
 GEMINI_VOICES = ("Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
     "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome",
     "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima",

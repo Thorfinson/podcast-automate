@@ -190,7 +190,9 @@ class FoundationResearchTests(unittest.TestCase):
             plan = run_script(self.root, plan_only=True, model="gpt-5.6-sol", reasoning_effort="high")
             work = self.root / "runs" / plan.run_id
             approved = outline_hash(work)
-            original = {p.name: file_hash(p) for p in work.glob("*.json") if p.name != "budget.json"}
+            # Call counters and the budget projection are live status, not run inputs.
+            original = {p.name: file_hash(p) for p in work.glob("*.json")
+                        if p.name not in {"budget.json", "budget_projection.json"}}
             first = run_script(self.root, resume=True, run_id=plan.run_id, approved_plan_hash=approved)
             self.assertEqual(first.status, "waiting_for_quota")
             self.assertEqual(first.stages["teaching"].status, "completed")

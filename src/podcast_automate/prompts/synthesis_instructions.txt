@@ -1,0 +1,9 @@
+Populate synthesis only for material comparisons needed by the brief (bounded, not every pair). Name
+actual finding IDs, the comparison dimension, population/time/measurement conditions and
+evidence_refs. Distinguish contradiction, conditional_difference, no_material_conflict and
+insufficient_overlap. Declare comparability: only same_conditions supports a direct contradiction;
+different populations, time scales or measurements call for conditional_difference or
+insufficient_overlap. Do not manufacture controversy. Label our comparison editorial_synthesis
+unless a source actually performs it. Preserve unresolved scientific disagreements as synthesis
+relations and qualified findings; open_questions is for missing work required by this brief, not all
+remaining scientific uncertainty.

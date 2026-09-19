@@ -1,8 +1,15 @@
-"""Explicit text-generation choices, independent of personal CLI configuration."""
+"""Explicit text-generation choices, independent of personal CLI configuration.
+
+The model catalogs below are snapshots of provider offerings. ``CATALOG_VERIFIED_ON`` records
+when they were last checked; ``pla doctor`` reports their age so stale entries are noticed.
+"""
 import re
+from datetime import date
 
 from .errors import AppError
 
+CATALOG_VERIFIED_ON = date(2026, 9, 16)
+CATALOG_STALE_DAYS = 90
 DEFAULT_CODEX_MODEL = "gpt-6-astra"
 DEFAULT_REASONING_EFFORT = "xhigh"
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
@@ -35,6 +42,12 @@ TEXT_PRESETS = [
     {"id": "openrouter_deepseek", "label": "DeepSeek V4.1 Flash · max · OpenRouter", "provider": "openrouter",
      "model": "deepseek/deepseek-v4.1-flash", "reasoning_effort": "max"},
 ]
+
+
+def catalog_age(today=None):
+    """Days since the model catalogs were verified, and whether that exceeds the review interval."""
+    days = ((today or date.today()) - CATALOG_VERIFIED_ON).days
+    return {"verified_on": CATALOG_VERIFIED_ON.isoformat(), "age_days": days, "stale": days > CATALOG_STALE_DAYS}
 
 
 def text_preset(preset_id):

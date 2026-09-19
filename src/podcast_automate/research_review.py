@@ -5,20 +5,13 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from .prompts import instructions
 from .models import Contract, NonEmpty
 from .research_models import DossierReview, ReviewIssue
 from .evidence_models import FindingSupport, ResearchObjection, SourceAssessment, ObjectionClosure
 
 
-ROUTING_INSTRUCTIONS = (
-    "For every issue choose resolution='research' when resolving it needs evidence absent from the supplied "
-    "passages: a missing definition, causal step, original text, independent test or comparison. Provide concrete "
-    "search_queries identifying the missing passage or primary study (English terms are welcome). Choose "
-    "resolution='revise' ONLY when the supplied passages already suffice to correct the wording, attribution or "
-    "explanation, and leave search_queries empty. For a mixed issue choose research. Do not turn missing evidence "
-    "into a wording issue by dropping an agreed requirement or calling missing research scientific uncertainty. "
-    "Research issues trigger retrieval BEFORE another rewrite."
-)
+ROUTING_INSTRUCTIONS = instructions("routing_instructions")
 
 
 class Resolution(Contract):

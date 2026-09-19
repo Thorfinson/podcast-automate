@@ -5,6 +5,10 @@ on:
   pull_request:
 permissions:
   contents: read
+# Only tests run here, never a deployment, so a superseded run of the same ref is safe to cancel.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   tests:
     strategy:

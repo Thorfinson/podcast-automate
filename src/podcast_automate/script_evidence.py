@@ -1,20 +1,12 @@
 """Check complete, anchored semantic-preservation receipts for spoken scripts."""
 from collections import Counter
 
+from .prompts import fragment
 from .errors import AppError
 from .script_models import ScriptIssue
 from .sources import clean
 
-SCRIPT_EVIDENCE_INSTRUCTIONS = (
-    "Preserve each finding's claim_contract and the material unresolved synthesis relationships. "
-    "Do not upgrade association to causation, source theory to tested fact, or remove population/time limits. "
-    "Compare normalized quantities by value, unit and direction; equivalent spoken numbers, translations and "
-    "unit conversions are allowed. Review claim_checks exactly once per segment, including nonfactual segments. "
-    "Each check must quote the actual segment, identify all its knowledge_refs, assess preservation against "
-    "the research contract and original draft, and name changed semantic fields for drift. A factual assertion "
-    "without references is drift, not no_research_claim. No-research-claim is only for genuinely nonfactual framing. "
-    "When a qualified finding spans segments, check its scope in the surrounding dialogue. "
-)
+SCRIPT_EVIDENCE_INSTRUCTIONS = fragment("script_evidence_instructions")
 
 
 def validate_claim_checks(review, script, findings, *, required=True):

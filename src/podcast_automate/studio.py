@@ -22,6 +22,7 @@ from pydantic import Field
 from .errors import AppError
 from . import attachments
 from .execution import ExecutionChoice, MAX_PARALLEL, selected_execution
+from .logs import configure_logging, logger
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, now
 from .runner import manifest_path
 from .scripting import outline_hash, script_metrics
@@ -734,6 +735,9 @@ class StudioHandler(BaseHTTPRequestHandler):
             message = str(exc) if isinstance(exc, AppError) else "Daten konnten nicht verarbeitet werden. Eingaben prüfen und Ansicht neu laden."
             if app.key:
                 message = message.replace(app.key, "[Key verborgen]")
+            if not isinstance(exc, AppError):
+                # Request bodies and paths stay out of the log; the traceback names the failing code.
+                logger("studio").warning("Anfrage %s abgewiesen: %s", urlsplit(self.path).path, type(exc).__name__, exc_info=exc)
             self.send_data(403 if code == "forbidden" else 404 if code == "not_found" else 400,
                            json.dumps({"error": message, "code": code}, ensure_ascii=False).encode("utf-8"))
 
@@ -801,8 +805,10 @@ def serve(workspace, port=8765, open_browser=True):
     except (OSError, ValueError):
         pass
     with project_lock(Path(workspace) / ".studio"):
+        configure_logging(Path(workspace) / ".studio/studio.log")
         server = make_server(workspace, port)
         url = f"http://127.0.0.1:{server.server_port}"
+        logger("studio").info("Studio gestartet: %s", url)
         print(f"Podcast Studio: {url}\nDieses Fenster geöffnet lassen. Beenden mit Strg+C.", flush=True)
         if open_browser:
             webbrowser.open(url)

@@ -69,8 +69,13 @@ class TopicBrief(Contract):
     target_total_minutes: float | None = Field(default=None, gt=0)
     max_episode_minutes: Literal[30] = 30
     research_limits: ResearchLimits = Field(default_factory=ResearchLimits)
-    text_backend: Literal["codex_cli"] = "codex_cli"
-    tts_backend: Literal["qwen3_local"] = "qwen3_local"
+    # project.yaml records the CLI defaults. The Studio stores a project's actual provider
+    # choices next to it in studio/text.json (text model, effort) and studio/audio.json
+    # (Qwen or Gemini voices); those files never hold credentials.
+    text_backend: Literal["codex_cli"] = Field(
+        default="codex_cli", description="CLI default; the Studio selection lives in studio/text.json.")
+    tts_backend: Literal["qwen3_local"] = Field(
+        default="qwen3_local", description="CLI default; the Studio selection lives in studio/audio.json.")
     voice_profile: HostVoices = Field(
         default_factory=lambda: {"host_a": "Ryan", "host_b": "Serena"})
     style_profile_id: Literal["de_calm_deep"] = "de_calm_deep"
