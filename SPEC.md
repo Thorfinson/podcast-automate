@@ -8,7 +8,7 @@ Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vortr�
 
 Der Standard setzt keine fachlichen oder mathematischen Vorkenntnisse voraus und erklärt auch anspruchsvolle Zusammenhänge in Alltagssprache. Klare mentale Bilder, konkrete Beispiele und kleine Erklärschritte tragen die gewünschte Tiefe. Vorwissen und Detailtiefe können im Themenauftrag angepasst werden. Zusammenhänge dürfen längere Erklärungen benötigen; die Gesprächsform erzwingt keine kurzen Sprecherantworten.
 
-Der MVP startet als CLI mit lokalen Projektdateien auf Windows 11. Der Zielrechner besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt zunächst das vorhandene ChatGPT-/Codex-Abo über die offizielle CLI; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Diese Spezifikation beschreibt den vollständigen Zielumfang. Version 0.1 implementiert Projektverwaltung, das Browser-Studio, die fragengeleitete Recherche bis zum geprüften Dossier, Serienplanung, Lehrplanung, Dialogskripte mit Polishing und Prüfungen sowie die Vertonung freigegebener Skripte mit lokalem Qwen oder Gemini über OpenRouter. Der aktuelle Stand steht in der [README](README.md) und den dort verlinkten Anleitungen.
+Der MVP begann als CLI mit lokalen Projektdateien auf Windows 11; heute laufen CLI und Browser-Studio unter Windows, macOS und Linux. Der Zielrechner für die lokale Sprachausgabe besitzt eine AMD Radeon RX 9070 XT. Textverarbeitung nutzt die vorhandenen Abos (ChatGPT/Codex und Claude Max) über die offiziellen CLIs; lokale Sprachausgabe und automatische Audiomontage gehören zum MVP. Zusätzliche bezahlte APIs und manueller Audioschnitt sind keine Voraussetzung. Diese Spezifikation beschreibt den vollständigen Zielumfang. Version 0.1 implementiert Projektverwaltung, das Browser-Studio, die fragengeleitete Recherche bis zum geprüften Dossier, Serienplanung, Lehrplanung, Dialogskripte mit Polishing und Prüfungen sowie die Vertonung freigegebener Skripte mit lokalem Qwen oder Gemini über OpenRouter. Der aktuelle Stand steht in der [README](README.md) und den dort verlinkten Anleitungen.
 
 ### Hauptfälle
 
@@ -79,29 +79,27 @@ Deterministisch sind Ablauf, Schema-Prüfungen und die Wiederverwendung gespeich
 
 ## 4. CLI-Entscheidung
 
-Bereits implementiert sind `init`, `doctor`, `status`, `resume`, `schemas`, `text-probe`, `audio-probe`, `research` und `script`. Die beiden Proben schreiben Ergebnisse nach `probes/`. `research` führt Live-Suche, Quellenimport, Dossiererstellung und Quellenreview aus. `script` erstellt daraus ein kompaktes Wissensmodell, einen Serienentwurf und geprüfte Dialogskripte zur Leseprüfung. `script --episode ep_001` zieht die erste Folge vor; ohne Auswahl werden alle geplanten Skripte geschrieben. Audio wird dabei nicht erzeugt. [Skriptworkflow](docs/scripts.md). Die folgende Befehlsfolge beschreibt darüber hinaus die vollständige Zielpipeline; nicht jeder aufgeführte Befehl ist bereits einzeln implementiert:
+Implementiert sind `studio`, `init`, `doctor`, `status`, `text-probe`, `quota`, `audio-probe`, `research`, `script`, `series-review`, `audio`, `resume`, `approve` und `schemas`. Die beiden Proben schreiben Ergebnisse nach `probes/`. `research` führt Live-Suche, Quellenimport, Dossiererstellung und Quellenreview aus. `script` erstellt daraus ein kompaktes Wissensmodell, einen Serienentwurf, Lehrpläne und geprüfte Dialogskripte zur Leseprüfung; `script --episode ep_001` zieht die erste Folge vor, ohne Auswahl werden alle geplanten Skripte geschrieben, `--revise` überarbeitet einen vorhandenen Text. `series-review` prüft die Skripte eines veröffentlichten Laufs nachträglich als Serie. `audio` vertont eine gelesene und freigegebene Folge mit lokalem Qwen, montiert sie und exportiert MP3, Kapitel, Transkript und Show Notes; Gemini über OpenRouter wird im Studio gewählt. `approve` erhöht ausdrücklich das Aufruf- oder Suchrundenlimit eines Laufs oder akzeptiert eine blockierte Teilfrage als Lücke. `quota` zeigt die Kontingente beider Abos ohne Modellaufruf. [Skriptworkflow](docs/scripts.md), [Recherche](docs/research.md), [Studio](docs/studio.md). Die Pipeline besteht aus drei Laufarten, die je Projekt aufeinander aufbauen:
 
 ```bash
 pla doctor
 pla init <project-dir> --topic "Thema oder Frage"
-pla research <project-dir>
-pla ingest <project-dir>
-pla model <project-dir>
-pla plan <project-dir>
-pla script <project-dir> [--episode ep_001]
-pla check <project-dir>
-pla render <project-dir> [--episode ep_001] --approve-audio
-pla export <project-dir>
-pla run <project-dir> [--approve-audio]
+pla research <project-dir>                                 # Laufart research: bis zum geprüften Dossier
+pla script <project-dir> [--episode ep_001]                # Laufart script: Plan, Lehrpläne, Skripte, Prüfungen
+pla series-review <project-dir> [--run <run_id>]           # Serienprüfung eines veröffentlichten Skriptlaufs
+pla audio <project-dir> --episode ep_001 --approve-audio   # Laufart episode_audio: Vertonung, Montage, Export
 pla status <project-dir>
-pla resume <project-dir> [--approve-audio]
+pla resume <project-dir> [--run-id <run_id>] [--approve-audio]
+pla approve <project-dir> [--model-calls N] [--search-rounds N] [--accept-gap TASK_ID]
 ```
+
+Die ursprüngliche Zielskizze mit `ingest`, `model`, `plan`, `check`, `render`, `export` und `run` wurde durch diese Laufarten ersetzt: Quellenimport und Wissensmodell gehören zu `research` und `script`, die Prüfungen laufen innerhalb der Stufen, Rendern und Export bilden zusammen `audio`. Einen Gesamtbefehl `run` gibt es nicht; das Studio führt die Läufe nacheinander aus.
 
 Ohne zusätzliche Zeitvorgabe wird die Serienlänge aus dem Inhalt abgeleitet. Nur wenn der Nutzer ausdrücklich eine Gesamtdauer wünscht, kann `pla init` optional `--total-minutes <minutes>` als Planungswunsch übernehmen; der Parameter hat keinen Standardwert.
 
-`pla doctor` prüft lokale Voraussetzungen, CLI-Anmeldung und Verfügbarkeit des Audio-Backends. `pla run` führt ohne Audio-Freigabe die Stufen von Recherche bis Qualitätsbericht aus. Mit `--approve-audio` folgen automatisch Audioerzeugung, Montage, Prüfung und Export. Ohne `--episode` bearbeiten `script` und `render` alle geplanten Folgen. Einzelne Skripte können zur redaktionellen Prüfung vorgezogen werden.
+`pla doctor` prüft lokale Voraussetzungen, CLI-Anmeldungen und Verfügbarkeit des Audio-Backends. `research` und `script` enden ohne Audio-Freigabe beim Qualitätsbericht. Ohne `--episode` bearbeitet `script` alle geplanten Folgen; `audio` vertont je Lauf genau eine Folge, und erst `--approve-audio` startet Audioerzeugung, Montage, Prüfung und Export. Einzelne Skripte können zur redaktionellen Prüfung vorgezogen werden.
 
-`pla render` benötigt sowohl `--approve-audio` als auch einen aktuellen Qualitätsbericht ohne blockierende Befunde für die ausgewählten Folgen und den Serienplan. Ein bestandener Bericht ersetzt keine Audio-Freigabe. `pla export` erzeugt keine neue Audioausgabe und veröffentlicht nichts automatisch.
+`pla audio` benötigt sowohl `--approve-audio` als auch einen aktuellen Qualitätsbericht ohne blockierende Befunde für die Folge und, bei einem seriengeprüften Lauf, ein bestandenes Serienurteil. Ein bestandener Bericht ersetzt keine Audio-Freigabe. Der Export im selben Lauf veröffentlicht nichts automatisch.
 
 Die Freigabe eines Gesamtlaufs umfasst dessen automatisch geprüfte Skripte und begrenzte Reparaturen. Vor jedem Rendern werden die aktuellen Qualitätsprüfungen und die freigegebenen Input-Hashes protokolliert. Automatische Textkorrekturen innerhalb dieses Laufs benötigen erneute bestandene Checks. Eine manuelle Änderung an Eingaben oder Produktionskonfiguration erfordert eine erneute Audio-Freigabe; eine bloße Wiederaufnahme eines unveränderten Laufs übernimmt dessen Freigabe.
 
@@ -261,9 +259,9 @@ Eine Folge führt von einer konkreten Frage oder einem Fall über Kontext, Erkl�
 
 ## 9. Prompt- und Modellstrategie
 
-Prompts sind getrennte Textdateien unter `src/podcast_automate/prompts/` mit definierten Eingaben (JSON-Nutzlast als letzte Zeile), Ausgaben (Pydantic-Verträge als striktes JSON-Schema) und deterministischer Validierung. Gemeinsame Regelblöcke (Terminologie, Lehranspruch, Kontinuität, Episodenrahmung, Belegregeln) werden vor die aufgabenspezifischen Anweisungen gesetzt. Jeder Aufruf trägt im Code eine Versionsmarke wie `write_episode.v6-framing`; Zwischenstände sind an den Hash des vollständigen Prompts gebunden, sodass eine Textänderung nur die betroffenen Aufrufe wiederholt. Die Aufgabenfamilien sind Recherchesuche, Fragenplan und Umfangsprüfung, Leseentscheidung und Antwortprüfung je Teilfrage, Dossierkomposition mit Gesamtprüfung und Einwandzuordnung, Serienplan, Lehrkonzept mit Prüfung, Skriptentwurf, Dialog-Polishing mit Vergleich, Quellen-, Lese-, Redaktions- und Lehrprüfung sowie Serienprüfung; Details in [prompts/README.md](src/podcast_automate/prompts/README.md).
+Prompts sind getrennte Textdateien unter `src/podcast_automate/prompts/` mit definierten Eingaben (JSON-Nutzlast als letzte Zeile), Ausgaben (Pydantic-Verträge als striktes JSON-Schema) und deterministischer Validierung. Gemeinsame Regelblöcke (Terminologie, Lehranspruch, Kontinuität, Episodenrahmung, Belegregeln) werden vor die aufgabenspezifischen Anweisungen gesetzt. Jeder Aufruf trägt im Code eine Versionsmarke wie `write_episode.v7-audit-notes`; Zwischenstände sind an den Hash des vollständigen Prompts gebunden, sodass eine Textänderung nur die betroffenen Aufrufe wiederholt. Die Aufgabenfamilien sind Recherchesuche, Fragenplan und Umfangsprüfung, Leseentscheidung und Antwortprüfung je Teilfrage, Dossierkomposition mit Gesamtprüfung und Einwandzuordnung, Serienplan, Lehrkonzept mit Prüfung, Skriptentwurf, Dialog-Polishing mit Vergleich, Quellen-, Lese-, Redaktions- und Lehrprüfung sowie Serienprüfung; Details in [prompts/README.md](src/podcast_automate/prompts/README.md).
 
-Die Textbackends sind Codex CLI mit vorhandener ChatGPT-Abo-Anmeldung und Claude Code mit vorhandener claude.ai-Anmeldung (Claude-Max-Abo); OpenRouter bleibt die API-Alternative. Je Anbieter kapselt ein kleiner Adapter mit demselben Vertrag Aufträge, strukturierte Ausgaben, Validierung, verfügbare Nutzungsmetadaten und Fehler. Die Anwendung verwendet die offiziellen CLI-Anmeldungen; sie implementiert keine eigenen Zugriffe mit ausgelesenen Sitzungstokens, und API-Key-Umgebungsvariablen werden den CLIs entzogen. Modell und CLI-Version werden pro Aufruf festgehalten. Die dokumentierten Grundlagen stehen im [Implementierungsplan](docs/personal-learning-podcast-system-plan.md) und im [Plan für den zweiten Abo-Anbieter](docs/claude-backend-plan.md).
+Die Textbackends sind Codex CLI mit vorhandener ChatGPT-Abo-Anmeldung und Claude Code mit vorhandener claude.ai-Anmeldung (Claude-Max-Abo); OpenRouter bleibt die API-Alternative. Je Anbieter kapselt ein kleiner Adapter mit demselben Vertrag Aufträge, strukturierte Ausgaben, Validierung, verfügbare Nutzungsmetadaten und Fehler. Die Anwendung verwendet die offiziellen CLI-Anmeldungen; sie implementiert keine eigenen Zugriffe mit ausgelesenen Sitzungstokens, und API-Key-Umgebungsvariablen werden den CLIs entzogen. Modell und CLI-Version werden pro Aufruf festgehalten. Die dokumentierten Grundlagen stehen im [Plan für den zweiten Abo-Anbieter](docs/claude-backend-plan.md); was das Audit vom September 2026 an Prüfungen ergänzt hat, steht in [docs/quality-audit-2026-09-19-implementation.md](docs/quality-audit-2026-09-19-implementation.md).
 
 Suche, Abruf und Textextraktion benötigen echte Werkzeuganbindungen. Zunächst werden die Suchwerkzeuge des gewählten CLI-Backends genutzt und ihre Verfügbarkeit durch einen realen Abruf geprüft. Ein Modell darf keine nicht abgerufenen Quellen als gelesene Evidenz ausgeben. Nicht zugängliche Texte bleiben Quellenkandidaten oder dokumentierte Lücken.
 
@@ -287,6 +285,7 @@ Die Abo-Kontingente gelten auch für automatisierte Aufrufe. Fertige Stufenergeb
 | `rights_check` | Geplantes Gate | Individuelle Rechtezustände und Exportsperren sind noch nicht implementiert. Aktuell gelten ausschließlich private Nutzung und die deterministischen Dossier-Zitatgrenzen; siehe Abschnitt 11. |
 | `audio_readiness_check` | Ja vor Rendern | Sprecher, gesprochener Text, Pausen und Kapitel sind eindeutig. |
 | `audio_output_check` | Ja vor finalem Audioexport | Alle Segmente sind vorhanden und technisch gültig; Montage, gemessene Dauer und Kapitel stimmen überein. |
+| `advisories` | Nein | Nichtblockierende Hinweise neben den Gates: erneut definierte Begriffe, wiederholte Hinweise auf erfundene Beispiele, langer Kaltstart und Dauer über dem Ziel (`script_advisories.py`) sowie Befunde aus nur einer Forschungsgruppe in der Recherche. Sie stehen in `reports/script_quality.yaml` unter `episodes.<ep>.advisories` beziehungsweise im Recherchebericht und im Studio unter „Hinweise der Prüfungen“; nichts wertet sie automatisch aus. |
 
 ID- und Schema-Prüfungen sind maschinell deterministisch. Inhaltliche Tiefe, Evidenzpassung und Natürlichkeit benötigen redaktionelle Bewertung; eine Quellen-ID beweist keine sachliche Richtigkeit. Der Bericht trennt automatische Prüfungen, Modellbewertungen und menschliche Befunde.
 
@@ -315,7 +314,7 @@ Als Ausbauziel soll die folgende Transparenznotiz in die Exporte aufgenommen wer
 ## 12. Audio und Wiederaufnahme
 
 - Audio wird nur nach expliziter Freigabe und bestandenen blockierenden Prüfungen erzeugt.
-- TTS läuft lokal auf dem Windows-Rechner in einer separaten Umgebung. Qwen3-TTS ist der erste Testkandidat; Modellvariante, Stimmen und passende AMD-Laufzeit werden anhand eines frühen Machbarkeitstests festgelegt. Die konkrete Kombination ist bisher nicht erprobt.
+- TTS läuft lokal in einer separaten Umgebung oder über Gemini bei OpenRouter. Qwen3-TTS ist der lokale Kandidat; Modellvariante, Modellrevision, Stimmen und AMD-Laufzeit wurden am 13.09.2026 auf dem Zielrechner festgelegt und erprobt, siehe [docs/qwen-windows.md](docs/qwen-windows.md).
 - Rendering erfolgt pro Sprechersegment, anschließend werden Segmente automatisch zu Folgen zusammengesetzt. Der Nutzer muss keinen Audioeditor bedienen.
 - Die strukturierte Regie steuert Sprecherzuordnung, Pausen und Kapitel. FFmpeg und ffprobe übernehmen Montage und Messung; unbeabsichtigte Randstille darf korrigiert werden, Sprachlaute und geplante Denkpausen müssen erhalten bleiben.
 - Der Cache-Key berücksichtigt Provider, Modellrevision, Stimme, gesprochenen Segmenttext, Aussprache- und TTS-Einstellungen einschließlich gegebenenfalls verwendeter Seeds.
@@ -323,7 +322,7 @@ Als Ausbauziel soll die folgende Transparenznotiz in die Exporte aufgenommen wer
 - Fehlende oder beschädigte Dateien, leere Ausgabe, auffällige Stille, Pegelfehler und unplausible Dauer führen zu gezielter Prüfung und begrenzten Reparaturversuchen. Bleibt ein Fehler bestehen, wird er mit Segment-ID gemeldet und der betroffene finale Export blockiert.
 - Standardformat ist MP3, 44.1 kHz, Stereo und lautheitsnormalisiert auf -16 LUFS.
 - Kapitelmarken werden aus der tatsächlichen Audio-Zeitleiste erzeugt. Zu lange Folgen werden automatisch sinnvoll aufgeteilt oder überarbeitet und erneut geprüft.
-- Aussprache und Stimmenkonstanz werden im Audiopilot bewertet und über ein zentrales Ausspracheprofil unterstützt. Ergänzende lokale Rücktranskription zur Erkennung von Auslassungen und Wiederholungen wird am Pilot erprobt; sie garantiert keine fehlerfreie Aussprache.
+- Aussprache und Stimmenkonstanz werden im Audiopilot bewertet und über die Sprechformtabelle des Projekts (`studio/spoken_forms.json`) sowie Überschreibungen je Segment mit erneuter Vertonung einzelner Segmente unterstützt, siehe [docs/studio.md](docs/studio.md#sprechformen-pausen-hostnamen-und-redaktionelle-notizen). Ergänzende lokale Rücktranskription zur Erkennung von Auslassungen und Wiederholungen ist als deterministischer Vergleich vorbereitet (`transcription_check.py`), aber noch mit keinem Erkenner verbunden; sie garantiert keine fehlerfreie Aussprache.
 - Vor Produktion werden Umfang und, soweit aus dem Pilot ableitbar, Renderzeit und Speicherbedarf angezeigt. Der Lauf protokolliert tatsächliche Renderdauer, Cache-Nutzung und verfügbare Abo-Verbrauchsdaten. Unbekanntes Restkontingent wird als unbekannt ausgewiesen. Geschätzte API-Dollarwerte einer CLI sind keine tatsächlich berechneten Abo-Kosten.
 
 Musik, aufwendiges Sounddesign und ein dritter Host sind keine Voraussetzungen für den ersten MVP.
@@ -336,13 +335,13 @@ Zusätzlich erfasst es Status und Wiederaufnahmepunkte je Stufe, Folge und Segme
 
 ## 14. Evaluation und Definition of Done
 
-Vor weiteren Ausgabeformaten werden drei Fixture-Projekte angelegt:
+Die ursprünglich vorgesehenen Fixture-Projekte `fixtures/simple_topic`, `fixtures/mechanism_series` und `fixtures/conflicting_perspectives` wurden nicht angelegt. An ihrer Stelle dienen als Prüfgrundlage:
 
-1. `fixtures/simple_topic`: kleiner, konsistenter Quellenbestand für schnelle Prüfungen von Ingestion, Referenzen und Export.
-2. `fixtures/mechanism_series`: eine Serie mit aufeinander aufbauenden Grundlagen und Mechanismen. Die Planung muss mit zusätzlichem inhaltlichem Bedarf um weitere Folgen wachsen können, ohne an einer festen Gesamtzeit oder Folgenzahl zu scheitern.
-3. `fixtures/conflicting_perspectives`: widersprüchliche Positionen, unsichere Evidenz und eine personenzentrierte Ausgangsfrage.
+1. die Fixture-Module der Testsuite unter `tests/*_fixtures.py` (Recherche, Fragen, Lehrplanung, Skript, Polishing, Serie) mit simulierten Modellantworten, die den vollständigen Ablauf einschließlich Wiederaufnahme, Budget und Freigaben durchlaufen;
+2. die Fälle unter `evals/` (`teaching_quality`, `dialogue_polishing`, `research_evidence`, `research_refinement`) mit eingefrorenen Korpora, erwarteten Urteilen, absichtlich fehlerhaften Fällen und sauberen Kontrollen, die per Hand laufen, teils mit echten Modellaufrufen, teils als Offline-Replay;
+3. die Beispielserie vom September 2026 und der zurückgewiesene Pilot (`evals/teaching_quality/pilot_rejected.json`) als Regressionsfälle.
 
-Jedes Fixture erhält erwartete Kernclaims, Erklärschritte, Quellenbezüge, Beispiele, Grenzen und mindestens einen absichtlich problematischen Fall. Das Serienfixture umfasst zudem erwartete Abhängigkeiten, Abdeckung und unerwünschte Wiederholungen. Die Hauptfälle aus Abschnitt 1 sind Kandidaten für spätere fachliche Piloten; konkrete Quellen müssen dafür recherchiert werden.
+Die Hauptfälle aus Abschnitt 1 sind Kandidaten für spätere fachliche Piloten; konkrete Quellen müssen dafür recherchiert werden.
 
 Der MVP ist fertig, wenn:
 

@@ -1,6 +1,6 @@
-# Windows 11: erster ausführbarer Stand
+# Windows 11: Einrichtung und erste Proben
 
-Version 0.1 enthält Projektverwaltung, eine Codex-Abo-Verbindungsprobe, echte Themenrecherche mit Quellenabruf und Dossier sowie eine automatisch montierte lokale Qwen-Hörprobe. Die Verbindung vom Dossier zur Podcastserie folgt in den nächsten Meilensteinen. [Recherche starten und fortsetzen](research.md).
+Diese Anleitung richtet die Anwendung unter Windows 11 ein und führt bis zur ersten technischen Hörprobe. Die vollständige Pipeline vom Thema über Recherche, Serienplan und geprüfte Skripte bis zur exportierten MP3 ist implementiert; im Alltag führt das [Browser-Studio](studio.md) durch diese Schritte, die Einzelbefehle stehen in der [README](../README.md). [Recherche starten und fortsetzen](research.md), [Skripte erstellen und prüfen](scripts.md).
 
 ## 1. Anwendung installieren
 
@@ -52,15 +52,15 @@ ffmpeg -version
 ffprobe -version
 ~~~
 
-Die Binärdateien liegen unter `tools/ffmpeg/bin/` und sind von Git ausgeschlossen. Das Setup ist nach einem frischen Checkout erneut nötig. Die beiden PATH-Zeilen in jedem neuen PowerShell-Fenster vor `doctor`, `audio-probe`, `resume` oder den Audio-Tests ausführen; eine systemweite PATH-Änderung ist nicht erforderlich. [Downloadquelle und Details](../README.md#ffmpeg-lokal-installieren-und-windows-probe-starten).
+Die Binärdateien liegen unter `tools/ffmpeg/bin/` und sind von Git ausgeschlossen. Das Setup ist nach einem frischen Checkout erneut nötig. Die beiden PATH-Zeilen in jedem neuen PowerShell-Fenster vor `doctor`, `audio-probe`, `resume` oder den Audio-Tests ausführen; eine systemweite PATH-Änderung ist nicht erforderlich. [Downloadquelle und Prüfsumme](../scripts/setup-ffmpeg.ps1).
 
-Für Qwen gibt es nun ein Setup für die separate Python-3.12-Umgebung und die AMD-Wheels:
+Für Qwen richtet ein Setup die separate Python-3.12-Umgebung `.venv-tts` mit den AMD-Wheels ein, lädt die feste Modellrevision und trägt Python-Pfad und Modellstand in `project.yaml` ein:
 
 ~~~powershell
 powershell -NoProfile -File .\scripts\setup-qwen.ps1 -ProjectDir .\projects\energy-models
 ~~~
 
-Das Setup lädt bei Bedarf Python 3.12.14 nach `tools/python/`, installiert PyTorch 2.9.1 mit ROCm 7.2.1 und Qwen 0.1.1 in `.venv-tts`, prüft GPU-Berechnung und lädt die feste Qwen-Modellrevision. Anschließend aktualisiert es den Python-Pfad und Modellstand in `project.yaml`. Auf dem Zielrechner erkennt diese Kombination die RX 9070 XT und besteht FP32-, FP16- und BF16-Berechnungen. [Versionen, Voraussetzungen und Details](qwen-windows.md).
+Festgelegte Versionen, Voraussetzungen und Details: [qwen-windows.md](qwen-windows.md).
 
 Anschließend:
 
@@ -70,9 +70,7 @@ Anschließend:
 
 doctor zeigt die Pakete der TTS-Umgebung, die von PyTorch erkannte GPU und gegebenenfalls die HIP-Version. Der Befehl lädt keine Modellgewichte und führt keine Spracherzeugung aus. Er prüft auch die Codex-Anmeldung; die Audio-Probe selbst benötigt keine Codex-Anmeldung.
 
-Für die erste Probe sind Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice und die Stimmen Ryan und Serena voreingestellt. Diese Stimmen können Deutsch sprechen; wie passend sie klingen, entscheidet die Hörprobe. Das Modell wird beim ersten Audiolauf von Hugging Face geladen und danach lokal wiederverwendet. Der konkrete Modellstand wird über einen Snapshot festgehalten. [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
-
-Der Worker verwendet zunächst eager attention und setzt keine FlashAttention-Installation voraus. Die Einstellung cuda:0 ist auch bei PyTorch mit AMD/HIP der verwendete Gerätename. Ein fehlendes GPU-Gerät führt zu einem Fehler; es wird nicht unbemerkt auf CPU umgeschaltet. [PyTorch-Dokumentation zu HIP](https://github.com/pytorch/pytorch/blob/main/docs/source/notes/hip.rst)
+Für die erste Probe sind `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` und die Stimmen Ryan und Serena voreingestellt; wie passend sie klingen, entscheidet die Hörprobe. Bei der Einstellung `cuda:0` führt ein fehlendes GPU-Gerät zu einem Fehler; nur `auto` weicht auf MPS oder CPU aus. Modellrevision, Gerät und Attention-Einstellung stehen in [qwen-windows.md](qwen-windows.md).
 
 ## 4. Hörprobe erzeugen
 
@@ -116,16 +114,16 @@ Rückgabecodes: 0 bedeutet erfolgreich, 1 bedeutet blockiert oder fehlgeschlagen
 
 ## Verifikation und Grenzen dieser Version
 
-Die Tests verwenden simulierte Codex-Antworten und echte FFmpeg-Montage mit erzeugten Testsignalen. Sie benötigen weder ein Modellkonto noch eine GPU.
+Die Tests verwenden simulierte Modellantworten und echte FFmpeg-Montage mit erzeugten Testsignalen. Sie benötigen weder ein Modellkonto noch eine GPU. Welche Suiten es gibt, wann welche läuft und welche Tests zu welchem Modul gehören, steht in [AGENTS.md](../AGENTS.md).
 
 ~~~powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+$env:PATH = "$PWD\tools\ffmpeg\bin;$env:PATH"
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+node --test tests/studio_ui.test.cjs
 ~~~
 
-Ohne FFmpeg werden die Audio-Integrationstests ausdrücklich übersprungen. Die Kernprüfungen laufen weiter.
+Ohne FFmpeg werden die Audio-Integrationstests ausdrücklich übersprungen. Die Kernprüfungen laufen weiter. CI führt beide Suiten unter Linux, macOS und Windows ohne Modellkonten aus.
 
-Lokal geprüft sind Dateiverwaltung, Schemas, Prozessaufrufe, Kontingentzustände, Wiederaufnahme, Audio-Montage, Laufzeiten und Kapitel. Beim [Windows-Versuch am 13.09.2026](windows-pilot.md) bestanden alle 24 Tests mit FFmpeg, ein echter Codex-Abo-Aufruf und eine vollständige Qwen-Hörprobe auf der RX 9070 XT einschließlich Wiederaufnahme. Die 58,79 Sekunden lange MP3 ist technisch geprüft; Aussprache und Natürlichkeit sind noch anzuhören. Für Windows und Linux ist ein CI-Testlauf ohne Modellkonten eingerichtet.
+Die Einzelbefehle decken die gesamte Pipeline ab: `pla research` recherchiert live und erstellt das geprüfte Dossier, `pla script` schreibt Serienplan, Lehrpläne und geprüfte Dialogskripte, `pla series-review` prüft eine veröffentlichte Serie nachträglich, und `pla audio .\projects\energy-models --episode ep_001 --approve-audio` vertont eine gelesene und freigegebene Folge lokal mit Qwen und exportiert MP3, Kapitel, Transkript und Show Notes. Gemini über OpenRouter wird im Studio gewählt. [Recherche](research.md), [Skriptworkflow](scripts.md), [Studio](studio.md), [Gemini-Audio](gemini-audio.md).
 
-`pla research` implementiert einen begrenzten Live-Recherchepass mit Quellenimport, Abschnittsreferenzen, Dossier, Referenzprüfung und Modellreview. Danach erstellt `pla script .\projects\windows-pilot --episode ep_001` einen Serienentwurf und die erste belegte Dialogfolge zur Leseprüfung. [Skriptworkflow](scripts.md). Audio wartet auf den ausdrücklichen Auftrag nach dieser Prüfung.
-
-Vollständige Qualitätsprüfungen über alle Folgengrenzen, Audio-Produktion recherchierter Folgen und Aufteilung zu langer Folgen bleiben weitere Ausbauschritte. `run`, `ingest`, `model`, `plan`, `check`, `render` und `export` aus der vollständigen Produktspezifikation werden noch nicht als eigenständige fertige CLI-Funktionen angeboten.
+Grenzen dieser Version: Die Hörprüfung der erzeugten Folgen bleibt eine menschliche Aufgabe; jeder Audiobericht trägt `human_listening_reviewed: false`, bis sie im Studio vermerkt wird. Es gibt keinen öffentlichen Veröffentlichungsweg; Exporte bleiben auf `private_learning` begrenzt. ElevenLabs ist nicht angebunden. Die Rücktranskription zur Erkennung von Auslassungen ist als deterministischer Vergleich vorhanden (`transcription_check.py`), aber noch mit keinem Erkenner verbunden.

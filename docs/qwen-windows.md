@@ -57,7 +57,7 @@ Nach einer Unterbrechung desselben unveränderten Audiolaufs:
 .\.venv\Scripts\pla.exe resume .\projects\windows-pilot
 ```
 
-Die fertige Hörprobe liegt unter `projects/windows-pilot/probes/audio/<run_id>/audio.mp3`, begleitet von Transkript, Kapiteln, Timeline und Messbericht. Aussprache, Natürlichkeit und Stimmenkonstanz werden anhand der MP3 beurteilt. Die technischen Berichte behaupten keine bereits bestandene Hörprüfung.
+Die fertige Hörprobe liegt unter `projects/windows-pilot/probes/audio/<run_id>/audio.mp3`, begleitet von Transkript, Kapiteln, Timeline und Messbericht. Aussprache, Natürlichkeit und Stimmenkonstanz werden anhand der MP3 beurteilt. Die technischen Berichte behaupten keine bereits bestandene Hörprüfung. Die Messwerte des Pilotlaufs vom 13.09.2026 (Modellladezeit, belegter GPU-Speicher, Synthesezeiten der Segmente) standen in der inzwischen entfernten Datei `docs/windows-pilot.md` und bleiben in der Git-Historie erhalten; jeder Lauf hält Ladezeit, GPU-Daten und Renderzeiten unter `runs/<run_id>/tts_report.json` fest.
 
 ## Deutsch und Englisch vergleichen
 
