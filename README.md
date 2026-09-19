@@ -69,7 +69,7 @@ Protokolle: `.studio/studio.log`, `<projekt>/studio/worker.log`, `<projekt>/logs
 
 ## Qualität und Grenzen
 
-Jede Modellantwort muss ein striktes JSON-Schema erfüllen und wird deterministisch geprüft: wörtliche Zitate, existierende Quellenabschnitte, Zitatgrenzen je Quelle, Abhängigkeitsreihenfolge und vollständige Kriterienabdeckung. Bestandene Prüfungen müssen Textstellen belegen. Was das System nicht leistet: menschliche Fach- und Hörabnahme, öffentliche Rechteklärung einzelner Quellen und eine allgemeine Anonymisierung. [SPEC.md](SPEC.md) beschreibt Zielumfang und Abnahmekriterien, [Qualitätsprüfung](docs/quality-verification.md) die durchgeführten Verifikationen.
+Jede Modellantwort muss ein striktes JSON-Schema erfüllen und wird deterministisch geprüft: wörtliche Zitate, existierende Quellenabschnitte, Zitatgrenzen je Quelle, Abhängigkeitsreihenfolge und vollständige Kriterienabdeckung. Bestandene Prüfungen müssen Textstellen belegen. Was das System nicht leistet: menschliche Fach- und Hörabnahme, öffentliche Rechteklärung einzelner Quellen und eine allgemeine Anonymisierung. [SPEC.md](SPEC.md) beschreibt Zielumfang und Abnahmekriterien, das [Umsetzungsprotokoll des Qualitätsaudits vom 19. September 2026](docs/quality-audit-2026-09-19-implementation.md) die durchgeführten Verifikationen.
 
 ## Tests
 
@@ -82,10 +82,12 @@ Modellantworten werden simuliert; FFmpeg wird echt aufgerufen. Regressionen mit 
 
 ## Dokumentation
 
-- [docs/studio.md](docs/studio.md), [docs/windows-quickstart.md](docs/windows-quickstart.md), [docs/macos-linux.md](docs/macos-linux.md), [docs/qwen-windows.md](docs/qwen-windows.md), [docs/gemini-audio.md](docs/gemini-audio.md)
-- [docs/research.md](docs/research.md), [docs/research-evidence.md](docs/research-evidence.md), [docs/scripts.md](docs/scripts.md), [docs/teaching-design.md](docs/teaching-design.md)
-- [docs/quality-verification.md](docs/quality-verification.md), [docs/system-quality-assessment.md](docs/system-quality-assessment.md), [docs/windows-pilot.md](docs/windows-pilot.md)
-- [SPEC.md](SPEC.md), [Implementierungsplan](docs/personal-learning-podcast-system-plan.md), [Plan: Claude Code als zweiter Abo-Anbieter](docs/claude-backend-plan.md), [Entwicklungsnotizen](docs/entwicklungsnotizen.md) (ausführliche Funktionsnotizen der bisherigen README)
+Der Index [docs/README.md](docs/README.md) ordnet alle Anleitungen ein.
+
+- Einstieg und Einrichtung: [docs/windows-quickstart.md](docs/windows-quickstart.md), [docs/macos-linux.md](docs/macos-linux.md), [docs/qwen-windows.md](docs/qwen-windows.md), [docs/gemini-audio.md](docs/gemini-audio.md)
+- Referenz zum heutigen Verhalten: [docs/studio.md](docs/studio.md), [docs/research.md](docs/research.md), [docs/research-evidence.md](docs/research-evidence.md), [docs/scripts.md](docs/scripts.md), [docs/teaching-design.md](docs/teaching-design.md), [docs/system-quality-assessment.md](docs/system-quality-assessment.md)
+- Pläne mit Umsetzungsstand: [docs/claude-backend-plan.md](docs/claude-backend-plan.md), [docs/quality-audit-2026-09-19-implementation.md](docs/quality-audit-2026-09-19-implementation.md)
+- Archiv: [docs/history/quality-audit-2026-09-19.md](docs/history/quality-audit-2026-09-19.md) und [docs/history/quality-audit-2026-09-19-plan.md](docs/history/quality-audit-2026-09-19-plan.md); [SPEC.md](SPEC.md) beschreibt Zielumfang und Abnahmekriterien, [AGENTS.md](AGENTS.md) die Testregeln
 
 ## Lizenz
 

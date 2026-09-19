@@ -1,7 +1,7 @@
 # What was built from the quality-audit plan of 19 September 2026
 
 Status: 19 September 2026, after a review pass on the first implementation. Records what landed for
-each work package of [quality-audit-2026-09-19-plan.md](quality-audit-2026-09-19-plan.md), where
+each work package of [quality-audit-2026-09-19-plan.md](history/quality-audit-2026-09-19-plan.md), where
 the implementation deviates from the plan and why, what the review of the first attempt found and
 how it was fixed, and which acceptance checks still need a real run, a human listener or hardware
 this repository does not have.

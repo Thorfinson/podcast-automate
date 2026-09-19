@@ -1,3 +1,5 @@
+Archived plan of 19 September 2026. The findings and the plan were carried out; the current state is in [quality-audit-2026-09-19-implementation.md](../quality-audit-2026-09-19-implementation.md).
+
 # Implementation plan for the quality audit of 19 September 2026
 
 Status: 19 September 2026. Implements the sixteen proposals P-01 to P-16 in [quality-audit-2026-09-19.md](quality-audit-2026-09-19.md). Written for the operator and for the agents who will carry out the work packages. Every file and line reference was checked against the working tree on 19 September 2026, including uncommitted changes; where the audit's citations have drifted, section 1 gives the current location.
@@ -103,7 +105,7 @@ Size: S is under a day of focused work, M one to two days, L more. Effort exclud
 #### WP7 Validate the research gate on a real run (P-03) — S engineering, quota cost
 
 - **Runbook.** After WP6: start a research run on the Transformer project from the Studio with the default limits (40 calls, 3 rounds, 30 sources). Published scripts are untouched by a research run. Collect `reports/research_quality.json`, `question_research/gap_probes.json`, `budget.json` and the ledger. Check that the V3 bias rule appears as a finding referencing `sec_6891d807643ea0ef`, that every remaining gap has status `no_hits` or `hits_read_confirmed`, and whether the run passed or blocked with specific gaps. Record calls, blocks and coverage in `docs/research-validation-2026-09.md`.
-- **Precondition.** Subscription quota. Per [claude-backend-plan.md](claude-backend-plan.md) the Codex weekly window resets on 22 September; the Claude backend is in the uncommitted tree and must be landed first if it is to serve this run.
+- **Precondition.** Subscription quota. Per [claude-backend-plan.md](../claude-backend-plan.md) the Codex weekly window resets on 22 September; the Claude backend is in the uncommitted tree and must be landed first if it is to serve this run.
 - **Acceptance.** As the audit states: either all six questions answered with no false gap, or a block with corpus-verified gaps.
 
 ### Phase 2: speech delivery
