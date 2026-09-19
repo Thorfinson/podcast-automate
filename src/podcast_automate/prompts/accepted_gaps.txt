@@ -1,0 +1,4 @@
+accepted_gaps lists research tasks the user has explicitly accepted as unanswered gaps. Do not
+invent findings for them and do not treat them as errors: record each affected discovery question
+honestly as partial or unanswered with the accepted gap named in its gap field, keep every other
+answer intact, and do not turn an accepted gap into a blocking objection or a new research demand.

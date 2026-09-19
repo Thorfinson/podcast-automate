@@ -189,10 +189,44 @@ function defaultTextChoice(provider="codex_cli") {
   return provider==="codex_cli"?{provider,model:"gpt-6-astra",reasoning_effort:"xhigh",max_output_tokens:32768}:
     {provider,model:"",reasoning_effort:null,max_output_tokens:32768};
 }
+const providerLabels={codex_cli:"Codex · Abo",claude_code:"Claude · Abo",openrouter:"OpenRouter · API",auto:"Automatisch · Codex-Abo, sonst Claude-Abo"};
+const providerNames={codex_cli:"Codex",claude_code:"Claude",openrouter:"OpenRouter"};
+function autoCandidates() {
+  return boot.text_catalog?.auto_candidates||{codex_cli:{model:"gpt-6-astra",reasoning_effort:"xhigh"},claude_code:{model:"claude-opus-5",reasoning_effort:"high"}};
+}
+function candidateText(c) {
+  return `Codex ${escape(c?.codex_cli?.model||"Standard")} (${escape(c?.codex_cli?.reasoning_effort||"Standard")}) · Claude ${escape(c?.claude_code?.model||"Standard")} (${escape(c?.claude_code?.reasoning_effort||"Standard")})`;
+}
+function textChoiceSummary(t) {
+  if(t.provider==="auto")return `${providerLabels.auto} · ${candidateText(autoCandidates())}`;
+  return `${providerLabels[t.provider]||escape(t.provider)} · ${escape(t.model||"Standard")} · Reasoning: ${escape(t.reasoning_effort||"Standard")}`;
+}
 function renderRunTextChoice(job) {
   if(!["script","research"].includes(job?.run?.kind))return "";
   const t=job.text_generation;
-  return `<p class="hint">Für diesen Auftrag gespeichert: ${t?.model?escape(t.model):"Modell nicht festgelegt"} · Reasoning: ${t?.reasoning_effort?escape(t.reasoning_effort):"nicht festgelegt"}.</p>`;
+  const saved=t?.provider==="auto"?`Automatische Abo-Wahl · ${candidateText(t.candidates)}`:
+    `${t?.model?escape(t.model):"Modell nicht festgelegt"} · Reasoning: ${t?.reasoning_effort?escape(t.reasoning_effort):"nicht festgelegt"}`;
+  return `<p class="hint">Für diesen Auftrag gespeichert: ${saved}.</p>${renderProviderChoice(job)}`;
+}
+function resetText(iso) {
+  const time=iso?Date.parse(iso):NaN;
+  return Number.isFinite(time)?` · Reset ${new Date(time).toLocaleString("de-DE",{dateStyle:"short",timeStyle:"short"})}`:"";
+}
+function windowText(snapshot) {
+  const w=(snapshot?.windows||[])[0];
+  if(!w||typeof w.used_percent!=="number")return "";
+  const label=w.window_minutes===10080?"Wochenfenster":w.window_minutes===300?"5-Stunden-Fenster":"Fenster";
+  return ` (${label} ${Number(w.used_percent)} %)`;
+}
+function renderProviderChoice(job) {
+  const c=job?.provider_choice;
+  if(!c?.provider)return "";
+  const s=c.snapshots||{}, codex=s.codex_cli, claude=s.claude_code, parts=[];
+  if(codex)parts.push(`Codex ${codex.available?"bereit":codex.usable?"ohne Kontingent":"nicht nutzbar"}${windowText(codex)}${codex.available?"":resetText(codex.resets_at)}`);
+  if(claude)parts.push(`Claude ${claude.available?"bereit":claude.usable?"gesperrt":"nicht nutzbar"}${claude.available?"":resetText(claude.blocked_until||claude.resets_at)}`);
+  const current=`Aktueller Anbieter: ${providerNames[c.provider]||escape(c.provider)}${c.model?" · "+escape(c.model):""}${c.mode==="fixed"?" (fest gewählt)":""}`;
+  const switched=c.switch?` · Wechsel von ${providerNames[c.switch.from]||escape(c.switch.from)} zu ${providerNames[c.switch.to]||escape(c.switch.to)} nach Kontingentfehler`:"";
+  return `<p class="hint provider-choice">${current}${switched}${parts.length?" · "+parts.join(" · "):""}</p>`;
 }
 function setupSelection() {
   const proposal=[...(project?.chat||[])].reverse().find(m=>m.role==="assistant");
@@ -213,8 +247,8 @@ function setupSummary() {
     ${c.focus_questions?.length?`<dt>Schwerpunkte</dt><dd>${c.focus_questions.map(escape).join(" · ")}</dd>`:""}
     ${c.excluded_topics?.length?`<dt>Ausgenommen</dt><dd>${c.excluded_topics.map(escape).join(" · ")}</dd>`:""}
     ${c.seed_urls?.length?`<dt>Quellenlinks</dt><dd>${c.seed_urls.map(escape).join(" · ")}</dd>`:""}
-    <dt>Textmodell</dt><dd>${t.provider==="codex_cli"?"Codex · Abo":"OpenRouter · API"} · ${escape(t.model||"Standard")} · Reasoning: ${escape(t.reasoning_effort||"Standard")}</dd>
-    ${t.provider==="openrouter"?'<dt>Live-Recherche</dt><dd>Weiterhin Codex · Textarbeit wird separat über OpenRouter abgerechnet.</dd>':""}
+    <dt>Textmodell</dt><dd>${textChoiceSummary(t)}</dd>
+    ${t.provider==="openrouter"?'<dt>Live-Recherche</dt><dd>Über die Abos (Codex, sonst Claude) · Textarbeit wird separat über OpenRouter abgerechnet.</dd>':""}
     <dt>Stimmen</dt><dd>${a.provider==="qwen3_local"?"Qwen · lokal":"Gemini · OpenRouter"} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
     <dt>Textausarbeitung</dt><dd>${mode(x.text)}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio)}</dd></dl>
     <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing und Prüfung; Recherche und Lehrkonzept bleiben in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
@@ -272,7 +306,7 @@ function renderBrief() {
     <section class="panel"><div class="conversation">${chat.length?chat.map(m=>`<div class="chat-message ${m.role==="user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<div class="chat-message"><strong>Redaktion</strong><p>Worum soll dein Podcast gehen – und was möchtest du danach besser verstehen? Du kannst direkt auch Wünsche zu Sprache, Tiefe oder Stimmen nennen.</p></div>'}</div>
     ${!running()&&proposal?.suggested_replies?.length?`<div class="actions">${proposal.suggested_replies.map(reply=>`<button class="secondary small" data-setup-reply="${escape(reply)}">${escape(reply)}</button>`).join("")}</div>`:""}
     <form id="chat-form"><fieldset ${running()||setupSending||readingAttachments||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}
-    ${boot.text_catalog?.presets?.length?`<div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${boot.text_catalog.presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Live-Recherche bleibt bei Codex; Stimmen wählst du separat.</p></div>`:""}
+    ${boot.text_catalog?.presets?.length?`<div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${boot.text_catalog.presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Codex und springt bei leerem Kontingent auf Claude um. Live-Recherche läuft über das gewählte Abo; Stimmen wählst du separat.</p></div>`:""}
     ${boot.capabilities?.project_attachments?`<div class="attachment-picker"><label for="chat-files">Dateien anhängen · .md / .txt / .docx</label><input id="chat-files" type="file" accept=".md,.txt,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple aria-describedby="attachment-hint"><p id="attachment-hint" class="hint">Für deine Projektidee und als Ausgangsmaterial der Recherche. Bis zu 10 Dateien: Text je 256 KiB, DOCX je 2 MiB, insgesamt 1 MiB eingelesener Text. DOCX übernimmt Text und Tabellen, keine Bilder. Mit „Senden“ erhält dein Textmodell den Inhalt; bei langen Dateien zunächst gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein.</p><div id="attachment-list">${renderAttachments()}</div></div>`:'<p class="hint">Dateianhänge benötigen einen Studio-Neustart nach Ende laufender Aufträge.</p>'}
     <button type="submit">${setupSending?"Wird gesendet …":readingAttachments?"Dateien werden eingelesen …":"Senden"}</button></fieldset></form></section>
     ${setupSummary()}
@@ -623,7 +657,7 @@ function renderStatusSummary(job) {
   const report=job?.progress?.status_summary;
   if(!report || report.job_id!==job.id)return "";
   const active=job.status==="running";
-  const model=report.provider==="openrouter"?"DeepSeek 4.1 Flash · OpenRouter":"Luna · Codex-Abo";
+  const model=report.provider==="openrouter"?"DeepSeek 4.1 Flash · OpenRouter":report.provider==="claude_code"?"Haiku 4.5 · Claude-Abo":report.provider==="auto"?"Automatisch · Codex, sonst Claude":"Luna · Codex-Abo";
   const messages={summarizing:"Eine kurze Zusammenfassung wird erstellt.",
     unchanged:"Seit dem letzten Bericht gibt es keine neuen protokollierten Ergebnisse oder Zwischenmeldungen. Daraus lässt sich nicht erkennen, wie weit der aktuelle Modellaufruf ist.",
     unavailable:"Die Zusammenfassung ist gerade nicht verfügbar. Der eigentliche Auftrag läuft unabhängig davon weiter.",
@@ -635,7 +669,7 @@ function renderStatusSummary(job) {
     ${active&&messages[report.status]?`<p class="hint">${messages[report.status]}</p>`:""}
     ${report.generated_at?`<p class="hint">Bericht vor ${progressAge(report.generated_at)} · ${model}</p>`:`<p class="hint">${model}</p>`}
     ${active&&!report.live_events_available?'<p class="hint">Dieser Stand basiert auf gespeicherten Ergebnissen. Für den aktuellen Aufruf liegen noch keine öffentlichen Live-Meldungen vor.</p>':""}
-    <p class="hint">${active?"Prüfung etwa alle 3 Minuten; neuer Bericht nur bei Änderungen. ":""}Statusberichte: ${Number(report.calls||0)} von ${Number(report.call_limit||100)} · zusätzlich zum Produktionsbudget${report.provider==="openrouter"?", über dein OpenRouter-Guthaben":", über dein Codex-Abo"}.</p>
+    <p class="hint">${active?"Prüfung etwa alle 3 Minuten; neuer Bericht nur bei Änderungen. ":""}Statusberichte: ${Number(report.calls||0)} von ${Number(report.call_limit||100)} · zusätzlich zum Produktionsbudget${report.provider==="openrouter"?", über dein OpenRouter-Guthaben":report.provider==="claude_code"?", über dein Claude-Abo":report.provider==="auto"?", über deine Abos":", über dein Codex-Abo"}.</p>
     ${history.length?`<details class="status-history"><summary>Bisherige Kurzberichte</summary>${history.map(row=>`<p>${escape(row.text)}<small>Vor ${progressAge(row.at)}</small></p>`).join("")}</details>`:""}</section>`;
 }
 function renderWorkInsight(job) {
@@ -697,9 +731,12 @@ function renderModelTrace(job) {
     ${rows.length?`<ol class="trace-lines">${rows.map(row=>`<li><small>${escape(row.at?new Date(row.at).toLocaleTimeString("de-DE"):"")} · ${escape(kinds[row.kind]||"Meldung")}</small><p>${escape(row.text)}</p></li>`).join("")}</ol>`:`<p class="hint">Noch keine Meldungen verfügbar. Manche Anbieter senden Text erst am Ende des Aufrufs.</p>`}
     ${insight?"</details>":""}</section>`;
 }
-function renderResearchQuestions(ledger, opened=new Set()) {
+function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="", searchLimit=0) {
   const budget=ledger.budget_projection;
-  const budgetNote=budget?`<p class="${budget.feasible?"hint":"notice"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar. ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>`:"";
+  const expected=Number.isSafeInteger(budget?.expected_remaining_calls)?` Erfahrungsgemäß etwa ${Number(budget.expected_remaining_calls)} Aufrufe (${Number(budget.expected_calls_per_task)} je offener Teilfrage).`:"";
+  const suggested=budget?Number(budget.used)+Math.max(Number(budget.expected_remaining_calls||0),Number(budget.minimum_remaining_calls||0)):0;
+  const approveCalls=budget&&!budget.feasible&&!active?`<button class="secondary small" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${suggested}">Aufruflimit auf ${suggested} erhöhen</button>`:"";
+  const budgetNote=budget?`<p class="${budget.feasible?"hint":"notice"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar.${escape(expected)} ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>${approveCalls}`:"";
   const states={pending:"Wartet",researching:"Wird untersucht",reviewing:"Antwort wird geprüft",verified:"Geprüft abgeschlossen",blocked:"Beleg fehlt"};
   const phases={questions:"Einzelne Fragen untersuchen und prüfen",synthesis:"Dossier aus geprüften Antworten erstellen",audit:"Gesamtdossier prüfen",completed:"Recherche abgeschlossen",blocked:"Offene Belegfragen"};
   const rows=(ledger.questions||[]).map(row=>{
@@ -708,17 +745,19 @@ function renderResearchQuestions(ledger, opened=new Set()) {
       ${(row.findings||[]).map(f=>`<p>${escape(f.statement)}</p>`).join("")}
       ${row.sources?.length?`<p>Gelesene Belege:</p><ul>${row.sources.map(source=>`<li>${markdownLink(escape(source.title),source.url)}${source.page?`, Seite ${Number(source.page)}`:""}</li>`).join("")}</ul>`:""}
       ${row.limits?.length?`<p>Grenzen der Antwort:</p><ul>${row.limits.map(l=>`<li>${escape(l)}</li>`).join("")}</ul>`:""}`:"";
+    const searchBlocked=row.outcome==="budget_block"&&/Suchbudget|Suchrunden/.test(row.reason||"");
+    const gapActions=row.status==="blocked"&&!row.accepted_gap&&!active?`<div class="actions"><button class="secondary small" data-action="accept-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Als Lücke akzeptieren und ohne diese Teilfrage abschließen</button>${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`:"";
     return `<details data-research-question="${escape(row.id)}"${opened.has(row.id)?" open":""}>
-      <summary>${row.status==="verified"?"✓":row.id===ledger.active_task?"●":"○"} ${escape(row.question)} · ${escape(states[row.status]||row.status)}</summary>
+      <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":row.id===ledger.active_task?"●":"○"} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":(states[row.status]||row.status))}</summary>
       <p>${escape(row.activity)}</p>
       <p class="hint">${Number(row.read_sections)} Abschnitte gelesen · ${Number(row.steps)} Bearbeitungsschritte${row.reopened?` · ${Number(row.reopened)} Mal mit Einwand wieder geöffnet`:""}</p>
       ${row.support?`<p class="hint">Textbelege vorhanden · Inhalt automatisch je Befund geprüft · ${row.support.findings.filter(f=>f.empirical_status==="independently_tested").length} Befunde mit dokumentierter unabhängiger empirischer Prüfung</p>`:""}
       ${row.outcome?`<p class="hint">Ergebnis: ${escape(({supported_answer:"Belegte Antwort",supported_uncertainty:"Belegte wissenschaftliche Unsicherheit",access_block:"Quelle nicht zugänglich",extraction_block:"Text nicht zuverlässig extrahiert",search_block:"Suche ohne ausreichenden Abschluss",budget_block:"Recherchebudget ausgeschöpft",evidence_block:"Beleg fehlt",prerequisite_block:"Voraussetzung noch offen"})[row.outcome]||row.outcome)}</p>`:""}
       <p>Abschlusskriterien:</p><ul>${(row.acceptance||[]).map(c=>`<li>${escape(c)}</li>`).join("")}</ul>
-      ${row.reason?`<p><strong>Noch offen:</strong> ${escape(row.reason)}</p>`:""}${answer}</details>`;
+      ${row.reason?`<p><strong>Noch offen:</strong> ${escape(row.reason)}</p>`:""}${row.accepted_gap?`<p class="hint">Diese Teilfrage bleibt im Dossier als dokumentierte Lücke${row.accepted_reason?`: ${escape(row.accepted_reason)}`:"."}</p>`:""}${gapActions}${answer}</details>`;
   }).join("");
   return `<section class="research-questions">
-    <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen</strong></p>
+    <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
     <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}"></progress>
     <p>${escape(phases[ledger.phase]||"")}</p>${budgetNote}
     <p class="hint">Die Abschlusskriterien bleiben fest. Eine geprüfte Antwort wird nur bei einem konkreten Einwand aus der Gesamtprüfung erneut geöffnet.</p>${rows}</section>`;
@@ -768,6 +807,8 @@ function renderJob() {
   const message=designBlocked&&j?.progress?.review_issues?.length?"Die automatische Überarbeitung hat noch nicht alle Kritikpunkte gelöst. Der bisherige Stand ist gespeichert.":missingFoundation&&/research_needed\.md/.test(j?.message||"")?"Der Abgleich zwischen Quellen und Lehrkonzept ist noch offen. Der bisherige Auftrag bleibt gespeichert.":j?.message;
   box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r&&!isScript&&!j?.progress?.research_questions?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
   if(isScript&&j?.progress?.current_episode)box.innerHTML+=`<p>Folge ${Number(j.progress.episode_number)} von ${Number(j.progress.total_segments)} · ${escape(j.progress.activity)}</p>`;
+  if(j?.auto_resume_at)box.innerHTML+=`<p class="hint">Automatische Fortsetzung geplant für ${escape(new Date(j.auto_resume_at).toLocaleString("de-DE"))}, solange das Studio-Fenster geöffnet bleibt.</p>`;
+  if(active&&Number.isSafeInteger(j?.heartbeat_age_seconds)&&j.heartbeat_age_seconds>300)box.innerHTML+=`<p class="notice">Der Arbeitsprozess hat seit ${Math.floor(j.heartbeat_age_seconds/60)} Min. keinen Fortschritt gespeichert. Läuft er nicht mehr, „Auftrag anhalten“ und danach fortsetzen.</p>`;
   const destination=state==="completed"?runPage(r):jobPage();
   const links=["Auftrag ansehen","Recherche ansehen","Inhaltsverzeichnis prüfen","Ausarbeitung ansehen","Skripte lesen","Audio ansehen"];
   if(destination!==null&&destination!==undefined&&destination!==step)box.innerHTML+=`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`;
@@ -783,8 +824,8 @@ function renderJob() {
     const quality=j.progress.research_quality;
     const ledger=j.progress.research_questions;
     if(ledger){
-      box.innerHTML+=renderResearchQuestions(ledger,questionOpen);
-      if(researchBlocked)box.innerHTML+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht; die konkrete Beleglücke oder der Rechercheauftrag muss geklärt werden.</p><button class="secondary small" data-step="${PAGE.brief}">Auftrag ansehen</button>`;
+      box.innerHTML+=renderResearchQuestions(ledger,questionOpen,active,r?.run_id||"",j.progress.search_round_limit);
+      if(researchBlocked)box.innerHTML+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht. Eine blockierte Teilfrage kann als Lücke akzeptiert werden; das Dossier wird dann ohne sie abgeschlossen und nennt die Lücke ausdrücklich.</p><button class="secondary small" data-step="${PAGE.brief}">Auftrag ansehen</button>`;
     }
     box.innerHTML+=`<p>${escape(j.progress.activity)}</p><p class="hint">Rechercherunden: ${Number(j.progress.search_rounds||0)} von ${Number(j.progress.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
     if(quality){
@@ -921,6 +962,18 @@ document.addEventListener("click",event=>{
     if(action==="store-key"){await storeKey();notice("Key im Sitzungsspeicher hinterlegt.");return;}
     if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
+    if(action==="accept-gap"){
+      const reason=window.prompt("Warum darf diese Teilfrage im Dossier als Lücke bleiben? (optional)","");
+      if(reason===null)return;
+      await api(`/api/projects/${project.id}/approve`,{kind:"gap",run_id:button.dataset.runId,task_id:button.dataset.taskId,reason});
+      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Lücke akzeptiert. „Fortsetzen“ schließt das Dossier ohne diese Teilfrage ab.");return;
+    }
+    if(action==="approve-calls"||action==="approve-search"){
+      const payload={kind:"model_calls",run_id:button.dataset.runId};
+      if(action==="approve-calls")payload.model_calls=Number(button.dataset.modelCalls);else payload.search_rounds=Number(button.dataset.searchRounds);
+      await api(`/api/projects/${project.id}/approve`,payload);
+      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Limit genehmigt. Ein laufender Auftrag übernimmt es beim nächsten Aufruf, ein angehaltener mit „Fortsetzen“.");return;
+    }
     const extra={};
     if(action==="audio_samples"){
       extra.language=setupSelection().config.language;extra.approve_samples=true;

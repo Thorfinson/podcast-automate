@@ -16,7 +16,7 @@ from .research import source_context
 from .research_models import Evidence, Finding, ResearchDiscovery, SourceIndex
 from .evidence_models import ClaimContract, FindingSupport, SourceAssessment
 from .research_evidence import EVIDENCE_INSTRUCTIONS, support_errors
-from .sources import canonical_url, clean, import_source
+from .sources import canonical_url, clean, import_failure, import_source
 from .storage import digest, file_hash, inside, write_json
 
 VERSION = "teaching_research.v1"
@@ -169,7 +169,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
                 document, _ = import_source(candidate, root, work.name)
                 index.sources.append(document)
             except AppError as exc:
-                index.failures.append({"source": candidate.url, "reason": str(exc)})
+                index.failures.append(import_failure(candidate.url, exc))
         if not index.sources:
             raise AppError("Die zusätzlichen Quellen sind derzeit nicht abrufbar. Später fortsetzen.", code="source_download_failed", status="blocked")
         write_json(index_path, index.model_dump())

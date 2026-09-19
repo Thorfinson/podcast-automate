@@ -2,6 +2,7 @@
 
 Mixed into ``QuestionResearch``. Composition edits only findings owned by dirty tasks; the audit
 binds every objection to a fixed criterion or quality rule before a task may be reopened.
+Objections that only concern explicitly accepted gaps are recorded, never researched again.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_INSTRUCTIONS, e
 from .research_ledger import VERSION, save_value
 from .research_models import ResearchDiscovery, ResearchDossier
 from .research_patches import edit_dossier, repair_references
-from .research_quality import ResearchAssessment, quality_brief, quality_report, render_quality
+from .research_quality import ResearchAssessment, check_assessment, quality_brief, quality_report, render_quality
 from .research_retrieval import merge_context, references
 from .research_review import ROUTING_INSTRUCTIONS, SourceReview, needs_research
 from .research_tasks import QuestionPlan, ReopenPlan
@@ -33,9 +34,11 @@ class SynthesisMixin:
     def compose(self):
         discovery = ResearchDiscovery.model_validate(self.state["discovery"])
         plan = QuestionPlan.model_validate(self.state["plan"])
+        accepted = self.accepted_summary()
         answers = [{"task": task.model_dump(), "answer": self.state["tasks"][task.id]["answer"],
                     "evidence_review": self.state["tasks"][task.id].get("verification", {}).get("review")}
-                   for task in plan.tasks]
+                   for task in plan.tasks if task.id not in accepted]
+        gaps = [{"task_id": tid, **gap} for tid, gap in accepted.items()]
         refs = [e["reference"] for item in answers for f in item["answer"]["findings"] for e in f["evidence"]]
         context = read_context(self.reader, refs)
         seed = self.state["seed_dossier"]
@@ -57,15 +60,17 @@ class SynthesisMixin:
                 legacy_targets = {fid for item in batch for fid in item["task"]["finding_ids"]}
                 legacy_targets.update(fid for c in dossier.coverage if c.question_id in question_ids for fid in c.finding_ids)
                 before = dossier
+                rules = {"verified_answers": batch,
+                         "assigned_gaps": {gid: self.state["gaps"][gid] for item in batch for gid in item["task"]["gap_ids"]},
+                         "all_closed_tasks": [{"task": item["task"], "answer": item["answer"]["summary"]} for item in answers],
+                         "rule": "Integrate these independently verified answers. Resolve old open questions explicitly "
+                         "when their assigned tasks fully answer them; do not carry stale editorial to-dos as evidence gaps. "
+                         "Only close a compound question when ALL its obligations are answered. Preserve all unrelated findings."}
+                if gaps:
+                    rules["accepted_gaps"] = {"rule": instructions("accepted_gaps"), "tasks": gaps}
                 dossier = edit_dossier(folder, f"batch_{start:03d}", dossier, discovery, context, self.config,
                     lambda p, s: self.generate(folder, f"batch_{start:03d}", p, s, f"{VERSION}.compose_patch"),
-                    targets=targets, legacy_targets=legacy_targets,
-                    instructions={"verified_answers": batch,
-                                  "assigned_gaps": {gid: self.state["gaps"][gid] for item in batch for gid in item["task"]["gap_ids"]},
-                                  "all_closed_tasks": [{"task": item["task"], "answer": item["answer"]["summary"]} for item in answers],
-                                  "rule": "Integrate these independently verified answers. Resolve old open questions explicitly "
-                                  "when their assigned tasks fully answer them; do not carry stale editorial to-dos as evidence gaps. "
-                                  "Only close a compound question when ALL its obligations are answered. Preserve all unrelated findings."},
+                    targets=targets, legacy_targets=legacy_targets, instructions=rules,
                     extra_context=read_context(self.reader, [e["reference"] for item in batch
                                    for f in item["answer"]["findings"] for e in f["evidence"]]), coverage_ids=question_ids)
                 added = {f.id for f in dossier.findings} - {f.id for f in before.findings}
@@ -76,11 +81,15 @@ class SynthesisMixin:
                 additions = dossier.model_copy(update={"findings": [f for f in dossier.findings if f.id in added]})
                 owners.update(finding_owners(additions, [t for t in plan.tasks if t.id in batch_ids], self.state["tasks"]))
         else:
-            prompt = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + SYNTHESIS_INSTRUCTIONS +
-                instructions("dossier_compose", language=self.config.language) + "\n" + json.dumps({"brief": quality_brief(self.config),
-                    "questions": [q.model_dump() for q in discovery.questions], "verified_answers": answers,
-                    "sources": context}, ensure_ascii=False))
-            dossier = self.call(folder, "dossier", ResearchDossier, prompt)
+            text = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + SYNTHESIS_INSTRUCTIONS +
+                    instructions("dossier_compose", language=self.config.language))
+            payload = {"brief": quality_brief(self.config), "questions": [q.model_dump() for q in discovery.questions],
+                       "verified_answers": answers, "sources": context}
+            if gaps:
+                text += " " + instructions("accepted_gaps")
+                payload["accepted_gaps"] = gaps
+            dossier = self.call(folder, "dossier", ResearchDossier, text + "\n" + json.dumps(payload, ensure_ascii=False),
+                                validate=lambda candidate, final: validate_synthesis(candidate, context))
             dossier = repair_references(folder, "references", dossier, discovery, context, self.config,
                 lambda p, s: self.generate(folder, "references", p, s, f"{VERSION}.references"))
             owners = finding_owners(dossier, plan.tasks, self.state["tasks"])
@@ -89,45 +98,56 @@ class SynthesisMixin:
         self.save()
         return dossier, discovery, context
 
+    def write_gate(self, report):
+        write_json(self.work / "research_quality_gate.json", report)
+        atomic_text(self.work / "research_quality.md", render_quality(report))
+
     def audit(self, dossier, discovery, context):
         folder = self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}"
         self.state["phase"] = "audit"
         self.save("Gesamtdossier wird auf Quellenbezüge, Widersprüche und alle ursprünglichen Leitfragen geprüft")
+        tasks = QuestionPlan.model_validate(self.state["plan"]).tasks
+        accepted = self.accepted_summary()
         for revision in range(3):
+            expected = self.state.get("objections", {})
+
+            def well_formed(review, final, dossier=dossier):
+                if Counter(c.objection_id for c in review.objection_checks) != Counter(expected.keys()):
+                    raise AppError("Every existing objection needs an explicit closure check.", code="invalid_evidence_review", status="blocked")
+                for check in review.objection_checks:
+                    if not set(check.references) <= references(context) or (check.verdict == "closed" and not check.references):
+                        raise AppError("Objection closure requires read source evidence.", code="invalid_evidence_review", status="blocked")
+                semantic_errors = support_errors(dossier.findings, review, context)
+                rejected = {s.finding_id for s in review.finding_support if s.verdict != "supported" or
+                            s.suitability != "suitable" or not s.contract_preserved}
+                if semantic_errors and (not rejected or not rejected <= {i.finding_id for i in review.issues}):
+                    raise AppError("Failing support receipts require explicit corrective issues.", code="invalid_evidence_review", status="blocked")
+                for issue in review.issues:
+                    if (issue.objection is None or issue.finding_id not in issue.objection.finding_ids or
+                            issue.objection.resolution not in {issue.resolution, "review_disagreement"}):
+                        raise AppError("A dossier objection requires an affected finding and closure condition.",
+                                       code="invalid_evidence_review", status="blocked")
+                    validate_objection(issue.objection, tasks, dossier.findings, context)
+                if not {i.finding_id for i in review.issues} <= {f.id for f in dossier.findings}:
+                    raise AppError("Gesamtprüfung nennt unbekannte Befunde.", code="invalid_model_output", status="blocked")
+
             review = self.call(folder, f"grounding_{revision}", SourceReview,
                 EVIDENCE_INSTRUCTIONS + SYNTHESIS_INSTRUCTIONS + ROUTING_INSTRUCTIONS +
                 " " + instructions("dossier_audit") + "\n" + json.dumps({
                     "brief": quality_brief(self.config), "dossier": dossier.model_dump(), "sources": context,
                     "open_objections": self.state.get("objections", {}),
-                    "tasks": self.state["plan"]["tasks"], "verified_baseline": self.state.get("verified_baseline", [])}, ensure_ascii=False))
-            expected = self.state.get("objections", {})
-            if Counter(c.objection_id for c in review.objection_checks) != Counter(expected.keys()):
-                raise AppError("Every existing objection needs an explicit closure check.", code="invalid_evidence_review", status="blocked")
+                    "tasks": self.state["plan"]["tasks"], "verified_baseline": self.state.get("verified_baseline", [])}, ensure_ascii=False),
+                validate=well_formed)
+            # A reviewer's disagreement is a legitimate verdict, not a malformed one: it stops the run.
             for check in review.objection_checks:
-                if not set(check.references) <= references(context) or (check.verdict == "closed" and not check.references):
-                    raise AppError("Objection closure requires read source evidence.", code="invalid_evidence_review", status="blocked")
                 if check.verdict == "review_disagreement" or (check.verdict == "open" and not review.issues):
                     save_value(folder / "review_disagreement.json", check.model_dump())
                     raise AppError("An unresolved review disagreement cannot trigger unanchored research.", code="review_disagreement", status="blocked")
-            semantic_errors = support_errors(dossier.findings, review, context)
-            validate_synthesis(dossier, context)
-            rejected = {s.finding_id for s in review.finding_support if s.verdict != "supported" or
-                        s.suitability != "suitable" or not s.contract_preserved}
-            if semantic_errors and (not rejected or not rejected <= {i.finding_id for i in review.issues}):
-                raise AppError("Failing support receipts require explicit corrective issues.", code="invalid_evidence_review", status="blocked")
             for issue in review.issues:
-                if (issue.objection is None or issue.finding_id not in issue.objection.finding_ids or
-                        issue.objection.resolution not in {issue.resolution, "review_disagreement"}):
-                    raise AppError("A dossier objection requires an affected finding and closure condition.",
-                                   code="invalid_evidence_review", status="blocked")
-                validate_objection(issue.objection, QuestionPlan.model_validate(self.state["plan"]).tasks,
-                                   dossier.findings, context)
                 if issue.objection.resolution == "review_disagreement":
                     self.state.setdefault("review_disagreements", []).append(issue.objection.model_dump())
                     self.save("Prüfeinwand ist nicht hinreichend belegt")
                     raise AppError("Unanchored review disagreement; no automatic new research.", code="review_disagreement", status="blocked")
-            if not {i.finding_id for i in review.issues} <= {f.id for f in dossier.findings}:
-                raise AppError("Gesamtprüfung nennt unbekannte Befunde.", code="invalid_model_output", status="blocked")
             if not review.issues or needs_research(review) or revision == 2:
                 break
             before = dossier
@@ -140,12 +160,17 @@ class SynthesisMixin:
                 lambda p, s: self.generate(folder, f"correction_{revision}_references", p, s, f"{VERSION}.references"),
                 allowed_ids=targets)
             preserve_unrelated(before, dossier, targets)
-        assessment = self.call(folder, "assessment", ResearchAssessment,
-            instructions("research_assessment", language=self.config.language) + "\n" + json.dumps({"brief": quality_brief(self.config),
-                "dossier": dossier.model_dump(), "sources": context,
-                "finding_support": [r.model_dump() for r in review.finding_support],
-                "source_assessments": [a.model_dump() for a in review.source_assessments]}, ensure_ascii=False))
-        report = quality_report(self.config, dossier, discovery, self.index, assessment, (i.reason for i in review.issues))
+        text = instructions("research_assessment", language=self.config.language)
+        payload = {"brief": quality_brief(self.config), "dossier": dossier.model_dump(), "sources": context,
+                   "finding_support": [r.model_dump() for r in review.finding_support],
+                   "source_assessments": [a.model_dump() for a in review.source_assessments]}
+        if accepted:
+            text += " " + instructions("accepted_gaps")
+            payload["accepted_gaps"] = [{"task_id": tid, **gap} for tid, gap in accepted.items()]
+        assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
+                               validate=lambda candidate, final: check_assessment(self.config, dossier, candidate))
+        report = quality_report(self.config, dossier, discovery, self.index, assessment, (i.reason for i in review.issues),
+                                accepted=accepted)
         dossier = dossier.model_copy(update={"evidence_version": EVIDENCE_VERSION,
                                             "source_assessments": review.source_assessments})
         report["dossier_hash"] = digest(dossier.model_dump())
@@ -153,75 +178,117 @@ class SynthesisMixin:
         report["objection_checks"] = [c.model_dump() for c in review.objection_checks]
         report["unresolved_scientific_relations"] = [r.model_dump() for r in dossier.synthesis if r.resolution == "unresolved"]
         report["question_workflow"] = VERSION
-        write_json(self.work / "research_quality_gate.json", report)
-        atomic_text(self.work / "research_quality.md", render_quality(report))
+        self.write_gate(report)
         self.state["composed_findings"]["dossier_hash"] = digest(dossier.model_dump())
         self.save()
         return dossier, review, report
 
+    def objections(self, review, report):
+        return list(dict.fromkeys([*(i.reason for i in review.issues), *report["blocking_gaps"],
+            *(row["reason"] + " " + " ".join(row["missing"]) for row in report["requirements"] if not row["passed"])]))
+
+    def tolerate(self, dossier, review, report):
+        """Every remaining objection targets an accepted gap: finish, with those objections on record."""
+        report = {**report, "passed": True, "passed_with_accepted_gaps": True,
+                  "residual_objections": self.objections(review, report)}
+        self.write_gate(report)
+        self.save("Verbliebene Einwände betreffen nur akzeptierte Lücken; die Recherche wird abgeschlossen")
+        return report
+
+    @staticmethod
+    def existing_objection(registry, closed, anchor, identifier):
+        # Keep an unresolved objection stable even when a later reviewer paraphrases
+        # its missing-evidence description. A new defect is allowed after explicit closure.
+        for old_id, old in registry.items():
+            if old_id not in closed and all(old.get(key) == anchor.model_dump().get(key)
+                    for key in ("rule", "task_id", "criterion_index", "finding_ids")):
+                return old_id
+        return identifier
+
     def reopen(self, dossier, review, report):
+        """Route objections to tasks; return the ids reopened and the ids blocked for exhausted reopenings."""
         tasks = QuestionPlan.model_validate(self.state["plan"]).tasks
         composed = self.state.get("composed_findings")
         if composed and composed["dossier_hash"] != digest(dossier.model_dump()):
             raise AppError("Befundzuordnung passt nicht zum geprüften Dossier.",
                            code="invalid_research_checkpoint", status="blocked")
         owners = finding_owners(dossier, tasks, self.state["tasks"], composed["owners"] if composed else None)
-        objections = list(dict.fromkeys([*(i.reason for i in review.issues), *report["blocking_gaps"],
-            *(row["reason"] + " " + " ".join(row["missing"]) for row in report["requirements"] if not row["passed"])]))
-        routes = self.call(self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}", "routes", ReopenPlan,
-            instructions("objection_routes") + "\n" +
-            json.dumps({"objections": objections, "tasks": [t.model_dump() for t in tasks],
-                        "anchored_issues": [i.objection.model_dump() for i in review.issues if i.objection],
-                        "finding_owners": owners,
-                        "answers": {t.id: self.state["tasks"][t.id]["answer"] for t in tasks},
-                        "dossier": dossier.model_dump()}, ensure_ascii=False))
-        if (Counter(r.index for r in routes.routes) != Counter(range(len(objections))) or
-            any(not set(r.task_ids) <= {t.id for t in tasks} for r in routes.routes)):
-            raise AppError("Prüfeinwände sind nicht vollständig bestehenden Recherchefragen zugeordnet.",
-                           code="invalid_question_routing", status="blocked")
-        reasons = {}
+        objections = self.objections(review, report)
+        accepted = self.accepted_summary()
         context = read_context(self.reader, [e.reference for f in dossier.findings for e in f.evidence])
         registry = self.state.setdefault("objections", {})
         closed = {c["objection_id"] for c in report.get("objection_checks", []) if c["verdict"] == "closed"}
-        for route in routes.routes:
-            if len(set(route.task_ids)) != len(route.task_ids) or not route.anchors:
-                raise AppError("Every routed task needs a specific evidence or criterion anchor.",
+        text = instructions("objection_routes")
+        payload = {"objections": objections, "tasks": [t.model_dump() for t in tasks],
+                   "anchored_issues": [i.objection.model_dump() for i in review.issues if i.objection],
+                   "finding_owners": owners,
+                   "answers": {t.id: self.state["tasks"][t.id]["answer"] for t in tasks},
+                   "dossier": dossier.model_dump()}
+        if accepted:
+            text += " " + instructions("accepted_gaps")
+            payload["accepted_gaps"] = [{"task_id": tid, **gap} for tid, gap in accepted.items()]
+
+        def well_formed(routes, final):
+            if (Counter(r.index for r in routes.routes) != Counter(range(len(objections))) or
+                any(not set(r.task_ids) <= {t.id for t in tasks} for r in routes.routes)):
+                raise AppError("Prüfeinwände sind nicht vollständig bestehenden Recherchefragen zugeordnet.",
                                code="invalid_question_routing", status="blocked")
+            for route in routes.routes:
+                if len(set(route.task_ids)) != len(route.task_ids) or not route.anchors:
+                    raise AppError("Every routed task needs a specific evidence or criterion anchor.",
+                                   code="invalid_question_routing", status="blocked")
+                for task_id in route.task_ids:
+                    anchors = [a for a in route.anchors if a.task_id == task_id]
+                    if not anchors:
+                        raise AppError("Missing task-specific objection anchor.", code="invalid_question_routing", status="blocked")
+                    for anchor in anchors:
+                        identifier = validate_objection(anchor, tasks, dossier.findings, context,
+                                                        target_task=task_id, owners=owners)
+                        if anchor.resolution == "review_disagreement":
+                            continue
+                        identifier = self.existing_objection(registry, closed, anchor, identifier)
+                        previous = registry.get(identifier) if identifier not in closed else None
+                        if previous and previous["closure_condition"] != anchor.closure_condition:
+                            raise AppError("The closure condition of an existing objection changed.",
+                                           code="invalid_question_routing", status="blocked")
+
+        routes = self.call(self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}", "routes", ReopenPlan,
+                           text + "\n" + json.dumps(payload, ensure_ascii=False), validate=well_formed)
+        reasons = {}
+        for route in routes.routes:
             for task_id in route.task_ids:
-                anchors = [a for a in route.anchors if a.task_id == task_id]
-                if not anchors:
-                    raise AppError("Missing task-specific objection anchor.", code="invalid_question_routing", status="blocked")
-                for anchor in anchors:
+                for anchor in [a for a in route.anchors if a.task_id == task_id]:
                     identifier = validate_objection(anchor, tasks, dossier.findings, context,
                                                     target_task=task_id, owners=owners)
                     if anchor.resolution == "review_disagreement":
                         self.state.setdefault("review_disagreements", []).append(anchor.model_dump())
                         self.save("Prüfeinwand benötigt Klärung statt weiterer Suche")
                         raise AppError("Review disagreement cannot trigger more research.", code="review_disagreement", status="blocked")
-                    # Keep an unresolved objection stable even when a later reviewer paraphrases
-                    # its missing-evidence description. A new defect is allowed after explicit closure.
-                    for old_id, old in registry.items():
-                        if old_id not in closed and all(old.get(key) == anchor.model_dump().get(key)
-                                for key in ("rule", "task_id", "criterion_index", "finding_ids")):
-                            identifier = old_id
-                            break
-                    previous = registry.get(identifier) if identifier not in closed else None
-                    if previous and previous["closure_condition"] != anchor.closure_condition:
-                        raise AppError("The closure condition of an existing objection changed.",
-                                       code="invalid_question_routing", status="blocked")
-                    registry[identifier] = {**anchor.model_dump(), "id": identifier, "status": "open"}
+                    identifier = self.existing_objection(registry, closed, anchor, identifier)
+                    if task_id in accepted:
+                        self.state.setdefault("accepted_gap_objections", {})[identifier] = {
+                            **anchor.model_dump(), "id": identifier, "objection": objections[route.index], "status": "accepted_gap"}
+                    else:
+                        registry[identifier] = {**anchor.model_dump(), "id": identifier, "status": "open"}
                 reasons.setdefault(task_id, []).append(objections[route.index] + " " + route.reason)
-        for task_id, objections in reasons.items():
+        reopened, blocked = [], []
+        for task_id, texts in reasons.items():
+            if task_id in accepted:
+                continue
             row = self.state["tasks"][task_id]
             if len(row["reopenings"]) >= self.state["limits"]["reopenings"]:
-                row.update(status="blocked", reason="Wiederholte Gesamtprüfung widerspricht dem Abschluss: " + " ".join(objections))
+                row.update(status="blocked", reason="Wiederholte Gesamtprüfung widerspricht dem Abschluss: " + " ".join(texts))
+                blocked.append(task_id)
                 continue
-            row["reopenings"].append({"reason": objections, "previous_answer": row["answer"],
+            row["reopenings"].append({"reason": texts, "previous_answer": row["answer"],
                                      "previous_verification": row.get("verification")})
             row.update(status="researching", answer=None, draft_answer=row["reopenings"][-1]["previous_answer"],
-                       feedback=objections, step=0, no_progress=0, fallbacks=0, pending=None,
+                       feedback=texts, step=0, no_progress=0, fallbacks=0, pending=None,
                        activity="Mit konkretem Einwand aus der Gesamtprüfung wieder geöffnet")
-        dirty = invalidate_dependents(self.state, reasons)
+            reopened.append(task_id)
+        dirty = invalidate_dependents(self.state, [t for t in reasons if t not in accepted])
         self.state.update(seed_dossier=dossier.model_dump(), dirty_tasks=dirty, finding_owners=owners,
                           audit_round=self.state["audit_round"]+1, phase="questions")
-        self.save("Konkrete Einwände werden ihren ursprünglichen Recherchefragen zugeordnet")
+        self.save("Konkrete Einwände werden ihren ursprünglichen Recherchefragen zugeordnet" if reopened or blocked
+                  else "Verbliebene Einwände betreffen nur akzeptierte Lücken")
+        return reopened, blocked

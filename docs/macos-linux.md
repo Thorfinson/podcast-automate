@@ -29,7 +29,7 @@ Bei anderen Distributionen Python, das venv-Modul und FFmpeg über den jeweilige
 
 Das Studio öffnet `http://127.0.0.1:8765`; das Terminal bleibt während der Arbeit geöffnet. Für einen anderen Port: `sh Podcast-Studio.sh --port 8766`. Mit `--no-browser` startet nur der Server; die Adresse lässt sich dann im Browser desselben Rechners öffnen. Der Server bleibt ausschließlich an localhost gebunden.
 
-Codex CLI muss im PATH verfügbar und mit dem vorhandenen Konto angemeldet sein. `runtime.codex_executable` erlaubt einen expliziten Programmpfad. Der Studio-Starter berücksichtigt zusätzlich `~/.local/bin`, `/opt/homebrew/bin` und `/usr/local/bin`.
+Codex CLI muss im PATH verfügbar und mit dem vorhandenen Konto angemeldet sein. `runtime.codex_executable` erlaubt einen expliziten Programmpfad. Der Studio-Starter berücksichtigt zusätzlich `~/.local/bin`, `/opt/homebrew/bin` und `/usr/local/bin`. Claude Code (`claude`, mit `claude auth login` über claude.ai angemeldet) wird auf dieselbe Weise gefunden; es genügt, wenn eines der beiden Abos nutzbar ist.
 
 Eine Prüfung ohne lokalen Qwen-Worker:
 
@@ -37,7 +37,7 @@ Eine Prüfung ohne lokalen Qwen-Worker:
 .venv/bin/pla doctor --skip-tts
 ```
 
-Diese Prüfung kontrolliert Programme und Codex-Anmeldung; sie erzeugt kein Audio und prüft keinen OpenRouter-Key. Recherche verwendet weiterhin Codex; die Auswahl des Audioanbieters ist unabhängig davon.
+Diese Prüfung kontrolliert Programme, beide Abo-Anmeldungen und den Kontingentstand (`pla quota` zeigt ihn allein); sie erzeugt kein Audio und prüft keinen OpenRouter-Key. Recherche läuft über das gewählte Abo; die Auswahl des Audioanbieters ist unabhängig davon.
 
 ## Optional: lokales Qwen
 

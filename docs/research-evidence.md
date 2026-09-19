@@ -13,7 +13,7 @@ Implemented on 17 September 2026 from the [research skills comparison](research-
 
 Search receipts extend the existing task ledger and download receipts. They retain local queries, candidate results, web selection/exclusion rationales and counterevidence outcomes. Tool-observed web queries and model-reported queries are separate fields: model JSON is not proof that a query ran. Initial discovery also has a selection receipt. The existing live-search event requirement still applies.
 
-Corpus concentration is descriptive: each dimension reports known and unknown source counts and the largest share among known values. It is an advisory, not a quota or automatic rejection. New PDF imports record total pages, pages with text, empty/suspected image pages and pages with table/equation signals. These are heuristics, not a visual verification of extracted data. Oversized/unreadable imports still fail; OCR is not started automatically.
+Corpus concentration is descriptive: each dimension reports known and unknown source counts and the largest share among known values. It is an advisory, not a quota or automatic rejection. New PDF imports record total pages, pages with text, empty/suspected image pages and pages with table/equation signals. These are heuristics, not a visual verification of extracted data. Oversized/unreadable imports still fail; OCR is not started automatically. Each failure row in the source index names its cause (parser error class, encrypted file, page or size limit, pages without a text layer, HTTP status) and carries a stable `code` such as `source_unreadable` or `source_download_failed`.
 
 ## Artifacts and presentation
 

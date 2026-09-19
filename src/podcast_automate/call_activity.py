@@ -25,6 +25,8 @@ class CallActivity:
         self.trace = ModelTrace(directory, model, secrets=secrets, enabled=schema != "ProgressDigest")
         self._lock = threading.RLock()
         self._snapshots = {}
+        self._claude_tools = {}
+        self._claude_messages = 0
         self._last_diagnostic_write = 0
         self.diagnostics = {"model": model, "schema": schema, "status": "running", "started_at": now(),
                             "stdout_lines": 0, "stderr_lines": 0, "events": []}
@@ -174,6 +176,99 @@ class CallActivity:
             self.record("Modell hat eine Zwischenmeldung ausgegeben")
         elif item_type in {"command_execution", "mcp_tool_call", "file_change"}:
             self.record("Werkzeugaktion gestartet" if kind == "item.started" else "Werkzeugaktion abgeschlossen")
+
+    def observe_claude(self, line):
+        """Public Claude Code stream-json events: output deltas, tool activity, limit notices, the result."""
+        with self._lock:
+            self.diagnostics["stdout_lines"] += 1
+            self.diagnostics["last_stdout_at"] = now()
+            self._save_diagnostics()
+        if len(line) > 2_000_000:
+            self.diagnostic("oversized_event")
+            return
+        try:
+            event = json.loads(line)
+        except (ValueError, TypeError):
+            return
+        if not isinstance(event, dict):
+            return
+        kind = event.get("type")
+        if kind == "system":
+            subtype = str(event.get("subtype") or "")
+            if subtype == "init":
+                self.diagnostic("stream.connected")
+                self.record("Modell bearbeitet den Auftrag")
+            elif subtype:
+                # Retry and status notices keep only their category, never the CLI's free text.
+                self.diagnostic(subtype, subtype.replace("_", " "))
+        elif kind == "stream_event":
+            self._observe_claude_stream(event.get("event") or {})
+        elif kind == "assistant":
+            for block in (event.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = str(block.get("name") or "")
+                self._claude_tools = dict(list(self._claude_tools.items())[-40:] + [(str(block.get("id")), name)])
+                arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+                if name == "WebSearch":
+                    query = arguments.get("query")
+                    self.record("Websuche gestartet" + (f": {clean_status(query, 400)}" if isinstance(query, str) and query else ""))
+                elif name == "WebFetch":
+                    try:
+                        host = urlsplit(str(arguments.get("url", ""))).hostname
+                    except ValueError:
+                        host = None
+                    self.record("Quelle wird abgerufen" + (f" · {host}" if host else ""))
+                elif name == "StructuredOutput":
+                    self.record("Strukturierte Antwort empfangen; Validierung folgt")
+                else:
+                    self.record("Werkzeugaktion gestartet")
+        elif kind == "user":
+            for block in (event.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    name = self._claude_tools.get(str(block.get("tool_use_id")), "")
+                    if name == "WebSearch":
+                        self.record("Websuche abgeschlossen")
+                    elif name == "WebFetch":
+                        self.record("Quelle abgerufen")
+        elif kind == "rate_limit_event":
+            info = event.get("rate_limit_info") if isinstance(event.get("rate_limit_info"), dict) else {}
+            status = str(info.get("status") or "")
+            self.diagnostic("quota_window", status=status, window=info.get("rateLimitType"),
+                            resets_at=info.get("resetsAt"))
+            if status and status.lower() != "allowed":
+                self.diagnostic("quota", "usage limit " + status)
+        elif kind == "result":
+            subtype = str(event.get("subtype") or "")
+            if subtype == "success" and not event.get("is_error"):
+                self.record("Modellantwort empfangen; Validierung folgt")
+            else:
+                errors = event.get("errors") if isinstance(event.get("errors"), list) else []
+                self.diagnostic("result", subtype + " " + " ".join(str(e) for e in errors[:3]), subtype=subtype)
+                self.record("Modell meldet einen fehlgeschlagenen Aufruf")
+
+    def _observe_claude_stream(self, event):
+        """Only the CLI's public partial-message deltas; thinking arrives empty on current models."""
+        kind = event.get("type")
+        if kind == "message_start":
+            self._claude_messages += 1
+            return
+        if kind != "content_block_delta":
+            return
+        delta = event.get("delta") or {}
+        if not isinstance(delta, dict):
+            return
+        stream = f"claude:{self._claude_messages}:{event.get('index', 0)}"
+        if delta.get("type") == "input_json_delta":
+            text, lane = delta.get("partial_json"), "text"
+        elif delta.get("type") == "text_delta":
+            text, lane = delta.get("text"), "text"
+        elif delta.get("type") == "thinking_delta":
+            text, lane = delta.get("thinking"), "reasoning"
+        else:
+            return
+        if isinstance(text, str) and text:
+            self.stream_delta(lane, text, stream)
 
     def finish(self, status):
         self.data["status"] = status

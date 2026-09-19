@@ -12,7 +12,31 @@ from .errors import AppError
 from .models import RuntimeSettings
 from .process import run_process
 from .speech import VOICES_VERIFIED_ON
+from .subscriptions import describe_snapshot, quota_overview
 from .text_settings import catalog_age
+
+LOGIN_CHECKS = {"codex_login", "claude_login", "subscription_quota"}
+
+
+def subscription_checks(settings: RuntimeSettings) -> list[dict]:
+    """Claude login and both subscription quotas. Informational unless no subscription is usable at all."""
+    try:
+        overview = quota_overview(settings, refresh=True)
+    except (AppError, OSError, ValueError) as exc:
+        return [{"name": "claude_login", "ok": False, "detail": str(exc)},
+                {"name": "subscription_quota", "ok": False, "detail": "Kontingentabfrage fehlgeschlagen"}]
+    claude = overview["claude_code"]
+    login = claude.get("login") or {}
+    detail = (f"claude.ai · {claude.get('plan') or 'Abo'} · Claude Code {login.get('cli_version')}"
+              if claude.get("usable") else describe_snapshot("claude_code", claude))
+    return [{"name": "claude_login", "ok": bool(claude.get("usable")), "detail": detail},
+            {"name": "subscription_quota", "ok": bool(overview["any_available"]), "detail": " | ".join(overview["lines"])}]
+
+
+def readiness(checks) -> bool:
+    """Everything technical must pass; of the subscriptions, at least one must be usable."""
+    return (all(check["ok"] for check in checks if check["name"] not in LOGIN_CHECKS) and
+            any(check["ok"] for check in checks if check["name"] in {"codex_login", "claude_login"}))
 
 
 def catalog_check() -> dict:
@@ -39,8 +63,9 @@ def inspect(settings: RuntimeSettings, *, include_tts=True) -> dict:
         checks.append({"name": "codex_login", "ok": True, "detail": mode})
     except AppError as exc:
         checks.append({"name": "codex_login", "ok": False, "detail": str(exc)})
+    checks.extend(subscription_checks(settings))
     if not include_tts:
-        return {"ready": all(check["ok"] for check in checks), "checks": checks,
+        return {"ready": readiness(checks), "checks": checks,
                 "tts": None, "model_inference_tested": False}
     tts = None
     try:
@@ -63,6 +88,6 @@ def inspect(settings: RuntimeSettings, *, include_tts=True) -> dict:
     except (AppError, OSError, ValueError) as exc:
         checks.append({"name": "tts_environment", "ok": False, "detail": str(exc)})
     return {
-        "ready": all(check["ok"] for check in checks),
+        "ready": readiness(checks),
         "checks": checks, "tts": tts, "model_inference_tested": False,
     }

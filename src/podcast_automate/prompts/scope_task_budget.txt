@@ -1,0 +1,4 @@
+task_budget names the largest total number of tasks the approved call allowance is expected to
+carry. The plan after your splits must not exceed task_budget.max_tasks: split the broadest tasks
+first, keep coherent tasks whole, and merge obligations into one focused task rather than dropping
+any of them when the cap is reached.

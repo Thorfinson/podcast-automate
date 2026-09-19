@@ -6,6 +6,17 @@ import json
 from .errors import AppError
 from .storage import digest
 
+# Observed cost of an ordinary task: reading decisions, one or two answers and their reviews.
+# The hard gate stays at the two-call minimum; this rate sizes plans and warns early.
+EXPECTED_CALLS_PER_TASK = 5
+# Dossier, grounding review, assessment and one repair, kept out of the task allowance.
+CLOSING_RESERVE = 4
+
+
+def affordable_tasks(used, limit):
+    """How many tasks the approved allowance is expected to carry at the usual per-task cost."""
+    return max(1, (limit - used - CLOSING_RESERVE) // EXPECTED_CALLS_PER_TASK)
+
 
 def checkpoint(path):
     if not path.exists():
@@ -21,13 +32,14 @@ def remaining_calls(state, folder):
     """Return identifiable mandatory calls; repairs/rejections can require more.
 
     Presence is only an estimate of reuse: cached_call still validates the exact
-    prompt and schema before a receipt can actually be used.
+    prompt and schema before a receipt can actually be used. Blocked tasks receive
+    no further calls, whether they wait for an explicit gap approval or a new run.
     """
     questions, closing = set(), set()
     if state["phase"] == "completed":
         return questions, closing
     for task_id, row in state["tasks"].items():
-        if row["status"] == "verified":
+        if row["status"] in {"verified", "blocked"}:
             continue
         attempt = folder / "tasks" / task_id / f"attempt_{len(row['reopenings'])}"
         if row.get("dependency_revision"):
@@ -86,7 +98,11 @@ def budget_projection(work, state, limits, request=None):
     questions, closing = remaining_calls(state, work / "question_research")
     minimum = len(questions | closing | ({request} if request else set()))
     remaining = max(0, limits.model_calls - used)
+    open_tasks = sum(row["status"] not in {"verified", "blocked"} for row in state["tasks"].values())
+    expected = (open_tasks * EXPECTED_CALLS_PER_TASK + len(closing)) if state["phase"] != "completed" else 0
     return {"used": used, "limit": limits.model_calls, "remaining": remaining,
             "minimum_remaining_calls": minimum, "question_calls": len(questions),
             "closing_calls": len(closing), "headroom": remaining - minimum,
-            "shortfall": max(0, minimum - remaining), "feasible": minimum <= remaining}
+            "shortfall": max(0, minimum - remaining), "feasible": minimum <= remaining,
+            "expected_remaining_calls": max(minimum, expected), "expected_calls_per_task": EXPECTED_CALLS_PER_TASK,
+            "open_tasks": open_tasks}

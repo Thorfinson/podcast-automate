@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 from typing import Literal
@@ -25,6 +26,8 @@ from .execution import ExecutionChoice, MAX_PARALLEL, selected_execution
 from .logs import configure_logging, logger
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, now
 from .runner import manifest_path
+from .run_budget import approve_model_call_limit, approve_research_gap
+from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics
 from .speech import AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, selected_audio
 from .storage import digest, file_hash, init_project, inside, load_project, project_lock, read_yaml, write_json, write_yaml
@@ -34,11 +37,31 @@ from .downloads import disposition, podcast_download, podcast_zip
 from .studio_trash import has_artifacts, move_contents
 from .platforms import configure_path, venv_python
 from .process import stop_process_tree
-from .text_settings import (CODEX_MODELS, OPENROUTER_MODELS, OPENROUTER_EFFORTS, TEXT_PRESETS, text_preset,
-                            provider_model, DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT,
-                            REASONING_EFFORTS, validate_model, validate_reasoning)
+from .text_settings import (CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL,
+                            DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT, EFFORT_EQUIVALENTS, OPENROUTER_EFFORTS,
+                            OPENROUTER_MODELS, PROVIDER_NOTES, REASONING_EFFORTS, TEXT_PRESETS, TEXT_PROVIDERS,
+                            auto_candidates, provider_model, text_preset, validate_model, validate_reasoning)
 
 VOICES = QWEN_VOICES
+# A job paused by a subscription limit is resumed automatically at its named reset, at most this often.
+MAX_AUTO_RESUMES = 3
+SCHEDULER_INTERVAL_SECONDS = 30
+
+
+def latest_provider_choice(work):
+    """The decision of the newest model call, with the switch receipt when that call changed provider."""
+    calls = sorted((work / "calls").glob("call_*/provider_choice.json"))
+    if not calls:
+        return None
+    choice = read_json(calls[-1], {})
+    if not isinstance(choice, dict) or not choice:
+        return None
+    switch = read_json(calls[-1].with_name("provider_switch.json"))
+    keys = ("provider", "model", "reasoning_effort", "mode", "reason", "decided_at", "search")
+    return {"call": calls[-1].parent.name, **{key: choice.get(key) for key in keys},
+            "snapshots": choice.get("snapshots") if isinstance(choice.get("snapshots"), dict) else {},
+            "switch": {key: switch.get(key) for key in ("from", "to", "error_code", "switched_at")}
+            if isinstance(switch, dict) and switch else None}
 
 
 def audio_job_path(root, job_id):
@@ -114,10 +137,13 @@ class TextChoice(Contract):
     reasoning_effort: str | None = None
 
     def kwargs(self):
-        if self.provider not in {"codex_cli", "openrouter"}:
+        if self.provider not in TEXT_PROVIDERS:
             raise AppError("Textanbieter auswählen.", code="invalid_backend")
-        model = provider_model(self.provider, self.model) or (DEFAULT_CODEX_MODEL if self.provider == "codex_cli" else None)
-        effort = self.reasoning_effort or (DEFAULT_REASONING_EFFORT if self.provider == "codex_cli" else None)
+        defaults = {"codex_cli": (DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT),
+                    "claude_code": (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT)}
+        default_model, default_effort = defaults.get(self.provider, (None, None))
+        model = provider_model(self.provider, self.model) or default_model
+        effort = self.reasoning_effort or default_effort
         validate_model(model)
         validate_reasoning(effort, provider=self.provider, model=model)
         return {"backend": self.provider, "model": model, "reasoning_effort": effort,
@@ -141,6 +167,7 @@ class Studio:
         self.process = None
         self.process_root = None
         self.audio_processes = {}
+        self.scheduler = None
         configure_path(self.workspace)
 
     def root(self, project):
@@ -182,15 +209,18 @@ class Studio:
         return {"app": "podcast-studio", "workspace": str(self.workspace),
                 "capabilities": {"text_reasoning_selection": True, "parallel_audio": True,
                                  "project_execution": True, "conversational_setup": True, "project_overview": True,
-                                 "podcast_downloads": True, "project_attachments": True},
+                                 "podcast_downloads": True, "project_attachments": True, "subscription_auto": True},
                 "attachment_limits": {"files": attachments.MAX_FILES, "file_bytes": attachments.MAX_FILE_BYTES,
                                       "docx_bytes": attachments.MAX_DOCX_BYTES, "transfer_bytes": attachments.MAX_TRANSFER_BYTES,
                                       "total_bytes": attachments.MAX_TOTAL_BYTES},
                 "parallel_limit": MAX_PARALLEL,
-                "text_defaults": TextChoice().normalized(),
+                # New projects start with the automatic subscription choice; saved projects keep studio/text.json.
+                "text_defaults": TextChoice(**text_preset("auto_subscriptions")).normalized(),
                 "text_catalog": {"codex_models": CODEX_MODELS, "openrouter_models": OPENROUTER_MODELS,
                                  "openrouter_efforts": OPENROUTER_EFFORTS, "presets": TEXT_PRESETS,
-                                 "reasoning_efforts": REASONING_EFFORTS},
+                                 "reasoning_efforts": REASONING_EFFORTS, "claude_models": CLAUDE_MODELS,
+                                 "claude_efforts": CLAUDE_EFFORTS, "effort_equivalents": EFFORT_EQUIVALENTS,
+                                 "provider_notes": PROVIDER_NOTES, "auto_candidates": auto_candidates()},
                 "token": self.token, "projects": projects, "voices": VOICES,
                 "audio_catalog": audio_catalog(),
                 "voice_samples": sample_inventory(self.projects),
@@ -215,6 +245,12 @@ class Studio:
             run = data.get("run")
             if run:
                 work = manifest_path(root, run["run_id"]).parent
+                if owned:
+                    # The worker's watcher rewrites progress.json every few seconds while it is alive.
+                    try:
+                        data["heartbeat_age_seconds"] = max(0, int(time.time() - (work / "progress.json").stat().st_mtime))
+                    except OSError:
+                        pass
                 progress = read_json(work / "progress.json")
                 if progress and "total_segments" in progress:
                     if progress.get("chapter_progress"):
@@ -232,7 +268,67 @@ class Studio:
             work = manifest_path(root, run["run_id"]).parent
             request = "script_request.json" if run["kind"] == "script" else "research_request.json"
             data["text_generation"] = read_json(work / request, {}).get("text_generation")
+            data["provider_choice"] = latest_provider_choice(work)
+        if (data and data.get("status") == "waiting_for_quota" and data.get("retry_at")
+                and data.get("auto_resume_count", 0) < MAX_AUTO_RESUMES):
+            data["auto_resume_at"] = data["retry_at"]
         return data
+
+    def approve(self, project, data):
+        """Explicit run-bound approvals; each writes one receipt and never touches counters or state."""
+        root = self.root(project)
+        run_id = data.get("run_id") or ((self.job(root) or {}).get("run") or {}).get("run_id")
+        if not isinstance(run_id, str):
+            raise AppError("Kein Lauf für diese Freigabe vorhanden.", code="no_run")
+        kind = data.get("kind")
+        if kind == "model_calls":
+            approval = approve_model_call_limit(root, run_id, data.get("model_calls"), search_rounds=data.get("search_rounds"))
+            return {"approval": approval.model_dump(mode="json")}
+        if kind == "gap":
+            approval = approve_research_gap(root, run_id, data.get("task_id"), data.get("reason", ""))
+            return {"gap": approval.model_dump(mode="json")}
+        raise AppError("Unbekannte Freigabe.", code="invalid_action")
+
+    def due_resumes(self, now_seconds=None):
+        """Paused jobs whose named reset has passed and whose automatic resumes are not used up."""
+        current = time.time() if now_seconds is None else now_seconds
+        due = []
+        for path in sorted(self.projects.glob("*/studio/job.json")):
+            job = read_json(path)
+            if not isinstance(job, dict) or job.get("status") != "waiting_for_quota":
+                continue
+            retry = parse_iso(job.get("retry_at"))
+            run_id = (job.get("run") or {}).get("run_id")
+            count = job.get("auto_resume_count", 0)
+            if retry is None or retry.timestamp() > current or not run_id or count >= MAX_AUTO_RESUMES:
+                continue
+            due.append((path.parents[1].name, run_id, count))
+        return due
+
+    def resume_due(self, now_seconds=None):
+        started = []
+        for project, run_id, count in self.due_resumes(now_seconds):
+            with self.mutex:
+                try:
+                    self.start(project, {"action": "resume", "run_id": run_id, "auto_resume_count": count + 1})
+                    started.append(project)
+                    logger("studio").info("Auftrag nach Kontingent-Reset automatisch fortgesetzt: %s", project)
+                except AppError as exc:
+                    logger("studio").warning("Automatische Fortsetzung nicht möglich (%s): %s", exc.code, exc)
+        return started
+
+    def start_scheduler(self):
+        if self.scheduler is None:
+            self.scheduler = threading.Thread(target=self._schedule_loop, daemon=True)
+            self.scheduler.start()
+
+    def _schedule_loop(self):
+        while True:
+            time.sleep(SCHEDULER_INTERVAL_SECONDS)
+            try:
+                self.resume_due()
+            except Exception:  # The scheduler must outlive any single project's trouble.
+                logger("studio").warning("Automatische Fortsetzung übersprungen.", exc_info=True)
 
     def active_audio(self):
         return {key: value for key, value in self.audio_processes.items() if value[0].poll() is None}
@@ -567,6 +663,8 @@ class Studio:
         payload["text"] = read_json(root / "studio/text.json", TextChoice().model_dump())
         payload["api_key"] = self.key or None
         job = {"id": uuid.uuid4().hex, "action": action, "status": "running", "started_at": now(), "run": None}
+        if action == "resume" and type(data.get("auto_resume_count")) is int:
+            job["auto_resume_count"] = data["auto_resume_count"]
         if remote_episode:
             job.update(episode=remote_episode, provider="openrouter_gemini_tts")
             payload["audio_job_id"] = job["id"]
@@ -680,7 +778,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                     elif path == "/api/restore":
                         result = app.restore(data)
                     else:
-                        match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload|remove_attachment)", path)
+                        match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload|remove_attachment|approve)", path)
                         if not match:
                             raise AppError("Seite nicht gefunden.", code="not_found")
                         project, action = match.groups()
@@ -807,6 +905,7 @@ def serve(workspace, port=8765, open_browser=True):
     with project_lock(Path(workspace) / ".studio"):
         configure_logging(Path(workspace) / ".studio/studio.log")
         server = make_server(workspace, port)
+        server.studio.start_scheduler()
         url = f"http://127.0.0.1:{server.server_port}"
         logger("studio").info("Studio gestartet: %s", url)
         print(f"Podcast Studio: {url}\nDieses Fenster geöffnet lassen. Beenden mit Strg+C.", flush=True)

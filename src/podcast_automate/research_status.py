@@ -82,8 +82,18 @@ def _source_metadata(path, modified, size):
     # Source indexes can contain entire books. Keep only metadata in the read cache.
     index = read(path, {})
     index = index.get("value", index)
-    return {f"{source['id']}#{section['id']}": (source["id"], source["title"], section.get("page"))
-            for source in index.get("sources", []) for section in source.get("sections", [])}
+    lookup = {}
+    for source in index.get("sources", []):
+        # A manifest row keeps the document's metadata and points at its processed text.
+        document = source.get("document") or source
+        sections = source.get("sections")
+        if sections is None and source.get("processed"):
+            root = path.parents[3]
+            processed = read(root / source["processed"], {}) if (root / source["processed"]).is_file() else {}
+            sections = processed.get("sections", [])
+        for section in sections or []:
+            lookup[f"{document['id']}#{section['id']}"] = (document["id"], document.get("title", ""), section.get("page"))
+    return lookup
 
 
 def saved_context(work, state, schema):

@@ -12,12 +12,12 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .codex import CodexAdapter
+from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.scripting.CodexAdapter.structured)
 from .errors import AppError
 from .execution import ExecutionChoice, selected_execution
 from .models import EpisodeScript, RunManifest, StageRecord
-from .openrouter import ADAPTER_VERSION, DEFAULT_MAX_OUTPUT_TOKENS, OpenRouterAdapter
 from .polishing import HOST_ROLES, POLISH_VERSION
+from .provider_pool import AdapterPool, check_adapter_versions, text_generation_settings  # noqa: F401  (re-exported)
 from .research import validate_dossier
 from .research_models import ResearchDossier
 from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
@@ -31,35 +31,9 @@ from .script_pipeline import SPOKEN_DIALOGUE, ScriptRun  # noqa: F401
 from .series_review import SERIES_REVIEW_VERSION
 from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json, write_yaml
 from .teaching import DESIGN_VERSION, TEACHING_VERSION
-from .text_settings import validate_reasoning
 
 SCRIPT_VERSION = "script.v5-dialogue-polish"
 STAGES = ("planning", "teaching", "writing", "polishing", "review", "publish")
-
-
-def text_generation_settings(config, *, backend=None, model=None, max_output_tokens=None, reasoning_effort=None, saved=None):
-    validate_reasoning(reasoning_effort, provider=backend or (saved or {}).get("provider") or config.text_backend,
-                       model=model or (saved or {}).get("model"))
-    if saved is not None:
-        if ((backend is not None and backend != saved["provider"]) or
-                (model is not None and model != saved["model"]) or
-                (max_output_tokens is not None and max_output_tokens != saved["max_output_tokens"]) or
-                (reasoning_effort is not None and reasoning_effort != saved.get("reasoning_effort"))):
-            raise AppError("Anbieter, Modell, Reasoning-Stufe oder Tokenlimit geändert. Einen neuen script-Lauf starten; "
-                           "resume verwendet die gespeicherte Auswahl.", code="inputs_changed", status="blocked")
-        return saved
-    backend = backend or config.text_backend
-    if backend not in {"codex_cli", "openrouter"}:
-        raise AppError("Unbekannter Skriptanbieter.", code="invalid_backend", status="blocked")
-    if backend == "codex_cli" and max_output_tokens is not None:
-        raise AppError("--max-output-tokens wird nur mit --backend openrouter verwendet.", code="invalid_backend", status="blocked")
-    return {"provider": backend, "model": model if model is not None else
-            (config.runtime.codex_model if backend == "codex_cli" else None),
-            "max_output_tokens": (max_output_tokens if max_output_tokens is not None else DEFAULT_MAX_OUTPUT_TOKENS)
-                if backend == "openrouter" else None,
-            "adapter_version": ADAPTER_VERSION if backend == "openrouter" else None,
-            "provider_sort": "throughput" if backend == "openrouter" else None,
-            "reasoning_effort": reasoning_effort}
 
 
 def load_research(root: Path, config):
@@ -164,17 +138,11 @@ def new_run(root, research_id, dossier, *, episode, revise, feedback):
 
 
 def build_adapter(config, text_generation, api_key):
-    if text_generation["provider"] == "openrouter":
-        adapter = OpenRouterAdapter(config.runtime, model=text_generation["model"], api_key=api_key,
-                                    max_output_tokens=text_generation["max_output_tokens"],
-                                    reasoning_effort=text_generation.get("reasoning_effort"))
-        if text_generation["adapter_version"] != ADAPTER_VERSION:
-            raise AppError("OpenRouter-Adapter geändert; einen neuen script-Lauf starten.", code="inputs_changed", status="blocked")
-        return adapter
-    if api_key is not None:
+    """The adapter pool of this run: a fixed provider as before, ``auto`` chooses a subscription per call."""
+    check_adapter_versions(text_generation)
+    if text_generation["provider"] != "openrouter" and api_key is not None:
         raise AppError("--api-key nur mit --backend openrouter verwenden.", code="invalid_backend", status="blocked")
-    return CodexAdapter(config.runtime.model_copy(update={"codex_model": text_generation["model"]}),
-                        reasoning_effort=text_generation.get("reasoning_effort"))
+    return AdapterPool(config.runtime, text_generation, api_key=api_key)
 
 
 def run_inputs(config, research_id, dossier, discovery, sources, context, state, text_generation):

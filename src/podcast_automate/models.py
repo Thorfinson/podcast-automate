@@ -72,7 +72,7 @@ class TopicBrief(Contract):
     # project.yaml records the CLI defaults. The Studio stores a project's actual provider
     # choices next to it in studio/text.json (text model, effort) and studio/audio.json
     # (Qwen or Gemini voices); those files never hold credentials.
-    text_backend: Literal["codex_cli"] = Field(
+    text_backend: Literal["codex_cli", "claude_code", "auto"] = Field(
         default="codex_cli", description="CLI default; the Studio selection lives in studio/text.json.")
     tts_backend: Literal["qwen3_local"] = Field(
         default="qwen3_local", description="CLI default; the Studio selection lives in studio/audio.json.")

@@ -8,7 +8,7 @@ from datetime import date
 
 from .errors import AppError
 
-CATALOG_VERIFIED_ON = date(2026, 9, 16)
+CATALOG_VERIFIED_ON = date(2026, 9, 19)
 CATALOG_STALE_DAYS = 90
 DEFAULT_CODEX_MODEL = "gpt-6-astra"
 DEFAULT_REASONING_EFFORT = "xhigh"
@@ -21,6 +21,17 @@ CODEX_MODELS = {
     "gpt-5.6-luna": "GPT-5.6 Luna",
     "gpt-5.5": "GPT-5.5",
 }
+# Claude Code CLI 2.1.92 with a claude.ai subscription login, verified on 2026-09-19. The CLI
+# accepts full model names; the catalog lists the one used for production text.
+DEFAULT_CLAUDE_MODEL = "claude-opus-5"
+DEFAULT_CLAUDE_EFFORT = "high"
+CLAUDE_MODELS = {"claude-opus-5": "Claude Opus 5"}
+CLAUDE_EFFORTS = ("low", "medium", "high", "max")
+# Which Claude Code level carries the same intent as a Codex level. Shown in catalogs and
+# documentation; never applied as a silent conversion of a saved choice.
+EFFORT_EQUIVALENTS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "max"}
+SUBSCRIPTION_PROVIDERS = ("codex_cli", "claude_code")
+TEXT_PROVIDERS = ("codex_cli", "claude_code", "openrouter", "auto")
 # Verified against https://openrouter.ai/api/v1/models on 2026-09-16.
 OPENROUTER_MODELS = {
     "openai/gpt-6-astra-pro": "GPT-6 Astra Pro",
@@ -31,8 +42,12 @@ OPENROUTER_MODELS = {
 OPENROUTER_EFFORTS = {model: (*REASONING_EFFORTS, "max") for model in OPENROUTER_MODELS}
 OPENROUTER_EFFORTS["deepseek/deepseek-v4.1-flash"] = ("low", "high", "max")
 TEXT_PRESETS = [
+    {"id": "auto_subscriptions", "label": "Automatisch · Codex, sonst Claude", "provider": "auto",
+     "model": None, "reasoning_effort": None},
     {"id": "codex_astra", "label": "Astra · Codex-Abo", "provider": "codex_cli",
      "model": "gpt-6-astra", "reasoning_effort": "xhigh"},
+    {"id": "claude_opus_sub", "label": "Opus 5 · Claude-Abo", "provider": "claude_code",
+     "model": "claude-opus-5", "reasoning_effort": "high"},
     {"id": "openrouter_astra", "label": "Astra · OpenRouter", "provider": "openrouter",
      "model": "openai/gpt-6-astra", "reasoning_effort": None},
     {"id": "openrouter_astra_pro", "label": "Astra Pro · OpenRouter", "provider": "openrouter",
@@ -42,6 +57,15 @@ TEXT_PRESETS = [
     {"id": "openrouter_deepseek", "label": "DeepSeek V4.1 Flash · max · OpenRouter", "provider": "openrouter",
      "model": "deepseek/deepseek-v4.1-flash", "reasoning_effort": "max"},
 ]
+PROVIDER_NOTES = {
+    "codex_cli": "Codex CLI mit ChatGPT-Abo; kein API-Guthaben. Das Kontingent wird vor jedem Aufruf gelesen.",
+    "claude_code": "Claude Code CLI mit Claude-Max-Abo (claude.ai-Anmeldung); keine API-Kosten. Ein erreichtes "
+                   "Limit wird erst beim Aufruf sichtbar und danach bis zum Reset vermerkt.",
+    "openrouter": "OpenRouter-API mit eigenem Key und Guthaben.",
+    "auto": "Automatische Abo-Wahl je Modellaufruf: Codex, solange dessen Kontingent reicht, sonst Claude über das "
+            "Claude-Max-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Modell und Stufe kommen "
+            "aus dem Katalog und werden nicht einzeln angegeben.",
+}
 
 
 def catalog_age(today=None):
@@ -57,6 +81,12 @@ def text_preset(preset_id):
     return {key: preset[key] for key in ("provider", "model", "reasoning_effort")}
 
 
+def auto_candidates(codex_model=None):
+    """The two subscription configurations an automatic run may use, one per provider."""
+    return {"codex_cli": {"model": codex_model or DEFAULT_CODEX_MODEL, "reasoning_effort": DEFAULT_REASONING_EFFORT},
+            "claude_code": {"model": DEFAULT_CLAUDE_MODEL, "reasoning_effort": DEFAULT_CLAUDE_EFFORT}}
+
+
 def provider_model(provider, model):
     """Use the namespace of the explicitly chosen provider; never downgrade Pro."""
     if provider == "openrouter" and model in {"gpt-6-astra", "gpt-6-astra-pro"}:
@@ -66,11 +96,30 @@ def provider_model(provider, model):
     if provider == "codex_cli" and model in {"gpt-6-astra-pro", "openai/gpt-6-astra-pro"}:
         raise AppError("Astra Pro bitte mit OpenRouter auswählen. Für das Codex-Abo steht Astra zur Verfügung.",
                        code="invalid_backend")
+    if provider == "claude_code":
+        if model in {"opus", "claude-opus", "anthropic/claude-opus-5"}:
+            return DEFAULT_CLAUDE_MODEL
+        if model and "/" in model:
+            raise AppError("Für das Claude-Abo eine Claude-Modell-ID wie claude-opus-5 wählen; "
+                           "OpenRouter-IDs gehören zur OpenRouter-Auswahl.", code="invalid_backend")
+    if provider == "auto" and model is not None:
+        raise AppError("Die automatische Abo-Wahl verwendet die Katalogstandards beider Anbieter. "
+                       "Modell und Reasoning-Stufe nur für einen festen Anbieter angeben.", code="invalid_backend")
     return model
 
 
 def validate_reasoning(effort, *, provider="codex_cli", model=None):
-    allowed = OPENROUTER_EFFORTS.get(model, (*REASONING_EFFORTS, "max")) if provider == "openrouter" else REASONING_EFFORTS
+    if provider == "openrouter":
+        allowed = OPENROUTER_EFFORTS.get(model, (*REASONING_EFFORTS, "max"))
+    elif provider == "claude_code":
+        allowed = CLAUDE_EFFORTS
+    elif provider == "auto":
+        if effort is not None:
+            raise AppError("Die automatische Abo-Wahl verwendet die Katalogstandards beider Anbieter. "
+                           "Eine Reasoning-Stufe nur für einen festen Anbieter angeben.", code="invalid_backend")
+        return None
+    else:
+        allowed = REASONING_EFFORTS
     if effort is not None and effort not in allowed:
         raise AppError("Unterstützte Reasoning-Stufen für diese Auswahl: " + ", ".join(allowed) + ".", code="invalid_backend")
     return effort

@@ -17,7 +17,7 @@ class TextSelectionTests(unittest.TestCase):
 
     def test_all_requested_presets_survive_proposal_application_without_changing_audio(self):
         boot = json.loads(self.request("/api/bootstrap")[1])
-        self.assertEqual(len(boot["text_catalog"]["presets"]), 5)
+        self.assertEqual(len(boot["text_catalog"]["presets"]), 7)
         for preset in TEXT_PRESETS:
             with self.subTest(preset=preset["id"]):
                 requested = text_preset(preset["id"])

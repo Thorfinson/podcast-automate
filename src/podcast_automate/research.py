@@ -13,23 +13,30 @@ from pathlib import Path
 from .prompts import fragment, instructions
 from . import __version__
 from . import attachments
-from .codex import CodexAdapter
+from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.research.CodexAdapter.structured)
 from .errors import AppError
-from .run_budget import effective_limits
+from .run_budget import accepted_gaps, effective_limits
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .models import RunManifest, StageRecord
+from .provider_pool import AdapterPool, check_adapter_versions, subscription_selection
 from .research_models import ResearchDiscovery, ResearchDossier, SourceCandidate, SourceDocument, SourceIndex
 from .runner import execute_stages, manifest_path, outputs_valid, run_observer
 from .research_quality import load_complete_research, requirements_for
 from .question_research import run_question_research
 from .research_ledger import read_value
-from .sources import EXTRACTION_VERSION, canonical_url, clean, import_source
+from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_lock,
-                      read_yaml, write_json, write_yaml)
+                      read_optional_json, read_yaml, write_json, write_yaml)
 from .text_settings import validate_model, validate_reasoning
 
 RESEARCH_VERSION = "research.v3-complete-brief"
 PLAIN_LANGUAGE = TERMINOLOGY + TEACHING_SCOPE + fragment("plain_language")
+# Failures after which no model response exists: the reservation is returned to the run budget.
+# Model work that was rejected (invalid output, unobserved search, provider failure) stays charged.
+UNANSWERED_CALL_CODES = frozenset({
+    "timeout", "stall", "interrupted", "missing_executable", "codex_missing", "claude_missing",
+    "authentication_required", "subscription_required", "claude_version", "prompt_too_large",
+    "invalid_output_schema", "unsupported_codex_launcher", "unsupported_claude_launcher"})
 
 
 def inherit_sources(root, work, manifest, config, local_files, parent_id):
@@ -90,6 +97,11 @@ def inherit_sources(root, work, manifest, config, local_files, parent_id):
 
 
 def reserve_call(work: Path, limits, *, search=False) -> int:
+    """Charge one call against the run budget and return its call number.
+
+    Call numbers come from a separate sequence, so a refunded reservation never reuses a
+    directory that already holds receipts of an earlier attempt.
+    """
     with file_lock(work / ".budget.lock", timeout=30):
         path = work / "budget.json"
         budget = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"model_calls": 0, "search_rounds": 0}
@@ -101,8 +113,65 @@ def reserve_call(work: Path, limits, *, search=False) -> int:
                            code="research_budget_exhausted", status="blocked")
         budget["model_calls"] += 1
         budget["search_rounds"] += int(search)
+        budget["sequence"] = budget.get("sequence", budget["model_calls"] - 1) + 1
         write_json(path, budget)
-        return budget["model_calls"]
+        return budget["sequence"]
+
+
+def refund_call(work: Path, number: int, *, search=False) -> bool:
+    """Return the reservation of a call that produced no model response; never twice for one call."""
+    with file_lock(work / ".budget.lock", timeout=30):
+        path = work / "budget.json"
+        if not path.exists():
+            return False
+        budget = json.loads(path.read_text(encoding="utf-8"))
+        refunded = budget.setdefault("refunded", [])
+        if number in refunded:
+            return False
+        refunded.append(number)
+        budget["model_calls"] = max(0, budget.get("model_calls", 0) - 1)
+        if search:
+            budget["search_rounds"] = max(0, budget.get("search_rounds", 0) - 1)
+        write_json(path, budget)
+        return True
+
+
+def unanswered(error: AppError) -> bool:
+    return error.status == "waiting_for_quota" or error.code in UNANSWERED_CALL_CODES
+
+
+def reconcile_budget(work: Path) -> list[int]:
+    """Refund calls a stopped or killed worker never finished: no response and no charged failure.
+
+    Runs before a resume, under the project lock, so no call is in flight. A call that ended with a
+    charged failure (invalid output, failed provider turn) keeps its charge.
+    """
+    with file_lock(work / ".budget.lock", timeout=30):
+        path = work / "budget.json"
+        if not path.exists():
+            return []
+        budget = json.loads(path.read_text(encoding="utf-8"))
+        refunded = budget.setdefault("refunded", [])
+        found = []
+        for directory in sorted((work / "calls").glob("call_*")):
+            match = re.fullmatch(r"call_(\d+)", directory.name)
+            if not match or int(match[1]) in refunded or (directory / "response.json").exists():
+                continue
+            if not (directory / "output_schema.json").exists() and not (directory / "activity.json").exists():
+                continue
+            failure = read_optional_json(directory / "failure.json", {}) or {}
+            if failure and failure.get("code") not in UNANSWERED_CALL_CODES:
+                continue
+            choice = read_optional_json(directory / "provider_choice.json", {}) or {}
+            number = int(match[1])
+            refunded.append(number)
+            found.append(number)
+            budget["model_calls"] = max(0, budget.get("model_calls", 0) - 1)
+            if choice.get("search"):
+                budget["search_rounds"] = max(0, budget.get("search_rounds", 0) - 1)
+        if found:
+            write_json(path, budget)
+        return found
 
 
 def source_context(index: SourceIndex, discovery: ResearchDiscovery, *, retained_dossier=None, extra_queries=(),
@@ -223,25 +292,34 @@ def render_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, index
 
 
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
-                 reuse_sources: str | None = None, model=None, reasoning_effort=None) -> RunManifest:
+                 reuse_sources: str | None = None, model=None, reasoning_effort=None, backend=None) -> RunManifest:
     root = root.resolve()
     config = load_project(root)
     local_files = [(root / value).resolve() for value in config.local_sources]
     local_hashes = {str(path): file_hash(path) if path.is_file() else None for path in local_files}
     with project_lock(root):
         validate_model(model)
-        validate_reasoning(reasoning_effort)
-        selection = {"provider": "codex_cli", "model": model or config.runtime.codex_model,
-                     "reasoning_effort": reasoning_effort} if model is not None or reasoning_effort is not None else None
+        if backend in {"claude_code", "auto"}:
+            selection = subscription_selection(config, backend, model=model, reasoning_effort=reasoning_effort)
+        elif backend in {None, "codex_cli"}:
+            validate_reasoning(reasoning_effort)
+            selection = {"provider": "codex_cli", "model": model or config.runtime.codex_model,
+                         "reasoning_effort": reasoning_effort} if model is not None or reasoning_effort is not None else None
+        else:
+            raise AppError("Für die Recherche stehen codex_cli, claude_code und auto zur Verfügung.",
+                           code="invalid_backend", status="blocked")
         if resume:
             path = manifest_path(root, run_id)
             request_path = path.parent / "research_request.json"
             saved = json.loads(request_path.read_text(encoding="utf-8")).get("text_generation") if request_path.exists() else None
-            if ((model is not None and model != (saved or {}).get("model")) or
+            if ((backend is not None and backend != ((saved or {}).get("provider") or "codex_cli")) or
+                    (model is not None and model != (saved or {}).get("model")) or
                     (reasoning_effort is not None and reasoning_effort != (saved or {}).get("reasoning_effort"))):
                 raise AppError("Modellauswahl geändert. Fortsetzen verwendet die gespeicherte Rechercheauswahl.",
                                code="inputs_changed", status="blocked")
             selection = saved
+            if selection:
+                check_adapter_versions(selection)
         bound_config = config.model_dump(mode="json")
         if resume:
             # A longer execution deadline does not alter the research inputs.
@@ -274,6 +352,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             if resume:
                 raise AppError("Quellenübernahme nur für einen neuen Lauf verwenden.", code="invalid_run")
             inherit_sources(root, work, manifest, config, local_files, reuse_sources)
+        if resume:
+            # A stopped worker leaves its reservation behind; the call it never finished is not charged.
+            reconcile_budget(work)
         if resume and manifest.stages["retrieval"].status == "completed":
             try:
                 previous_index = SourceIndex.model_validate_json((work / "source_index.json").read_text(encoding="utf-8"))
@@ -296,15 +377,22 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             previous_outline = json.loads((root / "studio/outline.json").read_text(encoding="utf-8"))
             write_json(root / "studio/previous_outline.json", previous_outline)
             (root / "studio/outline.json").unlink()
-        adapter = CodexAdapter(config.runtime.model_copy(update={"codex_model": selection["model"]}) if selection else config.runtime,
-                               reasoning_effort=selection.get("reasoning_effort") if selection else None)
+        pool = AdapterPool(config.runtime, selection or {"provider": "codex_cli", "model": config.runtime.codex_model,
+                                                        "reasoning_effort": None})
+
+        def limits():
+            return effective_limits(work, config.research_limits, input_hash)
+
+        def accepted():
+            return accepted_gaps(work, input_hash)
 
         def progress(activity, quality=None, round_number=None):
             previous = json.loads((work / "research_activity.json").read_text(encoding="utf-8")) if (work / "research_activity.json").exists() else {}
+            current = limits()
             data = {**previous, "phase": "research", "activity": activity,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "model_call_limit": effective_limits(work, config.research_limits, input_hash).model_calls,
-                    "search_round_limit": config.research_limits.search_rounds}
+                    "model_call_limit": current.model_calls,
+                    "search_round_limit": current.search_rounds}
             if quality is not None:
                 data["research_quality"] = quality
             question_path = work / "research_questions.json"
@@ -321,13 +409,21 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 observer(manifest)
 
         def invoke(prompt, output_type, version, *, search=False):
-            number = reserve_call(work, effective_limits(work, config.research_limits, input_hash), search=search)
+            number = reserve_call(work, limits(), search=search)
             from .research_status import record_request
             record_request(work / "calls" / f"call_{number:03d}", output_type.__name__, prompt)
             if search:
                 progress("Quellen zu offenen Leitfragen werden gesucht")
-            return adapter.structured(prompt, output_type, work / "calls" / f"call_{number:03d}",
-                                      prompt_version=version, search=search)
+            try:
+                return pool.structured(prompt, output_type, work / "calls" / f"call_{number:03d}",
+                                       prompt_version=version, search=search)
+            except AppError as exc:
+                if unanswered(exc):
+                    refund_call(work, number, search=search)
+                raise
+            except BaseException:
+                refund_call(work, number, search=search)
+                raise
 
         def discovery_stage():
             brief = {key: value for key, value in config.model_dump(mode="json").items()
@@ -366,13 +462,13 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 try:
                     identity = str(local) if local else canonical_url(candidate.url)
                 except (AppError, ValueError) as exc:
-                    failures.append({"source": address, "reason": str(exc)})
+                    failures.append(import_failure(address, exc))
                     continue
                 if identity in seen:
                     continue
                 seen.add(identity)
                 if attempted >= config.research_limits.sources:
-                    failures.append({"source": address, "reason": "Quellenlimit erreicht; nicht abgerufen."})
+                    failures.append({"source": address, "reason": "Quellenlimit erreicht; nicht abgerufen.", "code": "source_limit"})
                     continue
                 attempted += 1
                 checkpoint = cache_dir / (digest(identity) + ".json")
@@ -402,13 +498,13 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                     independent_copy = bool(document.url) and any(
                         s.text_hash == document.text_hash and not s.url for s in sources)
                     if document.text_hash in hashes and not independent_copy:
-                        failures.append({"source": address, "reason": "Identischer Quellentext bereits eingelesen."})
+                        failures.append({"source": address, "reason": "Identischer Quellentext bereits eingelesen.", "code": "duplicate_source"})
                         continue
                     hashes.add(document.text_hash)
                     sources.append(document)
                     outputs.extend([processed, inside(root, document.raw_path)])
                 except (AppError, OSError, ValueError) as exc:
-                    failures.append({"source": address, "reason": str(exc)})
+                    failures.append(import_failure(address, exc))
                 write_json(work / "retrieval_progress.json", {"imported": len(sources), "attempted": attempted, "failures": failures})
             index = SourceIndex(sources=sources, failures=failures)
             write_json(work / "source_index.json", index.model_dump(mode="json"))
@@ -438,12 +534,14 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             return (quality.get("passed") and quality.get("question_workflow") == "question_research.v1"
                     and quality.get("dossier_hash") == digest(dossier))
 
+        def question_research(*, dossier=None, with_context=False):
+            discovery, index, context = synthesis_inputs()
+            return run_question_research(root, work, config, discovery, index, invoke, progress, dossier=dossier,
+                                         context=context if with_context else (), limits=limits, accepted=accepted)
 
         def dossier_stage():
             progress("Belege werden zu Grundlagen und Erklärungen verbunden")
-            discovery, index, context = synthesis_inputs()
-            outputs = run_question_research(root, work, config, discovery, index, invoke, progress,
-                                           limits=lambda: effective_limits(work, config.research_limits, input_hash))
+            outputs = question_research()
             _, _, checked_context, checked_dossier = load_complete_research(work)
             write_json(work / "dossier.json", checked_dossier.model_dump())
             write_json(work / "source_context.json", checked_context)
@@ -453,15 +551,10 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         def review_stage():
             outputs = []
             if not (work / "question_research/state.json").exists():
-                discovery, index, context = synthesis_inputs()
                 dossier = ResearchDossier.model_validate_json((work / "dossier.json").read_text(encoding="utf-8"))
-                outputs = run_question_research(root, work, config, discovery, index, invoke, progress,
-                                               dossier=dossier, context=context,
-                                               limits=lambda: effective_limits(work, config.research_limits, input_hash))
+                outputs = question_research(dossier=dossier, with_context=True)
             elif not question_result_ready():
-                discovery, index, context = synthesis_inputs()
-                outputs = run_question_research(root, work, config, discovery, index, invoke, progress, context=context,
-                                               limits=lambda: effective_limits(work, config.research_limits, input_hash))
+                outputs = question_research(with_context=True)
             _, _, _, checked = load_complete_research(work)
             reviewed = json.loads((work / "complete_research/source_review.json").read_text(encoding="utf-8"))
             write_json(work / "reviewed_dossier.json", checked.model_dump())
@@ -475,11 +568,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 return [*sorted((work / "complete_research").glob("*.json")),
                         work / "research_quality_gate.json", work / "research_quality.md",
                         work / "research_questions.json", work / "research_questions.md"]
-            discovery, index, context = synthesis_inputs()
             dossier = ResearchDossier.model_validate_json((work / "reviewed_dossier.json").read_text(encoding="utf-8"))
-            return run_question_research(root, work, config, discovery, index, invoke, progress,
-                                         dossier=dossier, context=context,
-                                         limits=lambda: effective_limits(work, config.research_limits, input_hash))
+            return question_research(dossier=dossier, with_context=True)
 
         def publish_stage():
             discovery, index, context, dossier = load_complete_research(work)
@@ -487,6 +577,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             final_review_path = work / "complete_research/source_review.json"
             if not quality["passed"]:
                 raise AppError("Die Recherche ist noch nicht vollständig geprüft.", code="research_coverage_incomplete", status="blocked")
+            accepted_rows = quality.get("accepted_gaps", [])
             files = {
                 "research/research_plan.yaml": {"schema_version": "1.0", "run_id": manifest.run_id,
                     "topic": config.topic, "questions": [q.model_dump() for q in discovery.questions],
@@ -504,7 +595,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 "failures": index.failures, "query_provenance": "Tool-observed queries; absent for historical receipts."}
             write_json(root / "research/discovery_receipt.json", initial_receipt)
             outputs.append(root / "research/discovery_receipt.json")
-            for name in ("evidence_report.json", "search_receipts.json", "objections.json"):
+            for name in ("evidence_report.json", "search_receipts.json", "objections.json", "accepted_gaps.json"):
                 source = work / "complete_research" / name
                 if source.exists():
                     destination = root / "research" / name
@@ -524,13 +615,18 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                     destination = root / "research" / destination_name
                     atomic_text(destination, (work / source_name).read_text(encoding="utf-8"))
                     outputs.append(destination)
+            accepted_lines = [f"- Akzeptierte Lücke: {row.get('question') or row['task_id']}"
+                              + (f" ({row['reason']})" if row.get("reason") else "") for row in accepted_rows]
             atomic_text(root / "research/open_questions.md", "# Offene Recherchefragen\n\n" +
                         "\n".join(f"- {q}" for q in dossier.open_questions) + "\n\n" +
-                        "\n".join(f"- {c.gap}" for c in dossier.coverage if c.status != "answered") + "\n")
+                        "\n".join(f"- {c.gap}" for c in dossier.coverage if c.status != "answered") + "\n" +
+                        ("\n" + "\n".join(accepted_lines) + "\n" if accepted_lines else ""))
             write_json(root / "research/latest.json", {"run_id": manifest.run_id})
             write_json(root / "reports/research_quality.json", {
-                "run_id": manifest.run_id, "reference_check": "passed", "model_review": "no_remaining_issues",
-                "human_reviewed": False, "complete_topic_coverage": True, "coverage_scope": "agreed_brief",
+                "run_id": manifest.run_id, "reference_check": "passed",
+                "model_review": "accepted_gaps_remaining" if quality.get("passed_with_accepted_gaps") else "no_remaining_issues",
+                "human_reviewed": False, "complete_topic_coverage": not accepted_rows, "coverage_scope": "agreed_brief",
+                "accepted_gaps": accepted_rows, "residual_objections": quality.get("residual_objections", []),
                 "quality_gate": quality, "sources": len(index.sources),
                 "findings": len(dossier.findings), "access_failures": index.failures,
                 "budget": json.loads((work / "budget.json").read_text(encoding="utf-8")),
