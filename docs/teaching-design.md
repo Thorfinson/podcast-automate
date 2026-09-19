@@ -2,7 +2,7 @@
 
 Diese Arbeitsweise ist für neue `pla script`-Läufe implementiert. Auf den Serienplan folgen ein eigener Lehrplan mit Quellenprüfung, ein Fachentwurf, ein eigener Dialog-Polishing-Schritt mit Vorher-/Nachher-Vergleich sowie getrennte Quellen-, Lese- und Lehrprüfungen. Sie gilt für alle Projektthemen.
 
-Ein Quellenverzeichnis und ein korrektes Dossier reichen nicht aus, um eine verständliche Lehrfolge zu erhalten. Zwischen Recherche und Dialog benötigt das Projekt eine ausgearbeitete Unterrichtsplanung. Der aktuelle Pilotentwurf liegt lokal unter `projects/windows-pilot/research/redesign/teaching_plan.md`.
+Ein Quellenverzeichnis und ein korrektes Dossier reichen nicht aus, um eine verständliche Lehrfolge zu erhalten. Zwischen Recherche und Dialog benötigt das Projekt eine ausgearbeitete Unterrichtsplanung.
 
 Zur Unterrichtsplanung gehört auch die Rahmung der Reihe: Episode 1 führt das Gesamtthema, seine Bedeutung und den aufeinander aufbauenden Themenweg ein. Die letzte Episode fasst die wesentlichen Erkenntnisse zusammen, verbindet sie zur Antwort auf die gemeinsame Ausgangsfrage und benennt bleibende Grenzen. Jede Folge hat außerdem einen gesprochenen Einstieg mit Begrüßung und einen klaren Abschluss mit Verabschiedung. Das wird im ersten beziehungsweise letzten vorhandenen Kapitel vorbereitet und am tatsächlichen Text erneut geprüft. Der Gesamtrückblick braucht zugeordnete Belege; fehlende Begrüßungen sind redaktionelle Aufgaben und lösen keine Webrecherche aus. [Intro, Outro und Prüfungen](scripts.md#erklärweise-und-leseprüfung).
 
@@ -21,7 +21,7 @@ Der Lehrplan wird bei Kritik automatisch bis zu zweimal überarbeitet. Bleiben E
 
 Die [Regressionstests mit echten Modellaufrufen](../evals/teaching_quality/README.md) verwenden dieselben Prüffunktionen wie die Produktion. Erwartete Urteile werden den Prüfern nicht mitgeteilt. Sie ergänzen die automatisierten Tests zu fehlenden Grundlagen, falschen Zitaten, Wiederaufnahme und Audiofreigabe.
 
-Die [Verifikation vom 13.09.2026](quality-verification.md) dokumentiert sowohl die aktuellen Ergebnisse als auch die Fehlurteile früherer Prüfversionen.
+Das [Audit vom 19.09.2026](quality-audit-2026-09-19-implementation.md) hat die Lehrschiene um drei Regeln ergänzt. `Concept.terms` hält die gesprochenen Namen der Begriffe eines Lehrkonzepts fest; `prerequisite_context` übergibt sie als `established_terms` je geprüfter Vorgängerfolge an Lehrplanung, Schreiben, Polishing und dessen Vergleich, damit eingeführte Begriffe in späteren Folgen nicht erneut definiert werden. Der Polishing-Vergleich muss unter `demanding_passages` die anspruchsvollsten Passagen der Folge benennen und für jeden unklaren Bezug angeben, wodurch die neue Fassung ihn auflöst; ein offener Bezug wird zum `spoken_language`-Einwand für die bestehende Reparaturschleife. Daneben zählt eine nichtblockierende Hinweisstufe (`script_advisories.py`) erneut definierte Begriffe, wiederholte Hinweise auf erfundene Beispiele, einen langen Kaltstart und eine Dauer über dem Ziel; die Zeilen stehen in `reports/script_quality.yaml` unter `episodes.<ep>.advisories` und im Studio unter [Hinweise der Prüfungen](studio.md#hinweise-der-prüfungen), stoppen aber keinen Lauf. Die Bewertung der Beispielserie, aus der diese Regeln stammen, steht in [docs/history/quality-audit-2026-09-19.md](history/quality-audit-2026-09-19.md).
 
 ## Bestehende Projekte
 

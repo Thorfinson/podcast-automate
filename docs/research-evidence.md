@@ -1,6 +1,6 @@
 # Evidence contracts in the research pipeline
 
-Implemented on 17 September 2026 from the [research skills comparison](research-skills-comparison.md). The implementation extends the existing question controller and model calls. It does not install the external skills, copy their prompts, introduce a review panel, or change research/audio approval rules.
+Implemented on 17 September 2026; the six contracts below came out of a comparison of research skills made in September 2026. The implementation extends the existing question controller and model calls. It does not install the external skills, copy their prompts, introduce a review panel, or change research/audio approval rules.
 
 | Finding | Implemented behavior |
 | --- | --- |
