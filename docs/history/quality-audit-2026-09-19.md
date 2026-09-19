@@ -1,3 +1,5 @@
+Archived record of 19 September 2026. The findings and the plan were carried out; the current state is in [quality-audit-2026-09-19-implementation.md](../quality-audit-2026-09-19-implementation.md).
+
 # Podcast Studio quality audit, 19 September 2026
 
 Read-only audit of how well Podcast Studio supports and demonstrates the skills needed for accurate, insightful, understandable and engaging deep-dive audio. No code, settings, prompts or project files were changed; no paid generation was started. The sample series and the code citations reflect the working tree on 19 September 2026, including uncommitted changes. Written for the operator of Podcast Studio.

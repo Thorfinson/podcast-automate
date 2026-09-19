@@ -17,7 +17,7 @@ Alle Python-Fälle gehören auch zur regulären Testsuite. Sie prüfen mit tempo
 - Vollständigkeit der ursprünglichen Leitfragen, unabhängige Prüfung und begrenztes Wiederöffnen.
 - Import historischer Entwurfs- und Reparaturformate, unveränderte Quellen und Prüfsummen sowie das Fortsetzen vor und nach der alten Review-Stufe.
 
-Migrationstests erzeugen die historischen Dateien direkt. Eine zweite ausführbare Recherchepipeline und Tests ihrer inzwischen ungenutzten Steuerungslogik sind dafür nicht erforderlich. Die [Analyse vom 17.09.2026](../../docs/research-analysis.md) enthält den Hintergrund der ursprünglichen Fehler; das separate Akzeptanzskript wurde in die Invariantentests aufgenommen.
+Migrationstests erzeugen die historischen Dateien direkt. Eine zweite ausführbare Recherchepipeline und Tests ihrer inzwischen ungenutzten Steuerungslogik sind dafür nicht erforderlich. Den heutigen Rechercheablauf beschreiben [docs/research.md](../../docs/research.md) und [docs/research-evidence.md](../../docs/research-evidence.md); die Analyse vom 17.09.2026 mit dem Hintergrund der ursprünglichen Fehler wurde am 19.09.2026 entfernt und bleibt in der Git-Historie (`docs/research-analysis.md`). Das separate Akzeptanzskript wurde in die Invariantentests aufgenommen.
 
 ## Kontrolle mit einem gespeicherten Quellenbestand
 
