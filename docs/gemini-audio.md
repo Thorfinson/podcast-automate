@@ -1,6 +1,6 @@
 # Gemini-Audio über OpenRouter
 
-Im Studio unter **Idee & Stimmen → Wer spricht deinen Podcast? → Audioanbieter** die Option **Gemini 3.1 Flash TTS · OpenRouter** wählen. Danach beide Stimmen auswählen, den OpenRouter-Key hinterlegen und speichern. Das Schreibmodell kann weiterhin Codex sein. Die Audioauswahl wird separat gespeichert und verändert weder das geprüfte Skript noch seine Recherche.
+Im Studio unter **Auftrag & Stimmen** im Gespräch mit dem redaktionellen Partner **Gemini 3.1 Flash TTS · OpenRouter** als Audioanbieter und beide Stimmen wählen; unter **Stimmen anhören** lassen sich die Stimmen vergleichen, im **geschützten OpenRouter-Key-Eingang** wird der Key hinterlegt. Die Zusammenfassung mit **Diese Auswahl übernehmen** speichern. Das Schreibmodell kann weiterhin Codex oder Claude sein. Die Audioauswahl wird separat gespeichert und verändert weder das geprüfte Skript noch seine Recherche.
 
 Bei Gemini sind **Sadaltager** für den Experten und **Aoede** für die neugierige Gesprächspartnerin vorbelegt. Das ist eine bearbeitbare Vorauswahl. Die 30 verfügbaren Stimmen wurden am 13. September 2026 anhand von `supported_voices` im öffentlichen [OpenRouter-Modellkatalog](https://openrouter.ai/api/v1/models?output_modalities=speech) geprüft:
 
@@ -12,7 +12,7 @@ Neben jeder fertigen Stimme steht **▶ Play**. Dieser Button spielt ausschließ
 
 Die gemeinsame Bibliothek liegt unter `projects/voice-samples/gemini/` und ist durch die vorhandene Gitignore-Regel für `projects/` ausgeschlossen. Sprache, Stimme, Modell, Vergleichstext und Adapterversion bestimmen die Aufnahme; Dateiprüfsummen verhindern die Wiederverwendung beschädigter Dateien. Bereits vorhandene passende WAV-Aufnahmen aus einzelnen Projekten werden ohne erneuten API-Aufruf übernommen. Deutsch und Englisch besitzen getrennte Bibliotheken.
 
-Für eine Folge anschließend das Skript lesen und unter **Audio & Export** genau diesen Text mit dem angezeigten Anbieter und den Stimmen freigeben. Ein Anbieterwechsel übernimmt keine frühere Qwen-Freigabe für kostenpflichtige Gemini-Aufrufe. Bei einer Fortsetzung bleiben Modell, Stimmen und Text des begonnenen Audiolaufs fest; der Key darf erneuert werden. Frühere Aufnahmen bleiben verfügbar und werden als frühere Fassung gekennzeichnet.
+Für eine Folge anschließend das Skript lesen und unter **Vertonung** genau diesen Text mit dem angezeigten Anbieter und den Stimmen freigeben. Ein Anbieterwechsel übernimmt keine frühere Qwen-Freigabe für kostenpflichtige Gemini-Aufrufe. Bei einer Fortsetzung bleiben Modell, Stimmen und Text des begonnenen Audiolaufs fest; der Key darf erneuert werden. Frühere Aufnahmen bleiben verfügbar und werden als frühere Fassung gekennzeichnet.
 
 ## Umsetzung
 
@@ -28,4 +28,4 @@ Der API-Key bleibt im Arbeitsspeicher und im Authorization-Header. Er wird nicht
 
 Automatisierte Tests prüfen den Speech-Aufruf und seine Stimmen, WAV-Erzeugung, Aufteilung ohne Textverlust, Cache-Wiederverwendung, API-/Formatfehler, unveränderte Skripte, getrennte Anbieterwahl, Freigaben und Wiederaufnahme nach einem API-Limit. Die bestehende FFmpeg-Montage wird dabei mit simulierten API-Audiodaten ausgeführt. Qwen- und Schreibaufrufe sind in den Gemini-Integrationstests ausdrücklich gesperrt.
 
-Ein echter OpenRouter-Hörtest und ein Geschwindigkeitsvergleich wurden mangels hinterlegtem Key noch nicht ausgeführt. Gemini vermeidet die lokale GPU-Vertonung; eine konkrete Beschleunigung oder natürliche Stimmqualität ist erst nach diesem Hörtest belegt. Das Modell wird von OpenRouter derzeit als Preview geführt.
+Am 13.09.2026 wurde die deutsche Hörprobenbibliothek mit allen 30 Stimmen über OpenRouter erzeugt; alle Dateien wurden technisch dekodiert und auf gültige Laufzeiten geprüft ([Stand der Prüfung](studio.md#stand-der-prüfung)). Ein Geschwindigkeitsvergleich zwischen Gemini und der lokalen Qwen-Vertonung ist in keinem Dokument festgehalten; Gemini vermeidet die lokale GPU-Vertonung, eine konkrete Beschleunigung ist damit nicht belegt. Die Hörprüfung der erzeugten Stimmen und Folgen bleibt eine menschliche Aufgabe. Das Modell wird von OpenRouter derzeit als Preview geführt.

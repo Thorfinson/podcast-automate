@@ -14,7 +14,7 @@ line breaks are free to change while the text is not.
 
 Changing a file changes the composed prompt. Draft, design, polish and review checkpoints are keyed
 by a hash of that prompt, so an in-flight run will redo the affected call after an edit. Bump the
-`prompt_version` tag at the call site (for example `write_episode.v7-audit`) whenever the meaning
+`prompt_version` tag at the call site (for example `write_episode.v7-audit-notes`) whenever the meaning
 changes, so receipts show which wording produced a result.
 
 `tests/test_prompts.py` checks that every file is referenced by code and every referenced name exists.
