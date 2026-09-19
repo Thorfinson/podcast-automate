@@ -185,6 +185,12 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                     path = self.root / mode / name
                     if path.exists():
                         self.assertNotIn("test-only-secret", path.read_text(encoding="utf-8"))
+        receipt = json.loads((self.root / "invalid/failure.json").read_text(encoding="utf-8"))
+        self.assertEqual((receipt["code"], receipt["result_subtype"], receipt["exit_code"]), ("invalid_model_output", "success", 0))
+        self.assertTrue(receipt["validation_errors"])
+        self.assertTrue(all(set(item) == {"loc", "msg", "type"} for item in receipt["validation_errors"]))
+        self.assertEqual(json.loads((self.root / "invalid/rejected_output.json").read_text(encoding="utf-8")),
+                         {"topic": "incomplete"})
         with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "quota"}), self.assertRaises(AppError) as error:
             self.call("quota_details")
         until = datetime.fromisoformat(error.exception.details["blocked_until"])

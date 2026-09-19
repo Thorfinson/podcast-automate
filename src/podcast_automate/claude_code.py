@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .call_activity import CallActivity, clean_status
+from .call_activity import CallActivity, clean_status, write_rejected_output
 from .codex import subscription_environment
 from .errors import AppError
 from .models import TextProbeOutput
@@ -346,8 +346,13 @@ class ClaudeCodeAdapter:
             output = output_type.model_validate(payload)
         except (ValueError, TypeError, ValidationError) as exc:
             activity.finish("invalid_model_output")
-            raise AppError("Claude Code hat keine gültige strukturierte Antwort geliefert.",
-                           code="invalid_model_output") from exc
+            failure = AppError("Claude Code hat keine gültige strukturierte Antwort geliefert.", code="invalid_model_output")
+            write_rejected_output(directory, exc, {
+                "code": failure.code, "message": str(failure), "exit_code": result.returncode,
+                "result_subtype": final.get("subtype") if isinstance(final.get("subtype"), str) else None,
+                "model": self.model, "reasoning_effort": self.reasoning_effort,
+                "prompt_version": prompt_version, "cli_version": version}, payload=payload)
+            raise failure from exc
         research_performed = bool(search_requests) or server_searches > 0
         if search and not research_performed:
             activity.finish("search_not_observed")

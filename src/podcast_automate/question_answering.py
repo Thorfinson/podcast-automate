@@ -58,6 +58,23 @@ def normalise_answer(answer):
     return answer.model_copy(update={"criteria": [criteria[i] for i in sorted(criteria)], "findings": findings})
 
 
+def reference_defect(reference, reader, read_refs):
+    """Why a cited reference is not read evidence, naming it so the next attempt corrects the citation."""
+    if reference in reader.sources:
+        return (f"evidence reference '{reference}' names a whole source; cite a read section as "
+                "<source_id>#<section_id> instead.")
+    if reference not in reader.lookup:
+        return f"evidence reference '{reference}' is not a known section; use the exact references of the supplied sections."
+    return f"evidence reference '{reference}' was not read for this question; cite a section from read_refs or read it first."
+
+
+def well_formed_decision(decision, final):
+    """A reader decision whose payload contradicts its action is re-asked with the defect named."""
+    error = decision.payload_error()
+    if error:
+        raise AppError(error, code="invalid_model_output", status="blocked")
+
+
 def answer_errors(answer, task, reader, read_refs):
     errors, ids = [], [f.id for f in answer.findings]
     if len(set(ids)) != len(ids):
@@ -70,16 +87,18 @@ def answer_errors(answer, task, reader, read_refs):
             f.claim_contract and f.claim_contract.relation == "uncertainty" for f in answer.findings)):
         errors.append("Supported uncertainty requires a sourced uncertainty claim and explicit limits.")
     for finding in answer.findings:
-        external = False
+        external = resolved = False
         for evidence in finding.evidence:
             entry = reader.lookup.get(evidence.reference)
             if evidence.reference not in read_refs or entry is None:
-                errors.append(f"{finding.id}: evidence must reference a section actually read for this question.")
+                errors.append(f"{finding.id}: {reference_defect(evidence.reference, reader, read_refs)}")
             elif clean(evidence.excerpt) not in clean(entry[2].text):
                 errors.append(f"{finding.id}: quote is not verbatim in the cited section.")
             if entry and entry[0].url and entry[0].final_url:
                 external = True
-        if not external:
+            resolved = resolved or entry is not None
+        # An unresolved reference is reported above; only resolved citations can show notes-only support.
+        if resolved and not external:
             errors.append(f"{finding.id}: user notes alone do not independently support a finding.")
     return errors
 
@@ -455,7 +474,7 @@ class TaskResearchMixin:
                         "deferred": row.get("deferred", []), "feedback": row["feedback"],
                         "previous_answer": row["draft_answer"], "previous_actions": row["actions"][-4:],
                         "reopening": row["reopenings"][-1:]}, ensure_ascii=False))
-                decision = self.call(folder, "reader", ResearchDecision, prompt)
+                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=well_formed_decision)
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
                 self.save(f"{spec.question} · {decision.reason}")

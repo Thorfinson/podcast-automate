@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from .models import Contract, Identifier, NonEmpty
 from .research_models import Finding, SourceCandidate
@@ -56,6 +56,10 @@ class ReaderWindow(Contract):
     after: int = Field(ge=0, le=5)
 
 
+# The one payload field each reader action fills; the other payload fields stay empty.
+READER_PAYLOADS = {"read": "windows", "search_local": "searches", "search_web": "web_queries", "answer": "answer"}
+
+
 class ResearchDecision(Contract):
     action: Literal["read", "search_local", "search_web", "answer", "blocked"]
     reason: NonEmpty = Field(description="One sentence naming the next step and the criterion it serves; "
@@ -66,13 +70,20 @@ class ResearchDecision(Contract):
     answer: QuestionAnswer | None
     block_kind: Literal["access", "extraction", "search", "budget", "evidence"] | None = None
 
-    @model_validator(mode="after")
-    def action_payload(self):
-        expected = {"read": "windows", "search_local": "searches", "search_web": "web_queries", "answer": "answer"}
-        for name in ("windows", "searches", "web_queries", "answer"):
-            if bool(getattr(self, name)) != (expected.get(self.action) == name):
-                raise ValueError("Supply only the payload of the selected reader action")
-        return self
+    def payload_error(self) -> str | None:
+        """Why the payload contradicts the chosen action, or None.
+
+        The reader call checks this as a correctable rejection rather than a schema rule: a schema
+        failure ends the run as ``invalid_model_output``, a rejection re-asks with the defect named.
+        """
+        expected = READER_PAYLOADS.get(self.action)
+        supplied = [name for name in READER_PAYLOADS.values() if getattr(self, name)]
+        if supplied == ([expected] if expected else []):
+            return None
+        wanted = f"only '{expected}'" if expected else "no payload"
+        given = ", ".join(f"'{name}'" for name in supplied) or "none"
+        return (f"Action '{self.action}' takes {wanted}; supplied: {given}. Fill exactly the payload field of "
+                "the chosen action and leave the other payload fields empty or null.")
 
 
 class CriterionVerdict(Contract):

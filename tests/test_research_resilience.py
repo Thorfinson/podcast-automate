@@ -229,6 +229,44 @@ class RejectedReceiptTests(WorkflowCase):
         self.assertTrue(rejected.with_name("search.json").exists())
         self.assertFalse(rejected.with_name("search_rejected_01.json").exists())
 
+    def test_reader_payload_mismatch_is_re_asked_with_the_defect_named(self):
+        readers = []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                readers.append(prompt)
+                if len(readers) == 1:
+                    return decision("read")  # reads nothing: the payload contradicts the action
+        self.fixture.hook = hook
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(len(readers), 2)
+        self.assertIn("Rejections:", readers[1])
+        self.assertIn("Action 'read' takes only 'windows'; supplied: none", readers[1])
+        self.assertTrue(readers[1].endswith("\n" + readers[0].rsplit("\n", 1)[1]), "the JSON payload stays the last line")
+        rejected = next((self.work / "question_research/tasks").glob("*/attempt_0/step_*/reader_rejected_00.json"))
+        saved = json.loads(rejected.read_text(encoding="utf-8"))
+        self.assertEqual((saved["code"], saved["value"]["action"]), ("invalid_model_output", "read"))
+        self.assertTrue(rejected.with_name("reader.json").exists())
+
+    def test_persistent_reader_payload_mismatch_blocks_after_named_retries(self):
+        self.fixture.hook = lambda prompt, schema, payload, kwargs: (
+            decision("answer", answer=answer_for(self.fixture.ref), web_queries=["energy"])
+            if schema is ResearchDecision else None)
+        with self.assertRaises(AppError) as caught:
+            self.run_engine()
+        self.assertEqual((caught.exception.code, caught.exception.status), ("invalid_model_output", "blocked"))
+        self.assertIn("supplied: 'web_queries', 'answer'", str(caught.exception))
+        self.assertIn("wiederholt", str(caught.exception))
+        self.assertEqual(self.calls(ResearchDecision), 3)
+
+    def test_decision_schema_reports_a_payload_mismatch_instead_of_failing(self):
+        window = {"reference": self.fixture.ref, "before": 0, "after": 1}
+        self.assertIsNone(decision("blocked").payload_error())
+        self.assertIsNone(decision("read", windows=[window]).payload_error())
+        self.assertIn("Action 'blocked' takes no payload; supplied: 'windows'",
+                      decision("blocked", windows=[window]).payload_error())
+
     def test_exhausted_rejections_block_and_resume_makes_no_further_call(self):
         self.searching([self.bad_search()])
         with self.assertRaises(AppError) as caught:

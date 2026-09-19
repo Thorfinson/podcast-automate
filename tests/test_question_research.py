@@ -472,7 +472,15 @@ class QuestionResearchTests(unittest.TestCase):
         spec = QuestionPlan(tasks=[task_value()]).tasks[0]
         answer = answer_for(self.ref)
         reader = SourceReader(self.index)
-        self.assertTrue(answer_errors(answer, spec, reader, set()))
+        self.assertEqual(answer_errors(answer, spec, reader, set()),
+                         [f"f_energy: evidence reference '{self.ref}' was not read for this question; "
+                          "cite a section from read_refs or read it first."])
+        source_id = self.ref.split("#")[0]
+        self.assertEqual(answer_errors(answer_for(source_id), spec, reader, {self.ref}),
+                         [f"f_energy: evidence reference '{source_id}' names a whole source; cite a read section "
+                          "as <source_id>#<section_id> instead."])
+        self.assertEqual([e.split(";")[0] for e in answer_errors(answer_for("src_none#sec_none"), spec, reader, {self.ref})],
+                         ["f_energy: evidence reference 'src_none#sec_none' is not a known section"])
         local = self.index.model_copy(deep=True)
         local.sources[0].url = local.sources[0].final_url = ""
         self.assertTrue(any("notes alone" in e for e in answer_errors(answer, spec, SourceReader(local), {self.ref})))

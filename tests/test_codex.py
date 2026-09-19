@@ -116,12 +116,19 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(metadata["web_search_events"], 1)
 
     def test_quota_is_distinct_from_invalid_output(self):
+        import json
         for mode, expected in (("quota", "quota_exhausted"), ("invalid", "invalid_model_output"),
                                ("incomplete", "codex_failed"), ("late_failure", "quota_exhausted")):
             with self.subTest(mode=mode), patch.dict(os.environ, {"PLA_TEST_MODE": mode}):
                 with self.assertRaises(AppError) as error:
                     self.adapter.probe("Thema", self.root / "request")
                 self.assertEqual(error.exception.code, expected)
+                if mode == "invalid":
+                    receipt = json.loads((self.root / "request/failure.json").read_text(encoding="utf-8"))
+                    self.assertEqual(receipt["code"], "invalid_model_output")
+                    self.assertTrue(all(set(item) == {"loc", "msg", "type"} for item in receipt["validation_errors"]))
+                    self.assertEqual(json.loads((self.root / "request/rejected_output.json").read_text(encoding="utf-8")),
+                                     {"topic": "incomplete"})
 
     def test_recovered_stream_error_does_not_invalidate_success(self):
         with patch.dict(os.environ, {"PLA_TEST_MODE": "retry"}):
