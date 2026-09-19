@@ -10,8 +10,9 @@ from array import array
 from pathlib import Path
 
 from .errors import AppError
-from .models import EpisodeScript, TopicBrief
+from .models import ROLE_LABELS, EpisodeScript, TopicBrief
 from .process import run_process
+from .spoken_forms import SpokenForms, spoken_text
 from .storage import file_hash, inside, write_json, atomic_text
 
 
@@ -19,12 +20,15 @@ def worker_path() -> Path:
     return Path(__file__).with_name("qwen_worker.py")
 
 
-def run_tts(config: TopicBrief, script: EpisodeScript, root: Path, work: Path) -> list[Path]:
+def run_tts(config: TopicBrief, script: EpisodeScript, root: Path, work: Path,
+            *, table=None, overrides=None) -> list[Path]:
     request, response = work / "tts_request.json", work / "tts_report.json"
+    table = table if table is not None else SpokenForms()
     write_json(request, {
         "runtime": config.runtime.model_dump(), "voices": config.voice_profile,
         "language": {"de-DE": "German", "en-US": "English"}[config.language],
-        "segments": [s.model_dump() for s in script.segments],
+        "segments": [{**s.model_dump(), "spoken_text": spoken_text(s, table, overrides)}
+                     for s in script.segments],
         "cache_dir": str(root / "cache/audio"),
         "progress_file": str(work / "tts_progress.json"),
     })
@@ -88,8 +92,60 @@ def audio_info(path: Path) -> dict:
     return data
 
 
+def transition(script, index):
+    """What follows this segment: another chapter, the other host, or the same host."""
+    if index + 1 >= len(script.segments):
+        return "episode_end"
+    current, following = script.segments[index], script.segments[index + 1]
+    if following.chapter_id != current.chapter_id:
+        return "chapter_break"
+    return "speaker_change" if following.speaker_id != current.speaker_id else "same_speaker"
+
+
+def applied_pause(script, index, pauses):
+    """The planned pause, raised to the policy minimum for this transition."""
+    planned = script.segments[index].pause_after_ms
+    kind = transition(script, index)
+    if pauses is None or kind == "episode_end":
+        return planned, kind
+    minimum = {"chapter_break": pauses.chapter_break_ms, "speaker_change": pauses.speaker_change_ms,
+               "same_speaker": pauses.same_speaker_ms}[kind]
+    return max(planned, minimum), kind
+
+
+def metadata_value(text):
+    """FFmpeg's metadata file escapes '=', ';', '#', '\\' and a newline with a backslash."""
+    return re.sub(r"([=;#\\\n])", r"\\\1", text)
+
+
+def chapter_metadata(title, chapters):
+    """An FFmpeg metadata input; timings are milliseconds from the measured timeline."""
+    lines = [";FFMETADATA1", "title=" + metadata_value(title)]
+    for chapter in chapters:
+        lines.extend(["", "[CHAPTER]", "TIMEBASE=1/1000",
+                      f"START={round(chapter['start_seconds'] * 1000)}",
+                      f"END={round(chapter['end_seconds'] * 1000)}",
+                      "title=" + metadata_value(chapter["title"])])
+    return "\n".join(lines) + "\n"
+
+
+def embedded_chapters(path: Path) -> list[dict]:
+    """Read the chapters back from the produced file; an empty list means none were written."""
+    executable = shutil.which("ffprobe")
+    if not executable:
+        raise AppError("ffprobe fehlt im PATH.", code="ffprobe_missing", status="blocked")
+    result = run_process([executable, "-v", "error", "-show_chapters", "-of", "json", str(path)], timeout=30)
+    try:
+        return [{"title": row.get("tags", {}).get("title", ""),
+                 "start_seconds": float(row["start_time"]), "end_seconds": float(row["end_time"])}
+                for row in json.loads(result.stdout).get("chapters", [])]
+    except (ValueError, KeyError, TypeError):
+        return []
+
+
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
-             *, max_seconds: float = 1800, language: str = "de-DE", voices: dict | None = None) -> list[Path]:
+             *, max_seconds: float = 1800, language: str = "de-DE", labels: dict | None = None,
+             pauses=None) -> list[Path]:
     if len(paths) != len(script.segments):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
     output.mkdir(parents=True, exist_ok=True)
@@ -117,7 +173,8 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                     if frames == 0 or peak == 0:
                         raise AppError(f"Segment enthält nur Stille: {segment.segment_id}",
                                        code="invalid_audio")
-                pause = round(segment.pause_after_ms * 44100 / 1000)
+                pause_ms, reason = applied_pause(script, index, pauses)
+                pause = round(pause_ms * 44100 / 1000)
                 position += frames + pause
                 if position / 44100 > max_seconds:
                     raise AppError("Folge ist zu lang. Die automatische Aufteilung folgt im Serien-Meilenstein.",
@@ -128,6 +185,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                     "speaker_id": segment.speaker_id, "start_seconds": start / 44100,
                     "speech_end_seconds": (start + frames) / 44100,
                     "end_seconds": position / 44100,
+                    "pause_ms": pause_ms, "pause_reason": reason,
                 })
         measurement = ffmpeg([
             "-i", str(mixed), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
@@ -146,8 +204,20 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
             f":measured_TP={levels['input_tp']}:measured_LRA={levels['input_lra']}"
             f":measured_thresh={levels['input_thresh']}:offset={levels['target_offset']}:linear=true"
         )
+        chapters = []
+        for chapter in script.chapters:
+            entries = [row for row in timeline if row["chapter_id"] == chapter.chapter_id]
+            chapters.append({
+                "chapter_id": chapter.chapter_id, "title": chapter.title,
+                "start_seconds": entries[0]["start_seconds"],
+                "end_seconds": entries[-1]["end_seconds"],
+            })
+        metadata = work / "chapters.ffmetadata"
+        atomic_text(metadata, chapter_metadata(script.title, chapters))
         encoded = work / "audio.mp3"
-        ffmpeg(["-i", str(mixed), "-af", loudnorm, "-ar", "44100", "-ac", "2",
+        ffmpeg(["-i", str(mixed), "-i", str(metadata), "-map", "0:a", "-map_metadata", "1",
+                "-id3v2_version", "3", "-write_id3v1", "1",
+                "-af", loudnorm, "-ar", "44100", "-ac", "2",
                 "-c:a", "libmp3lame", "-b:a", "192k", "-metadata", f"title={script.title}",
                 str(encoded)])
         info = audio_info(encoded)
@@ -155,16 +225,10 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         if duration > max_seconds:
             raise AppError("Die gemessene MP3 überschreitet die Folgenlänge.",
                            code="duration_exceeded", status="blocked")
+        written_chapters = embedded_chapters(encoded)
         encoded.replace(output / "audio.mp3")
-    chapters = []
-    for chapter in script.chapters:
-        entries = [row for row in timeline if row["chapter_id"] == chapter.chapter_id]
-        chapters.append({
-            "chapter_id": chapter.chapter_id, "title": chapter.title,
-            "start_seconds": entries[0]["start_seconds"],
-            "end_seconds": entries[-1]["end_seconds"],
-        })
-    write_json(output / "chapters.json", {"version": "1.0", "chapters": chapters})
+    write_json(output / "chapters.json", {"version": "1.0", "chapters": chapters,
+                                          "embedded": written_chapters})
     write_json(output / "timeline.json", {
         "schema_version": "1.0", "segments": timeline,
         "pcm_duration_seconds": position / 44100, "mp3_duration_seconds": duration,
@@ -173,6 +237,9 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         "purpose": script.purpose, "duration_seconds": duration,
         "sample_rate": 44100, "channels": 2, "target_lufs": -16,
         "input_loudness": levels, "speech_quality_verified": False,
+        "pause_policy": pauses.model_dump() if pauses is not None else None,
+        "applied_pause_seconds": round(sum(row["pause_ms"] for row in timeline) / 1000, 3),
+        "chapters_embedded": bool(chapters) and [c["title"] for c in written_chapters] == [c["title"] for c in chapters],
     })
     if script.purpose == "technical_probe":
         notice = ("Technical voice sample; not a researched podcast episode." if language == "en-US"
@@ -182,7 +249,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                   else "Erste Audiofassung zur Hörprüfung.")
     lines = [f"# {script.title}", "", notice, ""]
     for segment in script.segments:
-        lines.extend([f"**{(voices or {}).get(segment.speaker_id, segment.speaker_id)}:** {segment.text}", ""])
+        lines.extend([f"**{(labels or ROLE_LABELS).get(segment.speaker_id, segment.speaker_id)}:** {segment.text}", ""])
     atomic_text(output / "transcript.md", "\n".join(lines))
     return [output / name for name in (
         "audio.mp3", "chapters.json", "timeline.json", "audio_report.json", "transcript.md")]

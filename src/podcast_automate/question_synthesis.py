@@ -16,6 +16,7 @@ from .prompts import instructions
 from .question_answering import read_context
 from .question_dependencies import invalidate_dependents
 from .question_ownership import editable_findings, finding_owners, preserve_unrelated
+from .research_gap_probe import coverage_terms, gap_id, probe, settle
 from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_INSTRUCTIONS, evidence_summary,
                                 support_errors, validate_objection, validate_synthesis)
 from .research_ledger import VERSION, save_value
@@ -170,11 +171,12 @@ class SynthesisMixin:
         assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
                                validate=lambda candidate, final: check_assessment(self.config, dossier, candidate))
         report = quality_report(self.config, dossier, discovery, self.index, assessment, (i.reason for i in review.issues),
-                                accepted=accepted)
+                                accepted=accepted, gap_probes=self.probe_declared_gaps(dossier))
         dossier = dossier.model_copy(update={"evidence_version": EVIDENCE_VERSION,
                                             "source_assessments": review.source_assessments})
         report["dossier_hash"] = digest(dossier.model_dump())
         report["evidence"] = evidence_summary(dossier.findings, review)
+        report["advisories"] = {"single_group_findings": report["evidence"]["single_group_findings"]}
         report["objection_checks"] = [c.model_dump() for c in review.objection_checks]
         report["unresolved_scientific_relations"] = [r.model_dump() for r in dossier.synthesis if r.resolution == "unresolved"]
         report["question_workflow"] = VERSION
@@ -182,6 +184,24 @@ class SynthesisMixin:
         self.state["composed_findings"]["dossier_hash"] = digest(dossier.model_dump())
         self.save()
         return dossier, review, report
+
+    def probe_declared_gaps(self, dossier):
+        """Probe the gaps this composition declares, and settle them against everything read.
+
+        A gap the run itself invented is exactly the case the audit found: nothing had checked
+        it against the sections already retrieved. Reading counts across all tasks, so a gap
+        whose candidate sections a reader saw is confirmed rather than blocked.
+        """
+        texts = dict.fromkeys([*dossier.open_questions, *(row.gap for row in dossier.coverage if row.gap)])
+        wanted = {gap_id(text): text for text in texts}
+        rows = {row["gap_id"]: row for row in self.state.get("gap_probes", [])}
+        rows.update({row["gap_id"]: row for row in probe(self.index, {gid: text for gid, text in wanted.items()
+                                                                     if gid not in rows},
+                                                         gap_terms=coverage_terms(dossier))})
+        read = {ref for task in self.state["tasks"].values() for ref in task.get("read_refs", [])}
+        self.state["gap_probes"] = [settle(row, read_refs=read) if row["gap_id"] in wanted else row
+                                    for row in rows.values()]
+        return [row for row in self.state["gap_probes"] if row["gap_id"] in wanted]
 
     def objections(self, review, report):
         return list(dict.fromkeys([*(i.reason for i in review.issues), *report["blocking_gaps"],

@@ -18,6 +18,22 @@ class HostVoices(TypedDict):
     host_b: NonEmpty
 
 
+class HostNames(TypedDict):
+    """What the hosts call each other. A voice preset name is not a host identity."""
+
+    host_a: NonEmpty
+    host_b: NonEmpty
+
+
+ROLE_LABELS = {"host_a": "Host A", "host_b": "Host B"}
+
+
+def host_labels(config):
+    """Spoken-role labels for transcripts and the reading page, never the voice preset."""
+    names = getattr(config, "host_names", None) or {}
+    return {role: (names.get(role) or ROLE_LABELS[role]) for role in ROLE_LABELS}
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -78,6 +94,8 @@ class TopicBrief(Contract):
         default="qwen3_local", description="CLI default; the Studio selection lives in studio/audio.json.")
     voice_profile: HostVoices = Field(
         default_factory=lambda: {"host_a": "Ryan", "host_b": "Serena"})
+    host_names: HostNames | None = Field(default=None,
+        description="Optional names the hosts use for each other; never invented by a model.")
     style_profile_id: Literal["de_calm_deep"] = "de_calm_deep"
     export_context: Literal["private_learning"] = "private_learning"
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
@@ -151,7 +169,7 @@ class RunManifest(Contract):
     schema_version: Literal["1.0"] = "1.0"
     pipeline_version: str = "0.1.0"
     run_id: Identifier
-    kind: Literal["text_probe", "audio_probe", "research", "script", "episode_audio"]
+    kind: Literal["text_probe", "audio_probe", "research", "script", "episode_audio", "series_review"]
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
     project_hash: str

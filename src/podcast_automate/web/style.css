@@ -72,3 +72,10 @@
 @media(max-width:650px){.sidebar nav{padding-bottom:5px}.step{min-width:145px}.step-label small{font-size:10px}.production-stages li{grid-template-columns:20px minmax(0,1fr);gap:6px 10px}.phase-status{grid-column:2;white-space:normal}.script-progress{padding:20px}}
 
 .research-questions{margin-top:14px}.research-questions details{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:12px 15px;margin-top:10px;overflow-wrap:anywhere}.research-questions summary{cursor:pointer;font-weight:600}.research-questions ul{font-size:14px;padding-left:22px}.research-questions .prose{line-height:1.65;margin-top:14px}
+
+
+.review-notes{max-width:850px}.review-notes h3{font-size:15px;margin:18px 0 6px;color:var(--green)}.review-notes h3:first-of-type{margin-top:4px}.review-notes ul{margin:0;padding-left:22px;font-size:14px;line-height:1.7}.review-notes li{margin-bottom:8px;overflow-wrap:anywhere}.review-notes li p{margin:2px 0 0;color:var(--muted)}
+
+
+.pronunciation{margin:20px 0 0;padding:14px 18px;border:1px solid var(--line);border-radius:7px;background:var(--surface);max-width:720px}.pronunciation[open]>summary{margin-bottom:10px}
+.pronunciation h3,.speech-settings h3{font-size:15px;margin:16px 0 6px;color:var(--green)}.pronunciation ul{margin:0;padding-left:22px;font-size:14px;line-height:1.7}.speech-settings textarea{font-family:ui-monospace,Consolas,monospace;font-size:14px}.spoken-override{margin-top:10px;font-size:14px}.spoken-override summary{color:var(--green)}.spoken-override textarea{min-height:70px}

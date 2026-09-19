@@ -1,0 +1,194 @@
+{
+  "id": "ep002_dense_passage",
+  "date": "2026-09-19",
+  "origin": "Chapter 4 of episode 2 of the September 2026 sample series, projects/die-entwicklung-der-transformer-architek-13325a, run run_20260913_182611_981976_0b7a6dfc.",
+  "defect": "The polished passage keeps four chained referents alive at once: the compact state, the back-projected key, the adapted query and the marked drawer position. The 13 September comparison passed spoken_language on this text.",
+  "expected": {
+    "verdict": "fail",
+    "criterion": "spoken_language",
+    "demanding_passages_include": [
+      "ep_002_seg_031",
+      "ep_002_seg_032"
+    ]
+  },
+  "label_origin": "Audit finding of 19 September 2026, read by a human; not a measured listener test.",
+  "brief": {
+    "language": "de-DE",
+    "audience": "Neugierige Erwachsene ohne spezielles Vorwissen",
+    "prior_knowledge": "Folge 1 der Serie ist gehört; Token, Query, Key und Value sind eingeführt.",
+    "depth": "Fachliche Tiefe auf Augenhöhe, ohne Formeln."
+  },
+  "episode": {
+    "episode_id": "ep_002",
+    "title": "Vom Übersetzen zum Fortsetzen: Decoder und komprimierte Erinnerung",
+    "central_question": "Warum reicht für Textfortsetzung ein Decoder, wie lernt er diese Aufgabe, und weshalb wird sein gespeicherter Kontext zum Speicherproblem?",
+    "target_minutes": 25.0,
+    "prerequisite_episodes": [
+      "ep_001"
+    ],
+    "finding_ids": [
+      "f10"
+    ],
+    "scenes": [
+      {
+        "scene_id": "ep_002_sc_04",
+        "title": "V2 speichert eine kleinere gemeinsame Darstellung",
+        "question": "Wie kann Kompression Speicher sparen, ohne vor jedem Zugriff alle großen Darstellungen wieder auszubreiten?",
+        "purpose": "explanation",
+        "finding_ids": [
+          "f10"
+        ],
+        "explanation_steps": [
+          "Die V2-Idee konkret beschreiben: Schlüssel und Werte werden gemeinsam in eine kleinere gelernte Darstellung verdichtet. Gespeichert wird dieser kompakte Zustand.",
+          "Den naheliegenden Einwand ausarbeiten: Würde jeder Zugriff die großen Schlüssel und Werte vollständig rekonstruieren, entstünden erneut große Zwischenzustände.",
+          "Die belegte Zusammenfassung von Projektionen intuitiv herleiten: Wenn das Ergebnis einer Rückprojektion unmittelbar wieder projiziert wird, können geeignete Projektionen zu einer direkten Verarbeitung des kompakten Zustands zusammengefasst werden. Für den beschriebenen Attention-Anteil braucht die große Zwischenform dadurch nicht eigens hergestellt zu werden.",
+          "Die Reichweite begrenzen: Das Dossier belegt diese Umformung für den angegebenen Anteil, keine beliebige Zusammenfassung sämtlicher Netzoperationen und keine verlustfreie Wiederherstellung jedes denkbaren Inhalts.",
+          "Den verbleibenden Engpass benennen: Speicher für Attention-Zustände und Berechnung in Feedforward-Netzen sind verschiedene Kosten. Die nächste Folge untersucht den zweiten Bereich."
+        ]
+      }
+    ],
+    "deferred_questions": [
+      "Wie begrenzt V2 die aktive Feedforward-Berechnung, und welche neuen Kosten entstehen dadurch? Das behandelt ep_003.",
+      "Was passiert, wenn trotz kleinerer Einträge sehr viele Positionen erreichbar bleiben? Das behandelt ep_004.",
+      "Wie genau werden Cache-Zustände beim Prefill aufgebaut und danach ergänzt? Der vollständige Ablauf fehlt in den vorliegenden Auszügen."
+    ]
+  },
+  "original": {
+    "schema_version": "1.0",
+    "episode_id": "ep_002",
+    "title": "Vom Übersetzen zum Fortsetzen: Decoder und komprimierte Erinnerung",
+    "purpose": "deep_dive",
+    "chapters": [
+      {
+        "chapter_id": "ep_002_sc_04",
+        "title": "V2 speichert eine kleinere gemeinsame Darstellung"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "ep_002_seg_030",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_b",
+        "text": "Für unseren Kopf fehlt zunächst der Key im gewohnten Vergleichsraum. Ich könnte den gespeicherten Zustand der früheren Position nehmen und linear in diesen Raum zurückprojizieren. Danach vergleiche ich den entstandenen Key mit der aktuellen Query. Das wäre ein verständlicher Weg. Wenn wir den Key vermeiden wollen, müssen wir dieselbe Information über den Vergleich auf andere Weise gewinnen.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 300
+      },
+      {
+        "segment_id": "ep_002_seg_031",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_a",
+        "text": "Dafür betrachten wir, was der Vergleich tut. Er multipliziert entsprechende Komponenten von Query und Key und addiert die Produkte. Das nennt man ein Skalarprodukt. Der rückprojizierte Key besteht seinerseits aus linearen Kombinationen der kompakten Komponenten. Eine solche Komponente kann also zu mehreren Stellen des großen Key beitragen. Die Query bestimmt, wie diese Stellen in den Vergleich eingehen. Wir können deshalb für jede kompakte Komponente zusammenfassen, wie stark ihr gesamter Beitrag durch die aktuelle Query bewertet wird.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "ep_002_seg_032",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_a",
+        "text": "Diese zusammengefassten Bewertungen bilden eine angepasste Query im gemeinsamen kompakten Raum. Sie wird direkt mit dem gespeicherten Zustand verglichen. Das liefert denselben Inhaltsbeitrag wie der Weg über den großen Key. Die Key-Rückprojektion ist dafür passend in die Query-Abbildung aufgenommen. Wir vertauschen keine beliebigen Transformationen, sondern gruppieren ihre Wirkung auf diesen Vergleich neu. Der frühere Zustand bleibt unverändert gespeichert. Die aktuelle Query wird so berechnet, dass der Vergleich unmittelbar dort stattfinden kann.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "ep_002_seg_033",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_b",
+        "text": "Der Vorteil reicht damit über unsere markierte Schubladen-Position hinaus. Die angepasste Query kann auch mit den anderen gespeicherten Zuständen verglichen werden. Man muss für diesen Inhaltsvergleich nicht erst jeden früheren Key ausbreiten. Die Umordnung sagt aber noch nichts darüber, ob die Schublade einen hohen Anteil bekommt. Bisher haben wir nur einen Beitrag zum Vergleich erhalten. Die Textposition muss ebenfalls eingehen.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 300
+      },
+      {
+        "segment_id": "ep_002_seg_034",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_a",
+        "text": "V2 verwendet dafür separate Positionsanteile von Query und Key. Diese werden abhängig von ihrer Textposition gedreht. Das Verfahren heißt Rotary Position Embedding. Bei unserem Paar richtet sich die Drehung des Query-Anteils nach der aktuellen Position, die des Key-Anteils nach der früheren. Ihr Skalarprodukt ergänzt den Inhaltsvergleich. Beide Beiträge werden zusammengeführt und gemeinsam skaliert. Damit liegt der vollständige Attention score dieses Paars vor. Die genaue Konstruktion der Drehungen brauchen wir für diesen Informationsweg nicht.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 400
+      }
+    ]
+  },
+  "candidate": {
+    "schema_version": "1.0",
+    "episode_id": "ep_002",
+    "title": "Vom Übersetzen zum Fortsetzen: Decoder und komprimierte Erinnerung",
+    "purpose": "deep_dive",
+    "chapters": [
+      {
+        "chapter_id": "ep_002_sc_04",
+        "title": "V2 speichert eine kleinere gemeinsame Darstellung"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "ep_002_seg_030",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_b",
+        "text": "Bleiben wir bei unserem einen Kopf. Für seinen Vergleich fehlt jetzt zunächst der Key der früheren Position im gewohnten Raum. Ich könnte den kompakten Zustand nehmen und linear in diesen Raum zurückprojizieren. Dann vergleiche ich den entstandenen Key mit der aktuellen Query. Wie bekommen wir dasselbe Vergleichsergebnis, wenn wir diesen Key gar nicht erst herstellen?",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 300
+      },
+      {
+        "segment_id": "ep_002_seg_031",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_a",
+        "text": "Schauen wir dafür in den Vergleich hinein. Er multipliziert die entsprechenden Komponenten von Query und Key miteinander und addiert die Produkte. Das ist ein Skalarprodukt. Nun ist jede Komponente des rückprojizierten Key eine lineare Kombination der kompakten Komponenten. Eine einzelne kompakte Komponente kann dadurch an mehreren Stellen im großen Key auftauchen. Beim anschließenden Vergleich bestimmt die Query, wie stark diese Stellen eingehen. Wir können die Rechnung deshalb auch von dieser einen kompakten Komponente aus betrachten: Wie viel trägt sie über all diese Stellen insgesamt zum Vergleich bei?",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "ep_002_seg_032",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_a",
+        "text": "Fassen wir das für jede kompakte Komponente zusammen, erhalten wir eine angepasste Query im gemeinsamen kompakten Raum. Diese Query vergleichen wir direkt mit dem gespeicherten Zustand. Dabei entsteht derselbe Inhaltsbeitrag wie beim Umweg über den großen Key. Die lineare Key-Rückprojektion wird dazu passend in die Query-Abbildung aufgenommen. Die Abbildungen werden also nicht beliebig vertauscht; ihre Wirkung auf diesen Vergleich wird neu gruppiert. Der frühere Zustand bleibt, wie er gespeichert ist. Wir passen die Berechnung der aktuellen Query so an, dass der Vergleich unmittelbar mit ihm funktioniert.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 450
+      },
+      {
+        "segment_id": "ep_002_seg_033",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_b",
+        "text": "Und diese angepasste Query kann dann auch mit den anderen gespeicherten Positionen verglichen werden. Wir müssen für den Inhaltsvergleich also nicht jeden früheren Key einzeln ausbreiten. Du sagst aber bewusst Inhaltsbeitrag. Damit haben wir noch keinen fertigen Attention weight für unsere Schubladen-Position. Wo kommt jetzt ihre Position im Text dazu?",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 300
+      },
+      {
+        "segment_id": "ep_002_seg_034",
+        "scene_id": "ep_002_sc_04",
+        "chapter_id": "ep_002_sc_04",
+        "speaker_id": "host_a",
+        "text": "V2 verwendet dafür separate Positionsanteile von Query und Key. Rotary Position Embedding dreht diese Anteile abhängig von ihrer Textposition. Bei unserem Paar wird der Query-Anteil entsprechend der aktuellen Position gedreht, der Key-Anteil entsprechend der früheren. Auch diese beiden Anteile werden per Skalarprodukt verglichen. Das Ergebnis ergänzt den Inhaltsvergleich. Beide Beiträge zusammen werden gemeinsam skaliert. Erst damit haben wir den vollständigen Attention score für unser Positionspaar. Wie die Drehungen im Einzelnen konstruiert sind, lassen wir hier offen.",
+        "knowledge_refs": [
+          "f10"
+        ],
+        "pause_after_ms": 400
+      }
+    ]
+  }
+}

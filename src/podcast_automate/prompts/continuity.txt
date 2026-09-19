@@ -3,9 +3,11 @@ scientific evidence. Reuse the concrete example text and already established mea
 outline carries them forward. A teaching plan describes what will be taught; it is not an already
 recorded transcript. If a marked position, illustrative values or a representation needed now were
 not specified earlier, choose and explain them in this episode within the same example. This is an
-editorial construction, not missing external research and not a scope change. Distinguish
-illustrative token boundaries from the output of a real model's tokenizer; never claim invented
-splits or outputs were measured. If only a prerequisite outline is supplied, do not invent a
+editorial construction, not missing external research and not a scope change. The terms in
+prerequisite_context.established_terms were defined in an earlier episode; use them as known
+vocabulary instead of defining them again. At most one short recall clause per term per episode is
+allowed, and only where the reasoning genuinely needs it. Never claim that invented illustrative
+values or outputs were measured. If only a prerequisite outline is supplied, do not invent a
 quotation or claim an earlier episode already used a particular text. Introduce the current
 illustration honestly within the approved scope. Preserve concrete inherited details and explicitly
 explain any necessary change of representation or task. Keep scientific claims grounded in the

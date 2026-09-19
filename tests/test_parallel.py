@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.execution import run_episode_stage
@@ -20,14 +21,17 @@ from podcast_automate.research import reserve_call
 from podcast_automate.runner import manifest_path, outputs_valid
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.scripting import run_script
-from podcast_automate.storage import digest, file_hash, init_project, project_lock, read_yaml, write_json, write_yaml
+from podcast_automate.storage import digest, file_hash, init_project, project_hash, project_lock, read_yaml, write_json, write_yaml
 from podcast_automate.studio import BriefProposal, Studio, audio_job_path
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_script
 from tests.test_speech import response
 
 
-REMOTE = {"provider": "openrouter_gemini_tts", "voices": {"host_a": "Sadaltager", "host_b": "Aoede"}}
+from podcast_automate.speech import AudioChoice
+
+REMOTE = AudioChoice(provider="openrouter_gemini_tts",
+                     voices={"host_a": "Sadaltager", "host_b": "Aoede"}).model_dump()
 
 
 class LockAndBudgetTests(unittest.TestCase):
@@ -120,7 +124,7 @@ class StudioParallelTests(unittest.TestCase):
         folder = self.root / "episodes" / episode
         return {"action": "audio", "episode": episode, "approve_audio": True,
             "script_hash": file_hash(folder / "script.yaml"), "readable_hash": file_hash(folder / "script.md"),
-            "config_hash": digest(self.config.model_dump(mode="json")), "audio_hash": digest(REMOTE)}
+            "config_hash": project_hash(self.config), "audio_hash": digest(REMOTE)}
 
     def process(self, *args, **kwargs):
         pipe = io.StringIO()
@@ -184,8 +188,8 @@ class StudioParallelTests(unittest.TestCase):
         with self.assertRaises(AppError):
             self.app.delete("example", {})
         with project_lock(self.root, shared=True), self.assertRaises(AppError):
-            self.app.delete("example", {"confirm_id": "example", "config_hash": digest(self.config.model_dump(mode="json"))})
-        result = self.app.delete("example", {"confirm_id": "example", "config_hash": digest(self.config.model_dump(mode="json"))})
+            self.app.delete("example", {"confirm_id": "example", "config_hash": project_hash(self.config)})
+        result = self.app.delete("example", {"confirm_id": "example", "config_hash": project_hash(self.config)})
         self.assertFalse(marker.exists())
         self.assertEqual(self.app.overview()["projects"], [])
         self.assertEqual(len(self.app.overview()["trash"]), 1)
@@ -234,7 +238,7 @@ class ParallelPipelineTests(unittest.TestCase):
         write_json(self.root / "studio/execution.json", {"text": "parallel", "audio": "sequential"})
         barrier = threading.Barrier(2)
         def model(*args, **kwargs):
-            if kwargs["prompt_version"] == "write_episode.v6-framing":
+            if kwargs["prompt_version"] == WRITE_EPISODE_VERSION:
                 barrier.wait(timeout=5)
             return self.model(*args, **kwargs)
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):

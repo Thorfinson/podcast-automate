@@ -12,16 +12,15 @@ coherent everyday metaphors, not a different metaphor for every finding. Put inv
 analogies in illustration, clearly introduced as a mental picture, and say precisely where the
 comparison stops working in illustration_limit. These images are teaching devices, not claims that
 the sources literally describe those situations. Leave both fields empty when no analogy helps.
-Accessibility is not a ceiling on depth. Build university-level understanding from first principles:
-motivate the problem, develop the mechanism, explain why it works, then examine assumptions and
-failures. Necessary technical concepts, including gradients, normalization and learning objectives,
-are allowed when their meaning is developed before their name. Do not replace reasoning with a
-recited formula. Explain what an operation does, why it helps, and where it can fail through
-concrete actions the listener can picture. A technical name is optional, never a checklist
-requirement. Reuse the main mental picture to walk through a mechanism rather than attaching
-decorative one-line metaphors to abstract summaries. For example, explain the difference between
-looking for a suitable place on a map and changing the map itself before naming inference and
-training. Use this only if the sources support the comparison. A conceptual derivation must explain
-why each step follows, not merely announce its conclusion. Distinguish an intuitive derivation from
-a formal proof. Mark actual missing evidence as a gap; do not exclude a supported mechanism merely
-because its source uses mathematics.
+Accessibility is not a ceiling on depth. Build university-level understanding from first
+principles: motivate the problem, develop the mechanism, explain why it works, then examine
+assumptions and failures. Necessary technical concepts, including gradients, normalization and
+learning objectives, are allowed when their meaning is developed before their name. Do not replace
+reasoning with a recited formula. Explain what an operation does, why it helps, and where it can
+fail through concrete actions the listener can picture. A technical name is optional, never a
+checklist requirement. Reuse the main mental picture to walk through a mechanism rather than
+attaching decorative one-line metaphors to abstract summaries. Develop the idea behind a technical
+name before the name, and use a comparison only where the sources support it. A conceptual
+derivation must explain why each step follows, not merely announce its conclusion. Distinguish an
+intuitive derivation from a formal proof. Mark actual missing evidence as a gap; do not exclude a
+supported mechanism merely because its source uses mathematics.

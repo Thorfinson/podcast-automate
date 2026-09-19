@@ -14,7 +14,8 @@ from podcast_automate.models import RunManifest, StageRecord, TopicBrief
 from podcast_automate.runner import manifest_path, outputs_valid
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.scripting import outline_hash, run_script
-from podcast_automate.storage import digest, file_hash, init_project, read_yaml, write_json, write_yaml
+from podcast_automate.speech import AudioChoice, audio_generation_record
+from podcast_automate.storage import digest, file_hash, init_project, project_hash, read_yaml, write_json, write_yaml
 from podcast_automate.studio import BriefProposal, Studio, make_server, record_interruption
 from podcast_automate.studio_worker import perform
 from tests import script_fixtures as fixtures
@@ -99,6 +100,18 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
         with patch("podcast_automate.studio_worker.CodexAdapter.structured", autospec=True, side_effect=reply):
             perform(self.root, {"action": "assistant", "message": "Help", "text": selection})
 
+    def test_the_worker_re_render_relies_on_the_saved_approval_instead_of_a_fresh_receipt(self):
+        request = {"action": "audio", "episode": "ep_001", "text": {}, "script_hash": "s", "readable_hash": "r",
+                   "config_hash": "c", "audio_settings": AudioChoice(voices=self.config.voice_profile).model_dump()}
+        with patch("podcast_automate.studio_worker.run_episode_audio") as run:
+            run.return_value.model_dump.return_value = {"status": "completed"}
+            perform(self.root, {**request, "rerender": True})
+            self.assertFalse(run.call_args.kwargs["approve_audio"])
+            self.assertIn("gespeicherten Freigabe", run.call_args.kwargs["approval_note"])
+            perform(self.root, request)
+            self.assertTrue(run.call_args.kwargs["approve_audio"])
+            self.assertIn("ausdrücklich", run.call_args.kwargs["approval_note"])
+
     def test_audio_hash_is_rechecked_inside_pipeline_before_gpu(self):
         from podcast_automate.episode_audio import run_episode_audio
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
@@ -159,6 +172,12 @@ class StudioHttpTests(unittest.TestCase):
         result = response.status, body, dict(response.getheaders())
         connection.close()
         return result
+
+    def publish_episode(self, episode="ep_001"):
+        """The two files a published episode always has; nothing here is approved for audio."""
+        script = example_script()
+        write_yaml(self.root / "episodes" / episode / "script.yaml", script.model_dump())
+        (self.root / "episodes" / episode / "script.md").write_text("# " + script.title, encoding="utf-8")
 
     def test_local_page_and_project_are_real_and_mutations_need_csrf_token(self):
         status, body, headers = self.request("/")
@@ -270,6 +289,187 @@ class StudioHttpTests(unittest.TestCase):
         launch.assert_not_called()
         self.assertFalse((self.root / "episodes/ep_001/script.yaml").exists())
 
+    def test_published_episodes_expose_the_recorded_review_caveats(self):
+        self.publish_episode()
+        write_yaml(self.root / "reports/script_quality.yaml", {"episodes": {"ep_001": {
+            "model_review": {"limitations": ["Eine Modellprüfung kann Fehler übersehen.", ""]},
+            "teaching_review": {"review": {"limitations": ["Kein echtes Lernen gemessen."]},
+                                "editorial": {"limitations": []}},
+            "dialogue_polish": {"review": {"limitations": ["Kein Hörtest."]}},
+            "dismissed_gaps": [{"stage": "teaching_review", "objective_id": "goal_one",
+                                "gap": "Wie wird trainiert?", "reason": "Für das Lernziel nicht nötig.",
+                                "extra": "wird nicht durchgereicht"}],
+            "advisories": [{"code": "long_cold_open", "count": 157, "detail": "157 Wörter.",
+                            "segment_ids": ["seg_001"]}]}}})
+        notes = json.loads(self.request("/api/projects/example")[1])["episodes"][0]["review_notes"]
+        self.assertEqual(notes["script_review"], ["Eine Modellprüfung kann Fehler übersehen."])
+        self.assertEqual(notes["teaching_review"], ["Kein echtes Lernen gemessen."])
+        self.assertEqual(notes["dialogue_polish"], ["Kein Hörtest."])
+        self.assertNotIn("editorial_review", notes)
+        self.assertEqual(notes["dismissed_gaps"], [{"stage": "teaching_review", "objective_id": "goal_one",
+            "gap": "Wie wird trainiert?", "reason": "Für das Lernziel nicht nötig."}])
+        self.assertEqual(notes["advisories"][0]["code"], "long_cold_open")
+
+    def test_a_spoken_override_is_saved_per_segment_and_rejects_anything_unknown(self):
+        self.publish_episode()
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"audio_approved": True})
+        status, body, _ = self.request("/api/projects/example/spoken_override",
+                                       {"episode": "ep_001", "segment_id": "seg_002", "spoken": "  Anders gesprochen.  "})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["spoken_overrides"], {"seg_002": "Anders gesprochen."})
+        decision = read_yaml(self.root / "episodes/ep_001/audio_review.yaml")
+        self.assertEqual(decision["spoken_overrides"], {"seg_002": "Anders gesprochen."})
+        self.assertTrue(decision["audio_approved"])
+        for payload in ({"episode": "../etc", "segment_id": "seg_002", "spoken": "x"},
+                        {"episode": "ep_001", "segment_id": "seg_999", "spoken": "x"},
+                        {"episode": "ep_404", "segment_id": "seg_002", "spoken": "x"},
+                        {"episode": "ep_001", "segment_id": "seg_002", "spoken": "x" * 4001}):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.request("/api/projects/example/spoken_override", payload)[0], 400)
+        empty = self.request("/api/projects/example/spoken_override",
+                             {"episode": "ep_001", "segment_id": "seg_002", "spoken": "   "})
+        self.assertEqual(json.loads(empty[1])["spoken_overrides"], {})
+
+    def test_a_spoken_override_reaches_the_reading_view_and_never_carries_a_key(self):
+        self.publish_episode()
+        self.assertEqual(self.request("/api/key", {"key": "sk-or-test-secret-key"})[0], 200)
+        write_json(self.root / "studio/spoken_forms.json", {"schema_version": "1.0",
+                   "entries": [{"written": "model", "spoken": "Modell"}, {"written": "H800", "spoken": "H achthundert"}]})
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml",
+                   {"audio_approved": True, "spoken_overrides": {"seg_001": "So gesprochen."}})
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(detail["episodes"][0]["spoken_overrides"], {"seg_001": "So gesprochen."})
+        self.assertFalse(detail["episodes"][0]["human_listening_reviewed"])
+        self.assertEqual([row["written"] for row in detail["spoken_forms"]["entries"]], ["model", "H800"])
+        self.assertNotIn("sk-or-", json.dumps(detail))
+
+    def test_the_pronunciation_report_is_computed_before_any_audio_run(self):
+        script = example_script().model_copy(deep=True)
+        script.segments[0].text = "Wir rechnen auf H800 mit 2048 Positionen und der KL-Abweichung."
+        write_yaml(self.root / "episodes/ep_001/script.yaml", script.model_dump())
+        (self.root / "episodes/ep_001/script.md").write_text("# " + script.title, encoding="utf-8")
+        write_json(self.root / "studio/spoken_forms.json", {"schema_version": "1.0",
+                   "entries": [{"written": "KL", "spoken": "Kullback-Leibler"}]})
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"spoken_overrides": {"seg_002": "Anders."}})
+        episode = json.loads(self.request("/api/projects/example")[1])["episodes"][0]
+        self.assertEqual(episode["audio"], [])
+        report = episode["pronunciation"]
+        self.assertEqual([row["token"] for row in report["flagged"]["versions"]], ["H800"])
+        self.assertEqual([row["token"] for row in report["flagged"]["numbers"]], ["2048"])
+        self.assertNotIn("abbreviations", report["flagged"])  # the table entry resolved "KL"
+        self.assertEqual(report["applied"], {"KL": 1})
+        self.assertEqual(report["overrides"], ["seg_002"])
+        self.assertFalse(report["human_pronunciation_reviewed"])
+
+    def test_a_re_render_starts_on_the_saved_approval_and_is_refused_without_one(self):
+        self.publish_episode()
+        folder = self.root / "episodes/ep_001"
+        audio = AudioChoice(voices=self.config.voice_profile)
+        data = {"action": "audio", "episode": "ep_001", "rerender": True, "approve_audio": False,
+                "script_hash": file_hash(folder / "script.yaml"), "readable_hash": file_hash(folder / "script.md"),
+                "config_hash": project_hash(self.config), "audio_hash": digest(audio.model_dump())}
+        with patch("podcast_automate.studio.subprocess.Popen") as process:
+            status, body, _ = self.request("/api/projects/example/start", data)
+            self.assertEqual((status, json.loads(body)["code"]), (400, "audio_approval_required"))
+            # An approval of another script hash or of other voices does not count.
+            write_yaml(folder / "audio_review.yaml", {"audio_approved": True, "scripts": {"ep_001": "older"},
+                                                      "audio_generation": audio_generation_record(audio)})
+            self.assertEqual(json.loads(self.request("/api/projects/example/start", data)[1])["code"], "audio_approval_required")
+            write_yaml(folder / "audio_review.yaml", {"audio_approved": True, "scripts": {"ep_001": data["script_hash"]},
+                "audio_generation": {"provider": "qwen3_local", "voices": {"host_a": "Ryan", "host_b": "Serena"}}})
+            self.assertEqual(json.loads(self.request("/api/projects/example/start", data)[1])["code"], "audio_approval_required")
+            process.assert_not_called()
+            # The decision the pipeline writes: approved, this script, these voices, no pause policy.
+            write_yaml(folder / "audio_review.yaml", {"audio_approved": True, "scripts": {"ep_001": data["script_hash"]},
+                                                      "audio_generation": audio_generation_record(audio)})
+            process.return_value.stdin = io.StringIO()
+            process.return_value.stdin.close = Mock()
+            process.return_value.poll.return_value = None
+            status, body, _ = self.request("/api/projects/example/start", data)
+            self.assertEqual(status, 200)
+            payload = json.loads(process.return_value.stdin.getvalue())
+        self.assertEqual(json.loads(body)["status"], "running")
+        self.assertEqual((payload["action"], payload["rerender"], payload["episode"]), ("audio", True, "ep_001"))
+        self.assertEqual((payload["script_hash"], payload["audio_settings"]), (data["script_hash"], audio.model_dump()))
+
+    def test_host_names_are_saved_through_the_settings_route_and_shown_in_detail(self):
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertIsNone(detail["config"]["host_names"])
+        self.assertEqual(detail["host_labels"], {"host_a": "Host A", "host_b": "Host B"})
+        data = {"config": {**detail["config"], "host_names": {"host_a": "Mara", "host_b": "Jonas"}},
+                "config_hash": detail["config_hash"], "text": detail["text"]}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        saved = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(saved["config"]["host_names"], {"host_a": "Mara", "host_b": "Jonas"})
+        self.assertEqual(saved["host_labels"], {"host_a": "Mara", "host_b": "Jonas"})
+        self.assertNotEqual(saved["config_hash"], detail["config_hash"])
+        self.assertEqual(read_yaml(self.root / "project.yaml")["host_names"], {"host_a": "Mara", "host_b": "Jonas"})
+        # Half a pair is rejected by the brief itself; both empty means unset, and the hash is back.
+        half = {"config": {**saved["config"], "host_names": {"host_a": "Mara", "host_b": ""}},
+                "config_hash": saved["config_hash"], "text": saved["text"]}
+        self.assertEqual(self.request("/api/projects/example/save", half)[0], 400)
+        cleared = {"config": {**saved["config"], "host_names": None}, "config_hash": saved["config_hash"], "text": saved["text"]}
+        self.assertEqual(self.request("/api/projects/example/save", cleared)[0], 200)
+        final = json.loads(self.request("/api/projects/example")[1])
+        self.assertIsNone(final["config"]["host_names"])
+        self.assertEqual(final["config_hash"], detail["config_hash"])
+
+    def test_an_override_equal_to_what_the_table_produces_is_not_stored(self):
+        self.publish_episode()
+        write_json(self.root / "studio/spoken_forms.json", {"schema_version": "1.0",
+                   "entries": [{"written": "model", "spoken": "Modell"}]})
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml",
+                   {"audio_approved": True, "spoken_overrides": {"seg_001": "Alt."}})
+        applied = self.request("/api/projects/example/spoken_override",
+                               {"episode": "ep_001", "segment_id": "seg_001", "spoken": "What does this Modell compare?"})
+        self.assertEqual(json.loads(applied[1])["spoken_overrides"], {})
+        real = self.request("/api/projects/example/spoken_override",
+                            {"episode": "ep_001", "segment_id": "seg_001", "spoken": "What does this model compare?"})
+        self.assertEqual(json.loads(real[1])["spoken_overrides"], {"seg_001": "What does this model compare?"})
+
+    def test_a_save_without_the_table_leaves_the_table_file_alone(self):
+        detail = json.loads(self.request("/api/projects/example")[1])
+        data = {"config": detail["config"], "config_hash": detail["config_hash"], "text": detail["text"],
+                "style_notes": "Kurz.", "style_notes_hash": detail["style_notes_hash"]}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        self.assertFalse((self.root / "studio/spoken_forms.json").exists())
+        write_json(self.root / "studio/spoken_forms.json", {"schema_version": "1.0",
+                   "entries": [{"written": "H800", "spoken": "H achthundert"}]})
+        before = (self.root / "studio/spoken_forms.json").read_bytes()
+        detail = json.loads(self.request("/api/projects/example")[1])
+        data = {"config": detail["config"], "config_hash": detail["config_hash"], "text": detail["text"]}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        self.assertEqual((self.root / "studio/spoken_forms.json").read_bytes(), before)
+
+    def test_the_spoken_form_table_is_saved_only_against_its_own_hash(self):
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(detail["spoken_forms"], {"schema_version": "1.0", "entries": []})
+        data = {"config": detail["config"], "config_hash": detail["config_hash"], "text": detail["text"],
+                "spoken_forms": {"schema_version": "1.0", "entries": [{"written": "H800", "spoken": "H achthundert"}]},
+                "spoken_forms_hash": detail["spoken_forms_hash"]}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        saved = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(saved["spoken_forms"]["entries"], [{"written": "H800", "spoken": "H achthundert"}])
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 400)
+
+    def test_the_listening_review_is_only_ever_set_by_a_person(self):
+        self.publish_episode()
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"audio_approved": True})
+        self.assertEqual(self.request("/api/projects/example/listening_review",
+                                      {"episode": "ep_001", "reviewed": "yes", "note": ""})[0], 400)
+        status, body, _ = self.request("/api/projects/example/listening_review",
+                                       {"episode": "ep_001", "reviewed": True, "note": " Kapitel 2 war dicht. "})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["human_listening_reviewed"])
+        decision = read_yaml(self.root / "episodes/ep_001/audio_review.yaml")
+        self.assertTrue(decision["human_listening_reviewed"])
+        self.assertEqual(decision["listening_note"], "Kapitel 2 war dicht.")
+
+    def test_an_episode_without_a_quality_report_carries_no_notes(self):
+        self.publish_episode()
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(detail["episodes"][0]["review_notes"], {})
+
     def test_bad_model_does_not_leave_a_half_created_project(self):
         data = {"config":self.config.model_dump(), "text":{"provider":"openrouter", "model":None}}
         self.assertEqual(self.request("/api/projects", data)[0], 400)
@@ -280,13 +480,13 @@ class StudioHttpTests(unittest.TestCase):
         write_yaml(folder / "script.yaml", example_script().model_dump())
         (folder / "script.md").write_text("Text to read", encoding="utf-8")
         data = {"action":"audio", "episode":"ep_001", "script_hash":file_hash(folder / "script.yaml"),
-                "readable_hash":file_hash(folder / "script.md"), "config_hash":digest(self.config.model_dump(mode="json"))}
+                "readable_hash":file_hash(folder / "script.md"), "config_hash":project_hash(self.config)}
         with patch("podcast_automate.studio.subprocess.Popen") as process:
             self.assertEqual(self.request("/api/projects/example/start", data)[0], 400)
             data["approve_audio"] = True
             data["config_hash"] = "old voices"
             self.assertEqual(self.request("/api/projects/example/start", data)[0], 400)
-            data["config_hash"] = digest(self.config.model_dump(mode="json"))
+            data["config_hash"] = project_hash(self.config)
             data["script_hash"] = "old text"
             self.assertEqual(self.request("/api/projects/example/start", data)[0], 400)
             process.assert_not_called()
@@ -294,7 +494,8 @@ class StudioHttpTests(unittest.TestCase):
     def test_gemini_audio_can_be_selected_without_changing_script_inputs(self):
         detail = json.loads(self.request("/api/projects/example")[1])
         before = (self.root / "project.yaml").read_bytes()
-        audio = {"provider":"openrouter_gemini_tts", "voices":{"host_a":"Sadaltager","host_b":"Aoede"}}
+        audio = AudioChoice(provider="openrouter_gemini_tts",
+                            voices={"host_a":"Sadaltager","host_b":"Aoede"}).model_dump()
         data = {"config":detail["config"], "config_hash":detail["config_hash"], "text":detail["text"],
                 "audio_settings":audio, "audio_hash":detail["audio_hash"]}
         self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
@@ -312,7 +513,7 @@ class StudioHttpTests(unittest.TestCase):
         (folder / "script.md").write_text("Read this", encoding="utf-8")
         data = {"action":"audio", "episode":"ep_001", "approve_audio":True,
                 "script_hash":file_hash(folder / "script.yaml"), "readable_hash":file_hash(folder / "script.md"),
-                "config_hash":digest(self.config.model_dump(mode="json")), "audio_hash":"old provider"}
+                "config_hash":project_hash(self.config), "audio_hash":"old provider"}
         with patch("podcast_automate.studio.subprocess.Popen") as process:
             self.assertEqual(self.request("/api/projects/example/start", data)[0], 400)
             process.assert_not_called()
@@ -456,6 +657,86 @@ class StudioHttpTests(unittest.TestCase):
         before = path.read_bytes()
         self.assertEqual(record_interruption(self.root), completed)
         self.assertEqual(path.read_bytes(), before)
+
+
+class ReportMergeTests(unittest.TestCase):
+    """``retained_episode_reports`` keeps an entry only while it judges the text on disk."""
+
+    def test_stale_and_foreign_entries_are_dropped_and_legacy_entries_inherit_the_run(self):
+        from podcast_automate.script_artifacts import retained_episode_reports
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        write_yaml(root / "episodes/ep_001/script.yaml", example_script().model_dump())
+        current = file_hash(root / "episodes/ep_001/script.yaml")
+        previous = {"run_id": "run_legacy", "episodes": {
+            "ep_001": {"script_sha256": current, "model_review": {"limitations": ["kept"]}},
+            "ep_002": {"script_sha256": "stale", "run_id": "run_old"},
+            "ep_003": {"script_sha256": current, "run_id": "run_old"},
+            "../ep_001": {"script_sha256": current}}}
+        self.assertEqual(retained_episode_reports(root, previous, {"ep_003"}), {
+            "ep_001": {"script_sha256": current, "model_review": {"limitations": ["kept"]}, "run_id": "run_legacy"}})
+        self.assertEqual(retained_episode_reports(root, {"episodes": "not a map"}, set()), {})
+        self.assertEqual(retained_episode_reports(root, None, set()), {})
+
+
+class PublishedReportTests(fixtures.ScriptProjectCase):
+    """``reports/script_quality.yaml`` speaks for every published episode, not only the last run's."""
+
+    def two_episode_model(self, prompt, output_type, directory, **kwargs):
+        from podcast_automate.models import EpisodeScript
+        value, metadata = self.model(prompt, output_type, directory, **kwargs)
+        if output_type is SeriesPlan:
+            second = value.episodes[0].model_copy(deep=True)
+            second.episode_id, second.title = "ep_002", "Further consequences"
+            value.episodes.append(second)
+        if output_type is EpisodeScript:
+            payload = json.loads(prompt.splitlines()[-1])
+            value.episode_id = (payload.get("episode") or payload.get("original_script"))["episode_id"]
+        return value, metadata
+
+    def test_revising_one_episode_keeps_the_other_episodes_report_entries(self):
+        from podcast_automate.studio_scripts import review_notes
+        report = self.root / "reports/script_quality.yaml"
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.two_episode_model):
+            first = run_script(self.root)
+            self.assertEqual(first.status, "completed")
+            complete = read_yaml(report)
+            second = run_script(self.root, revise="ep_002", feedback="Clarify the consequence")
+            self.assertEqual(second.status, "completed")
+        self.assertEqual({key: value["run_id"] for key, value in complete["episodes"].items()},
+                         {"ep_001": first.run_id, "ep_002": first.run_id})
+        partial = read_yaml(report)
+        self.assertEqual(partial["run_id"], second.run_id)
+        self.assertEqual(sorted(partial["episodes"]), ["ep_001", "ep_002"])
+        self.assertEqual(partial["episodes"]["ep_001"], complete["episodes"]["ep_001"])
+        self.assertEqual(partial["episodes"]["ep_002"]["run_id"], second.run_id)
+        self.assertEqual(partial["episodes"]["ep_001"]["model_review"]["limitations"],
+                         ["A fixture is not a real editorial review."])
+        self.assertIn("advisories", partial["episodes"]["ep_001"])
+        # The Studio's reading panel takes its notes from exactly this entry.
+        notes = review_notes(partial["episodes"]["ep_001"])
+        self.assertEqual(notes, review_notes(complete["episodes"]["ep_001"]))
+        self.assertEqual(notes["script_review"], ["A fixture is not a real editorial review."])
+        self.assertEqual(partial["episodes"]["ep_001"]["script_sha256"], file_hash(self.root / "episodes/ep_001/script.yaml"))
+        # The revise run's publish record hashes the merged report it wrote.
+        self.assertEqual(second.stages["publish"].outputs["reports/script_quality.yaml"], file_hash(report))
+
+    def test_unowned_probe_rows_are_reported_at_series_level(self):
+        gap = "How is the bias term of an overloaded expert updated?"
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            planned = run_script(self.root, plan_only=True)
+            work = manifest_path(self.root, planned.run_id).parent
+            probes = work / "gap_probes.json"
+            rows = json.loads(probes.read_text(encoding="utf-8")) if probes.exists() else []
+            rows.append({"gap_id": "gap_seeded", "text": gap, "status": "hits_unowned", "owner_episodes": [],
+                         "hits": [{"reference": "src_unused#sec_001", "score": 2, "preview": "An unused section."}]})
+            write_json(probes, rows)
+            completed = run_script(self.root, resume=True, approved_plan_hash=outline_hash(work))
+        self.assertEqual(completed.status, "completed")
+        quality = read_yaml(self.root / "reports/script_quality.yaml")
+        self.assertEqual(quality["gap_probes_unowned"], [
+            {"gap_id": "gap_seeded", "text": gap, "status": "hits_unowned", "references": ["src_unused#sec_001"]}])
 
 
 if __name__ == "__main__":

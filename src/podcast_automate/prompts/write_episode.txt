@@ -3,26 +3,32 @@ naturally into the dialogue. Work through one example in enough detail that list
 what changes, what stays fixed, why the next step helps, and what can go wrong. Keep the hosts
 curious and thoughtful. Both contribute; avoid praise, repetitive 'exactly', quiz questions to the
 audience and unexplained jargon. Follow the supplied host_roles. Explain the idea before its
-optional name. No equations, spoken citations, source IDs, URLs, stage directions or descriptions of
-this pipeline. Distinguish hypothetical teaching examples from reported experiments. Preserve
-important limits. Use original wording, no direct quotations or close reproduction of source
-passages. Write full explanations rather than stretching a summary with banter. Execute the reviewed
-teaching_design: establish the starting problem and foundations, develop its reasoning and example,
-then earn the synthesis and transfer. Its objectives will be checked by a separate reader who
-receives only the script and questions. Do not recite the teaching plan, announce every micro-step,
-or turn the dialogue into a quiz. Use each scene as a chapter in order, chapter_id=scene_id. Use
-purpose=deep_dive. Segments have stable unique IDs and host_a or host_b. Let the reasoning determine
-turn length: a short objection can lead to a longer explanation. Split long turns at natural
-sentence boundaries into consecutive segments by the same host when needed. Attach finding IDs in
-knowledge_refs to every factual explanation and teaching illustration. Pure transitions and
-nonfactual intro/outro framing may have empty refs. Each scene must develop its assigned findings;
-it may also reference findings introduced in earlier scenes to build on them or connect the
-conclusion to the opening. Do not introduce later findings prematurely. Cover them all, and never
-reference an episode as already heard unless it is a listed prerequisite. Meet the planned teaching
-scope and duration with substantive reasoning, not padding. Aim for 95-100% of target_minutes at 130
-spoken words/minute including short pauses, and never exceed 30 planned minutes. Derive the word
-budget from this episode's actual target. A summary of a few points is not a complete episode. Carry
-a motivating problem through the episode; work out concrete examples and counterexamples, explain
-why each mechanism is needed and why it helps. Build later reasoning explicitly on the foundations
-already established. Let the second host develop consequences and challenge assumptions, not merely
-restate or cue definitions. End by resolving the opening problem at a deeper level.
+optional name. No equations, spoken citations, source IDs, URLs, stage directions or descriptions
+of this pipeline. Distinguish hypothetical teaching examples from reported experiments. Mark an
+invented example as illustrative exactly once, where it is introduced. Later references to it name
+the example itself, as in 'in unserem Beispiel', and do not repeat that it is hypothetical or not
+measured. Preserve important limits. brief.style_notes holds the operator's standing editorial
+corrections; follow them unless they conflict with the evidence rules, which always win. For a
+finding listed in single_group_findings, attribute it audibly once in this episode: say whose
+measurement or report it is, in ordinary words and without a spoken citation. Use original wording,
+no direct quotations or close reproduction of source passages. Write full explanations rather than
+stretching a summary with banter. Execute the reviewed teaching_design: establish the starting
+problem and foundations, develop its reasoning and example, then earn the synthesis and transfer.
+Its objectives will be checked by a separate reader who receives only the script and questions. Do
+not recite the teaching plan, announce every micro-step, or turn the dialogue into a quiz. Use each
+scene as a chapter in order, chapter_id=scene_id. Use purpose=deep_dive. Segments have stable
+unique IDs and host_a or host_b. Let the reasoning determine turn length: a short objection can
+lead to a longer explanation. Split long turns at natural sentence boundaries into consecutive
+segments by the same host when needed. Attach finding IDs in knowledge_refs to every factual
+explanation and teaching illustration. Pure transitions and nonfactual intro/outro framing may have
+empty refs. Each scene must develop its assigned findings; it may also reference findings
+introduced in earlier scenes to build on them or connect the conclusion to the opening. Do not
+introduce later findings prematurely. Cover them all, and never reference an episode as already
+heard unless it is a listed prerequisite. Meet the planned teaching scope and duration with
+substantive reasoning, not padding. Aim for 95-100% of target_minutes at 130 spoken words/minute
+including short pauses, and never exceed 30 planned minutes. Derive the word budget from this
+episode's actual target. A summary of a few points is not a complete episode. Carry a motivating
+problem through the episode; work out concrete examples and counterexamples, explain why each
+mechanism is needed and why it helps. Build later reasoning explicitly on the foundations already
+established. Let the second host develop consequences and challenge assumptions, not merely restate
+or cue definitions. End by resolving the opening problem at a deeper level.

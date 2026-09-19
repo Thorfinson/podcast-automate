@@ -7,24 +7,31 @@ university-depth request cannot pass with a short overview of disconnected point
 planned explanation step is actually developed, not merely named. There must be a causal narrative
 from an opening problem through mechanisms and a worked example to more advanced consequences; the
 closing answer must use knowledge built during the episode. A high word count alone does not prove
-depth. Flag missing intermediate reasoning and unsupported jumps. A first-time listener can follow a
-worked example through actions, purposes and consequences. Reject merely verbalized formulas,
+depth. Flag missing intermediate reasoning and unsupported jumps. A first-time listener can follow
+a worked example through actions, purposes and consequences. Reject merely verbalized formulas,
 unexplained jargon and chains of abstract definitions. Also flag patronizing hand-holding, repeated
 definitions, excessive reminders that an analogy is imaginary, and repeated recaps that stall the
 explanation. A compact explanation may be complete; do not demand laborious restatement of what is
 already clear. Check the order of prerequisites, natural contributions from both hosts, useful
 transitions and an honest answer to the episode question. Long coherent monologues are acceptable;
 reject mechanical alternation, not length of individual turns. Do not demand unrelated advanced
-topics, but flag deferral of the core mechanism needed to answer this episode's own question. Report
-only concrete blocking issues, with affected segment IDs (empty only for a whole-episode issue) and
-a useful correction. Put nonblocking cautions in limitations. A model review is not human approval
-or proof of complete topic coverage. Compare with original_draft: polishing must preserve
-substantive explanations, quantities and qualifications, rather than hide omissions behind fluent
-speech. Do not treat the original as verified truth: corrections and missing explanations needed to
-satisfy a review may be added only from the supplied evidence. Describe material corrections in
-limitations. Check host_roles in the actual final text, also after repairs: a precise explanatory
-expert and a thoughtful partner whose doubts and deductions engage with the explanation. Verify that
-intro and outro remain complete after any repairs. In episode 1 require the overall topic,
-motivation and learning path; in the final episode require a supported recap and synthesis of the
-whole series. Nonfactual greetings and metadata-based orientation do not need research citations.
-The series outline is not scientific evidence for a recap.
+topics, but flag deferral of the core mechanism needed to answer this episode's own question.
+Report only concrete blocking issues, with affected segment IDs (empty only for a whole-episode
+issue) and a useful correction. brief.style_notes holds the operator's standing editorial
+corrections; follow them unless they conflict with the evidence rules, which always win. For every
+spoken statement that the sources do not explain or do not contain something, gap_probes must carry
+a matching entry whose status is no_hits, hits_read_confirmed or resolved. Without such an entry,
+treat the statement as unsupported and return a grounding correction that names the matching
+section. Put nonblocking cautions in limitations. A model review is not human approval or proof of
+complete topic coverage. Compare with original_draft: polishing must preserve substantive
+explanations, quantities and qualifications, rather than hide omissions behind fluent speech. Do
+not treat the original as verified truth: corrections and missing explanations needed to satisfy a
+review may be added only from the supplied evidence. Describe material corrections in limitations.
+Check host_roles in the actual final text, also after repairs: a precise explanatory expert and a
+thoughtful partner whose doubts and deductions engage with the explanation. Verify that intro and
+outro remain complete after any repairs. In episode 1 require the overall topic, motivation and
+learning path; in the final episode require a supported recap and synthesis of the whole series.
+Nonfactual greetings and metadata-based orientation do not need research citations. The episode
+should attribute the findings in single_group_findings audibly at least once per episode, naming
+whose measurement or report they are; note a missing attribution in limitations, never as an
+issue. The series outline is not scientific evidence for a recap.

@@ -11,9 +11,12 @@ from .prompts import instructions
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .models import Contract, EpisodeScript, Identifier, NonEmpty
+from .script_models import ScriptIssue
 from .storage import digest, write_json
 
 SERIES_REVIEW_VERSION = "series_review.v1"
+# One bounded cross-episode repair. A second failure is a decision for the operator.
+MAX_SERIES_REPAIRS = 1
 CRITERIA = ("coverage", "prerequisites", "progression", "deferred_questions", "synthesis")
 
 
@@ -65,6 +68,20 @@ def validate_review(review, scripts):
                        code="invalid_series_evidence", status="blocked")
 
 
+def series_issues(review):
+    """Failing series checks as per-episode script issues, from the segments they cite."""
+    grouped = {}
+    for check in review.checks:
+        if check.verdict != "fail":
+            continue
+        for episode_id in dict.fromkeys(e.episode_id for e in check.evidence):
+            segments = [e.segment_id for e in check.evidence if e.episode_id == episode_id]
+            grouped.setdefault(episode_id, []).append(ScriptIssue(
+                category="structure", segment_ids=list(dict.fromkeys(segments)),
+                reason=f"{check.criterion}: {check.reason}"))
+    return grouped
+
+
 def review_binding(plan, scripts, input_hash):
     return digest({"version": SERIES_REVIEW_VERSION, "input_hash": input_hash,
                    "plan": plan.model_dump(), "scripts": [s.model_dump() for s in scripts]})
@@ -103,23 +120,14 @@ def require_passing_series(report):
                        code="series_review_failed", status="blocked")
 
 
-def assess_series(work, config, plan, scripts, input_hash, invoke):
-    path = work / "series_review.json"
-    if path.exists():
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        if saved.get("sha256") != digest(saved.get("report")):
-            raise AppError("Die gespeicherte Serienprüfung wurde verändert.",
-                           code="invalid_series_review", status="blocked")
-        if saved["report"].get("input_hash") == review_binding(plan, scripts, input_hash):
-            report = load_series_review(work, plan, scripts, input_hash)
-            require_passing_series(report)
-            return [path]
+def series_report(config, plan, scripts, input_hash, invoke, repairs=0):
+    """One review of the whole collection; a partial selection gets no whole-series verdict."""
     identifiers = [s.episode_id for s in scripts]
     complete = identifiers == [e.episode_id for e in plan.episodes]
     report = {"version": SERIES_REVIEW_VERSION, "input_hash": review_binding(plan, scripts, input_hash),
               "episode_ids": identifiers, "complete": complete, "status": "partial", "review": None,
               "missing_episodes": [e.episode_id for e in plan.episodes if e.episode_id not in identifiers],
-              "human_reviewed": False}
+              "repairs": repairs, "human_reviewed": False}
     if complete:
         prompt = (TERMINOLOGY + TEACHING_SCOPE +
             instructions("series_review") + "\n" +
@@ -131,6 +139,88 @@ def assess_series(work, config, plan, scripts, input_hash, invoke):
         validate_review(review, scripts)
         report.update(review=review.model_dump(),
                       status="passed" if all(c.verdict == "pass" for c in review.checks) else "blocked")
-    write_json(path, {"report": report, "sha256": digest(report)})
+    return report
+
+
+def repair_binding(plan, input_hash):
+    """The repair round belongs to the plan and the inputs, not to the scripts it rewrites."""
+    return digest({"version": SERIES_REVIEW_VERSION, "input_hash": input_hash, "plan": plan.model_dump()})
+
+
+def load_repair_receipt(work, plan, input_hash):
+    """The saved repair round of this plan, or ``None`` when no round was started for it."""
+    path = work / "series_repair.json"
+    if not path.exists():
+        return None
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        receipt = saved["receipt"]
+        if saved["sha256"] != digest(receipt) or receipt["version"] != SERIES_REVIEW_VERSION:
+            raise ValueError("Changed series repair receipt")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise AppError("Die gespeicherte Korrektur der Serienprüfung wurde verändert.",
+                       code="invalid_series_review", status="blocked") from exc
+    return receipt if receipt.get("binding") == repair_binding(plan, input_hash) else None
+
+
+def write_repair_receipt(work, receipt):
+    write_json(work / "series_repair.json", {"receipt": receipt, "sha256": digest(receipt)})
+
+
+def assess_series(work, config, plan, scripts, input_hash, invoke, *, repair=None):
+    """``repair`` receives the failing checks grouped by episode and returns the rewritten scripts.
+
+    It is called at most ``MAX_SERIES_REPAIRS`` times per plan and input hash, across resumes:
+    ``series_repair.json`` records the round and, when the repair raised, its failure. A resume
+    after a failed round raises that failure again without a model call, because the scripts
+    the round left behind may differ from the ones the saved verdict is bound to. The caller
+    reviews a repaired script again before returning it, so the re-check judges text that still
+    carries its own evidence.
+    """
+    path = work / "series_review.json"
+    receipt_path = work / "series_repair.json"
+
+    def outputs():
+        return [path, receipt_path] if receipt_path.exists() else [path]
+
+    saved_report = None
+    if path.exists():
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved.get("sha256") != digest(saved.get("report")):
+            raise AppError("Die gespeicherte Serienprüfung wurde verändert.",
+                           code="invalid_series_review", status="blocked")
+        if saved["report"].get("input_hash") == review_binding(plan, scripts, input_hash):
+            saved_report = load_series_review(work, plan, scripts, input_hash)
+            if saved_report["status"] != "blocked":
+                return outputs()
+    receipt = load_repair_receipt(work, plan, input_hash)
+    if receipt and receipt.get("failure"):
+        failure = receipt["failure"]
+        raise AppError(failure["message"], code=failure["code"], status="blocked")
+    if saved_report is not None:
+        require_passing_series(saved_report)
+    repairs = receipt["repairs"] if receipt else 0
+    while True:
+        report = series_report(config, plan, scripts, input_hash, invoke, repairs)
+        write_json(path, {"report": report, "sha256": digest(report)})
+        if report["status"] != "blocked" or repair is None or repairs >= MAX_SERIES_REPAIRS:
+            break
+        grouped = series_issues(SeriesReview.model_validate(report["review"]))
+        if not grouped:
+            break
+        repairs += 1
+        # The round is spent when it starts; the receipt outlives a failure inside it.
+        receipt = {"version": SERIES_REVIEW_VERSION, "binding": repair_binding(plan, input_hash),
+                   "repairs": repairs, "scripts_before": report["input_hash"],
+                   "episodes": list(grouped), "failure": None}
+        write_repair_receipt(work, receipt)
+        try:
+            repaired = repair(grouped)
+        except AppError as exc:
+            write_repair_receipt(work, {**receipt, "failure": {"code": exc.code, "message": str(exc)}})
+            raise
+        if not repaired:
+            break
+        scripts = repaired
     require_passing_series(report)
-    return [path]
+    return outputs()

@@ -11,12 +11,18 @@ from .prompts import instructions
 from .errors import AppError
 from .editorial import TERMINOLOGY, TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING
 from .models import Contract, Identifier, NonEmpty
+from .script_advisories import humanised
 from .script_models import ScriptIssue
 from .storage import atomic_text, digest, write_json
 
 TEACHING_VERSION = "teaching.v3"
 DESIGN_VERSION = "teaching_design.v2"
-EDITORIAL_REVIEW_VERSION = "editorial_review.v3-series-context"
+DESIGN_PROMPT_VERSION = "teaching_design.v2-terms"
+DESIGN_REVIEW_VERSION = "teaching_design_review.v5-terms"
+# Stored in every script-review checkpoint: bumping it makes a resumed in-flight run re-run the
+# editorial review of its saved draft (draft and repair count are kept). That is intended whenever
+# a composed fragment such as episode_framing.txt changes meaning.
+EDITORIAL_REVIEW_VERSION = "editorial_review.v4-audit"
 CRITERIA = ("orientation", "progression", "worked_example", "synthesis", "dialogue", "depth", "spoken_clarity")
 
 
@@ -31,6 +37,8 @@ class LearningObjective(Contract):
 class Concept(Contract):
     concept_id: Identifier
     meaning: NonEmpty
+    terms: list[NonEmpty] = Field(default_factory=list,
+        description="Spoken names of this concept in the episode's language; the ID is not spoken.")
     introduced_in: Identifier
     requires: list[Identifier]
     finding_ids: list[Identifier] = Field(min_length=1)
@@ -188,6 +196,12 @@ def validate_teaching_plan(design, entry):
     return errors
 
 
+def spoken_terms(concepts):
+    """What an earlier episode actually called its concepts; older plans fall back to the ID."""
+    found = [term for concept in concepts for term in (concept.terms or [humanised(concept.concept_id)])]
+    return list(dict.fromkeys(term for term in (t.strip() for t in found) if term))
+
+
 def prerequisite_context(plan, entry, work):
     """Use reviewed plans from this run; never substitute a future or unreviewed episode."""
     previous = {}
@@ -222,7 +236,8 @@ def prerequisite_context(plan, entry, work):
                 row.update(status="reviewed_teaching_plan", teaching_design={
                     "destination": design.destination, "objectives": [g.model_dump() for g in design.objectives],
                     "concepts": [c.model_dump() for c in design.concepts],
-                    "worked_example": design.worked_example.model_dump()})
+                    "worked_example": design.worked_example.model_dump()},
+                    established_terms=spoken_terms(design.concepts))
         except (OSError, ValueError, KeyError, TypeError):
             pass
         rows.append(row)
@@ -287,7 +302,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                                "focused_repair": focused_repair})
 
     if design is None:
-        design = invoke(prompt, TeachingPlan, "teaching_design.v1")
+        design = invoke(prompt, TeachingPlan, DESIGN_PROMPT_VERSION)
         save()
     elif reused_draft:
         save()
@@ -301,7 +316,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                     "episode": entry.model_dump(), "design": design.model_dump(), "series_context": series_context,
                     "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
                     "sources": sources, "prerequisite_context": continuity or []}, ensure_ascii=False),
-                TeachingPlanReview, "teaching_design_review.v4-framing")
+                TeachingPlanReview, DESIGN_REVIEW_VERSION)
             save()
         if review is not None:
             reported = {g.question for g in design.research_gaps}
@@ -362,6 +377,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
         save()
     write_json(work / "plan.json", design.model_dump())
     write_json(work / "review.json", review.model_dump())
+    write_json(work / "dismissed_gaps.json", dismissed_design_gaps(review))
     limits = [g.reason for g in review.gap_assessments if not g.required_for_objective]
     atomic_text(work / "plan.md", render_teaching_plan(design) +
                 ("\n## Eingeordnete Forschungsgrenzen\n\n" + "\n".join(f"- {s}" for s in limits) + "\n" if limits else ""))
@@ -373,10 +389,22 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
         atomic_text(work / "research_needed.md", "# Recherchefragen geklärt\n\n"
                     "Die Lehrplanung wurde mit den verfügbaren Quellen erneut geprüft und angenommen.\n\n" +
                     "\n".join(f"- {g['question']}" for g in gaps["questions"]) + "\n")
-    files = [work / "plan.json", work / "review.json", work / "plan.md", checkpoint]
+    files = [work / "plan.json", work / "review.json", work / "dismissed_gaps.json", work / "plan.md", checkpoint]
     if focused_repair:
         files.append(work / "focused_repair.json")
     return design, files
+
+
+def dismissed_design_gaps(review):
+    """Research questions the design review judged inessential, with the reason it gave."""
+    return [{"stage": "teaching_design", "objective_id": None, "gap": g.gap, "reason": g.reason}
+            for g in review.gap_assessments if not g.required_for_objective]
+
+
+def dismissed_objective_gaps(review):
+    """Explanation gaps the listener reported that the examiner judged inessential."""
+    return [{"stage": "teaching_review", "objective_id": objective.objective_id, "gap": g.gap, "reason": g.reason}
+            for objective in review.objectives for g in objective.gap_assessments if not g.required_for_objective]
 
 
 def _check_passages(script, passages):
@@ -462,7 +490,7 @@ def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_
         instructions("teaching_review") + "\n" +
         json.dumps({"audience": audience, "prior_knowledge": prior_knowledge, "depth": depth,
                     "design": design.model_dump(), "script": script.model_dump(), "series_context": series_context,
-                    "listener": reader.model_dump()}, ensure_ascii=False), "teaching_review.v3-framing")
+                    "listener": reader.model_dump()}, ensure_ascii=False), "teaching_review.v4-audit")
     validate_teaching_review(review, design, script, reader)
     issues = []
     for item in [*editorial.checks, *review.checks, *review.objectives]:
@@ -479,6 +507,7 @@ def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_
               "script_digest": digest(script.model_dump()), "design_digest": digest(design.model_dump()),
               "listener": reader.model_dump(), "review": review.model_dump(),
               "editorial": editorial.model_dump(),
-              "human_learning_validated": False, "issues": [i.model_dump() for i in issues]}
+              "human_learning_validated": False, "issues": [i.model_dump() for i in issues],
+              "dismissed_gaps": dismissed_objective_gaps(review)}
     write_json(work / "result.json", report)
     return issues, report, list(work.glob("*.json"))

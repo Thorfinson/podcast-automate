@@ -21,11 +21,12 @@ from .models import RunManifest, StageRecord
 from .provider_pool import AdapterPool, check_adapter_versions, subscription_selection
 from .research_models import ResearchDiscovery, ResearchDossier, SourceCandidate, SourceDocument, SourceIndex
 from .runner import execute_stages, manifest_path, outputs_valid, run_observer
+from .research_gap_probe import suffix as probe_suffix
 from .research_quality import load_complete_research, requirements_for
 from .question_research import run_question_research
 from .research_ledger import read_value
 from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source
-from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_lock,
+from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash, project_lock,
                       read_optional_json, read_yaml, write_json, write_yaml)
 from .text_settings import validate_model, validate_reasoning
 
@@ -320,13 +321,16 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             selection = saved
             if selection:
                 check_adapter_versions(selection)
-        bound_config = config.model_dump(mode="json")
+        bound_config = config
         if resume:
             # A longer execution deadline does not alter the research inputs.
             # Keep the original fingerprint and still reject every content change.
             snapshot = read_yaml(path.parent / "project_snapshot.yaml")
-            bound_config["runtime"]["text_timeout_seconds"] = snapshot["runtime"]["text_timeout_seconds"]
-        config_hash = digest(bound_config)
+            bound_config = config.model_copy(update={"runtime": config.runtime.model_copy(
+                update={"text_timeout_seconds": snapshot["runtime"]["text_timeout_seconds"]})})
+        # One rule for the brief's identity, shared with every other lane: ``project_hash`` drops
+        # a field that is unset, so existing research manifests keep their pre-field hash.
+        config_hash = project_hash(bound_config)
         inputs = {"project": config_hash, "pipeline": __version__,
                   "research": RESEARCH_VERSION, "local_files": local_hashes}
         if selection is not None:
@@ -436,7 +440,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 instructions("research_discovery", maximum=maximum) + " " + TERMINOLOGY +
                 attachments.MATERIAL_RULES +
                 instructions("research_discovery_attachments") + "\n" + json.dumps(brief, ensure_ascii=False))
-            discovery, metadata = invoke(prompt, ResearchDiscovery, "research_discovery.v3-attachments", search=True)
+            discovery, metadata = invoke(prompt, ResearchDiscovery, "research_discovery.v4-independence", search=True)
             if discovery.topic != config.topic or len(discovery.candidates) > maximum:
                 raise AppError("Suchantwort verletzt Thema oder Quellenlimit.", code="invalid_model_output")
             write_json(work / "discovery.json", discovery.model_dump(mode="json"))
@@ -617,9 +621,13 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                     outputs.append(destination)
             accepted_lines = [f"- Akzeptierte Lücke: {row.get('question') or row['task_id']}"
                               + (f" ({row['reason']})" if row.get("reason") else "") for row in accepted_rows]
+            # Each open question carries what the corpus probe found for it, so a reader sees
+            # whether the gap was checked against the stored sections or only asserted.
+            probes = {row["text"]: probe_suffix(row) for row in quality.get("gap_probes", [])}
+            open_line = lambda text: f"- {text}" + (f" {probes[text]}" if text in probes else "")
             atomic_text(root / "research/open_questions.md", "# Offene Recherchefragen\n\n" +
-                        "\n".join(f"- {q}" for q in dossier.open_questions) + "\n\n" +
-                        "\n".join(f"- {c.gap}" for c in dossier.coverage if c.status != "answered") + "\n" +
+                        "\n".join(open_line(q) for q in dossier.open_questions) + "\n\n" +
+                        "\n".join(open_line(c.gap) for c in dossier.coverage if c.status != "answered") + "\n" +
                         ("\n" + "\n".join(accepted_lines) + "\n" if accepted_lines else ""))
             write_json(root / "research/latest.json", {"run_id": manifest.run_id})
             write_json(root / "reports/research_quality.json", {

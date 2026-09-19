@@ -5,7 +5,9 @@ from unittest.mock import patch
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.models import Chapter, EpisodeScript
-from podcast_automate.polishing import (DialoguePolishReview, HOST_ROLES, POLISH_PROMPT_VERSION,
+from podcast_automate.polishing import (DEMANDING_PASSAGES, DemandingPassage, DialoguePolishReview,
+                                       HOST_ROLES, Referent,
+                                       POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION, compare_dialogue,
                                        polish_dialogue, validate_polish_review)
 from podcast_automate.script_models import ScriptReview
 from podcast_automate.scripting import run_script, validate_script
@@ -35,9 +37,10 @@ class PolishingTests(unittest.TestCase):
         self.assertEqual(run.status, 'completed')
         self.assertEqual(list(run.stages), ['planning', 'teaching', 'writing', 'polishing', 'review', 'publish'])
         folder = self.root / 'runs' / run.run_id / 'polishing/ep_001'
-        self.assertIn('**Aiden:** What', (folder / 'before.md').read_text(encoding='utf-8'))
-        self.assertIn('**Vivian:** What', (folder / 'after.md').read_text(encoding='utf-8'))
-        self.assertIn('**Vivian:** What', (self.root / 'episodes/ep_001/script.md').read_text(encoding='utf-8'))
+        # The before/after views name the role; the speaker swap below is what is being checked.
+        self.assertIn('**Host A:** What', (folder / 'before.md').read_text(encoding='utf-8'))
+        self.assertIn('**Host B:** What', (folder / 'after.md').read_text(encoding='utf-8'))
+        self.assertIn('**Host B:** What', (self.root / 'episodes/ep_001/script.md').read_text(encoding='utf-8'))
         self.assertEqual(final_checks[0]['original_draft'], fixtures.example_script().model_dump())
         self.assertEqual(final_checks[0]['script']['segments'][0]['speaker_id'], 'host_b')
         self.assertEqual(final_checks[0]['host_roles'], HOST_ROLES)
@@ -183,6 +186,127 @@ class PolishingTests(unittest.TestCase):
         self.assertEqual(resumed.status, 'blocked')
         self.assertEqual(len(self.fixture.calls), calls)
         self.assertFalse((self.root / 'episodes/ep_001/script.yaml').exists())
+
+    def long_script(self):
+        """Six segments, so three demanding passages that are neither greeting nor sign-off exist."""
+        script = fixtures.example_script()
+        first = script.segments[0]
+        script.segments = [first.model_copy(update={"segment_id": f"seg_{i:03d}", "text": f"Satz Nummer {i}."},
+                                            deep=True) for i in range(1, 7)]
+        return script
+
+    def review_for(self, script, **changes):
+        review = fixtures.polish_review(json.dumps({"original": script.model_dump(),
+                                                    "candidate": script.model_dump()}))
+        for key, value in changes.items():
+            setattr(review, key, value)
+        return review
+
+    def test_exactly_three_distinct_existing_passages_are_required(self):
+        script = self.long_script()
+        review = self.review_for(script)
+        self.assertEqual(len(review.demanding_passages), DEMANDING_PASSAGES)
+        self.assertEqual(validate_polish_review(review, script, script), [])
+        for broken, code in ((review.demanding_passages[:2], "invalid_polish_review"),
+                             (review.demanding_passages + [review.demanding_passages[0]], "invalid_polish_review")):
+            with self.subTest(code=code), self.assertRaises(AppError) as caught:
+                validate_polish_review(self.review_for(script, demanding_passages=broken), script, script)
+            self.assertEqual(caught.exception.code, code)
+        unknown = self.review_for(script)
+        unknown.demanding_passages[0].segment_id = "seg_999"
+        with self.assertRaises(AppError) as caught:
+            validate_polish_review(unknown, script, script)
+        self.assertEqual(caught.exception.code, "invalid_polish_evidence")
+
+    def test_three_named_passages_with_a_repeated_id_are_rejected_for_distinctness(self):
+        script = self.long_script()
+        review = self.review_for(script)
+        # Three passages are named, so the count rule is met; only the repeated id can reject.
+        review.demanding_passages[2].segment_id = review.demanding_passages[1].segment_id
+        self.assertEqual(len(review.demanding_passages), DEMANDING_PASSAGES)
+        with self.assertRaises(AppError) as caught:
+            validate_polish_review(review, script, script)
+        self.assertEqual(caught.exception.code, "invalid_polish_review")
+        self.assertIn("unterschiedliche", str(caught.exception))
+
+    def test_greeting_and_sign_off_never_count_as_the_densest_passage(self):
+        script = self.long_script()
+        for position in (0, -1):
+            review = self.review_for(script)
+            review.demanding_passages[0].segment_id = script.segments[position].segment_id
+            with self.subTest(position=position), self.assertRaises(AppError) as caught:
+                validate_polish_review(review, script, script)
+            self.assertEqual(caught.exception.code, "invalid_polish_review")
+
+    def test_a_referent_must_be_resolved_by_an_earlier_segment(self):
+        script = self.long_script()
+        review = self.review_for(script)
+        review.demanding_passages[0].referents[0].resolved_by = script.segments[-1].segment_id
+        with self.assertRaises(AppError) as caught:
+            validate_polish_review(review, script, script)
+        self.assertEqual(caught.exception.code, "invalid_polish_evidence")
+
+    def test_an_unresolved_referent_becomes_a_spoken_language_issue_instead_of_a_rejection(self):
+        script = self.long_script()
+        review = self.review_for(script)
+        review.demanding_passages[1].referents[0].resolved_by = None
+        issues = validate_polish_review(review, script, script)
+        self.assertEqual(len(issues), 1)
+        self.assertTrue(issues[0].startswith("spoken_language: "))
+        self.assertIn(review.demanding_passages[1].segment_id, issues[0])
+        failing = self.review_for(script)
+        failing.demanding_passages[1].referents[0].resolved_by = None
+        next(c for c in failing.checks if c.criterion == "spoken_language").verdict = "fail"
+        self.assertEqual(validate_polish_review(failing, script, script), [])
+
+    def test_an_unresolved_referent_drives_the_existing_repair_loop(self):
+        original, comparisons = self.long_script(), 0
+        entry = fixtures.example_plan().episodes[0]
+
+        def invoke(prompt, output_type, version):
+            nonlocal comparisons
+            if output_type is EpisodeScript:
+                return original.model_copy(deep=True)
+            review = fixtures.polish_review(prompt)
+            comparisons += 1
+            if comparisons == 1:
+                review.demanding_passages[0].referents[0] = Referent(expression="dieser Wert", resolved_by=None)
+            return review
+
+        polish_dialogue(self.fixture.config, entry, original, None, invoke,
+                        self.root / "density", lambda *_: [])
+        self.assertEqual(comparisons, 2)
+        issues = json.loads((self.root / "density/issues.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(issues), 1)
+        self.assertIn("dieser Wert", issues[0])
+
+    def test_the_prerequisite_context_reaches_the_polish_pass_and_its_comparison(self):
+        seen = []
+        script = fixtures.example_script()
+        entry = fixtures.example_plan().episodes[0]
+        context = [{"episode_id": "ep_001", "status": "reviewed_teaching_plan",
+                    "established_terms": ["Kandidat"]}]
+        def invoke(prompt, output_type, version):
+            seen.append((version, json.loads(prompt.splitlines()[-1])))
+            if output_type is EpisodeScript:
+                return script.model_copy(deep=True)
+            return fixtures.polish_review(prompt)
+        polish_dialogue(self.fixture.config, entry, script, None, invoke, self.root / "context",
+                        validate_script, prerequisite_context=context)
+        self.assertEqual([version for version, _ in seen], [POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION])
+        self.assertTrue(all(payload["prerequisite_context"] == context for _, payload in seen))
+
+    def test_the_comparison_call_can_be_made_on_its_own(self):
+        script = fixtures.example_script()
+        entry = fixtures.example_plan().episodes[0]
+        captured = {}
+        def invoke(prompt, output_type, version):
+            captured["version"], captured["payload"] = version, json.loads(prompt.splitlines()[-1])
+            return fixtures.polish_review(prompt)
+        review = compare_dialogue({"language": "de-DE"}, entry, script, script, invoke)
+        self.assertEqual(captured["version"], POLISH_REVIEW_VERSION)
+        self.assertEqual(captured["payload"]["candidate"], script.model_dump())
+        self.assertEqual(validate_polish_review(review, script, script), [])
 
     def test_framing_pass_needs_quotes_from_both_boundary_chapters(self):
         script = fixtures.example_script()

@@ -68,6 +68,48 @@ Die CLI verwendet `web_search="live"`, strukturierte Ausgaben und die vorhandene
 
 Ein Quellenkandidat ist noch kein Beleg. Nur eingelesene Abschnitte, die dem schreibenden Modell tatsächlich vorlagen, dürfen zitiert werden. Publikationsangaben können teilweise aus Suchergebnissen stammen und sind als noch zu prüfende Metadaten gekennzeichnet.
 
+## Korpusprobe der Lücken
+
+Jede gemeldete Lücke wird ohne Modellaufruf gegen die bereits gespeicherten Abschnitte geprüft. Die
+Probe nutzt dieselbe lexikalische Suche wie das Nachlesen: Aus dem Lückentext werden Schlüsselwörter
+gebildet; ein Abschnitt zählt als Treffer, wenn mindestens zwei verschiedene davon als ganze Wörter
+darin vorkommen. Gezählt werden nur ganze Wörter des Abschnitts, nicht Teilzeichenketten: „rule“ in
+„overruled“ oder „load“ in „download“ zählt nicht, auch wenn die Rangfolge der Lesesuche solche
+Vorkommen weiterhin berücksichtigt. Häufige deutsche Funktionswörter (etwa „sie“, „beim“, „unter“,
+„dabei“) sind keine Schlüsselwörter. Die Ergebnisse stehen in
+`runs/<run_id>/question_research/gap_probes.json` und im Qualitätsbericht unter „Korpusprobe der
+Lücken“.
+
+Die Probe vergleicht Wörter. Steht die Lücke auf Deutsch und die Quelle auf Englisch, findet der
+Lückentext allein den passenden Abschnitt nicht; `no_hits` heißt dann „keine lexikalische
+Überschneidung“, nicht „nicht vorhanden“. Deshalb trägt jede nicht beantwortete Abdeckungszeile des
+Dossiers `gap_terms`: drei bis acht Suchwörter in der Sprache der gespeicherten Quellen, die ein
+Abschnitt enthalten würde, der die Lücke beantwortet. Das Modell füllt sie beim Verfassen und beim
+Ändern des Dossiers; die Probe zählt sie als Schlüsselwörter neben denen des Lückentexts. Ältere
+Dossiers ohne dieses Feld werden weiterhin geladen und nur über den Text geprobt. Angehängte eigene
+Materialien (Quellen ohne Adresse) durchsucht die Probe nicht, weil die Lesesuche sie auslässt.
+
+Ein Treffer widerlegt die Lücke nicht. Eine Begriffssuche über hunderte Abschnitte trifft fast immer
+irgendetwas; ein Treffer benennt deshalb einen Abschnitt, der gelesen werden muss. Die Zustände sind
+`no_hits` (kein passender Abschnitt), `hits_unread` (Treffer, noch ungelesen), `hits_read_confirmed`
+(gelesen, Lücke bleibt bestehen) und `resolved` (in den Quellen beantwortet). Nur `hits_unread`
+blockiert: Die Qualitätsprüfung nennt dann den Abschnitt, und `open_questions.md` trägt den Status
+hinter jeder offenen Frage. Treffer werden außerdem als erste Lesefenster der zuständigen Teilfrage
+vorgemerkt, was keinen zusätzlichen Aufruf kostet.
+
+Im Skriptlauf läuft dieselbe Probe einmal je Lauf bei der Planung über die Unsicherheiten des
+Wissensmodells, mit den `gap_terms` des Dossiers, und schreibt `runs/<run_id>/gap_probes.json`. Jede
+Zeile nennt in `owner_episodes` die Folgen, deren Quellen einen Treffer enthalten. Vor jedem
+Lehrkonzept gehen die ungelesenen Treffer in den Quellen dieser Folge in die bestehende
+Ergänzungsrecherche, deren Quellenkontext die Trefferabschnitte enthält. Beantwortet die Ergänzung
+die Frage, wird die Zeile `resolved`; nennt sie die Frage in `remaining_gaps`, wird die Zeile
+`hits_read_confirmed`, aber nur, wenn alle Trefferabschnitte im Quellenkontext der Ergänzung standen.
+`settled_by` hält die Folge fest, die das entschieden hat; eine spätere Folge mit denselben Quellen
+gibt dafür keine weitere Ergänzungsrunde aus. Die Skriptprüfung einer Folge wartet genau auf die
+Zeilen, die sie selbst hätte lesen müssen: ungelesene Treffer in ihren eigenen Quellen. Treffer, die
+in keiner Folge liegen, tragen den Zustand `hits_unowned`; sie blockieren nichts und stehen zur
+Nachprüfung in der Laufdatei.
+
 ## Grenzen und Wiederaufnahme
 
 Die erste Suche berücksichtigt die Breite der ursprünglichen Leitfragen. Danach prüft eine unabhängige Modellbewertung jede Leitfrage anhand von fünf verbindlichen Merkmalen: vollständige Antwort, erklärter Mechanismus mit Grundlagen und Beispiel, tatsächlich gelesene Belege, passende unabhängige Gegenprüfung sowie Grenzen und begründete Verbindungen. Fehlende Fragen, unlesbare Texte und bloße Inhaltsverzeichnisse bestehen diese Prüfung nicht. Wissenschaftlich offene Fragen dürfen mit belegten konkurrierenden Erklärungen und einer klaren Darstellung des Wissensstands beantwortet werden; fehlende Recherche darf nicht als wissenschaftliche Unsicherheit umgedeutet werden.

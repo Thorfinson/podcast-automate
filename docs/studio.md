@@ -123,6 +123,80 @@ Automatisierte Tests prüfen Planfreigaben, veraltete Text-/Stimmenstände, Assi
 
 Am 13.09.2026 wurde die deutsche Gemini-Bibliothek mit allen 30 Stimmen über den lokalen Studio-Server erstellt. Die vorhandene Sadaltager-Aufnahme wurde aus ihrem geprüften Cache übernommen; die übrigen 29 Stimmen wurden auf Nutzerauftrag über OpenRouter erzeugt. Alle 30 MP3-Dateien wurden technisch dekodiert und auf gültige Laufzeiten geprüft. Automatisierte Tests prüfen zusätzlich die Wiederverwendung ohne API-Key, die Fortsetzung nach einem Fehler und Play ohne Generierungsauftrag. Ein vollständiger Durchlauf mit einem neuen Thema und eine Hörprüfung bleiben die praktische Abnahme. Automatisierte Inhaltsreviews garantieren keine hervorragende Erzählung; deine Durchsicht bleibt bewusst Teil des Ablaufs.
 
+## Sprechformen, Pausen, Hostnamen und redaktionelle Notizen
+
+Auf der Audioseite steht **Aussprache prüfen** direkt über dem Kontrollkästchen der Freigabe;
+darunter liegen zwei einklappbare Bereiche mit Einstellungen.
+
+**Aussprache prüfen** listet die Wörter, die eine Stimme nach eigener Regel liest: mehrstellige
+Zahlen, Abkürzungen, Versions- und Modellnamen wie `V3.2` oder `H800` und Wörter mit fremden
+Zeichen. Der Server berechnet die Liste ohne Modellaufruf aus dem veröffentlichten Text, der
+Sprechformtabelle und den Abschnitts-Sprechformen, deshalb steht sie schon vor der ersten
+Vertonung bereit und soll vor der Freigabe gelesen werden. Die Liste beschreibt den tatsächlich
+gesprochenen Text: ein Eintrag in der Tabelle lässt das Wort aus der Liste verschwinden. Nach einer
+Vertonung liegt derselbe Bericht zusätzlich in `reports/<folge>_audio.json`.
+
+**Sprechformen, Pausen und Hostnamen** speichert eine Tabelle je Projekt, eine Zeile pro Eintrag in
+der Form `geschrieben = gesprochen`. Jede Vertonung erhält dann zwei Felder: `text` bleibt der
+geprüfte Skripttext für Transkript, Hash und Freigabe, `spoken_text` ist das, was die Stimme hört,
+und steht nur dort, wo es vom Text abweicht. Ein Abschnitt ohne Sprechform wird deshalb genauso
+gespeichert und im Cache gefunden wie vor der Einführung der Sprechformen; keine bereits erzeugte
+Aufnahme wird ein zweites Mal bezahlt. Eine Sprechform ändert nie das Skript und nie einen
+Skript-Hash.
+
+Die Ersetzung ist schreibungsgenau und arbeitet mit ganzen Wörtern. Ein Bindestrich, ein
+Gedankenstrich und ein Schrägstrich trennen Wörter: der Eintrag `KL` erreicht „KL-Abweichung“, der
+Eintrag `H800` auch „H800-GPUs“. Ein Punkt zwischen Zeichen trennt nicht: der Eintrag `V3` lässt
+„V3.2-Exp“ unverändert, der Eintrag `1.000` lässt „1.000.000“ unverändert; dafür gibt es die
+Einträge `V3.2` und `1.000.000`. Der Bericht zerlegt den Text nach derselben Regel, jedes gemeldete
+Wort lässt sich also mit genau einem Eintrag beheben. Bei mehreren passenden Einträgen gewinnt der
+längste, und keine Ersetzung wird ein zweites Mal ersetzt.
+
+Die drei Pausenwerte sind Mindestpausen bei gleicher Stimme, bei einem Stimmwechsel und an einer
+Kapitelgrenze; eine längere geplante Pause bleibt erhalten. Die Montage und die Aufteilung einer zu
+langen Folge in Teile rechnen mit denselben angewendeten Pausen, sodass eine Folge nahe der
+30-Minuten-Grenze vor der Montage geteilt wird und nicht erst nach der bezahlten Vertonung scheitert.
+Geänderte Pausen sind hörbar und verlangen deshalb eine neue Audio-Freigabe. Die Standardwerte werden
+in Freigaben und Laufeingaben nicht mitgespeichert; nur eine abweichende Pausenregel steht dort und
+ändert den Eingabe-Hash.
+
+Die **Hostnamen** sind zwei Felder im selben Bereich: beide Namen oder keinen. Mit Namen dürfen sich
+die Hosts im Skript so ansprechen, Transkript, Shownotes und Leseseite zeigen die Namen; ohne Namen
+bleiben es „Host A“ und „Host B“. Ein Stimmenname ist nie ein Hostname. Die Namen stehen in
+`project.yaml` und gehören zum Projekt-Hash: geänderte Namen gelten für neue Skriptläufe, bestehende
+Audio-Freigaben bleiben gültig, weil sie an Skript-Hash und Stimmen gebunden sind. Ein Projekt ohne
+Namen behält den Projekt-Hash, den seine bisherigen Läufe tragen.
+
+**Redaktionelle Notizen** stehen in `projects/<id>/style_notes.md` und gehen in die Eingaben eines
+Skriptlaufs ein. Sie erreichen das Schreiben, das Dialog-Polishing und beide Prüfungen; die
+Belegregeln haben Vorrang. Eine Änderung führt zu einem neuen Lauf, weil sie den Eingabe-Hash ändert.
+
+Auf der Leseseite hat jede Sprechpassage einer veröffentlichten Folge mit Audio eine eigene
+**Sprechform**. Das Feld beginnt mit dem Text, den die Tabelle für diesen Abschnitt ergibt; wer es
+unverändert speichert, legt keine Abschnitts-Sprechform an, und die Tabelle gilt weiter. Ein
+abweichender Text gilt nur für diesen Abschnitt und geht der Tabelle vor. „Nur diesen Abschnitt neu
+rendern“ sendet den Auftrag mit dem Kennzeichen `rerender` statt einer neuen Freigabe: Das Studio
+prüft nach derselben Regel wie die Vertonung, ob für genau diesen Skript-Hash mit dem gewählten
+Anbieter und den Stimmen eine gespeicherte Freigabe vorliegt, und lehnt den Auftrag sonst mit dem
+Hinweis auf die Audioseite ab. Skript-Hash, Leseansicht, Auftrag und Audioauswahl werden dabei wie
+bei jeder Vertonung gegen den angezeigten Stand geprüft. Der Lauf erzeugt nur den geänderten
+Abschnitt neu, alle anderen kommen aus dem Cache; die Freigabequittung des Laufs nennt die
+gespeicherte Freigabe, nicht eine neue Entscheidung. Die Abweichungen stehen anschließend im
+Exportbericht und in den Shownotes.
+
+Nach dem Hören trägst du die **Hörprüfung** ein. Der Prüfbogen `listening_sheet.md` liegt im Export
+neben der MP3 und hat Spalten für Unklarheiten, verlorene Aufmerksamkeit und Aussprache. Diese
+Angabe setzt ausschließlich ein Mensch; kein Programmschritt setzt sie.
+
+## Hinweise der Prüfungen
+
+Auf der Leseseite einer veröffentlichten Folge steht ein einklappbares Feld **Hinweise der
+Prüfungen**. Es zeigt, was die Prüfungen gesagt, aber nicht blockiert haben: die Grenzen, die jede
+Prüfung ihrem eigenen Urteil gibt, die Erklärlücken, die die Prüfer als nicht notwendig eingeordnet
+haben, mit ihrer Begründung, und die deterministischen Hinweise über wiederholte Definitionen,
+wiederholte Hinweise auf erfundene Beispiele, einen langen Kaltstart und eine Überlänge. Nichts davon
+verhindert eine Veröffentlichung; es ist Lesestoff für deine Durchsicht.
+
 ## Ausführung und Projektübersicht
 
 **Sequenziell oder parallel wählst du pro Projekt im Gespräch**, getrennt für Text und Audio. Zum Beispiel: „Text parallel, Vertonung sequenziell“. Parallel bedeutet höchstens drei Folgen gleichzeitig innerhalb von Skripterstellung, Dialog-Polishing oder Qualitätsprüfung – auch bei Codex über das Abo. Recherche und Lehrkonzept bleiben in Reihenfolge, damit gemeinsame Belege und vorausgesetzte Beispiele konsistent bleiben. Der Modus wird beim Start eines Textauftrags gespeichert; Fortsetzen behält ihn bei. Bestehende Projekte und ältere Aufträge bleiben zunächst sequenziell. Anbieterlimits und das genehmigte Modellaufrufbudget gelten weiter.

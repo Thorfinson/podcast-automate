@@ -40,6 +40,28 @@ class PromptFileTests(unittest.TestCase):
         self.assertEqual(referenced - files, set(), "code names prompt files that do not exist")
         self.assertEqual(files - referenced, set(), "prompt files that no code uses")
 
+    def test_the_audit_rules_are_present_where_their_checks_expect_them(self):
+        continuity = prompts.text("continuity")
+        self.assertIn("established_terms", continuity)
+        self.assertIn("one short recall clause per term per episode", continuity)
+        self.assertIn("under 90 words", prompts.text("episode_framing"))
+        for name in ("write_episode", "dialogue_polish"):
+            with self.subTest(prompt=name):
+                self.assertIn("illustrative exactly once", prompts.text(name))
+        self.assertIn("demanding_passages", prompts.text("dialogue_polish_review"))
+        self.assertIn("resolved_by", prompts.text("dialogue_polish_review"))
+        self.assertIn("terms the words the hosts will actually say", prompts.text("teaching_design"))
+        self.assertIn("include at least one source not authored by the organisation making the claim",
+                      prompts.text("research_discovery"))
+        # WP14 attribution: the writer attributes once, the reviewer notes a miss as a limitation.
+        self.assertIn("attribute it audibly once in this episode", prompts.text("write_episode"))
+        self.assertIn("note a missing attribution in limitations, never as an issue", prompts.text("script_review"))
+        self.assertIn("use a comparison only where the sources support it", prompts.text("plain_language"))
+
+    def test_pilot_specific_examples_no_longer_live_in_the_general_rules(self):
+        self.assertNotIn("tokenizer", prompts.text("continuity"))
+        self.assertNotIn("map", prompts.text("plain_language").split())
+
     def test_shared_rules_compose_without_double_spaces(self):
         from podcast_automate.editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, TERMINOLOGY
         from podcast_automate.research import PLAIN_LANGUAGE

@@ -13,12 +13,15 @@ from podcast_automate.research import run_research, validate_dossier
 from podcast_automate.research_patches import DossierPatch
 from podcast_automate.research_review import SourceReview, SourceReviewIssue
 from podcast_automate.research_models import Evidence, Finding, QuestionCoverage, ResearchDiscovery, ResearchDossier
+from podcast_automate.research_quality import requirements_for
+from podcast_automate.research_tasks import QuestionPlan, ReopenPlan, ResearchDecision
+from podcast_automate.run_budget import approve_research_gap
 from podcast_automate.runner import status
 from podcast_automate.sources import canonical_url, extract, public_url, PublicRedirect
 from podcast_automate.storage import write_yaml
 from tests import research_fixtures as fixtures
 from tests.research_fixtures import TEXT, HTML, discovery, dossier_from_prompt
-from tests.question_fixtures import complete_fixture_response
+from tests.question_fixtures import complete_fixture_response, decision, task_value
 
 
 class SourceTests(unittest.TestCase):
@@ -109,6 +112,60 @@ class ResearchTests(fixtures.ResearchProjectCase):
         self.assertEqual(self.download.call_count, 1)
         self.assertTrue(all(stage.attempts == 1 for stage in second.stages.values()))
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
+
+    def test_discovery_asks_for_independent_sources_under_its_own_version(self):
+        seen = []
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is ResearchDiscovery:
+                seen.append((kwargs["prompt_version"], prompt))
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            self.assertEqual(run_research(self.root).status, "completed")
+        self.assertEqual([version for version, _ in seen], ["research_discovery.v4-independence"])
+        self.assertIn("For every empirical or performance claim family, include at least one source not "
+                      "authored by the organisation making the claim, or state in limitations that none "
+                      "was found.", seen[0][1])
+
+    def test_open_questions_carry_what_the_corpus_probe_found(self):
+        """An open question reaches ``open_questions.md`` only through an accepted gap: one task
+        blocks, the user accepts it, and the resumed run finishes with the question on record.
+        The composed dossier declares the gap; the probe finds its section, which the definition
+        task had already read, so the line says the hits were read and the gap confirmed."""
+        gap = "The rule that assigns an energy to each configuration is missing."
+
+        def model(prompt, schema, directory, **kwargs):
+            payload = json.loads(prompt.splitlines()[-1])
+            if schema is QuestionPlan:
+                plan = QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+                plan.tasks[0].requirement_ids = [r["id"] for r in requirements_for(self.config)]
+                return plan, {}
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                return decision("blocked"), {}
+            if schema is ReopenPlan:
+                routes = ReopenPlan(routes=[dict(index=i, task_ids=["task_empirical"], reason="Only the accepted gap.")
+                                            for i in range(len(payload["objections"]))])
+                return complete_fixture_response(routes, payload), {}
+            value, meta = self.model(prompt, schema, directory, **kwargs)
+            if isinstance(value, ResearchDossier) and not value.open_questions:
+                value.open_questions = [gap]
+            return value, meta
+
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            first = run_research(self.root)
+        self.assertEqual((first.status, first.stages["dossier"].error.code), ("blocked", "research_questions_blocked"))
+        approve_research_gap(self.root, first.run_id, "task_empirical", "Out of scope for this series")
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            run = run_research(self.root, resume=True)
+        self.assertEqual((run.status, run.run_id), ("completed", first.run_id))
+        probes = json.loads((self.root / "runs" / run.run_id /
+                             "question_research/gap_probes.json").read_text(encoding="utf-8"))
+        self.assertEqual([row["text"] for row in probes], [gap])
+        self.assertTrue(probes[0]["hits"])
+        self.assertEqual(probes[0]["status"], "hits_read_confirmed")
+        text = (self.root / "research/open_questions.md").read_text(encoding="utf-8")
+        references = ", ".join(hit["reference"] for hit in probes[0]["hits"])
+        self.assertIn(f"- {gap} Korpusprobe: gelesen und bestätigt trotz Treffern in {references}.", text)
+        self.assertIn("- Akzeptierte Lücke: What is energy? (Out of scope for this series)", text)
 
     def test_selected_research_model_is_bound_to_run_and_preserved_on_resume(self):
         original = (self.root / "project.yaml").read_bytes()

@@ -146,10 +146,38 @@ def validate_objection(objection, tasks, findings, context, *, target_task=None,
                             sorted(objection.finding_ids), objection.missing_evidence])[:16]
 
 
+def single_group_findings(findings, assessments):
+    """Claims and mechanisms whose every source belongs to one known research group.
+
+    Descriptive, never a gate: 2026 model claims often have no independent test yet, so the
+    honest outcome is a stated limitation, not a forced source. Sources whose group is unknown
+    are reported as unknown rather than counted as independent.
+    """
+    groups = {a.source_id: a.research_group for a in assessments}
+    rows = []
+    for finding in findings:
+        if finding.kind not in {"claim", "mechanism"}:
+            continue
+        sources = list(dict.fromkeys(e.reference.split("#")[0] for e in finding.evidence))
+        known = [groups[s] for s in sources if groups.get(s)]
+        unknown = [s for s in sources if not groups.get(s)]
+        if known and len(set(known)) == 1 and not unknown:
+            rows.append({"finding_id": finding.id, "research_group": known[0],
+                         "source_ids": sources, "unknown_group_source_ids": []})
+        elif not known and sources:
+            rows.append({"finding_id": finding.id, "research_group": None,
+                         "source_ids": sources, "unknown_group_source_ids": unknown})
+        elif known and len(set(known)) == 1:
+            rows.append({"finding_id": finding.id, "research_group": known[0],
+                         "source_ids": sources, "unknown_group_source_ids": unknown})
+    return rows
+
+
 def evidence_summary(findings, review):
     return {"version": EVIDENCE_VERSION, "findings": [
         {"finding_id": row.finding_id, "passage_present": True,
          "automated_support_checked": True, "support_verdict": row.verdict,
          "empirical_status": row.empirical_status, "finding_hash": digest(next(
              f.model_dump() for f in findings if f.id == row.finding_id))}
-        for row in review.finding_support], "concentration": concentration(review.source_assessments)}
+        for row in review.finding_support], "concentration": concentration(review.source_assessments),
+        "single_group_findings": single_group_findings(findings, review.source_assessments)}

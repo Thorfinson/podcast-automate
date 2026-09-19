@@ -49,6 +49,83 @@ class CliTests(unittest.TestCase):
             _, data = self.invoke("status", root, "--json")
             self.assertEqual(data["run"]["stages"]["codex_probe"]["error"]["code"], "codex_missing")
 
+    def test_series_review_runs_on_its_own_without_touching_the_reviewed_run(self):
+        from podcast_automate.scripting import run_script
+        from podcast_automate.storage import file_hash, read_yaml
+        from tests import script_fixtures as fixtures
+        fixture = fixtures.script_project(self)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
+            script = run_script(fixture.root)
+        self.assertEqual(script.status, "completed")
+        work = fixture.root / "runs" / script.run_id
+        before = {path.relative_to(work).as_posix(): file_hash(path)
+                  for path in sorted(work.rglob("*")) if path.is_file()}
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
+            code, data = self.invoke("series-review", str(fixture.root), "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(data["status"], "completed")
+        self.assertNotEqual(data["run_id"], script.run_id)
+        # The reviewed run stays byte-identical; the verdict lands in its own run folder.
+        self.assertEqual({path.relative_to(work).as_posix(): file_hash(path)
+                          for path in sorted(work.rglob("*")) if path.is_file()}, before)
+        report = json.loads((fixture.root / "runs" / data["run_id"] /
+                             "series_review.json").read_text(encoding="utf-8"))["report"]
+        self.assertEqual(report["status"], "passed")
+        quality = read_yaml(fixture.root / "reports/script_quality.yaml")
+        self.assertEqual(quality["series_review_run_id"], data["run_id"])
+        self.assertTrue(quality["complete_series_review"])
+        self.assertEqual(read_yaml(fixture.root / "runs" / data["run_id"] / "run_manifest.yaml")["kind"],
+                         "series_review")
+        self.assertEqual(json.loads((fixture.root / "runs/latest.json").read_text(encoding="utf-8")),
+                         {"run_id": script.run_id})
+
+    def test_series_review_keeps_the_latest_pointer_and_mirrors_only_the_published_run(self):
+        from podcast_automate.scripting import run_script
+        from podcast_automate.storage import read_yaml
+        from tests import script_fixtures as fixtures
+        fixture = fixtures.script_project(self)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
+            first = run_script(fixture.root)
+            second = run_script(fixture.root, revise="ep_001", feedback="Tighter.")
+        self.assertEqual((first.status, second.status), ("completed", "completed"))
+        report = fixture.root / "reports/script_quality.yaml"
+        before = report.read_bytes()
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
+            code, data = self.invoke("series-review", str(fixture.root), "--run", first.run_id, "--json")
+        self.assertEqual((code, data["status"], data["report_mirrored"], data["script_run_id"]),
+                         (0, "completed", False, first.run_id))
+        self.assertIn("nicht der veröffentlichte Stand", data["message"])
+        self.assertEqual(report.read_bytes(), before)
+        review_run = fixture.root / "runs" / data["run_id"]
+        verdict = json.loads((review_run / "series_review.json").read_text(encoding="utf-8"))["report"]
+        self.assertEqual(verdict["status"], "passed")
+        # The one call is charged to the review run's own budget.
+        self.assertEqual(json.loads((review_run / "budget.json").read_text(encoding="utf-8"))["model_calls"], 1)
+        # The latest-run pointer still names the script run, so status and resume dispatch on it.
+        self.assertEqual(json.loads((fixture.root / "runs/latest.json").read_text(encoding="utf-8")),
+                         {"run_id": second.run_id})
+        code, state = self.invoke("status", str(fixture.root), "--json")
+        self.assertEqual((code, state["run"]["run_id"], state["run"]["kind"]), (0, second.run_id, "script"))
+        calls = len(fixture.calls)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
+            code, resumed = self.invoke("resume", str(fixture.root), "--json")
+        self.assertEqual((code, resumed["run"]["run_id"], resumed["run"]["status"]), (0, second.run_id, "completed"))
+        self.assertEqual(len(fixture.calls), calls)
+        # Without --run the published run is reviewed and that verdict reaches the report.
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
+            code, data = self.invoke("series-review", str(fixture.root), "--json")
+        self.assertEqual((code, data["report_mirrored"], data["script_run_id"]), (0, True, second.run_id))
+        self.assertIn("reports/script_quality.yaml", data["message"])
+        quality = read_yaml(report)
+        self.assertEqual((quality["series_review_run_id"], quality["run_id"]), (data["run_id"], second.run_id))
+        self.assertEqual(json.loads((fixture.root / "runs/latest.json").read_text(encoding="utf-8")),
+                         {"run_id": second.run_id})
+        # A review run has nothing to resume; naming it explicitly is refused, not treated as a probe.
+        calls = len(fixture.calls)
+        code, refused = self.invoke("resume", str(fixture.root), "--run-id", data["run_id"], "--json")
+        self.assertEqual((code, refused["code"]), (1, "invalid_run"))
+        self.assertEqual(len(fixture.calls), calls)
+
     def test_invalid_user_configuration_has_no_traceback(self):
         with tempfile.TemporaryDirectory() as root:
             code, data = self.invoke("init", root, "--topic", "   ", "--json")

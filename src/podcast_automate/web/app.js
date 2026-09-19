@@ -496,6 +496,79 @@ function renderReaderControls() {
     ${e.preview?`<p class="note">${e.state==="draft"?"Der Entwurf ist vollständig gespeichert. Dialog-Polishing und Qualitätsprüfungen stehen noch aus.":e.state==="polished"?"Der Dialog ist überarbeitet. Die abschließenden Qualitätsprüfungen stehen noch aus.":"Die automatischen Prüfungen dieser Fassung sind bestanden. Die Bereitstellung des Auftrags steht noch aus."} Du kannst bereits lesen; diese Vorschau hat noch keine Audio-Freigabe.</p>`:""}
     <p class="hint">Weitere Folgen erscheinen hier automatisch, sobald ein vollständiger Entwurf gespeichert ist.</p>`;
 }
+const reviewNoteLabels={script_review:"Quellen- und Skriptprüfung",teaching_review:"Lehrprüfung",editorial_review:"Redaktionelle Prüfung",dialogue_polish:"Dialogvergleich",dismissed_gaps:"Eingeordnete Erklärlücken",advisories:"Deterministische Hinweise"};
+function renderReviewNotes(entry) {
+  // The published report is the only source; a preview has been through no full review yet.
+  const notes=entry.preview?null:project.episodes.find(row=>row.script.episode_id===entry.script.episode_id)?.review_notes;
+  const groups=Object.keys(reviewNoteLabels).filter(name=>notes?.[name]?.length);
+  if(!groups.length) return "";
+  const line=(name,row)=>name==="dismissed_gaps"?`<strong>${escape(row.gap)}</strong><p>${escape(row.reason)}</p>`
+    :name==="advisories"?`<strong>${escape(row.code)}</strong><p>${escape(row.detail)}${row.segment_ids?.length?` (${row.segment_ids.map(escape).join(", ")})`:""}</p>`
+    :`<p>${escape(row)}</p>`;
+  return `<details class="panel review-notes"><summary>Hinweise der Prüfungen</summary>
+    <p class="hint">Diese Punkte haben die Veröffentlichung nicht verhindert. Die Prüfungen nennen sie als Grenze ihres eigenen Urteils oder als beobachtetes Muster.</p>
+    ${groups.map(name=>`<h3>${escape(reviewNoteLabels[name])}</h3><ul>${notes[name].map(row=>`<li>${line(name,row)}</li>`).join("")}</ul>`).join("")}</details>`;
+}
+function hostLabels() {
+  const names=project?.config?.host_names||{};
+  return {host_a:names.host_a||"Host A",host_b:names.host_b||"Host B"};
+}
+// The same boundary rule as spoken_forms.apply: a hyphen, en dash or slash separates tokens,
+// a dot between word characters does not; the longest written form wins in one pass.
+function spokenFormPattern(table) {
+  const written=[...new Set((table?.entries||[]).map(row=>row.written).filter(Boolean))].sort((a,b)=>b.length-a.length);
+  if(!written.length)return null;
+  const escaped=written.map(value=>value.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"));
+  return new RegExp(`(?<![\\p{L}\\p{N}_])(?<![\\p{L}\\p{N}_]\\.)(${escaped.join("|")})(?![\\p{L}\\p{N}_])(?!\\.[\\p{L}\\p{N}_])`,"gu");
+}
+function applySpokenForms(text, table) {
+  const pattern=spokenFormPattern(table);
+  if(!pattern)return String(text);
+  const spoken=new Map((table.entries||[]).map(row=>[row.written,row.spoken]));
+  return String(text).replace(pattern,match=>spoken.get(match));
+}
+function renderSpokenOverride(episodeId,segment,overrides) {
+  const current=overrides[segment.segment_id]||"";
+  // The field starts from what the table already produces, so saving it unchanged creates no
+  // override and the table keeps working for this segment.
+  return `<details class="spoken-override"><summary>Sprechform${current?" · gesetzt":""}</summary>
+    <p class="hint">Nur der Klang ändert sich. Der Text dieser Folge, sein Hash und deine Freigabe bleiben, wie sie sind.</p>
+    ${area("spoken-"+segment.segment_id,"Wie soll dieser Abschnitt gesprochen werden?",current||applySpokenForms(segment.text,project.spoken_forms),3)}
+    <div class="actions"><button class="secondary small" data-action="spoken-override" data-episode="${escape(episodeId)}" data-segment="${escape(segment.segment_id)}" ${disabled()}>Sprechform speichern</button>
+    <button class="secondary small" data-action="audio" data-rerender="true" data-episode="${escape(episodeId)}" ${disabled()}>Nur diesen Abschnitt neu rendern</button></div></details>`;
+}
+function audioRequest(episodeId, rerender=false) {
+  // From the reading page the saved approval stands: script hash and voices are unchanged and
+  // only a spoken form differs, so the re-render is not a new editorial decision. The server
+  // checks the saved approval by the pipeline's own rule before it starts anything.
+  const e=episodeId?project.episodes.find(row=>row.script.episode_id===episodeId):project.episodes[episodeIndex];
+  return {episode:e.script.episode_id,approve_audio:!rerender&&!!$("audio-approval")?.checked,
+    ...(rerender?{rerender:true}:{}),script_hash:e.hash,readable_hash:e.readable_hash,
+    config_hash:project.config_hash,audio_hash:project.audio_hash};
+}
+async function rerenderEpisode(episodeId) {
+  await start("audio",audioRequest(episodeId,true));
+}
+async function saveSpokenOverride(episodeId, segmentId) {
+  const field=$("spoken-"+segmentId), value=field?field.value:"";
+  const segment=project.episodes.find(row=>row.script.episode_id===episodeId)?.script.segments.find(s=>s.segment_id===segmentId);
+  // What the table already produces is not an override; sending it empty removes a stale one.
+  const spoken=segment&&value.trim()===applySpokenForms(segment.text,project.spoken_forms)?"":value;
+  await api(`/api/projects/${project.id}/spoken_override`,{episode:episodeId,segment_id:segmentId,spoken});
+  project=await api(`/api/projects/${project.id}`);readingSnapshot=null;render();
+  notice(spoken?"Sprechform gespeichert. Mit „Neu rendern“ wird nur dieser Abschnitt neu vertont.":"Keine abweichende Sprechform; die Tabelle gilt für diesen Abschnitt.");
+}
+async function saveSpeechSettings() {
+  const hostA=$("host-name-a").value.trim(), hostB=$("host-name-b").value.trim();
+  if(!!hostA!==!!hostB)throw new Error("Beide Hostnamen angeben oder beide Felder leer lassen.");
+  await api(`/api/projects/${project.id}/save`,{config:{...project.config,host_names:hostA?{host_a:hostA,host_b:hostB}:null},
+    config_hash:project.config_hash,text:project.text,audio_settings:{...currentAudio(),pauses:{same_speaker_ms:Number($("pause-same").value),
+      speaker_change_ms:Number($("pause-change").value),chapter_break_ms:Number($("pause-chapter").value)}},
+    audio_hash:project.audio_hash,spoken_forms:parseSpokenForms($("spoken-forms").value),
+    spoken_forms_hash:project.spoken_forms_hash});
+  project=await api(`/api/projects/${project.id}`);render();
+  notice("Gespeichert. Geänderte Pausen benötigen eine neue Audio-Freigabe; geänderte Hostnamen gelten für neue Skriptläufe.");
+}
 function refreshScriptReader() {
   if(!readingSnapshot||!$("script-reader-controls")){$("content").innerHTML=renderScript();return;}
   // Only the picker and status change. Keep the text DOM, selection and feedback intact.
@@ -513,11 +586,57 @@ function renderScript() {
   const e=readingSnapshot.entry,s=e.script;
   if(!e.preview)episodeIndex=Math.max(0,project.episodes.findIndex(row=>row.script.episode_id===s.episode_id));
   html+=`<div id="script-reader-controls">${renderReaderControls()}</div><div class="outline-summary"><span>${e.metrics.words.toLocaleString("de-DE")} Wörter</span><span>ca. ${Math.round(e.metrics.estimated_minutes)} Min. geschätzt</span><span>${s.chapters.length} Kapitel</span></div><article id="script-text" class="panel reader"><h1>${escape(s.title)}</h1>`;
-  for(const chapter of s.chapters) html+=`<h2>${escape(chapter.title)}</h2>`+s.segments.filter(x=>x.chapter_id===chapter.chapter_id).map(x=>`<div class="utterance ${x.speaker_id}"><strong>${escape(project.config.voice_profile[x.speaker_id])}</strong><p>${escape(x.text)}</p></div>`).join("");
-  html+='</article>';
+  const published=e.preview?null:project.episodes.find(row=>row.script.episode_id===s.episode_id);
+  const spoken=published?.audio?.length?(published.spoken_overrides||{}):null;
+  for(const chapter of s.chapters) html+=`<h2>${escape(chapter.title)}</h2>`+s.segments.filter(x=>x.chapter_id===chapter.chapter_id).map(x=>`<div class="utterance ${x.speaker_id}"><strong>${escape(hostLabels()[x.speaker_id])}</strong><p>${escape(x.text)}</p>${spoken?renderSpokenOverride(s.episode_id,x,spoken):""}</div>`).join("");
+  html+='</article>'+renderReviewNotes(e);
   if(e.preview)html+=`<p class="hint">Nach Abschluss der Ausarbeitung kannst du Rückmeldung für eine weitere Überarbeitung geben und über die Vertonung entscheiden.</p><button class="secondary" data-step="${PAGE.production}">Ausarbeitung verfolgen</button>`;
   else html+=`<section class="panel"><h2>Deine redaktionelle Rückmeldung</h2>${area("script-feedback","Was fehlt oder klingt noch nicht richtig?","",4)}<div class="actions"><button class="secondary" data-action="revise" ${disabled()}>Diese Folge überarbeiten lassen</button><button data-step="${PAGE.audio}">Weiter zur Audio-Freigabe →</button></div><p class="hint">Eine Überarbeitung durchläuft erneut Polishing und Prüfung. Sie erhält eine neue Audio-Freigabe.</p></section>`;
   return html;
+}
+const NEWLINE=String.fromCharCode(10);
+const pronunciationLabels={numbers:"Mehrstellige Zahlen",abbreviations:"Abkürzungen",versions:"Versions- und Modellnamen",foreign:"Fremdsprachige Wörter"};
+function renderPronunciation(e) {
+  // Model-free, computed by the server from the published text, the table and the overrides,
+  // so it is available before the first audio run and belongs above the approval.
+  const report=e.pronunciation;
+  if(!report?.flagged||!Object.keys(report.flagged).length)return "";
+  return `<details class="pronunciation"><summary>Aussprache prüfen · ${Object.values(report.flagged).reduce((n,rows)=>n+rows.length,0)} auffällige Wörter</summary>
+    <p class="hint">Diese Wörter liest die Stimme nach eigener Regel. Prüfe sie vor der Freigabe; eine Sprechform ändert nur den Klang, nie den Text.</p>
+    ${Object.entries(report.flagged).map(([name,rows])=>`<h3>${escape(pronunciationLabels[name]||name)}</h3><ul>${rows.map(row=>`<li><strong>${escape(row.token)}</strong> · ${row.count}× (${row.segment_ids.map(escape).join(", ")})</li>`).join("")}</ul>`).join("")}
+    ${Object.keys(report.applied||{}).length?`<h3>Angewendete Sprechformen</h3><ul>${Object.entries(report.applied).map(([written,count])=>`<li><strong>${escape(written)}</strong> · ${count}×</li>`).join("")}</ul>`:""}</details>`;
+}
+function spokenFormsText(table) { return (table?.entries||[]).map(row=>`${row.written} = ${row.spoken}`).join(NEWLINE); }
+function parseSpokenForms(text) {
+  return {schema_version:"1.0",entries:String(text).split(NEWLINE).map(line=>line.split("=")).filter(parts=>parts.length>=2)
+    .map(parts=>({written:parts[0].trim(),spoken:parts.slice(1).join("=").trim()})).filter(row=>row.written&&row.spoken)};
+}
+function renderStyleNotes() {
+  return `<details class="panel style-notes"><summary>Redaktionelle Notizen</summary>
+    <p class="hint">Stehende Korrekturen für alle künftigen Folgen dieses Projekts. Sie gelten beim Schreiben, beim Dialog und in beiden Prüfungen; die Belegregeln haben Vorrang. Eine Änderung führt zu einem neuen Skriptlauf.</p>
+    ${area("style-notes","Was soll immer anders gemacht werden?",project.style_notes||"",6)}
+    <div class="actions"><button class="secondary" data-action="save-notes" ${disabled()}>Notizen speichern</button></div></details>`;
+}
+function renderSpeechSettings(a) {
+  const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
+  const names=project.config?.host_names||{};
+  const number=(id,label,value)=>`<div class="field"><label for="${id}">${escape(label)}</label><input id="${id}" type="number" min="0" max="10000" step="50" value="${Number(value)}"></div>`;
+  return `<details class="panel speech-settings"><summary>Sprechformen, Pausen und Hostnamen</summary>
+    <p class="hint">Gilt für alle Folgen dieses Projekts. Eine Änderung der Pausen verlangt eine neue Audio-Freigabe, weil sie hörbar ist.</p>
+    ${area("spoken-forms","Sprechformen · eine Zeile je Eintrag: geschrieben = gesprochen",spokenFormsText(project.spoken_forms),5)}
+    <p class="hint">Ein Bindestrich trennt Wörter, ein Punkt zwischen Zeichen nicht: der Eintrag „KL“ erreicht „KL-Abweichung“, der Eintrag „V3“ lässt „V3.2-Exp“ unverändert.</p>
+    <div class="row">${number("pause-same","Gleiche Stimme (ms)",pauses.same_speaker_ms)}${number("pause-change","Stimmwechsel (ms)",pauses.speaker_change_ms)}</div>
+    ${number("pause-chapter","Kapitelwechsel (ms)",pauses.chapter_break_ms)}
+    <div class="row">${textInput("host-name-a","Name von Host A (optional)",names.host_a||"")}${textInput("host-name-b","Name von Host B (optional)",names.host_b||"")}</div>
+    <p class="hint">Beide Namen oder keinen. Mit Namen sprechen sich die Hosts im Skript so an und Transkript und Leseseite zeigen sie; ohne Namen bleiben es Host A und Host B. Geänderte Namen gelten für neue Skriptläufe.</p>
+    <div class="actions"><button class="secondary" data-action="save-speech" ${disabled()}>Sprechformen, Pausen und Hostnamen speichern</button></div></details>`;
+}
+function renderListeningReview(e) {
+  return `<section class="panel"><h2>Hörprüfung</h2>
+    <p class="hint">Der Prüfbogen liegt im Export neben der MP3. Diese Angabe setzt nur ein Mensch.</p>
+    <label class="approval"><input id="listening-done" type="checkbox" ${e.human_listening_reviewed?"checked":""}><span>Ich habe diese Folge vollständig gehört.</span></label>
+    ${area("listening-note","Was ist beim Hören aufgefallen?",e.listening_note||"",3)}
+    <div class="actions"><button class="secondary" data-action="listening-review" ${disabled()}>Hörprüfung eintragen</button></div></section>`;
 }
 function renderAudio() {
   let html=heading(6,"Vom Text zum Gespräch.","Gib eine gelesene Folge mit dem gewählten Audioanbieter ausdrücklich frei. Fertige Abschnitte bleiben für eine Fortsetzung gespeichert.");
@@ -525,8 +644,10 @@ function renderAudio() {
   episodeIndex=Math.min(episodeIndex,project.episodes.length-1);
   const e=project.episodes[episodeIndex];
   const a=currentAudio(),remote=a.provider==="openrouter_gemini_tts",blocked=audioBlockReason();
-  html+=episodePicker()+`<section class="panel"><div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${remote?"Gemini 3.1 Flash TTS · OpenRouter":"Qwen · lokal"}</span></div><p>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"}</p><p class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</p><button class="secondary small" data-step="0">Audioanbieter oder Stimmen ändern</button><label class="approval"><input id="audio-approval" type="checkbox" ${blocked?"disabled":""}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label><div class="actions"><button id="audio-start" data-action="audio" disabled>Audio erzeugen</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div></section>`;
+  html+=episodePicker()+`<section class="panel"><div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${remote?"Gemini 3.1 Flash TTS · OpenRouter":"Qwen · lokal"}</span></div><p>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"}</p><p class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</p><button class="secondary small" data-step="0">Audioanbieter oder Stimmen ändern</button>${renderPronunciation(e)}<label class="approval"><input id="audio-approval" type="checkbox" ${blocked?"disabled":""}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label><div class="actions"><button id="audio-start" data-action="audio" disabled>Audio erzeugen</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div></section>`;
   if(blocked)html+=`<p class="hint">${escape(blocked)}</p>`;
+  html+=renderSpeechSettings(a)+renderStyleNotes();
+  if(e.audio?.length)html+=renderListeningReview(e);
   if(remote)html+=boot.capabilities?.parallel_audio?`<p class="hint">${project.execution?.audio==="parallel"?"Parallel":"Sequenziell"} · ${project.audio_capacity?.active||0} von ${project.audio_capacity?.limit||1} Plätzen belegt. Weitere gelesene Folgen kannst du oben auswählen und einzeln freigeben.</p>`:'<p class="note">Parallele Vertonung benötigt einen Studio-Neustart nach Ende des laufenden Auftrags.</p>';
   if(project.episodes.some(e=>e.audio.length))html+='<button class="secondary" data-action="overview">Alle fertigen Folgen anhören →</button>';
   return html;
@@ -974,6 +1095,21 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/approve`,payload);
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Limit genehmigt. Ein laufender Auftrag übernimmt es beim nächsten Aufruf, ein angehaltener mit „Fortsetzen“.");return;
     }
+    if(action==="save-speech"){await saveSpeechSettings();return;}
+    if(action==="save-notes"){
+      await api(`/api/projects/${project.id}/save`,{config:project.config,config_hash:project.config_hash,
+        text:project.text,style_notes:$("style-notes").value,style_notes_hash:project.style_notes_hash});
+      project=await api(`/api/projects/${project.id}`);render();
+      notice("Notizen gespeichert. Sie gelten ab dem nächsten Skriptlauf.");return;
+    }
+    if(action==="listening-review"){
+      const e=project.episodes[episodeIndex];
+      await api(`/api/projects/${project.id}/listening_review`,{episode:e.script.episode_id,
+        reviewed:$("listening-done").checked,note:$("listening-note").value});
+      project=await api(`/api/projects/${project.id}`);render();notice("Hörprüfung eingetragen.");return;
+    }
+    if(action==="spoken-override"){await saveSpokenOverride(button.dataset.episode,button.dataset.segment);return;}
+    if(action==="audio"&&button.dataset.rerender){await rerenderEpisode(button.dataset.episode);return;}
     const extra={};
     if(action==="audio_samples"){
       extra.language=setupSelection().config.language;extra.approve_samples=true;
@@ -983,7 +1119,7 @@ document.addEventListener("click",event=>{
     if(action==="script")extra.plan_hash=project.outline.hash;
     if(action==="revise"){extra.message=$("script-feedback").value;extra.episode=project.episodes[episodeIndex].script.episode_id;}
     if(action==="resume"){extra.run_id=button.dataset.runId||project.job?.run?.run_id||project.run?.run_id;if(button.dataset.episode)extra.episode=button.dataset.episode;}
-    if(action==="audio"){const e=project.episodes[episodeIndex];Object.assign(extra,{episode:e.script.episode_id,approve_audio:$("audio-approval").checked,script_hash:e.hash,readable_hash:e.readable_hash,config_hash:project.config_hash,audio_hash:project.audio_hash});}
+    if(action==="audio")Object.assign(extra,audioRequest(button.dataset.episode));
     await start(action,extra);
   });
 });

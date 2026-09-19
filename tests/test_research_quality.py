@@ -46,6 +46,37 @@ class ResearchQualityTests(fixtures.ResearchProjectCase):
         self.assertFalse(result["passed"])
         self.assertEqual(len(result["blocking_gaps"]), 2)
 
+    def test_a_gap_with_unread_corpus_hits_blocks_and_a_read_one_does_not(self):
+        _, dossier, discovery, index, _, assessment = self.completed_data()
+        hit = {"reference": index.sources[0].id + "#" + index.sources[0].sections[0].id,
+               "title": index.sources[0].title, "key_term_matches": 2, "preview": "..."}
+        row = {"gap_id": "gap_one", "text": "The mechanism is missing.", "key_terms": ["mechanism"],
+               "hits": [hit], "status": "hits_unread"}
+        blocked = quality_report(self.config, dossier, discovery, index, assessment, gap_probes=[row])
+        self.assertFalse(blocked["passed"])
+        self.assertEqual(len(blocked["blocking_gaps"]), 1)
+        self.assertIn(hit["reference"], blocked["blocking_gaps"][0])
+        self.assertEqual(blocked["gap_probes"], [row])
+        for status in ("hits_read_confirmed", "no_hits", "resolved"):
+            with self.subTest(status=status):
+                result = quality_report(self.config, dossier, discovery, index, assessment,
+                                        gap_probes=[{**row, "status": status}])
+                self.assertEqual(result["blocking_gaps"], [])
+                self.assertTrue(result["passed"])
+
+    def test_the_rendered_report_explains_the_corpus_probe(self):
+        from podcast_automate.research_quality import render_quality
+        _, dossier, discovery, index, _, assessment = self.completed_data()
+        row = {"gap_id": "gap_one", "text": "The mechanism is missing.", "key_terms": ["mechanism"],
+               "hits": [{"reference": "src_a#sec_b", "title": "A", "key_term_matches": 2, "preview": "..."}],
+               "status": "hits_read_confirmed"}
+        text = render_quality(quality_report(self.config, dossier, discovery, index, assessment, gap_probes=[row]))
+        self.assertIn("## Korpusprobe der Lücken", text)
+        self.assertIn("Treffer gelesen, Lücke bestätigt", text)
+        self.assertIn("src_a#sec_b", text)
+        self.assertNotIn("## Korpusprobe", render_quality(
+            quality_report(self.config, dossier, discovery, index, assessment)))
+
     def test_missing_requirement_or_unknown_finding_cannot_pass(self):
         _, dossier, discovery, index, _, assessment = self.completed_data()
         for broken in (assessment.model_copy(update={"requirements": []}), assessment.model_copy(deep=True)):

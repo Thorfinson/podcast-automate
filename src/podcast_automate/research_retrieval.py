@@ -9,7 +9,17 @@ STOP_WORDS = set("""the and for with from that this these those into what which 
 has have does can its not all any also only full text original paper source sources research evidence
 der die das den dem des ein eine einer eines einem einen und oder mit von zur zum auf aus bei für
 wie was welche welcher welches warum sind ist wird werden wurde wurden sich noch auch als durch
-nicht einer diese dieser dieses diesen einem anhand bitte belege quellen abschnitt abschnitte""".split())
+nicht einer diese dieser dieses diesen einem anhand bitte belege quellen abschnitt abschnitte
+sie ihr ihre ihrer ihrem ihren ihres sein seine seiner seinem seinen seines uns unser unsere unserer
+wir ich mir mich ihm ihn ihnen beim vom ins ans unter uber fur nach vor hinter neben zwischen gegen
+ohne seit bis wegen trotz statt innerhalb ausserhalb wahrend dann dabei damit dafur dagegen davon
+dazu daran darauf darin daruber hier dort hierbei welchen welchem jede jeder jedes jeden jedem alle
+allen aller alles kein keine keinen keinem keiner keines aber dass denn doch weil wenn falls obwohl
+sowie sowohl sondern jedoch bereits schon nur etwa sehr mehr immer wieder somit wobei womit wodurch
+wozu haben hatte hatten gibt kann konnen muss mussen soll sollen darf durfen will wollen""".split())
+# The German block is written as ``terms`` sees a word: casefolded, umlauts and ß stripped
+# ("für" arrives as "fur", "über" as "uber"). Words that are also English content words ("war",
+# "man", "hat") are deliberately absent.
 
 
 def terms(text):

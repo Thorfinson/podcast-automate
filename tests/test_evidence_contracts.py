@@ -193,6 +193,65 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertEqual(coverage["suspected_equation_pages"], [1])
 
 
+class SingleGroupTests(unittest.TestCase):
+    """Descriptive only: this advisory names claims with one known source of authority."""
+
+    def assessments(self, **groups):
+        from podcast_automate.evidence_models import SourceAssessment
+        return [SourceAssessment(source_id=source_id, roles=["original_definition"],
+                                 evidence_refs=[f"{source_id}#sec_one"],
+                                 rationale="Fixture.", work_id="", version="", evidence_family="",
+                                 independence="unknown", method="", research_group=group, population="",
+                                 geography="", period="", limitations=[])
+                for source_id, group in groups.items()]
+
+    def finding(self, identifier, kind, *sources):
+        from podcast_automate.research_models import Evidence, Finding
+        return Finding(id=identifier, kind=kind, statement="A synthetic statement.",
+                       evidence=[Evidence(reference=f"{s}#sec_one", excerpt="A quote") for s in sources])
+
+    def test_a_claim_backed_only_by_one_group_is_listed_with_its_sources(self):
+        from podcast_automate.research_evidence import single_group_findings
+        rows = single_group_findings(
+            [self.finding("f_one", "claim", "src_a", "src_b")],
+            self.assessments(src_a="Vendor Labs", src_b="Vendor Labs"))
+        self.assertEqual(rows, [{"finding_id": "f_one", "research_group": "Vendor Labs",
+                                 "source_ids": ["src_a", "src_b"], "unknown_group_source_ids": []}])
+
+    def test_two_groups_are_not_reported(self):
+        from podcast_automate.research_evidence import single_group_findings
+        self.assertEqual(single_group_findings(
+            [self.finding("f_one", "claim", "src_a", "src_b")],
+            self.assessments(src_a="Vendor Labs", src_b="A university")), [])
+
+    def test_an_unknown_group_is_reported_as_unknown_rather_than_independent(self):
+        from podcast_automate.research_evidence import single_group_findings
+        rows = single_group_findings([self.finding("f_one", "claim", "src_a", "src_b")],
+                                     self.assessments(src_a="Vendor Labs", src_b=""))
+        self.assertEqual(rows[0]["research_group"], "Vendor Labs")
+        self.assertEqual(rows[0]["unknown_group_source_ids"], ["src_b"])
+        nothing_known = single_group_findings([self.finding("f_one", "claim", "src_a")],
+                                              self.assessments(src_a=""))
+        self.assertIsNone(nothing_known[0]["research_group"])
+
+    def test_definitions_and_limitations_are_not_effect_claims(self):
+        from podcast_automate.research_evidence import single_group_findings
+        for kind in ("definition", "limitation", "example"):
+            with self.subTest(kind=kind):
+                self.assertEqual(single_group_findings([self.finding("f_one", kind, "src_a")],
+                                                       self.assessments(src_a="Vendor Labs")), [])
+
+    def test_the_advisory_never_gates_and_reaches_the_quality_report(self):
+        from podcast_automate.research_evidence import evidence_summary, single_group_findings
+        from podcast_automate.research_review import SourceReview
+        findings = [self.finding("f_one", "claim", "src_a")]
+        review = SourceReview(issues=[], limitations=[], finding_support=[],
+                              source_assessments=self.assessments(src_a="Vendor Labs"))
+        summary = evidence_summary(findings, review)
+        self.assertEqual(summary["single_group_findings"], single_group_findings(findings, review.source_assessments))
+        self.assertTrue(summary["concentration"]["advisory_only"])
+
+
 class PrerequisiteTests(unittest.TestCase):
     def tasks(self):
         return QuestionPlan(tasks=[{**task_value("task_synthesis", "synthesis"), "depends_on": ["task_definition"]},

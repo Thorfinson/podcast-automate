@@ -78,7 +78,7 @@ class PlanningRepairTests(unittest.TestCase):
         self.run_plan(Mock(return_value=self.good))
         invoke = Mock(return_value=self.good)
         self.run_plan(invoke, signature="revised-brief", allow_legacy=True)
-        self.assertEqual(invoke.call_args.args[2], "series_plan.v3-framing")
+        self.assertEqual(invoke.call_args.args[2], "series_plan.v4-audit")
 
     def test_legacy_run_recovers_latest_saved_draft_and_used_repairs(self):
         for number, (version, plan) in enumerate([

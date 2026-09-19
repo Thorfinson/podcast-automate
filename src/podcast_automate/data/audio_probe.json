@@ -4,33 +4,51 @@
   "title": "Podcast Automate – Technische Hörprobe",
   "purpose": "technical_probe",
   "chapters": [
-    {"chapter_id": "dialog", "title": "Stimmen und Gespräch"},
-    {"chapter_id": "pronunciation", "title": "Fachbegriffe, Zahlen und Pausen"}
+    {
+      "chapter_id": "dialog",
+      "title": "Stimmen und Gespräch"
+    },
+    {
+      "chapter_id": "pronunciation",
+      "title": "Fachbegriffe, Zahlen und Pausen"
+    }
   ],
   "segments": [
     {
-      "segment_id": "seg_001", "scene_id": "scene_001", "chapter_id": "dialog",
+      "segment_id": "seg_001",
+      "scene_id": "scene_001",
+      "chapter_id": "dialog",
       "speaker_id": "host_a",
       "text": "Das ist eine technische Hörprobe für unsere Podcastserie. Wir testen zwei Stimmen, längere Erklärpassagen und die Übergänge zwischen ihnen. Hör darauf, ob die Stimme auch am Ende eines längeren Satzes verständlich bleibt und ob die Pausen angenehm wirken.",
-      "knowledge_refs": [], "pause_after_ms": 450
+      "knowledge_refs": [],
+      "pause_after_ms": 450
     },
     {
-      "segment_id": "seg_002", "scene_id": "scene_001", "chapter_id": "dialog",
+      "segment_id": "seg_002",
+      "scene_id": "scene_001",
+      "chapter_id": "dialog",
       "speaker_id": "host_b",
       "text": "Und wie klingt es, wenn ich nachfrage? Für die spätere Serie sollen Nachfragen helfen, einen Gedanken wirklich zu verstehen. Wir möchten genug Zeit für Herleitungen und Beispiele haben.",
-      "knowledge_refs": [], "pause_after_ms": 800
+      "knowledge_refs": [],
+      "pause_after_ms": 800
     },
     {
-      "segment_id": "seg_003", "scene_id": "scene_002", "chapter_id": "pronunciation",
+      "segment_id": "seg_003",
+      "scene_id": "scene_002",
+      "chapter_id": "pronunciation",
       "speaker_id": "host_a",
-      "text": "Jetzt folgen Wörter und Zahlen für den Aussprachetest: Maschinenlernen, energiebasierte Modelle, Gradientenverfahren, Alfredo Canziani und Yann LeCun. Zwölf Komma fünf Milligramm pro Deziliter. Null Komma null zwei. Einhundertzwanzig Sekunden.",
-      "knowledge_refs": [], "pause_after_ms": 600
+      "text": "Jetzt folgen Wörter und Zahlen für den Aussprachetest: Maschinenlernen, energiebasierte Modelle, Gradientenverfahren, Alfredo Canziani und Yann LeCun. Zwölf Komma fünf Milligramm pro Deziliter. Null Komma null zwei. Einhundertzwanzig Sekunden. Jetzt die schwierigen Fälle: j'ai mal aux pieds, DeepSeek-V3.2-Exp, H800 und Kullback-Leibler. Die Zahlen 2048, 1997 und 128000 bitte deutlich sprechen.",
+      "knowledge_refs": [],
+      "pause_after_ms": 600
     },
     {
-      "segment_id": "seg_004", "scene_id": "scene_002", "chapter_id": "pronunciation",
+      "segment_id": "seg_004",
+      "scene_id": "scene_002",
+      "chapter_id": "pronunciation",
       "speaker_id": "host_b",
       "text": "Damit endet die Hörprobe. Die Begriffe waren Testmaterial und noch keine fachliche Erklärung. Als Nächstes vergleichen wir die Verständlichkeit und die Beständigkeit der beiden Stimmen.",
-      "knowledge_refs": [], "pause_after_ms": 300
+      "knowledge_refs": [],
+      "pause_after_ms": 300
     }
   ]
 }

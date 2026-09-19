@@ -40,6 +40,29 @@ class EpisodeFramingTests(unittest.TestCase):
         self.assertEqual(context['episode_count'], 1)
         self.assertIsNone(context['next_episode'])
 
+    def test_configured_host_names_reach_generation_and_every_readable_view(self):
+        fixture = fixtures.script_project(self)
+        config = fixture.config.model_copy(update={'host_names': {'host_a': 'Mara', 'host_b': 'Jonas'}})
+        from podcast_automate.storage import write_yaml
+        write_yaml(fixture.root / 'project.yaml', config.model_dump(mode='json'))
+        briefs = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            payload = json.loads(prompt.splitlines()[-1])
+            if 'host_names' in (payload.get('brief') or {}):
+                briefs.append(payload['brief']['host_names'])
+            return fixture.model(prompt, output_type, directory, **kwargs)
+
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            run = run_script(fixture.root, episode='ep_001')
+        self.assertEqual(run.status, 'completed')
+        self.assertTrue(briefs)
+        self.assertTrue(all(row == {'host_a': 'Mara', 'host_b': 'Jonas'} for row in briefs))
+        text = (fixture.root / 'episodes/ep_001/script.md').read_text(encoding='utf-8')
+        self.assertIn('**Mara:**', text)
+        self.assertIn('**Jonas:**', text)
+        self.assertNotIn('**Host A:**', text)
+
     def test_selected_episode_keeps_series_context_through_writing_polishing_and_reviews(self):
         fixture = fixtures.script_project(self)
         plan = self.series()
@@ -63,10 +86,10 @@ class EpisodeFramingTests(unittest.TestCase):
             self.assertEqual(run.status, 'completed')
             selected = next(entry for entry in plan.episodes if entry.episode_id == episode_id)
             expected = episode_series_context(plan, selected)
-            for version in ('teaching_design.v1', 'teaching_design_review.v4-framing', 'write_episode.v6-framing',
-                            'dialogue_polish.v2-framing', 'dialogue_polish_review.v2-framing',
-                            'script_review.v8-evidence', 'teaching_review.v3-framing',
-                            'editorial_review.v3-series-context'):
+            for version in ('teaching_design.v2-terms', 'teaching_design_review.v5-terms', 'write_episode.v7-audit-notes',
+                            'dialogue_polish.v3-audit-notes', 'dialogue_polish_review.v3-density-notes',
+                            'script_review.v9-gaps-notes', 'teaching_review.v4-audit',
+                            'editorial_review.v4-audit'):
                 self.assertEqual(captured[version], expected)
             self.assertFalse((fixture.root / 'audio').exists())
 

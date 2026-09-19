@@ -4,29 +4,42 @@ episode_framing. For episode_framing, check the actual spoken intro AND outro, i
 useful orientation, supported resolution and sign-off. A technical opening example or a final
 forward question alone fails. Check outlooks against series_context; a final episode must not
 promise an invented successor. Episode 1 must introduce the overall topic, motivation and path
-through the series. The final episode must recap and connect the series' main insights to answer its
-overall question, not only conclude its own narrower topic. Quote these passages as well when
+through the series. The final episode must recap and connect the series' main insights to answer
+its overall question, not only conclude its own narrower topic. Quote these passages as well when
 applicable. Quote the relevant opening AND closing passages in after, from the first and last
 chapters, and explain how both ends work. Do not pass solely because the script contains words such
 as welcome or goodbye. For a one-chapter episode, still examine and quote both ends. Editorial
 framing added from the supplied metadata is permitted and is not a factual invention or meaning
 drift. For meaning, compare the actual claims, numerical values, conditions and uncertainty; reject
 new facts even if plausible, changed quantities, unsupported causality and stronger claims. For
-completeness, check ALL substantive reasoning and qualifications in the original, not just the cited
-samples or finding IDs. Reject a fluent summary that has lost a step or limitation. Removing empty
-repetition is allowed. For speaker_roles, judge the expert's calm explanatory work and the partner's
-relevant challenge, question or connection to significance. A request for 'more' and generic praise
-are not substantive contributions. The next answer must engage with the actual objection. Do not
-demand an objection in every exchange, equal speaking time or constant alternation; long monologues
-and consecutive expert segments can work well. For spoken_language, judge whether the thought can be
-followed on first hearing. Do not reward filler, fake excitement or merely inserting speaker breaks
-into a written paragraph. Do not treat extensive rewording or shorter sentences as evidence that the
-conversation works. Inspect dense passages and transitions throughout the candidate, not only its
-best exchange. Flag tautologies, vague chains of references and successive explanation paragraphs
-whose connection a listener would have to reconstruct. If such a problem remains, identify the
-specific passage and the needed correction even when every sentence was rewritten. Do not demand
-superficial changes where the original already works. Provide exact short quotes with segment IDs
-separately in before and after; a pass for meaning/completeness requires both. Every pass needs
-after evidence. Missing material may have no after quote. Explain each failure and its concrete
-correction. The original is a preservation baseline, not verified truth; full factual support is
-checked separately against sources. Report in the dialogue's language.
+completeness, check ALL substantive reasoning and qualifications in the original, not just the
+cited samples or finding IDs. Reject a fluent summary that has lost a step or limitation. Removing
+empty repetition is allowed. For speaker_roles, judge the expert's calm explanatory work and the
+partner's relevant challenge, question or connection to significance. A request for 'more' and
+generic praise are not substantive contributions. The next answer must engage with the actual
+objection. Do not demand an objection in every exchange, equal speaking time or constant
+alternation; long monologues and consecutive expert segments can work well. For spoken_language,
+judge whether the thought can be followed on first hearing. Do not reward filler, fake excitement
+or merely inserting speaker breaks into a written paragraph. Repeated reminders that an example is
+hypothetical, invented or not measured are a spoken_language failure: the illustrative status
+belongs once at the introduction, and later references simply name the example. Do not treat
+extensive rewording or shorter sentences as evidence that the conversation works. Inspect dense
+passages and transitions throughout the candidate, not only its best exchange. Flag tautologies,
+vague chains of references and successive explanation paragraphs whose connection a listener would
+have to reconstruct. If such a problem remains, identify the specific passage and the needed
+correction even when every sentence was rewritten. Name in demanding_passages exactly three
+segments of the candidate that place the greatest load on a listener hearing them once, chosen for
+density of reasoning and not for length. Neither the greeting nor the sign-off counts. For each,
+state in load what the listener must hold in mind at that point, and list every expression whose
+meaning depends on something said earlier: pronouns, 'this step', 'that value', 'the second case',
+a term used before its explanation. Set resolved_by to the segment ID of the earlier sentence that
+makes the expression concrete, or to null when no earlier sentence does. Fail spoken_language when
+one of these passages carries more than three unresolved referents, or any referent that no earlier
+sentence resolves, and say which sentence has to do the resolving. Do not demand superficial
+changes where the original already works. brief.style_notes holds the operator's standing editorial
+corrections; follow them unless they conflict with the evidence rules, which always win. Provide
+exact short quotes with segment IDs separately in before and after; a pass for meaning/completeness
+requires both. Every pass needs after evidence. Missing material may have no after quote. Explain
+each failure and its concrete correction. The original is a preservation baseline, not verified
+truth; full factual support is checked separately against sources. Report in the dialogue's
+language.
