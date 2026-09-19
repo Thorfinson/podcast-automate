@@ -50,25 +50,38 @@ def atomic_text(path: Path, text: str) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def replace_file(temporary: Path | str, path: Path, *, timeout: float = 2.0) -> None:
-    """``os.replace`` that outlasts a concurrent reader.
+def outlast_sharing_violation(operation, timeout: float = 2.0):
+    """Run ``operation``; on Windows, wait out a momentary permission error with doubling backoff.
 
-    On Windows a rename onto a file fails with a sharing violation while any other handle holds
-    the target open, for example a progress poll or another worker reading ``budget.json`` at that
-    instant. Such a reader is gone within microseconds; the write waits for it briefly rather than
-    failing a run over a momentary overlap.
+    Windows refuses to open a file while another handle is renaming onto it, and refuses the rename
+    while another handle reads it. Either overlap lasts microseconds, so the loser waits briefly
+    instead of failing a run. A lock that stays raises once the timeout has passed; other
+    platforms raise at once.
     """
     deadline = time.monotonic() + timeout
     delay = 0.001
     while True:
         try:
-            os.replace(temporary, path)
-            return
+            return operation()
         except PermissionError:
             if os.name != "nt" or time.monotonic() >= deadline:
                 raise
             time.sleep(delay)
             delay = min(delay * 2, 0.05)
+
+
+def replace_file(temporary: Path | str, path: Path, *, timeout: float = 2.0) -> None:
+    """``os.replace`` that outlasts a concurrent reader, for example a progress poll or another
+    worker reading ``budget.json`` at that instant."""
+    outlast_sharing_violation(lambda: os.replace(temporary, path), timeout)
+
+
+def read_text(path: Path, *, timeout: float = 2.0) -> str:
+    """``Path.read_text`` that outlasts a concurrent ``replace_file`` onto the same file, for example
+    a worker projecting the budget while another worker's call reservation rewrites ``budget.json``.
+    Files one worker writes while another may read them go through this; a missing file raises as
+    before."""
+    return outlast_sharing_violation(lambda: path.read_text(encoding="utf-8"), timeout)
 
 
 def write_json(path: Path, data: object) -> None:

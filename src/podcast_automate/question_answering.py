@@ -22,7 +22,7 @@ from .research_reader import source_catalog
 from .research_retrieval import references
 from .research_tasks import AnswerReview, QuestionAnswer, QuestionSearch, ReaderWindow, ResearchDecision
 from .sources import canonical_url, clean, import_failure, import_source
-from .storage import digest
+from .storage import digest, read_text
 
 READER_ACTIONS = ["search_local", "read", "search_web", "answer", "blocked"]
 LOCK_FEEDBACK = ("The answer is locked after a failed review: read or search new passages first and answer only "
@@ -309,7 +309,7 @@ class TaskResearchMixin:
 
     def web_search(self, spec, row, queries):
         budget_path = self.work / "budget.json"
-        budget = json.loads(budget_path.read_text(encoding="utf-8")) if budget_path.exists() else {}
+        budget = json.loads(read_text(budget_path)) if budget_path.exists() else {}
         if self.attempts is None:
             self.attempts = restore_attempts(self.folder, self.index)
         remaining = self.config.research_limits.sources - len(self.attempts)

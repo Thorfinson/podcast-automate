@@ -195,10 +195,9 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual((receipt.run_id, receipt.input_hash, receipt.plan_hash, receipt.max_tasks, receipt.source),
                          ("run_plan", "b" * 64, digest(plan), 1, "studio"))
         self.assertEqual(json.loads(body)["plan"]["max_tasks"], 1)
-        for cap in (0, "1", True, 2.5):
-            with self.subTest(cap=cap):
-                self.assertEqual(self.request("/api/projects/example/approve",
-                                              {"kind": "plan", "run_id": "run_plan", "max_tasks": cap})[0], 400)
+        # The route answers a rejected cap with 400; the cap rules themselves are pinned on approve_research_plan.
+        self.assertEqual(self.request("/api/projects/example/approve",
+                                      {"kind": "plan", "run_id": "run_plan", "max_tasks": 0})[0], 400)
         self.assertEqual(read_plan_approval(work).max_tasks, 1, "a rejected request leaves the receipt alone")
         # Without a cap the receipt approves the shown plan as it is; a running plan takes no cap any more.
         self.assertEqual(self.request("/api/projects/example/approve", {"kind": "plan", "run_id": "run_plan"})[0], 200)
