@@ -323,9 +323,9 @@ class StatusAndStudioTests(test_studio.StudioHttpTests):
         with patch("podcast_automate.studio_worker.run_research") as research:
             research.return_value.model_dump.return_value = {"status": "pending"}
             perform(self.root, {"action": "research", "text": {"provider": "auto"}})
-            research.assert_called_once_with(self.root, backend="auto", model=None, reasoning_effort=None)
+            research.assert_called_once_with(self.root, backend="auto", model=None, reasoning_effort=None, plan_review="required")
             perform(self.root, {"action": "research", "text": {"provider": "openrouter", "model": "openai/gpt-6-astra"}})
-            self.assertEqual(research.call_args.kwargs, {"backend": "auto"})
+            self.assertEqual(research.call_args.kwargs, {"backend": "auto", "plan_review": "required"})
 
     def test_job_detail_exposes_the_latest_provider_decision_and_switch(self):
         run = {"run_id": "run_test", "kind": "script", "status": "waiting_for_quota", "stages": {}}

@@ -74,6 +74,28 @@ class StudioProgressTests(unittest.TestCase):
         self.assertIsNotNone(completed["last_result_at"])
         self.assertEqual(completed["activity_started_at"], first["activity_started_at"])
 
+    def test_research_progress_reports_the_plan_gate_and_only_a_matching_receipt_as_approved(self):
+        from podcast_automate.storage import digest
+        write_json(self.work / "research_activity.json", {"activity": "Der Rechercheplan wartet auf Freigabe"})
+        write_json(self.work / "research_questions.json", {"closed": 0, "total": 3, "phase": "awaiting_plan_approval", "questions": []})
+        projection = {"tasks": 3, "projected_calls": 27, "projected_hours": 1.8, "seconds_per_call": 240, "plan_hash": "c" * 64}
+        write_json(self.work / "question_research/plan_projection.json", projection)
+        run = {**self.run, "kind": "research", "status": "blocked", "input_hash": "b" * 64}
+        review = script_progress(self.root, run)["plan_review"]
+        self.assertEqual((review["awaiting"], review["approved"], review["approval"], review["projection"]), (True, False, None, projection))
+        value = {"run_id": "run_test", "input_hash": "b" * 64, "plan_hash": "c" * 64, "max_tasks": None,
+                 "approved_at": "2026-09-19T20:00:00+00:00", "source": "studio"}
+        write_json(self.work / "plan_approval.json", {"value": value, "sha256": digest(value)})
+        review = script_progress(self.root, run)["plan_review"]
+        self.assertEqual((review["awaiting"], review["approved"], review["approval"]["source"]), (True, True, "studio"))
+        # A receipt for another plan, another run or with a broken checksum is not an approval.
+        write_json(self.work / "plan_approval.json", {"value": {**value, "plan_hash": "d" * 64}, "sha256": digest({**value, "plan_hash": "d" * 64})})
+        self.assertFalse(script_progress(self.root, run)["plan_review"]["approved"])
+        write_json(self.work / "plan_approval.json", {"value": {**value, "max_tasks": 1}, "sha256": digest(value)})
+        review = script_progress(self.root, run)["plan_review"]
+        self.assertEqual((review["approved"], review["approval"]), (False, None))
+        self.assertFalse(script_progress(self.root, {**run, "input_hash": "e" * 64})["plan_review"]["approved"])
+
     def test_research_progress_uses_question_ledger_instead_of_stale_global_score(self):
         write_json(self.work / "research_activity.json", {"activity": "Eine Frage wird geprüft"})
         write_json(self.work / "research_quality_gate.json", {"closed": 0, "total": 2})
@@ -84,6 +106,15 @@ class StudioProgressTests(unittest.TestCase):
         self.assertEqual((progress["completed_segments"], progress["total_segments"]), (3, 7))
         self.assertEqual(progress["research_questions"], ledger)
         self.assertEqual(progress["research_quality"]["closed"], 0)
+
+    def test_research_progress_reports_the_execution_mode_the_run_was_started_with(self):
+        write_json(self.work / "research_activity.json", {"activity": "Drei Teilfragen laufen"})
+        run = {**self.run, "kind": "research"}
+        # A run started before the field existed answered one task at a time.
+        self.assertEqual(script_progress(self.root, run)["execution"], {"text": "sequential", "audio": "sequential"})
+        write_json(self.work / "research_request.json", {"text_generation": None,
+                   "execution": {"text": "parallel", "audio": "sequential"}})
+        self.assertEqual(script_progress(self.root, run)["execution"], {"text": "parallel", "audio": "sequential"})
 
     def test_publisher_recovers_from_transient_job_read_and_progress_io_failures(self):
         job_path = self.root / "studio/job.json"

@@ -9,6 +9,7 @@ from pydantic import Field
 from .prompts import instructions
 from .errors import AppError
 from .models import Contract, NonEmpty
+from .research_ledger import active_tasks
 from .research_tasks import QuestionPlan, QuestionTask
 from .storage import digest
 
@@ -106,7 +107,10 @@ def refine_state(state, review):
     for owners in ownership_maps:
         for identifier, assigned in owners.items():
             owners[identifier] = sorted({child for task in assigned for child in groups.get(task, [task])})
-    if state.get("active_task") in groups:
-        updated["active_task"] = None
+    # A split parent is no longer a task anyone answers; a legacy single-task field mirrors the first one left.
+    active = [task for task in active_tasks(state) if task not in groups]
+    updated["active_tasks"] = active
+    if "active_task" in updated:
+        updated["active_task"] = active[0] if active else None
     updated["scope_review"] = review.model_dump()
     return updated

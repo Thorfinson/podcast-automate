@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 
 from .model_trace import redact, trace_view
+from .research_ledger import active_tasks
 from .storage import read_optional_json as read
 
 
@@ -96,9 +97,24 @@ def _source_metadata(path, modified, size):
     return lookup
 
 
+def active_questions(state):
+    """The tasks being answered right now, in plan order, with what each one is doing."""
+    rows = state.get("tasks", {})
+    active = set(active_tasks(state))
+    return [{"id": spec["id"], "question": clean(spec.get("question")),
+             "status": rows.get(spec["id"], {}).get("status"),
+             "activity": clean(rows.get(spec["id"], {}).get("activity"), 300)}
+            for spec in state.get("plan", {}).get("tasks", []) if spec.get("id") in active]
+
+
 def saved_context(work, state, schema):
-    """Fallback for a worker already running before input receipts were added."""
-    spec = next((s for s in state.get("plan", {}).get("tasks", []) if s.get("id") == state.get("active_task")), {})
+    """Fallback for a worker already running before input receipts were added.
+
+    With several tasks in flight the saved state cannot tell which one the latest call serves;
+    the first active task in plan order stands in, and ``active_questions`` lists them all.
+    """
+    active = active_tasks(state)
+    spec = next((s for s in state.get("plan", {}).get("tasks", []) if s.get("id") in active), {})
     row = state.get("tasks", {}).get(spec.get("id"), {})
     if schema not in QUESTION_SCHEMAS or state.get("phase") != "questions":
         return {}, {}
@@ -155,7 +171,8 @@ def work_insight(work, run):
         [visible_at or "", diagnostics.get("last_content_at") or ""], default="") or None
     live = run.get("status") == "running"
     call_state = "completed" if response.exists() else "failed" if failure or activity.get("status") not in {None, "running"} else "running" if live else "stopped"
-    phases = {"synthesis": "Geprüfte Antworten werden zum Dossier verbunden.", "audit": "Das zusammengesetzte Dossier wird abschließend geprüft."}
+    phases = {"awaiting_plan_approval": "Wartet auf Freigabe des Rechercheplans; bis dahin wird kein Modellaufruf verbraucht.",
+              "synthesis": "Geprüfte Antworten werden zum Dossier verbunden.", "audit": "Das zusammengesetzte Dossier wird abschließend geprüft."}
     no_progress = row.get("no_progress", 0)
     results = list((work / "calls").glob("call_*/response.json"))
     timeout = next((e.get("timeout_seconds") for e in diagnostics.get("events", []) if e.get("kind") == "request"), None)
@@ -164,6 +181,7 @@ def work_insight(work, run):
             "criteria": context.get("criteria", []), "last_step": context.get("last_step", ""),
             "feedback": context.get("feedback", []), "material": context.get("material", {}),
             "candidate_count": context.get("candidate_count", 0), "queries": context.get("queries", []),
+            "active_questions": active_questions(state),
             "no_progress_steps": no_progress, "steps": row.get("step", 0),
             "warning": f"Die letzten {no_progress} Arbeitsschritte brachten keine neuen Belege oder Suchtreffer und keine bestandene Antwortprüfung."
                        if no_progress >= 2 else "",

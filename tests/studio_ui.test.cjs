@@ -1220,3 +1220,91 @@ test('a paused job announces its automatic resume and a silent worker is flagged
   app.run("project.job.heartbeat_age_seconds=4;renderJob();");
   assert.ok(!app.elements.get('job-status').innerHTML.includes('keinen Fortschritt'));
 });
+
+test('a waiting research plan offers the approval and the cap field only while blocked and unapproved',()=>{
+  const app=studio();
+  const projection={tasks:29,tasks_pending:29,expected_calls_per_task:5,expected_calls_source:'project',closing_reserve:4,closing_calls:3,
+    projected_calls:148,used:7,approved_limit:150,within_limit:true,seconds_per_call:270,seconds_per_call_source:'run',projected_hours:11.1,plan_hash:'h',plan_caps:[]};
+  const ledger={closed:0,total:29,accepted:0,phase:'awaiting_plan_approval',active_task:null,questions:[]};
+  app.run(`project={id:'p',job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{dossier:{status:'blocked',error:{code:'research_plan_review'}}}},
+    progress:{phase:'research',activity:'Der Rechercheplan wartet auf Freigabe',research_questions:${JSON.stringify(ledger)},plan_review:{awaiting:true,approved:false,approval:null,projection:${JSON.stringify(projection)}},model_call_limit:150,model_calls:7}}};renderJob();`);
+  let html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Wartet auf Freigabe des Rechercheplans'));
+  assert.ok(html.includes('29 Teilfragen, voraussichtlich 148 Aufrufe, etwa 11 Stunden bei 4,5 Minuten je Aufruf'));
+  assert.ok(html.includes('5 Aufrufe je Teilfrage (Erfahrungswert des Projekts)'));
+  assert.ok(html.includes('data-action="approve-plan"'));
+  assert.ok(html.includes('data-run-id="run_x"'));
+  assert.ok(html.includes('id="plan-max-tasks"'));
+  assert.ok(!html.includes('>Fortsetzen<'));
+  // The button posts kind plan; the field adds the cap only when it holds a whole number.
+  const request=()=>JSON.parse(JSON.stringify(app.run("planApprovalRequest('run_x')")));
+  assert.deepEqual(request(),{kind:'plan',run_id:'run_x'});
+  app.elements.get('plan-max-tasks').value='10';
+  assert.deepEqual(request(),{kind:'plan',run_id:'run_x',max_tasks:10});
+  app.elements.get('plan-max-tasks').value='viele';
+  assert.throws(()=>app.run("planApprovalRequest('run_x')"),/ganze Zahl/);
+  app.run("project.job.progress.plan_review.projection.plan_caps=[1];project.job.progress.plan_review.projection.within_limit=false;renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Obergrenze von 1 Teilfragen wurde bereits angefordert'));
+  assert.ok(html.includes('Das Limit reicht dafür voraussichtlich nicht'));
+  app.run("project.job.status='running';renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(!html.includes('data-action="approve-plan"'));
+  assert.ok(!html.includes('class="plan-review"'));
+  app.run("project.job.status='blocked';project.job.progress.plan_review.approved=true;project.job.progress.plan_review.approval={max_tasks:null};renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Rechercheplan freigegeben'));
+  assert.ok(!html.includes('data-action="approve-plan"'));
+  assert.ok(!html.includes('id="plan-max-tasks"'));
+  assert.ok(html.includes('>Fortsetzen<'));
+  app.run("project.job.progress.plan_review={awaiting:false,approved:false,projection:null,approval:null};project.job.progress.research_questions.phase='questions';renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(!html.includes('class="plan-review"'));
+  assert.ok(!html.includes('Freigabe des Rechercheplans'));
+  assert.ok(html.includes('>Fortsetzen<'));
+});
+
+test('several research tasks in flight are counted, named and marked while the first stays the current question',()=>{
+  const app=studio();
+  const ledger={closed:0,total:3,accepted:0,phase:'questions',active_task:'a',active_tasks:['a','b','c'],questions:[
+    {id:'a',question:'Frage A <x>',status:'researching',activity:'Liest Abschnitte',steps:1,read_sections:2,acceptance:['x'],findings:[]},
+    {id:'b',question:'Frage B',status:'reviewing',activity:'Antwort wird geprüft',steps:2,read_sections:3,acceptance:['y'],findings:[]},
+    {id:'c',question:'Frage C',status:'researching',activity:'Sucht',steps:1,read_sections:1,acceptance:['z'],findings:[]}]};
+  app.run(`project={id:'p',job:{id:'j1',status:'running',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)}}}};renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('3 Teilfragen in Arbeit: Frage A &lt;x&gt; · Frage B · Frage C'));
+  assert.ok(!html.includes('<x>'));
+  assert.equal((html.match(/●/g)||[]).length,3);
+  const trace=app.run('renderModelTrace(project.job)');
+  assert.ok(trace.includes('<p class="trace-focus">Frage A &lt;x&gt;</p>'));
+  assert.ok(trace.includes('3 Teilfragen in Arbeit'));
+  // One task at a time, as before: no count line and one marker; a ledger without active_tasks still marks its task.
+  app.run("project.job.progress.research_questions.active_tasks=['b'];renderJob()");
+  let single=app.elements.get('job-status').innerHTML;
+  assert.ok(!single.includes('Teilfragen in Arbeit'));
+  assert.equal((single.match(/●/g)||[]).length,1);
+  assert.ok(single.includes('● Frage B'));
+  app.run("delete project.job.progress.research_questions.active_tasks;project.job.progress.research_questions.active_task='c';renderJob()");
+  single=app.elements.get('job-status').innerHTML;
+  assert.equal((single.match(/●/g)||[]).length,1);
+  assert.ok(single.includes('● Frage C'));
+});
+
+test('a paused research run without a dossier still offers a fresh research start',()=>{
+  const app=studio();
+  app.run(`project={id:'test',config:boot.defaults,research:null,job:{action:'research',status:'waiting_for_quota',run:{kind:'research',status:'waiting_for_quota'}}};`);
+  let html=app.run('renderResearch()');
+  assert.ok(html.includes('Die aktuelle Recherche ist noch nicht abgeschlossen'));
+  assert.ok(html.includes('Recherche neu beginnen'));
+  assert.ok(html.includes('neuem Plan und neuer Hochrechnung'));
+  assert.ok(html.includes('<button class="secondary" data-action="research" >Neu recherchieren</button>'));
+  // While a job is actually running the button is present but disabled, like every other start.
+  app.run("project.job.status='running';project.job.run.status='running'");
+  html=app.run('renderResearch()');
+  assert.ok(html.includes('data-action="research" disabled>Neu recherchieren'));
+  // A completed run without a dossier falls back to the plain start button, unchanged.
+  app.run("project.job.status='completed';project.job.run.status='completed'");
+  html=app.run('renderResearch()');
+  assert.ok(html.includes('data-action="research" >Recherche starten'));
+  assert.ok(!html.includes('Recherche neu beginnen'));
+});

@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from .models import Contract, Identifier, NonEmpty
 from .research_models import Finding, SourceCandidate
-from .evidence_models import FindingSupport, ResearchObjection, SourceAssessment
+from .evidence_models import BRIEF, FindingSupport, ResearchObjection, SourceAssessment
 
 
 class QuestionTask(Contract):
@@ -30,7 +30,8 @@ class QuestionPlan(Contract):
 
 class CriterionAnswer(Contract):
     index: int = Field(ge=0)
-    explanation: NonEmpty
+    explanation: NonEmpty = Field(description="One sentence naming the findings that meet this criterion; "
+                                              "at most 300 characters.")
     finding_ids: list[Identifier] = Field(min_length=1)
 
 
@@ -57,7 +58,8 @@ class ReaderWindow(Contract):
 
 class ResearchDecision(Contract):
     action: Literal["read", "search_local", "search_web", "answer", "blocked"]
-    reason: NonEmpty
+    reason: NonEmpty = Field(description="One sentence naming the next step and the criterion it serves; "
+                                         "at most 300 characters.")
     searches: list[ReaderSearch] = Field(max_length=4)
     windows: list[ReaderWindow] = Field(max_length=8)
     web_queries: list[NonEmpty] = Field(max_length=4)
@@ -76,14 +78,16 @@ class ResearchDecision(Contract):
 class CriterionVerdict(Contract):
     index: int = Field(ge=0)
     passed: bool
-    reason: NonEmpty
+    reason: NonEmpty = Field(description=BRIEF)
 
 
 class AnswerReview(Contract):
     criteria: list[CriterionVerdict] = Field(min_length=1)
     supported: bool
     source_adequacy: bool
-    issues: list[NonEmpty]
+    issues: list[NonEmpty] = Field(description="Defects of the answer that fail no criterion; each entry: " + BRIEF)
+    limitations: list[NonEmpty] = Field(default_factory=list,
+                                        description="What this review itself could not check; each entry: " + BRIEF)
     finding_support: list[FindingSupport] = Field(default_factory=list)
     source_assessments: list[SourceAssessment] = Field(default_factory=list)
 

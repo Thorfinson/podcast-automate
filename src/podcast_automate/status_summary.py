@@ -18,6 +18,7 @@ from .errors import AppError
 from .models import Contract
 from .openrouter import OpenRouterAdapter
 from .provider_pool import AdapterPool
+from .research_ledger import active_tasks
 from .runner import manifest_path
 from .storage import digest, file_lock, load_project, write_json
 from .storage import read_optional_json as read
@@ -101,8 +102,17 @@ def evidence_snapshot(root, run):
     if questions:
         add("question_progress", f"{questions.get('closed', 0)} von {questions.get('total', 0)} Teilfragen unabhängig geprüft abgeschlossen. "
             f"Phase: {questions.get('phase')}. Die Gesamtprüfung bleibt zusätzlich erforderlich.")
+        if questions.get("phase") == "awaiting_plan_approval":
+            from .question_budget import plan_summary
+            projection = read(work / "question_research/plan_projection.json", {})
+            add("plan_review", "Wartet auf Freigabe des Rechercheplans; bis dahin wird kein Modellaufruf verbraucht."
+                + (" Hochrechnung: " + plan_summary(projection) + "." if projection.get("projected_calls") is not None else ""))
+        active = active_tasks(questions)
+        if len(active) > 1:
+            names = {row.get("id"): row.get("question") for row in questions.get("questions", []) if isinstance(row, dict)}
+            add("active_tasks", f"{len(active)} Teilfragen in Arbeit: " + "; ".join(str(names.get(t) or t) for t in active))
         for n, row in enumerate(questions.get("questions", [])):
-            if row.get("id") == questions.get("active_task") or row.get("status") == "blocked":
+            if row.get("id") in active or row.get("status") == "blocked":
                 add(f"question_{n}", f"{row.get('question')}: {row.get('status')}. {row.get('activity')}. "
                     f"{row.get('read_sections', 0)} Abschnitte gelesen. {row.get('reason', '')}")
             if len(facts) >= 14:

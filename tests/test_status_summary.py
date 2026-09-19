@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -125,6 +126,17 @@ class StatusSummaryTests(unittest.TestCase):
         self.assertIn("Original comparison is missing", text)
         self.assertNotIn("0 von 10", text)
 
+    def test_a_waiting_plan_is_a_fact_with_its_projection(self):
+        write_json(self.work / "research_questions.json", {"closed": 0, "total": 29, "phase": "awaiting_plan_approval",
+                   "active_task": None, "questions": []})
+        write_json(self.work / "question_research/plan_projection.json", {"tasks": 29, "projected_calls": 148,
+                   "projected_hours": 11.1, "seconds_per_call": 270.0})
+        text = json.dumps(evidence_snapshot(self.root, self.job["run"]), ensure_ascii=False)
+        self.assertIn("Wartet auf Freigabe des Rechercheplans", text)
+        self.assertIn("29 Teilfragen, voraussichtlich 148 Aufrufe, etwa 11 Stunden bei 4,5 Minuten je Aufruf", text)
+        write_json(self.work / "research_questions.json", {"closed": 0, "total": 29, "phase": "questions", "questions": []})
+        self.assertNotIn("Freigabe des Rechercheplans", json.dumps(evidence_snapshot(self.root, self.job["run"]), ensure_ascii=False))
+
     def test_question_progress_and_new_sources_replace_stale_global_summary_facts(self):
         write_json(self.work / "source_index.json", {"sources": [1], "failures": []})
         ledger = {"closed": 2, "total": 4, "phase": "questions", "active_task": "task_test", "source_count": 7,
@@ -144,6 +156,27 @@ class StatusSummaryTests(unittest.TestCase):
             self.update()
         envelope = json.loads((self.work / "research_activity.json").read_text())
         self.assertEqual(envelope["research_questions"], ledger)
+
+    def test_several_active_tasks_are_one_fact_each_plus_a_count(self):
+        ledger = {"closed": 0, "total": 4, "phase": "questions", "active_task": "task_a",
+                  "active_tasks": ["task_a", "task_b", "task_c"],
+                  "questions": [{"id": task, "question": f"Question {task}?", "status": "researching",
+                                 "activity": f"Reading for {task}", "read_sections": 1}
+                                for task in ("task_a", "task_b", "task_c", "task_d")]}
+        write_json(self.work / "research_questions.json", ledger)
+        facts = {fact["id"]: fact["text"] for fact in evidence_snapshot(self.root, self.job["run"])["facts"]}
+        self.assertEqual(facts["active_tasks"], "3 Teilfragen in Arbeit: Question task_a?; Question task_b?; Question task_c?")
+        self.assertEqual({key for key in facts if re.fullmatch(r"question_\d+", key)}, {"question_0", "question_1", "question_2"})
+        self.assertNotIn("Reading for task_d", json.dumps(facts))
+        # One task at a time, as before: no count line; the legacy field alone still selects its task.
+        write_json(self.work / "research_questions.json", {**ledger, "active_tasks": ["task_b"], "active_task": "task_b"})
+        facts = {fact["id"]: fact["text"] for fact in evidence_snapshot(self.root, self.job["run"])["facts"]}
+        self.assertNotIn("active_tasks", facts)
+        self.assertEqual({key for key in facts if re.fullmatch(r"question_\d+", key)}, {"question_1"})
+        legacy = {key: value for key, value in ledger.items() if key != "active_tasks"}
+        write_json(self.work / "research_questions.json", {**legacy, "active_task": "task_d"})
+        facts = {fact["id"]: fact["text"] for fact in evidence_snapshot(self.root, self.job["run"])["facts"]}
+        self.assertEqual({key for key in facts if re.fullmatch(r"question_\d+", key)}, {"question_3"})
 
     def test_public_events_are_allowlisted_redacted_and_visible_before_completion(self):
         directory = self.work / "calls/call_004"

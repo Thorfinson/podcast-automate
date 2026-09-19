@@ -8,30 +8,48 @@ State layout (all JSON-serialisable):
 
 - ``plan``: the fixed ``QuestionPlan``; ``tasks``: one row per task id as created by
   ``question_scope.pending_task`` (status, step, read_refs, answer, feedback, reopenings, ...).
-- ``phase``: ``questions`` → ``synthesis`` → ``audit`` → ``completed``, or ``blocked``.
+- ``phase``: ``awaiting_plan_approval`` (only with a plan gate) → ``questions`` → ``synthesis`` →
+  ``audit`` → ``completed``, or ``blocked``.
+- ``call_timings``: wall-clock seconds per answered call with the task it served; ``plan_caps`` and
+  ``plan_revisions``: the task caps an approval asked for and the plans made under them.
+- ``active_tasks``: the tasks being answered right now, in plan order; several when the project's
+  text execution is ``parallel`` and independent tasks run side by side.
 - ``seed_dossier``/``dirty_tasks``/``finding_owners``: which findings a later batch may edit.
 - ``objections``: audit objections keyed by a stable id, closed only by a passing audit.
 - ``accepted_gap`` on a task row: the user's explicit approval to finish without that task. The
   dossier then records the gap; objections that only concern accepted gaps no longer block.
+
+Concurrency: with ``workers > 1`` the task loop runs independent tasks in a thread pool. One
+re-entrant lock guards the ledger: a worker holds it whenever it is not inside a model call (row
+edits, ``save``, timings, gap probes, source attempts, the progress callback) and steps out of it
+only for the call itself (``generate``). Workers mutate only their own row; a failure in one worker
+stops the others at their next step boundary, the state is saved, and the first error is raised.
 """
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
+from contextvars import copy_context
 
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
 from .question_answering import TaskResearchMixin, answer_errors, read_context, review_passes
-from .question_budget import EXPECTED_CALLS_PER_TASK, affordable_tasks, budget_projection
+from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
+                              plan_projection, plan_review_message, run_timings)
 from .question_dependencies import ordered_tasks, prerequisite_answers
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
 from .question_sources import restore_attempts
 from .question_synthesis import SynthesisMixin
 from .research_evidence import support_errors
 from .research_gap_probe import coverage_terms, gap_id, probe
-from .research_ledger import (VERSION, bootstrap_legacy, check_sources, load_index, public_ledger, read_value,
-                              save_index, save_value)
+from .research_ledger import (CALL_VERSION, VERSION, bootstrap_legacy, check_sources, load_index, public_ledger,
+                              read_value, save_index, save_value)
+from .research_models import ResearchDiscovery, ResearchDossier
 from .research_patches import cached_call
 from .research_quality import quality_brief, requirements_for
 from .research_reader import SourceReader
@@ -71,7 +89,7 @@ def _gaps(dossier, migration):
 
 
 class QuestionResearch(TaskResearchMixin, SynthesisMixin):
-    def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None):
+    def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None, plan_gate=None, workers=1):
         self.root, self.work, self.config, self.invoke, self.progress = root, work, config, invoke, progress
         self.folder = work / "question_research"
         self.state = None
@@ -81,31 +99,89 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.limits = limits or (lambda: self.config.research_limits)
         # Explicit gap approvals, read afresh on every pass so an approval written during a run counts.
         self.accepted = accepted or (lambda: {})
+        # ``plan_gate(projection)`` returns the valid approval of the projected plan or None. Without a
+        # gate the caller has taken that decision (the CLI and Studio always pass one).
+        self.plan_gate = plan_gate
+        # Wall-clock seconds of this run's answered calls, kept in the ledger as ``call_timings``.
+        self.timings = []
+        # The call tag of every engine call; the ledger version above binds the receipts.
+        self.call_version = CALL_VERSION
+        # How many independent tasks may be answered at once; one keeps the plain sequential loop.
+        self.workers = max(1, int(workers))
+        # The one lock over everything shared between tasks, and the depth this thread holds it at,
+        # so a worker can step out of it for a model call however deeply it is inside.
+        self.lock = threading.RLock()
+        self.held = threading.local()
+        # Set by the first failing worker: the others finish their current call and stop at the next step.
+        self.stopping = threading.Event()
+
+    @contextmanager
+    def guarded(self):
+        """Hold the ledger lock; re-entrant within a thread, so nested saves and checks stay simple."""
+        self.lock.acquire()
+        self.held.depth = getattr(self.held, "depth", 0) + 1
+        try:
+            yield
+        finally:
+            self.held.depth -= 1
+            self.lock.release()
+
+    @contextmanager
+    def unguarded(self):
+        """Release the ledger lock completely for the duration of a model call, then take it back."""
+        depth = getattr(self.held, "depth", 0)
+        for _ in range(depth):
+            self.lock.release()
+        self.held.depth = 0
+        try:
+            yield
+        finally:
+            for _ in range(depth):
+                self.lock.acquire()
+            self.held.depth = depth
+
+    def task_of(self, path):
+        """The task a receipt path belongs to, or None for planning and closing calls."""
+        tasks = self.folder / "tasks"
+        return path.relative_to(tasks).parts[0] if path is not None and tasks in path.parents else None
 
     def ensure_budget(self, request=None):
         if self.state is None:
             return
-        projection = budget_projection(self.work, self.state, self.limits(), request)
-        self.state["budget_projection"] = projection
-        if not projection["feasible"]:
-            if self.state.get("active_task"):
-                self.state["tasks"][self.state["active_task"]]["outcome"] = "budget_block"
-            self.save("Das genehmigte Aufruflimit reicht nicht für die verbleibenden Fragen und Abschlussprüfungen", budget_request=request)
-            raise AppError(f"Mindestens {projection['minimum_remaining_calls']} weitere Modellaufrufe erforderlich, "
-                           f"aber nur {projection['remaining']} genehmigt verfügbar. "
-                           "Antworten und Rechercheumfang bleiben gespeichert; ein höheres Aufruflimit muss ausdrücklich genehmigt werden.",
-                           code="research_budget_insufficient", status="blocked")
+        with self.guarded():
+            projection = budget_projection(self.work, self.state, self.limits(), request, root=self.root)
+            self.state["budget_projection"] = projection
+            if not projection["feasible"]:
+                task = self.task_of(request)
+                if task:
+                    self.state["tasks"][task]["outcome"] = "budget_block"
+                self.save("Das genehmigte Aufruflimit reicht nicht für die verbleibenden Fragen und Abschlussprüfungen", budget_request=request)
+                raise AppError(f"Mindestens {projection['minimum_remaining_calls']} weitere Modellaufrufe erforderlich, "
+                               f"aber nur {projection['remaining']} genehmigt verfügbar. "
+                               "Antworten und Rechercheumfang bleiben gespeichert; ein höheres Aufruflimit muss ausdrücklich genehmigt werden.",
+                               code="research_budget_insufficient", status="blocked")
 
     def generate(self, folder, name, prompt, schema, version, *, search=False):
         self.ensure_budget(folder / f"{name}.json")
-        value, metadata = self.invoke(prompt, schema, version, search=search)
+        started = time.monotonic()
+        # The call itself runs outside the ledger lock, so other tasks keep working meanwhile.
+        with self.unguarded():
+            value, metadata = self.invoke(prompt, schema, version, search=search)
+        self.record_timing(folder, name, time.monotonic() - started)
         if search:
             save_value(folder / f"{name}_metadata.json", metadata)
         return value
 
+    def record_timing(self, folder, name, seconds):
+        """One answered call's wall-clock seconds, attributed to its task for the per-task calibration."""
+        with self.guarded():
+            self.timings.append({"name": name, "task": self.task_of(folder), "seconds": round(seconds, 3)})
+            if self.state is not None:
+                self.state["call_timings"] = self.timings
+
     def call(self, folder, name, schema, prompt, *, search=False, validate=None):
         return cached_call(folder, name, schema, prompt,
-            lambda p, s: self.generate(folder, name, p, s, f"{VERSION}.{name}", search=search), validate=validate)
+            lambda p, s: self.generate(folder, name, p, s, f"{self.call_version}.{name}", search=search), validate=validate)
 
     def set_index(self, index):
         self.index = index
@@ -125,18 +201,25 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 for tid, gap in self.accepted_tasks().items() if tid in tasks}
 
     def adopt_accepted_gaps(self):
-        changed = False
-        for task_id, approval in self.accepted().items():
-            row = self.state["tasks"].get(task_id)
-            if row is not None and row["status"] == "blocked" and not row.get("accepted_gap"):
-                row.update(accepted_gap=approval, outcome="accepted_gap",
-                           activity="Lücke ausdrücklich akzeptiert; das Dossier wird ohne diese Teilfrage abgeschlossen")
-                changed = True
-        if changed:
-            self.save("Akzeptierte Lücken werden übernommen")
+        with self.guarded():
+            changed = False
+            for task_id, approval in self.accepted().items():
+                row = self.state["tasks"].get(task_id)
+                if row is not None and row["status"] == "blocked" and not row.get("accepted_gap"):
+                    row.update(accepted_gap=approval, outcome="accepted_gap",
+                               activity="Lücke ausdrücklich akzeptiert; das Dossier wird ohne diese Teilfrage abgeschlossen")
+                    changed = True
+            if changed:
+                self.save("Akzeptierte Lücken werden übernommen")
 
     def save(self, activity=None, *, budget_request=None):
-        self.state["budget_projection"] = budget_projection(self.work, self.state, self.limits(), budget_request)
+        # Whole-ledger writes: state, probes, the public ledger and its markdown, then the progress line.
+        with self.guarded():
+            self._save(activity, budget_request)
+
+    def _save(self, activity, budget_request):
+        self.state["budget_projection"] = budget_projection(self.work, self.state, self.limits(), budget_request,
+                                                            root=self.root)
         if self.attempts is not None:
             self.state["source_attempt_count"] = len(self.attempts)
         save_value(self.folder / "state.json", self.state)
@@ -147,10 +230,13 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         if public["accepted"]:
             lines += [f"{public['accepted']} Teilfragen als Lücke ausdrücklich akzeptiert.", ""]
         budget = self.state["budget_projection"]
+        if self.state["phase"] == "awaiting_plan_approval":
+            lines += ["Der Rechercheplan wartet auf Freigabe; bis dahin wird kein weiterer Modellaufruf verbraucht.", ""]
         lines += [f"Mindestens {budget['minimum_remaining_calls']} weitere Modellaufrufe, davon "
                   f"{budget['closing_calls']} für Dossier und Abschlussprüfung; {budget['remaining']} verfügbar. "
                   f"Erfahrungsgemäß etwa {budget['expected_remaining_calls']} Aufrufe "
-                  f"({budget['expected_calls_per_task']} je offener Teilfrage). "
+                  f"({budget['expected_calls_per_task']} je offener Teilfrage, "
+                  f"{SOURCE_LABELS.get(budget.get('expected_calls_source'), SOURCE_LABELS['default'])}). "
                   "Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.", ""]
         for row in public["questions"]:
             status = row["status"] + (" (akzeptierte Lücke)" if row["accepted_gap"] else "")
@@ -203,6 +289,16 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     expected = {a["task_id"]: a["answer_hash"] for a in prerequisite_answers(task, self.state)}
                     if set(expected) != set(task.depends_on) or verification.get("prerequisite_hashes", {}) != expected:
                         raise AppError("The verified prerequisites changed.", code="invalid_research_checkpoint", status="blocked")
+            # No task is running when a resume starts, whatever the interrupted worker had in flight;
+            # ledgers of an earlier version named that one task in ``active_task``.
+            self.state["active_tasks"] = []
+            self.state.pop("active_task", None)
+            if (self.plan_gate is not None and self.state["phase"] == "questions"
+                    and not self.state.get("plan_approval")
+                    and all(row["status"] not in {"verified", "blocked"} for row in self.state["tasks"].values())):
+                # A plan made before the gate existed, with no task finished yet: nothing is lost by
+                # projecting it now and letting the operator approve it or cap it before the first call.
+                self.state["phase"] = "awaiting_plan_approval"
             if self.state.get("evidence_version") != EVIDENCE_VERSION:
                 # Preserve the old receipt verbatim, but never relabel it as clause-level verification.
                 save_value(self.folder / "legacy_evidence_state.json", self.state)
@@ -216,26 +312,119 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 self.state.update(evidence_version=EVIDENCE_VERSION, phase="questions",
                                   audit_round=self.state["audit_round"] + 1,
                                   dirty_tasks=[t["id"] for t in self.state["plan"]["tasks"]])
+            self.timings = self.state.setdefault("call_timings", [])
             self.save("Gespeicherte Antworten und offene Recherchefragen werden übernommen")
             return
         discovery, index, dossier, context, migration = bootstrap_legacy(
             self.root, self.work, discovery, index, dossier, context)
         gaps = _gaps(dossier, migration)
         self.progress("Leitfragen werden in überprüfbare Rechercheaufgaben aufgeteilt")
+        # Calls before the ledger existed (discovery, an earlier planning attempt) count for the projection too.
+        self.timings = run_timings(self.work)
         planning_path = self.folder / "planning_budget.json"
         planning_budget = None
-        if planning_path.exists():
-            planning_budget = read_value(planning_path)
-        elif not (self.folder / "plan.json").exists():
-            budget_path = self.work / "budget.json"
-            used = json.loads(budget_path.read_text(encoding="utf-8")).get("model_calls", 0) if budget_path.exists() else 0
-            limit = self.limits().model_calls
-            planning_budget = {"used": used, "approved_limit": limit,
-                               "minimum_calls_per_task": 2,
-                               "expected_calls_per_task": EXPECTED_CALLS_PER_TASK,
-                               "max_tasks": affordable_tasks(used, limit),
-                               "synthesis": "One call for a fresh dossier, or one patch per four tasks for an inherited dossier, plus two final audits."}
-            save_value(planning_path, planning_budget)
+        if planning_path.exists() or not (self.folder / "plan.json").exists():
+            planning_budget = self.planning_allowance(planning_path)
+        suffix = ""
+        if (self.folder / "plan.json").exists() and any("depends_on" not in task for task in read_value(self.folder / "plan.json")["tasks"]):
+            # A pre-ledger planning receipt has no binding for the new schema. Retain it and
+            # make a separately budgeted plan; do not overwrite or mislabel the old receipt.
+            suffix = "_evidence_v1"
+        plan, groups = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
+        tasks = {t.id: pending_task() for t in plan.tasks}
+        self.state = {"version": VERSION, "input_hash": binding, "plan": plan.model_dump(), "tasks": tasks,
+                      "evidence_version": EVIDENCE_VERSION,
+                      "discovery": discovery.model_dump(), "seed_dossier": dossier.model_dump() if dossier else None,
+                      "migration": migration, "gaps": gaps, "phase": "questions", "audit_round": 0,
+                      "task_groups": groups,
+                      "dirty_tasks": [t.id for t in plan.tasks], "active_tasks": [],
+                      "limits": {"steps_per_question": MAX_STEPS, "web_attempts": MAX_WEB_ATTEMPTS,
+                                 "reopenings": MAX_REOPENINGS},
+                      "call_timings": self.timings, "plan_caps": [], "plan_revisions": []}
+        self.set_index(index)
+        self.attempts = restore_attempts(self.folder, index)
+        # Model-free: a lexical pass that asks whether each declared gap already has
+        # candidate sections in the corpus. It costs nothing and blocks nothing yet.
+        self.state["gap_probes"] = probe(index, gaps, gap_terms=coverage_terms(dossier) if dossier else {})
+        self.project_plan()
+        if self.plan_gate is None:
+            self.save("Rechercheplan gespeichert – einzelne Fragen werden untersucht")
+            return
+        # No task call before the projected cost was seen and approved (plan_approval.json).
+        self.state["phase"] = "awaiting_plan_approval"
+        self.save("Rechercheplan gespeichert – wartet auf Freigabe")
+
+    def planning_allowance(self, path, *, cap=None):
+        """The allowance the planner sees, saved once so replays judge a plan by the same rule."""
+        if path.exists():
+            return read_value(path)
+        budget_path = self.work / "budget.json"
+        used = json.loads(budget_path.read_text(encoding="utf-8")).get("model_calls", 0) if budget_path.exists() else 0
+        limit = self.limits().model_calls
+        per_task, source = expected_calls_per_task(self.work, self.root, self.state)
+        affordable = affordable_tasks(used, limit, per_task)
+        allowance = {"used": used, "approved_limit": limit, "minimum_calls_per_task": 2,
+                     "expected_calls_per_task": per_task, "expected_calls_source": source,
+                     "max_tasks": min(cap, affordable) if cap else affordable,
+                     "synthesis": "One call for a fresh dossier, or one patch per four tasks for an inherited dossier, plus two final audits."}
+        if cap:
+            allowance["requested_max_tasks"] = cap
+        save_value(path, allowance)
+        return allowance
+
+    def project_plan(self):
+        """What the current plan is expected to cost; written beside the ledger for Studio, CLI and the gate."""
+        projection = plan_projection(self.work, self.root, self.state, self.limits())
+        write_json(self.folder / "plan_projection.json", projection)
+        return projection
+
+    def review_plan(self):
+        """Stop before the first task call until the projected plan is approved.
+
+        An approval with a cap below the task count plans again under that cap, once per cap, and
+        presents the new plan; the operator always approves the plan that will actually run.
+        """
+        if self.state["phase"] != "awaiting_plan_approval":
+            return
+        if self.plan_gate is None:
+            self.state["phase"] = "questions"
+            self.save("Rechercheplan übernommen – einzelne Fragen werden untersucht")
+            return
+        while True:
+            projection = self.project_plan()
+            approval = self.plan_gate(projection)
+            cap = (approval or {}).get("max_tasks")
+            if approval is None or (cap is not None and cap < projection["tasks"] and cap in self.state.get("plan_caps", [])):
+                self.save("Der Rechercheplan wartet auf Freigabe")
+                raise AppError(plan_review_message(projection, self.work.name), code="research_plan_review", status="blocked")
+            if cap is not None and cap < projection["tasks"]:
+                self.replan(cap)
+                continue
+            self.state.update(phase="questions", plan_approval=approval)
+            self.save("Rechercheplan freigegeben – einzelne Fragen werden untersucht")
+            return
+
+    def replan(self, cap):
+        """Plan again under an approved cap; the previous plan's receipts stay, the new one waits for approval."""
+        discovery = ResearchDiscovery.model_validate(self.state["discovery"])
+        dossier = ResearchDossier.model_validate(self.state["seed_dossier"]) if self.state.get("seed_dossier") else None
+        gaps = self.state["gaps"]
+        previous = digest(self.state["plan"])
+        self.progress(f"Der Rechercheplan wird auf höchstens {cap} Teilfragen neu zugeschnitten")
+        suffix = f"_cap{cap}"
+        planning_budget = self.planning_allowance(self.folder / f"planning_budget{suffix}.json", cap=cap)
+        plan, groups = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
+        self.state.update(plan=plan.model_dump(), tasks={t.id: pending_task() for t in plan.tasks}, task_groups=groups,
+                          dirty_tasks=[t.id for t in plan.tasks], active_tasks=[],
+                          plan_caps=[*self.state.get("plan_caps", []), cap],
+                          plan_revisions=[*self.state.get("plan_revisions", []),
+                                          {"cap": cap, "previous_plan_hash": previous,
+                                           "plan_hash": digest(plan.model_dump()), "tasks": len(plan.tasks)}])
+        self.state["gap_probes"] = probe(self.index, gaps, gap_terms=coverage_terms(dossier) if dossier else {})
+        self.save(f"Rechercheplan mit {len(plan.tasks)} Teilfragen gespeichert – wartet auf Freigabe")
+
+    def plan_tasks(self, discovery, dossier, gaps, planning_budget, suffix=""):
+        """One planning call, then the scope review in at most two passes; returns the plan and its split groups."""
         prompt = (TERMINOLOGY + TEACHING_SCOPE +
             instructions("question_plan", language=self.config.language) + "\n" + json.dumps({
                 "brief": quality_brief(self.config), "questions": [q.model_dump() for q in discovery.questions],
@@ -244,11 +433,6 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             head, data = prompt.rsplit("\n", 1)
             prompt = (head + " " + instructions("question_plan_allowance") + "\n" +
                 json.dumps({**json.loads(data), "planning_budget": planning_budget}, ensure_ascii=False))
-        suffix = ""
-        if (self.folder / "plan.json").exists() and any("depends_on" not in task for task in read_value(self.folder / "plan.json")["tasks"]):
-            # A pre-ledger planning receipt has no binding for the new schema. Retain it and
-            # make a separately budgeted plan; do not overwrite or mislabel the old receipt.
-            suffix = "_evidence_v1"
         # The cap is a stable snapshot from planning time, so replays judge a plan by the same rule.
         max_tasks = (planning_budget or {}).get("max_tasks")
 
@@ -293,41 +477,95 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         else:
             raise AppError("Recherchefragen bleiben nach der Umfangsprüfung zu breit; die überarbeitete Aufteilung ist gespeichert.",
                            code="question_scope_unresolved", status="blocked")
-        tasks = {t.id: pending_task() for t in plan.tasks}
-        self.state = {"version": VERSION, "input_hash": binding, "plan": plan.model_dump(), "tasks": tasks,
-                      "evidence_version": EVIDENCE_VERSION,
-                      "discovery": discovery.model_dump(), "seed_dossier": dossier.model_dump() if dossier else None,
-                      "migration": migration, "gaps": gaps, "phase": "questions", "audit_round": 0,
-                      "task_groups": groups,
-                      "dirty_tasks": [t.id for t in plan.tasks], "active_task": None,
-                      "limits": {"steps_per_question": MAX_STEPS, "web_attempts": MAX_WEB_ATTEMPTS,
-                                 "reopenings": MAX_REOPENINGS}}
-        self.set_index(index)
-        self.attempts = restore_attempts(self.folder, index)
-        # Model-free: a lexical pass that asks whether each declared gap already has
-        # candidate sections in the corpus. It costs nothing and blocks nothing yet.
-        self.state["gap_probes"] = probe(index, gaps, gap_terms=coverage_terms(dossier) if dossier else {})
-        self.save("Rechercheplan gespeichert – einzelne Fragen werden untersucht")
+        return plan, groups
+
+    def task_readiness(self, task, *, wait_for_open=False):
+        """Whether a task can start: ``done`` (verified or blocked), ``ready`` (every prerequisite
+        verified), ``waiting`` (a prerequisite is still being answered; only asked for when tasks run
+        side by side) or ``blocked`` after marking the row, because a prerequisite ended without a
+        verified answer, an accepted gap included."""
+        row = self.state["tasks"][task.id]
+        if row["status"] in {"verified", "blocked"}:
+            return "done"
+        unmet = [dep for dep in task.depends_on if self.state["tasks"][dep]["status"] != "verified"]
+        if not unmet:
+            return "ready"
+        if wait_for_open and not any(self.state["tasks"][dep]["status"] == "blocked" for dep in unmet):
+            return "waiting"
+        accepted = [dep for dep in unmet if self.state["tasks"][dep].get("accepted_gap")]
+        row.update(status="blocked", outcome="prerequisite_block",
+                   reason=("Eine vorausgesetzte Teilfrage wurde als Lücke akzeptiert; diese Teilfrage "
+                           "kann ohne sie nicht geprüft werden." if accepted else
+                           "A required prerequisite has not passed evidence review."))
+        return "blocked"
+
+    def research_tasks(self):
+        """Answer every open task of the plan: one at a time in plan order, or with several workers
+        up to that many tasks whose prerequisites are verified at once."""
+        tasks = ordered_tasks(QuestionPlan.model_validate(self.state["plan"]).tasks)
+        self.stopping.clear()
+        if self.workers == 1:
+            for task in tasks:
+                if self.task_readiness(task) == "ready":
+                    self.ensure_budget()
+                    self.research_task(task)
+            self.state["active_tasks"] = []
+            return
+        self.research_tasks_concurrently(tasks)
+
+    def research_tasks_concurrently(self, tasks):
+        """Submit ready tasks in plan order, refill as tasks finish, drain in-flight work on failure."""
+        remaining, running = list(tasks), {}
+
+        def perform(task):
+            try:
+                self.research_task(task)
+            except BaseException:
+                # The other workers finish their current call and stop at their next step boundary.
+                self.stopping.set()
+                raise
+
+        def fill(pool):
+            kept = []
+            for task in remaining:
+                readiness = self.task_readiness(task, wait_for_open=True)
+                if readiness in {"done", "blocked"}:
+                    continue
+                if readiness == "ready" and len(running) < self.workers and not self.stopping.is_set():
+                    self.ensure_budget()
+                    running[pool.submit(copy_context().run, perform, task)] = task
+                    continue
+                kept.append(task)
+            remaining[:] = kept
+
+        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="research") as pool:
+            try:
+                while True:
+                    with self.guarded():
+                        fill(pool)
+                    if not running:
+                        if remaining and not self.stopping.is_set():
+                            raise AppError("Research task prerequisites contain a cycle.",
+                                           code="invalid_question_plan", status="blocked")
+                        break
+                    done, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        running.pop(future)
+                        future.result()
+            except BaseException:
+                self.stopping.set()
+                wait(running)
+                self.save()
+                raise
+        with self.guarded():
+            self.state["active_tasks"] = []
 
     def run(self, discovery, index, dossier=None, context=()):
         self.initialise(discovery, index, dossier, context)
+        self.review_plan()
         while True:
             self.adopt_accepted_gaps()
-            for task in ordered_tasks(QuestionPlan.model_validate(self.state["plan"]).tasks):
-                row = self.state["tasks"][task.id]
-                if row["status"] in {"verified", "blocked"}:
-                    continue
-                unmet = [dep for dep in task.depends_on if self.state["tasks"][dep]["status"] != "verified"]
-                if unmet:
-                    accepted = [dep for dep in unmet if self.state["tasks"][dep].get("accepted_gap")]
-                    row.update(status="blocked", outcome="prerequisite_block",
-                               reason=("Eine vorausgesetzte Teilfrage wurde als Lücke akzeptiert; diese Teilfrage "
-                                       "kann ohne sie nicht geprüft werden." if accepted else
-                                       "A required prerequisite has not passed evidence review."))
-                    continue
-                self.ensure_budget()
-                self.research_task(task)
-            self.state["active_task"] = None
+            self.research_tasks()
             self.adopt_accepted_gaps()
             blocked = [r for r in public_ledger(self.state)["questions"] if r["status"] == "blocked" and not r["accepted_gap"]]
             if blocked:
@@ -345,7 +583,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     continue
                 # Every objection targets an explicitly accepted gap: nothing is left to research.
                 report = self.tolerate(dossier, review, report)
-            self.state.update(phase="completed", active_task=None)
+            self.state.update(phase="completed", active_tasks=[])
             for objection in self.state.get("objections", {}).values():
                 objection.update(status="closed", closure_audit=self.state["audit_round"],
                                  dossier_hash=digest(dossier.model_dump()))
@@ -367,6 +605,6 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
 
 
 def run_question_research(root, work, config, discovery, index, invoke, progress, *, dossier=None, context=(),
-                          limits=None, accepted=None):
-    return QuestionResearch(root, work, config, invoke, progress, limits=limits, accepted=accepted).run(
-        discovery, index, dossier, context)
+                          limits=None, accepted=None, plan_gate=None, workers=1):
+    return QuestionResearch(root, work, config, invoke, progress, limits=limits, accepted=accepted,
+                            plan_gate=plan_gate, workers=workers).run(discovery, index, dossier, context)

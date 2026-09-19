@@ -108,7 +108,8 @@ def perform(root, request, sample_progress=None):
         else:
             # OpenRouter has no web tools; research runs on the subscriptions with the automatic rule.
             research_choice = {"backend": "auto"}
-        run = run_research(root, **research_choice)
+        # Studio runs always stop for the plan projection; the approval comes from the research page.
+        run = run_research(root, **research_choice, plan_review="required")
     elif action == "plan":
         run = run_script(root, plan_only=True, **kwargs)
     elif action == "replan":
@@ -142,7 +143,8 @@ def perform(root, request, sample_progress=None):
             run = run_script(root, resume=True, run_id=run_id, plan_only=plan_only,
                              api_key=request.get("api_key") if saved.get("text_generation", {}).get("provider") == "openrouter" else None)
         elif manifest["kind"] == "research":
-            run = run_research(root, resume=True, run_id=run_id)
+            # Also for the scheduler's automatic resume after a quota reset: the gate is never bypassed.
+            run = run_research(root, resume=True, run_id=run_id, plan_review="required")
         elif manifest["kind"] == "episode_audio":
             run = run_episode_audio(root, resume=True, run_id=run_id, api_key=request.get("api_key"),
                                     parallel_remote=request.get("parallel_remote", False))

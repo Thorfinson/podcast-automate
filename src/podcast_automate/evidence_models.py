@@ -10,6 +10,8 @@ from pydantic import Field, model_validator
 from .models import Contract, Identifier, NonEmpty
 
 EVIDENCE_VERSION = "evidence.v1"
+# Free-text justifications are records, not essays: a long one costs minutes per review call.
+BRIEF = "One sentence naming the passage and the defect; at most 300 characters."
 
 
 class Quantity(Contract):
@@ -42,17 +44,18 @@ class SourceAssessment(Contract):
     population: str
     geography: str
     period: str
-    limitations: list[NonEmpty]
+    limitations: list[NonEmpty] = Field(description="Each entry: " + BRIEF)
 
 
 class FindingSupport(Contract):
     finding_id: Identifier
     verdict: Literal["supported", "partially_supported", "contradicted", "insufficient_context"]
     references: list[NonEmpty] = Field(min_length=1)
-    reason: NonEmpty
+    reason: NonEmpty = Field(description=BRIEF)
     unsupported_clauses: list[NonEmpty]
     suitability: Literal["suitable", "unsuitable", "unknown"]
-    suitability_reason: NonEmpty
+    suitability_reason: NonEmpty = Field(description="One sentence on whether this source can carry this assertion; "
+                                                     "at most 300 characters.")
     contract_preserved: bool
     empirical_status: Literal["not_applicable", "tested_in_source", "independently_tested", "unknown"]
     independent_evidence_refs: list[NonEmpty]

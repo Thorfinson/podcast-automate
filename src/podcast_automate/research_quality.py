@@ -64,12 +64,15 @@ def check_assessment(config, dossier, assessment):
 
 
 def quality_report(config, dossier, discovery, index, assessment, grounding_issues=(), *, accepted=None,
-                   gap_probes=()):
+                   gap_probes=(), review_limitations=()):
     """The gate report. ``accepted`` maps task ids to explicitly accepted gaps; their coverage rows
     are listed as accepted, not blocking. Requirement verdicts stay honest either way.
 
     ``gap_probes`` are the corpus-probe rows. A gap whose candidate sections were never read
-    blocks; a gap confirmed after reading them does not. A hit alone is not a contradiction."""
+    blocks; a gap confirmed after reading them does not. A hit alone is not a contradiction.
+
+    ``review_limitations`` are per-question rows of what the independent answer review confirmed
+    only with a stated limit. They are recorded, never a gate: the answer passed."""
     check_assessment(config, dossier, assessment)
     accepted = accepted or {}
     requirements = requirements_for(config)
@@ -109,6 +112,7 @@ def quality_report(config, dossier, discovery, index, assessment, grounding_issu
                                "question_ids": gap.get("question_ids", []), "requirement_ids": gap.get("requirement_ids", [])}
                               for tid, gap in sorted(accepted.items())],
             "accepted_coverage_gaps": list(dict.fromkeys(tolerated)),
+            "review_limitations": [dict(row) for row in review_limitations if row.get("limitations")],
             "dossier_hash": digest(dossier.model_dump()), "brief_hash": digest(requirements),
             "scope": "Alle vereinbarten Leitfragen; keine Behauptung abschließenden Wissens über das gesamte Fachgebiet."}
 
@@ -157,6 +161,12 @@ def render_quality(report):
             lines += [f"- {row['text']} — {PROBE_LABELS.get(row['status'], row['status'])}"
                       + (": " + ", ".join(hit["reference"] for hit in row["hits"]) if row["hits"] else "")]
         lines += [""]
+    if report.get("review_limitations"):
+        lines += ["## Einschränkungen der Prüfung", "",
+                  "Die unabhängige Antwortprüfung hat diese Teilfragen bestanden, einzelne Aussagen aber nur mit "
+                  "Einschränkung bestätigt. Sie gelten als Grenzen der Befunde, nicht als offene Recherche.", ""]
+        for row in report["review_limitations"]:
+            lines += [f"### {row['question']}", "", *[f"- {item['text']}" for item in row["limitations"]], ""]
     if report.get("accepted_gaps"):
         lines += ["## Akzeptierte Lücken", ""]
         for gap in report["accepted_gaps"]:

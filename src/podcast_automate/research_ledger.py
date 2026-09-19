@@ -10,6 +10,8 @@ from .research_retrieval import merge_context
 from .storage import digest, file_hash, inside, write_json
 
 VERSION = "question_research.v1"
+# The workflow and receipt bindings above stay; the call tag names the loop wording that produced a result.
+CALL_VERSION = "question_research.v2-loop"
 INDEX_MANIFEST = "index_manifest.v1"
 
 
@@ -22,6 +24,19 @@ def read_value(path):
     if saved.get("sha256") != digest(saved.get("value")):
         raise AppError("Gespeicherter Recherchestand wurde verändert.", code="invalid_research_checkpoint", status="blocked")
     return saved["value"]
+
+
+def active_tasks(state):
+    """Ids of the tasks being answered right now, in plan order.
+
+    Ledgers written before tasks ran side by side named one ``active_task``; the public ledger
+    keeps that field as the first element for readers that still expect it.
+    """
+    rows = state.get("active_tasks")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, str)]
+    single = state.get("active_task")
+    return [single] if isinstance(single, str) else []
 
 
 def check_sources(root, index):
@@ -158,6 +173,7 @@ def public_ledger(state, index=None):
                      "depends_on": spec.get("depends_on", []), "outcome": task.get("outcome"),
                      "accepted_gap": bool(accepted), "accepted_reason": (accepted or {}).get("reason", ""),
                      "support": task.get("verification", {}).get("support_summary") if answer else None,
+                     "review_limitations": (task.get("verification") or {}).get("limitations", []) if answer else [],
                      "search_count": len(task.get("search_receipts", [])),
                      "read_sections": len(task["read_refs"]), "reason": task.get("reason", ""),
                      "answer": answer["summary"] if answer else "", "limits": answer["limits"] if answer else [],
@@ -171,10 +187,11 @@ def public_ledger(state, index=None):
     phase = state["phase"]
     if phase == "blocked" and not blocked:
         phase = "questions"
+    active = active_tasks(state)
     return {"version": VERSION, "total": len(rows), "closed": sum(r["status"] == "verified" for r in rows),
             "blocked": len(blocked), "accepted": sum(r["accepted_gap"] for r in rows), "phase": phase,
             "source_count": len(index.sources) if index else None,
             "source_failures": len(index.failures) if index else None,
             "source_attempt_count": state.get("source_attempt_count"),
             "budget_projection": state.get("budget_projection"),
-            "active_task": state.get("active_task"), "questions": rows}
+            "active_task": active[0] if active else None, "active_tasks": active, "questions": rows}

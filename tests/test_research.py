@@ -113,6 +113,28 @@ class ResearchTests(fixtures.ResearchProjectCase):
         self.assertTrue(all(stage.attempts == 1 for stage in second.stages.values()))
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
 
+    def test_answered_calls_record_their_wall_clock_and_the_publish_writes_the_calibration(self):
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
+            run = run_research(self.root)
+        self.assertEqual(run.status, "completed")
+        work = self.root / "runs" / run.run_id
+        # The simulated adapter writes no response receipts; the run's own timing receipt marks each answered call.
+        timings = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(work.glob("calls/call_*/timing.json"))]
+        self.assertEqual([t["schema"] for t in timings], [s.__name__ for s in self.calls])
+        for timing in timings:
+            self.assertGreaterEqual(timing["seconds"], 0)
+            self.assertLessEqual(timing["started_at"], timing["finished_at"])
+        self.assertEqual([t["search"] for t in timings], [True] + [False] * 7)
+        state = json.loads((work / "question_research/state.json").read_text(encoding="utf-8"))["value"]
+        # Discovery precedes the ledger and still counts; the task's two calls are attributed to it.
+        self.assertEqual([(row["name"], row["task"]) for row in state["call_timings"]][:5],
+                         [("ResearchDiscovery", None), ("plan", None), ("scope_0", None),
+                          ("reader", "task_definition"), ("review_001", "task_definition")])
+        calibration = json.loads((self.root / "research/calibration.json").read_text(encoding="utf-8"))
+        self.assertEqual((calibration["run_id"], calibration["tasks"], calibration["verified_tasks"], calibration["calls_per_task"]),
+                         (run.run_id, 1, 1, 2))
+        self.assertEqual(status(self.root)["invalid_completed_stages"], [])
+
     def test_discovery_asks_for_independent_sources_under_its_own_version(self):
         seen = []
         def model(prompt, output_type, directory, **kwargs):

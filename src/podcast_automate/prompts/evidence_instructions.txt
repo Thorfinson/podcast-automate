@@ -14,4 +14,5 @@ an empirical test; a theory's own exposition does not establish its empirical va
 independently_tested with cited distinct works and known independent evidence families. A source can
 be useful without a DOI. Inspect extraction_coverage: missing pages or uncertain tables/equations
 are operational limitations, not evidence of absence. Do not infer precise results from incomplete
-extraction.
+extraction. Keep reason, suitability_reason, rationale and every limitation to one sentence naming
+the passage and the defect, at most 300 characters.

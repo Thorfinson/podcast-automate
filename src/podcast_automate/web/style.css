@@ -79,3 +79,4 @@
 
 .pronunciation{margin:20px 0 0;padding:14px 18px;border:1px solid var(--line);border-radius:7px;background:var(--surface);max-width:720px}.pronunciation[open]>summary{margin-bottom:10px}
 .pronunciation h3,.speech-settings h3{font-size:15px;margin:16px 0 6px;color:var(--green)}.pronunciation ul{margin:0;padding-left:22px;font-size:14px;line-height:1.7}.speech-settings textarea{font-family:ui-monospace,Consolas,monospace;font-size:14px}.spoken-override{margin-top:10px;font-size:14px}.spoken-override summary{color:var(--green)}.spoken-override textarea{min-height:70px}
+.plan-review{margin-top:14px;padding:14px 16px;background:var(--paper);border:1px solid var(--line);border-radius:6px}.plan-review .field{margin:12px 0 0;max-width:260px}.plan-review input{max-width:180px}.plan-review .actions{margin-top:12px}

@@ -25,7 +25,7 @@ from podcast_automate.question_research import QuestionResearch
 from podcast_automate.research import reconcile_budget, reserve_call
 from podcast_automate.research_ledger import load_index, read_value, save_value
 from podcast_automate.research_quality import ResearchAssessment
-from podcast_automate.research_tasks import QuestionPlan, QuestionSearch, ReopenPlan, ResearchDecision
+from podcast_automate.research_tasks import AnswerReview, QuestionPlan, QuestionSearch, ReopenPlan, ResearchDecision
 from podcast_automate.run_budget import accepted_gaps, approve_research_gap, effective_limits
 from podcast_automate.sources import download, extract, import_failure, public_url
 from podcast_automate.storage import digest, init_project, write_json, write_yaml
@@ -110,6 +110,34 @@ class AcceptedGapTests(WorkflowCase):
         calls = len(self.fixture.calls)
         self.assertEqual(self.run_engine().state["phase"], "completed")
         self.assertEqual(len(self.fixture.calls), calls)
+
+    def test_an_evidence_block_after_a_failed_review_takes_the_same_gap_approval_path(self):
+        def flow(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                if "answer" in payload["allowed_actions"]:
+                    return decision("answer", answer=answer_for(self.fixture.ref))
+                return decision("search_web", web_queries=["independent empirical test"])
+            if schema is AnswerReview and payload["task"]["id"] == "task_empirical":
+                return AnswerReview(criteria=[dict(index=0, passed=False, reason="No empirical test among the passages.")],
+                                    supported=True, source_adequacy=True, issues=[])
+        self.fixture.hook = flow
+        with self.assertRaises(AppError) as blocked:
+            self.run_engine()
+        self.assertEqual(blocked.exception.code, "research_questions_blocked")
+        state = read_value(self.work / "question_research/state.json")
+        self.assertEqual((state["tasks"]["task_empirical"]["status"], state["tasks"]["task_empirical"]["outcome"]),
+                         ("blocked", "evidence_block"))
+        self.assertEqual(state["tasks"]["task_definition"]["status"], "verified")
+        decisions = self.calls(ResearchDecision)
+        approve_research_gap(self.root, "run_test", "task_empirical", "No empirical test exists for this fixture.")
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(self.calls(ResearchDecision), decisions)
+        self.assertEqual(engine.state["tasks"]["task_empirical"]["outcome"], "accepted_gap")
+        public = json.loads((self.work / "research_questions.json").read_text(encoding="utf-8"))
+        self.assertEqual((public["blocked"], public["accepted"], public["phase"]), (0, 1, "completed"))
 
     def test_objections_that_only_concern_an_accepted_gap_finish_with_them_on_record(self):
         self.block_empirical_task()
@@ -229,7 +257,9 @@ class RejectedReceiptTests(WorkflowCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["value"]["requirements"][0]["finding_ids"], ["f_energy"])
 
     def test_plan_beyond_the_affordable_task_count_is_re_asked_then_accepted(self):
-        self.fixture.config.research_limits.model_calls = 14  # affordable: (14 - 4) // 5 = 2 tasks
+        # Nothing spent yet and the default of 8 calls per task (no calibration history in a fresh project):
+        # affordable = (20 - 0 - 4) // 8 = 2 tasks, so a three-task plan still exceeds the allowance.
+        self.fixture.config.research_limits.model_calls = 20
         plans = []
 
         def oversized(prompt, schema, payload, kwargs):
@@ -240,7 +270,8 @@ class RejectedReceiptTests(WorkflowCase):
         engine = self.engine()
         engine.initialise(self.fixture.discovery, self.fixture.index, None, [])
         self.assertEqual(len(plans), 3)
-        self.assertEqual((plans[0]["planning_budget"]["max_tasks"], plans[0]["planning_budget"]["expected_calls_per_task"]), (2, 5))
+        self.assertEqual((plans[0]["planning_budget"]["max_tasks"], plans[0]["planning_budget"]["expected_calls_per_task"]), (2, 8))
+        self.assertEqual(plans[0]["planning_budget"]["expected_calls_source"], "default")
         self.assertNotIn("Rejections:", plans[0].get("brief", {}).get("topic", ""))
         rejected = json.loads((self.work / "question_research/plan_rejected_01.json").read_text(encoding="utf-8"))
         self.assertEqual(rejected["code"], "plan_exceeds_allowance")

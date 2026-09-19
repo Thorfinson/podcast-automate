@@ -65,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("--model", help="Modell-ID des festen Abo-Anbieters")
     research.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"),
                           help="Denkaufwand für Recherche-Modellaufrufe des festen Anbieters")
+    research.add_argument("--approve-plan", action="store_true",
+                          help="Den Rechercheplan ohne Freigabe-Stopp automatisch freigeben; die Hochrechnung steht "
+                               "trotzdem in runs/<run_id>/question_research/plan_projection.json")
     script = commands.add_parser("script", help="Geprüftes Dossier in Serienentwurf und Dialogskripte umsetzen")
     script.add_argument("project_dir", type=Path)
     script.add_argument("--episode", help="Nur die gewählte Folge schreiben, zum Beispiel ep_001")
@@ -98,8 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
                              help="OpenRouter-Key nur für diesen Aufruf; ohne Wert verdeckt abfragen, alternativ OPENROUTER_API_KEY")
         command.add_argument("--max-output-tokens", type=int,
                              help="OpenRouter-Ausgabelimit pro Modellaufruf; Standard 32768")
-    approve = commands.add_parser("approve", help="Ausdrückliche Freigabe für einen Lauf: höheres Aufruf- oder "
-                                                   "Suchrundenlimit oder eine blockierte Teilfrage als Lücke akzeptieren")
+    approve = commands.add_parser("approve", help="Ausdrückliche Freigabe für einen Lauf: Rechercheplan freigeben, "
+                                                   "höheres Aufruf- oder Suchrundenlimit oder eine blockierte "
+                                                   "Teilfrage als Lücke akzeptieren")
     approve.add_argument("project_dir", type=Path)
     approve.add_argument("--run-id", help="Standard: der letzte Lauf des Projekts")
     approve.add_argument("--model-calls", type=int, help="Neues Limit für Modellaufrufe dieses Laufs")
@@ -107,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--accept-gap", metavar="TASK_ID",
                          help="Blockierte Teilfrage, die im Dossier als Lücke dokumentiert bleibt")
     approve.add_argument("--reason", default="", help="Kurze Begründung der akzeptierten Lücke")
+    approve.add_argument("--research-plan", nargs="?", const=True, default=None, metavar="RUN_ID",
+                         help="Den wartenden Rechercheplan dieses Laufs freigeben (Hochrechnung in "
+                              "runs/<run_id>/question_research/plan_projection.json); ohne RUN_ID gilt --run-id oder der letzte Lauf")
+    approve.add_argument("--max-tasks", type=int, metavar="N",
+                         help="Mit --research-plan: höchstens N Teilfragen; der Plan wird einmal neu zugeschnitten und erneut vorgelegt")
     schemas = commands.add_parser("schemas", help="Implementierte JSON-Schemas exportieren")
     schemas.add_argument("output_dir", type=Path)
     for command in (init, doctor, state, text_probe, audio_probe, research, script, series, audio, resume, schemas, quota, approve):
@@ -189,13 +198,20 @@ def run_command(args) -> int:
                     "waiting_for_quota" if overview["any_usable"] else "blocked", **overview}
             code = 0 if overview["any_available"] else 2 if overview["any_usable"] else 1
         elif args.command == "approve":
-            from .run_budget import approve_model_call_limit, approve_research_gap
+            from .run_budget import approve_model_call_limit, approve_research_gap, approve_research_plan
             root = args.project_dir.resolve()
-            run_id = manifest_path(root, args.run_id).parent.name
-            if args.model_calls is None and args.search_rounds is None and not args.accept_gap:
-                raise AppError("Freigabe angeben: --model-calls, --search-rounds oder --accept-gap.",
+            named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
+            run_id = manifest_path(root, named).parent.name
+            if (args.model_calls is None and args.search_rounds is None and not args.accept_gap
+                    and args.research_plan is None):
+                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds oder --accept-gap.",
                                code="invalid_request", status="blocked")
+            if args.max_tasks is not None and args.research_plan is None:
+                raise AppError("--max-tasks gilt nur zusammen mit --research-plan.", code="invalid_request", status="blocked")
             data = {"status": "approved", "run_id": run_id}
+            if args.research_plan is not None:
+                plan = approve_research_plan(root, run_id, max_tasks=args.max_tasks, source="pla approve --research-plan")
+                data["plan_approval"] = plan.model_dump(mode="json")
             if args.model_calls is not None or args.search_rounds is not None:
                 approval = approve_model_call_limit(root, run_id, args.model_calls, search_rounds=args.search_rounds)
                 data["budget_approval"] = approval.model_dump(mode="json")
@@ -265,11 +281,13 @@ def run_command(args) -> int:
                                       backend=args.backend, model=args.model, api_key=api_key,
                                       max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort)
             elif research_run:
+                # The plan gate is the CLI default; only an explicit --approve-plan at the start waives it.
                 manifest = run_research(args.project_dir, resume=args.command == "resume",
                                         run_id=getattr(args, "run_id", None),
                                         reuse_sources=getattr(args, "reuse_sources", None),
                                         backend=getattr(args, "backend", None), model=getattr(args, "model", None),
-                                        reasoning_effort=getattr(args, "reasoning_effort", None))
+                                        reasoning_effort=getattr(args, "reasoning_effort", None),
+                                        plan_review="auto" if getattr(args, "approve_plan", False) else "required")
             else:
                 manifest = run_probe(
                     args.project_dir,
