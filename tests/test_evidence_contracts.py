@@ -43,17 +43,51 @@ class EvidenceContractTests(unittest.TestCase):
         return ResearchDossier(topic="Fixture", scope_note="Synthetic evidence, no research claim.",
             findings=self.findings, coverage=[], open_questions=[], synthesis=list(synthesis))
 
-    def test_missing_duplicate_and_unknown_finding_receipts_fail_closed(self):
-        for rows in ([], self.receipts["finding_support"] * 2,
-                     [{**self.receipts["finding_support"][0], "finding_id": "f_unknown"}]):
+    def test_missing_and_unknown_finding_receipts_fail_closed_while_repeats_collapse_conservatively(self):
+        for rows in ([], [{**self.receipts["finding_support"][0], "finding_id": "f_unknown"}]):
             with self.subTest(rows=rows), self.assertRaises(AppError):
                 support_errors(self.findings, self.review(finding_support=rows), self.context)
+        # An identical repeat is a shape defect that costs no call; a differing repeat keeps the worse verdict.
+        self.assertEqual(support_errors(self.findings, self.review(finding_support=self.receipts["finding_support"] * 2),
+                                        self.context), [])
+        contradicted = {**self.receipts["finding_support"][0], "verdict": "contradicted",
+                        "unsupported_clauses": ["Configurations are assigned energies."]}
+        review = self.review(finding_support=[self.receipts["finding_support"][0], contradicted])
+        self.assertTrue(support_errors(self.findings, review, self.context))
 
     def test_valid_anchor_does_not_cancel_unsupported_clause(self):
         review = self.review()
         review.finding_support[0].verdict = "partially_supported"
         review.finding_support[0].unsupported_clauses = ["The method is effective in all populations."]
-        self.assertTrue(support_errors(self.findings, review, self.context))
+        # Tiered: the clause is not silently accepted, it becomes a recorded limitation of a passing answer.
+        limitations = []
+        self.assertEqual(support_errors(self.findings, review, self.context, limitations=limitations), [])
+        self.assertEqual(limitations[0]["finding_id"], "f_energy")
+        self.assertEqual(limitations[0]["kind"], "partial_support")
+        self.assertIn("The method is effective in all populations.", limitations[0]["text"])
+        for verdict in ("contradicted", "insufficient_context"):
+            review.finding_support[0].verdict = verdict
+            with self.subTest(verdict=verdict):
+                self.assertTrue(support_errors(self.findings, review, self.context, limitations=[]))
+
+    def test_a_receipt_over_some_cited_passages_is_accepted_with_the_omission_recorded(self):
+        self.findings[0].evidence.append(self.findings[0].evidence[0].model_copy(update={"reference": "src_one#s_two"}))
+        self.context[0]["sections"] += [{"reference": "src_one#s_two", "text": "Models assign an energy again."},
+                                        {"reference": "src_one#s_three", "text": "Another passage read for this question."}]
+        self.receipts = support_receipts([f.model_dump() for f in self.findings], self.context)
+        review = self.review()
+        # The trace's rejected shape: a receipt over one of the finding's two cited passages.
+        review.finding_support[0].references = ["src_one#s_one"]
+        limitations = []
+        self.assertEqual(support_errors(self.findings, review, self.context, limitations=limitations), [])
+        self.assertEqual(limitations, [{"finding_id": "f_energy", "kind": "unassessed_references",
+                                        "text": "f_energy: Belegstellen nicht einzeln geprüft: src_one#s_two."}])
+        review.finding_support[0].references = ["src_one#s_one", "src_one#s_one", "src_one#s_three"]
+        self.assertEqual(support_errors(self.findings, review, self.context), [])
+        for refs in ([], ["src_one#s_unread"], ["src_one#s_three"], ["src_one#s_one", "src_two#s_elsewhere"]):
+            review.finding_support[0].references = refs
+            with self.subTest(refs=refs), self.assertRaises(AppError):
+                support_errors(self.findings, review, self.context)
 
     def test_aggregate_pass_cannot_override_semantic_failure(self):
         review = AnswerReview(criteria=[dict(index=0, passed=True, reason="Fixture criterion.")],

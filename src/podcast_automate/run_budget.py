@@ -5,8 +5,11 @@ Three receipts live next to a run and are written only by an explicit user actio
 - ``budget_approval.json`` raises the model-call limit and, optionally, the search-round limit.
 - ``gap_approvals.json`` lists blocked research tasks the user accepts as documented gaps, so the
   dossier can be finished and published without them.
+- ``plan_approval.json`` approves the projected research plan (``question_research/plan_projection.json``)
+  before the first task call, optionally with a cap on the number of tasks. It binds to the plan
+  hash as well, so a re-planned run needs a new approval.
 
-Both bind to the run id and its input hash; a copy cannot serve another run or changed inputs.
+All bind to the run id and its input hash; a copy cannot serve another run or changed inputs.
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from pydantic import Field
 from .errors import AppError
 from .models import Contract, Identifier, RunManifest, now
 from .runner import manifest_path
-from .storage import load_project, read_yaml, write_json
+from .storage import digest, load_project, read_yaml, write_json
 
 
 class BudgetApproval(Contract):
@@ -39,6 +42,45 @@ class GapApprovals(Contract):
     run_id: Identifier
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     gaps: list[GapApproval]
+
+
+class PlanApproval(Contract):
+    run_id: Identifier
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    max_tasks: int | None = Field(default=None, strict=True, ge=1)
+    approved_at: datetime
+    source: str = "explicit"
+
+
+def read_plan_approval(work) -> PlanApproval | None:
+    """The saved plan approval of a run folder; a changed or malformed receipt is refused, not ignored."""
+    path = work / "plan_approval.json"
+    if not path.exists():
+        return None
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict) or saved.get("sha256") != digest(saved.get("value")):
+            raise ValueError("checksum")
+        return PlanApproval.model_validate(saved["value"])
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise AppError("Die gespeicherte Freigabe des Rechercheplans ist ungültig.",
+                       code="invalid_plan_approval", status="blocked") from exc
+
+
+def plan_approval_for(work, input_hash, plan_hash) -> PlanApproval | None:
+    """The valid approval of exactly this plan.
+
+    A receipt of another run or of changed inputs is refused; one for an earlier plan of the same
+    run is simply not an approval, so a re-planned run waits for a new decision.
+    """
+    approval = read_plan_approval(work)
+    if approval is None:
+        return None
+    if approval.run_id != work.name or approval.input_hash != input_hash:
+        raise AppError("Die Freigabe des Rechercheplans gehört nicht zu diesem Auftrag.",
+                       code="invalid_plan_approval", status="blocked")
+    return approval if approval.plan_hash == plan_hash else None
 
 
 def read_budget_approval(work) -> BudgetApproval | None:
@@ -144,4 +186,34 @@ def approve_research_gap(root, run_id, task_id, reason=""):
     approvals = GapApprovals(run_id=manifest.run_id, input_hash=manifest.input_hash,
                              gaps=[*(GapApproval.model_validate(g) for g in existing.values()), approval])
     write_json(work / "gap_approvals.json", approvals.model_dump(mode="json"))
+    return approval
+
+
+def approve_research_plan(root, run_id, *, max_tasks=None, source="explicit"):
+    """Approve the research plan the run currently holds, after the user read its projection.
+
+    The receipt binds to the plan hash: it approves exactly the saved plan. ``max_tasks`` below the
+    plan's task count asks the next resume to plan again under that cap and present the new plan
+    for approval; it is only accepted while the run waits at the gate, because a running plan can no
+    longer be cut. Nothing here spends a call or changes counters, checkpoints or the plan itself.
+    """
+    from .research_ledger import read_value
+    work, manifest = _text_run(root, run_id)
+    if manifest.kind != "research":
+        raise AppError("Ein Rechercheplan gehört nur zu einem Rechercheauftrag.", code="invalid_plan_approval")
+    state_path = work / "question_research/state.json"
+    if not state_path.exists():
+        raise AppError("Für diesen Lauf gibt es noch keinen Rechercheplan.", code="invalid_plan_approval")
+    state = read_value(state_path)
+    if max_tasks is not None and (type(max_tasks) is not int or max_tasks < 1):
+        raise AppError("Die Obergrenze der Teilfragen muss eine ganze Zahl ab 1 sein.", code="invalid_plan_approval")
+    if max_tasks is not None and state.get("phase") != "awaiting_plan_approval":
+        raise AppError("Eine Obergrenze der Teilfragen gilt nur, solange der Rechercheplan auf Freigabe wartet.",
+                       code="invalid_plan_approval")
+    if not isinstance(source, str) or not source.strip() or len(source) > 200:
+        raise AppError("Ungültige Herkunft der Planfreigabe.", code="invalid_plan_approval")
+    approval = PlanApproval(run_id=manifest.run_id, input_hash=manifest.input_hash, plan_hash=digest(state["plan"]),
+                            max_tasks=max_tasks, approved_at=now(), source=source.strip())
+    value = approval.model_dump(mode="json")
+    write_json(work / "plan_approval.json", {"value": value, "sha256": digest(value)})
     return approval

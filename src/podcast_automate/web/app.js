@@ -251,7 +251,7 @@ function setupSummary() {
     ${t.provider==="openrouter"?'<dt>Live-Recherche</dt><dd>Über die Abos (Codex, sonst Claude) · Textarbeit wird separat über OpenRouter abgerechnet.</dd>':""}
     <dt>Stimmen</dt><dd>${a.provider==="qwen3_local"?"Qwen · lokal":"Gemini · OpenRouter"} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
     <dt>Textausarbeitung</dt><dd>${mode(x.text)}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio)}</dd></dl>
-    <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing und Prüfung; Recherche und Lehrkonzept bleiben in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
+    <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing, Prüfung und unabhängige Recherche-Teilfragen; das Lehrkonzept bleibt in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
     ${proposal&&!project.proposal_applied?`<button data-action="apply-proposal" ${running()||setupSending||pendingAttachments.length||project.proposal_current===false||!boot.capabilities?.conversational_setup?"disabled":""}>Diese Auswahl übernehmen</button><p class="hint">${project.proposal_current===false?"Die Anhänge haben sich geändert. Bitte den Partner im Chat die Zusammenfassung aktualisieren lassen.":"Das speichert den Auftrag. Recherche, Plan- und Audiofreigabe erfolgen weiterhin auf den folgenden Seiten."}</p>`:""}
     </section>`;
 }
@@ -435,7 +435,7 @@ function renderResearch() {
   if(!project) return html+empty("Ein Thema fehlt noch.","Lege zuerst deinen Podcast-Auftrag an.","Zur Idee",0);
   const run=currentRun(), researching=run?.kind==="research"&&run.status!=="completed";
   if(project.attachments?.length)html+=`<section class="panel"><h2>Deine Ausgangsmaterialien</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">Diese Dateien werden als lokale Quellen eingelesen. Aussagen aus deinen Notizen werden anhand weiterer Quellen geprüft. Sehr kurze Notizen dienen vor allem der Projektbeschreibung.</p></section>`;
-  html += `<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">Recherche mit Codex</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht oben; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${project.research?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen.</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
+  html += `<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">Recherche mit Codex</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht oben; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>${researching?"Das startet einen neuen Recherchelauf mit neuem Plan und neuer Hochrechnung. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt.":"Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen."}</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
   if(project.research) html+=`<section class="panel"><h2>${researching?"Bisheriges Dossier · wird neu recherchiert":"Dein Recherche-Dossier"}</h2><article class="markdown-document">${renderMarkdown(project.research)}</article></section>`;
   return html;
 }
@@ -833,18 +833,29 @@ function renderWorkInsight(job) {
       ${info.warning?`<p class="note">${escape(info.warning)}</p>`:""}
     </div><p class="hint">${info.basis==="request"?"Aus dem tatsächlich gesendeten Arbeitsauftrag":"Aus dem gespeicherten Recherchestand rekonstruiert"}; keine zusätzliche Modellabfrage.</p>`;
 }
+function activeTasks(ledger) {
+  // Several tasks run side by side in parallel mode; older ledgers name one active task.
+  if(Array.isArray(ledger?.active_tasks))return ledger.active_tasks.filter(id=>typeof id==="string");
+  return typeof ledger?.active_task==="string"?[ledger.active_task]:[];
+}
+function renderActiveTasks(ledger) {
+  const ids=activeTasks(ledger);
+  if(ids.length<2)return "";
+  const names=new Map((ledger.questions||[]).map(row=>[row.id,row.question]));
+  return `<p class="hint">${ids.length} Teilfragen in Arbeit: ${ids.map(id=>escape(names.get(id)||id)).join(" · ")}</p>`;
+}
 function renderModelTrace(job) {
   if(!["research","script"].includes(job?.progress?.phase))return "";
   const trace=job.progress.model_trace,rows=(trace?.lines||[]).slice(-20);
   const kinds={reasoning:"Öffentliche Reasoning-Zusammenfassung",text:"Live-Text",status:"Arbeitsschritt",diagnostic:"Technischer Hinweis"};
   const active=job.status==="running";
   const ledger=job.progress.research_questions;
-  const current=(ledger?.questions||[]).find(row=>row.id===ledger.active_task);
+  const current=(ledger?.questions||[]).find(row=>row.id===activeTasks(ledger)[0]);
   const started=job.progress.model_call_started_at;
   const currentContent=rows.some(row=>["text","reasoning"].includes(row.kind)&&(!started||Date.parse(row.at)>=Date.parse(started)));
   const insight=renderWorkInsight(job);
   return `<section class="model-trace" aria-label="Live-Ausgabe des Modells"><strong>${insight?(active?"Aktueller Rechercheauftrag":"Letzter Rechercheauftrag"):(active?"Gerade in Arbeit":"Letzte Arbeitsschritte")}</strong>
-    ${insight|| (current?`<p class="trace-focus">${escape(current.question)}</p><p>${escape(current.activity)}</p>`:"")}
+    ${insight|| (current?`<p class="trace-focus">${escape(current.question)}</p><p>${escape(current.activity)}</p>`:"")}${renderActiveTasks(ledger)}
     ${!insight&&active&&started&&!currentContent?'<p class="hint">Der aktuelle Modellaufruf läuft. Inhaltliche Zwischenmeldungen liegen dafür noch nicht vor.</p>':""}
     ${insight?'<details class="model-events" open><summary>Live-Ausgabe · letzte 20 Meldungen</summary>':""}
     <p class="hint">Neue Textfragmente und öffentliche Reasoning-Zusammenfassungen erscheinen während des Aufrufs. Aussagen des Modells sind noch ungeprüft.</p>
@@ -859,7 +870,8 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   const approveCalls=budget&&!budget.feasible&&!active?`<button class="secondary small" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${suggested}">Aufruflimit auf ${suggested} erhöhen</button>`:"";
   const budgetNote=budget?`<p class="${budget.feasible?"hint":"notice"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar.${escape(expected)} ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>${approveCalls}`:"";
   const states={pending:"Wartet",researching:"Wird untersucht",reviewing:"Antwort wird geprüft",verified:"Geprüft abgeschlossen",blocked:"Beleg fehlt"};
-  const phases={questions:"Einzelne Fragen untersuchen und prüfen",synthesis:"Dossier aus geprüften Antworten erstellen",audit:"Gesamtdossier prüfen",completed:"Recherche abgeschlossen",blocked:"Offene Belegfragen"};
+  const phases={awaiting_plan_approval:"Wartet auf Freigabe des Rechercheplans",questions:"Einzelne Fragen untersuchen und prüfen",synthesis:"Dossier aus geprüften Antworten erstellen",audit:"Gesamtdossier prüfen",completed:"Recherche abgeschlossen",blocked:"Offene Belegfragen"};
+  const activeIds=activeTasks(ledger);
   const rows=(ledger.questions||[]).map(row=>{
     const answer=row.status==="verified"&&row.answer?`
       <div class="prose">${renderMarkdown(row.answer)}</div>
@@ -869,7 +881,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
     const searchBlocked=row.outcome==="budget_block"&&/Suchbudget|Suchrunden/.test(row.reason||"");
     const gapActions=row.status==="blocked"&&!row.accepted_gap&&!active?`<div class="actions"><button class="secondary small" data-action="accept-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Als Lücke akzeptieren und ohne diese Teilfrage abschließen</button>${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`:"";
     return `<details data-research-question="${escape(row.id)}"${opened.has(row.id)?" open":""}>
-      <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":row.id===ledger.active_task?"●":"○"} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":(states[row.status]||row.status))}</summary>
+      <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":activeIds.includes(row.id)?"●":"○"} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":(states[row.status]||row.status))}</summary>
       <p>${escape(row.activity)}</p>
       <p class="hint">${Number(row.read_sections)} Abschnitte gelesen · ${Number(row.steps)} Bearbeitungsschritte${row.reopened?` · ${Number(row.reopened)} Mal mit Einwand wieder geöffnet`:""}</p>
       ${row.support?`<p class="hint">Textbelege vorhanden · Inhalt automatisch je Befund geprüft · ${row.support.findings.filter(f=>f.empirical_status==="independently_tested").length} Befunde mit dokumentierter unabhängiger empirischer Prüfung</p>`:""}
@@ -880,8 +892,33 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   return `<section class="research-questions">
     <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
     <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}"></progress>
-    <p>${escape(phases[ledger.phase]||"")}</p>${budgetNote}
+    <p>${escape(phases[ledger.phase]||"")}</p>${renderActiveTasks(ledger)}${budgetNote}
     <p class="hint">Die Abschlusskriterien bleiben fest. Eine geprüfte Antwort wird nur bei einem konkreten Einwand aus der Gesamtprüfung erneut geöffnet.</p>${rows}</section>`;
+}
+const calibrationSources={run:"in diesem Lauf gemessen",project:"Erfahrungswert des Projekts",default:"Standardwert"};
+function planSummary(p) {
+  const hours=Number(p.projected_hours), minutes=Number(p.seconds_per_call)/60;
+  const german=(n,d)=>n.toLocaleString("de-DE",{minimumFractionDigits:0,maximumFractionDigits:d});
+  return `${Number(p.tasks)} Teilfragen, voraussichtlich ${Number(p.projected_calls)} Aufrufe, etwa ${german(hours,hours>=10?0:1)} Stunden bei ${german(minutes,1)} Minuten je Aufruf`;
+}
+function planApprovalRequest(runId) {
+  // The receipt approves exactly the shown plan; a cap asks for one re-plan that is shown again before it runs.
+  const payload={kind:"plan",run_id:runId};
+  const raw=String($("plan-max-tasks")?.value??"").trim();
+  if(raw){const n=Number(raw);if(!Number.isInteger(n)||n<1)throw new Error("Höchstens N Teilfragen: bitte eine ganze Zahl ab 1 eingeben.");payload.max_tasks=n;}
+  return payload;
+}
+function renderPlanReview(job, runId) {
+  const review=job?.progress?.plan_review, p=review?.projection;
+  if(!review?.awaiting||!p||job?.status==="running")return "";
+  const basis=`<p class="hint">${Number(p.expected_calls_per_task)} Aufrufe je Teilfrage (${escape(calibrationSources[p.expected_calls_source]||"Standardwert")}), dazu ${Number(p.closing_calls)} für Dossier und Abschlussprüfung; Aufrufdauer ${escape(calibrationSources[p.seconds_per_call_source]||"Standardwert")}. Genehmigtes Limit ${Number(p.approved_limit)} Aufrufe, ${Number(p.used)} verbraucht.${p.within_limit===false?" Das Limit reicht dafür voraussichtlich nicht.":""}</p>`;
+  if(review.approved)return `<section class="plan-review"><strong>Rechercheplan freigegeben</strong><p>${escape(planSummary(p))}</p>${basis}<p class="hint">„Fortsetzen“ beginnt mit der ersten Teilfrage.${review.approval?.max_tasks?` Angeforderte Obergrenze: ${Number(review.approval.max_tasks)} Teilfragen; der Plan wird zuerst neu zugeschnitten und erneut vorgelegt.`:""}</p></section>`;
+  const caps=(p.plan_caps||[]).map(Number).filter(Number.isInteger);
+  const capNote=caps.length&&Number(p.tasks)>Math.min(...caps)?`<p class="note">Eine Obergrenze von ${Math.min(...caps)} Teilfragen wurde bereits angefordert; die Planung konnte den Plan nicht weiter bündeln, ohne Verpflichtungen wegzulassen. Diesen Plan freigeben oder eine neue Recherche starten.</p>`:"";
+  return `<section class="plan-review"><strong>Wartet auf Freigabe des Rechercheplans</strong><p>${escape(planSummary(p))}</p>${basis}${capNote}
+    <div class="field"><label for="plan-max-tasks">Höchstens N Teilfragen (optional)</label><input id="plan-max-tasks" type="number" inputmode="numeric" min="1" max="${Number(p.tasks)}" step="1" placeholder="${Number(p.tasks)}"></div>
+    <div class="actions"><button data-action="approve-plan" data-run-id="${escape(runId)}">Rechercheplan freigeben</button></div>
+    <p class="hint">Ohne Freigabe wird kein Modellaufruf verbraucht. Mit einer Obergrenze wird der Plan einmal neu zugeschnitten (Planungsaufrufe) und erneut zur Freigabe vorgelegt; die Freigabe gilt immer genau für den angezeigten Plan.</p></section>`;
 }
 function renderJob() {
   const j=project?.job, box=$("job-status");
@@ -922,9 +959,12 @@ function renderJob() {
   const missingFoundation=!active&&Object.values(r?.stages||{}).some(v=>v.error?.code==="teaching_research_required");
   const designBlocked=!active&&Object.values(r?.stages||{}).some(v=>v.error?.code==="teaching_design_failed");
   const foundationResearch=active&&j?.progress?.phase==="foundation_research";
-  const title=designBlocked?"Lehrkonzept angehalten: Erklärung noch unvollständig":foundationResearch?"Fehlende Erklärgrundlagen werden automatisch recherchiert":missingFoundation?"Automatische Recherche konnte noch nicht abgeschlossen werden":active?(isScript?"Ausarbeitung läuft":actionNames[j.action]):({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
+  const planReview=!active&&!!j?.progress?.plan_review?.awaiting;
+  const planPending=planReview&&!j.progress.plan_review.approved;
+  const title=designBlocked?"Lehrkonzept angehalten: Erklärung noch unvollständig":planReview?(planPending?"Wartet auf Freigabe des Rechercheplans":"Rechercheplan freigegeben – bereit zum Fortsetzen"):foundationResearch?"Fehlende Erklärgrundlagen werden automatisch recherchiert":missingFoundation?"Automatische Recherche konnte noch nicht abgeschlossen werden":active?(isScript?"Ausarbeitung läuft":actionNames[j.action]):({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
   const researchBlocked=!active&&j?.progress?.research_questions?.phase==="blocked";
-  const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked&&!researchBlocked;
+  // A resume without the approval would only stop at the gate again; the approval button replaces it until then.
+  const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked&&!researchBlocked&&!planPending;
   const message=designBlocked&&j?.progress?.review_issues?.length?"Die automatische Überarbeitung hat noch nicht alle Kritikpunkte gelöst. Der bisherige Stand ist gespeichert.":missingFoundation&&/research_needed\.md/.test(j?.message||"")?"Der Abgleich zwischen Quellen und Lehrkonzept ist noch offen. Der bisherige Auftrag bleibt gespeichert.":j?.message;
   box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r&&!isScript&&!j?.progress?.research_questions?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
   if(isScript&&j?.progress?.current_episode)box.innerHTML+=`<p>Folge ${Number(j.progress.episode_number)} von ${Number(j.progress.total_segments)} · ${escape(j.progress.activity)}</p>`;
@@ -948,6 +988,7 @@ function renderJob() {
       box.innerHTML+=renderResearchQuestions(ledger,questionOpen,active,r?.run_id||"",j.progress.search_round_limit);
       if(researchBlocked)box.innerHTML+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht. Eine blockierte Teilfrage kann als Lücke akzeptiert werden; das Dossier wird dann ohne sie abgeschlossen und nennt die Lücke ausdrücklich.</p><button class="secondary small" data-step="${PAGE.brief}">Auftrag ansehen</button>`;
     }
+    box.innerHTML+=renderPlanReview(j,r?.run_id||"");
     box.innerHTML+=`<p>${escape(j.progress.activity)}</p><p class="hint">Rechercherunden: ${Number(j.progress.search_rounds||0)} von ${Number(j.progress.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
     if(quality){
       const pending=quality.assessment_status==="pending_after_source_review"||(ledger&&ledger.phase!=="completed");
@@ -1088,6 +1129,12 @@ document.addEventListener("click",event=>{
       if(reason===null)return;
       await api(`/api/projects/${project.id}/approve`,{kind:"gap",run_id:button.dataset.runId,task_id:button.dataset.taskId,reason});
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Lücke akzeptiert. „Fortsetzen“ schließt das Dossier ohne diese Teilfrage ab.");return;
+    }
+    if(action==="approve-plan"){
+      const payload=planApprovalRequest(button.dataset.runId);
+      await api(`/api/projects/${project.id}/approve`,payload);
+      project=await api(`/api/projects/${project.id}`);lastJobView="";render();
+      notice(payload.max_tasks?`Obergrenze von ${payload.max_tasks} Teilfragen gespeichert. „Fortsetzen“ schneidet den Plan neu zu und legt ihn erneut zur Freigabe vor.`:"Rechercheplan freigegeben. „Fortsetzen“ beginnt mit der ersten Teilfrage.");return;
     }
     if(action==="approve-calls"||action==="approve-search"){
       const payload={kind:"model_calls",run_id:button.dataset.runId};

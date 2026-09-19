@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .runner import manifest_path
 from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-exported for callers)
-from .run_budget import accepted_gaps, effective_limits
+from .run_budget import accepted_gaps, effective_limits, read_plan_approval
 from .errors import AppError
 from .models import ResearchLimits
 from .storage import read_yaml, write_json
@@ -111,6 +111,21 @@ def script_progress(root, run):
             "review_issues": issues}
 
 
+def plan_review_state(work, input_hash, awaiting):
+    """The plan gate as the run folder shows it: the projection, whether the run waits, whether it is approved."""
+    projection = read(work / "question_research/plan_projection.json")
+    approval, approved = None, False
+    try:
+        approval = read_plan_approval(work)
+    except AppError:
+        approval = None
+    if approval is not None:
+        approved = (approval.run_id == work.name and approval.input_hash == input_hash
+                    and bool(projection) and approval.plan_hash == projection.get("plan_hash"))
+    return {"awaiting": bool(awaiting), "approved": approved, "projection": projection,
+            "approval": approval.model_dump(mode="json") if approval else None}
+
+
 def research_progress(root, run):
     work = manifest_path(root, run["run_id"]).parent
     data = read(work / "research_activity.json", {})
@@ -141,9 +156,14 @@ def research_progress(root, run):
                 questions["phase"] = "questions"
     counts = questions or report or {}
     from .research_status import work_insight
+    awaiting = isinstance(questions, dict) and questions.get("phase") == "awaiting_plan_approval"
+    request = read(work / "research_request.json", {})
     return {**data, "phase": "research", "unit": "questions", "research_quality": report,
             "work_insight": work_insight(work, run),
             "research_questions": questions,
+            "plan_review": plan_review_state(work, run.get("input_hash"), awaiting),
+            # The mode the run was started with; older runs without the field ran one task at a time.
+            "execution": request.get("execution") or {"text": "sequential", "audio": "sequential"},
             "total_segments": counts.get("total", 0), "completed_segments": counts.get("closed", 0),
             "model_calls": budget.get("model_calls", 0), "search_rounds": budget.get("search_rounds", 0),
             "model_call_limit": effective.model_calls, "search_round_limit": effective.search_rounds,

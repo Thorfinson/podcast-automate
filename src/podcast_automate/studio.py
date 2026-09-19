@@ -27,7 +27,7 @@ from .logs import configure_logging, logger
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, host_labels, now
 from .episode_audio import saved_approval
 from .runner import manifest_path
-from .run_budget import approve_model_call_limit, approve_research_gap
+from .run_budget import approve_model_call_limit, approve_research_gap, approve_research_plan
 from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics, style_notes
 from .speech import (AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
@@ -291,6 +291,10 @@ class Studio:
         if kind == "gap":
             approval = approve_research_gap(root, run_id, data.get("task_id"), data.get("reason", ""))
             return {"gap": approval.model_dump(mode="json")}
+        if kind == "plan":
+            # The receipt binds to the projected plan; a cap asks the next resume to plan again and present anew.
+            approval = approve_research_plan(root, run_id, max_tasks=data.get("max_tasks"), source="studio")
+            return {"plan": approval.model_dump(mode="json")}
         raise AppError("Unbekannte Freigabe.", code="invalid_action")
 
     def due_resumes(self, now_seconds=None):

@@ -90,7 +90,8 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
         with patch("podcast_automate.studio_worker.run_research") as research:
             research.return_value.model_dump.return_value = {"status": "pending"}
             perform(self.root, {"action": "research", "text": selection})
-            research.assert_called_once_with(self.root, model="gpt-5.6-sol", reasoning_effort="high")
+            # Every Studio research run stops for the plan projection; only the research page approves it.
+            research.assert_called_once_with(self.root, model="gpt-5.6-sol", reasoning_effort="high", plan_review="required")
         proposal = BriefProposal(message="A proposal.", topic="Title", central_question="Why?", prior_knowledge="",
                                  depth_request="Deep", focus_questions=[], excluded_topics=[])
         def reply(adapter, *args, **kwargs):
@@ -178,6 +179,40 @@ class StudioHttpTests(unittest.TestCase):
         script = example_script()
         write_yaml(self.root / "episodes" / episode / "script.yaml", script.model_dump())
         (self.root / "episodes" / episode / "script.md").write_text("# " + script.title, encoding="utf-8")
+
+    def test_the_plan_approval_route_writes_a_run_bound_receipt_only_for_a_waiting_research_plan(self):
+        from podcast_automate.research_ledger import save_value
+        from podcast_automate.run_budget import read_plan_approval
+        from tests.question_fixtures import task_value
+        work = self.root / "runs/run_plan"
+        write_yaml(work / "run_manifest.yaml", RunManifest(run_id="run_plan", kind="research", project_hash="0" * 64,
+                                                           input_hash="b" * 64, stages={}).model_dump(mode="json"))
+        plan = {"tasks": [task_value("task_a"), task_value("task_b")]}
+        save_value(work / "question_research/state.json", {"plan": plan, "phase": "awaiting_plan_approval", "tasks": {}})
+        status, body, _ = self.request("/api/projects/example/approve", {"kind": "plan", "run_id": "run_plan", "max_tasks": 1})
+        self.assertEqual(status, 200, body)
+        receipt = read_plan_approval(work)
+        self.assertEqual((receipt.run_id, receipt.input_hash, receipt.plan_hash, receipt.max_tasks, receipt.source),
+                         ("run_plan", "b" * 64, digest(plan), 1, "studio"))
+        self.assertEqual(json.loads(body)["plan"]["max_tasks"], 1)
+        for cap in (0, "1", True, 2.5):
+            with self.subTest(cap=cap):
+                self.assertEqual(self.request("/api/projects/example/approve",
+                                              {"kind": "plan", "run_id": "run_plan", "max_tasks": cap})[0], 400)
+        self.assertEqual(read_plan_approval(work).max_tasks, 1, "a rejected request leaves the receipt alone")
+        # Without a cap the receipt approves the shown plan as it is; a running plan takes no cap any more.
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "plan", "run_id": "run_plan"})[0], 200)
+        self.assertIsNone(read_plan_approval(work).max_tasks)
+        save_value(work / "question_research/state.json", {"plan": plan, "phase": "questions", "tasks": {}})
+        self.assertEqual(self.request("/api/projects/example/approve",
+                                      {"kind": "plan", "run_id": "run_plan", "max_tasks": 1})[0], 400)
+        script = self.root / "runs/run_script"
+        write_yaml(script / "run_manifest.yaml", RunManifest(run_id="run_script", kind="script", project_hash="0" * 64,
+                                                             input_hash="b" * 64, stages={}).model_dump(mode="json"))
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "plan", "run_id": "run_script"})[0], 400)
+        self.assertFalse((script / "plan_approval.json").exists())
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "plan", "run_id": "run_plan"},
+                                      {"X-Studio-Token": "wrong"})[0], 403)
 
     def test_local_page_and_project_are_real_and_mutations_need_csrf_token(self):
         status, body, headers = self.request("/")

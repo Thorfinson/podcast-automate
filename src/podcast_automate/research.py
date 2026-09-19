@@ -5,6 +5,8 @@ import json
 import hashlib
 import re
 import shutil
+import threading
+import time
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -15,7 +17,9 @@ from . import __version__
 from . import attachments
 from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.research.CodexAdapter.structured)
 from .errors import AppError
-from .run_budget import accepted_gaps, effective_limits
+from .execution import ExecutionChoice, selected_execution
+from .question_budget import write_calibration
+from .run_budget import accepted_gaps, approve_research_plan, effective_limits, plan_approval_for
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .models import RunManifest, StageRecord
 from .provider_pool import AdapterPool, check_adapter_versions, subscription_selection
@@ -292,8 +296,22 @@ def render_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, index
     return "\n".join(lines) + "\n"
 
 
+PLAN_REVIEW_MODES = {None, "required", "auto"}
+
+
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
-                 reuse_sources: str | None = None, model=None, reasoning_effort=None, backend=None) -> RunManifest:
+                 reuse_sources: str | None = None, model=None, reasoning_effort=None, backend=None,
+                 plan_review: str | None = None) -> RunManifest:
+    """Run or resume the research lane.
+
+    ``plan_review`` decides the plan gate before the first task call: ``"required"`` (the CLI and
+    Studio) stops the run with the projection until ``plan_approval.json`` approves the plan,
+    ``"auto"`` (``pla research --approve-plan``) records an automatic approval and is remembered in
+    ``research_request.json`` for the run's resumes, ``None`` leaves the decision to the caller and
+    proceeds after scoping.
+    """
+    if plan_review not in PLAN_REVIEW_MODES:
+        raise AppError("Die Planfreigabe kennt nur required, auto oder keine Angabe.", code="invalid_request", status="blocked")
     root = root.resolve()
     config = load_project(root)
     local_files = [(root / value).resolve() for value in config.local_sources]
@@ -349,9 +367,17 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                                    input_hash=input_hash, stages={name: StageRecord() for name in
                                    ("discovery", "retrieval", "dossier", "review", "completeness", "publish")})
             write_yaml(path.parent / "project_snapshot.yaml", config.model_dump(mode="json"))
+            # The project's execution choice is fixed at the start, as for scripts; a resume keeps it.
             write_json(path.parent / "research_request.json", {"text_generation": selection,
-                       "requirements": requirements_for(config), "quality_policy": "research_quality.v1"})
+                       "requirements": requirements_for(config), "quality_policy": "research_quality.v1",
+                       "plan_review": plan_review, "execution": selected_execution(root).model_dump()})
         work = path.parent
+        request = read_optional_json(work / "research_request.json", {}) or {}
+        # An automatic plan approval asked for at the start stays with the run; a required review does too.
+        saved_review = request.get("plan_review")
+        review_mode = "auto" if "auto" in (plan_review, saved_review) else plan_review
+        # Runs started before the field existed answered one task at a time and keep doing so.
+        execution = ExecutionChoice.model_validate(request.get("execution") or {})
         if reuse_sources:
             if resume:
                 raise AppError("Quellenübernahme nur für einen neuen Lauf verwenden.", code="invalid_run")
@@ -390,37 +416,43 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         def accepted():
             return accepted_gaps(work, input_hash)
 
+        # Research tasks may report from several threads; the read-modify-write of the activity
+        # envelope and the observer's job file happen one at a time.
+        progress_lock = threading.Lock()
+
         def progress(activity, quality=None, round_number=None):
-            previous = json.loads((work / "research_activity.json").read_text(encoding="utf-8")) if (work / "research_activity.json").exists() else {}
-            current = limits()
-            data = {**previous, "phase": "research", "activity": activity,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "model_call_limit": current.model_calls,
-                    "search_round_limit": current.search_rounds}
-            if quality is not None:
-                data["research_quality"] = quality
-            question_path = work / "research_questions.json"
-            if question_path.exists():
-                # Existing Studio processes also read this envelope. Keep the new
-                # ledger visible without restarting a server holding session keys.
-                data["research_questions"] = json.loads(question_path.read_text(encoding="utf-8"))
-            if round_number is not None:
-                data["research_round"] = round_number
-            write_json(work / "research_activity.json", data)
-            write_json(work / "progress.json", data)
-            observer = run_observer.get()
-            if observer:
-                observer(manifest)
+            with progress_lock:
+                previous = json.loads((work / "research_activity.json").read_text(encoding="utf-8")) if (work / "research_activity.json").exists() else {}
+                current = limits()
+                data = {**previous, "phase": "research", "activity": activity,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "model_call_limit": current.model_calls,
+                        "search_round_limit": current.search_rounds}
+                if quality is not None:
+                    data["research_quality"] = quality
+                question_path = work / "research_questions.json"
+                if question_path.exists():
+                    # Existing Studio processes also read this envelope. Keep the new
+                    # ledger visible without restarting a server holding session keys.
+                    data["research_questions"] = json.loads(question_path.read_text(encoding="utf-8"))
+                if round_number is not None:
+                    data["research_round"] = round_number
+                write_json(work / "research_activity.json", data)
+                write_json(work / "progress.json", data)
+                observer = run_observer.get()
+                if observer:
+                    observer(manifest)
 
         def invoke(prompt, output_type, version, *, search=False):
             number = reserve_call(work, limits(), search=search)
             from .research_status import record_request
-            record_request(work / "calls" / f"call_{number:03d}", output_type.__name__, prompt)
+            directory = work / "calls" / f"call_{number:03d}"
+            record_request(directory, output_type.__name__, prompt)
             if search:
                 progress("Quellen zu offenen Leitfragen werden gesucht")
+            started_at, started = datetime.now(timezone.utc).isoformat(), time.monotonic()
             try:
-                return pool.structured(prompt, output_type, work / "calls" / f"call_{number:03d}",
-                                       prompt_version=version, search=search)
+                result = pool.structured(prompt, output_type, directory, prompt_version=version, search=search)
             except AppError as exc:
                 if unanswered(exc):
                     refund_call(work, number, search=search)
@@ -428,6 +460,18 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             except BaseException:
                 refund_call(work, number, search=search)
                 raise
+            # Wall-clock of an answered call, the basis of the hours a plan projection names.
+            write_json(directory / "timing.json", {"schema": output_type.__name__, "prompt_version": version,
+                       "search": search, "seconds": round(time.monotonic() - started, 3),
+                       "started_at": started_at, "finished_at": datetime.now(timezone.utc).isoformat()})
+            return result
+
+        def plan_gate(projection):
+            """The valid approval of the projected plan; ``auto`` writes one, everything else waits for the user."""
+            approval = plan_approval_for(work, input_hash, projection["plan_hash"])
+            if approval is None and review_mode == "auto":
+                approval = approve_research_plan(root, manifest.run_id, source="auto: pla research --approve-plan")
+            return approval.model_dump(mode="json") if approval else None
 
         def discovery_stage():
             brief = {key: value for key, value in config.model_dump(mode="json").items()
@@ -541,7 +585,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         def question_research(*, dossier=None, with_context=False):
             discovery, index, context = synthesis_inputs()
             return run_question_research(root, work, config, discovery, index, invoke, progress, dossier=dossier,
-                                         context=context if with_context else (), limits=limits, accepted=accepted)
+                                         context=context if with_context else (), limits=limits, accepted=accepted,
+                                         plan_gate=plan_gate if review_mode else None, workers=execution.text_workers)
 
         def dossier_stage():
             progress("Belege werden zu Grundlagen und Erklärungen verbunden")
@@ -630,6 +675,10 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                         "\n".join(open_line(c.gap) for c in dossier.coverage if c.status != "answered") + "\n" +
                         ("\n" + "\n".join(accepted_lines) + "\n" if accepted_lines else ""))
             write_json(root / "research/latest.json", {"run_id": manifest.run_id})
+            # What this run measured per task and per call sizes the next run's plan projection.
+            calibration = write_calibration(root, work, manifest.run_id)
+            if calibration is not None:
+                outputs.append(calibration)
             write_json(root / "reports/research_quality.json", {
                 "run_id": manifest.run_id, "reference_check": "passed",
                 "model_review": "accepted_gaps_remaining" if quality.get("passed_with_accepted_gaps") else "no_remaining_issues",

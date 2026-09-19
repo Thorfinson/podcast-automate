@@ -6,7 +6,6 @@ keys are defined by ``question_scope.pending_task``.
 from __future__ import annotations
 
 import json
-from collections import Counter
 
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
@@ -14,9 +13,10 @@ from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
 from .question_dependencies import prerequisite_answers
 from .question_sources import reserve_source, restore_attempts, source_identity
-from .research_evidence import EVIDENCE_INSTRUCTIONS, PROFILES, evidence_summary, support_errors
+from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, collapse_assessments, collapse_support,
+                                evidence_summary, support_errors)
 from .research_gap_probe import settle
-from .research_ledger import check_sources, read_value, save_value
+from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
 from .research_models import ResearchDiscovery, SourceDocument, SourceIndex
 from .research_reader import source_catalog
 from .research_retrieval import references
@@ -24,12 +24,45 @@ from .research_tasks import AnswerReview, QuestionAnswer, QuestionSearch, Reader
 from .sources import canonical_url, clean, import_failure, import_source
 from .storage import digest
 
+READER_ACTIONS = ["search_local", "read", "search_web", "answer", "blocked"]
+LOCK_FEEDBACK = ("The answer is locked after a failed review: read or search new passages first and answer only "
+                 "with new evidence. If a criterion needs a kind of source the corpus lacks, search_web for it; "
+                 "if the web search brings nothing, choose blocked and name the criterion.")
+
+
+def normalise_criteria(rows, *, worse=None):
+    """One entry per criterion index, deterministically: a repeated index collapses to its most
+    conservative entry (``worse(new, kept)`` decides), otherwise the first one stays."""
+    merged = {}
+    for row in rows:
+        kept = merged.get(row.index)
+        if kept is None or (worse is not None and worse(row, kept)):
+            merged[row.index] = row
+    return [merged[index] for index in sorted(merged)]
+
+
+def normalise_answer(answer):
+    """Repeated criterion entries merge their findings; identical repeated findings collapse.
+
+    Differing findings under one id stay for ``answer_errors`` to reject.
+    """
+    criteria = {}
+    for row in answer.criteria:
+        kept = criteria.get(row.index)
+        criteria[row.index] = row if kept is None else kept.model_copy(
+            update={"finding_ids": list(dict.fromkeys([*kept.finding_ids, *row.finding_ids]))})
+    findings = []
+    for finding in answer.findings:
+        if finding not in findings:
+            findings.append(finding)
+    return answer.model_copy(update={"criteria": [criteria[i] for i in sorted(criteria)], "findings": findings})
+
 
 def answer_errors(answer, task, reader, read_refs):
     errors, ids = [], [f.id for f in answer.findings]
     if len(set(ids)) != len(ids):
         errors.append("Finding IDs must be unique within the answer.")
-    if Counter(c.index for c in answer.criteria) != Counter(range(len(task.acceptance))):
+    if sorted({c.index for c in answer.criteria}) != list(range(len(task.acceptance))):
         errors.append("Answer every fixed acceptance criterion exactly once.")
     if any(not set(c.finding_ids) <= set(ids) for c in answer.criteria):
         errors.append("Criterion answers must refer to the answer's actual findings.")
@@ -51,11 +84,46 @@ def answer_errors(answer, task, reader, read_refs):
     return errors
 
 
-def review_passes(review, task):
-    if Counter(c.index for c in review.criteria) != Counter(range(len(task.acceptance))):
+def normalise_review(review, task):
+    """The review with repeated criterion, finding and source entries collapsed conservatively.
+
+    A repeated criterion keeps its failing verdict. A missing or unknown criterion index is still a
+    shape defect that costs a repeated call.
+    """
+    criteria = normalise_criteria(review.criteria, worse=lambda new, kept: not new.passed and kept.passed)
+    if [c.index for c in criteria] != list(range(len(task.acceptance))):
         raise AppError("Antwortprüfung muss jedes Abschlusskriterium genau einmal bewerten.",
                        code="invalid_question_review", status="blocked")
-    return review.supported and review.source_adequacy and not review.issues and all(c.passed for c in review.criteria)
+    return review.model_copy(update={"criteria": criteria, "finding_support": collapse_support(review.finding_support),
+                                     "source_assessments": collapse_assessments(review.source_assessments)})
+
+
+def review_passes(review, task):
+    """The blocking tier that needs no passages: every fixed criterion passed and the sources are
+    adequate for this kind of claim. ``supported`` and ``issues`` are limitations, not gates."""
+    review = normalise_review(review, task)
+    return review.source_adequacy and all(c.passed for c in review.criteria)
+
+
+def review_outcome(review, task, findings, passages):
+    """(blocking feedback, limitations) of a well-formed review under the tiered rule.
+
+    Blocking: a failed criterion, inadequate sources, a contradicted or insufficient_context
+    finding, an unsuitable source, a broken claim contract or unestablished independence. Every
+    other observation passes the answer and is stored beside it as a limitation.
+    """
+    review = normalise_review(review, task)
+    limitations = []
+    blocking = support_errors(findings, review, passages, limitations=limitations)
+    blocking += [f"Criterion {c.index} not met: {c.reason}" for c in review.criteria if not c.passed]
+    if not review.source_adequacy:
+        blocking.append("The sources are not adequate for this type of claim.")
+    limitations += [{"finding_id": "", "kind": "issue", "text": issue} for issue in review.issues]
+    limitations += [{"finding_id": "", "kind": "review_limitation", "text": text} for text in review.limitations]
+    if not review.supported:
+        limitations.append({"finding_id": "", "kind": "not_fully_supported",
+                            "text": "Die Prüfung stuft die Antwort insgesamt als nicht vollständig gestützt ein."})
+    return blocking, limitations
 
 
 def read_context(reader, refs):
@@ -65,7 +133,13 @@ def read_context(reader, refs):
 
 
 class TaskResearchMixin:
-    """Answer one fixed research task at a time with bounded reading, search and review steps."""
+    """Answer one fixed research task with bounded reading, search and review steps.
+
+    Every method here edits only the row of its own task. The host provides ``guarded``,
+    ``stopping`` and ``save`` so several tasks can run side by side under one ledger lock.
+    """
+
+    call_version = CALL_VERSION
 
     def catalog(self, spec, row, query=None, *, source_id="", offset=0, include_notes=False):
         results = [self.reader.search(q, key_terms=spec.key_terms, source_id=source_id, offset=offset,
@@ -103,6 +177,10 @@ class TaskResearchMixin:
         row["activity"] = "Passende Originalabschnitte gelesen; Antwort wird erarbeitet"
         self.save(f"Recherchefrage: {spec.question}")
 
+    def unlock(self, row):
+        """New passages or candidates arrived: the reader may answer again."""
+        row["answer_locked"] = False
+
     def recover(self, spec, row):
         """One automatic strategy change, then a concrete block instead of an endless loop."""
         row["fallbacks"] += 1
@@ -119,6 +197,7 @@ class TaskResearchMixin:
         if candidates:
             self.read(row, [ReaderWindow(reference=r, before=1, after=1) for r in list(dict.fromkeys(candidates))[:8]])
             row["no_progress"] = 0
+            self.unlock(row)
             row["feedback"] = ["The previous strategy made no progress. Additional candidate sections have now been read. "
                                "Evaluate these passages against this question's fixed criteria; do not add new research goals."]
             return True
@@ -130,6 +209,7 @@ class TaskResearchMixin:
                                "new_evidence": novel, "read_sections": len(row["read_refs"])})
         if novel:
             row["no_progress"] = 0
+            self.unlock(row)
         elif not row["reason"]:
             row["reason"] = "Auch die gezielte Ersatzsuche lieferte keine neuen passenden Belege. " + " ".join(row["feedback"])
         return novel
@@ -147,28 +227,55 @@ class TaskResearchMixin:
 
         def well_formed(verdict, final):
             # Shape defects are corrected by a repeated call; substantive non-passes are feedback.
-            review_passes(verdict, spec)
-            support_errors(answer.findings, verdict, passages)
+            support_errors(answer.findings, normalise_review(verdict, spec), passages)
 
-        verdict = self.call(self.task_folder(spec, row),
-                            f"review_{row['step']:03d}", AnswerReview, prompt, validate=well_formed)
-        semantic_errors = support_errors(answer.findings, verdict, passages)
-        if review_passes(verdict, spec) and not semantic_errors:
-            row.update(status="verified", activity="Antwort und Belege geprüft", reason="", feedback=[], no_progress=0)
+        verdict = normalise_review(self.call(self.task_folder(spec, row),
+                                             f"review_{row['step']:03d}", AnswerReview, prompt, validate=well_formed), spec)
+        blocking, limitations = review_outcome(verdict, spec, answer.findings, passages)
+        if not blocking:
+            row.update(status="verified", activity="Antwort und Belege geprüft", reason="", feedback=[], no_progress=0,
+                       answer_locked=False, lock=None)
             row["outcome"] = answer.outcome
             row["verification"] = {"answer_hash": digest(answer.model_dump()), "review": verdict.model_dump(),
-                                   "evidence_version": EVIDENCE_VERSION,
+                                   "evidence_version": EVIDENCE_VERSION, "limitations": limitations,
                                    "prerequisite_hashes": {a["task_id"]: a["answer_hash"] for a in prerequisite_answers(spec, self.state)},
                                    "support_summary": evidence_summary(answer.findings, verdict),
                                    "source_hashes": {self.reader.lookup[r][0].id: self.reader.lookup[r][0].text_hash for r in refs}}
             self.save(f"Teilfrage abgeschlossen: {spec.question}")
         else:
-            row.update(status="researching", draft_answer=row["answer"], answer=None,
-                       feedback=[*semantic_errors, *verdict.issues, *(c.reason for c in verdict.criteria if not c.passed),
-                                 *([] if verdict.supported else ["The original passages do not support the full answer."]),
-                                 *([] if verdict.source_adequacy else ["The sources are not adequate for this type of claim."])],
-                       no_progress=row["no_progress"] + 1, activity="Antwortprüfung verlangt eine gezielte Ergänzung")
+            # The answer is locked: the same passages cannot pass a second time, so the reader
+            # must bring new evidence, search the web for the missing kind of source, or block.
+            failed = [c.index for c in verdict.criteria if not c.passed]
+            row.update(status="researching", draft_answer=row["answer"], answer=None, answer_locked=True,
+                       lock={"step": row["step"], "web_attempts": row["web_attempts"],
+                             "criteria": [{"index": i, "text": spec.acceptance[i]} for i in failed],
+                             "finding_ids": [r.finding_id for r in verdict.finding_support if blocks(r)],
+                             "reasons": blocking},
+                       feedback=[*blocking, *(item["text"] for item in limitations)],
+                       no_progress=row["no_progress"] + 1, activity="Antwortprüfung verlangt neue Belege")
             self.save(f"Belege zu dieser Frage werden ergänzt: {spec.question}")
+
+    def lock_block(self, spec, row):
+        """Locked, the web searched, still nothing new: the concrete gap goes to the operator now."""
+        lock = row.get("lock") or {}
+        unmet = "; ".join(f"Kriterium {c['index']}: {c['text']}" for c in lock.get("criteria", [])) or \
+            "; ".join(lock.get("reasons", []))
+        reason = ("Die unabhängige Prüfung hat die Antwort abgewiesen, und auch die Websuche brachte keine neuen "
+                  f"Belege. Unerfüllt: {unmet}")
+        row.update(status="blocked", activity="Keine neuen Belege für die abgewiesenen Kriterien",
+                   reason=reason + (" " + row["reason"] if row["reason"] else ""),
+                   outcome="budget_block" if row.get("outcome") == "budget_block" else "evidence_block")
+
+    def allowed_actions(self, row):
+        return [a for a in READER_ACTIONS if a != "answer" or not row.get("answer_locked")]
+
+    def review_limitations(self):
+        """Per verified task, what the independent review confirmed only with a stated limit."""
+        return [{"task_id": spec["id"], "question": spec["question"],
+                 "limitations": (self.state["tasks"][spec["id"]].get("verification") or {}).get("limitations", [])}
+                for spec in self.state["plan"]["tasks"]
+                if self.state["tasks"][spec["id"]]["status"] == "verified"
+                and (self.state["tasks"][spec["id"]].get("verification") or {}).get("limitations")]
 
     def task_folder(self, spec, row):
         path = self.folder / "tasks" / spec.id / f"attempt_{len(row['reopenings'])}"
@@ -295,12 +402,27 @@ class TaskResearchMixin:
         row["feedback"] = extra.limitations
         return bool(novel or ({s.text_hash for s in restored.sources} - before))
 
+    def plan_order(self, task_ids):
+        wanted = set(task_ids)
+        return [task["id"] for task in self.state["plan"]["tasks"] if task["id"] in wanted]
+
     def research_task(self, spec):
-        row = self.state["tasks"][spec.id]
-        self.state["active_task"] = spec.id
+        """Answer one task under the ledger lock; the lock is released only inside each model call."""
+        with self.guarded():
+            self.state["active_tasks"] = self.plan_order([*self.state.get("active_tasks", []), spec.id])
+            try:
+                self.answer_task(spec, self.state["tasks"][spec.id])
+            finally:
+                self.state["active_tasks"] = [task for task in self.state.get("active_tasks", []) if task != spec.id]
+            self.save()
+
+    def answer_task(self, spec, row):
         if row["status"] == "pending":
             self.seed(spec, row)
         while row["status"] in {"researching", "reviewing"}:
+            if self.stopping.is_set():
+                # Another task failed: this row keeps the step it saved last, and a resume continues there.
+                return
             if row["status"] == "reviewing":
                 self.verify(spec, row)
                 continue
@@ -310,8 +432,11 @@ class TaskResearchMixin:
                 break
             if row["no_progress"] >= 2 and not row["pending"]:
                 if not self.recover(spec, row):
-                    row.update(status="blocked", activity="Keine neuen passenden Belege",
-                               reason=row["reason"] or "Wiederholte Schritte lieferten keine neuen Belege oder geprüfte Antwort.")
+                    if row.get("answer_locked"):
+                        self.lock_block(spec, row)
+                    else:
+                        row.update(status="blocked", activity="Keine neuen passenden Belege",
+                                   reason=row["reason"] or "Wiederholte Schritte lieferten keine neuen Belege oder geprüfte Antwort.")
                     break
                 self.save("Suchstrategie geändert – weitere gespeicherte Abschnitte werden geprüft")
             folder = self.task_folder(spec, row) / f"step_{row['step']:03d}"
@@ -323,6 +448,8 @@ class TaskResearchMixin:
                         "task": spec.model_dump(), "task_groups": self.state.get("task_groups", {}),
                         "evidence_profile": PROFILES[spec.kind],
                         "prerequisite_answers": prerequisite_answers(spec, self.state),
+                        "allowed_actions": self.allowed_actions(row),
+                        "answer_lock": row.get("lock") if row.get("answer_locked") else None,
                         "source_catalog": source_catalog(self.index), "candidates": row["catalog"],
                         "sources": read_context(self.reader, row["current_refs"]), "read_refs": row["read_refs"],
                         "deferred": row.get("deferred", []), "feedback": row["feedback"],
@@ -347,16 +474,22 @@ class TaskResearchMixin:
                 novel = bool(set(row["candidate_refs"]) - before)
             elif action == "search_web":
                 novel = self.web_search(spec, row, decision.web_queries)
+            elif action == "answer" and row.get("answer_locked"):
+                # The same passages already failed review: this answer is not sent to review and
+                # counts as no progress; one such call at most before recovery or the block below.
+                row["locked_answers"] = row.get("locked_answers", 0) + 1
+                row["feedback"] = list(dict.fromkeys([LOCK_FEEDBACK, *row["feedback"]]))
             elif action == "answer":
-                errors = answer_errors(decision.answer, spec, self.reader, set(row["read_refs"]))
-                if any(f.claim_contract is None for f in decision.answer.findings):
+                answer = normalise_answer(decision.answer)
+                errors = answer_errors(answer, spec, self.reader, set(row["read_refs"]))
+                if any(f.claim_contract is None for f in answer.findings):
                     errors.append("Supply a structured claim_contract for every finding.")
-                if row["draft_answer"] and digest(decision.answer.model_dump()) == digest(row["draft_answer"]):
+                if row["draft_answer"] and digest(answer.model_dump()) == digest(row["draft_answer"]):
                     errors.append("This identical answer already failed independent review. Address the specific feedback before resubmitting.")
                 if errors:
                     row["feedback"] = list(dict.fromkeys([*row["feedback"], *errors]))
                 else:
-                    row.update(answer=decision.answer.model_dump(), status="reviewing", activity="Antwort wird unabhängig geprüft")
+                    row.update(answer=answer.model_dump(), status="reviewing", activity="Antwort wird unabhängig geprüft")
             elif action == "blocked":
                 if self.recover(spec, row):
                     novel = True
@@ -367,15 +500,20 @@ class TaskResearchMixin:
                                    "new_evidence": novel, "read_sections": len(row["read_refs"])})
             row["step"] += 1
             row["pending"] = None
+            if novel:
+                self.unlock(row)
             # A differently worded draft is not evidence of progress. Only new
             # passages/candidates or a passing independent review reset the count.
             if row["status"] != "reviewing":
                 row["no_progress"] = 0 if novel else row["no_progress"] + 1
+            # Locked, the web already searched in this attempt and still nothing new: the concrete
+            # gap goes to the operator now instead of after further fruitless steps.
+            if row["status"] == "researching" and row.get("answer_locked") and not novel and row["web_attempts"] >= 1:
+                self.lock_block(spec, row)
             self.save(f"Recherchefrage: {spec.question}")
         if row["status"] == "blocked" and not row.get("outcome"):
             row["outcome"] = "search_block"
         self.settle_probes(spec, row)
-        self.save()
 
     def probes_for(self, gap_ids):
         wanted = set(gap_ids)

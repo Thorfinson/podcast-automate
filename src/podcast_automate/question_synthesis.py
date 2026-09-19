@@ -37,7 +37,8 @@ class SynthesisMixin:
         plan = QuestionPlan.model_validate(self.state["plan"])
         accepted = self.accepted_summary()
         answers = [{"task": task.model_dump(), "answer": self.state["tasks"][task.id]["answer"],
-                    "evidence_review": self.state["tasks"][task.id].get("verification", {}).get("review")}
+                    "evidence_review": self.state["tasks"][task.id].get("verification", {}).get("review"),
+                    "review_limitations": (self.state["tasks"][task.id].get("verification") or {}).get("limitations", [])}
                    for task in plan.tasks if task.id not in accepted]
         gaps = [{"task_id": tid, **gap} for tid, gap in accepted.items()]
         refs = [e["reference"] for item in answers for f in item["answer"]["findings"] for e in f["evidence"]]
@@ -171,7 +172,8 @@ class SynthesisMixin:
         assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
                                validate=lambda candidate, final: check_assessment(self.config, dossier, candidate))
         report = quality_report(self.config, dossier, discovery, self.index, assessment, (i.reason for i in review.issues),
-                                accepted=accepted, gap_probes=self.probe_declared_gaps(dossier))
+                                accepted=accepted, gap_probes=self.probe_declared_gaps(dossier),
+                                review_limitations=self.review_limitations())
         dossier = dossier.model_copy(update={"evidence_version": EVIDENCE_VERSION,
                                             "source_assessments": review.source_assessments})
         report["dossier_hash"] = digest(dossier.model_dump())

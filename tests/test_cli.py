@@ -126,6 +126,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, refused["code"]), (1, "invalid_run"))
         self.assertEqual(len(fixture.calls), calls)
 
+    def test_research_and_resume_gate_the_plan_unless_the_flag_waives_it_at_the_start(self):
+        from unittest.mock import Mock
+        from podcast_automate.models import RunManifest
+        from podcast_automate.storage import write_json, write_yaml
+        with tempfile.TemporaryDirectory() as temporary:
+            root = str(Path(temporary) / "Projekt")
+            self.invoke("init", root, "--topic", "Thema", "--json")
+            manifest = Mock(status="completed")
+            manifest.model_dump.return_value = {"run_id": "run_r", "kind": "research", "status": "completed", "stages": {}}
+            with patch("podcast_automate.cli.run_research", return_value=manifest) as research:
+                self.assertEqual(self.invoke("research", root, "--json")[0], 0)
+                self.assertEqual(research.call_args.kwargs["plan_review"], "required")
+                self.assertEqual(self.invoke("research", root, "--approve-plan", "--json")[0], 0)
+                self.assertEqual(research.call_args.kwargs["plan_review"], "auto")
+                write_yaml(Path(root) / "runs/run_r/run_manifest.yaml", RunManifest(
+                    run_id="run_r", kind="research", project_hash="0" * 64, input_hash="a" * 64, stages={}).model_dump(mode="json"))
+                write_json(Path(root) / "runs/latest.json", {"run_id": "run_r"})
+                self.assertEqual(self.invoke("resume", root, "--json")[0], 0)
+                # A resume has no flag: only the request saved at the start can waive the gate.
+                self.assertEqual((research.call_args.kwargs["resume"], research.call_args.kwargs["plan_review"]), (True, "required"))
+            code, data = self.invoke("approve", root, "--research-plan", "--json")
+            self.assertEqual((code, data["code"]), (1, "invalid_plan_approval"))
+            self.assertIn("noch keinen Rechercheplan", data["message"])
+            code, data = self.invoke("approve", root, "--max-tasks", "2", "--json")
+            self.assertEqual((code, data["code"]), (1, "invalid_request"))
+
     def test_invalid_user_configuration_has_no_traceback(self):
         with tempfile.TemporaryDirectory() as root:
             code, data = self.invoke("init", root, "--topic", "   ", "--json")

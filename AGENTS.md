@@ -52,12 +52,12 @@ Derived from imports and patch targets in `tests/`. Regenerate with the snippet 
 - `cli`, `doctor` → `test_cli`, `test_provider_pool`; resume through the CLI is also exercised by `test_episode_audio`, `test_openrouter`, `test_research`, `test_scripting`
 - `codex`, `codex_stream`, `call_activity`, `model_trace`, `process` → `test_codex`, `test_codex_stream`, `test_setup_schema`, `test_model_trace`, `test_status_summary`, `test_studio_progress`, `test_research_resilience`; the app-server quota RPC in `codex_stream` is covered by `test_subscriptions`, the Claude stream observer in `call_activity` by `test_claude_code`
 - `editorial`, `prompts` → `test_prompts`, `test_teaching`, `test_episode_framing`
-- `execution`, `parallel_speech` → `test_parallel`
+- `execution`, `parallel_speech` → `test_parallel`, `test_research_parallel`
 - `logs` → `test_logs`, `test_cli`
 - `openrouter` → `test_openrouter`, `test_setup_schema`
 - `polishing` → `test_polishing`, `test_scripting`; `compare_dialogue` is also driven by `evals/dialogue_polishing/run.py`
 - `provider_pool` → `test_provider_pool`; `text_generation_settings` lives here and is exercised by `test_scripting` and `test_text_selection`
-- `question_research`, `question_answering`, `question_synthesis`, `question_scope`, `question_budget`, `question_dependencies` → `test_question_research`, `test_research_invariants`, `test_evidence_contracts`, `test_model_trace`
+- `question_research`, `question_answering`, `question_synthesis`, `question_scope`, `question_budget`, `question_dependencies` → `test_question_research`, `test_research_parallel`, `test_research_invariants`, `test_evidence_contracts`, `test_model_trace`
 - `script_advisories` → `test_script_advisories`; the report field is asserted by `test_scripting`
 - `research_gap_probe` → `test_gap_probe`, `test_question_research`, `test_research`, `test_research_quality`, `test_scripting`, `test_teaching_research`
 - `research` and every `research_*` module → `test_research`, `test_research_invariants`, `test_research_migration`, `test_research_quality`, `test_research_refinement`, `test_research_resilience`, `test_research_status`, `test_evidence_contracts`, `test_question_research`, `test_gap_probe`, `test_attachments`, `test_parallel`, `test_run_budget`, `test_prompts`

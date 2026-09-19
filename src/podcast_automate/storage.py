@@ -45,9 +45,30 @@ def atomic_text(path: Path, text: str) -> None:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        replace_file(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def replace_file(temporary: Path | str, path: Path, *, timeout: float = 2.0) -> None:
+    """``os.replace`` that outlasts a concurrent reader.
+
+    On Windows a rename onto a file fails with a sharing violation while any other handle holds
+    the target open, for example a progress poll or another worker reading ``budget.json`` at that
+    instant. Such a reader is gone within microseconds; the write waits for it briefly rather than
+    failing a run over a momentary overlap.
+    """
+    deadline = time.monotonic() + timeout
+    delay = 0.001
+    while True:
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.05)
 
 
 def write_json(path: Path, data: object) -> None:

@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from podcast_automate.errors import AppError
 from podcast_automate.models import TopicBrief
+from podcast_automate.question_answering import (READER_ACTIONS, normalise_answer, normalise_review, read_context,
+                                                 review_outcome, review_passes)
 from podcast_automate.question_research import QuestionResearch, answer_errors, validate_plan
 from podcast_automate.question_scope import QuestionScopeReview
 from podcast_automate.research import run_research
@@ -26,7 +28,8 @@ from podcast_automate.studio_progress import research_progress
 from tests import research_fixtures as fixtures
 
 
-from tests.question_fixtures import task_value, decision, answer_for, question_response, complete_fixture_response
+from tests.question_fixtures import (task_value, decision, answer_for, question_response, complete_fixture_response,
+                                     support_receipts)
 
 
 class QuestionResearchTests(unittest.TestCase):
@@ -376,6 +379,8 @@ class QuestionResearchTests(unittest.TestCase):
             self.engine().run(self.discovery, self.index)
         self.assertEqual(len(drafts), 2)
         self.assertEqual(sum(c[0] is QuestionSearch for c in self.calls), 1)
+        # The reworded second draft was locked out of review: only the first one cost a review call.
+        self.assertEqual(sum(c[0] is AnswerReview for c in self.calls), 1)
 
     def test_definition_stays_closed_when_empirical_question_remains_blocked(self):
         def separate(prompt, schema, payload, kwargs):
@@ -543,6 +548,221 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertTrue(bounded["deferred"])
         with self.assertRaises(AppError):
             reader.read([ReaderWindow(reference="../../secret", before=0, after=0)])
+
+    def test_review_and_reader_prompts_carry_the_brevity_rule_under_the_loop_call_tag(self):
+        prompts = {}
+        def capture(prompt, schema, payload, kwargs):
+            prompts.setdefault(schema, prompt)
+        self.hook = capture
+        self.engine().run(self.discovery, self.index)
+        self.assertIn("one sentence that names the passage and the defect, at most 300 characters", prompts[AnswerReview])
+        self.assertIn("at most 300 characters", prompts[ResearchDecision])
+        self.assertIn("allowed_actions", prompts[ResearchDecision])
+        self.assertIn((ResearchDecision, "question_research.v2-loop.reader"), self.calls)
+        self.assertTrue(any(s is AnswerReview and v.startswith("question_research.v2-loop.review_") for s, v in self.calls))
+
+    def failing_review(self, reason):
+        return AnswerReview(criteria=[dict(index=0, passed=False, reason=reason)],
+                            supported=True, source_adequacy=True, issues=[])
+
+    def test_a_failed_review_locks_answering_and_a_fruitless_web_search_blocks_the_task(self):
+        payloads = []
+        def flow(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                payloads.append(payload)
+                if "answer" in payload["allowed_actions"]:
+                    return decision("answer", answer=answer_for(self.ref))
+                return decision("search_web", web_queries=["freely accessible introduction"])
+            if schema is AnswerReview:
+                return self.failing_review("No freely accessible introductory source among the passages.")
+        self.hook = flow
+        engine = self.engine()
+        with self.assertRaises(AppError) as raised:
+            engine.run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        self.assertEqual(payloads[0]["allowed_actions"], READER_ACTIONS)
+        self.assertIsNone(payloads[0]["answer_lock"])
+        self.assertEqual(payloads[1]["allowed_actions"], ["search_local", "read", "search_web", "blocked"])
+        self.assertEqual(payloads[1]["answer_lock"]["criteria"], [{"index": 0, "text": "Explain energy in this bounded example."}])
+        self.assertIn("Criterion 0 not met", payloads[1]["feedback"][0])
+        # One web search without new evidence is the escalation: no second recovery, no MAX_STEPS wait.
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(sum(c[0] is QuestionSearch for c in self.calls), 1)
+        row = engine.state["tasks"]["task_definition"]
+        self.assertEqual((row["status"], row["outcome"], row["web_attempts"]), ("blocked", "evidence_block", 1))
+        self.assertIn("Kriterium 0: Explain energy in this bounded example.", row["reason"])
+        self.assertEqual(public_ledger(engine.state)["blocked"], 1)
+
+    def test_an_answer_while_locked_is_not_reviewed_and_costs_at_most_one_call(self):
+        reviews, payloads = [], []
+        def flow(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                payloads.append(payload)
+                answer = answer_for(self.ref)
+                answer.summary += f" Wording {len(payloads)}."
+                return decision("answer", answer=answer)
+            if schema is AnswerReview:
+                reviews.append(1)
+                return self.failing_review("The mechanism is absent from the passage.")
+        self.hook = flow
+        engine = self.engine()
+        with self.assertRaises(AppError):
+            engine.run(self.discovery, self.index)
+        self.assertEqual((len(reviews), len(payloads)), (1, 2))
+        self.assertEqual(sum(c[0] is QuestionSearch for c in self.calls), 1)
+        row = engine.state["tasks"]["task_definition"]
+        self.assertEqual(row["locked_answers"], 1)
+        self.assertEqual([a["action"] for a in row["actions"]], ["answer", "answer", "recovery_search_web"])
+        self.assertEqual((row["status"], row["outcome"]), ("blocked", "evidence_block"))
+        self.assertIn("Kriterium 0", row["reason"])
+
+    def test_new_evidence_after_a_failed_review_unlocks_the_answer(self):
+        payloads, reviews = [], []
+        def flow(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                payloads.append(payload)
+                if "answer" not in payload["allowed_actions"]:
+                    return decision("search_web", web_queries=["independent evidence"])
+                answer = answer_for(self.ref)
+                if payload["previous_answer"]:
+                    answer.summary += " Revised with the additional source."
+                return decision("answer", answer=answer)
+            if schema is AnswerReview:
+                reviews.append(1)
+                if len(reviews) == 1:
+                    return self.failing_review("Independent evidence is absent.")
+            if schema is QuestionSearch:
+                return QuestionSearch(candidates=fixtures.discovery(count=2).candidates[1:], limitations=[])
+        self.hook = flow
+        self.download.side_effect = lambda url: (fixtures.HTML.replace(b"These sentences", b"Additional independent evidence. These sentences"), "text/html", url)
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        locked = [a for a in READER_ACTIONS if a != "answer"]
+        self.assertEqual([p["allowed_actions"] for p in payloads], [READER_ACTIONS, locked, READER_ACTIONS])
+        self.assertEqual(len(reviews), 2)
+        row = engine.state["tasks"]["task_definition"]
+        self.assertEqual((row["status"], row["answer_locked"]), ("verified", False))
+        self.assertEqual(row["verification"]["limitations"], [])
+
+    def test_a_partially_supported_finding_passes_with_a_recorded_limitation_that_reaches_every_output(self):
+        composed = []
+        def partial(prompt, schema, payload, kwargs):
+            if schema is AnswerReview:
+                review = complete_fixture_response(AnswerReview(
+                    criteria=[dict(index=0, passed=True, reason="The passage defines the assignment.")],
+                    supported=False, source_adequacy=True, issues=["The summary sharpens 'assign' to 'always assign'."]), payload)
+                review.finding_support[0].verdict = "partially_supported"
+                review.finding_support[0].unsupported_clauses = ["in this fixture"]
+                return review
+            if schema is ResearchDossier:
+                composed.append(payload)
+        self.hook = partial
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        row = engine.state["tasks"]["task_definition"]
+        self.assertEqual(row["status"], "verified")
+        limitations = row["verification"]["limitations"]
+        self.assertEqual([item["kind"] for item in limitations], ["partial_support", "issue", "not_fully_supported"])
+        self.assertEqual(limitations[0]["finding_id"], "f_energy")
+        self.assertIn("f_energy: nicht vollständig gestützt: in this fixture", limitations[0]["text"])
+        self.assertEqual(limitations[1]["text"], "The summary sharpens 'assign' to 'always assign'.")
+        self.assertEqual(public_ledger(engine.state)["questions"][0]["review_limitations"], limitations)
+        self.assertEqual(composed[0]["verified_answers"][0]["review_limitations"], limitations)
+        quality = (self.work / "research_quality.md").read_text(encoding="utf-8")
+        self.assertIn("## Einschränkungen der Prüfung", quality)
+        self.assertIn("### What is energy?", quality)
+        self.assertIn("- f_energy: nicht vollständig gestützt: in this fixture", quality)
+        self.assertIn("always assign", quality)
+        self.assertEqual(engine.state["phase"], "completed")
+        # The stored verification passes today's check on resume: no call is repeated.
+        count = len(self.calls)
+        self.engine().run(self.discovery, self.index)
+        self.assertEqual(len(self.calls), count)
+
+    def test_blocking_and_limitation_tiers_of_the_review_rule(self):
+        spec = QuestionPlan(tasks=[task_value()]).tasks[0]
+        answer = answer_for(self.ref)
+        passages = read_context(SourceReader(self.index), [self.ref])
+        receipts = support_receipts([f.model_dump() for f in answer.findings], passages)
+        def review(**changes):
+            return AnswerReview(**{"criteria": [dict(index=0, passed=True, reason="Defined in the passage.")], "supported": True,
+                                   "source_adequacy": True, "issues": [], **json.loads(json.dumps(receipts)), **changes})
+        self.assertEqual(review_outcome(review(), spec, answer.findings, passages), ([], []))
+        partial = review()
+        partial.finding_support[0].verdict = "partially_supported"
+        partial.finding_support[0].unsupported_clauses = ["always"]
+        blocking, limitations = review_outcome(partial, spec, answer.findings, passages)
+        self.assertEqual(blocking, [])
+        self.assertEqual((limitations[0]["finding_id"], limitations[0]["kind"]), ("f_energy", "partial_support"))
+        self.assertIn("always", limitations[0]["text"])
+        for field, value in (("verdict", "contradicted"), ("verdict", "insufficient_context"),
+                             ("suitability", "unsuitable"), ("contract_preserved", False)):
+            bad = review()
+            bad.finding_support[0].unsupported_clauses = ["always"]
+            setattr(bad.finding_support[0], field, value)
+            with self.subTest(field=field, value=value):
+                self.assertTrue(review_outcome(bad, spec, answer.findings, passages)[0])
+        failed = review()
+        failed.criteria[0].passed = False
+        self.assertEqual(review_outcome(failed, spec, answer.findings, passages)[0], ["Criterion 0 not met: Defined in the passage."])
+        self.assertTrue(review_outcome(review(source_adequacy=False), spec, answer.findings, passages)[0])
+        self.assertFalse(review_passes(review(source_adequacy=False), spec))
+        self.assertTrue(review_passes(review(supported=False, issues=["A wording issue."]), spec))
+
+    def test_repeated_criterion_entries_collapse_and_only_missing_indices_still_reject(self):
+        spec = QuestionPlan(tasks=[{**task_value(), "acceptance": ["A", "B", "C", "D"]}]).tasks[0]
+        def review(indices):
+            return AnswerReview(criteria=[dict(index=i, passed=True, reason="Checked.") for i in indices],
+                                supported=True, source_adequacy=True, issues=[])
+        # The trace's rejected shape: index 1 listed twice with identical verdicts.
+        self.assertTrue(review_passes(review([0, 1, 1, 2, 3]), spec))
+        self.assertEqual([c.index for c in normalise_review(review([0, 1, 1, 2, 3]), spec).criteria], [0, 1, 2, 3])
+        for position in (1, 2):
+            mixed = review([0, 1, 1, 2, 3])
+            mixed.criteria[position].passed = False
+            with self.subTest(failing_copy=position):
+                self.assertFalse(review_passes(mixed, spec), "a differing repeat keeps the failing verdict")
+        for indices in ([0, 1, 2, 4], [0, 1, 2], [0, 1, 2, 3, 4]):
+            with self.subTest(indices=indices), self.assertRaises(AppError) as raised:
+                review_passes(review(indices), spec)
+            self.assertEqual(raised.exception.code, "invalid_question_review")
+        one = QuestionPlan(tasks=[task_value()]).tasks[0]
+        answer = answer_for(self.ref)
+        answer.criteria = [answer.criteria[0], answer.criteria[0].model_copy(update={"explanation": "Repeated wording."})]
+        answer.findings = answer.findings * 2
+        normalised = normalise_answer(answer)
+        self.assertEqual((len(normalised.criteria), len(normalised.findings)), (1, 1))
+        self.assertEqual(answer_errors(normalised, one, SourceReader(self.index), {self.ref}), [])
+        answer.findings[1] = answer.findings[1].model_copy(update={"statement": "A different finding under the same id."})
+        self.assertTrue(answer_errors(normalise_answer(answer), one, SourceReader(self.index), {self.ref}))
+
+    def test_the_sequential_ledger_names_the_task_in_progress_and_none_afterwards(self):
+        ledgers = []
+
+        def capture(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                ledgers.append(json.loads((self.work / "research_questions.json").read_text(encoding="utf-8")))
+        self.hook = capture
+        engine = self.engine()
+        self.assertEqual(engine.workers, 1)
+        engine.run(self.discovery, self.index)
+        self.assertEqual([(row["active_task"], row["active_tasks"]) for row in ledgers], [("task_definition", ["task_definition"])])
+        self.assertEqual(engine.state["active_tasks"], [])
+        self.assertNotIn("active_task", engine.state)
+        public = json.loads((self.work / "research_questions.json").read_text(encoding="utf-8"))
+        self.assertEqual((public["active_task"], public["active_tasks"]), (None, []))
+        # A ledger saved by an earlier version names one task; a resume carries it over as the list.
+        path = self.work / "question_research/state.json"
+        saved = read_value(path)
+        del saved["active_tasks"]
+        saved["active_task"] = None
+        save_value(path, saved)
+        count = len(self.calls)
+        resumed = self.engine()
+        resumed.run(self.discovery, self.index)
+        self.assertEqual((len(self.calls), resumed.state["active_tasks"]), (count, []))
+        self.assertNotIn("active_task", read_value(path))
 
 
 if __name__ == "__main__":

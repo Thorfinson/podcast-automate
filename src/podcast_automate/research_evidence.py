@@ -31,18 +31,58 @@ def identity(value):
     return re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", value)
 
 
-def support_errors(findings, review, context, *, require_contract=True):
-    """Malformed coverage raises; substantive non-passes return actionable feedback."""
-    if Counter(r.finding_id for r in review.finding_support) != Counter(f.id for f in findings):
+SUPPORT_RANK = {"supported": 0, "partially_supported": 1, "insufficient_context": 2, "contradicted": 3}
+INDEPENDENCE_RANK = {"independent": 0, "unknown": 1, "shared": 2}
+BLOCKING_VERDICTS = {"contradicted", "insufficient_context"}
+
+
+def blocks(row):
+    """Whether one support receipt fails the answer on its own; anything milder is a limitation."""
+    return row.verdict in BLOCKING_VERDICTS or row.suitability != "suitable" or not row.contract_preserved
+
+
+def collapse_support(rows):
+    """One receipt per finding: a repeated finding keeps its most conservative receipt."""
+    merged = {}
+    for row in rows:
+        key = (SUPPORT_RANK[row.verdict], row.suitability != "suitable", not row.contract_preserved)
+        if row.finding_id not in merged or key > merged[row.finding_id][0]:
+            merged[row.finding_id] = (key, row)
+    return [row for _, row in merged.values()]
+
+
+def collapse_assessments(rows):
+    """One assessment per source: a repeated source keeps the one claiming the least independence."""
+    merged = {}
+    for row in rows:
+        if row.source_id not in merged or INDEPENDENCE_RANK[row.independence] > INDEPENDENCE_RANK[merged[row.source_id].independence]:
+            merged[row.source_id] = row
+    return list(merged.values())
+
+
+def support_errors(findings, review, context, *, require_contract=True, limitations=None):
+    """Malformed coverage raises; blocking non-passes return actionable feedback.
+
+    Blocking is a contradicted or insufficient_context verdict, an unsuitable source, a broken claim
+    contract or independence that the receipts do not establish. A partially supported finding whose
+    contract and source hold, and a receipt that assessed only some of a finding's cited passages,
+    are limitations of a passing answer: they are appended to ``limitations`` when the caller
+    supplies a list and count as passes otherwise (the stored-verification check on resume).
+    Repeated finding or source entries collapse to their most conservative receipt; a missing or
+    unknown one is still a shape defect.
+    """
+    support = collapse_support(review.finding_support)
+    assessments = collapse_assessments(review.source_assessments)
+    if Counter(r.finding_id for r in support) != Counter(f.id for f in findings):
         evidence_error("Evidence review must assess every finding exactly once.")
     passages = {p["reference"]: s for s in context for p in s["sections"]}
     cited = {e.reference for f in findings for e in f.evidence}
     source_ids = {passages[r]["source_id"] for r in cited if r in passages}
     if not cited <= passages.keys():
         evidence_error("Evidence review contains unread or unknown passages.")
-    if Counter(a.source_id for a in review.source_assessments) != Counter(source_ids):
+    if Counter(a.source_id for a in assessments) != Counter(source_ids):
         evidence_error("Assess the suitability and identity of every cited source exactly once.")
-    assessments = {a.source_id: a for a in review.source_assessments}
+    assessments = {a.source_id: a for a in assessments}
     for assessment in assessments.values():
         if any(r not in passages or passages[r]["source_id"] != assessment.source_id for r in assessment.evidence_refs):
             evidence_error("Source assessment must be grounded in that source's supplied passages.")
@@ -50,11 +90,20 @@ def support_errors(findings, review, context, *, require_contract=True):
             evidence_error("Known independence requires a source-grounded study or dataset identity.")
     by_id = {f.id: f for f in findings}
     errors = []
-    for row in review.finding_support:
+    for row in support:
         finding = by_id[row.finding_id]
         refs = {e.reference for e in finding.evidence}
-        if set(row.references) != refs or len(row.references) != len(set(row.references)):
-            evidence_error("A support receipt must cover precisely the finding's cited passages.")
+        assessed = set(row.references)
+        # A receipt over some of the cited passages is a partial check, not a wasted call: extra
+        # references to other read passages are ignored, omitted ones become a stated limitation.
+        if not assessed & refs:
+            evidence_error("A support receipt must cover at least one of the finding's cited passages.")
+        if not assessed <= passages.keys():
+            evidence_error("A support receipt names passages that were not supplied to this review.")
+        omitted = sorted(refs - assessed)
+        if omitted and limitations is not None:
+            limitations.append({"finding_id": finding.id, "kind": "unassessed_references",
+                                "text": f"{finding.id}: Belegstellen nicht einzeln geprüft: {', '.join(omitted)}."})
         if not set(row.independent_evidence_refs) <= refs:
             evidence_error("Independent evidence must be cited by the finding and actually supplied.")
         if row.empirical_status == "independently_tested":
@@ -75,9 +124,13 @@ def support_errors(findings, review, context, *, require_contract=True):
                 errors.append(f"{finding.id}: independent testing is not established by distinct evidence families and works.")
         if require_contract and finding.claim_contract is None:
             errors.append(f"{finding.id}: missing claim contract (basis, relation, scope and qualifications).")
-        if row.verdict != "supported" or row.suitability != "suitable" or not row.contract_preserved:
+        if blocks(row):
             errors.append(f"{finding.id}: {row.verdict}; {row.reason}; {row.suitability_reason}; "
                           + "; ".join(row.unsupported_clauses))
+        elif row.verdict == "partially_supported" and limitations is not None:
+            limitations.append({"finding_id": finding.id, "kind": "partial_support",
+                                "text": f"{finding.id}: nicht vollständig gestützt: {'; '.join(row.unsupported_clauses)} "
+                                        f"({row.reason})"})
     return errors
 
 

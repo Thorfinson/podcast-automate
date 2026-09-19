@@ -109,12 +109,42 @@ class ResearchStatusTests(unittest.TestCase):
         write_json(self.call / "response.json", {"action": "answer"})
         self.assertEqual(work_insight(self.work, self.run)["signals"]["state"], "completed")
 
+    def test_a_waiting_plan_names_the_gate_when_no_call_is_assigned(self):
+        self.state["phase"] = "awaiting_plan_approval"
+        self.save_state()
+        write_json(self.call / "output_schema.json", {"title": "SomethingNew"})
+        write_json(self.call / "response.json", {"ok": True})
+        info = work_insight(self.work, {**self.run, "status": "blocked"})
+        self.assertIn("Wartet auf Freigabe des Rechercheplans", info["assignment"])
+        self.assertEqual(info["signals"]["state"], "completed")
+
     def test_unsafe_index_path_is_ignored(self):
         self.state["index_hash"] = "../../private"
         self.save_state()
         info = work_insight(self.work, self.run)
         self.assertEqual(info["material"]["source_count"], 0)
         self.assertEqual(info["material"]["unresolved_sections"], 2)
+
+    def test_several_active_tasks_are_listed_and_the_first_stands_in_for_the_saved_context(self):
+        self.state["plan"]["tasks"].append({"id": "task_two", "question": "Wie wirkt Confounding?", "acceptance": ["Mechanismus."]})
+        self.state["tasks"]["task_two"] = {**self.row, "status": "researching", "activity": "Liest Originalabschnitte PRIVATE_PATH"}
+        self.state["tasks"]["task_one"].update(status="reviewing", activity="Antwort wird geprüft")
+        del self.state["active_task"]
+        self.state["active_tasks"] = ["task_one", "task_two"]
+        self.save_state()
+        info = work_insight(self.work, self.run)
+        self.assertEqual(info["question"], "Was ist Causation?")
+        self.assertEqual([(row["id"], row["question"], row["status"], row["activity"]) for row in info["active_questions"]],
+                         [("task_one", "Was ist Causation?", "reviewing", "Antwort wird geprüft"),
+                          ("task_two", "Wie wirkt Confounding?", "researching", "Liest Originalabschnitte PRIVATE_PATH")])
+        self.assertNotIn("PRIVATE_FULL_TEXT", json.dumps(info))
+        # A ledger of an earlier version names one task; it is that one.
+        del self.state["active_tasks"]
+        self.state["active_task"] = "task_two"
+        self.save_state()
+        info = work_insight(self.work, self.run)
+        self.assertEqual((info["question"], [row["id"] for row in info["active_questions"]]),
+                         ("Wie wirkt Confounding?", ["task_two"]))
 
 
 if __name__ == "__main__":
