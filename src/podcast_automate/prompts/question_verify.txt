@@ -9,6 +9,9 @@ explanations as well as the findings. A failed criterion, a contradicted or insu
 finding, an unsuitable source or a broken claim_contract fails the answer; a partially supported
 clause or an entry in issues is recorded as a limitation of a passing answer, so name the exact
 clause. issues are defects that fail no criterion; limitations are what this review itself could
-not check. Keep every free-text field short: one sentence that names the passage and the defect, at
-most 300 characters; the detail belongs in unsupported_clauses and the criterion verdicts, not in
-prose.
+not check. A supported verdict has an empty unsupported_clauses list; naming a clause makes the
+finding partially_supported. Provenance and extraction gaps, such as a year or publisher known only
+from metadata or a table or page that was not extracted, are limitations of this review, not
+unsupported clauses of the claim. Keep every free-text field short: one sentence that names the
+passage and the defect, at most 300 characters; the detail belongs in unsupported_clauses and the
+criterion verdicts, not in prose.

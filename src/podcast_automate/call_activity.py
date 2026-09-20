@@ -7,9 +7,13 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
+from .errors import AppError
 from .model_trace import ModelTrace
 from .models import now
 from .storage import write_json
+
+# Defects named in a contract rejection; the receipt keeps them all.
+MAX_NAMED_DEFECTS = 8
 
 
 def clean_status(value, limit=600):
@@ -297,6 +301,25 @@ def validation_details(error):
                  "type": str(item.get("type", ""))}
                 for item in error.errors(include_url=False, include_context=False, include_input=False)]
     return [{"loc": [], "msg": str(error), "type": type(error).__name__}]
+
+
+def contract_rejection(error, payload, *, provider):
+    """The correctable error for a parsed answer that violates its output contract.
+
+    Such an answer is real model work: the call stays charged and the adapter keeps its receipts.
+    A caller with a rejection loop (``research_patches.cached_call``) repeats the task with the
+    defects named; every other caller stops as ``blocked`` and a resume repeats the call. Only a
+    missing or unparseable answer remains ``invalid_model_output``. A cross-field rule of a contract
+    cannot be expressed in the JSON schema handed to the model, so its violation must never end a run.
+    """
+    defects = validation_details(error)
+    named = "; ".join(f"{'.'.join(item['loc']) or 'answer'}: {re.sub(r'^Value error, ', '', item['msg'])}"
+                      for item in defects[:MAX_NAMED_DEFECTS])
+    if len(defects) > MAX_NAMED_DEFECTS:
+        named += f"; and {len(defects) - MAX_NAMED_DEFECTS} more"
+    message = (f"{provider} answered, but the answer violates its output contract: {clean_status(named, 1500).rstrip('.')}. "
+               "Return the complete answer again with exactly these defects corrected.")
+    return AppError(message, code="rejected_output", status="blocked", details={"payload": payload, "defects": defects})
 
 
 def write_rejected_output(directory, error, receipt, *, payload=None, text=None):

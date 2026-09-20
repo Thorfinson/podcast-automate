@@ -19,6 +19,7 @@ from .models import EpisodeScript, RunManifest, StageRecord
 from .polishing import HOST_ROLES, POLISH_VERSION
 from .provider_pool import AdapterPool, check_adapter_versions, text_generation_settings  # noqa: F401  (re-exported)
 from .research import refund_call, reserve_call, unanswered, validate_dossier
+from .research_patches import re_asked
 from .research_models import ResearchDossier
 from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
 from .run_budget import effective_limits
@@ -337,19 +338,22 @@ def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reas
         def review():
             def invoke(prompt, output_type, version, **kwargs):
                 # The one call is charged like every other: reserved against the run budget,
-                # refunded only when no model answered.
+                # refunded only when no model answered; a contract rejection is re-asked once named.
                 adapter.require_key()
-                number = reserve_call(work, limits)
-                try:
-                    return adapter.structured(prompt, output_type, work / "calls" / f"call_{number:03d}",
-                                              prompt_version=version, search=False)[0]
-                except AppError as exc:
-                    if unanswered(exc):
+
+                def once(attempt):
+                    number = reserve_call(work, limits)
+                    try:
+                        return adapter.structured(attempt, output_type, work / "calls" / f"call_{number:03d}",
+                                                  prompt_version=version, search=False)[0]
+                    except AppError as exc:
+                        if unanswered(exc):
+                            refund_call(work, number)
+                        raise
+                    except BaseException:
                         refund_call(work, number)
-                    raise
-                except BaseException:
-                    refund_call(work, number)
-                    raise
+                        raise
+                return re_asked(once, prompt)
 
             report = series_report(config, plan, scripts, manifest.input_hash, invoke)
             write_json(work / "series_review.json", {"report": report, "sha256": digest(report)})

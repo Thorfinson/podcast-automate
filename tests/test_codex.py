@@ -42,6 +42,8 @@ assert schema["additionalProperties"] is False
 response = pathlib.Path(args[args.index("--output-last-message")+1])
 if mode == "invalid":
     response.write_text('{"topic": "incomplete"}', encoding="utf-8")
+elif mode == "garbled":
+    response.write_text('{"topic": "cut off', encoding="utf-8")
 else:
     response.write_text(json.dumps({"topic": topic, "focus_questions": ["Wie und warum?"],
                                    "note": "Keine Quellenrecherche."}), encoding="utf-8")
@@ -117,18 +119,26 @@ class CodexTests(unittest.TestCase):
 
     def test_quota_is_distinct_from_invalid_output(self):
         import json
-        for mode, expected in (("quota", "quota_exhausted"), ("invalid", "invalid_model_output"),
+        for mode, expected in (("quota", "quota_exhausted"), ("invalid", "rejected_output"),
+                               ("garbled", "invalid_model_output"),
                                ("incomplete", "codex_failed"), ("late_failure", "quota_exhausted")):
             with self.subTest(mode=mode), patch.dict(os.environ, {"PLA_TEST_MODE": mode}):
                 with self.assertRaises(AppError) as error:
-                    self.adapter.probe("Thema", self.root / "request")
+                    self.adapter.probe("Thema", self.root / mode)
                 self.assertEqual(error.exception.code, expected)
+                receipt = json.loads((self.root / mode / "failure.json").read_text(encoding="utf-8"))
+                self.assertEqual(receipt["code"], expected)
                 if mode == "invalid":
-                    receipt = json.loads((self.root / "request/failure.json").read_text(encoding="utf-8"))
-                    self.assertEqual(receipt["code"], "invalid_model_output")
+                    # A parsed answer the contract rejects is charged, kept and correctable.
+                    self.assertEqual(error.exception.status, "blocked")
                     self.assertTrue(all(set(item) == {"loc", "msg", "type"} for item in receipt["validation_errors"]))
-                    self.assertEqual(json.loads((self.root / "request/rejected_output.json").read_text(encoding="utf-8")),
+                    self.assertEqual(json.loads((self.root / mode / "rejected_output.json").read_text(encoding="utf-8")),
                                      {"topic": "incomplete"})
+                    self.assertEqual(error.exception.details["payload"], {"topic": "incomplete"})
+                if mode == "garbled":
+                    # No JSON answer is not an answer: the call is a plain failure with the text kept.
+                    self.assertFalse((self.root / mode / "rejected_output.json").exists())
+                    self.assertEqual((self.root / mode / "rejected_output.txt").read_text(encoding="utf-8"), '{"topic": "cut off')
 
     def test_recovered_stream_error_does_not_invalidate_success(self):
         with patch.dict(os.environ, {"PLA_TEST_MODE": "retry"}):

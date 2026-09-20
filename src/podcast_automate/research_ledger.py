@@ -11,7 +11,7 @@ from .storage import digest, file_hash, inside, write_json
 
 VERSION = "question_research.v1"
 # The workflow and receipt bindings above stay; the call tag names the loop wording that produced a result.
-CALL_VERSION = "question_research.v2-loop"
+CALL_VERSION = "question_research.v3-clauses"
 INDEX_MANIFEST = "index_manifest.v1"
 
 
@@ -159,6 +159,20 @@ def bootstrap_legacy(root, work, discovery, index, dossier, context):
     return discovery, index, dossier, context, {"drafts": imported, "last_review": review}
 
 
+def reopenable(task, limits):
+    """A task an earlier recovery rule blocked without ever searching the web.
+
+    Until 2026-09-20 the single automatic strategy change was spent on unread saved passages, so a
+    task ended as ``evidence_block`` or ``search_block`` with no web attempt while the run had search
+    rounds left. A resume gives such a task its web search before it counts as a concrete gap.
+    """
+    steps = (limits or {}).get("steps_per_question")
+    return (task["status"] == "blocked" and not task.get("accepted_gap")
+            and task.get("outcome") in {"evidence_block", "search_block"}
+            and task.get("web_attempts", 0) == 0 and task.get("fallbacks", 0) >= 2
+            and (steps is None or task["step"] < steps))
+
+
 def public_ledger(state, index=None):
     rows = []
     sections = {f"{source.id}#{section.id}": (source, section) for source in index.sources
@@ -172,6 +186,7 @@ def public_ledger(state, index=None):
                      "status": task["status"], "activity": task["activity"], "steps": task["step"],
                      "depends_on": spec.get("depends_on", []), "outcome": task.get("outcome"),
                      "accepted_gap": bool(accepted), "accepted_reason": (accepted or {}).get("reason", ""),
+                     "web_attempts": task.get("web_attempts", 0), "reopenable": reopenable(task, state.get("limits")),
                      "support": task.get("verification", {}).get("support_summary") if answer else None,
                      "review_limitations": (task.get("verification") or {}).get("limitations", []) if answer else [],
                      "search_count": len(task.get("search_receipts", [])),
@@ -190,6 +205,7 @@ def public_ledger(state, index=None):
     active = active_tasks(state)
     return {"version": VERSION, "total": len(rows), "closed": sum(r["status"] == "verified" for r in rows),
             "blocked": len(blocked), "accepted": sum(r["accepted_gap"] for r in rows), "phase": phase,
+            "reopenable": sum(r["reopenable"] for r in rows),
             "source_count": len(index.sources) if index else None,
             "source_failures": len(index.failures) if index else None,
             "source_attempt_count": state.get("source_attempt_count"),

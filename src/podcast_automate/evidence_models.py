@@ -60,10 +60,18 @@ class FindingSupport(Contract):
     empirical_status: Literal["not_applicable", "tested_in_source", "independently_tested", "unknown"]
     independent_evidence_refs: list[NonEmpty]
 
+    @model_validator(mode="before")
+    @classmethod
+    def clauses_decide_partial_support(cls, data):
+        # The clause list is the judgement and the verdict its summary: a "supported" finding that
+        # names unsupported clauses is partially supported. Only a contradiction or missing context
+        # is a verdict in its own right, so those two stay with the reviewer.
+        if isinstance(data, dict) and data.get("verdict") == "supported" and data.get("unsupported_clauses"):
+            return {**data, "verdict": "partially_supported"}
+        return data
+
     @model_validator(mode="after")
     def coherent_support(self):
-        if self.verdict == "supported" and self.unsupported_clauses:
-            raise ValueError("A fully supported finding cannot contain unsupported clauses.")
         if self.verdict in {"partially_supported", "contradicted"} and not self.unsupported_clauses:
             raise ValueError("Name the unsupported or contradicted clauses.")
         if self.empirical_status == "independently_tested" and not self.independent_evidence_refs:

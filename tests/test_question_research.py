@@ -566,8 +566,8 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("one sentence that names the passage and the defect, at most 300 characters", prompts[AnswerReview])
         self.assertIn("at most 300 characters", prompts[ResearchDecision])
         self.assertIn("allowed_actions", prompts[ResearchDecision])
-        self.assertIn((ResearchDecision, "question_research.v2-loop.reader"), self.calls)
-        self.assertTrue(any(s is AnswerReview and v.startswith("question_research.v2-loop.review_") for s, v in self.calls))
+        self.assertIn((ResearchDecision, "question_research.v3-clauses.reader"), self.calls)
+        self.assertTrue(any(s is AnswerReview and v.startswith("question_research.v3-clauses.review_") for s, v in self.calls))
 
     def failing_review(self, reason):
         return AnswerReview(criteria=[dict(index=0, passed=False, reason=reason)],
@@ -623,6 +623,78 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual([a["action"] for a in row["actions"]], ["answer", "answer", "recovery_search_web"])
         self.assertEqual((row["status"], row["outcome"]), ("blocked", "evidence_block"))
         self.assertIn("Kriterium 0", row["reason"])
+
+    def test_recovery_reads_saved_passages_first_and_searches_the_web_before_blocking(self):
+        searches = []
+
+        def flow(prompt, schema, payload, kwargs):
+            if schema is QuestionSearch:
+                searches.append(prompt)
+                return QuestionSearch(candidates=[], limitations=["Nothing new in this fixture."])
+        self.hook = flow
+        engine = self.engine()
+        engine.initialise(self.discovery, self.index, None, ())
+        spec = QuestionPlan.model_validate(engine.state["plan"]).tasks[0]
+        row = engine.state["tasks"][spec.id]
+        with engine.guarded():
+            engine.seed(spec, row)
+            # A reader that answered or chose blocked at once leaves the catalogued passages unread.
+            row["read_refs"], row["no_progress"] = [], 2
+            self.assertTrue(engine.recover(spec, row))
+            self.assertTrue(row["read_refs"])
+            self.assertEqual((row["fallbacks"], row["web_attempts"], searches), (1, 0, []))
+            # The second recovery is the web search, never a block while a web attempt is left.
+            self.assertFalse(engine.recover(spec, row))
+            self.assertEqual((row["fallbacks"], row["web_attempts"], len(searches)), (2, 1, 1))
+            self.assertEqual(row["actions"][-1]["action"], "recovery_search_web")
+            # The third is the concrete block, without another call.
+            self.assertFalse(engine.recover(spec, row))
+            self.assertEqual((row["fallbacks"], len(searches)), (3, 1))
+        # The block names only what happened.
+        row.update(answer_locked=True, lock={"criteria": [{"index": 0, "text": spec.acceptance[0]}], "reasons": []})
+        engine.lock_block(spec, row)
+        self.assertIn("auch die Websuche brachte keine neuen Belege", row["reason"])
+        unsearched = {**row, "web_attempts": 0, "reason": ""}
+        engine.lock_block(spec, unsearched)
+        self.assertIn("die gespeicherten Quellen brachten keine neuen Belege", unsearched["reason"])
+        self.assertNotIn("Websuche", unsearched["reason"])
+
+    def test_a_task_blocked_without_a_web_attempt_is_resumed_with_one(self):
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        row = engine.state["tasks"]["task_definition"]
+        # The block the earlier recovery rule produced: both fallbacks spent on saved passages, the web never searched.
+        row.update(status="blocked", outcome="evidence_block", web_attempts=0, fallbacks=2, no_progress=2, pending=None,
+                   answer=None, draft_answer=row["answer"], answer_locked=True,
+                   lock={"step": row["step"], "web_attempts": 0, "finding_ids": [], "reasons": [],
+                         "criteria": [{"index": 0, "text": "Explain energy in this bounded example."}]},
+                   reason="Wiederholte Schritte lieferten keine neuen Belege oder geprüfte Antwort.")
+        engine.state["phase"] = "blocked"
+        engine.save()
+        # The Studio learns from the ledger that a resume has something to do here.
+        ledger = public_ledger(engine.state)
+        self.assertEqual((ledger["reopenable"], ledger["questions"][0]["reopenable"], ledger["questions"][0]["web_attempts"]), (1, True, 0))
+        searches = []
+
+        def flow(prompt, schema, payload, kwargs):
+            if schema is QuestionSearch:
+                searches.append(prompt)
+                return QuestionSearch(candidates=[], limitations=["Nothing new in this fixture."])
+        self.hook = flow
+        resumed = self.engine()
+        with self.assertRaises(AppError) as raised:
+            resumed.run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        self.assertEqual(len(searches), 1)
+        row = resumed.state["tasks"]["task_definition"]
+        self.assertEqual((row["status"], row["outcome"], row["web_attempts"], row["fallbacks"]), ("blocked", "evidence_block", 1, 2))
+        self.assertIn("auch die Websuche brachte keine neuen Belege", row["reason"])
+        self.assertEqual(public_ledger(resumed.state)["reopenable"], 0)
+        # Blocked under the current rule, a further resume repeats nothing.
+        calls = len(self.calls)
+        with self.assertRaises(AppError):
+            self.engine().run(self.discovery, self.index)
+        self.assertEqual(len(self.calls), calls)
 
     def test_new_evidence_after_a_failed_review_unlocks_the_answer(self):
         payloads, reviews = [], []

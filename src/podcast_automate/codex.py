@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .prompts import instructions
 from .errors import AppError
-from .call_activity import CallActivity, parsed_json, write_rejected_output
+from .call_activity import CallActivity, contract_rejection, parsed_json, write_rejected_output
 from .codex_stream import run_app_server
 from .models import RuntimeSettings, TextProbeOutput
 from .process import STALL_TIMEOUT_SECONDS, run_process
@@ -212,20 +212,29 @@ class CodexAdapter:
                        "exit_code": result.returncode, "model": self.settings.codex_model,
                        "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version})
             raise failure
-        text = None
         try:
             text = response_file.read_text(encoding="utf-8")
-            output = output_type.model_validate_json(text)
-        except (OSError, ValueError, ValidationError) as exc:
-            activity.finish("invalid_model_output")
-            failure = AppError("Codex hat keine gültige strukturierte Antwort geliefert.", code="invalid_model_output")
-            write_rejected_output(directory, exc, {
-                "code": failure.code, "message": str(failure), "exit_code": result.returncode,
-                "model": self.settings.codex_model, "reasoning_effort": self.reasoning_effort,
-                "prompt_version": prompt_version}, payload=parsed_json(text), text=text)
-            raise failure from exc
+        except OSError:
+            text = None
         finally:
             response_file.unlink(missing_ok=True)
+        receipt = {"exit_code": result.returncode, "model": self.settings.codex_model,
+                   "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version}
+        answer = parsed_json(text)
+        if answer is None:
+            activity.finish("invalid_model_output")
+            failure = AppError("Codex hat keine gültige strukturierte Antwort geliefert.", code="invalid_model_output")
+            write_rejected_output(directory, ValueError("no JSON answer"),
+                                  {"code": failure.code, "message": str(failure), **receipt}, text=text)
+            raise failure
+        try:
+            output = output_type.model_validate(answer)
+        except (ValueError, TypeError, ValidationError) as exc:
+            # A parsed answer the contract rejects is charged model work that a caller may re-ask.
+            activity.finish("rejected_output")
+            failure = contract_rejection(exc, answer, provider="Codex")
+            write_rejected_output(directory, exc, {"code": failure.code, "message": str(failure), **receipt}, payload=answer)
+            raise failure from exc
         if search and not search_requests:
             activity.finish("search_not_observed")
             raise AppError("Kein Websuch-Ereignis im Codex-Lauf nachgewiesen. Recherche nicht übernommen.",

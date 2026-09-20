@@ -4,6 +4,9 @@ import json
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
+from podcast_automate.call_activity import contract_rejection
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.models import Chapter, EpisodeScript
@@ -163,6 +166,52 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(self.calls.count(EpisodeScript), 2)
         report = read_yaml(self.root / "reports/script_quality.yaml")
         self.assertEqual(report["episodes"]["ep_001"]["model_review"]["limitations"], [note])
+
+    def script_rejection(self):
+        """A script whose chapters break the structure rule, reported exactly as the adapters report it."""
+        broken = example_script().model_dump()
+        broken["segments"][0]["chapter_id"] = "scene_other"
+        try:
+            EpisodeScript.model_validate(broken)
+        except ValidationError as exc:
+            return contract_rejection(exc, broken, provider="Fixture")
+        self.fail("the fixture script must violate the contract")
+
+    def test_a_contract_rejection_is_re_asked_with_the_defects_named_and_stays_charged(self):
+        prompts = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is EpisodeScript:
+                prompts.append(prompt)
+                if len(prompts) == 1:
+                    self.calls.append(output_type)
+                    raise self.script_rejection()
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(self.calls.count(EpisodeScript), 3)
+        self.assertIn("Rejections:", prompts[1])
+        self.assertIn("Kapitel müssen vollständig und zusammenhängend", prompts[1])
+        self.assertTrue(prompts[1].endswith("\n" + prompts[0].rsplit("\n", 1)[1]), "the JSON payload stays the last line")
+        self.assertNotIn("Rejections:", prompts[2])
+        # Every attempt is a charged call of its own; nothing is refunded for rejected model work.
+        budget = json.loads((self.root / "runs" / run.run_id / "budget.json").read_text(encoding="utf-8"))
+        self.assertEqual((budget["model_calls"], budget.get("refunded", [])), (len(self.calls), []))
+
+    def test_a_persistent_contract_rejection_blocks_the_writing_stage_after_named_retries(self):
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is EpisodeScript:
+                self.calls.append(output_type)
+                raise self.script_rejection()
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "blocked")
+        self.assertEqual(run.stages["writing"].error.code, "rejected_output")
+        self.assertIn("Kapitel müssen vollständig und zusammenhängend", run.stages["writing"].error.message)
+        self.assertIn("wiederholt", run.stages["writing"].error.message)
+        self.assertEqual(self.calls.count(EpisodeScript), 3)
 
     def test_a_long_cold_open_reaches_the_quality_report_as_an_advisory(self):
         opening = " ".join(["Wort"] * 101)

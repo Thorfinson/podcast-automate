@@ -56,9 +56,30 @@ def rejected_prompt(prompt, rejections):
     """The same task with every earlier rejection named; the JSON payload stays the last line."""
     if not rejections:
         return prompt
-    head, data = prompt.rsplit("\n", 1)
-    notes = " ".join(f"({n + 1}) {row['message']}" for n, row in enumerate(rejections))
-    return head + " " + prompt_instructions("rejected_response") + " " + notes + "\n" + data
+    head, newline, data = prompt.rpartition("\n")
+    notes = prompt_instructions("rejected_response") + " " + " ".join(f"({n + 1}) {row['message']}"
+                                                                      for n, row in enumerate(rejections))
+    return head + " " + notes + "\n" + data if newline else notes + "\n" + data
+
+
+def re_asked(call, prompt):
+    """``call(prompt)``, repeated with every contract rejection named, at most ``MAX_REJECTIONS`` times.
+
+    For callers without a receipt store, such as the script stages: every attempt is a charged call
+    whose receipts stay in its own call folder, and the last rejection stops the stage as ``blocked``.
+    A resume repeats the whole sequence, because nothing of it is saved as a checkpoint.
+    """
+    rejections = []
+    while True:
+        try:
+            return call(rejected_prompt(prompt, rejections))
+        except AppError as exc:
+            if exc.code != "rejected_output" or "payload" not in exc.details:
+                raise
+            rejections.append({"code": exc.code, "message": str(exc)})
+            if len(rejections) > MAX_REJECTIONS:
+                raise AppError(f"{exc} Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; "
+                               "die abgewiesenen Antworten liegen bei den Aufrufen.", code=exc.code, status="blocked") from exc
 
 
 def call_signature(folder, name, schema, prompt):
@@ -101,7 +122,15 @@ def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=T
             last = rejections[-1]
             raise AppError(f"{last['message']} Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; "
                            "die abgewiesenen Antworten sind gespeichert.", code=last["code"], status="blocked")
-        value = generate(attempt, schema)
+        try:
+            value = generate(attempt, schema)
+        except AppError as exc:
+            if exc.code != "rejected_output" or "payload" not in exc.details:
+                raise
+            # A parsed answer the contract rejected is charged model work: it is kept beside the
+            # receipts and the task is repeated with the defects named, like a validate rejection.
+            _reject(folder, name, len(rejections), signature, exc, exc.details["payload"])
+            continue
         if validate is not None:
             try:
                 validate(value, len(rejections) >= MAX_REJECTIONS)
@@ -113,9 +142,9 @@ def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=T
 
 
 def _reject(folder, name, number, signature, error, value):
+    data = value.model_dump() if hasattr(value, "model_dump") else value
     write_json(folder / f"{name}_rejected_{number:02d}.json", {
-        "input_hash": signature, "code": error.code, "message": str(error),
-        "sha256": digest(value.model_dump()), "value": value.model_dump()})
+        "input_hash": signature, "code": error.code, "message": str(error), "sha256": digest(data), "value": data})
 
 
 def apply_patch(dossier, patch, allowed_ids, *, allow_additions=True, coverage_ids=None, allow_questions=True):
