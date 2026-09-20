@@ -111,6 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--accept-gap", metavar="TASK_ID",
                          help="Blockierte Teilfrage, die im Dossier als Lücke dokumentiert bleibt")
     approve.add_argument("--reason", default="", help="Kurze Begründung der akzeptierten Lücke")
+    approve.add_argument("--retry", metavar="TASK_ID",
+                         help="Blockierte Teilfrage beim nächsten Fortsetzen erneut versuchen, mit dem Spielraum einer neuen Frage")
+    approve.add_argument("--hint", default="", help="Hinweis für den neuen Versuch; geht als Rückmeldung an das Modell")
     approve.add_argument("--research-plan", nargs="?", const=True, default=None, metavar="RUN_ID",
                          help="Den wartenden Rechercheplan dieses Laufs freigeben (Hochrechnung in "
                               "runs/<run_id>/question_research/plan_projection.json); ohne RUN_ID gilt --run-id oder der letzte Lauf")
@@ -198,13 +201,14 @@ def run_command(args) -> int:
                     "waiting_for_quota" if overview["any_usable"] else "blocked", **overview}
             code = 0 if overview["any_available"] else 2 if overview["any_usable"] else 1
         elif args.command == "approve":
-            from .run_budget import approve_model_call_limit, approve_research_gap, approve_research_plan
+            from .run_budget import (approve_model_call_limit, approve_research_gap, approve_research_plan,
+                                     approve_research_retry)
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
             if (args.model_calls is None and args.search_rounds is None and not args.accept_gap
-                    and args.research_plan is None):
-                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds oder --accept-gap.",
+                    and not args.retry and args.research_plan is None):
+                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --accept-gap oder --retry.",
                                code="invalid_request", status="blocked")
             if args.max_tasks is not None and args.research_plan is None:
                 raise AppError("--max-tasks gilt nur zusammen mit --research-plan.", code="invalid_request", status="blocked")
@@ -218,6 +222,9 @@ def run_command(args) -> int:
             if args.accept_gap:
                 gap = approve_research_gap(root, run_id, args.accept_gap, args.reason)
                 data["gap_approval"] = gap.model_dump(mode="json")
+            if args.retry:
+                request = approve_research_retry(root, run_id, args.retry, args.hint)
+                data["retry_request"] = request.model_dump(mode="json")
             data["message"] = "Freigabe gespeichert. Der Lauf übernimmt sie beim nächsten Aufruf oder mit pla resume."
             code = 0
         elif args.command == "schemas":

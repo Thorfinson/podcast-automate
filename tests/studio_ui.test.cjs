@@ -1451,7 +1451,8 @@ test('blocked questions are decided from a card above the ledger without expandi
   assert.ok(card>-1&&rows>card,'the decision card precedes the ledger');
   assert.ok(page.includes('2 Teilfragen sind blockiert'));
   assert.ok(page.includes('Wurzelfrage &lt;x&gt;'));
-  assert.ok(page.includes('id="gap-reason-root"'));
+  assert.ok(page.includes('id="retry-hint-root"'));
+  assert.ok(page.includes('data-action="retry-task" data-run-id="run_x" data-task-id="root"'));
   assert.ok(page.includes('data-action="accept-gap" data-run-id="run_x" data-task-id="child"'));
   assert.ok(page.includes('hängt an: Wurzelfrage &lt;x&gt;'));
   assert.ok(!page.includes('>Fortsetzen<'));
@@ -1463,4 +1464,26 @@ test('blocked questions are decided from a card above the ledger without expandi
   assert.ok(decided.includes('data-action="resume"'));
   assert.ok(!decided.includes('data-action="accept-gap"'));
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('a requested new attempt shows in place, keeps the other decision open and makes the run resumable',async()=>{
+  const app=studio();
+  const ledger={closed:2,total:4,accepted:0,blocked:2,reopenable:0,retry_requested:1,phase:'blocked',active_task:null,
+    questions:[{id:'root',question:'Wurzelfrage',status:'blocked',outcome:'search_block',web_attempts:1,reason:'Keine Belege.',activity:'x',steps:6,read_sections:2,acceptance:['a'],depends_on:[],retry_requested:true,retry_hint:'Originalpaper <lesen>'},
+      {id:'other',question:'Andere Frage',status:'blocked',outcome:'extraction_block',web_attempts:1,reason:'Tabelle nicht lesbar.',activity:'y',steps:7,read_sections:3,acceptance:['b'],depends_on:[]}]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_rounds:11,search_round_limit:12}}};step=PAGE.research;render();`);
+  const page=app.elements.get('research-progress').innerHTML;
+  assert.ok(page.includes('Neuer Versuch angefordert · Hinweis: Originalpaper &lt;lesen&gt;'));
+  assert.ok(!page.includes('data-task-id="root"'),'a requested retry offers no further buttons');
+  assert.ok(page.includes('data-action="retry-task" data-run-id="run_x" data-task-id="other"'));
+  assert.ok(page.includes('Eine Teilfrage ist blockiert'));
+  assert.ok(page.includes('Suchrunden auf 18 erhöhen'),'a nearly exhausted search budget is raised from the card');
+  assert.ok(page.includes('>Fortsetzen<'),'the requested attempt can start while the other decision stays open');
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('1 Teilfrage wartet auf deine Entscheidung'));
+  app.run(`$('retry-hint-other').value='Seite 35 bis 39 als Text';`);
+  app.responses.set('/api/projects/p',app.run('structuredClone(project)'));
+  await app.run(`(async()=>{const button={dataset:{action:'retry-task',runId:'run_x',taskId:'other'}};const hint=$('retry-hint-'+button.dataset.taskId)?.value||'';await api('/api/projects/'+project.id+'/approve',{kind:'retry',run_id:button.dataset.runId,task_id:button.dataset.taskId,hint});})()`);
+  const request=app.requests.find(r=>r.path==='/api/projects/p/approve');
+  assert.deepEqual(JSON.parse(request.options.body),{kind:'retry',run_id:'run_x',task_id:'other',hint:'Seite 35 bis 39 als Text'});
+  assert.equal(request.options.headers['X-Studio-Token'],'csrf');
 });

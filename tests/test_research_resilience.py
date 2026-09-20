@@ -29,7 +29,8 @@ from podcast_automate.research import reconcile_budget, reserve_call
 from podcast_automate.research_ledger import load_index, read_value, save_value
 from podcast_automate.research_quality import ResearchAssessment
 from podcast_automate.research_tasks import AnswerReview, QuestionPlan, QuestionSearch, ReopenPlan, ResearchDecision
-from podcast_automate.run_budget import accepted_gaps, approve_research_gap, effective_limits
+from podcast_automate.run_budget import (accepted_gaps, approve_research_gap, approve_research_retry, effective_limits,
+                                         retry_requests)
 from podcast_automate.sources import download, extract, import_failure, public_url
 from podcast_automate.storage import digest, init_project, write_json, write_yaml
 from podcast_automate.studio import make_server, read_json
@@ -58,7 +59,8 @@ class WorkflowCase(unittest.TestCase):
         f = self.fixture
         return QuestionResearch(f.root, f.work, f.config, f.model,
                                 lambda activity: write_json(f.work / "research_activity.json", {"activity": activity}),
-                                accepted=lambda: accepted_gaps(f.work, INPUT_HASH))
+                                accepted=lambda: accepted_gaps(f.work, INPUT_HASH),
+                                retries=lambda: retry_requests(f.work, INPUT_HASH))
 
     def run_engine(self):
         engine = self.engine()
@@ -78,6 +80,82 @@ class WorkflowCase(unittest.TestCase):
         with self.assertRaises(AppError) as blocked:
             self.run_engine()
         self.assertEqual(blocked.exception.code, "research_questions_blocked")
+
+
+class RetryRequestTests(WorkflowCase):
+    def test_a_requested_new_attempt_reopens_the_task_with_the_hint_and_a_fresh_allowance(self):
+        def plan_with_dependent(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical"),
+                                           dict(task_value("task_follow", "empirical"), depends_on=["task_empirical"])])
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                return decision("blocked")
+        self.fixture.hook = plan_with_dependent
+        with self.assertRaises(AppError) as blocked:
+            self.run_engine()
+        self.assertEqual(blocked.exception.code, "research_questions_blocked")
+        state = read_value(self.work / "question_research/state.json")
+        self.assertEqual(state["tasks"]["task_empirical"]["status"], "blocked")
+        self.assertEqual(state["tasks"]["task_follow"]["outcome"], "prerequisite_block")
+        used_steps = state["tasks"]["task_empirical"]["step"]
+        with self.assertRaises(AppError):
+            approve_research_retry(self.root, "run_test", "task_definition")  # verified, never retried
+        with self.assertRaises(AppError):
+            approve_research_retry(self.root, "run_test", "task_unknown")
+        with self.assertRaises(AppError):
+            approve_research_retry(self.root, "run_test", "task_follow")  # waits for its prerequisite, not a gap
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["approve", str(self.root), "--run-id", "run_test", "--retry", "task_empirical",
+                         "--hint", "Read the original paper", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["retry_request"]["task_id"], "task_empirical")
+        # Adoption happens at the start of the next resume, before any task call.
+        engine = self.engine()
+        engine.initialise(self.fixture.discovery, self.fixture.index, None, ())
+        self.assertEqual(engine.adopt_retries(), ["task_empirical"])
+        row = engine.state["tasks"]["task_empirical"]
+        self.assertEqual((row["status"], row["outcome"], row["no_progress"], row["fallbacks"], row["retries"]),
+                         ("researching", None, 0, 0, 1))
+        self.assertEqual(row["step"], used_steps, "the saved step folders stay valid")
+        self.assertEqual((row["extra_steps"], row["extra_web_attempts"]),
+                         (engine.state["limits"]["steps_per_question"], engine.state["limits"]["web_attempts"]))
+        self.assertIn("Note from the editor: Read the original paper", row["feedback"])
+        self.assertEqual(engine.state["tasks"]["task_follow"]["status"], "pending")
+        self.assertEqual(engine.adopt_retries(), [], "one request is adopted once")
+        # The public ledger names the adopted request, so the Studio can tell it from a new block.
+        public = json.loads((self.work / "research_questions.json").read_text(encoding="utf-8"))
+        empirical = next(r for r in public["questions"] if r["id"] == "task_empirical")
+        self.assertEqual(empirical["retry_adopted"], retry_requests(self.work, INPUT_HASH)["task_empirical"]["requested_at"])
+
+    def test_the_new_attempt_runs_and_a_second_block_waits_for_a_new_request(self):
+        self.block_empirical_task()
+        approve_research_retry(self.root, "run_test", "task_empirical", "Try again")
+        decisions = self.calls(ResearchDecision)
+        # Still blocked by the reader: the run spends new steps, blocks again and is not reopened on its own.
+        with self.assertRaises(AppError) as again:
+            self.run_engine()
+        self.assertEqual(again.exception.code, "research_questions_blocked")
+        self.assertGreater(self.calls(ResearchDecision), decisions, "the requested attempt was made")
+        state = read_value(self.work / "question_research/state.json")
+        self.assertEqual((state["tasks"]["task_empirical"]["status"], state["tasks"]["task_empirical"]["retries"]), ("blocked", 1))
+        repeated = self.calls(ResearchDecision)
+        with self.assertRaises(AppError):
+            self.run_engine()
+        self.assertEqual(self.calls(ResearchDecision), repeated, "a resume never repeats a failed attempt on its own")
+        # A new request, and this time the reader answers: the task closes and the dossier completes.
+        approve_research_retry(self.root, "run_test", "task_empirical")
+
+        def answer_now(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                return decision("answer", answer=answer_for(self.fixture.ref))
+        self.fixture.hook = answer_now
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual((engine.state["tasks"]["task_empirical"]["status"], engine.state["tasks"]["task_empirical"]["retries"]),
+                         ("verified", 2))
 
 
 class AcceptedGapTests(WorkflowCase):
@@ -674,7 +752,8 @@ class StudioApprovalTests(unittest.TestCase):
         write_yaml(self.work / "run_manifest.yaml", RunManifest(run_id="run_x", kind="research", project_hash="0" * 64,
                                                                 input_hash="b" * 64, stages={}).model_dump(mode="json"))
         save_value(self.work / "question_research/state.json",
-                   {"tasks": {"task_a": {"status": "blocked"}, "task_b": {"status": "pending"}}})
+                   {"tasks": {"task_a": {"status": "blocked"}, "task_b": {"status": "pending"},
+                              "task_c": {"status": "blocked"}}})
 
     def request(self, path, data=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
@@ -694,6 +773,15 @@ class StudioApprovalTests(unittest.TestCase):
         self.assertEqual(list(accepted_gaps(self.work, "b" * 64)), ["task_a"])
         self.assertEqual(self.request("/api/projects/example/approve",
                                       {"kind": "gap", "run_id": "run_x", "task_id": "task_b"})[0], 400)
+        status, _ = self.request("/api/projects/example/approve",
+                                 {"kind": "retry", "run_id": "run_x", "task_id": "task_c", "hint": "Originalquelle lesen"})
+        self.assertEqual(status, 200)
+        self.assertEqual(retry_requests(self.work, "b" * 64)["task_c"]["hint"], "Originalquelle lesen")
+        # A pending task and an accepted gap are never retried.
+        self.assertEqual(self.request("/api/projects/example/approve",
+                                      {"kind": "retry", "run_id": "run_x", "task_id": "task_b"})[0], 400)
+        self.assertEqual(self.request("/api/projects/example/approve",
+                                      {"kind": "retry", "run_id": "run_x", "task_id": "task_a"})[0], 400)
         status, _ = self.request("/api/projects/example/approve",
                                  {"kind": "model_calls", "run_id": "run_x", "model_calls": 200, "search_rounds": 20})
         self.assertEqual(status, 200)

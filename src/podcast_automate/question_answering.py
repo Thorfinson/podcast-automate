@@ -200,6 +200,13 @@ class TaskResearchMixin:
         """New passages or candidates arrived: the reader may answer again."""
         row["answer_locked"] = False
 
+    def step_limit(self, row):
+        """Steps this task may take: the run's limit plus what explicit new attempts granted on top."""
+        return self.state["limits"]["steps_per_question"] + row.get("extra_steps", 0)
+
+    def web_attempt_limit(self, row):
+        return self.state["limits"]["web_attempts"] + row.get("extra_web_attempts", 0)
+
     def recover(self, spec, row):
         """Two automatic strategy changes before a concrete block: unread saved passages, then one web search.
 
@@ -226,7 +233,7 @@ class TaskResearchMixin:
                 row["feedback"] = ["The previous strategy made no progress. Additional candidate sections have now been read. "
                                    "Evaluate these passages against this question's fixed criteria; do not add new research goals."]
                 return True
-        if row["web_attempts"] >= self.state["limits"]["web_attempts"]:
+        if row["web_attempts"] >= self.web_attempt_limit(row):
             return False
         # Exhausted saved passages are a reason to search externally, not to
         # keep rewriting the same answer or ask the user to click again.
@@ -346,7 +353,7 @@ class TaskResearchMixin:
         receipt = folder / "downloads.json"
         request_path = folder / "search_request.json"
         resuming = (folder / "search.json").exists() or request_path.exists()
-        if not resuming and (row["web_attempts"] >= self.state["limits"]["web_attempts"] or remaining <= 0):
+        if not resuming and (row["web_attempts"] >= self.web_attempt_limit(row) or remaining <= 0):
             row["reason"] = "Für diese Frage wurden die begrenzten zusätzlichen Quellenversuche ausgeschöpft."
             row["outcome"] = "budget_block"
             return False
@@ -455,7 +462,7 @@ class TaskResearchMixin:
             if row["status"] == "reviewing":
                 self.verify(spec, row)
                 continue
-            if row["step"] >= self.state["limits"]["steps_per_question"]:
+            if row["step"] >= self.step_limit(row):
                 row.update(status="blocked", activity="Recherche ohne ausreichenden Abschluss beendet",
                            reason="Die begrenzten Lese- und Prüfversuche reichen für diese Frage nicht aus. " + " ".join(row["feedback"]))
                 break

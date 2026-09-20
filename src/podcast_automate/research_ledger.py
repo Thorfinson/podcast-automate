@@ -187,6 +187,7 @@ def public_ledger(state, index=None):
                      "depends_on": spec.get("depends_on", []), "outcome": task.get("outcome"),
                      "accepted_gap": bool(accepted), "accepted_reason": (accepted or {}).get("reason", ""),
                      "web_attempts": task.get("web_attempts", 0), "reopenable": reopenable(task, state.get("limits")),
+                     "retry_adopted": task.get("retry_adopted"), "retries": task.get("retries", 0),
                      "support": task.get("verification", {}).get("support_summary") if answer else None,
                      "review_limitations": (task.get("verification") or {}).get("limitations", []) if answer else [],
                      "search_count": len(task.get("search_receipts", [])),

@@ -19,7 +19,7 @@ from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.res
 from .errors import AppError
 from .execution import ExecutionChoice, selected_execution
 from .question_budget import write_calibration
-from .run_budget import accepted_gaps, approve_research_plan, effective_limits, plan_approval_for
+from .run_budget import accepted_gaps, approve_research_plan, effective_limits, plan_approval_for, retry_requests
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .models import RunManifest, StageRecord
 from .provider_pool import AdapterPool, check_adapter_versions, subscription_selection
@@ -417,6 +417,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         def accepted():
             return accepted_gaps(work, input_hash)
 
+        def retries():
+            return retry_requests(work, input_hash)
+
         # Research tasks may report from several threads; the read-modify-write of the activity
         # envelope and the observer's job file happen one at a time.
         progress_lock = threading.Lock()
@@ -589,7 +592,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             discovery, index, context = synthesis_inputs()
             return run_question_research(root, work, config, discovery, index, invoke, progress, dossier=dossier,
                                          context=context if with_context else (), limits=limits, accepted=accepted,
-                                         plan_gate=plan_gate if review_mode else None, workers=execution.text_workers)
+                                         retries=retries, plan_gate=plan_gate if review_mode else None,
+                                         workers=execution.text_workers)
 
         def dossier_stage():
             progress("Belege werden zu Grundlagen und Erklärungen verbunden")
