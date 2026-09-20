@@ -197,6 +197,15 @@ dd{margin:0;overflow-wrap:anywhere}
 .research-questions ul{font-size:14px;padding-left:22px}
 .research-questions .prose{line-height:1.65;margin-top:14px}
 .research-quality{margin-top:16px}
+.decision-card{border-left:4px solid var(--amber);background:var(--amber-soft);border-color:#ecd4a8}
+.decision-card h2{font-size:17px;margin-bottom:6px}
+.decisions{list-style:none;padding:0;margin:0}
+.decisions li{padding:12px 0;border-top:1px solid #ecd4a8}
+.decisions li strong{display:block;margin-bottom:4px}
+.decisions li p{margin:2px 0}
+.decisions li.done{color:var(--muted)}
+.decisions .actions{margin-top:8px;gap:8px}
+.decisions .actions input{max-width:340px;flex:1 1 200px;padding:.4rem .6rem;font-size:14px}
 .plan-review{margin:0 0 18px;padding:16px 18px;background:var(--amber-soft);border:1px solid #ecd4a8;border-radius:8px}
 .plan-review .field{margin:12px 0 0;max-width:260px}
 .plan-review input{max-width:180px}
