@@ -89,7 +89,8 @@ def _gaps(dossier, migration):
 
 
 class QuestionResearch(TaskResearchMixin, SynthesisMixin):
-    def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None, plan_gate=None, workers=1):
+    def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None, retries=None, plan_gate=None,
+                 workers=1):
         self.root, self.work, self.config, self.invoke, self.progress = root, work, config, invoke, progress
         self.folder = work / "question_research"
         self.state = None
@@ -99,6 +100,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.limits = limits or (lambda: self.config.research_limits)
         # Explicit gap approvals, read afresh on every pass so an approval written during a run counts.
         self.accepted = accepted or (lambda: {})
+        # Explicit requests to attempt a blocked task again; each is adopted once, at the start of a resume.
+        self.retries = retries or (lambda: {})
         # ``plan_gate(projection)`` returns the valid approval of the projected plan or None. Without a
         # gate the caller has taken that decision (the CLI and Studio always pass one).
         self.plan_gate = plan_gate
@@ -235,6 +238,41 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     changed = True
             if changed:
                 self.save("Akzeptierte Lücken werden übernommen")
+
+    def adopt_retries(self):
+        """A new attempt the user asked for: the blocked task returns to research with a fresh recovery
+        ladder, the allowance of a new question on top of what it used, and the hint as feedback.
+
+        Each request is adopted once. A task that blocks again waits for a new explicit request, so a
+        resume never repeats a failed attempt on its own. Tasks that only waited for such a task are
+        decided again once it finishes, as after the automatic web search.
+        """
+        with self.guarded():
+            reopened = []
+            for task_id, request in self.retries().items():
+                row = self.state["tasks"].get(task_id)
+                if (row is None or row["status"] != "blocked" or row.get("accepted_gap")
+                        or row.get("retry_adopted") == request["requested_at"]):
+                    continue
+                limits = self.state["limits"]
+                hint = (request.get("hint") or "").strip()
+                row.update(status="researching", pending=None, outcome=None, reason="", no_progress=0, fallbacks=0,
+                           answer_locked=False, retry_adopted=request["requested_at"],
+                           retries=row.get("retries", 0) + 1,
+                           extra_steps=row.get("extra_steps", 0) + limits["steps_per_question"],
+                           extra_web_attempts=row.get("extra_web_attempts", 0) + limits["web_attempts"],
+                           activity="Neuer Versuch auf ausdrücklichen Wunsch",
+                           feedback=[*(["Note from the editor: " + hint] if hint else []),
+                                     "The editor asked for a new attempt after this question was blocked. Change the "
+                                     "strategy: other search terms, other sources or other passages. Do not repeat the "
+                                     "steps that already failed."])
+                reopened.append(task_id)
+            if reopened:
+                for row in self.state["tasks"].values():
+                    if row["status"] == "blocked" and row.get("outcome") == "prerequisite_block" and not row.get("accepted_gap"):
+                        row.update(status="pending", outcome=None, reason="", activity="Noch nicht bearbeitet")
+                self.save("Blockierte Teilfragen werden auf ausdrücklichen Wunsch erneut versucht")
+            return reopened
 
     def save(self, activity=None, *, budget_request=None):
         # Whole-ledger writes: state, probes, the public ledger and its markdown, then the progress line.
@@ -588,6 +626,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.initialise(discovery, index, dossier, context)
         self.review_plan()
         self.reopen_unsearched()
+        self.adopt_retries()
         while True:
             self.adopt_accepted_gaps()
             self.research_tasks()
@@ -630,6 +669,6 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
 
 
 def run_question_research(root, work, config, discovery, index, invoke, progress, *, dossier=None, context=(),
-                          limits=None, accepted=None, plan_gate=None, workers=1):
-    return QuestionResearch(root, work, config, invoke, progress, limits=limits, accepted=accepted,
+                          limits=None, accepted=None, retries=None, plan_gate=None, workers=1):
+    return QuestionResearch(root, work, config, invoke, progress, limits=limits, accepted=accepted, retries=retries,
                             plan_gate=plan_gate, workers=workers).run(discovery, index, dossier, context)

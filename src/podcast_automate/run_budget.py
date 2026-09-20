@@ -1,10 +1,12 @@
 """Explicit, run-bound allowances and gap approvals without changing approved content inputs.
 
-Three receipts live next to a run and are written only by an explicit user action:
+Four receipts live next to a run and are written only by an explicit user action:
 
 - ``budget_approval.json`` raises the model-call limit and, optionally, the search-round limit.
 - ``gap_approvals.json`` lists blocked research tasks the user accepts as documented gaps, so the
   dossier can be finished and published without them.
+- ``retry_requests.json`` lists blocked research tasks the user wants attempted again; the next
+  resume gives each a fresh recovery ladder and the allowance of a new question.
 - ``plan_approval.json`` approves the projected research plan (``question_research/plan_projection.json``)
   before the first task call, optionally with a cap on the number of tasks. It binds to the plan
   hash as well, so a re-planned run needs a new approval.
@@ -187,6 +189,68 @@ def approve_research_gap(root, run_id, task_id, reason=""):
                              gaps=[*(GapApproval.model_validate(g) for g in existing.values()), approval])
     write_json(work / "gap_approvals.json", approvals.model_dump(mode="json"))
     return approval
+
+
+class RetryRequest(Contract):
+    task_id: Identifier
+    hint: str = ""
+    requested_at: datetime
+
+
+class RetryRequests(Contract):
+    run_id: Identifier
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    retries: list[RetryRequest]
+
+
+def retry_requests(work, input_hash) -> dict[str, dict]:
+    """Requested new attempts of this run keyed by task id; empty when none was ever written."""
+    path = work / "retry_requests.json"
+    if not path.exists():
+        return {}
+    try:
+        requests = RetryRequests.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AppError("Die gespeicherten Wiederholungsanfragen sind ungültig.", code="invalid_retry_request", status="blocked") from exc
+    if requests.run_id != work.name or requests.input_hash != input_hash:
+        raise AppError("Die Wiederholungsanfragen gehören nicht zu diesem Auftrag.", code="invalid_retry_request", status="blocked")
+    return {item.task_id: item.model_dump(mode="json") for item in requests.retries}
+
+
+def approve_research_retry(root, run_id, task_id, hint=""):
+    """Ask for a new attempt at one blocked research task after the user explicitly requested it.
+
+    Only a blocked task that is not an accepted gap can be retried. The next resume gives it a fresh
+    recovery ladder, the allowance of a new question on top of what it used (steps and web attempts)
+    and the hint as feedback for the model. A later request for the same task replaces the earlier
+    one, so a task that blocked again is retried again only by a new explicit decision.
+    """
+    from .research_ledger import read_value
+    work, manifest = _text_run(root, run_id)
+    if manifest.kind != "research":
+        raise AppError("Ein neuer Versuch gilt nur für einen Rechercheauftrag.", code="invalid_retry_request")
+    state_path = work / "question_research/state.json"
+    if not state_path.exists():
+        raise AppError("Für diesen Lauf gibt es noch keine Recherchefragen.", code="invalid_retry_request")
+    row = read_value(state_path).get("tasks", {}).get(task_id)
+    if row is None:
+        raise AppError("Unbekannte Recherchefrage.", code="invalid_retry_request")
+    if row.get("status") != "blocked" or row.get("accepted_gap") or task_id in accepted_gaps(work, manifest.input_hash):
+        raise AppError("Nur eine blockierte Teilfrage, die keine akzeptierte Lücke ist, kann erneut versucht werden.",
+                       code="invalid_retry_request")
+    if row.get("outcome") == "prerequisite_block":
+        # Its own attempt never failed; a new attempt at the prerequisite takes it up again on its own.
+        raise AppError("Diese Teilfrage wartet auf eine vorausgesetzte Teilfrage. Versuche die Voraussetzung erneut "
+                       "oder akzeptiere sie als Lücke.", code="invalid_retry_request")
+    if not isinstance(hint, str) or len(hint) > 2000:
+        raise AppError("Der Hinweis muss ein kurzer Text sein.", code="invalid_retry_request")
+    existing = retry_requests(work, manifest.input_hash)
+    request = RetryRequest(task_id=task_id, hint=hint.strip(), requested_at=now())
+    existing[task_id] = request.model_dump(mode="json")
+    requests = RetryRequests(run_id=manifest.run_id, input_hash=manifest.input_hash,
+                             retries=[RetryRequest.model_validate(item) for item in existing.values()])
+    write_json(work / "retry_requests.json", requests.model_dump(mode="json"))
+    return request
 
 
 def approve_research_plan(root, run_id, *, max_tasks=None, source="explicit"):

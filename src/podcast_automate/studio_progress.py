@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .runner import manifest_path
 from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-exported for callers)
-from .run_budget import accepted_gaps, effective_limits, read_plan_approval
+from .run_budget import accepted_gaps, effective_limits, read_plan_approval, retry_requests
 from .errors import AppError
 from .models import ResearchLimits
 from .research_ledger import reopenable
@@ -154,6 +154,22 @@ def research_progress(root, run):
             questions["blocked"] = sum(r.get("status") == "blocked" and not r.get("accepted_gap") for r in questions["questions"])
             questions["accepted"] = sum(bool(r.get("accepted_gap")) for r in questions["questions"])
             if questions.get("phase") == "blocked" and not questions["blocked"]:
+                questions["phase"] = "questions"
+        # A requested new attempt is shown at once as well; the row stays blocked until the resume adopts it.
+        try:
+            retries = retry_requests(work, run.get("input_hash"))
+        except AppError:
+            retries = {}
+        if retries:
+            for row in questions["questions"]:
+                request = retries.get(row.get("id"))
+                if (request and row.get("status") == "blocked" and not row.get("accepted_gap")
+                        and row.get("retry_adopted") != request.get("requested_at")):
+                    row.update(retry_requested=True, retry_hint=request.get("hint", ""))
+            questions["retry_requested"] = sum(bool(r.get("retry_requested")) for r in questions["questions"])
+            undecided = [r for r in questions["questions"]
+                         if r.get("status") == "blocked" and not r.get("accepted_gap") and not r.get("retry_requested")]
+            if questions.get("phase") == "blocked" and not undecided:
                 questions["phase"] = "questions"
         if "reopenable" not in questions:
             # A ledger written before the field existed: decide it from the saved rows, as a resume would,
