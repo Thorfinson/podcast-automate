@@ -11,6 +11,9 @@ from podcast_automate.question_answering import (READER_ACTIONS, normalise_answe
                                                  review_outcome, review_passes)
 from podcast_automate.question_research import QuestionResearch, answer_errors, validate_plan
 from podcast_automate.question_scope import QuestionScopeReview
+from podcast_automate.evidence_models import ResearchObjection
+from podcast_automate.question_synthesis import (SUPPORT_VERDICT_FIELDS, compact_assessment_material,
+                                                 compact_review_instructions, compact_routing_material)
 from podcast_automate.research import run_research
 from podcast_automate.research_ledger import bootstrap_legacy, public_ledger, read_value, save_value
 from podcast_automate.research_models import ResearchDossier, SourceIndex, SourceSection
@@ -123,17 +126,28 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual((public["closed"], public["total"], public["phase"]), (1, 1, "completed"))
 
     def test_material_beyond_one_window_is_composed_and_audited_in_bounded_parts(self):
+        assessed = []
+
         def two_tasks(prompt, schema, payload, kwargs):
             if schema is QuestionPlan:
                 return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
             if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
                 return decision("answer", answer=answer_for(self.ref))
+            if schema is ResearchAssessment:
+                assessed.append(payload)
         self.hook = two_tasks
         with patch("podcast_automate.question_synthesis.PROMPT_BUDGET_CHARS", 1):
             engine = self.engine()
             outputs = engine.run(self.discovery, self.index)
             self.assertTrue(all(p.exists() for p in outputs))
             self.assertEqual(engine.state["phase"], "completed")
+            # The assessment of a dossier beyond one window reads verdicts and identities, not prose.
+            [payload] = assessed
+            self.assertEqual(set(payload["finding_support"][0]), {"finding_id", "verdict", "unsupported_clauses", "suitability",
+                                                                  "empirical_status", "independent_evidence_refs"})
+            self.assertTrue(all(set(e) == {"reference"} for f in payload["dossier"]["findings"] for e in f["evidence"]))
+            self.assertTrue(all(set(s) == {"source_id", "title", "url"} for s in payload["sources"]))
+            self.assertTrue(all("illustration" in f and "claim_contract" in f for f in payload["dossier"]["findings"]))
             schemas = [c[0] for c in self.calls]
             # The dossier opens with the first answer, the second is integrated as a patch, the audit runs in parts.
             self.assertEqual(schemas.count(ResearchDossier), 1)
@@ -183,6 +197,71 @@ class QuestionResearchTests(unittest.TestCase):
             count = len(self.calls)
             self.engine().run(self.discovery, self.index)
             self.assertEqual(len(self.calls), count, "a replay makes no calls")
+
+    def test_new_runs_state_the_synthesis_evidence_rule_and_old_runs_keep_their_prompts(self):
+        prompts = []
+
+        def capture(prompt, schema, payload, kwargs):
+            if schema is ResearchDossier:
+                prompts.append(prompt)
+        self.hook = capture
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["prompt_generation"], 2)
+        self.assertEqual(engine.prompt_tag, ".g2")
+        self.assertTrue(all("at least one for each compared finding" in p for p in prompts))
+        self.assertEqual(len(prompts), 1)
+        self.assertTrue(any(v.endswith(".g2.dossier") for _, v in self.calls))
+        engine.state["prompt_generation"] = 1
+        self.assertEqual((engine.synthesis_rule(), engine.prompt_tag), ("", ""))
+
+    def test_compact_assessment_material_keeps_verdicts_and_one_row_per_source(self):
+        dossier = self.seed_dossier()
+        sources = [{"source_id": s.id, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text} for x in s.sections]}
+                   for s in self.index.sources]
+        receipts = support_receipts([f.model_dump() for f in dossier.findings], sources)
+        first = receipts["source_assessments"][0]
+        second = {**first, "roles": ["empirical_test"], "rationale": "Second part of a split review."}
+        review = SourceReview(issues=[], limitations=[], finding_support=receipts["finding_support"],
+                              source_assessments=[first, second])
+        material = compact_assessment_material(dossier, review)
+        self.assertTrue(all(set(e) == {"reference"} for f in material["dossier"]["findings"] for e in f["evidence"]))
+        self.assertEqual([f["id"] for f in material["dossier"]["findings"]], [f.id for f in dossier.findings])
+        self.assertEqual(set(material["finding_support"][0]), set(SUPPORT_VERDICT_FIELDS))
+        self.assertEqual(len(material["source_assessments"]), 1)
+        self.assertEqual(material["source_assessments"][0]["roles"], ["original_definition", "empirical_test"])
+        self.assertNotIn("rationale", material["source_assessments"][0])
+
+    def test_compact_routing_and_correction_material_keep_anchors_and_statements(self):
+        dossier = self.seed_dossier()
+        sources = [{"source_id": s.id, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text} for x in s.sections]}
+                   for s in self.index.sources]
+        receipts = support_receipts([f.model_dump() for f in dossier.findings], sources)
+        objection = ResearchObjection(id="obj_energy", rule="support", task_id="task_definition", criterion_index=0,
+                                      finding_ids=["f_energy"], evidence_refs=[self.ref], missing_evidence="",
+                                      reason="The clause about configurations is not covered.",
+                                      correction="Restrict the statement to the read passage.",
+                                      closure_condition="A passage covers the configuration clause.", resolution="revise")
+        review = SourceReview(issues=[SourceReviewIssue(finding_id="f_energy", reason="Not covered.", resolution="revise",
+                                                        search_queries=[], objection=objection)],
+                              limitations=["fixture"], finding_support=receipts["finding_support"],
+                              source_assessments=receipts["source_assessments"])
+        plan = QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+        answers = {"task_definition": answer_for(self.ref).model_dump(), "task_empirical": None}
+        material = compact_routing_material(plan.tasks, answers, review, dossier)
+        self.assertTrue(set(material["tasks"][0]) <= set(plan.tasks[0].model_dump()))
+        self.assertIn("acceptance", material["tasks"][0])
+        self.assertNotIn("queries", material["tasks"][0])
+        self.assertEqual(material["anchored_issues"][0]["closure_condition"], objection.closure_condition)
+        self.assertNotIn("correction", material["anchored_issues"][0])
+        self.assertEqual(set(material["answers"]["task_definition"]), {"summary", "limits", "finding_ids"})
+        self.assertIsNone(material["answers"]["task_empirical"])
+        self.assertEqual([set(f) for f in material["dossier"]["findings"]], [{"id", "kind", "statement"}] * len(dossier.findings))
+        self.assertEqual(material["dossier"]["coverage"], dossier.model_dump()["coverage"])
+        guidance = compact_review_instructions(review, {"f_energy"})
+        self.assertEqual(set(guidance), {"issues", "objection_checks", "finding_support"})
+        self.assertEqual([s["finding_id"] for s in guidance["finding_support"]], ["f_energy"])
+        self.assertEqual(guidance["issues"][0]["objection"]["id"], "obj_energy")
 
     def seed_dossier(self, *open_questions):
         dossier = fixtures.dossier_from_prompt(json.dumps({"topic": "Test topic", "retrieved_sources": [
@@ -470,13 +549,24 @@ class QuestionResearchTests(unittest.TestCase):
                 return ReopenPlan(routes=[dict(index=i, task_ids=["task_empirical"], reason="Only validation is challenged.")
                     for i in range(len(payload["objections"]))])
         self.hook = route
-        engine.reopen(dossier, SourceReview(issues=[], limitations=[]),
-                      {"blocking_gaps": ["An empirical check is missing."], "requirements": []})
+        # Two objections, one per routing part: the parts merge back into the audit's objection list.
+        with patch("podcast_automate.question_synthesis.ROUTING_PART_SIZE", 1):
+            engine.reopen(dossier, SourceReview(issues=[], limitations=[]),
+                          {"blocking_gaps": ["An empirical check is missing.", "A second empirical check is missing."],
+                           "requirements": []})
         self.assertEqual(engine.state["tasks"]["task_definition"], old)
         empirical = engine.state["tasks"]["task_empirical"]
         self.assertEqual(empirical["status"], "researching")
         self.assertIsNone(empirical["answer"])
+        self.assertEqual(len(empirical["reopenings"][0]["reason"]), 2)
         self.assertIn("empirical check", empirical["reopenings"][0]["reason"][0])
+        self.assertIn("second empirical check", empirical["reopenings"][0]["reason"][1])
+        audit = self.work / "question_research/synthesis/audit_00"
+        merged = json.loads((audit / "routes_merged.json").read_text(encoding="utf-8"))
+        self.assertEqual((merged["parts"], merged["objections_per_part"], [r["index"] for r in merged["routes"]["routes"]]),
+                         (2, [1, 1], [0, 1]))
+        self.assertTrue((audit / "routes_part_001.json").exists())
+        self.assertFalse((audit / "routes.json").exists())
 
     def test_full_audit_reopens_only_empirical_task_then_rechecks_before_publish(self):
         reviews, reviewed_tasks = [], []

@@ -11,7 +11,7 @@ from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.models import RunManifest
 from podcast_automate.question_budget import (DEFAULT_CALLS_PER_TASK, DEFAULT_SECONDS_PER_CALL, affordable_tasks,
-                                              expected_calls_per_task, plan_review_message, seconds_per_call,
+                                              expected_calls_per_task, plan_review_message, review_parts_per_round, seconds_per_call,
                                               write_calibration)
 from podcast_automate.question_scope import QuestionScopeReview
 from podcast_automate.research import run_research
@@ -419,6 +419,11 @@ class CalibrationTests(unittest.TestCase):
         self.assertIn("5 Aufrufe je Teilfrage, Erfahrungswert des Projekts", message)
         self.assertIn("pla approve <projekt> --research-plan run_x [--max-tasks N]", message)
         self.assertNotIn("reicht dafür voraussichtlich nicht", message)
+        self.assertNotIn("Modellfenster", message)
+        large = plan_review_message({**projection, "large_run": True, "review_parts_per_round": 41}, "run_x")
+        self.assertIn("Ab 6 Teilfragen passt das Dossier nicht mehr in ein Modellfenster", large)
+        self.assertIn("etwa 41 Prüfteile je Runde", large)
+        self.assertEqual((review_parts_per_round(5), review_parts_per_round(6), review_parts_per_round(16)), (0, 9, 23))
         short = plan_review_message({**projection, "tasks": 2, "projected_calls": 19, "within_limit": False,
                                      "projected_hours": round(19 * 270 / 3600, 1), "plan_caps": [1]})
         self.assertIn("2 Teilfragen, voraussichtlich 19 Aufrufe, etwa 1,4 Stunden", short)

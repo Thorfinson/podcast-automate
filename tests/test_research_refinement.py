@@ -124,6 +124,52 @@ class PatchTests(unittest.TestCase):
                               lambda p, s: empty_patch())
         self.assertEqual(raised.exception.code, "invalid_evidence")
 
+    def test_shared_source_limit_waits_for_the_final_pass_while_local_defects_are_repaired(self):
+        discovery = fixtures.discovery()
+        draft = self.dossier.model_copy(deep=True)
+        for finding in draft.findings:
+            finding.statement = " ".join(["Wort"] * 80)  # both cite src_a: 160 words together, limit 150
+        shared = [e for e in validate_dossier(draft, discovery, self.context) if "paraphrased findings together" in e]
+        self.assertEqual(len(shared), 1)
+        calls = []
+
+        def generate(prompt, schema):
+            calls.append(json.loads(prompt.splitlines()[-1]))
+            return empty_patch()
+        # A batch that owns only f_energy cannot honour the limit alone: strictly, that stops the run.
+        with self.assertRaises(AppError) as raised:
+            repair_references(self.folder, "strict", draft, discovery, self.context, self.config, generate,
+                              allowed_ids={"f_energy"})
+        self.assertEqual(raised.exception.code, "invalid_evidence")
+        # Deferred, the limit waits for the dossier-wide pass and no model call is made.
+        deferred = repair_references(self.folder, "block", draft, discovery, self.context, self.config, generate,
+                                     allowed_ids={"f_energy"}, defer_shared=True)
+        self.assertEqual(deferred, draft)
+        self.assertEqual(calls, [])
+        self.assertEqual(json.loads((self.folder / "block_deferred.json").read_text(encoding="utf-8")), {"errors": shared})
+        # A defect local to the batch is still repaired at once, with only that defect named.
+        draft.findings[0].evidence[0].excerpt = "Not a real quotation"
+
+        def fix_local(prompt, schema):
+            calls.append(json.loads(prompt.splitlines()[-1]))
+            fixed = draft.findings[0].model_copy(deep=True)
+            fixed.evidence[0].excerpt = "Models assign an energy"
+            return empty_patch(updates=[fixed])
+        result = repair_references(self.folder, "local", draft, discovery, self.context, self.config, fix_local,
+                                   allowed_ids={"f_energy"}, defer_shared=True)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([f["id"] for f in calls[0]["editable_findings"]], ["f_energy"])
+        self.assertEqual(calls[0]["instructions"]["reference_errors"], ["f_energy: excerpt is not verbatim in src_a#sec_a."])
+        self.assertEqual(validate_dossier(result, discovery, self.context), shared)
+        # The closing pass may edit every finding and clears the limit.
+
+        def shorten(prompt, schema):
+            calls.append(json.loads(prompt.splitlines()[-1]))
+            return empty_patch(updates=[f.model_copy(update={"statement": "Kurz."}) for f in result.findings])
+        final = repair_references(self.folder, "final", result, discovery, self.context, self.config, shorten)
+        self.assertEqual({f["id"] for f in calls[-1]["editable_findings"]}, {"f_energy", "f_untouched"})
+        self.assertEqual(validate_dossier(final, discovery, self.context), [])
+
     def test_changed_base_cannot_reuse_a_patch(self):
         generate = lambda p, s: empty_patch()
         kwargs = dict(targets={"f_energy"}, instructions="Clarify the explanation")

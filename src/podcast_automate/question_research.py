@@ -44,7 +44,7 @@ from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection
 from .question_dependencies import ordered_tasks, prerequisite_answers
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
 from .question_sources import restore_attempts
-from .question_synthesis import SynthesisMixin
+from .question_synthesis import PROMPT_GENERATION, SynthesisMixin
 from .research_evidence import support_errors
 from .research_gap_probe import coverage_terms, gap_id, probe
 from .research_ledger import (CALL_VERSION, VERSION, bootstrap_legacy, check_sources, load_index, public_ledger,
@@ -182,9 +182,10 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             if self.state is not None:
                 self.state["call_timings"] = self.timings
 
-    def call(self, folder, name, schema, prompt, *, search=False, validate=None):
+    def call(self, folder, name, schema, prompt, *, search=False, validate=None, tag=""):
+        """``tag`` marks a call whose prompt changed with a prompt generation (question_synthesis.PROMPT_GENERATION)."""
         return cached_call(folder, name, schema, prompt,
-            lambda p, s: self.generate(folder, name, p, s, f"{self.call_version}.{name}", search=search), validate=validate)
+            lambda p, s: self.generate(folder, name, p, s, f"{self.call_version}{tag}.{name}", search=search), validate=validate)
 
     def set_index(self, index):
         self.index = index
@@ -395,7 +396,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         plan, groups = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
         tasks = {t.id: pending_task() for t in plan.tasks}
         self.state = {"version": VERSION, "input_hash": binding, "plan": plan.model_dump(), "tasks": tasks,
-                      "evidence_version": EVIDENCE_VERSION,
+                      "evidence_version": EVIDENCE_VERSION, "prompt_generation": PROMPT_GENERATION,
                       "discovery": discovery.model_dump(), "seed_dossier": dossier.model_dump() if dossier else None,
                       "migration": migration, "gaps": gaps, "phase": "questions", "audit_round": 0,
                       "task_groups": groups,

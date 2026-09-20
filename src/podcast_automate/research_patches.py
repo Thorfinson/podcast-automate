@@ -270,9 +270,22 @@ def preserve_unrelated(before, after, targets):
                        code="invalid_research_patch", status="blocked")
 
 
-def repair_references(folder, name, dossier, discovery, context, config, generate, *, allowed_ids=None):
+def repair_references(folder, name, dossier, discovery, context, config, generate, *, allowed_ids=None,
+                      defer_shared=False):
+    """Repair the dossier's reference defects with one bounded patch, or none when there are none.
+
+    ``allowed_ids`` limits the findings a repair may touch. With ``defer_shared``, an error whose
+    repair would reach findings outside that set (a source-wide quote or paraphrase limit that the
+    findings of several batches share) is left for a later, dossier-wide pass instead of stopping
+    the run; the errors local to the allowed findings are repaired now and the deferred ones are
+    recorded in ``<name>_deferred.json``.
+    """
     from .research import validate_dossier
     errors = validate_dossier(dossier, discovery, context)
+    deferred = []
+    if errors and allowed_ids is not None and defer_shared:
+        deferred = [e for e in errors if not error_targets(dossier, [e], discovery)[0] <= set(allowed_ids)]
+        errors = [e for e in errors if e not in deferred]
     if errors:
         targets, questions = error_targets(dossier, errors, discovery)
         if allowed_ids is not None and not targets <= set(allowed_ids):
@@ -288,7 +301,7 @@ def repair_references(folder, name, dossier, discovery, context, config, generat
             passages = context
 
         def repaired(result):
-            remaining = validate_dossier(result, discovery, context)
+            remaining = [e for e in validate_dossier(result, discovery, context) if e not in deferred]
             if remaining:
                 write_json(folder / f"{name}_errors.json", {"errors": remaining})
                 raise AppError("Die gezielte Dossierkorrektur enthält noch ungültige Quellenbezüge; Prüfdetails sind gespeichert. "
@@ -297,9 +310,11 @@ def repair_references(folder, name, dossier, discovery, context, config, generat
         dossier = edit_dossier(folder, name, dossier, discovery, context, config, generate,
             targets=targets, instructions={"reference_errors": errors}, extra_context=passages,
             allow_additions=False, coverage_ids=questions, allow_questions=False, check=repaired)
-        errors = validate_dossier(dossier, discovery, context)
+        errors = [e for e in validate_dossier(dossier, discovery, context) if e not in deferred]
     if errors:
         write_json(folder / f"{name}_errors.json", {"errors": errors})
         raise AppError("Die gezielte Dossierkorrektur enthält noch ungültige Quellenbezüge; Prüfdetails sind gespeichert.",
                        code="invalid_evidence", status="blocked")
+    if deferred:
+        write_json(folder / f"{name}_deferred.json", {"errors": deferred})
     return dossier
