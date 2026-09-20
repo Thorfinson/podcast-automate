@@ -1013,8 +1013,6 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
       ${(row.findings||[]).map(f=>`<p>${escape(f.statement)}</p>`).join("")}
       ${row.sources?.length?`<p>Gelesene Belege:</p><ul>${row.sources.map(source=>`<li>${markdownLink(escape(source.title),source.url)}${source.page?`, Seite ${Number(source.page)}`:""}</li>`).join("")}</ul>`:""}
       ${row.limits?.length?`<p>Grenzen der Antwort:</p><ul>${row.limits.map(l=>`<li>${escape(l)}</li>`).join("")}</ul>`:""}`:"";
-    const searchBlocked=row.outcome==="budget_block"&&/Suchbudget|Suchrunden/.test(row.reason||"");
-    const gapActions=row.status==="blocked"&&!row.accepted_gap&&!active?`<div class="actions"><button class="secondary small" data-action="accept-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Als Lücke akzeptieren und ohne diese Teilfrage abschließen</button>${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`:"";
     return `<details data-research-question="${escape(row.id)}"${opened.has(row.id)?" open":""}>
       <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":activeIds.includes(row.id)?"●":"○"} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":(states[row.status]||row.status))}</summary>
       <p>${escape(row.activity)}</p>
@@ -1022,7 +1020,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
       ${row.support?`<p class="hint">Textbelege vorhanden · Inhalt automatisch je Befund geprüft · ${row.support.findings.filter(f=>f.empirical_status==="independently_tested").length} Befunde mit dokumentierter unabhängiger empirischer Prüfung</p>`:""}
       ${row.outcome?`<p class="hint">Ergebnis: ${escape(({supported_answer:"Belegte Antwort",supported_uncertainty:"Belegte wissenschaftliche Unsicherheit",access_block:"Quelle nicht zugänglich",extraction_block:"Text nicht zuverlässig extrahiert",search_block:"Suche ohne ausreichenden Abschluss",budget_block:"Recherchebudget ausgeschöpft",evidence_block:"Beleg fehlt",prerequisite_block:"Voraussetzung noch offen"})[row.outcome]||row.outcome)}</p>`:""}
       <p>Abschlusskriterien:</p><ul>${(row.acceptance||[]).map(c=>`<li>${escape(c)}</li>`).join("")}</ul>
-      ${row.reason?`<p><strong>Noch offen:</strong> ${escape(row.reason)}</p>`:""}${row.reopenable?`<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ holt das nach.</p>`:""}${row.accepted_gap?`<p class="hint">Diese Teilfrage bleibt im Dossier als dokumentierte Lücke${row.accepted_reason?`: ${escape(row.accepted_reason)}`:"."}</p>`:""}${gapActions}${answer}</details>`;
+      ${row.reason?`<p><strong>Noch offen:</strong> ${escape(row.reason)}</p>`:""}${row.reopenable?`<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ holt das nach.</p>`:""}${row.accepted_gap?`<p class="hint">Diese Teilfrage bleibt im Dossier als dokumentierte Lücke${row.accepted_reason?`: ${escape(row.accepted_reason)}`:"."}</p>`:""}${answer}</details>`;
   }).join("");
   return `<section class="research-questions">
     <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
@@ -1055,10 +1053,31 @@ function renderPlanReview(job, runId) {
     <div class="actions"><button data-action="approve-plan" data-run-id="${escape(runId)}">Rechercheplan freigeben</button></div>
     <p class="hint">Ohne Freigabe wird kein Modellaufruf verbraucht. Mit einer Obergrenze wird der Plan einmal neu zugeschnitten (Planungsaufrufe) und erneut zur Freigabe vorgelegt; die Freigabe gilt immer genau für den angezeigten Plan.</p></section>`;
 }
+function gapActionsFor(row, runId, searchLimit) {
+  const searchBlocked=row.outcome==="budget_block"&&/Suchbudget|Suchrunden/.test(row.reason||"");
+  return `<div class="actions"><input id="gap-reason-${escape(row.id)}" placeholder="Begründung (optional)" aria-label="Begründung für die akzeptierte Lücke"><button class="secondary small" data-action="accept-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Als Lücke akzeptieren</button>${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`;
+}
+// Every open decision stands in one card above the ledger with its buttons visible: nothing to expand, no dialog.
+function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimit) {
+  const ledger=j.progress.research_questions, rows=ledger?.questions||[], runId=r?.run_id||"";
+  if(active||!rows.length)return "";
+  const open=rows.filter(q=>q.status==="blocked"&&!q.accepted_gap), accepted=rows.filter(q=>q.accepted_gap);
+  if(!open.length&&!accepted.length)return "";
+  const names=new Map(rows.map(q=>[q.id,q.question]));
+  const outcomes={extraction_block:"Quelle nicht lesbar",search_block:"Keine neuen Belege gefunden",evidence_block:"Beleg fehlt",budget_block:"Recherchebudget ausgeschöpft",access_block:"Quelle nicht zugänglich",prerequisite_block:"Voraussetzung offen"};
+  const item=q=>{
+    const deps=(q.depends_on||[]).filter(id=>rows.some(x=>x.id===id&&x.status!=="verified")).map(id=>names.get(id)||id);
+    const attempts=Number(q.web_attempts||0);
+    return `<li><strong>${escape(q.question)}</strong><p class="hint">${escape(outcomes[q.outcome]||q.outcome||"Blockiert")}${attempts?` · ${attempts} ${attempts===1?"Websuche":"Websuchen"}`:" · noch nicht bearbeitet"}${deps.length?` · hängt an: ${deps.map(escape).join("; ")}`:""}</p>${q.reason?`<p class="hint">${escape(q.reason)}</p>`:""}${q.reopenable?'<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ führt diese Websuche aus.</p>':gapActionsFor(q,runId,searchLimit)}</li>`;
+  };
+  const closing=Number(ledger.budget_projection?.closing_calls||0);
+  const intro=open.length?`${open.length===1?"Eine Teilfrage ist":`${open.length} Teilfragen sind`} blockiert. ${reopenable?"„Fortsetzen“ holt zuerst die fehlende Websuche nach.":`Entscheide je Frage; danach schließt „Fortsetzen“ das Dossier mit ${Number(ledger.closed)} geprüften Antworten ab${closing?` (${closing} Aufrufe)`:""}.`}`:"Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ schließt das Dossier ab.";
+  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p><ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?'<div class="actions"><button data-action="resume">Fortsetzen</button></div>':""}</section>`;
+}
 // The research page owns the decision and the ledger; the drawer only carries telemetry.
-function renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable) {
+function renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable,resumable) {
   const p=j.progress, ledger=p.research_questions, quality=p.research_quality, runId=r?.run_id||"";
-  let html=renderPlanReview(j,runId);
+  let html=renderPlanReview(j,runId)+renderResearchDecisions(j,r,active,reopenable,resumable,p.search_round_limit);
   if(ledger){
     if(reopenable)html+=`<p>${Number(ledger.reopenable)} blockierte ${Number(ledger.reopenable)===1?"Teilfrage hat":"Teilfragen haben"} das Web noch nicht durchsucht. „Fortsetzen“ holt diese Websuche nach; erst danach gilt eine Frage als konkrete Lücke. Fertige Antworten bleiben gespeichert.</p>`;
     else if(researchBlocked)html+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht. Eine blockierte Teilfrage kann als Lücke akzeptiert werden; das Dossier wird dann ohne sie abgeschlossen und nennt die Lücke ausdrücklich.</p><button class="secondary small" data-step="${PAGE.brief}">Auftrag ansehen</button>`;
@@ -1143,22 +1162,24 @@ function renderJob() {
   const foundationResearch=active&&j?.progress?.phase==="foundation_research";
   const planReview=!active&&!!j?.progress?.plan_review?.awaiting;
   const planPending=planReview&&!j.progress.plan_review.approved;
-  const title=designBlocked?"Lehrkonzept angehalten: Erklärung noch unvollständig":planReview?(planPending?"Wartet auf Freigabe des Rechercheplans":"Rechercheplan freigegeben – bereit zum Fortsetzen"):foundationResearch?"Fehlende Erklärgrundlagen werden automatisch recherchiert":missingFoundation?"Automatische Recherche konnte noch nicht abgeschlossen werden":active?(isScript?"Ausarbeitung läuft":actionNames[j.action]):({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
   const researchBlocked=!active&&j?.progress?.research_questions?.phase==="blocked";
   // Blocked questions that never searched the web get that search on resume; only then is a block a gap to accept.
   const reopenable=researchBlocked&&Number(j?.progress?.research_questions?.reopenable||0)>0;
+  const openBlocked=(j?.progress?.research_questions?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap).length;
+  const decisionNeeded=researchBlocked&&!reopenable&&openBlocked>0;
+  const title=decisionNeeded?`${openBlocked} ${openBlocked===1?"Teilfrage wartet":"Teilfragen warten"} auf deine Entscheidung`:designBlocked?"Lehrkonzept angehalten: Erklärung noch unvollständig":planReview?(planPending?"Wartet auf Freigabe des Rechercheplans":"Rechercheplan freigegeben – bereit zum Fortsetzen"):foundationResearch?"Fehlende Erklärgrundlagen werden automatisch recherchiert":missingFoundation?"Automatische Recherche konnte noch nicht abgeschlossen werden":active?(isScript?"Ausarbeitung läuft":actionNames[j.action]):({completed:"Arbeitsschritt abgeschlossen",review_ready:"Inhaltsverzeichnis bereit zur Durchsicht",interrupted:"Auftrag angehalten",waiting_for_quota:"Anbieterlimit erreicht",blocked:"Dieser Schritt braucht Aufmerksamkeit",failed:"Auftrag fehlgeschlagen",pending:"Auftrag wartet"}[state]||"Gespeicherter Auftrag");
   // A resume without the approval would only stop at the gate again; the approval button replaces it until then.
   const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked&&(!researchBlocked||reopenable)&&!planPending;
   const message=designBlocked&&j?.progress?.review_issues?.length?"Die automatische Überarbeitung hat noch nicht alle Kritikpunkte gelöst. Der bisherige Stand ist gespeichert.":missingFoundation&&/research_needed\.md/.test(j?.message||"")?"Der Abgleich zwischen Quellen und Lehrkonzept ist noch offen. Der bisherige Auftrag bleibt gespeichert.":j?.message;
   const destination=state==="completed"?runPage(r):jobPage();
   const links=["Auftrag ansehen","Recherche ansehen","Inhaltsverzeichnis prüfen","Ausarbeitung ansehen","Skripte lesen","Audio ansehen"];
-  const tone=active?"running":planPending||state==="review_ready"?"decision":["blocked","failed","interrupted","waiting_for_quota","pending"].includes(state)?"blocked":"done";
+  const tone=active?"running":planPending||decisionNeeded||state==="review_ready"?"decision":["blocked","failed","interrupted","waiting_for_quota","pending"].includes(state)?"blocked":"done";
   const calls=Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0?` · Aufrufe ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}`:"";
   const meta=active&&j?.started_at?` · seit ${elapsedText(j.started_at)}${calls}`:"";
   bar.innerHTML=`<span class="job-dot ${tone}" aria-hidden="true"></span><span class="job-text"><strong>${escape(title)}</strong>${meta}</span>`+
     (active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':"")+
     (destination!==null&&destination!==undefined&&destination!==step?`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`:"")+drawerToggle();
-  if(research)research.innerHTML=j?.progress?.phase==="research"?renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable):"";
+  if(research)research.innerHTML=j?.progress?.phase==="research"?renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable,resumable):"";
   let body="";
   if(message)body+=`<p>${escape(message)}</p>`;
   if(active)body+=`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`;
@@ -1338,8 +1359,7 @@ document.addEventListener("click",event=>{
     if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
     if(action==="accept-gap"){
-      const reason=window.prompt("Warum darf diese Teilfrage im Dossier als Lücke bleiben? (optional)","");
-      if(reason===null)return;
+      const reason=$("gap-reason-"+button.dataset.taskId)?.value||"";
       await api(`/api/projects/${project.id}/approve`,{kind:"gap",run_id:button.dataset.runId,task_id:button.dataset.taskId,reason});
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Lücke akzeptiert. „Fortsetzen“ schließt das Dossier ohne diese Teilfrage ab.","ok");return;
     }

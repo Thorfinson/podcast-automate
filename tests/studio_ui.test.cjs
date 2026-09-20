@@ -1437,3 +1437,30 @@ test('sending a message scrolls the conversation to its newest reply and clears 
   assert.equal(app.run('window.scrolledToEnd'),true);
   assert.equal(app.elements.get('chat-message').value,'');
 });
+
+test('blocked questions are decided from a card above the ledger without expanding a row or a dialog',()=>{
+  const app=studio();
+  const ledger={closed:2,total:4,accepted:0,blocked:2,reopenable:0,phase:'blocked',active_task:null,
+    budget_projection:{feasible:true,used:10,remaining:20,minimum_remaining_calls:3,closing_calls:3,expected_remaining_calls:3,expected_calls_per_task:5},
+    questions:[{id:'root',question:'Wurzelfrage <x>',status:'blocked',outcome:'search_block',web_attempts:1,reason:'Keine Belege.',activity:'x',steps:6,read_sections:2,acceptance:['a'],depends_on:[]},
+      {id:'child',question:'Folgefrage',status:'blocked',outcome:'prerequisite_block',web_attempts:0,reason:'A required prerequisite has not passed evidence review.',activity:'y',steps:0,read_sections:0,acceptance:['b'],depends_on:['root']},
+      {id:'ok',question:'Geklärt',status:'verified',answer:'A',findings:[],sources:[],limits:[],activity:'z',steps:2,read_sections:3,acceptance:['c'],depends_on:[]}]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12}}};step=PAGE.research;render();`);
+  const page=app.elements.get('research-progress').innerHTML;
+  const card=page.indexOf('class="panel decision-card"'), rows=page.indexOf('class="research-questions"');
+  assert.ok(card>-1&&rows>card,'the decision card precedes the ledger');
+  assert.ok(page.includes('2 Teilfragen sind blockiert'));
+  assert.ok(page.includes('Wurzelfrage &lt;x&gt;'));
+  assert.ok(page.includes('id="gap-reason-root"'));
+  assert.ok(page.includes('data-action="accept-gap" data-run-id="run_x" data-task-id="child"'));
+  assert.ok(page.includes('hängt an: Wurzelfrage &lt;x&gt;'));
+  assert.ok(!page.includes('>Fortsetzen<'));
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('2 Teilfragen warten auf deine Entscheidung'));
+  assert.ok(!source.includes('window.prompt'),'no modal dialog stands between the user and the decision');
+  app.run("for(const q of project.job.progress.research_questions.questions)if(q.status==='blocked'){q.accepted_gap=true;q.accepted_reason='ok';}const l=project.job.progress.research_questions;l.accepted=2;l.blocked=0;l.phase='questions';render();");
+  const decided=app.elements.get('research-progress').innerHTML;
+  assert.ok(decided.includes('Jede blockierte Teilfrage ist entschieden'));
+  assert.ok(decided.includes('data-action="resume"'));
+  assert.ok(!decided.includes('data-action="accept-gap"'));
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
