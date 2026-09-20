@@ -7,7 +7,8 @@ from pathlib import Path
 from podcast_automate.errors import AppError
 from podcast_automate.research import validate_dossier
 from podcast_automate.research_models import SourceDocument, SourceIndex, SourceSection
-from podcast_automate.research_patches import DossierPatch, apply_patch, edit_dossier, repair_references
+from podcast_automate.research_patches import (DossierPatch, apply_patch, cached_call, edit_dossier,
+                                               repair_references)
 from podcast_automate.research_reader import SourceReader
 from podcast_automate.research_tasks import ReaderWindow
 from podcast_automate.research_retrieval import merge_context, references
@@ -169,6 +170,32 @@ class PatchTests(unittest.TestCase):
         final = repair_references(self.folder, "final", result, discovery, self.context, self.config, shorten)
         self.assertEqual({f["id"] for f in calls[-1]["editable_findings"]}, {"f_energy", "f_untouched"})
         self.assertEqual(validate_dossier(final, discovery, self.context), [])
+
+    def test_rejections_of_an_earlier_prompt_do_not_count_against_the_corrected_one(self):
+        calls = []
+
+        def generate(prompt, schema):
+            calls.append(prompt)
+            return empty_patch()
+
+        def reject_all(value, final):
+            raise AppError("Synthetic rejection.", code="invalid_evidence_review", status="blocked")
+        retries = []
+        with self.assertRaises(AppError) as raised:
+            cached_call(self.folder, "routes", DossierPatch, "Old prompt\n{}", generate, validate=reject_all,
+                        on_retry=retries.append)
+        self.assertIn("2 Mal mit Korrekturhinweis wiederholt", str(raised.exception))
+        self.assertEqual((len(calls), retries), (3, [2, 3]))
+        self.assertTrue((self.folder / "routes_rejected_02.json").exists())
+        # A corrected prompt starts afresh; the old rejections stay readable under a new name.
+        result = cached_call(self.folder, "routes", DossierPatch, "Corrected prompt\n{}", generate)
+        self.assertEqual(result, empty_patch())
+        self.assertEqual(len(calls), 4)
+        self.assertIn("Corrected prompt", calls[-1])
+        self.assertNotIn("Synthetic rejection", calls[-1])
+        self.assertEqual(sorted(p.name for p in self.folder.glob("routes_*.json")),
+                         ["routes_superseded_00_00.json", "routes_superseded_00_01.json", "routes_superseded_00_02.json"])
+        self.assertTrue((self.folder / "routes.json").exists())
 
     def test_changed_base_cannot_reuse_a_patch(self):
         generate = lambda p, s: empty_patch()

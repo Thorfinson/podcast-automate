@@ -1469,3 +1469,21 @@ test('a requested new attempt shows in place, keeps the other decision open and 
   assert.deepEqual(JSON.parse(request.options.body),{kind:'retry',run_id:'run_x',task_id:'other',hint:'Seite 35 bis 39 als Text'});
   assert.equal(request.options.headers['X-Studio-Token'],'csrf');
 });
+
+test('the research card names the audit round and the job names the next step',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{id:'j1',status:'running',action:'research',run:{stages:{}},progress:{phase:'research',activity:'Zuordnung der Einwände: Teil 1 von 5',
+    research_questions:{closed:16,total:18,phase:'questions',audit_round:1,reopened:12,questions:[]}}}};renderJob();`);
+  let html=jobView(app);
+  assert.ok(html.includes('Prüfrunde 2 · 12 Teilfragen wieder geöffnet'));
+  assert.ok(html.includes('Nächster Schritt:'));
+  assert.ok(html.includes('Nichts zu tun, der Lauf arbeitet (Zuordnung der Einwände: Teil 1 von 5)'));
+  app.run(`project.job.status='failed';project.job.run={stages:{dossier:{status:'failed',error:{code:'timeout',message:'Zeitlimit'}}}};renderJob();`);
+  assert.ok(jobView(app).includes('Fortsetzen wiederholt den unterbrochenen Aufruf'));
+  app.run(`project.job.status='blocked';project.job.run={stages:{dossier:{status:'blocked',error:{code:'prompt_too_large',message:'zu groß'}}}};renderJob();`);
+  assert.ok(jobView(app).includes('passt nicht in das Modellfenster'));
+  app.run(`project.job.run={stages:{dossier:{status:'blocked',error:{code:'research_budget_insufficient',message:'Limit'}}}};renderJob();`);
+  assert.ok(jobView(app).includes('Aufruflimit erhöhen, dann fortsetzen'));
+  app.run(`project.job.progress.research_questions={closed:1,total:2,phase:'questions',audit_round:0,reopened:0,questions:[]};project.job.run={stages:{}};renderJob();`);
+  assert.ok(!jobView(app).includes('Prüfrunde'));
+});

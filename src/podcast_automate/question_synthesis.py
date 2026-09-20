@@ -88,8 +88,8 @@ def source_identity(context):
 # criteria, the answer's summary, the finding's statement, the objection's anchor. Never receipts.
 ROUTING_TASK_FIELDS = ("id", "question", "kind", "acceptance", "question_ids", "requirement_ids", "gap_ids",
                        "finding_ids", "depends_on")
-ROUTING_OBJECTION_FIELDS = ("id", "rule", "task_id", "criterion_index", "finding_ids", "reason", "closure_condition",
-                            "resolution")
+ROUTING_OBJECTION_FIELDS = ("id", "rule", "task_id", "criterion_index", "finding_ids", "evidence_refs", "missing_evidence",
+                            "reason", "closure_condition", "resolution")
 
 
 # Objections routed per call when there are many: the answer names an anchor per routed task and
@@ -119,8 +119,11 @@ def compact_routing_material(tasks, answers, review, dossier):
             "answers": {tid: None if not answer else {"summary": answer.get("summary"), "limits": answer.get("limits", []),
                                                        "finding_ids": [f["id"] for f in answer.get("findings", [])]}
                         for tid, answer in answers.items()},
+            # Every anchor must cite read references: the findings keep theirs, without the excerpts.
             "dossier": {"topic": data["topic"],
-                        "findings": [{k: f[k] for k in ("id", "kind", "statement")} for f in data["findings"]],
+                        "findings": [{**{k: f[k] for k in ("id", "kind", "statement")},
+                                      "evidence": [{"reference": e["reference"]} for e in f["evidence"]]}
+                                     for f in data["findings"]],
                         "coverage": data["coverage"], "open_questions": data["open_questions"],
                         "synthesis": [{k: r[k] for k in ("id", "finding_ids", "relation", "resolution")}
                                       for r in data["synthesis"]]}}
@@ -230,6 +233,7 @@ class SynthesisMixin:
                 while start + size < min(len(dirty), start + SEED_BATCH_SIZE) and fits(dirty[start:start + size + 1]):
                     size += 1
                 batch = dirty[start:start + size]
+                self.save(f"Einarbeitung wieder geöffneter Antworten: {start + size} von {len(dirty)}")
                 question_ids = {qid for item in batch for qid in item["task"]["question_ids"]}
                 batch_ids = {item["task"]["id"] for item in batch}
                 targets = editable_findings(owners, batch_ids, self.state["dirty_tasks"])
@@ -292,6 +296,7 @@ class SynthesisMixin:
             first += 1
         opening = answers[:first]
         opening_context = passages(opening)
+        self.save(f"Dossier wird aus den ersten {len(opening)} von {len(answers)} geprüften Antworten aufgebaut")
         dossier = self.call(folder, "dossier_batch_000", ResearchDossier,
                             text + "\n" + json.dumps(opening_payload(opening), ensure_ascii=False),
                             validate=lambda candidate, final: validate_synthesis(candidate, opening_context), tag=self.prompt_tag)
@@ -334,6 +339,7 @@ class SynthesisMixin:
             targets = editable_findings(owners, batch_ids, dirty)
             before = dossier
             name = f"dossier_batch_{index:03d}"
+            self.save(f"Einarbeitung: Block {index} mit {len(batch)} Antworten, danach noch {len(remaining) - start - size} offen")
             dossier = edit_dossier(folder, name, dossier, discovery, context, self.config,
                 lambda p, s, name=name: self.generate(folder, name, p, s, f"{VERSION}{self.prompt_tag}.compose_patch"),
                 targets=targets, instructions=rules_for(batch), extra_context=passages(batch), coverage_ids=question_ids)
@@ -349,6 +355,7 @@ class SynthesisMixin:
         # Source-wide quote and paraphrase limits are the one rule only the sum of the batches can
         # break. Every finding is new here, so the closing pass may edit any of them, as the
         # single-call composition does.
+        self.save("Belegkorrektur über das ganze Dossier läuft")
         dossier = repair_references(folder, "dossier_batches_references", dossier, discovery, context, self.config,
             lambda p, s: self.generate(folder, "dossier_batches_references", p, s, f"{VERSION}.references"))
         write_json(folder / "dossier_batches.json", {"opening": sorted(opening_ids), "batches": index - 1,
@@ -439,6 +446,7 @@ class SynthesisMixin:
                 payload.update(compact_assessment_material(dossier, review))
             if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
                 payload["sources"] = source_identity(payload["sources"])
+        self.save("Bewertung des Gesamtdossiers gegen alle Leitfragen läuft")
         assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
                                validate=lambda candidate, final: check_assessment(self.config, dossier, candidate))
         report = quality_report(self.config, dossier, discovery, self.index, assessment, (i.reason for i in review.issues),
@@ -500,6 +508,7 @@ class SynthesisMixin:
         reviews = []
         for index, part in enumerate(parts):
             payload = part_payload(part)
+            self.save(f"Quellenprüfung in Teilen: Teil {index + 1} von {len(parts)} mit {len(part)} Befunden")
             reviews.append(self.call(folder, f"grounding_{revision}_part_{index:03d}", SourceReview,
                 text + PART_NOTE + "\n" + json.dumps(payload, ensure_ascii=False),
                 validate=lambda review, final, part=part, objections=payload["open_objections"]:
@@ -615,10 +624,12 @@ class SynthesisMixin:
             # Many objections: routed in parts over the same material, merged into one plan that is
             # checked as a whole, the way a split review merges.
             parts = split_objections(objections, ROUTING_PART_SIZE)
-            plans = [self.call(folder, f"routes_part_{number:03d}", ReopenPlan,
-                               text + ROUTING_PART_NOTE + "\n" + json.dumps({**payload, "objections": part}, ensure_ascii=False),
-                               validate=lambda plan, final, part=part: well_formed(plan, final, objections=part))
-                     for number, part in enumerate(parts)]
+            plans = []
+            for number, part in enumerate(parts):
+                self.save(f"Zuordnung der Einwände: Teil {number + 1} von {len(parts)} mit {len(part)} Einwänden")
+                plans.append(self.call(folder, f"routes_part_{number:03d}", ReopenPlan,
+                                       text + ROUTING_PART_NOTE + "\n" + json.dumps({**payload, "objections": part}, ensure_ascii=False),
+                                       validate=lambda plan, final, part=part: well_formed(plan, final, objections=part)))
             routes = merge_route_plans(plans, ROUTING_PART_SIZE)
             well_formed(routes, True)
             write_json(folder / "routes_merged.json", {"parts": len(parts), "objections_per_part": [len(p) for p in parts],
