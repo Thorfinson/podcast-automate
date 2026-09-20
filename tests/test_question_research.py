@@ -155,6 +155,35 @@ class QuestionResearchTests(unittest.TestCase):
             self.engine().run(self.discovery, self.index)
             self.assertEqual(len(self.calls), count, "a replay makes no calls")
 
+    def test_answers_beyond_one_output_are_composed_in_parts_even_when_the_prompt_fits(self):
+        # The prompt budget is untouched: the answers alone bound the opening batch, because the
+        # dossier a call writes grows with them and the CLI cuts an answer at its output cap.
+        openings = []
+
+        def two_tasks(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                return decision("answer", answer=answer_for(self.ref))
+            if schema is ResearchDossier:
+                openings.append([item["task"]["id"] for item in payload["verified_answers"]])
+        self.hook = two_tasks
+        with patch("podcast_automate.question_synthesis.ANSWER_BUDGET_CHARS", 1):
+            engine = self.engine()
+            outputs = engine.run(self.discovery, self.index)
+            self.assertTrue(all(p.exists() for p in outputs))
+            self.assertEqual(engine.state["phase"], "completed")
+            schemas = [c[0] for c in self.calls]
+            self.assertEqual((schemas.count(ResearchDossier), schemas.count(DossierPatch)), (1, 1))
+            self.assertEqual(openings, [["task_definition"]])
+            audit = self.work / "question_research/synthesis/audit_00"
+            self.assertFalse((audit / "dossier.json").exists())
+            batches = json.loads((audit / "dossier_batches.json").read_text(encoding="utf-8"))
+            self.assertEqual((batches["opening"], batches["batches"], batches["answer_budget_chars"]), (["task_definition"], 1, 1))
+            count = len(self.calls)
+            self.engine().run(self.discovery, self.index)
+            self.assertEqual(len(self.calls), count, "a replay makes no calls")
+
     def seed_dossier(self, *open_questions):
         dossier = fixtures.dossier_from_prompt(json.dumps({"topic": "Test topic", "retrieved_sources": [
             {"source_id": s.id, "url": s.final_url, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text}
