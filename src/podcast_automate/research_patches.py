@@ -87,17 +87,23 @@ def call_signature(folder, name, schema, prompt):
     return digest({"prompt": attempt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
 
 
-def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=True):
+def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=True, on_retry=None):
     """Return the validated receipt for this exact prompt, calling the model only when none exists.
 
     ``validate(value, final)`` raises ``AppError`` for a deterministic rejection; ``final`` is true on
     the last permitted attempt so advisory checks can stand down. A saved receipt that no longer passes
     validation is retired as a rejection and the call is repeated when ``heal`` is set; otherwise the
-    stored rejection is raised unchanged.
+    stored rejection is raised unchanged. ``on_retry(number)`` is told before every repeated attempt.
     """
     path = folder / f"{name}.json"
+    base = digest({"prompt": prompt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
     while True:
         rejections = rejected_receipts(folder, name)
+        if rejections and rejections[0].get("input_hash") != base:
+            # Rejections answered an earlier prompt text (a code or prompt change since): they do not
+            # count against this prompt and stay readable under a new name.
+            supersede_rejections(folder, name, len(rejections))
+            rejections = []
         attempt = rejected_prompt(prompt, rejections)
         signature = digest({"prompt": attempt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
         if path.exists():
@@ -123,6 +129,8 @@ def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=T
             raise AppError(f"{last['message']} Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; "
                            "die abgewiesenen Antworten sind gespeichert.", code=last["code"], status="blocked")
         try:
+            if rejections and on_retry:
+                on_retry(len(rejections) + 1)
             value = generate(attempt, schema)
         except AppError as exc:
             if exc.code != "rejected_output" or "payload" not in exc.details:
@@ -139,6 +147,16 @@ def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=T
                 continue
         write_json(path, {"input_hash": signature, "sha256": digest(value.model_dump()), "value": value.model_dump()})
         return value
+
+
+def supersede_rejections(folder, name, count):
+    """Move the rejections of an earlier prompt aside, keeping them: ``<name>_superseded_<k>_<n>.json``."""
+    generation = 0
+    while (folder / f"{name}_superseded_{generation:02d}_00.json").exists():
+        generation += 1
+    for number in range(count):
+        path = folder / f"{name}_rejected_{number:02d}.json"
+        path.rename(folder / f"{name}_superseded_{generation:02d}_{number:02d}.json")
 
 
 def _reject(folder, name, number, signature, error, value):

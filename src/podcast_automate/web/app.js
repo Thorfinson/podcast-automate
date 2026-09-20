@@ -978,6 +978,45 @@ function renderModelTrace(job) {
     <p class="hint">Neue Textfragmente und öffentliche Reasoning-Zusammenfassungen erscheinen während des Aufrufs. Aussagen des Modells sind noch ungeprüft.</p>
     ${insight?`<details class="model-events"><summary>${active?"Aktueller Rechercheauftrag":"Letzter Rechercheauftrag"}</summary>${insight}</details>`:(current?`<p class="trace-focus">${escape(current.question)}</p><p>${escape(current.activity)}</p>`:"")}${renderActiveTasks(ledger)}</section>`;
 }
+function researchRound(ledger) {
+  // The round counts from the first whole-dossier audit; reopened questions belong to a later round.
+  const round=Number(ledger?.audit_round||0), reopened=Number(ledger?.reopened||0);
+  if(!(round>0||reopened>0||["synthesis","audit"].includes(ledger?.phase)))return "";
+  return `<p><strong>Prüfrunde ${round+1}${reopened>0?` · ${reopened} ${reopened===1?"Teilfrage":"Teilfragen"} wieder geöffnet`:""}</strong></p>`;
+}
+
+const NEXT_STEPS={
+  timeout:"Fortsetzen wiederholt den unterbrochenen Aufruf; er wurde nicht angerechnet. Bleibt es dabei, ist der Auftrag zu groß für einen Aufruf.",
+  stall:"Fortsetzen wiederholt den hängenden Aufruf; er wurde nicht angerechnet.",
+  prompt_too_large:"Der Prompt passt nicht in das Modellfenster. Fortsetzen hilft erst nach einer Anpassung des Laufs oder mit einem Anbieter mit größerem Fenster.",
+  claude_output_limit:"Die Antwort war länger, als ein Aufruf liefern kann. Fortsetzen wiederholt ihn unverändert; der Schritt braucht kleinere Teile.",
+  research_budget_insufficient:"Aufruflimit erhöhen, dann fortsetzen.",
+  research_plan_review:"Rechercheplan freigeben, dann fortsetzen.",
+  research_questions_blocked:"Blockierte Teilfragen als Lücke akzeptieren oder erneut versuchen lassen, dann fortsetzen.",
+  claude_quota_exhausted:"Warten, bis das Kontingent wieder frei ist, dann fortsetzen; bei automatischer Abo-Wahl übernimmt Codex.",
+  subscriptions_exhausted:"Warten, bis ein Abo wieder Kontingent hat, dann fortsetzen.",
+  waiting_for_quota:"Warten, bis das Kontingent wieder frei ist, dann fortsetzen.",
+  invalid_evidence_review:"Das Modell hat alle Anläufe für diesen Schritt verbraucht. Fortsetzen ohne Änderung hält hier wieder an; die abgewiesenen Antworten liegen im Laufordner.",
+  rejected_output:"Das Modell hat alle Anläufe für diesen Schritt verbraucht. Fortsetzen ohne Änderung hält hier wieder an.",
+  invalid_evidence:"Die Belegkorrektur konnte die Quellenbezüge nicht in Ordnung bringen; Prüfdetails liegen im Laufordner. Fortsetzen wiederholt den Schritt.",
+  review_disagreement:"Ein Prüfeinwand braucht deine Klärung; keine weitere Suche ohne Entscheidung.",
+  authentication_required:"Anmeldung erneuern (claude auth login), dann fortsetzen.",
+  claude_failed:"Fortsetzen wiederholt den Aufruf. Bleibt es dabei, Verbindung und CLI-Konfiguration prüfen.",
+  interrupted:"Fortsetzen macht an der unterbrochenen Stelle weiter; alles Fertige bleibt gespeichert.",
+};
+
+function nextStep(job, run, active, state) {
+  if(active){
+    const activity=job?.progress?.activity;
+    return `Nichts zu tun, der Lauf arbeitet${activity?` (${activity})`:""}. Ein Modellaufruf dauert meist 3 bis 8 Minuten; Zusammenstellung und Prüfung eines großen Dossiers laufen in vielen Teilen und können Stunden dauern.`;
+  }
+  const error=Object.values(run?.stages||{}).map(v=>v?.error).find(e=>e?.code);
+  const code=error?.code||"";
+  if(NEXT_STEPS[code])return NEXT_STEPS[code];
+  if(["blocked","failed","interrupted","waiting_for_quota"].includes(state))return NEXT_STEPS[state]||"Fortsetzen wiederholt den unterbrochenen Schritt; alles Fertige bleibt gespeichert.";
+  return "";
+}
+
 function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="", searchLimit=0) {
   const budget=ledger.budget_projection;
   const expected=Number.isSafeInteger(budget?.expected_remaining_calls)?` Erfahrungsgemäß etwa ${Number(budget.expected_remaining_calls)} Aufrufe (${Number(budget.expected_calls_per_task)} je offener Teilfrage).`:"";
@@ -1004,6 +1043,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   }).join("");
   return `<section class="research-questions">
     <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
+    ${researchRound(ledger)}
     <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}" aria-label="Geprüft abgeschlossene Teilfragen"></progress>
     <p>${escape(phases[ledger.phase]||"")}</p>${renderActiveTasks(ledger)}${budgetNote}
     <p class="hint">Die Abschlusskriterien bleiben fest. Eine geprüfte Antwort wird nur bei einem konkreten Einwand aus der Gesamtprüfung erneut geöffnet.</p>${rows}</section>`;
@@ -1170,6 +1210,8 @@ function renderJob() {
   if(live)live.innerHTML=lastLine?.text?`<section class="panel live-panel" aria-live="polite"><div class="panel-title"><h2>Live</h2><span class="hint">${lastLine.at?`vor ${progressAge(lastLine.at)}`:""}</span></div><p class="live-text">${escape(lastLine.text)}</p><button class="quiet small" data-action="drawer-toggle">Alle Meldungen im Maschinenraum</button></section>`:"";
   let body=`<div class="model-observability">${renderModelTrace(j)}</div>`;
   if(message)body+=`<p>${escape(message)}</p>`;
+  const next=nextStep(j,r,active,state);
+  if(next)body+=`<p class="next-step"><strong>Nächster Schritt:</strong> ${escape(next)}</p>`;
   if(active)body+=`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`;
   if(r&&!isScript&&!j?.progress?.research_questions)body+=`<div class="stage-strip">${Object.entries(r.stages||{}).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`;
   if(!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined)body+=`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}" aria-label="Fortschritt"></progress>`;

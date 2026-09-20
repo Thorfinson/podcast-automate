@@ -253,10 +253,15 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("acceptance", material["tasks"][0])
         self.assertNotIn("queries", material["tasks"][0])
         self.assertEqual(material["anchored_issues"][0]["closure_condition"], objection.closure_condition)
+        self.assertEqual(material["anchored_issues"][0]["evidence_refs"], [self.ref])
         self.assertNotIn("correction", material["anchored_issues"][0])
+        # An anchor must cite read references, so every finding keeps its references, never its excerpts.
+        self.assertEqual([e for f in material["dossier"]["findings"] for e in f["evidence"]],
+                         [{"reference": e.reference} for f in dossier.findings for e in f.evidence])
         self.assertEqual(set(material["answers"]["task_definition"]), {"summary", "limits", "finding_ids"})
         self.assertIsNone(material["answers"]["task_empirical"])
-        self.assertEqual([set(f) for f in material["dossier"]["findings"]], [{"id", "kind", "statement"}] * len(dossier.findings))
+        self.assertEqual([set(f) for f in material["dossier"]["findings"]],
+                         [{"id", "kind", "statement", "evidence"}] * len(dossier.findings))
         self.assertEqual(material["dossier"]["coverage"], dossier.model_dump()["coverage"])
         guidance = compact_review_instructions(review, {"f_energy"})
         self.assertEqual(set(guidance), {"issues", "objection_checks", "finding_support"})
@@ -567,6 +572,9 @@ class QuestionResearchTests(unittest.TestCase):
                          (2, [1, 1], [0, 1]))
         self.assertTrue((audit / "routes_part_001.json").exists())
         self.assertFalse((audit / "routes.json").exists())
+        ledger = public_ledger(engine.state)
+        self.assertEqual((ledger["audit_round"], ledger["reopened"]), (1, 1))
+        self.assertEqual(engine.last_activity, "Konkrete Einwände werden ihren ursprünglichen Recherchefragen zugeordnet")
 
     def test_full_audit_reopens_only_empirical_task_then_rechecks_before_publish(self):
         reviews, reviewed_tasks = [], []

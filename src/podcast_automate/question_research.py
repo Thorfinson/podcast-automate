@@ -109,6 +109,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.timings = []
         # The call tag of every engine call; the ledger version above binds the receipts.
         self.call_version = CALL_VERSION
+        # The last progress line written, so a repeated attempt can name the step it repeats.
+        self.last_activity = ""
         # How many independent tasks may be answered at once; one keeps the plain sequential loop.
         self.workers = max(1, int(workers))
         # The one lock over everything shared between tasks, and the depth this thread holds it at,
@@ -185,7 +187,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
     def call(self, folder, name, schema, prompt, *, search=False, validate=None, tag=""):
         """``tag`` marks a call whose prompt changed with a prompt generation (question_synthesis.PROMPT_GENERATION)."""
         return cached_call(folder, name, schema, prompt,
-            lambda p, s: self.generate(folder, name, p, s, f"{self.call_version}{tag}.{name}", search=search), validate=validate)
+            lambda p, s: self.generate(folder, name, p, s, f"{self.call_version}{tag}.{name}", search=search), validate=validate,
+            on_retry=lambda number: self.save(f"{self.last_activity or 'Modellaufruf'} · Anlauf {number} nach Abweisung"))
 
     def set_index(self, index):
         self.index = index
@@ -278,6 +281,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
     def save(self, activity=None, *, budget_request=None):
         # Whole-ledger writes: state, probes, the public ledger and its markdown, then the progress line.
         with self.guarded():
+            if activity and "Anlauf" not in activity:
+                self.last_activity = activity
             self._save(activity, budget_request)
 
     def _save(self, activity, budget_request):

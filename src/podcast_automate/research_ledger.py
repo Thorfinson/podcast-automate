@@ -207,6 +207,7 @@ def public_ledger(state, index=None):
     return {"version": VERSION, "total": len(rows), "closed": sum(r["status"] == "verified" for r in rows),
             "blocked": len(blocked), "accepted": sum(r["accepted_gap"] for r in rows), "phase": phase,
             "reopenable": sum(r["reopenable"] for r in rows),
+            "audit_round": int(state.get("audit_round", 0)), "reopened": sum(1 for r in rows if r["reopened"]),
             "source_count": len(index.sources) if index else None,
             "source_failures": len(index.failures) if index else None,
             "source_attempt_count": state.get("source_attempt_count"),
