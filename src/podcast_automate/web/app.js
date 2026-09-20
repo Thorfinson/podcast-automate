@@ -4,6 +4,16 @@ const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp
 const steps = ["Auftrag & Stimmen", "Recherche", "Inhaltsverzeichnis", "Ausarbeitung", "Skripte lesen", "Vertonung"];
 const pageKeys = ["brief", "research", "outline", "production", "scripts", "audio"];
 const PAGE = Object.fromEntries(pageKeys.map((key,index)=>[key,index]));
+// The editorial framing of a step introduces a page that has nothing to show yet. A working page
+// opens with its name, its state and its action instead.
+const pageIntros = {
+  brief:["Dein redaktioneller Partner.","Beschreibe deinen Wunsch. Dein Partner fragt nach, bis Thema, Tiefe, Stimmen und Arbeitsweise passen."],
+  research:["Erst verstehen. Dann erzählen.","Jede Leitfrage braucht eine belegte Antwort, nachvollziehbare Erklärungen und eine Gegenprüfung. Fehlende Grundlagen werden automatisch nachrecherchiert, bevor das Inhaltsverzeichnis entsteht."],
+  outline:["Der rote Faden, bevor wir schreiben.","Prüfe, ob die Grundlagen tragen, die Kapitel aufeinander aufbauen und das Ganze deine Frage beantwortet. Erst deine Freigabe startet die Skripte."],
+  production:["Vom roten Faden zum fertigen Gespräch.","Hier arbeitet die Redaktion nach deiner Planfreigabe automatisch weiter. Fertige Lehrkonzepte und gespeicherte Skriptfassungen kannst du schon währenddessen lesen."],
+  scripts:["Lies das Gespräch in deinem Tempo.","Jede gespeicherte Folge wird hier einzeln lesbar. Du siehst, ob du einen Entwurf, einen überarbeiteten Dialog oder eine geprüfte Fassung liest."],
+  audio:["Vom Text zum Gespräch.","Gib eine gelesene Folge mit dem gewählten Audioanbieter ausdrücklich frei. Fertige Abschnitte bleiben für eine Fortsetzung gespeichert."],
+};
 const productionStages = [
   ["teaching", "Lehrkonzept", "Einstieg, Erklärungen und Beispiele für jede Folge ausarbeiten."],
   ["writing", "Skriptentwurf", "Aus dem Lehrkonzept ein vollständiges Gespräch entwickeln."],
@@ -34,6 +44,7 @@ let overviewPage=false, overviewData={projects:[],trash:[]};
 let navigationEpoch=0;
 let setupSending=false;
 let pendingAttachments=[], readingAttachments=false;
+let drawerOpen=false, connectionLost=false;
 const scriptStateLabels={draft:"Entwurf",polished:"Dialog überarbeitet",reviewed:"Prüfungen bestanden",published:"Fertig zur Durchsicht"};
 const voiceSamples = () => project?.voice_samples || boot.voice_samples || {};
 const savedSample = (voice, language) => voiceSamples()[language]?.[voice];
@@ -56,19 +67,26 @@ function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.epi
   if(project.audio_capacity?.available===0)return "Alle Plätze sind belegt. Sobald eine Folge fertig ist, kannst du die nächste starten.";
   return "";
 }
-function notice(message) { $("notice").textContent = message; $("notice").hidden = !message; }
+// One message box for outcomes. Errors and confirmations look different; the box sticks below the topbar.
+function notice(message, kind="warn") { const box=$("notice"); box.textContent = message; box.hidden = !message; box.className = message?`notice ${kind}`:"notice"; }
 async function api(path, data) {
   const options = data === undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json","X-Studio-Token":boot.token},body:JSON.stringify(data)};
   const response = await fetch(path, options);
-  const result = await response.json();
+  const result = await response.json().catch(()=>({error:"Der Studio-Server hat keine lesbare Antwort geliefert."}));
   if (!response.ok) throw new Error(result.error || "Anfrage fehlgeschlagen.");
   return result;
 }
-async function attempt(action) { try { notice(""); await action(); } catch(error) { notice(error.message); } }
+async function attempt(action) { try { notice(""); await action(); } catch(error) { notice(error.message,"error"); } }
 function textInput(id,label,value,type="text") { return `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${escape(value)}"></div>`; }
 function area(id,label,value,rows=3) { return `<div class="field"><label for="${id}">${label}</label><textarea id="${id}" rows="${rows}">${escape(value)}</textarea></div>`; }
-function heading(n,title,subtitle) { return `<div class="eyebrow">${String(n).padStart(2,"0")} / ${steps[n-1].toUpperCase()}</div><h1>${title}</h1><p class="intro">${subtitle}</p>`; }
-function empty(title,body,button,target) { return `<section class="empty"><h2>${title}</h2><p>${body}</p><button data-step="${target}">${button}</button></section>`; }
+// Compact page head: step number and name, then the step's state as a chip.
+function heading(n) {
+  const state=project?navigationStates()[n-1]:null;
+  return `<header class="page-head"><div class="page-title"><span class="eyebrow">${String(n).padStart(2,"0")} / 06</span><h1>${steps[n-1]}</h1></div>${state?`<span class="chip ${state[1]}">${escape(state[0])}</span>`:""}</header>`;
+}
+function empty(title,body,button,target,intro=null) {
+  return `<section class="empty">${intro?`<p class="empty-intro">${intro[0]}</p>`:""}<h2>${title}</h2><p>${body}</p>${intro?`<p>${intro[1]}</p>`:""}<button data-step="${target}">${button}</button></section>`;
+}
 const currentRun = (p=project) => p?.job?.run || p?.run;
 function readableScripts(p=project) {
   const rows=new Map((p?.episodes||[]).map(e=>[e.script.episode_id,{...e,preview:false,state:"published"}]));
@@ -83,6 +101,9 @@ const readerVersion = e => JSON.stringify([e?.run_id,e?.hash,e?.readable_hash,e?
 const scriptCollectionKey = p => JSON.stringify(readableScripts(p).map(e=>[e.script.episode_id,readerVersion(e)]));
 const approvedOutline = (p=project) => !!p?.outline?.hash && p.outline.approval?.plan_hash===p.outline.hash;
 const hasProduction = run => !!run && productionStages.some(([name])=>run.stages?.[name]?.attempts>0 || ["running","completed","blocked","failed","waiting_for_quota"].includes(run.stages?.[name]?.status));
+// After an audio run the latest run is no longer the script run; published episodes then stand for the finished work.
+const scriptRun = (p=project) => { const run=currentRun(p); return run?.kind==="script"?run:null; };
+const scriptsFinished = (p=project) => { const run=scriptRun(p); return run?run.status==="completed":(p?.episodes||[]).length>0; };
 function runPage(run,p=project) {
   if(run?.kind==="research")return PAGE.research;
   if(run?.kind==="episode_audio")return PAGE.audio;
@@ -120,20 +141,35 @@ function navigationStates() {
   const run=currentRun(), destination=runPage(run), busy=project?.job?.status==="running";
   const state=project?.job?.status||run?.status;
   const blocked=["blocked","failed","interrupted","waiting_for_quota"].includes(state);
-  const producing=destination===PAGE.production&&run?.status!=="completed";
   const audioReady=(project?.episodes||[]).some(e=>e.audio_current&&e.audio?.length);
   const readable=readableScripts().length;
+  const finished=scriptsFinished();
   const rows=[
     [project?"Gespeichert":"Hier beginnen",project?"done":"ready"],
     [project?.research?"Dossier vorhanden":"Quellen und Grundlagen",project?.research?"done":"pending"],
     [approvedOutline()?"Freigegeben":project?.outline?"Deine Freigabe":"Nach der Recherche",approvedOutline()?"done":project?.outline?"decision":"pending"],
-    [run?.kind==="script"&&run.status==="completed"?"Abgeschlossen":approvedOutline()?"Automatische Schritte":"Nach der Planfreigabe",run?.kind==="script"&&run.status==="completed"?"done":"pending"],
+    [finished?"Abgeschlossen":approvedOutline()?"Automatische Schritte":"Nach der Planfreigabe",finished?"done":"pending"],
     [readable?`${readable} ${readable===1?"Folge lesbar":"Folgen lesbar"}`:"Sobald ein Entwurf fertig ist",readable?"decision":"pending"],
     [audioReady?"Aufnahmen vorhanden":project?.episodes?.length?"Deine Audio-Freigabe":"Nach deiner Durchsicht",audioReady?"done":project?.episodes?.length?"decision":"pending"],
   ];
   const activePage=jobPage()??destination;
   if(activePage!==undefined&&activePage!==null&&(busy||blocked))rows[activePage]=[busy?"Läuft automatisch":state==="waiting_for_quota"?"Anbieterlimit":"Angehalten",busy?"running":"blocked"];
   return rows;
+}
+function elapsedText(iso) {
+  const minutes=Math.floor((Date.now()-Date.parse(iso))/60000);
+  if(!Number.isFinite(minutes)||minutes<1)return "weniger als einer Minute";
+  return minutes<60?`${minutes} Min.`:`${Math.floor(minutes/60)} Std. ${minutes%60} Min.`;
+}
+// The stepper carries time where the pipeline knows it: elapsed on the running step, the projection on a waiting research.
+function stepTimeHints() {
+  const hints=Array(steps.length).fill(""), j=project?.job;
+  if(!j)return hints;
+  const page=jobPage();
+  if(j.status==="running"&&page!==null&&page!==undefined&&j.started_at)hints[page]=` · seit ${elapsedText(j.started_at)}`;
+  const projection=j.progress?.plan_review?.projection, run=currentRun();
+  if(j.status!=="running"&&projection?.projected_hours&&run?.kind==="research"&&run.status!=="completed")hints[PAGE.research]=` · voraussichtlich ${Math.round(Number(projection.projected_hours))} Std.`;
+  return hints;
 }
 function updatePageUrl(push=false) {
   const url=overviewPage?"/":project?`/?project=${encodeURIComponent(project.id)}&step=${pageKeys[step]}`:"/?new=1";
@@ -145,13 +181,18 @@ function navigatePage(target,{automatic=false,push=true}={}) {
   if(!Number.isInteger(target)||target<0||target>=steps.length)return;
   navigationEpoch++;
   overviewPage=false;step=target;followWorkflow=automatic;updatePageUrl(push);render();
+  // A conversation opens at its newest reply, right above the pinned composer.
+  if(step===PAGE.brief&&(project?.chat||[]).length)scrollChatToEnd();
 }
 function renderNavigation() {
-  $("steps").hidden=overviewPage;
-  if(overviewPage){$("project-title").textContent="Alle Projekte & Podcasts";return;}
-  const states=navigationStates();
-  $("steps").innerHTML = steps.map((name,i)=>`<button class="step ${states[i][1]}" data-step="${i}" ${i===step?'aria-current="page"':""}><span class="step-number" aria-hidden="true">${states[i][1]==="done"?"✓":i+1}</span><span class="step-label">${name}<small>${states[i][0]}</small></span></button>`).join("");
-  $("project-title").textContent = project?.config.topic || "Neues Podcast-Projekt";
+  if(overviewPage){$("steps").hidden=false;$("steps").innerHTML='<p class="sidebar-hint">Wähle ein Projekt, um seine Arbeitsschritte zu sehen.</p>';$("project-title").textContent="Alle Projekte & Podcasts";document.title="Podcast Studio";return;}
+  $("steps").hidden=false;
+  const states=navigationStates(), hints=stepTimeHints();
+  const glyph=state=>state==="done"?"✓":state==="running"?"●":state==="blocked"?"!":state==="decision"?"▲":null;
+  $("steps").innerHTML = steps.map((name,i)=>`<button class="step ${states[i][1]}" data-step="${i}" ${i===step?'aria-current="page"':""}><span class="step-number" aria-hidden="true">${glyph(states[i][1])??i+1}</span><span class="step-label">${name}<small>${escape(states[i][0])}${hints[i]}</small></span></button>`).join("");
+  const title=project?.config?.topic || "Neues Podcast-Projekt";
+  $("project-title").textContent = title;
+  document.title=project?`${title} · Podcast Studio`:"Podcast Studio";
 }
 function renderVoiceLibrary(language) {
   const voices=audioCatalog().openrouter_gemini_tts?.voices||[], ready=voices.filter(v=>savedSample(v,language)).length;
@@ -266,6 +307,7 @@ function refreshAttachmentComposer() {
   render();
   $("chat-message").value=draft;
 }
+function scrollChatToEnd() { $("chat-end")?.scrollIntoView?.({block:"end"}); }
 async function queueAttachments(files) {
   if(running()||setupSending||readingAttachments)return;
   if(!boot.capabilities?.project_attachments)throw new Error("Bitte das Studio nach Ende laufender Aufträge neu starten, um Dateien anzuhängen.");
@@ -296,25 +338,34 @@ async function removeAttachment(id) {
   const updated=await api(`/api/projects/${projectId}`);
   if(project?.id===projectId){project=updated;refreshAttachmentComposer();}
 }
+// Setup: the conversation fills the working column with the composer pinned at its foot; the proposal sits in the rail.
 function renderBrief() {
   const {proposal,config:c,audio:a,text:t}=setupSelection(), chat=project?.chat||[];
   const compatible=boot.capabilities?.conversational_setup;
   const nextPage=recommendedPage()===PAGE.brief?PAGE.research:recommendedPage();
   const voices=audioCatalog()[a.provider]?.voices||[];
-  return heading(1,"Dein redaktioneller Partner.","Beschreibe deinen Wunsch. Dein Partner fragt nach, bis Thema, Tiefe, Stimmen und Arbeitsweise passen.")+
+  const presets=boot.text_catalog?.presets||[];
+  const chosen=presets.find(p=>t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort));
+  const attachmentCount=(project?.attachments?.length||0)+pendingAttachments.length;
+  const messages=chat.length?chat.map(m=>`<div class="chat-message ${m.role==="user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<div class="chat-message"><strong>Redaktion</strong><p>Worum soll dein Podcast gehen – und was möchtest du danach besser verstehen? Du kannst direkt auch Wünsche zu Sprache, Tiefe oder Stimmen nennen.</p></div>';
+  return heading(1)+
     `${!compatible?'<p class="note">Die Gesprächseinrichtung benötigt einen Studio-Neustart. Lass den laufenden Auftrag fertigarbeiten, beende dann das Studio und öffne es erneut.</p>':""}
-    <section class="panel"><div class="conversation">${chat.length?chat.map(m=>`<div class="chat-message ${m.role==="user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<div class="chat-message"><strong>Redaktion</strong><p>Worum soll dein Podcast gehen – und was möchtest du danach besser verstehen? Du kannst direkt auch Wünsche zu Sprache, Tiefe oder Stimmen nennen.</p></div>'}</div>
-    ${!running()&&proposal?.suggested_replies?.length?`<div class="actions">${proposal.suggested_replies.map(reply=>`<button class="secondary small" data-setup-reply="${escape(reply)}">${escape(reply)}</button>`).join("")}</div>`:""}
-    <form id="chat-form"><fieldset ${running()||setupSending||readingAttachments||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}
-    ${boot.text_catalog?.presets?.length?`<div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${boot.text_catalog.presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Codex und springt bei leerem Kontingent auf Claude um. Live-Recherche läuft über das gewählte Abo; Stimmen wählst du separat.</p></div>`:""}
-    ${boot.capabilities?.project_attachments?`<div class="attachment-picker"><label for="chat-files">Dateien anhängen · .md / .txt / .docx</label><input id="chat-files" type="file" accept=".md,.txt,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple aria-describedby="attachment-hint"><p id="attachment-hint" class="hint">Für deine Projektidee und als Ausgangsmaterial der Recherche. Bis zu 10 Dateien: Text je 256 KiB, DOCX je 2 MiB, insgesamt 1 MiB eingelesener Text. DOCX übernimmt Text und Tabellen, keine Bilder. Mit „Senden“ erhält dein Textmodell den Inhalt; bei langen Dateien zunächst gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein.</p><div id="attachment-list">${renderAttachments()}</div></div>`:'<p class="hint">Dateianhänge benötigen einen Studio-Neustart nach Ende laufender Aufträge.</p>'}
-    <button type="submit">${setupSending?"Wird gesendet …":readingAttachments?"Dateien werden eingelesen …":"Senden"}</button></fieldset></form></section>
+    <div class="split"><div class="split-main">
+    <section class="panel chat-panel"><div class="conversation" id="conversation">${messages}<div id="chat-end"></div></div>
+    ${!running()&&proposal?.suggested_replies?.length?`<div class="actions suggested">${proposal.suggested_replies.map(reply=>`<button class="secondary small" data-setup-reply="${escape(reply)}">${escape(reply)}</button>`).join("")}</div>`:""}
+    <form id="chat-form" class="composer"><fieldset ${running()||setupSending||readingAttachments||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}
+    <div class="composer-tools">
+    ${presets.length?`<details class="composer-menu"><summary>Textmodell: ${chosen?escape(chosen.label):textChoiceSummary(t)}</summary><div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Codex und springt bei leerem Kontingent auf Claude um. Live-Recherche läuft über das gewählte Abo; Stimmen wählst du separat.</p></div></details>`:""}
+    ${boot.capabilities?.project_attachments?`<details class="composer-menu"${attachmentCount?" open":""}><summary>Dateien anhängen${attachmentCount?` · ${attachmentCount}`:""}</summary><div class="attachment-picker"><label for="chat-files">Dateien anhängen · .md / .txt / .docx</label><input id="chat-files" type="file" accept=".md,.txt,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple aria-describedby="attachment-hint"><p id="attachment-hint" class="hint">Für deine Projektidee und als Ausgangsmaterial der Recherche. Bis zu 10 Dateien: Text je 256 KiB, DOCX je 2 MiB, insgesamt 1 MiB eingelesener Text. DOCX übernimmt Text und Tabellen, keine Bilder. Mit „Senden“ erhält dein Textmodell den Inhalt; bei langen Dateien zunächst gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein.</p><div id="attachment-list">${renderAttachments()}</div></div></details>`:'<p class="hint">Dateianhänge benötigen einen Studio-Neustart nach Ende laufender Aufträge.</p>'}
+    <button type="submit">${setupSending?"Wird gesendet …":readingAttachments?"Dateien werden eingelesen …":"Senden"}</button></div></fieldset></form></section>
+    </div><aside class="split-rail">
     ${setupSummary()}
     <details class="panel"><summary>Stimmen anhören</summary><p class="hint">${a.provider==="qwen3_local"?"Qwen":"Gemini"} · ${c.language==="en-US"?"English":"Deutsch"}. Sag dem Partner anschließend, welche beiden Stimmen du möchtest. Neue Gemini-Proben nutzen dein API-Guthaben.</p><div class="voice-library">${voices.map(v=>`<div class="sample-row"><strong>${escape(v)}</strong><button class="secondary small" data-preview-voice="${escape(v)}" data-preview-provider="${a.provider}" data-language="${c.language}" ${a.provider!=="qwen3_local"&&!savedSample(v,c.language)&&running()?"disabled":""}>${sampleButtonLabel(a.provider,v,c.language)}</button></div>`).join("")}</div>
     ${a.provider==="openrouter_gemini_tts"?`<div id="voice-library-panel">${renderVoiceLibrary(c.language)}</div>`:""}</details>
     <details class="panel"><summary>Geschützter OpenRouter-Key-Eingang</summary><p class="hint">Falls du OpenRouter wählst, hinterlege den Key hier. Er wird nicht an den redaktionellen Partner gesendet und bleibt nur im Sitzungsspeicher.</p>
     ${textInput("api-key","OpenRouter-Key","","password")}<p id="key-status" class="hint">${boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt."}</p><div class="actions"><button class="secondary small" data-action="store-key">Key hinterlegen</button><button class="secondary small" data-action="forget-key">Sitzungs-Key entfernen</button></div></details>
-    ${project?`<div class="actions"><button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button><button data-step="${nextPage}" ${proposal&&!project.proposal_applied?"disabled":""}>Weiter: ${steps[nextPage]} →</button></div>`:""}`;
+    ${project?`<div class="actions"><button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button><button data-step="${nextPage}" ${proposal&&!project.proposal_applied?"disabled":""}>Weiter: ${steps[nextPage]} →</button></div>`:""}
+    </aside></div>`;
 }
 // Render the Markdown used by dossiers, escaping all source text. Raw HTML and
 // embedded images stay inert; only explicit HTTP(S) destinations become links.
@@ -372,7 +423,8 @@ function markdownInline(value, depth=0, links=true) {
   }
   return html+escape(text.slice(cursor));
 }
-function renderMarkdown(value, depth=0) {
+// With a `toc` array the headings also get an anchor before them, collected for a table of contents.
+function renderMarkdown(value, depth=0, toc=null) {
   if (depth>16) return `<p>${escape(value)}</p>`;
   const lines=String(value??"").replace(/\r\n?/g,"\n").split("\n"), blocks=[];
   const listItem=line=>line.match(/^( *)([-+*]|\d+[.)])\s+(.*)$/);
@@ -393,13 +445,15 @@ function renderMarkdown(value, depth=0) {
     if (heading) {
       // The dossier lives inside a section with its own h2.
       const level=Math.min(6,heading[1].length+2);
-      blocks.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`); i++; continue;
+      let anchor="";
+      if (toc) { const id=`doc-h-${toc.length+1}`; toc.push({level:heading[1].length,id,html:markdownInline(heading[2],0,false)}); anchor=`<span class="doc-anchor" id="${id}"></span>`; }
+      blocks.push(`${anchor}<h${level}>${markdownInline(heading[2])}</h${level}>`); i++; continue;
     }
     if (/^ {0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(line)) { blocks.push("<hr>"); i++; continue; }
     if (/^ {0,3}>/.test(line)) {
       const quote=[];
       while(i<lines.length && /^ {0,3}>/.test(lines[i])) quote.push(lines[i++].replace(/^ {0,3}> ?/,""));
-      blocks.push(`<blockquote>${renderMarkdown(quote.join("\n"),depth+1)}</blockquote>`); continue;
+      blocks.push(`<blockquote>${renderMarkdown(quote.join("\n"),depth+1,toc)}</blockquote>`); continue;
     }
     const first=listItem(line);
     if (first) {
@@ -419,7 +473,7 @@ function renderMarkdown(value, depth=0) {
           if (!lines[i].startsWith(" ".repeat(contentIndent))) break;
           content.push(lines[i++].slice(contentIndent));
         }
-        items.push(`<li>${renderMarkdown(content.join("\n"),depth+1)}</li>`);
+        items.push(`<li>${renderMarkdown(content.join("\n"),depth+1,toc)}</li>`);
       }
       const tag=ordered?"ol":"ul", start=ordered?` start="${Number.parseInt(first[2],10)||1}"`:"";
       blocks.push(`<${tag}${start}>${items.join("")}</${tag}>`); continue;
@@ -430,44 +484,58 @@ function renderMarkdown(value, depth=0) {
   }
   return blocks.join("\n");
 }
+function tocMarkup(entries, title) {
+  return `<nav class="toc" aria-label="${title}"><p class="toc-title">${title}</p>${entries.map(e=>`<button type="button" class="toc-link level-${Math.min(3,Math.max(1,Number(e.level)||1))}" data-scroll="${escape(e.id)}">${e.html}</button>`).join("")}</nav>`;
+}
+function researchProviderTag() {
+  const t=project?.job?.text_generation||project?.text, provider=t?.provider;
+  if(provider==="auto")return "Recherche über die Abos";
+  return provider?`Recherche mit ${providerNames[provider]||escape(provider)}`:"Recherche mit Codex";
+}
+// Research: while a run is open the ledger is the page; the finished dossier is a document with a table of contents.
 function renderResearch() {
-  let html = heading(2,"Erst verstehen. Dann erzählen.","Jede Leitfrage braucht eine belegte Antwort, nachvollziehbare Erklärungen und eine Gegenprüfung. Fehlende Grundlagen werden automatisch nachrecherchiert, bevor das Inhaltsverzeichnis entsteht.");
-  if(!project) return html+empty("Ein Thema fehlt noch.","Lege zuerst deinen Podcast-Auftrag an.","Zur Idee",0);
+  let html=heading(2);
+  if(!project) return html+empty("Ein Thema fehlt noch.","Lege zuerst deinen Podcast-Auftrag an.","Zur Idee",0,pageIntros.research);
   const run=currentRun(), researching=run?.kind==="research"&&run.status!=="completed";
-  if(project.attachments?.length)html+=`<section class="panel"><h2>Deine Ausgangsmaterialien</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">Diese Dateien werden als lokale Quellen eingelesen. Aussagen aus deinen Notizen werden anhand weiterer Quellen geprüft. Sehr kurze Notizen dienen vor allem der Projektbeschreibung.</p></section>`;
-  html += `<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">Recherche mit Codex</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht oben; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>${researching?"Das startet einen neuen Recherchelauf mit neuem Plan und neuer Hochrechnung. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt.":"Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen."}</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
-  if(project.research) html+=`<section class="panel"><h2>${researching?"Bisheriges Dossier · wird neu recherchiert":"Dein Recherche-Dossier"}</h2><article class="markdown-document">${renderMarkdown(project.research)}</article></section>`;
-  return html;
+  const attachments=project.attachments?.length?`<section class="panel"><h2>Deine Ausgangsmaterialien</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">Diese Dateien werden als lokale Quellen eingelesen. Aussagen aus deinen Notizen werden anhand weiterer Quellen geprüft. Sehr kurze Notizen dienen vor allem der Projektbeschreibung.</p></section>`:"";
+  const brief=`<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">${researchProviderTag()}</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht auf dieser Seite; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>${researching?"Das startet einen neuen Recherchelauf mit neuem Plan und neuer Hochrechnung. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt.":"Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen."}</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
+  if(researching||(!project.research&&project.job?.progress?.phase==="research"))
+    return html+`<div class="split"><div class="split-main"><div id="research-progress"></div>${project.research?`<section class="panel"><h2>Bisheriges Dossier · wird neu recherchiert</h2><article class="markdown-document">${renderMarkdown(project.research)}</article></section>`:""}</div><aside class="split-rail">${brief}${attachments}</aside></div>`;
+  if(project.research){
+    const toc=[], dossier=renderMarkdown(project.research,0,toc);
+    return html+`<div class="doc">${tocMarkup(toc,"Inhalt des Dossiers")}<section class="panel doc-main"><h2>Dein Recherche-Dossier</h2><article class="markdown-document">${dossier}</article></section><aside class="doc-rail">${brief}${attachments}</aside></div>`;
+  }
+  return html+`<div class="split"><div class="split-main">${brief}</div><aside class="split-rail">${attachments}</aside></div>`;
 }
 function renderOutline() {
-  let html=heading(3,"Der rote Faden, bevor wir schreiben.","Prüfe, ob die Grundlagen tragen, die Kapitel aufeinander aufbauen und das Ganze deine Frage beantwortet. Erst deine Freigabe startet die Skripte.");
+  let html=heading(3);
   const outline=project?.outline;
   if(!outline) {
     if(project?.job?.status==="running"&&jobPage()===PAGE.outline)return html+`<section class="panel tinted"><h2>Das Inhaltsverzeichnis wird ausgearbeitet.</h2><p>Folgen und Kapitel erscheinen hier, sobald der Entwurf bereit für deine Durchsicht ist.</p></section>`;
-    return html+empty("Das Inhaltsverzeichnis entsteht aus der Recherche.","Nach dem geprüften Dossier entwirft die Redaktion Folgen und Kapitel. Hier kannst du sie anschließend verändern und freigeben.","Zur Recherche",PAGE.research);
+    return html+empty("Das Inhaltsverzeichnis entsteht aus der Recherche.","Nach dem geprüften Dossier entwirft die Redaktion Folgen und Kapitel. Hier kannst du sie anschließend verändern und freigeben.","Zur Recherche",PAGE.research,pageIntros.outline);
   }
   const p=outline.plan, approved=outline.approval?.plan_hash===outline.hash;
-  html+=`<section class="panel tinted"><h2>${escape(p.central_question)}</h2><p>${escape(p.explanation_path)}</p><div class="outline-summary"><span><strong>${p.episodes.length}</strong> Folgen</span><span><strong>${Math.round(p.episodes.reduce((s,e)=>s+e.target_minutes,0))}</strong> Minuten geplant</span><span>${approved?"Dieser Stand wurde freigegeben":"Wartet auf deine Durchsicht"}</span></div><p class="hint">${escape(p.scope_note)}</p></section>`;
+  html+=`<section class="panel tinted"><h2 class="outline-question">${escape(p.central_question)}</h2><p>${escape(p.explanation_path)}</p><div class="outline-summary"><span><strong>${p.episodes.length}</strong> Folgen</span><span><strong>${Math.round(p.episodes.reduce((s,e)=>s+e.target_minutes,0))}</strong> Minuten geplant</span><span>${approved?"Dieser Stand wurde freigegeben":"Wartet auf deine Durchsicht"}</span></div><p class="hint">${escape(p.scope_note)}</p></section>`;
   html+=p.episodes.map((e,i)=>`<section class="panel"><div class="episode-head"><span class="episode-num">${String(i+1).padStart(2,"0")}</span><div><h2>${escape(e.title)}</h2><p>${escape(e.central_question)}</p></div><span class="tag">ca. ${Math.round(e.target_minutes)} Min.</span></div><ol class="chapters">${e.scenes.map((s,n)=>`<li><span>${String(n+1).padStart(2,"0")}</span><div><strong>${escape(s.title)}</strong><p>${escape(s.question)}</p><details><summary>Was hier erklärt wird</summary>${s.explanation_steps.map(x=>`<p>${escape(x)}</p>`).join("")}</details></div></li>`).join("")}</ol>${e.deferred_questions.length?`<details><summary>Offene oder spätere Fragen</summary>${e.deferred_questions.map(q=>`<p>${escape(q)}</p>`).join("")}</details>`:""}</section>`).join("");
   const canReplan = !Object.entries(project.job?.run?.stages || {}).some(([n,r])=>n!=="planning"&&r.attempts>0);
   html+=approved?`<section class="panel tinted"><h2>Dieser Plan ist freigegeben.</h2><p>Lehrkonzept, Skriptentwurf, Dialog-Polishing und Qualitätsprüfung gehören zur automatischen Ausarbeitung. Deine nächste inhaltliche Entscheidung triffst du beim Lesen der fertigen Skripte.</p><button data-step="${PAGE.production}">Ausarbeitung ansehen →</button></section>`:
-    `<section class="panel"><h2>Passt die Dramaturgie?</h2>${area("outline-feedback","Was soll sich ändern?","",3)}<div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>Plan überarbeiten lassen</button><button data-action="script" ${disabled()}>Plan freigeben & Skripte schreiben</button></div><p class="hint">Deine Freigabe startet die automatische Ausarbeitung. Die fertigen Skripte liest du anschließend vor der Vertonung.</p></section>`;
+    `<div class="action-bar"><details class="action-note"><summary>Änderungswünsche an die Redaktion</summary>${area("outline-feedback","Was soll sich ändern?","",3)}</details><div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>Plan überarbeiten lassen</button><button data-action="script" ${disabled()}>Plan freigeben & Skripte schreiben</button></div><p class="hint">Deine Freigabe startet die automatische Ausarbeitung. Die fertigen Skripte liest du anschließend vor der Vertonung.</p></div>`;
   if(!canReplan)html+=`<details class="restart-options"><summary>Eine neue Gliederung erstellen</summary><p>Der bisherige Auftrag bleibt gespeichert. Eine neue Gliederung benötigt wieder deine Freigabe.</p><button class="secondary" data-action="plan" ${disabled()}>Neues Inhaltsverzeichnis entwerfen</button></details>`;
   return html;
 }
 function renderProduction() {
-  const html=heading(4,"Vom roten Faden zum fertigen Gespräch.","Hier arbeitet die Redaktion nach deiner Planfreigabe automatisch weiter. Fertige Lehrkonzepte und gespeicherte Skriptfassungen kannst du schon währenddessen lesen.");
+  const html=heading(4);
   const run=currentRun();
-  if(!approvedOutline()&&!hasProduction(run))return html+empty("Zuerst das Inhaltsverzeichnis prüfen.","Deine Freigabe startet Lehrkonzept, Schreiben, Polishing und Qualitätsprüfung als zusammenhängenden Auftrag.","Zum Inhaltsverzeichnis",PAGE.outline);
+  if(!approvedOutline()&&!hasProduction(run))return html+empty("Zuerst das Inhaltsverzeichnis prüfen.","Deine Freigabe startet Lehrkonzept, Schreiben, Polishing und Qualitätsprüfung als zusammenhängenden Auftrag.","Zum Inhaltsverzeichnis",PAGE.outline,pageIntros.production);
   return html+'<div id="production-progress"></div>';
 }
 function renderProductionDetails() {
-  const run=currentRun(), scriptRun=run?.kind==="script"?run:null;
+  const run=scriptRun();
   const active=project?.job?.status==="running"&&jobPage()===PAGE.production;
-  const finished=scriptRun?.status==="completed";
+  const finished=scriptsFinished();
   const labels={completed:"Abgeschlossen",running:"In Arbeit",pending:"Folgt automatisch",blocked:"Angehalten",failed:"Angehalten",waiting_for_quota:"Wartet auf Anbieter"};
   let html=`<section class="panel"><div class="panel-title"><h2>Die Ausarbeitung</h2><span class="tag">${active?"Läuft automatisch":finished?"Bereit zum Lesen":"Gespeicherter Stand"}</span></div><ol class="production-stages">${productionStages.map(([key,title,description])=>{
-    const status=scriptRun?.stages?.[key]?.status||"pending";
+    const status=run?.stages?.[key]?.status||(finished?"completed":"pending");
     return `<li class="${escape(status)}"><span class="phase-marker" aria-hidden="true">${status==="completed"?"✓":status==="running"?"●":"○"}</span><div><strong>${title}</strong><p>${description}</p></div><span class="phase-status">${labels[status]||"Ausstehend"}</span></li>`;
   }).join("")}</ol><p class="hint">Notwendige Nachrecherche und interne Korrekturen gehören zu diesen Schritten. Gespeicherte Skriptfassungen lassen sich bereits während der Ausarbeitung lesen.</p></section>`;
   html+=renderScriptProgress(project?.job?.progress,active);
@@ -556,7 +624,7 @@ async function saveSpokenOverride(episodeId, segmentId) {
   const spoken=segment&&value.trim()===applySpokenForms(segment.text,project.spoken_forms)?"":value;
   await api(`/api/projects/${project.id}/spoken_override`,{episode:episodeId,segment_id:segmentId,spoken});
   project=await api(`/api/projects/${project.id}`);readingSnapshot=null;render();
-  notice(spoken?"Sprechform gespeichert. Mit „Neu rendern“ wird nur dieser Abschnitt neu vertont.":"Keine abweichende Sprechform; die Tabelle gilt für diesen Abschnitt.");
+  notice(spoken?"Sprechform gespeichert. Mit „Neu rendern“ wird nur dieser Abschnitt neu vertont.":"Keine abweichende Sprechform; die Tabelle gilt für diesen Abschnitt.","ok");
 }
 async function saveSpeechSettings() {
   const hostA=$("host-name-a").value.trim(), hostB=$("host-name-b").value.trim();
@@ -567,31 +635,33 @@ async function saveSpeechSettings() {
     audio_hash:project.audio_hash,spoken_forms:parseSpokenForms($("spoken-forms").value),
     spoken_forms_hash:project.spoken_forms_hash});
   project=await api(`/api/projects/${project.id}`);render();
-  notice("Gespeichert. Geänderte Pausen benötigen eine neue Audio-Freigabe; geänderte Hostnamen gelten für neue Skriptläufe.");
+  notice("Gespeichert. Geänderte Pausen benötigen eine neue Audio-Freigabe; geänderte Hostnamen gelten für neue Skriptläufe.","ok");
 }
 function refreshScriptReader() {
   if(!readingSnapshot||!$("script-reader-controls")){$("content").innerHTML=renderScript();return;}
   // Only the picker and status change. Keep the text DOM, selection and feedback intact.
   $("script-reader-controls").innerHTML=renderReaderControls();
 }
+// Reading: a sticky reader bar, chapters as a table of contents, the text in a measured column, notes in the margin.
 function renderScript() {
-  let html=heading(5,"Lies das Gespräch in deinem Tempo.","Jede gespeicherte Folge wird hier einzeln lesbar. Du siehst, ob du einen Entwurf, einen überarbeiteten Dialog oder eine geprüfte Fassung liest.");
+  let html=heading(5);
   const entries=readerEntries();
   if(!entries.length) return html+(approvedOutline()||hasProduction(currentRun())?
-    empty("Der erste Skriptentwurf entsteht noch.","Diese Seite aktualisiert sich automatisch, sobald ein vollständiger Entwurf gespeichert ist. Die übrigen Folgen dürfen währenddessen weiterlaufen.","Zur Ausarbeitung",PAGE.production):
-    empty("Zuerst den roten Faden festlegen.","Prüfe das Inhaltsverzeichnis und gib es frei. Danach entsteht das vollständige Gespräch.","Zum Inhaltsverzeichnis",PAGE.outline));
+    empty("Der erste Skriptentwurf entsteht noch.","Diese Seite aktualisiert sich automatisch, sobald ein vollständiger Entwurf gespeichert ist. Die übrigen Folgen dürfen währenddessen weiterlaufen.","Zur Ausarbeitung",PAGE.production,pageIntros.scripts):
+    empty("Zuerst den roten Faden festlegen.","Prüfe das Inhaltsverzeichnis und gib es frei. Danach entsteht das vollständige Gespräch.","Zum Inhaltsverzeichnis",PAGE.outline,pageIntros.scripts));
   const selected=entries.find(e=>e.script.episode_id===scriptEpisodeId)||entries[0];
   scriptEpisodeId=selected.script.episode_id;
   if(readingSnapshot?.projectId!==project.id||readingSnapshot.entry.script.episode_id!==scriptEpisodeId)readingSnapshot={projectId:project.id,entry:structuredClone(selected)};
   const e=readingSnapshot.entry,s=e.script;
   if(!e.preview)episodeIndex=Math.max(0,project.episodes.findIndex(row=>row.script.episode_id===s.episode_id));
-  html+=`<div id="script-reader-controls">${renderReaderControls()}</div><div class="outline-summary"><span>${e.metrics.words.toLocaleString("de-DE")} Wörter</span><span>ca. ${Math.round(e.metrics.estimated_minutes)} Min. geschätzt</span><span>${s.chapters.length} Kapitel</span></div><article id="script-text" class="panel reader"><h1>${escape(s.title)}</h1>`;
   const published=e.preview?null:project.episodes.find(row=>row.script.episode_id===s.episode_id);
   const spoken=published?.audio?.length?(published.spoken_overrides||{}):null;
-  for(const chapter of s.chapters) html+=`<h2>${escape(chapter.title)}</h2>`+s.segments.filter(x=>x.chapter_id===chapter.chapter_id).map(x=>`<div class="utterance ${x.speaker_id}"><strong>${escape(hostLabels()[x.speaker_id])}</strong><p>${escape(x.text)}</p>${spoken?renderSpokenOverride(s.episode_id,x,spoken):""}</div>`).join("");
-  html+='</article>'+renderReviewNotes(e);
-  if(e.preview)html+=`<p class="hint">Nach Abschluss der Ausarbeitung kannst du Rückmeldung für eine weitere Überarbeitung geben und über die Vertonung entscheiden.</p><button class="secondary" data-step="${PAGE.production}">Ausarbeitung verfolgen</button>`;
-  else html+=`<section class="panel"><h2>Deine redaktionelle Rückmeldung</h2>${area("script-feedback","Was fehlt oder klingt noch nicht richtig?","",4)}<div class="actions"><button class="secondary" data-action="revise" ${disabled()}>Diese Folge überarbeiten lassen</button><button data-step="${PAGE.audio}">Weiter zur Audio-Freigabe →</button></div><p class="hint">Eine Überarbeitung durchläuft erneut Polishing und Prüfung. Sie erhält eine neue Audio-Freigabe.</p></section>`;
+  const toc=s.chapters.map((chapter,i)=>({level:1,id:`ch-${chapter.chapter_id}`,html:`${i+1}. ${escape(chapter.title)}`}));
+  let text=`<h2 class="reader-title">${escape(s.title)}</h2>`;
+  for(const chapter of s.chapters) text+=`<span class="doc-anchor" id="ch-${escape(chapter.chapter_id)}"></span><h3>${escape(chapter.title)}</h3>`+s.segments.filter(x=>x.chapter_id===chapter.chapter_id).map(x=>`<div class="utterance ${x.speaker_id}"><strong>${escape(hostLabels()[x.speaker_id])}</strong><p>${escape(x.text)}</p>${spoken?renderSpokenOverride(s.episode_id,x,spoken):""}</div>`).join("");
+  const feedback=e.preview?`<section class="panel"><p class="hint">Nach Abschluss der Ausarbeitung kannst du Rückmeldung für eine weitere Überarbeitung geben und über die Vertonung entscheiden.</p><button class="secondary" data-step="${PAGE.production}">Ausarbeitung verfolgen</button></section>`
+    :`<section class="panel"><h2>Deine redaktionelle Rückmeldung</h2>${area("script-feedback","Was fehlt oder klingt noch nicht richtig?","",4)}<div class="actions"><button class="secondary" data-action="revise" ${disabled()}>Diese Folge überarbeiten lassen</button><button data-step="${PAGE.audio}">Weiter zur Audio-Freigabe →</button></div><p class="hint">Eine Überarbeitung durchläuft erneut Polishing und Prüfung. Sie erhält eine neue Audio-Freigabe.</p></section>`;
+  html+=`<div id="script-reader-controls" class="reader-bar">${renderReaderControls()}</div><div class="doc">${tocMarkup(toc,"Kapitel")}<article id="script-text" class="panel reader doc-main">${text}</article><aside class="doc-rail"><div class="outline-summary"><span>${e.metrics.words.toLocaleString("de-DE")} Wörter</span><span>ca. ${Math.round(e.metrics.estimated_minutes)} Min. geschätzt</span><span>${s.chapters.length} Kapitel</span></div>${renderReviewNotes(e)}${feedback}</aside></div>`;
   return html;
 }
 const NEWLINE=String.fromCharCode(10);
@@ -638,18 +708,37 @@ function renderListeningReview(e) {
     ${area("listening-note","Was ist beim Hören aufgefallen?",e.listening_note||"",3)}
     <div class="actions"><button class="secondary" data-action="listening-review" ${disabled()}>Hörprüfung eintragen</button></div></section>`;
 }
+// Audio: the approval is a checks card that names exactly what it binds; the recordings follow on the same page.
+function renderApprovalCard(e,a,remote) {
+  const blocked=audioBlockReason();
+  const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
+  const pronunciation=renderPronunciation(e);
+  return `<div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${remote?"Gemini 3.1 Flash TTS · OpenRouter":"Qwen · lokal"}</span></div>
+    <dl>
+    <dt>Text</dt><dd>${e.audio?.length?(e.audio_current?"Aufnahme vorhanden · dieser Stand ist bereits vertont":"Aufnahme eines früheren Skript- oder Stimmenstands vorhanden"):"Fertig zur Durchsicht · noch nicht vertont"} <button class="quiet small" data-step="4">Skript lesen</button></dd>
+    <dt>Stimmen</dt><dd>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"} <button class="quiet small" data-step="0">Audioanbieter oder Stimmen ändern</button></dd>
+    <dt>Anbieter</dt><dd class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</dd>
+    <dt>Aussprache</dt><dd>${pronunciation||'<span class="hint">Keine auffälligen Wörter im veröffentlichten Text.</span>'}</dd>
+    <dt>Pausen</dt><dd class="hint">${Number(pauses.same_speaker_ms)} / ${Number(pauses.speaker_change_ms)} / ${Number(pauses.chapter_break_ms)} ms · gleiche Stimme, Stimmwechsel, Kapitel</dd>
+    </dl>
+    <label class="approval"><input id="audio-approval" type="checkbox" ${blocked?"disabled":""}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label>
+    <div class="actions"><button id="audio-start" data-action="audio" disabled>Audio erzeugen</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div>${blocked?`<p class="hint">${escape(blocked)}</p>`:""}`;
+}
+function refreshAudioPanel() {
+  const panel=$("audio-panel");
+  if(!panel||!project?.episodes?.length)return;
+  const a=currentAudio();
+  panel.innerHTML=renderApprovalCard(project.episodes[Math.min(episodeIndex,project.episodes.length-1)],a,a.provider==="openrouter_gemini_tts");
+}
 function renderAudio() {
-  let html=heading(6,"Vom Text zum Gespräch.","Gib eine gelesene Folge mit dem gewählten Audioanbieter ausdrücklich frei. Fertige Abschnitte bleiben für eine Fortsetzung gespeichert.");
-  if(!project?.episodes?.length) return html+empty("Zuerst braucht es ein fertiges Skript.","Deine Freigabe gehört immer zu dem Text, den du tatsächlich gelesen hast.","Zu den Skripten",PAGE.scripts);
+  let html=heading(6);
+  if(!project?.episodes?.length) return html+empty("Zuerst braucht es ein fertiges Skript.","Deine Freigabe gehört immer zu dem Text, den du tatsächlich gelesen hast.","Zu den Skripten",PAGE.scripts,pageIntros.audio);
   episodeIndex=Math.min(episodeIndex,project.episodes.length-1);
   const e=project.episodes[episodeIndex];
-  const a=currentAudio(),remote=a.provider==="openrouter_gemini_tts",blocked=audioBlockReason();
-  html+=episodePicker()+`<section class="panel"><div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${remote?"Gemini 3.1 Flash TTS · OpenRouter":"Qwen · lokal"}</span></div><p>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"}</p><p class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</p><button class="secondary small" data-step="0">Audioanbieter oder Stimmen ändern</button>${renderPronunciation(e)}<label class="approval"><input id="audio-approval" type="checkbox" ${blocked?"disabled":""}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label><div class="actions"><button id="audio-start" data-action="audio" disabled>Audio erzeugen</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div></section>`;
-  if(blocked)html+=`<p class="hint">${escape(blocked)}</p>`;
-  html+=renderSpeechSettings(a)+renderStyleNotes();
-  if(e.audio?.length)html+=renderListeningReview(e);
-  if(remote)html+=boot.capabilities?.parallel_audio?`<p class="hint">${project.execution?.audio==="parallel"?"Parallel":"Sequenziell"} · ${project.audio_capacity?.active||0} von ${project.audio_capacity?.limit||1} Plätzen belegt. Weitere gelesene Folgen kannst du oben auswählen und einzeln freigeben.</p>`:'<p class="note">Parallele Vertonung benötigt einen Studio-Neustart nach Ende des laufenden Auftrags.</p>';
-  if(project.episodes.some(e=>e.audio.length))html+='<button class="secondary" data-action="overview">Alle fertigen Folgen anhören →</button>';
+  const a=currentAudio(),remote=a.provider==="openrouter_gemini_tts";
+  const hasAudio=project.episodes.some(row=>row.audio?.length);
+  const capacity=remote?(boot.capabilities?.parallel_audio?`<p class="hint">${project.execution?.audio==="parallel"?"Parallel":"Sequenziell"} · ${project.audio_capacity?.active||0} von ${project.audio_capacity?.limit||1} Plätzen belegt. Weitere gelesene Folgen kannst du oben auswählen und einzeln freigeben.</p>`:'<p class="note">Parallele Vertonung benötigt einen Studio-Neustart nach Ende des laufenden Auftrags.</p>'):"";
+  html+=`<div class="split"><div class="split-main">${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${e.audio?.length?renderListeningReview(e):""}${hasAudio?`<section class="panel recordings" id="recordings"><h2>Alle fertigen Folgen anhören</h2>${renderRecordings(recordingsProject())}</section>`:""}</div><aside class="split-rail">${capacity}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
   return html;
 }
 function overviewStatus(p) {
@@ -679,20 +768,79 @@ function podcastDownload(p) {
   return `<a class="download-all" href="/download/${encodeURIComponent(p.id)}/podcast.zip" download>${complete?"Gesamten Podcast herunterladen":"Fertige Folgen herunterladen"} <span>ZIP · ${complete?finished:`${finished} von ${total}`} Folgen</span></a>
     <p class="hint">${complete?"Alle Folgen":"Die bisher fertigen Folgen"} als einzelne MP3s mit kurzen Dateinamen: Folgennummer und Episodentitel.${(p.episodes||[]).some(e=>e.audio?.length&&!e.audio_current)?" Enthält auch die unten gekennzeichneten älteren Aufnahmen.":""}</p>`;
 }
+// The recordings list works on the overview's episode shape, built here from the project detail.
+function recordingsProject(p=project) {
+  return {id:p.id,topic:p.config?.topic||"Podcast",episode_count:Math.max((p.episodes||[]).length,(p.outline?.plan?.episodes||[]).length),
+    episodes:(p.episodes||[]).map(e=>({episode_id:e.script.episode_id,title:e.script.title,audio:e.audio||[],audio_current:e.audio_current}))};
+}
+function renderRecordings(p) {
+  return `<div class="podcast-download" id="project-download-${escape(p.id)}">${podcastDownload(p)}</div><div id="podcasts-${escape(p.id)}">${(p.episodes||[]).map((e,i)=>e.audio?.length?podcastCard(p,e,i):"").join("")}</div><p class="hint" id="project-audio-count-${escape(p.id)}">${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.</p>`;
+}
+// Polling adds finished episodes and updates labels without rebuilding a player that is in use.
+function refreshRecordings(p=project?recordingsProject():null) {
+  if(!p)return;
+  const count=$("project-audio-count-"+p.id);
+  if(count)count.textContent=`${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.`;
+  const download=$("project-download-"+p.id),downloadContent=podcastDownload(p);
+  if(download&&download.innerHTML!==downloadContent)download.innerHTML=downloadContent;
+  (p.episodes||[]).forEach((e,i)=>{
+    if(!e.audio?.length)return;
+    const audioCard=$("podcast-"+p.id+"-"+e.episode_id);
+    if(!audioCard){
+      const following=p.episodes.slice(i+1).map(next=>$("podcast-"+p.id+"-"+next.episode_id)).find(Boolean);
+      if(following)following.insertAdjacentHTML("beforebegin",podcastCard(p,e,i));
+      else $("podcasts-"+p.id)?.insertAdjacentHTML?.("beforeend",podcastCard(p,e,i));
+      return;
+    }
+    const label=$("recording-status-"+p.id+"-"+e.episode_id);
+    if(label)label.textContent=e.audio_current?"":"Aufnahme eines früheren Skript- oder Stimmenstands.";
+    if(audioCard.dataset?.audioVersion!==JSON.stringify(e.audio)&&
+        ![...(audioCard.querySelectorAll?.("audio")||[])].some(audio=>!audio.paused))audioCard.outerHTML=podcastCard(p,e,i);
+  });
+}
+// Overview: what waits for the user, what runs, then one pipeline row per project.
+const runningOf = p => p.job?.status==="running"||(p.audio_jobs||[]).some(a=>a.status==="running");
+function attentionOf(p) {
+  const j=p.job;
+  if(!j||p.unavailable||runningOf(p))return null;
+  const review=j.progress?.plan_review;
+  if(review?.awaiting&&!review.approved)return {text:"Der Rechercheplan wartet auf deine Freigabe.",button:"Plan freigeben",page:PAGE.research};
+  if(j.status==="review_ready")return {text:"Das Inhaltsverzeichnis ist bereit zur Durchsicht.",button:"Inhaltsverzeichnis prüfen",page:PAGE.outline};
+  if(["blocked","failed","interrupted","waiting_for_quota","pending"].includes(j.status))return {text:j.message?String(j.message):"Der Auftrag ist angehalten.",button:"Auftrag ansehen",page:jobPage(p)??PAGE.brief};
+  if(p.has_outline&&!p.script_count&&j.run?.kind!=="script"&&!["script","revise"].includes(j.action))return {text:"Das Inhaltsverzeichnis wartet auf deine Freigabe.",button:"Inhaltsverzeichnis prüfen",page:PAGE.outline};
+  if(p.script_count&&!(p.episodes||[]).some(e=>e.audio?.length))return {text:`${p.script_count} ${p.script_count===1?"Skript ist":"Skripte sind"} fertig zum Lesen und zur Audio-Freigabe.`,button:"Skripte lesen",page:PAGE.scripts};
+  return null;
+}
+function pipelineStates(p) {
+  const j=p.job, run=j?.run, busy=runningOf(p);
+  const blocked=["blocked","failed","interrupted","waiting_for_quota","pending"].includes(j?.status);
+  const hasAudio=(p.episodes||[]).some(e=>e.audio?.length);
+  const states=["done",p.has_research?"done":"pending",p.has_outline?"done":"pending",p.script_count?"done":"pending",p.script_count?"decision":"pending",hasAudio?"done":(p.script_count?"decision":"pending")];
+  if(p.has_outline&&!p.script_count&&run?.kind!=="script"&&!busy)states[PAGE.outline]="decision";
+  if(j?.progress?.plan_review?.awaiting&&!j.progress.plan_review.approved&&!busy)states[PAGE.research]="decision";
+  const page=jobPage(p);
+  if(page!==null&&page!==undefined&&(busy||blocked))states[page]=busy?"running":"blocked";
+  return states;
+}
+const pipeMarkup = states => states.map((s,i)=>`<span class="${s}" title="${steps[i]}"></span>`).join("");
 function overviewCard(p) {
-  return `<section class="panel" id="project-card-${escape(p.id)}" data-project-card="${escape(p.id)}"><div class="panel-title"><h2>${escape(p.topic)}</h2><span class="tag" id="project-state-${escape(p.id)}">${escape(overviewStatus(p))}</span></div>
-    <div class="actions"><button data-open-project="${escape(p.id)}">Projekt öffnen</button><button class="secondary small" data-delete-project="${escape(p.id)}" ${p.unavailable||p.job?.status==="running"||(p.audio_jobs||[]).some(j=>j.status==="running")||!boot.capabilities?.project_overview?"disabled":""}>Projekt löschen</button></div>
-    <div class="podcast-download" id="project-download-${escape(p.id)}">${podcastDownload(p)}</div>
-    <div id="podcasts-${escape(p.id)}">${(p.episodes||[]).map((e,i)=>e.audio?.length?podcastCard(p,e,i):"").join("")}</div>
-    <p class="hint" id="project-audio-count-${escape(p.id)}">${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.</p></section>`;
+  const busy=runningOf(p), hasAudio=(p.episodes||[]).some(e=>e.audio?.length);
+  return `<article class="pipeline" id="project-card-${escape(p.id)}" data-project-card="${escape(p.id)}"><div class="pipeline-main"><h2>${escape(p.topic)}</h2><div class="pipe" id="pipe-${escape(p.id)}" aria-label="Arbeitsschritte">${pipeMarkup(pipelineStates(p))}</div><p class="hint" id="project-state-${escape(p.id)}">${escape(overviewStatus(p))}</p></div>
+    <div class="actions"><button data-open-project="${escape(p.id)}">Projekt öffnen</button>${hasAudio?`<button class="secondary small" data-open-project="${escape(p.id)}" data-open-step="${PAGE.audio}">Podcast anhören</button>`:""}<button class="quiet small danger-text" data-delete-project="${escape(p.id)}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>Projekt löschen</button></div></article>`;
+}
+function renderInbox() {
+  const waiting=[], active=[];
+  for(const p of overviewData.projects){ const a=attentionOf(p); if(a)waiting.push([p,a]); else if(runningOf(p))active.push(p); }
+  return `${waiting.length?`<section class="inbox" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2>${waiting.map(([p,a])=>`<div class="inbox-item"><span class="job-dot decision" aria-hidden="true"></span><div><strong>${escape(p.topic)}</strong><p>${escape(a.text)}</p></div><button class="small" data-open-project="${escape(p.id)}" data-open-step="${a.page}">${escape(a.button)}</button></div>`).join("")}</section>`:""}
+    ${active.length?`<section class="inbox" aria-label="Läuft gerade"><h2>Läuft gerade</h2>${active.map(p=>`<div class="inbox-item running"><span class="job-dot running" aria-hidden="true"></span><div><strong>${escape(p.topic)}</strong><p>${escape(overviewStatus(p))}</p></div><button class="secondary small" data-open-project="${escape(p.id)}">Öffnen</button></div>`).join("")}</section>`:""}`;
 }
 function trashMarkup() {
   return overviewData.trash?.length?`<details class="panel"><summary>Papierkorb · ${overviewData.trash.length} Projekte</summary>${overviewData.trash.map(p=>`<div class="sample-row"><span>${escape(p.topic)}</span><button class="secondary small" data-restore-project="${escape(p.id)}">Wiederherstellen</button></div>`).join("")}</details>`:"";
 }
 function renderOverview() {
-  return `<div class="eyebrow">DEIN PODCAST STUDIO</div><h1>Deine Projekte &amp; Podcasts.</h1><p class="intro">Arbeitsstände verfolgen, weiterarbeiten und fertige Folgen anhören – auch während die nächste Folge entsteht.</p>
-    <button data-new-project>＋ Neues Projekt</button>
-    <div id="overview-projects">${overviewData.projects.length?overviewData.projects.map(overviewCard).join(""):'<p id="overview-empty" class="hint">Dein erstes Projekt beginnt mit einem Gespräch.</p>'}</div><div id="overview-trash">${trashMarkup()}</div>`;
+  return `<header class="page-head"><div class="page-title"><span class="eyebrow">ÜBERSICHT</span><h1>Deine Projekte &amp; Podcasts</h1></div><button data-new-project>＋ Neues Projekt</button></header>
+    <div id="overview-inbox">${renderInbox()}</div>
+    <section class="inbox" aria-label="Projekte"><h2>Projekte</h2><div id="overview-projects">${overviewData.projects.length?overviewData.projects.map(overviewCard).join(""):'<p id="overview-empty" class="hint">Dein erstes Projekt beginnt mit einem Gespräch.</p>'}</div></section><div id="overview-trash">${trashMarkup()}</div>`;
 }
 async function loadOverview() {
   if(boot.capabilities?.project_overview)return await api("/api/projects");
@@ -709,35 +857,22 @@ async function showOverview() {
 function refreshOverview() {
   const container=$("overview-projects");
   if(!container)return;
-  for(const card of container.querySelectorAll("[data-project-card]"))
+  const inbox=$("overview-inbox"),inboxContent=renderInbox();
+  if(inbox&&inbox.innerHTML!==inboxContent)inbox.innerHTML=inboxContent;
+  for(const card of container.querySelectorAll?.("[data-project-card]")||[])
     if(!overviewData.projects.some(p=>p.id===card.dataset.projectCard))card.remove();
   if(overviewData.projects.length&&$("overview-empty"))$("overview-empty").hidden=true;
   for(const p of overviewData.projects){
     const card=$("project-card-"+p.id);
-    if(!card){container.insertAdjacentHTML("beforeend",overviewCard(p));continue;}
+    if(!card){container.insertAdjacentHTML?.("beforeend",overviewCard(p));continue;}
     $("project-state-"+p.id).textContent=overviewStatus(p);
-    const button=card.querySelector("[data-delete-project]");
-    if(button)button.disabled=p.unavailable||p.job?.status==="running"||(p.audio_jobs||[]).some(j=>j.status==="running")||!boot.capabilities?.project_overview;
-    $("project-audio-count-"+p.id).textContent=`${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.`;
-    const download=$("project-download-"+p.id),downloadContent=podcastDownload(p);
-    if(download&&download.innerHTML!==downloadContent)download.innerHTML=downloadContent;
-    (p.episodes||[]).forEach((e,i)=>{
-      if(!e.audio?.length)return;
-      const audioCard=$("podcast-"+p.id+"-"+e.episode_id);
-      if(!audioCard){
-        const following=p.episodes.slice(i+1).map(next=>$("podcast-"+p.id+"-"+next.episode_id)).find(Boolean);
-        if(following)following.insertAdjacentHTML("beforebegin",podcastCard(p,e,i));
-        else $("podcasts-"+p.id).insertAdjacentHTML("beforeend",podcastCard(p,e,i));
-        return;
-      }
-      const label=$("recording-status-"+p.id+"-"+e.episode_id);
-      if(label)label.textContent=e.audio_current?"":"Aufnahme eines früheren Skript- oder Stimmenstands.";
-      if(audioCard.dataset.audioVersion!==JSON.stringify(e.audio)&&
-          ![...audioCard.querySelectorAll("audio")].some(audio=>!audio.paused))audioCard.outerHTML=podcastCard(p,e,i);
-    });
+    const pipe=$("pipe-"+p.id),pipeContent=pipeMarkup(pipelineStates(p));
+    if(pipe&&pipe.innerHTML!==pipeContent)pipe.innerHTML=pipeContent;
+    const button=card.querySelector?.("[data-delete-project]");
+    if(button)button.disabled=p.unavailable||runningOf(p)||!boot.capabilities?.project_overview;
   }
   const trash=$("overview-trash"),content=trashMarkup();
-  if(trash.innerHTML!==content)trash.innerHTML=content;
+  if(trash&&trash.innerHTML!==content)trash.innerHTML=content;
 }
 function renderAudioJobs() {
   const jobs=project?.audio_jobs||[];
@@ -748,8 +883,8 @@ function renderAudioJobs() {
     return `<section class="audio-job"><div class="job-top"><strong>${escape(e?.script.title||j.episode)} · ${escape(labels[j.status]||j.status)}</strong>
     ${active?`<button class="danger small" data-action="stop" data-job-id="${escape(j.id)}">Diese Folge anhalten</button>`:canResume?`<button class="secondary small" data-action="resume" data-run-id="${escape(j.run.run_id)}" data-episode="${escape(j.episode)}" ${audioBlockReason(j.episode)?"disabled":""}>Diese Folge fortsetzen</button>`:""}</div>
     ${j.message?`<p>${escape(j.message)}</p>`:""}
-    ${active&&p?.total_segments!==undefined?`<p>${Number(p.completed_segments)} von ${Number(p.total_segments)} Sprechabschnitten fertig</p><progress value="${Number(p.completed_segments)}" max="${Number(p.total_segments)}"></progress>`:""}
-    ${j.status==="completed"?'<button class="secondary small" data-action="overview">Podcast anhören</button>':""}</section>`;
+    ${active&&p?.total_segments!==undefined?`<p>${Number(p.completed_segments)} von ${Number(p.total_segments)} Sprechabschnitten fertig</p><progress value="${Number(p.completed_segments)}" max="${Number(p.total_segments)}" aria-label="Fertige Sprechabschnitte"></progress>`:""}
+    ${j.status==="completed"&&step!==PAGE.audio?`<button class="secondary small" data-step="${PAGE.audio}">Podcast anhören</button>`:""}</section>`;
   }).join("");
 }
 
@@ -868,7 +1003,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   const expected=Number.isSafeInteger(budget?.expected_remaining_calls)?` Erfahrungsgemäß etwa ${Number(budget.expected_remaining_calls)} Aufrufe (${Number(budget.expected_calls_per_task)} je offener Teilfrage).`:"";
   const suggested=budget?Number(budget.used)+Math.max(Number(budget.expected_remaining_calls||0),Number(budget.minimum_remaining_calls||0)):0;
   const approveCalls=budget&&!budget.feasible&&!active?`<button class="secondary small" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${suggested}">Aufruflimit auf ${suggested} erhöhen</button>`:"";
-  const budgetNote=budget?`<p class="${budget.feasible?"hint":"notice"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar.${escape(expected)} ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>${approveCalls}`:"";
+  const budgetNote=budget?`<p class="${budget.feasible?"hint":"note"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar.${escape(expected)} ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>${approveCalls}`:"";
   const states={pending:"Wartet",researching:"Wird untersucht",reviewing:"Antwort wird geprüft",verified:"Geprüft abgeschlossen",blocked:"Beleg fehlt"};
   const phases={awaiting_plan_approval:"Wartet auf Freigabe des Rechercheplans",questions:"Einzelne Fragen untersuchen und prüfen",synthesis:"Dossier aus geprüften Antworten erstellen",audit:"Gesamtdossier prüfen",completed:"Recherche abgeschlossen",blocked:"Offene Belegfragen"};
   const activeIds=activeTasks(ledger);
@@ -891,7 +1026,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   }).join("");
   return `<section class="research-questions">
     <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
-    <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}"></progress>
+    <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}" aria-label="Geprüft abgeschlossene Teilfragen"></progress>
     <p>${escape(phases[ledger.phase]||"")}</p>${renderActiveTasks(ledger)}${budgetNote}
     <p class="hint">Die Abschlusskriterien bleiben fest. Eine geprüfte Antwort wird nur bei einem konkreten Einwand aus der Gesamtprüfung erneut geöffnet.</p>${rows}</section>`;
 }
@@ -920,15 +1055,47 @@ function renderPlanReview(job, runId) {
     <div class="actions"><button data-action="approve-plan" data-run-id="${escape(runId)}">Rechercheplan freigeben</button></div>
     <p class="hint">Ohne Freigabe wird kein Modellaufruf verbraucht. Mit einer Obergrenze wird der Plan einmal neu zugeschnitten (Planungsaufrufe) und erneut zur Freigabe vorgelegt; die Freigabe gilt immer genau für den angezeigten Plan.</p></section>`;
 }
-function renderJob() {
-  const j=project?.job, box=$("job-status");
-  if(overviewPage){box.hidden=true;return;}
-  if(project?.audio_jobs?.some(job=>job.id===j?.id)){
-    box.hidden=false;
-    const view=JSON.stringify({audio_jobs:project.audio_jobs,capacity:project.audio_capacity,submitting});
-    if(view!==lastJobView){box.innerHTML=renderAudioJobs();lastJobView=view;}
-    return;
+// The research page owns the decision and the ledger; the drawer only carries telemetry.
+function renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable) {
+  const p=j.progress, ledger=p.research_questions, quality=p.research_quality, runId=r?.run_id||"";
+  let html=renderPlanReview(j,runId);
+  if(ledger){
+    if(reopenable)html+=`<p>${Number(ledger.reopenable)} blockierte ${Number(ledger.reopenable)===1?"Teilfrage hat":"Teilfragen haben"} das Web noch nicht durchsucht. „Fortsetzen“ holt diese Websuche nach; erst danach gilt eine Frage als konkrete Lücke. Fertige Antworten bleiben gespeichert.</p>`;
+    else if(researchBlocked)html+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht. Eine blockierte Teilfrage kann als Lücke akzeptiert werden; das Dossier wird dann ohne sie abgeschlossen und nennt die Lücke ausdrücklich.</p><button class="secondary small" data-step="${PAGE.brief}">Auftrag ansehen</button>`;
+    html+=renderResearchQuestions(ledger,questionOpen,active,runId,p.search_round_limit);
   }
+  html+=`<p>${escape(p.activity)}</p><p class="hint">Rechercherunden: ${Number(p.search_rounds||0)} von ${Number(p.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
+  if(quality){
+    const pending=quality.assessment_status==="pending_after_source_review"||(ledger&&ledger.phase!=="completed");
+    html+=`<details class="research-quality"${researchOpen?" open":""}><summary>${pending?(ledger?"Gesamtbewertung folgt nach den Einzelantworten":"Quellenlücken werden gezielt geschlossen · Gesamtbewertung folgt"):`${Number(quality.closed)} von ${Number(quality.total)} Leitfragen erfüllen alle Qualitätsmerkmale`}</summary>${pending?(ledger?"<p>Der aktuelle Stand steht bei den einzelnen Recherchefragen. Die bisherigen Leitfragenbewertungen unten werden vor der Freigabe erneuert.</p>":"<p>Zuerst werden die fehlenden Belege gesucht und gelesen. Die bisherigen Leitfragenbewertungen unten werden danach erneuert.</p>"):""}<p>Geprüft werden vollständige Antworten, nachvollziehbare Erklärungen, gelesene Belege, unabhängige Gegenprüfung und Grenzen.</p>${(quality.requirements||[]).map(row=>`<p><strong>${pending?"·":row.passed?"✓":"○"} ${escape(row.question)}</strong></p><p>${escape(row.reason)}</p>${(row.missing||[]).length?`<ul>${row.missing.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}`).join("")}${quality.blocking_gaps?.length?`<p>Weitere offene Punkte:</p><ul>${quality.blocking_gaps.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}</details>`;
+  }
+  return `<section class="panel research-panel">${html}</section>`;
+}
+function drawerToggle() {
+  return `<button class="quiet small drawer-toggle" data-action="drawer-toggle" aria-expanded="${drawerOpen}" aria-controls="job-status">${drawerOpen?"Maschinenraum schließen":"Maschinenraum"}</button>`;
+}
+function drawerMarkup(summary, body) {
+  return `<div class="drawer-head"><button class="quiet small drawer-toggle" data-action="drawer-toggle" aria-expanded="${drawerOpen}">${drawerOpen?"▾":"▴"} Maschinenraum</button><span class="hint">${summary}</span></div><div class="drawer-body"${drawerOpen?"":" hidden"}>${body}</div>`;
+}
+function dock(show) { document.body?.classList?.toggle?.("has-dock",!!show); }
+function audioJobSummary() {
+  const jobs=project?.audio_jobs||[], active=jobs.filter(j=>j.status==="running");
+  const title=id=>project.episodes?.find(e=>e.script.episode_id===id)?.script.title||id;
+  if(active.length===1){const p=active[0].progress;return `Folge wird vertont · ${escape(title(active[0].episode))}${p?.total_segments!==undefined?` · ${Number(p.completed_segments)} von ${Number(p.total_segments)} Sprechabschnitten`:""}`;}
+  if(active.length)return `${active.length} Folgen werden vertont`;
+  const done=jobs.filter(j=>j.status==="completed").length;
+  return done===jobs.length?`Vertonung abgeschlossen · ${done===1?escape(title(jobs[0].episode)):`${done} Aufträge`}`:`Vertonung: ${done} von ${jobs.length} Aufträgen fertig, ${jobs.length-done} angehalten`;
+}
+function renderAudioJobBar() {
+  const active=(project?.audio_jobs||[]).some(j=>j.status==="running");
+  return `<span class="job-dot ${active?"running":"done"}" aria-hidden="true"></span><span class="job-text">${audioJobSummary()}</span>${step!==PAGE.audio?`<button class="secondary small status-link" data-step="${PAGE.audio}">Vertonung ansehen →</button>`:""}${drawerToggle()}`;
+}
+// One line in the topbar carries the state and the stop, resume or next-step action. Telemetry goes to the docked drawer.
+// Page panels (production, research, audio jobs) are filled first because they belong to their step, not to the drawer.
+function renderJob() {
+  const j=project?.job, box=$("job-status"), bar=$("job-bar");
+  const clear=()=>{box.hidden=true;box.innerHTML="";bar.hidden=true;bar.innerHTML="";lastJobView="";dock(false);};
+  if(overviewPage||!project){clear();return;}
   const details=step===PAGE.production?$("production-progress"):null;
   if(details) {
     const opened=new Set(Array.from(details.querySelectorAll?.("details[open][data-progress-episode]")||[],el=>el.dataset.progressEpisode));
@@ -937,12 +1104,26 @@ function renderJob() {
     for(const detail of details.querySelectorAll?.("[data-progress-episode]")||[])detail.open=opened.has(detail.dataset.progressEpisode);
     for(const preview of details.querySelectorAll?.("[data-progress-preview]")||[])preview.scrollTop=scrolls.get(preview.dataset.progressPreview)||0;
   }
+  const audioPanel=step===PAGE.audio?$("audio-jobs"):null;
+  if(project.audio_jobs?.some(job=>job.id===j?.id)){
+    box.hidden=false;bar.hidden=false;dock(true);
+    const view=JSON.stringify({audio_jobs:project.audio_jobs,capacity:project.audio_capacity,submitting,drawerOpen,step});
+    if(view===lastJobView&&!(audioPanel&&audioPanel.innerHTML===""))return;
+    lastJobView=view;
+    const cards=renderAudioJobs();
+    bar.innerHTML=renderAudioJobBar();
+    if(audioPanel){audioPanel.innerHTML=cards?`<section class="panel audio-jobs"><h2>Vertonungsaufträge</h2>${cards}</section>`:"";box.innerHTML=drawerMarkup(audioJobSummary(),'<p class="hint">Fortschritt, Anhalten und Fortsetzen je Folge stehen auf der Seite Vertonung.</p>');}
+    else box.innerHTML=drawerMarkup(audioJobSummary(),cards);
+    return;
+  }
+  if(audioPanel)audioPanel.innerHTML="";
   const legacy=!j&&project?.run&&project.run.status!=="completed"?project.run:null;
-  box.hidden=!j&&!legacy;
-  if(box.hidden){box.innerHTML="";lastJobView="";return;}
+  const research=$("research-progress");
+  if(!j&&!legacy){clear();if(research)research.innerHTML="";return;}
+  box.hidden=false;bar.hidden=false;dock(true);
   const r=j?.run||legacy, active=j?.status==="running", state=j?.status||legacy.status;
-  const researchOpen=box.querySelector?.(".research-quality")?.open;
-  const questionOpen=new Set(Array.from(box.querySelectorAll?.("[data-research-question][open]")||[],el=>el.dataset.researchQuestion));
+  const researchOpen=research?.querySelector?.(".research-quality")?.open;
+  const questionOpen=new Set(Array.from(research?.querySelectorAll?.("[data-research-question][open]")||[],el=>el.dataset.researchQuestion));
   const summaryOpen=box.querySelector?.(".status-history")?.open;
   const materialOpen=box.querySelector?.(".work-material")?.open;
   const eventsOpen=box.querySelector?.(".model-events")?.open;
@@ -950,11 +1131,12 @@ function renderJob() {
   const traceAtEnd=!previousTrace||previousTrace.scrollHeight-previousTrace.scrollTop-previousTrace.clientHeight<32;
   const traceScroll=previousTrace?.scrollTop||0;
   const isScript=r?.kind==="script"||j?.progress?.phase==="script";
-  const view=JSON.stringify({project:project?.id,job:j,legacy,
+  const view=JSON.stringify({project:project?.id,job:j,legacy,drawerOpen,
     progressClock:active&&["script","research"].includes(j?.progress?.phase)?Math.floor(Date.now()/10000):null,
     page:j?.sample?null:step,minute:active?Math.floor((Date.now()-Date.parse(j.started_at))/60000):null});
-  // Preserve the audio element and its playback position during status polling.
-  if(view===lastJobView)return;
+  // A freshly rendered research page has an empty ledger container even when the job itself is unchanged.
+  const researchStale=!!research&&research.innerHTML===""&&j?.progress?.phase==="research";
+  if(view===lastJobView&&!researchStale)return;
   lastJobView=view;
   const missingFoundation=!active&&Object.values(r?.stages||{}).some(v=>v.error?.code==="teaching_research_required");
   const designBlocked=!active&&Object.values(r?.stages||{}).some(v=>v.error?.code==="teaching_design_failed");
@@ -968,52 +1150,69 @@ function renderJob() {
   // A resume without the approval would only stop at the gate again; the approval button replaces it until then.
   const resumable=r&&["interrupted","waiting_for_quota","failed","blocked","pending","running"].includes(state)&&!active&&!missingFoundation&&!designBlocked&&(!researchBlocked||reopenable)&&!planPending;
   const message=designBlocked&&j?.progress?.review_issues?.length?"Die automatische Überarbeitung hat noch nicht alle Kritikpunkte gelöst. Der bisherige Stand ist gespeichert.":missingFoundation&&/research_needed\.md/.test(j?.message||"")?"Der Abgleich zwischen Quellen und Lehrkonzept ist noch offen. Der bisherige Auftrag bleibt gespeichert.":j?.message;
-  box.innerHTML=`<div class="job-top"><strong>${escape(title)}</strong>${active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':""}</div>${message?`<p>${escape(message)}</p>`:""}${active?`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`:""}${r&&!isScript&&!j?.progress?.research_questions?`<div class="stage-strip">${Object.entries(r.stages).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`:""}${!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined?`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}"></progress>`:""}${j?.checks?`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`:""}`;
-  if(isScript&&j?.progress?.current_episode)box.innerHTML+=`<p>Folge ${Number(j.progress.episode_number)} von ${Number(j.progress.total_segments)} · ${escape(j.progress.activity)}</p>`;
-  if(j?.auto_resume_at)box.innerHTML+=`<p class="hint">Automatische Fortsetzung geplant für ${escape(new Date(j.auto_resume_at).toLocaleString("de-DE"))}, solange das Studio-Fenster geöffnet bleibt.</p>`;
-  if(active&&Number.isSafeInteger(j?.heartbeat_age_seconds)&&j.heartbeat_age_seconds>300)box.innerHTML+=`<p class="notice">Der Arbeitsprozess hat seit ${Math.floor(j.heartbeat_age_seconds/60)} Min. keinen Fortschritt gespeichert. Läuft er nicht mehr, „Auftrag anhalten“ und danach fortsetzen.</p>`;
   const destination=state==="completed"?runPage(r):jobPage();
   const links=["Auftrag ansehen","Recherche ansehen","Inhaltsverzeichnis prüfen","Ausarbeitung ansehen","Skripte lesen","Audio ansehen"];
-  if(destination!==null&&destination!==undefined&&destination!==step)box.innerHTML+=`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`;
-  if(j?.sample)box.innerHTML+=`<p>Hörprobe: ${escape(j.sample.voice)} · ${escape(j.sample.language)}</p><audio controls preload="none" src="${mediaUrl(j.sample.audio)}"></audio><div class="actions"><a href="${mediaUrl(j.sample.audio)}" target="_blank" rel="noopener">Hörprobe separat öffnen</a><a href="${mediaUrl(j.sample.audio)}" download>MP3 herunterladen</a></div>`;
-  if(j?.action==="audio_samples"&&j?.progress?.current_voice&&active)box.innerHTML+=`<p>Aktuelle Stimme: ${escape(j.progress.current_voice)}</p>`;
+  const tone=active?"running":planPending||state==="review_ready"?"decision":["blocked","failed","interrupted","waiting_for_quota","pending"].includes(state)?"blocked":"done";
+  const calls=Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0?` · Aufrufe ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}`:"";
+  const meta=active&&j?.started_at?` · seit ${elapsedText(j.started_at)}${calls}`:"";
+  bar.innerHTML=`<span class="job-dot ${tone}" aria-hidden="true"></span><span class="job-text"><strong>${escape(title)}</strong>${meta}</span>`+
+    (active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':"")+
+    (destination!==null&&destination!==undefined&&destination!==step?`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`:"")+drawerToggle();
+  if(research)research.innerHTML=j?.progress?.phase==="research"?renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable):"";
+  let body="";
+  if(message)body+=`<p>${escape(message)}</p>`;
+  if(active)body+=`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`;
+  if(r&&!isScript&&!j?.progress?.research_questions)body+=`<div class="stage-strip">${Object.entries(r.stages||{}).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`;
+  if(!["script","research"].includes(j?.progress?.phase)&&j?.progress?.total_segments!==undefined)body+=`<p>${j.progress.completed_segments} von ${j.progress.total_segments} ${j.action==="audio_samples"?"Hörproben":"Sprechabschnitten"} fertig</p><progress value="${Number(j.progress.completed_segments)}" max="${Number(j.progress.total_segments)}" aria-label="Fortschritt"></progress>`;
+  if(j?.checks)body+=`<ul class="checks">${j.checks.checks.map(c=>`<li>${c.ok?"✓":"○"} ${escape(c.name)}<span class="hint">${escape(c.detail)}</span></li>`).join("")}</ul><p>Diese Prüfung erzeugt kein Audio.</p>`;
+  if(isScript&&j?.progress?.current_episode)body+=`<p>Folge ${Number(j.progress.episode_number)} von ${Number(j.progress.total_segments)} · ${escape(j.progress.activity)}</p>`;
+  if(j?.auto_resume_at)body+=`<p class="hint">Automatische Fortsetzung geplant für ${escape(new Date(j.auto_resume_at).toLocaleString("de-DE"))}, solange das Studio-Fenster geöffnet bleibt.</p>`;
+  if(active&&Number.isSafeInteger(j?.heartbeat_age_seconds)&&j.heartbeat_age_seconds>300)body+=`<p class="note">Der Arbeitsprozess hat seit ${Math.floor(j.heartbeat_age_seconds/60)} Min. keinen Fortschritt gespeichert. Läuft er nicht mehr, „Auftrag anhalten“ und danach fortsetzen.</p>`;
+  if(j?.sample)body+=`<p>Hörprobe: ${escape(j.sample.voice)} · ${escape(j.sample.language)}</p><audio controls preload="none" src="${mediaUrl(j.sample.audio)}"></audio><div class="actions"><a href="${mediaUrl(j.sample.audio)}" target="_blank" rel="noopener">Hörprobe separat öffnen</a><a href="${mediaUrl(j.sample.audio)}" download>MP3 herunterladen</a></div>`;
+  if(j?.action==="audio_samples"&&j?.progress?.current_voice&&active)body+=`<p>Aktuelle Stimme: ${escape(j.progress.current_voice)}</p>`;
   if(Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0){
     const projection=j.progress.budget_projection;
     const outlook=Number.isSafeInteger(projection?.minimum_remaining_calls)?` · mindestens ${projection.minimum_remaining_calls} weitere nötig${projection.feasible===false?" – Limit reicht nicht":""}`:"";
-    box.innerHTML+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}${escape(outlook)}</p>`;
+    body+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}${escape(outlook)}</p>`;
   }
-  box.innerHTML+=`<div class="model-observability">${renderStatusSummary(j)}${renderModelTrace(j)}</div>`;
-  if(j?.progress?.phase==="research"){
-    const quality=j.progress.research_quality;
-    const ledger=j.progress.research_questions;
-    if(ledger){
-      box.innerHTML+=renderResearchQuestions(ledger,questionOpen,active,r?.run_id||"",j.progress.search_round_limit);
-      if(reopenable)box.innerHTML+=`<p>${Number(ledger.reopenable)} blockierte ${Number(ledger.reopenable)===1?"Teilfrage hat":"Teilfragen haben"} das Web noch nicht durchsucht. „Fortsetzen“ holt diese Websuche nach; erst danach gilt eine Frage als konkrete Lücke. Fertige Antworten bleiben gespeichert.</p>`;
-      else if(researchBlocked)box.innerHTML+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht. Eine blockierte Teilfrage kann als Lücke akzeptiert werden; das Dossier wird dann ohne sie abgeschlossen und nennt die Lücke ausdrücklich.</p><button class="secondary small" data-step="${PAGE.brief}">Auftrag ansehen</button>`;
-    }
-    box.innerHTML+=renderPlanReview(j,r?.run_id||"");
-    box.innerHTML+=`<p>${escape(j.progress.activity)}</p><p class="hint">Rechercherunden: ${Number(j.progress.search_rounds||0)} von ${Number(j.progress.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
-    if(quality){
-      const pending=quality.assessment_status==="pending_after_source_review"||(ledger&&ledger.phase!=="completed");
-      box.innerHTML+=`<details class="research-quality"${researchOpen?" open":""}><summary>${pending?(ledger?"Gesamtbewertung folgt nach den Einzelantworten":"Quellenlücken werden gezielt geschlossen · Gesamtbewertung folgt"):`${Number(quality.closed)} von ${Number(quality.total)} Leitfragen erfüllen alle Qualitätsmerkmale`}</summary>${pending?(ledger?"<p>Der aktuelle Stand steht bei den einzelnen Recherchefragen. Die bisherigen Leitfragenbewertungen unten werden vor der Freigabe erneuert.</p>":"<p>Zuerst werden die fehlenden Belege gesucht und gelesen. Die bisherigen Leitfragenbewertungen unten werden danach erneuert.</p>"):""}<p>Geprüft werden vollständige Antworten, nachvollziehbare Erklärungen, gelesene Belege, unabhängige Gegenprüfung und Grenzen.</p>${(quality.requirements||[]).map(row=>`<p><strong>${pending?"·":row.passed?"✓":"○"} ${escape(row.question)}</strong></p><p>${escape(row.reason)}</p>${(row.missing||[]).length?`<ul>${row.missing.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}`).join("")}${quality.blocking_gaps?.length?`<p>Weitere offene Punkte:</p><ul>${quality.blocking_gaps.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}</details>`;
-    }
-  }
-  const history=box.querySelector?.(".status-history");
-  if(history)history.open=!!summaryOpen;
-  box.innerHTML+=renderProgressTiming(j?.progress,active);
-  box.innerHTML+=renderRunTextChoice(j);
+  body+=`<div class="model-observability">${renderStatusSummary(j)}${renderModelTrace(j)}</div>`;
+  body+=renderProgressTiming(j?.progress,active);
+  body+=renderRunTextChoice(j);
   if(j?.progress?.execution?.text==="parallel"){
     const activeEpisodes=j.progress.active_episodes||[];
-    box.innerHTML+=`<p class="hint">Textmodus: Parallel · bis zu 3 Folgen je Skript-, Polishing- oder Prüfstufe.${activeEpisodes.length?` In Bearbeitung: ${activeEpisodes.map(id=>escape(j.progress.episodes?.find(e=>e.episode_id===id)?.title||id)).join(", ")}.`:""}</p>`;
-    if(j.progress.stage==="teaching")box.innerHTML+=`<p class="hint">Die Lehrkonzepte werden nacheinander ausgearbeitet, damit spätere Folgen auf den Erklärungen und Beispielen der früheren aufbauen können. Sobald alle Lehrkonzepte fertig sind, beginnt die parallele Skripterstellung.</p>`;
+    body+=`<p class="hint">Textmodus: Parallel · bis zu 3 Folgen je Skript-, Polishing- oder Prüfstufe.${activeEpisodes.length?` In Bearbeitung: ${activeEpisodes.map(id=>escape(j.progress.episodes?.find(e=>e.episode_id===id)?.title||id)).join(", ")}.`:""}</p>`;
+    if(j.progress.stage==="teaching")body+=`<p class="hint">Die Lehrkonzepte werden nacheinander ausgearbeitet, damit spätere Folgen auf den Erklärungen und Beispielen der früheren aufbauen können. Sobald alle Lehrkonzepte fertig sind, beginnt die parallele Skripterstellung.</p>`;
   }
+  box.innerHTML=drawerMarkup(escape(title)+(message?` · ${escape(message)}`:""),body||'<p class="hint">Für diesen Auftrag liegen keine weiteren Meldungen vor.</p>');
+  const history=box.querySelector?.(".status-history");
+  if(history)history.open=!!summaryOpen;
   const traceList=box.querySelector?.(".trace-lines");
   const materialDetail=box.querySelector?.(".work-material"),eventsDetail=box.querySelector?.(".model-events");
   if(materialDetail)materialDetail.open=!!materialOpen;
   if(eventsDetail)eventsDetail.open=!!eventsOpen;
   if(traceList)traceList.scrollTop=traceAtEnd?traceList.scrollHeight:traceScroll;
 }
-function render() { renderNavigation(); $("content").innerHTML=overviewPage?renderOverview():[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step](); renderJob(); syncPlayButtons(); }
+// Unfinished input survives a re-render of the same project; a project switch starts clean.
+const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","pause-same","pause-change","pause-chapter","host-name-a","host-name-b","plan-max-tasks","api-key"];
+function formSnapshot() {
+  const values={};
+  for(const id of FORM_IDS){const el=$(id);if(el&&typeof el.value==="string"&&el.value!=="")values[id]=el.value;}
+  const done=$("listening-done");
+  return {projectId:project?.id||null,values,listening:!!done?.checked};
+}
+function formRestore(saved) {
+  if(!saved||saved.projectId!==(project?.id||null))return;
+  for(const [id,value] of Object.entries(saved.values)){const el=$(id);if(el)el.value=value;}
+  const done=$("listening-done");
+  if(saved.listening&&done)done.checked=true;
+}
+function render() {
+  const saved=formSnapshot();
+  renderNavigation();
+  $("content").innerHTML=overviewPage?renderOverview():[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step]();
+  renderJob(); formRestore(saved); syncPlayButtons();
+  if(!overviewPage&&window.matchMedia?.("(max-width: 720px)")?.matches)$("steps").querySelector?.('[aria-current="page"]')?.scrollIntoView?.({inline:"center",block:"nearest"});
+}
 async function refreshProjects() {
   boot=await api("/api/bootstrap");
   $("project-select").innerHTML='<option value="">Neues Projekt</option>'+boot.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.topic)}</option>`).join("");
@@ -1025,12 +1224,13 @@ async function selectProject(id, loaded=null, requestedPage=null) {
   const selected=id?(loaded||await api("/api/projects/"+encodeURIComponent(id))):null;
   if(epoch!==navigationEpoch)return;
   overviewPage=false;
-  pendingAttachments=[];
+  pendingAttachments=[];drawerOpen=false;
   project=selected;
   $("project-select").value=id||"";
   episodeIndex=0;scriptEpisodeId=null;readingSnapshot=null;followWorkflow=requestedPage===null;
   step=requestedPage===null?recommendedPage():requestedPage;
   lastJobSignature=projectJobSignature(project);updatePageUrl();render();
+  if(step===PAGE.brief&&(project?.chat||[]).length)scrollChatToEnd();
 }
 async function storeKey() {
   const key=$("api-key")?.value.trim();
@@ -1057,12 +1257,14 @@ async function sendSetupMessage(message, presetId=null) {
       project=await api(`/api/projects/${project.id}`);
     }
     await start("assistant",{message,...(presetId?{text_preset:presetId}:{})});
+    const field=$("chat-message");
+    if(field)field.value="";
   }finally{setupSending=false;refreshAttachmentComposer();}
 }
 async function applySetupProposal() {
   await api(`/api/projects/${project.id}/apply_proposal`,{proposal_hash:project.proposal_hash,
     config_hash:project.config_hash,audio_hash:project.audio_hash,execution_hash:project.execution_hash});
-  project=await api(`/api/projects/${project.id}`);await refreshProjects();render();notice("Deine Auswahl ist gespeichert.");
+  project=await api(`/api/projects/${project.id}`);await refreshProjects();render();notice("Deine Auswahl ist gespeichert.","ok");
 }
 async function start(action, extra={}) {
   if(!project) throw new Error("Lege zuerst dein Projekt an.");
@@ -1072,7 +1274,10 @@ async function start(action, extra={}) {
   submitting=true;
   try { await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project); }
   finally { submitting=false; }
+  // Checks and voice samples answer inside the drawer, so it opens for them.
+  if(["check","audio_sample","audio_samples"].includes(action))drawerOpen=true;
   navigatePage(recommendedPage(),{automatic:true,push:false});
+  if(action==="assistant")scrollChatToEnd();
 }
 function jobSignature(job) { return job?`${job.id}:${job.status}`:""; }
 function projectJobSignature(p) { return [jobSignature(p?.job),...(p?.audio_jobs||[]).map(jobSignature)].join("|"); }
@@ -1091,6 +1296,7 @@ document.addEventListener("change",event=>attempt(async()=>{
 document.addEventListener("click",event=>{
   const button=event.target.closest("button");if(!button)return;
   attempt(async()=>{
+    if(button.dataset.scroll){$(button.dataset.scroll)?.scrollIntoView?.({block:"start"});return;}
     if(button.dataset.textPreset){
       const p=boot.text_catalog.presets.find(row=>row.id===button.dataset.textPreset);
       if(!p)throw new Error("Bitte die Modellauswahl neu laden.");
@@ -1101,12 +1307,12 @@ document.addEventListener("click",event=>{
     if(button.dataset.removeAttachment){await removeAttachment(button.dataset.removeAttachment);return;}
     if(button.id==="new-project"||button.hasAttribute("data-new-project")){await selectProject("");return;}
     if(button.id==="project-overview"||button.dataset.action==="overview"){await showOverview();return;}
-    if(button.dataset.openProject){await selectProject(button.dataset.openProject);return;}
+    if(button.dataset.openProject){await selectProject(button.dataset.openProject,null,button.dataset.openStep!==undefined?Number(button.dataset.openStep):null);return;}
     if(button.dataset.deleteProject){
       const p=overviewData.projects.find(p=>p.id===button.dataset.deleteProject);
       if(p&&window.confirm(`„${p.topic}“ mit Recherche, Skripten und Audio in den lokalen Papierkorb verschieben?`)){
         await api(`/api/projects/${p.id}/delete`,{confirm_id:p.id,config_hash:p.config_hash});
-        await refreshProjects();overviewData=await loadOverview();refreshOverview();notice("Projekt im Papierkorb. Du kannst es unten wiederherstellen.");
+        await refreshProjects();overviewData=await loadOverview();refreshOverview();notice("Projekt im Papierkorb. Du kannst es unten wiederherstellen.","ok");
       }return;
     }
     if(button.dataset.restoreProject){await api("/api/restore",{trash_id:button.dataset.restoreProject});await refreshProjects();overviewData=await loadOverview();refreshOverview();return;}
@@ -1121,42 +1327,46 @@ document.addEventListener("click",event=>{
     }
     if(button.dataset.playVoice)await playSample(button.dataset.playVoice,button.dataset.language);
     const action=button.dataset.action;if(!action)return;
+    if(action==="drawer-toggle"){drawerOpen=!drawerOpen;lastJobView="";renderJob();return;}
     if(action==="refresh-script"){readingSnapshot=null;$("content").innerHTML=renderScript();return;}
-    if(action==="quit"){await api("/api/quit",{});project=null;$("job-status").hidden=true;$("content").innerHTML='<section class="empty"><h1>Bis zum nächsten Gespräch.</h1><p>Das Studio ist beendet. Öffne den Podcast-Studio-Starter in deinem Projektordner, um es wieder zu starten.</p></section>';return;}
+    if(action==="quit"){
+      if(running()&&typeof window.confirm==="function"&&!window.confirm("Ein Auftrag läuft noch. Studio trotzdem beenden? Der Auftrag wird angehalten und bleibt fortsetzbar."))return;
+      await api("/api/quit",{});project=null;$("job-status").hidden=true;$("job-bar").hidden=true;$("content").innerHTML='<section class="empty"><h1>Bis zum nächsten Gespräch.</h1><p>Das Studio ist beendet. Öffne den Podcast-Studio-Starter in deinem Projektordner, um es wieder zu starten.</p></section>';return;
+    }
     if(action==="apply-proposal"){await applySetupProposal();return;}
-    if(action==="store-key"){await storeKey();notice("Key im Sitzungsspeicher hinterlegt.");return;}
+    if(action==="store-key"){await storeKey();notice("Key im Sitzungsspeicher hinterlegt.","ok");return;}
     if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
     if(action==="accept-gap"){
       const reason=window.prompt("Warum darf diese Teilfrage im Dossier als Lücke bleiben? (optional)","");
       if(reason===null)return;
       await api(`/api/projects/${project.id}/approve`,{kind:"gap",run_id:button.dataset.runId,task_id:button.dataset.taskId,reason});
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Lücke akzeptiert. „Fortsetzen“ schließt das Dossier ohne diese Teilfrage ab.");return;
+      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Lücke akzeptiert. „Fortsetzen“ schließt das Dossier ohne diese Teilfrage ab.","ok");return;
     }
     if(action==="approve-plan"){
       const payload=planApprovalRequest(button.dataset.runId);
       await api(`/api/projects/${project.id}/approve`,payload);
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();
-      notice(payload.max_tasks?`Obergrenze von ${payload.max_tasks} Teilfragen gespeichert. „Fortsetzen“ schneidet den Plan neu zu und legt ihn erneut zur Freigabe vor.`:"Rechercheplan freigegeben. „Fortsetzen“ beginnt mit der ersten Teilfrage.");return;
+      notice(payload.max_tasks?`Obergrenze von ${payload.max_tasks} Teilfragen gespeichert. „Fortsetzen“ schneidet den Plan neu zu und legt ihn erneut zur Freigabe vor.`:"Rechercheplan freigegeben. „Fortsetzen“ beginnt mit der ersten Teilfrage.","ok");return;
     }
     if(action==="approve-calls"||action==="approve-search"){
       const payload={kind:"model_calls",run_id:button.dataset.runId};
       if(action==="approve-calls")payload.model_calls=Number(button.dataset.modelCalls);else payload.search_rounds=Number(button.dataset.searchRounds);
       await api(`/api/projects/${project.id}/approve`,payload);
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Limit genehmigt. Ein laufender Auftrag übernimmt es beim nächsten Aufruf, ein angehaltener mit „Fortsetzen“.");return;
+      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Limit genehmigt. Ein laufender Auftrag übernimmt es beim nächsten Aufruf, ein angehaltener mit „Fortsetzen“.","ok");return;
     }
     if(action==="save-speech"){await saveSpeechSettings();return;}
     if(action==="save-notes"){
       await api(`/api/projects/${project.id}/save`,{config:project.config,config_hash:project.config_hash,
         text:project.text,style_notes:$("style-notes").value,style_notes_hash:project.style_notes_hash});
       project=await api(`/api/projects/${project.id}`);render();
-      notice("Notizen gespeichert. Sie gelten ab dem nächsten Skriptlauf.");return;
+      notice("Notizen gespeichert. Sie gelten ab dem nächsten Skriptlauf.","ok");return;
     }
     if(action==="listening-review"){
       const e=project.episodes[episodeIndex];
       await api(`/api/projects/${project.id}/listening_review`,{episode:e.script.episode_id,
         reviewed:$("listening-done").checked,note:$("listening-note").value});
-      project=await api(`/api/projects/${project.id}`);render();notice("Hörprüfung eingetragen.");return;
+      project=await api(`/api/projects/${project.id}`);render();notice("Hörprüfung eingetragen.","ok");return;
     }
     if(action==="spoken-override"){await saveSpokenOverride(button.dataset.episode,button.dataset.segment);return;}
     if(action==="audio"&&button.dataset.rerender){await rerenderEpisode(button.dataset.episode);return;}
@@ -1171,6 +1381,9 @@ document.addEventListener("click",event=>{
     if(action==="resume"){extra.run_id=button.dataset.runId||project.job?.run?.run_id||project.run?.run_id;if(button.dataset.episode)extra.episode=button.dataset.episode;}
     if(action==="audio")Object.assign(extra,audioRequest(button.dataset.episode));
     await start(action,extra);
+    // A sent request leaves no stale draft behind; unsent drafts survive re-renders elsewhere.
+    if(action==="replan"&&$("outline-feedback"))$("outline-feedback").value="";
+    if(action==="revise"&&$("script-feedback"))$("script-feedback").value="";
   });
 });
 async function poll() {
@@ -1179,6 +1392,7 @@ async function poll() {
     if(!project||submitting||setupSending||readingAttachments)return;
     const id=project.id,next=await api(`/api/projects/${id}`);
     if(project?.id!==id)return;
+    if(connectionLost){connectionLost=false;notice("");}
     const changed=projectJobSignature(next)!==lastJobSignature;
     const destination=followWorkflow?recommendedPage(next):step;
     const scriptsChanged=scriptCollectionKey(project)!==scriptCollectionKey(next);
@@ -1194,13 +1408,18 @@ async function poll() {
     project.episodes=next.episodes;project.script_previews=next.script_previews;renderNavigation();renderJob();
     if(samplesChanged)refreshVoiceLibrary();
     if(changed||destination!==step){lastJobSignature=projectJobSignature(next);project=next;
+      const finishedResult=next.job?.status==="completed"&&!!(next.job.sample||next.job.checks);
+      if(finishedResult)drawerOpen=true;
       if(followWorkflow){step=destination;updatePageUrl();}
+      // A playing episode keeps its player: the audio page refreshes its parts instead of rebuilding.
+      const playing=[...document.querySelectorAll("audio")].some(audio=>!audio.paused);
       if(readerOpen&&step===PAGE.scripts){renderNavigation();renderJob();refreshScriptReader();}
+      else if(playing&&step===PAGE.audio){renderNavigation();lastJobView="";renderJob();refreshAudioPanel();refreshRecordings();}
       else render();
-      if(next.job?.status==="completed"&&next.job.sample)$("job-status").scrollIntoView({block:"nearest"});
+      if(finishedResult)$("job-status").scrollIntoView({block:"nearest"});
     }else if(scriptsChanged&&step===PAGE.scripts)refreshScriptReader();
-    else if((chatChanged||attachmentsChanged)&&step===PAGE.brief){refreshAttachmentComposer();}
-  }catch(error){renderJob();notice("Verbindung zum Studio unterbrochen. Ist das Studio-Fenster noch geöffnet?");}
+    else if((chatChanged||attachmentsChanged)&&step===PAGE.brief){refreshAttachmentComposer();if(chatChanged)scrollChatToEnd();}
+  }catch(error){connectionLost=true;renderJob();notice("Verbindung zum Studio unterbrochen. Ist das Studio-Fenster noch geöffnet?","error");}
 }
 attempt(async()=>{
   const startupEpoch=navigationEpoch;
@@ -1218,7 +1437,7 @@ window.addEventListener("popstate",()=>attempt(async()=>{
   const params=new URLSearchParams(window.location.search), id=params.get("project");
   const index=pageKeys.indexOf(params.get("step"));
   if(id&&boot.projects.some(p=>p.id===id)) {
-    if(project?.id===id)navigatePage(index<0?recommendedPage():index,{push:false});
+    if(project?.id===id){const target=index<0?recommendedPage():index;if(target===step&&!overviewPage)return;navigatePage(target,{push:false});}
     else await selectProject(id,null,index<0?null:index);
   } else if(params.has("new"))await selectProject("");
   else await showOverview();

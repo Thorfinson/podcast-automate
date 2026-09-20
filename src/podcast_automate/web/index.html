@@ -12,25 +12,29 @@
   <a class="skip" href="#main">Zum Arbeitsbereich</a>
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="Podcast Studio Startseite"><span class="brand-mark">p<span>●</span></span><span>podcast<br><strong>studio</strong></span></a>
-    <div class="workspace-label">DEIN ARBEITSRAUM</div>
-    <button id="project-overview" class="quiet">Alle Projekte &amp; Podcasts</button>
-    <label class="sr-only" for="project-select">Projekt auswählen</label>
-    <select id="project-select"><option value="">Neues Projekt</option></select>
-    <button id="new-project" class="quiet">＋ Neues Projekt</button>
     <nav id="steps" aria-label="Arbeitsschritte"></nav>
-    <div class="sidebar-bottom"><span class="live-dot"></span> Lokal auf diesem Computer<p>Dein Thema. Deine Tiefe.<br>Dein Tempo.</p><button class="quiet small" data-action="quit">Studio beenden</button></div>
+    <div class="sidebar-bottom"><span><span class="live-dot"></span>Lokal auf diesem Computer</span><button class="quiet small" data-action="quit">Studio beenden</button></div>
   </aside>
   <div class="workspace">
-    <header class="topbar"><span id="project-title">Neues Podcast-Projekt</span><span class="private-label">PRIVATER ARBEITSRAUM</span></header>
+    <header class="topbar">
+      <div class="project-switch">
+        <button id="project-overview" class="quiet small">Übersicht</button>
+        <label class="sr-only" for="project-select">Projekt auswählen</label>
+        <select id="project-select"><option value="">Neues Projekt</option></select>
+        <button id="new-project" class="quiet small" aria-label="Neues Projekt anlegen">＋ Neu</button>
+        <h2 id="project-title" class="sr-only">Neues Podcast-Projekt</h2>
+      </div>
+      <div id="job-bar" class="job-bar" role="status" aria-live="polite" hidden></div>
+    </header>
     <main id="main" tabindex="-1">
       <div id="notice" role="status" aria-live="polite" hidden></div>
-      <section id="job-status" aria-label="Aktueller Auftrag" hidden></section>
       <div id="content"><p>Studio wird geladen …</p></div>
     </main>
+    <section id="sample-playback" class="sample-playback" aria-label="Hörprobe" hidden>
+      <strong id="sample-playing-label" aria-live="polite"></strong>
+      <audio id="sample-player" controls preload="none"></audio>
+    </section>
+    <section id="job-status" class="drawer" aria-label="Maschinenraum" hidden></section>
   </div>
-  <section id="sample-playback" class="sample-playback" aria-label="Hörprobe" hidden>
-    <strong id="sample-playing-label" aria-live="polite"></strong>
-    <audio id="sample-player" controls preload="none"></audio>
-  </section>
 </body>
 </html>

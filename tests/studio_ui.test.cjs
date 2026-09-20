@@ -86,7 +86,7 @@ test('question research shows fixed criteria, verified answers and specific bloc
       {id:'empirical',question:'Independent test?',status:'blocked',steps:3,read_sections:5,
        acceptance:['Find original test'],answer:'Unverified must stay hidden',reason:'Missing original study',findings:[]}]},
     research_quality:{closed:0,total:1,requirements:[],blocking_gaps:[]}}}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
+  const html=jobView(app);
   assert.ok(html.includes('1 von 2 Teilfragen geprüft abgeschlossen'));
   assert.ok(html.includes('<strong>Supported answer</strong>'));
   assert.ok(html.includes('Missing original study'));
@@ -101,9 +101,9 @@ test('expanded question remains open in the regenerated status panel',()=>{
   app.run(`project={id:'test',job:{status:'interrupted',progress:{phase:'research',research_questions:{
     closed:0,total:1,phase:'questions',questions:[{id:'q_one',question:'One',status:'researching',
     steps:1,read_sections:2,acceptance:['Explain']} ]}}}};renderJob();`);
-  app.elements.get('job-status').querySelectorAll=()=>[{dataset:{researchQuestion:'q_one'}}];
+  app.elements.get('research-progress').querySelectorAll=()=>[{dataset:{researchQuestion:'q_one'}}];
   app.run('project.job.progress.research_questions.questions[0].steps=2;renderJob();');
-  assert.ok(app.elements.get('job-status').innerHTML.includes('data-research-question="q_one" open'));
+  assert.ok(jobView(app).includes('data-research-question="q_one" open'));
 });
 
 test('evidence status distinguishes automated support, empirical testing and supported uncertainty',()=>{
@@ -113,7 +113,7 @@ test('evidence status distinguishes automated support, empirical testing and sup
       {id:'task_one',question:'What remains unresolved?',status:'verified',steps:2,read_sections:3,
        acceptance:['Explain limits'],answer:'Supported uncertainty',findings:[],outcome:'supported_uncertainty',
        support:{findings:[{empirical_status:'tested_in_source'},{empirical_status:'independently_tested'}]}}]}}}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
+  const html=jobView(app);
   assert.ok(html.includes('Textbelege vorhanden'));
   assert.ok(html.includes('Inhalt automatisch je Befund geprüft'));
   assert.ok(html.includes('1 Befunde mit dokumentierter unabhängiger empirischer Prüfung'));
@@ -139,7 +139,7 @@ test('exhausted research questions explain the block without a futile resume but
   const app=studio();
   app.run(`project={id:'test',job:{status:'blocked',action:'research',run:{kind:'research',stages:{}},
     progress:{phase:'research',research_questions:{closed:1,total:2,phase:'blocked',questions:[]}}}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
+  const html=jobView(app);
   assert.ok(html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
   assert.ok(html.includes('Auftrag ansehen'));
   assert.ok(!html.includes('data-action="resume"'));
@@ -152,7 +152,7 @@ test('research progress displays missing requirements safely and does not report
     progress:{phase:'research',activity:'Offene Leitfragen werden recherchiert',model_calls:8,model_call_limit:150,
       total_segments:3,completed_segments:1,search_rounds:2,search_round_limit:12,
       research_quality:{closed:1,total:3,requirements:[{question:'<script>Question</script>',passed:false,reason:'Actual text missing',missing:['Read full chapter']}],blocking_gaps:['A further gap']}}}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
+  const html=jobView(app);
   assert.ok(html.includes('1 von 3 Leitfragen'));
   assert.ok(html.includes('2 von 12'));
   assert.ok(html.includes('Read full chapter'));
@@ -167,7 +167,7 @@ test('evidence-first research labels the overall assessment as pending',()=>{
   app.run(`project={id:'test',job:{status:'running',action:'research',started_at:new Date().toISOString(),
     progress:{phase:'research',activity:'Quellen werden gesucht',research_quality:{closed:0,total:10,
       assessment_status:'pending_after_source_review',requirements:[],blocking_gaps:['Missing <chapter>']}}}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
+  const html=jobView(app);
   assert.ok(html.includes('Gesamtbewertung folgt'));
   assert.ok(html.includes('bisherigen Leitfragenbewertungen'));
   assert.ok(html.includes('Missing &lt;chapter&gt;'));
@@ -515,6 +515,13 @@ function studio() {
   run(`boot=${JSON.stringify({token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults})}`);
   return {run,context,elements,registered,requests,responses,events};
 }
+// The job UI spans the topbar line, the docked drawer and the panel a step page owns.
+function jobView(app) {
+  return ['job-bar','job-status','research-progress','production-progress'].map(id=>app.elements.get(id)?.innerHTML||'').join('');
+}
+function jobBarView(app) {
+  return ['job-bar','job-status'].map(id=>app.elements.get(id)?.innerHTML||'').join('');
+}
 function workflowProject(app) {
   return app.run(`({id:'test',config:structuredClone(boot.defaults),text:{provider:'codex_cli',model:null,max_output_tokens:32768},chat:[],research:'Reviewed dossier',episodes:[],
     outline:{hash:'h',approval:{plan_hash:'h'},plan:{central_question:'Why?',explanation_path:'Build the explanation.',scope_note:'Scope',episodes:[{episode_id:'ep_001',title:'One',central_question:'Why?',target_minutes:20,scenes:[],deferred_questions:[]}]}},
@@ -852,8 +859,8 @@ test('an existing active project opens its real workflow page, and explicit read
   assert.ok(app.elements.get('production-progress').innerHTML.includes('Dialog-Polishing'));
   await app.run(`selectProject('test',${JSON.stringify(p)},PAGE.research)`);
   assert.equal(app.run('step'),1);
-  assert.ok(app.elements.get('job-status').innerHTML.includes('Ausarbeitung ansehen'));
-  assert.ok(!app.elements.get('job-status').innerHTML.includes('production-stages'));
+  assert.ok(jobBarView(app).includes('Ausarbeitung ansehen'));
+  assert.ok(!jobBarView(app).includes('production-stages'));
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 test('navigation distinguishes approved, automatic, reading and audio steps',()=>{
@@ -1088,7 +1095,7 @@ test('independent audio cards target their own stop or resume action',()=>{
   assert.ok(html.includes('2 von 8'));
 });
 
-test('the overview includes every available episode while another episode is being rendered',()=>{
+test('the overview lists projects as pipeline rows while the recordings list keeps every available episode',()=>{
   const app=studio();
   app.run(`boot.capabilities={project_overview:true};overviewData={projects:[{id:'test',topic:'Topic <one>',
     job:{status:'running',action:'audio'},episodes:[
@@ -1096,28 +1103,30 @@ test('the overview includes every available episode while another episode is bei
       {episode_id:'ep_002',title:'Second',audio:['exports/ep_002/two.mp3','exports/ep_002/three.mp3'],audio_current:true},
       {episode_id:'ep_003',title:'Third',audio:[]}]}],trash:[]};`);
   const html=app.run('renderOverview()');
-  assert.equal((html.match(/<audio /g)||[]).length,3);
   assert.ok(html.includes('Topic &lt;one&gt;'));
   assert.ok(html.includes('Audio entsteht'));
   assert.ok(html.includes('data-open-project="test"'));
   assert.ok(html.includes('data-delete-project="test" disabled'));
+  assert.ok(html.includes('class="pipe"'));
+  assert.ok(!html.includes('<audio '),'players belong to the audio page, not the overview');
+  const recordings=app.run('renderRecordings(overviewData.projects[0])');
+  assert.equal((recordings.match(/<audio /g)||[]).length,3);
   assert.equal(app.run('steps.length'),6);
 });
 
-test('overview polling preserves an existing audio element and adds the next finished episode',()=>{
+test('audio-page polling preserves an existing audio element and adds the next finished episode',()=>{
   const app=studio();
-  app.run(`overviewData={projects:[{id:'test',topic:'Topic',episodes:[
-    {episode_id:'ep_001',title:'First',audio:['one.mp3'],audio_current:true},
-    {episode_id:'ep_002',title:'Second',audio:['two.mp3'],audio_current:true}]}],trash:[]};
-    $('overview-projects').querySelectorAll=()=>[];
-    $('project-card-test').querySelector=()=>null;
+  app.run(`project={id:'test',config:boot.defaults,episodes:[
+    {script:{episode_id:'ep_001',title:'First'},audio:['one.mp3'],audio_current:true},
+    {script:{episode_id:'ep_002',title:'Second'},audio:['two.mp3'],audio_current:true}]};step=PAGE.audio;
     $('podcast-test-ep_001').dataset={audioVersion:JSON.stringify(['one.mp3'])};
     $('podcast-test-ep_001').innerHTML='playing at 123 seconds';
     $('podcast-test-ep_002').dataset={audioVersion:JSON.stringify([])};
     $('podcast-test-ep_002').querySelectorAll=()=>[];
-    refreshOverview();`);
+    refreshRecordings();`);
   assert.equal(app.elements.get('podcast-test-ep_001').innerHTML,'playing at 123 seconds');
   assert.ok(app.elements.get('podcast-test-ep_002').outerHTML.includes('two.mp3'));
+  assert.ok(app.run('renderAudio()').includes('id="podcasts-test"'));
 });
 
 test('credential-like chat text is rejected before project creation or model calls',async()=>{
@@ -1132,7 +1141,7 @@ test('complete podcast download is a single ZIP link while episode playback stay
   const p={id:'test',topic:'Topic',episode_count:2,episodes:[
     {episode_id:'ep_001',title:'First',audio:['exports/ep_001/one.mp3'],audio_current:true},
     {episode_id:'ep_002',title:'Second',audio:['exports/ep_002/two.mp3'],audio_current:true}]};
-  const html=app.run(`overviewCard(${JSON.stringify(p)})`);
+  const html=app.run(`renderRecordings(${JSON.stringify(p)})`);
   assert.ok(html.includes('Gesamten Podcast herunterladen'));
   assert.ok(html.includes('href="/download/test/podcast.zip" download'));
   assert.ok(html.includes('href="/download/test/file/exports/ep_001/one.mp3"'));
@@ -1142,25 +1151,24 @@ test('complete podcast download is a single ZIP link while episode playback stay
 
 test('partial downloads are labelled honestly and update without replacing players',()=>{
   const app=studio();
-  app.run(`boot.capabilities={podcast_downloads:true};overviewData={projects:[{id:'test',topic:'Topic',episode_count:3,episodes:[
-    {episode_id:'ep_002',title:'Second',audio:['two.mp3'],audio_current:true}]}],trash:[]};
-    $('overview-projects').querySelectorAll=()=>[];
-    $('project-card-test').querySelector=()=>null;
+  app.run(`boot.capabilities={podcast_downloads:true};project={id:'test',config:{...boot.defaults,topic:'Topic'},
+    outline:{plan:{episodes:[{episode_id:'ep_001'},{episode_id:'ep_002'},{episode_id:'ep_003'}]}},
+    episodes:[{script:{episode_id:'ep_002',title:'Second'},audio:['two.mp3'],audio_current:true}]};step=PAGE.audio;
     $('podcast-test-ep_002').dataset={audioVersion:JSON.stringify(['two.mp3'])};
-    $('podcast-test-ep_002').innerHTML='playing at 123 seconds';refreshOverview();`);
+    $('podcast-test-ep_002').innerHTML='playing at 123 seconds';refreshRecordings();`);
   const html=app.elements.get('project-download-test').innerHTML;
   assert.ok(html.includes('Fertige Folgen herunterladen'));
   assert.ok(html.includes('1 von 3'));
   assert.ok(!html.includes('Gesamten Podcast'));
   assert.equal(app.elements.get('podcast-test-ep_002').innerHTML,'playing at 123 seconds');
-  const episode=app.run('podcastCard(overviewData.projects[0],overviewData.projects[0].episodes[0],0)');
+  const episode=app.run('podcastCard(recordingsProject(),recordingsProject().episodes[0],0)');
   assert.ok(episode.includes('Folge 2: Second'));
 });
 
 test('old servers keep named individual downloads and explain how to enable ZIP',()=>{
   const app=studio();
   app.run('boot.capabilities={}');
-  const html=app.run(`overviewCard({id:'test',topic:'Topic',episodes:[{episode_id:'ep_001',title:'First',audio:['one.mp3']}]})`);
+  const html=app.run(`renderRecordings({id:'test',topic:'Topic',episodes:[{episode_id:'ep_001',title:'First',audio:['one.mp3']}]})`);
   assert.ok(html.includes('Studio nach Ende laufender Aufträge einmal neu starten'));
   assert.ok(html.includes('download="Topic - Folge 01 - First.mp3"'));
   assert.ok(!html.includes('href="/download/'));
@@ -1184,7 +1192,7 @@ test('blocked research questions offer an explicit gap approval only while no jo
     questions:[{id:'task_definition',question:'Was ist Energie?',status:'verified',activity:'ok',steps:2,read_sections:3,acceptance:['x'],answer:'Antwort',findings:[],sources:[],limits:[],reopened:0},
       {id:'task_empirical',question:'Gibt es <Belege>?',status:'blocked',outcome:'budget_block',reason:'Das Web-Suchbudget ist ausgeschöpft.',activity:'Beleg fehlt',steps:4,read_sections:2,acceptance:['y'],reopened:0}]};
   app.run(`project={id:'p',job:{id:'j1',status:'blocked',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12,model_call_limit:150,model_calls:5}}};renderJob();`);
-  let html=app.elements.get('job-status').innerHTML;
+  let html=jobView(app);
   assert.ok(html.includes('data-action="accept-gap"'));
   assert.ok(html.includes('data-task-id="task_empirical"'));
   assert.ok(html.includes('data-run-id="run_x"'));
@@ -1194,17 +1202,17 @@ test('blocked research questions offer an explicit gap approval only while no jo
   assert.ok(!html.includes('<Belege>'));
   assert.ok(!html.includes('>Fortsetzen<'));
   app.run("project.job.status='running';renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(!html.includes('data-action="accept-gap"'));
   app.run("project.job.status='blocked';const q=project.job.progress.research_questions;q.questions[1].accepted_gap=true;q.questions[1].accepted_reason='Nicht nötig';q.accepted=1;q.blocked=0;q.phase='questions';renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(html.includes('Als Lücke akzeptiert'));
   assert.ok(html.includes('1 als Lücke akzeptiert'));
   assert.ok(html.includes('Nicht nötig'));
   assert.ok(!html.includes('data-action="accept-gap"'));
   assert.ok(html.includes('>Fortsetzen<'));
   app.run("project.job.progress.research_questions.budget_projection.feasible=false;project.job.progress.research_questions.budget_projection.shortfall=3;renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(html.includes('data-action="approve-calls"'));
   assert.ok(html.includes('Aufruflimit auf 12 erhöhen'));
 });
@@ -1216,7 +1224,7 @@ test('blocked research questions that never searched the web keep the resume but
       {id:'task_norms',question:'Wie wirken Normen?',status:'blocked',outcome:'evidence_block',reopenable:true,web_attempts:0,reason:'Die gespeicherten Quellen brachten keine neuen Belege.',activity:'Beleg fehlt',steps:3,read_sections:30,acceptance:['y'],reopened:0},
       {id:'task_other',question:'Gibt es Belege?',status:'blocked',outcome:'evidence_block',reopenable:false,web_attempts:1,reason:'Auch die Websuche brachte nichts.',activity:'Beleg fehlt',steps:5,read_sections:12,acceptance:['z'],reopened:0}]};
   app.run(`project={id:'p',job:{id:'j1',status:'blocked',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12,model_call_limit:150,model_calls:73}}};renderJob();`);
-  let html=app.elements.get('job-status').innerHTML;
+  let html=jobView(app);
   assert.ok(html.includes('>Fortsetzen<'));
   assert.ok(html.includes('1 blockierte Teilfrage hat das Web noch nicht durchsucht'));
   assert.ok(!html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
@@ -1224,7 +1232,7 @@ test('blocked research questions that never searched the web keep the resume but
   assert.ok(html.includes('data-action="accept-gap"'));
   // Once every block has had its web search, the old rule applies again: no resume, gaps to accept.
   app.run("const q=project.job.progress.research_questions;q.reopenable=0;q.questions[1].reopenable=false;q.questions[1].web_attempts=1;renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(!html.includes('>Fortsetzen<'));
   assert.ok(html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
   assert.ok(!html.includes('holt das nach'));
@@ -1249,7 +1257,7 @@ test('a waiting research plan offers the approval and the cap field only while b
   const ledger={closed:0,total:29,accepted:0,phase:'awaiting_plan_approval',active_task:null,questions:[]};
   app.run(`project={id:'p',job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{dossier:{status:'blocked',error:{code:'research_plan_review'}}}},
     progress:{phase:'research',activity:'Der Rechercheplan wartet auf Freigabe',research_questions:${JSON.stringify(ledger)},plan_review:{awaiting:true,approved:false,approval:null,projection:${JSON.stringify(projection)}},model_call_limit:150,model_calls:7}}};renderJob();`);
-  let html=app.elements.get('job-status').innerHTML;
+  let html=jobView(app);
   assert.ok(html.includes('Wartet auf Freigabe des Rechercheplans'));
   assert.ok(html.includes('29 Teilfragen, voraussichtlich 148 Aufrufe, etwa 11 Stunden bei 4,5 Minuten je Aufruf'));
   assert.ok(html.includes('5 Aufrufe je Teilfrage (Erfahrungswert des Projekts)'));
@@ -1265,21 +1273,21 @@ test('a waiting research plan offers the approval and the cap field only while b
   app.elements.get('plan-max-tasks').value='viele';
   assert.throws(()=>app.run("planApprovalRequest('run_x')"),/ganze Zahl/);
   app.run("project.job.progress.plan_review.projection.plan_caps=[1];project.job.progress.plan_review.projection.within_limit=false;renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(html.includes('Obergrenze von 1 Teilfragen wurde bereits angefordert'));
   assert.ok(html.includes('Das Limit reicht dafür voraussichtlich nicht'));
   app.run("project.job.status='running';renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(!html.includes('data-action="approve-plan"'));
   assert.ok(!html.includes('class="plan-review"'));
   app.run("project.job.status='blocked';project.job.progress.plan_review.approved=true;project.job.progress.plan_review.approval={max_tasks:null};renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(html.includes('Rechercheplan freigegeben'));
   assert.ok(!html.includes('data-action="approve-plan"'));
   assert.ok(!html.includes('id="plan-max-tasks"'));
   assert.ok(html.includes('>Fortsetzen<'));
   app.run("project.job.progress.plan_review={awaiting:false,approved:false,projection:null,approval:null};project.job.progress.research_questions.phase='questions';renderJob()");
-  html=app.elements.get('job-status').innerHTML;
+  html=jobView(app);
   assert.ok(!html.includes('class="plan-review"'));
   assert.ok(!html.includes('Freigabe des Rechercheplans'));
   assert.ok(html.includes('>Fortsetzen<'));
@@ -1292,7 +1300,7 @@ test('several research tasks in flight are counted, named and marked while the f
     {id:'b',question:'Frage B',status:'reviewing',activity:'Antwort wird geprüft',steps:2,read_sections:3,acceptance:['y'],findings:[]},
     {id:'c',question:'Frage C',status:'researching',activity:'Sucht',steps:1,read_sections:1,acceptance:['z'],findings:[]}]};
   app.run(`project={id:'p',job:{id:'j1',status:'running',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)}}}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
+  const html=jobView(app);
   assert.ok(html.includes('3 Teilfragen in Arbeit: Frage A &lt;x&gt; · Frage B · Frage C'));
   assert.ok(!html.includes('<x>'));
   assert.equal((html.match(/●/g)||[]).length,3);
@@ -1301,12 +1309,12 @@ test('several research tasks in flight are counted, named and marked while the f
   assert.ok(trace.includes('3 Teilfragen in Arbeit'));
   // One task at a time, as before: no count line and one marker; a ledger without active_tasks still marks its task.
   app.run("project.job.progress.research_questions.active_tasks=['b'];renderJob()");
-  let single=app.elements.get('job-status').innerHTML;
+  let single=jobView(app);
   assert.ok(!single.includes('Teilfragen in Arbeit'));
   assert.equal((single.match(/●/g)||[]).length,1);
   assert.ok(single.includes('● Frage B'));
   app.run("delete project.job.progress.research_questions.active_tasks;project.job.progress.research_questions.active_task='c';renderJob()");
-  single=app.elements.get('job-status').innerHTML;
+  single=jobView(app);
   assert.equal((single.match(/●/g)||[]).length,1);
   assert.ok(single.includes('● Frage C'));
 });
@@ -1328,4 +1336,104 @@ test('a paused research run without a dossier still offers a fresh research star
   html=app.run('renderResearch()');
   assert.ok(html.includes('data-action="research" >Recherche starten'));
   assert.ok(!html.includes('Recherche neu beginnen'));
+});
+
+test('finished scripts stay visible on the production page and in the stepper after an audio run',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job={id:'audio-one',action:'audio',status:'completed',run:{kind:'episode_audio',status:'completed',stages:{synthesis:{status:'completed'},assembly:{status:'completed'}}}};
+  p.audio_jobs=[{id:'audio-one',episode:'ep_001',status:'completed'}];
+  p.episodes=[{...publishedEpisode({}),audio:['exports/ep_001/run/audio.mp3'],audio_current:true}];
+  app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
+  const page=app.elements.get('production-progress').innerHTML;
+  assert.ok(page.includes('Dialog-Polishing'));
+  assert.ok(page.includes('Die Skripte sind bereit'));
+  assert.ok(!page.includes('Folgt automatisch'));
+  assert.ok(app.elements.get('steps').innerHTML.includes('Ausarbeitung<small>Abgeschlossen'));
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('Vertonung abgeschlossen'));
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('the job bar names the decision and links to its page while the drawer keeps the telemetry',()=>{
+  const app=studio();
+  const projection={tasks:5,tasks_pending:5,expected_calls_per_task:8,expected_calls_source:'default',closing_reserve:4,closing_calls:3,projected_calls:43,used:2,approved_limit:150,within_limit:true,seconds_per_call:300,seconds_per_call_source:'default',projected_hours:3.6,plan_hash:'h',plan_caps:[]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},
+    progress:{phase:'research',activity:'Wartet',research_questions:{closed:0,total:5,accepted:0,phase:'awaiting_plan_approval',questions:[]},plan_review:{awaiting:true,approved:false,approval:null,projection:${JSON.stringify(projection)}},
+      model_trace:{updated_at:new Date().toISOString(),lines:[{at:new Date().toISOString(),kind:'status',text:'Plan erstellt'}]}}}};step=PAGE.brief;renderJob();`);
+  const bar=app.elements.get('job-bar').innerHTML, drawer=app.elements.get('job-status').innerHTML, page=app.elements.get('research-progress').innerHTML;
+  assert.ok(bar.includes('Wartet auf Freigabe des Rechercheplans'));
+  assert.ok(bar.includes('data-step="1"'));
+  assert.ok(bar.includes('data-action="drawer-toggle"'));
+  assert.ok(!bar.includes('data-action="resume"'));
+  assert.ok(page.includes('data-action="approve-plan"'));
+  assert.ok(!drawer.includes('data-action="approve-plan"'));
+  assert.ok(drawer.includes('class="drawer-body" hidden'));
+  assert.ok(drawer.includes('Plan erstellt'));
+  app.run('drawerOpen=true;lastJobView="";renderJob();');
+  assert.ok(app.elements.get('job-status').innerHTML.includes('class="drawer-body">'));
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('the overview lists what waits for the user before the pipeline rows',()=>{
+  const app=studio();
+  app.run(`boot.capabilities={project_overview:true};overviewData={projects:[
+    {id:'a',topic:'Blocked <one>',job:{status:'blocked',action:'research',message:'Beleg fehlt',run:{kind:'research'}},has_research:false,has_outline:false,script_count:0,episodes:[]},
+    {id:'b',topic:'Running',job:{status:'running',action:'script',run:{kind:'script'}},has_research:true,has_outline:true,script_count:0,episodes:[]},
+    {id:'c',topic:'Readable',job:{status:'completed',action:'script',run:{kind:'script',status:'completed'}},has_research:true,has_outline:true,script_count:3,episodes:[{episode_id:'ep_001',title:'One',audio:[]}]},
+    {id:'d',topic:'Done',job:{status:'completed',action:'audio',run:{kind:'episode_audio',status:'completed'}},has_research:true,has_outline:true,script_count:1,episodes:[{episode_id:'ep_001',title:'One',audio:['one.mp3'],audio_current:true}]}],trash:[]};`);
+  const html=app.run('renderOverview()');
+  const waiting=html.indexOf('Wartet auf dich'), running=html.indexOf('Läuft gerade'), rows=html.indexOf('id="overview-projects"');
+  assert.ok(waiting>-1&&running>waiting&&rows>running,'decisions first, then running work, then the rows');
+  assert.ok(html.includes('Blocked &lt;one&gt;'));
+  assert.ok(html.includes('Beleg fehlt'));
+  assert.ok(html.includes('data-open-project="a" data-open-step="1"'));
+  assert.ok(html.includes('data-open-project="c" data-open-step="4"'));
+  assert.ok(!html.includes('data-open-project="b" data-open-step'));
+  assert.ok(html.includes('data-open-project="d" data-open-step="5"'));
+  assert.ok(html.includes('data-delete-project="b" disabled'));
+  assert.ok(!html.includes('<audio '));
+});
+
+test('unsaved form input survives a polling re-render of the same project',async()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[{...publishedEpisode({}),audio:['exports/ep_001/run/audio.mp3'],audio_current:true}];
+  await app.run(`selectProject('test',${JSON.stringify(p)},PAGE.audio)`);
+  const content=app.elements.get('content');
+  let markup=content.innerHTML;
+  // A real DOM drops every field with the old markup; the fake one must forget the values too.
+  Object.defineProperty(content,'innerHTML',{get:()=>markup,set:value=>{markup=value;app.elements.get('listening-note').value='';app.elements.get('host-name-a').value='';}});
+  app.run(`$('listening-note').value='Beim Hören notiert';$('host-name-a').value='Lena';`);
+  const next=structuredClone(p);
+  next.job={...next.job,id:'job-two',status:'running',action:'audio'};
+  app.responses.set('/api/projects/test',next);
+  await app.run('poll()');
+  assert.equal(app.run('step'),5);
+  assert.equal(app.elements.get('listening-note').value,'Beim Hören notiert');
+  assert.equal(app.elements.get('host-name-a').value,'Lena');
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+});
+
+test('a lost connection notice clears itself on the next successful poll',async()=>{
+  const app=studio(), p=workflowProject(app);
+  await app.run(`selectProject('test',${JSON.stringify(p)})`);
+  app.run(`const baseFetch=fetch;let fail=true;fetch=async(path,options)=>{if(fail&&path==='/api/projects/test')throw new Error('offline');return baseFetch(path,options);};window.stopFailing=()=>{fail=false;};`);
+  await app.run('poll()');
+  assert.ok(app.elements.get('notice').textContent.includes('Verbindung zum Studio unterbrochen'));
+  assert.equal(app.elements.get('notice').hidden,false);
+  app.run('window.stopFailing();');
+  app.responses.set('/api/projects/test',p);
+  await app.run('poll()');
+  assert.equal(app.elements.get('notice').hidden,true);
+  assert.equal(app.elements.get('notice').textContent,'');
+});
+
+test('sending a message scrolls the conversation to its newest reply and clears the draft',async()=>{
+  const app=studio();
+  const p=app.run(`({id:'test',config:boot.defaults,chat:[]})`);
+  await app.run(`selectProject('test',${JSON.stringify(p)})`);
+  app.run(`boot.capabilities={conversational_setup:true};$('chat-end').scrollIntoView=()=>{window.scrolledToEnd=true;};`);
+  app.responses.set('/api/projects/test',p);
+  await app.run(`sendSetupMessage('Worum es geht')`);
+  assert.equal(app.run('window.scrolledToEnd'),true);
+  assert.equal(app.elements.get('chat-message').value,'');
 });
