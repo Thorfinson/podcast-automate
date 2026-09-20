@@ -122,6 +122,39 @@ class QuestionResearchTests(unittest.TestCase):
         public = json.loads((self.work / "research_questions.json").read_text())
         self.assertEqual((public["closed"], public["total"], public["phase"]), (1, 1, "completed"))
 
+    def test_material_beyond_one_window_is_composed_and_audited_in_bounded_parts(self):
+        def two_tasks(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                return decision("answer", answer=answer_for(self.ref))
+        self.hook = two_tasks
+        with patch("podcast_automate.question_synthesis.PROMPT_BUDGET_CHARS", 1):
+            engine = self.engine()
+            outputs = engine.run(self.discovery, self.index)
+            self.assertTrue(all(p.exists() for p in outputs))
+            self.assertEqual(engine.state["phase"], "completed")
+            schemas = [c[0] for c in self.calls]
+            # The dossier opens with the first answer, the second is integrated as a patch, the audit runs in parts.
+            self.assertEqual(schemas.count(ResearchDossier), 1)
+            self.assertEqual(schemas.count(DossierPatch), 1)
+            self.assertEqual(schemas.count(SourceReview), 1)
+            self.assertEqual(schemas.count(ResearchAssessment), 1)
+            audit = self.work / "question_research/synthesis/audit_00"
+            for name in ("dossier_batch_000.json", "dossier_batch_001.json", "dossier_batches.json",
+                         "grounding_0_part_000.json", "grounding_0_merged.json", "assessment.json"):
+                self.assertTrue((audit / name).exists(), name)
+            self.assertFalse((audit / "dossier.json").exists())
+            batches = json.loads((audit / "dossier_batches.json").read_text(encoding="utf-8"))
+            self.assertEqual((batches["opening"], batches["batches"]), (["task_definition"], 1))
+            merged = json.loads((audit / "grounding_0_merged.json").read_text(encoding="utf-8"))
+            self.assertEqual((merged["parts"], merged["findings_per_part"]), (1, [1]))
+            report = json.loads((self.work / "research_quality_gate.json").read_text(encoding="utf-8"))
+            self.assertTrue(report["passed"])
+            count = len(self.calls)
+            self.engine().run(self.discovery, self.index)
+            self.assertEqual(len(self.calls), count, "a replay makes no calls")
+
     def seed_dossier(self, *open_questions):
         dossier = fixtures.dossier_from_prompt(json.dumps({"topic": "Test topic", "retrieved_sources": [
             {"source_id": s.id, "url": s.final_url, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text}

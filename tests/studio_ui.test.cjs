@@ -15,7 +15,9 @@ test('live model traces show only the last twenty escaped lines beside the summa
   assert.ok(html.includes('line-24 &lt;script&gt;'));
   assert.ok(!html.includes('line-4 &lt;script&gt;'));
   assert.ok(!html.includes('<script>untrusted'));
+  assert.ok(app.elements.get('research-live').innerHTML.includes('<p class="live-text">line-24 &lt;script&gt;untrusted&lt;/script&gt;</p>'),'the newest line stands in the rail');
   app.run("project.job.status='failed';renderJob()");
+  assert.equal(app.elements.get('research-live').innerHTML,'','a stale line leaves the rail');
   assert.ok(app.elements.get('job-status').innerHTML.includes('Letzte Arbeitsschritte'));
   app.run("project.job.progress.model_trace=null;renderJob()");
   assert.ok(app.elements.get('job-status').innerHTML.includes('Noch keine Meldungen verfügbar'));
@@ -46,8 +48,9 @@ test('research work explanation separates saved input, waiting, and checked prog
     '6 Textstellen aus 2 Quellen','48 Suchtreffer','Seit 15 Min. noch keine inhaltliche Zwischenmeldung',
     'Aus dem gespeicherten Recherchestand rekonstruiert','30 Min.'])assert.ok(html.includes(text),text);
   assert.ok(html.includes('work-signals quiet'));
-  assert.ok(html.includes('<details class="model-events" open>'));
+  assert.ok(html.includes('<details class="model-events">'),'the assignment folds under the live output');
   assert.ok(html.includes('Live-Ausgabe · letzte 20 Meldungen'));
+  assert.ok(html.indexOf('Noch keine Meldungen')<html.indexOf('Causation &lt;script&gt;'),'the live output comes first');
   assert.ok(!html.includes('Das Modell ist abgestürzt'));
   assert.ok(!html.includes('<script>'));
   app.run("project.job.status='interrupted'");
@@ -182,27 +185,6 @@ test('new unfinished research cannot offer planning based on the previous dossie
   assert.ok(html.includes('Bisheriges Dossier'));
   assert.ok(html.includes('noch nicht abgeschlossen'));
   assert.ok(!html.includes('data-action="plan"'));
-});
-
-test('status digests are escaped, distinguish stale evidence, and name the chosen reporter',()=>{
-  const app=studio();
-  app.run(`project={id:'test',job:{id:'j1',status:'running',action:'research',started_at:new Date().toISOString(),progress:{phase:'research',status_summary:{job_id:'j1',status:'unchanged',summary:'A draft <script>bad()</script>',provider:'openrouter',model:'deepseek/deepseek-v4.1-flash',calls:2,call_limit:100,generated_at:new Date().toISOString(),live_events_available:false,history:[{text:'Old <img src=x>',at:new Date().toISOString()},{text:'Latest'}]}}}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
-  assert.ok(html.includes('Kurz erklärt'));
-  assert.ok(html.includes('DeepSeek 4.1 Flash · OpenRouter'));
-  assert.ok(html.includes('keine neuen protokollierten'));
-  assert.ok(html.includes('keine öffentlichen Live-Meldungen'));
-  assert.ok(html.includes('zusätzlich zum Produktionsbudget'));
-  assert.ok(html.includes('&lt;script&gt;bad()'));
-  assert.ok(!html.includes('<script>')&&!html.includes('<img'));
-  app.run("project.job.progress.status_summary.job_id='old'");
-  assert.equal(app.run('renderStatusSummary(project.job)'),'');
-  app.run("project.job.progress.status_summary.job_id='j1';project.job.progress.status_summary.provider='codex_cli'");
-  assert.ok(app.run('renderStatusSummary(project.job)').includes('Luna · Codex-Abo'));
-  app.run("project.job.progress.status_summary.provider='claude_code'");
-  const claude=app.run('renderStatusSummary(project.job)');
-  assert.ok(claude.includes('Haiku 4.5 · Claude-Abo'));
-  assert.ok(claude.includes('über dein Claude-Abo'));
 });
 
 test('automatic subscription choice shows both models, the current provider and a switch',()=>{
@@ -1367,7 +1349,7 @@ test('the job bar names the decision and links to its page while the drawer keep
   assert.ok(page.includes('data-action="approve-plan"'));
   assert.ok(!drawer.includes('data-action="approve-plan"'));
   assert.ok(drawer.includes('class="drawer-body" hidden'));
-  assert.ok(drawer.includes('Plan erstellt'));
+  assert.ok(drawer.indexOf('Plan erstellt')>-1&&drawer.indexOf('Plan erstellt')<drawer.indexOf('Für diesen Auftrag gespeichert'),'the live output comes first');
   app.run('drawerOpen=true;lastJobView="";renderJob();');
   assert.ok(app.elements.get('job-status').innerHTML.includes('class="drawer-body">'));
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);

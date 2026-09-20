@@ -500,7 +500,7 @@ function renderResearch() {
   const attachments=project.attachments?.length?`<section class="panel"><h2>Deine Ausgangsmaterialien</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">Diese Dateien werden als lokale Quellen eingelesen. Aussagen aus deinen Notizen werden anhand weiterer Quellen geprüft. Sehr kurze Notizen dienen vor allem der Projektbeschreibung.</p></section>`:"";
   const brief=`<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">${researchProviderTag()}</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht auf dieser Seite; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>${researching?"Das startet einen neuen Recherchelauf mit neuem Plan und neuer Hochrechnung. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt.":"Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen."}</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
   if(researching||(!project.research&&project.job?.progress?.phase==="research"))
-    return html+`<div class="split"><div class="split-main"><div id="research-progress"></div>${project.research?`<section class="panel"><h2>Bisheriges Dossier · wird neu recherchiert</h2><article class="markdown-document">${renderMarkdown(project.research)}</article></section>`:""}</div><aside class="split-rail">${brief}${attachments}</aside></div>`;
+    return html+`<div class="split"><div class="split-main"><div id="research-progress"></div>${project.research?`<section class="panel"><h2>Bisheriges Dossier · wird neu recherchiert</h2><article class="markdown-document">${renderMarkdown(project.research)}</article></section>`:""}</div><aside class="split-rail"><div id="research-live"></div>${brief}${attachments}</aside></div>`;
   if(project.research){
     const toc=[], dossier=renderMarkdown(project.research,0,toc);
     return html+`<div class="doc">${tocMarkup(toc,"Inhalt des Dossiers")}<section class="panel doc-main"><h2>Dein Recherche-Dossier</h2><article class="markdown-document">${dossier}</article></section><aside class="doc-rail">${brief}${attachments}</aside></div>`;
@@ -909,25 +909,6 @@ function renderProgressTiming(p, active) {
   const freshness=stale?`<p class="note" role="status">Fortschrittsanzeige seit ${progressAge(p.updated_at)} nicht aktualisiert. Ob das Modell weiterarbeitet, lässt sich daraus nicht erkennen. Die Verbindung wird automatisch erneut geprüft.</p>`:p.updated_at?`<p class="hint">Fortschrittsdaten vor ${progressAge(p.updated_at)} aktualisiert.</p>`:"";
   return call+result+freshness;
 }
-function renderStatusSummary(job) {
-  const report=job?.progress?.status_summary;
-  if(!report || report.job_id!==job.id)return "";
-  const active=job.status==="running";
-  const model=report.provider==="openrouter"?"DeepSeek 4.1 Flash · OpenRouter":report.provider==="claude_code"?"Haiku 4.5 · Claude-Abo":report.provider==="auto"?"Automatisch · Codex, sonst Claude":"Luna · Codex-Abo";
-  const messages={summarizing:"Eine kurze Zusammenfassung wird erstellt.",
-    unchanged:"Seit dem letzten Bericht gibt es keine neuen protokollierten Ergebnisse oder Zwischenmeldungen. Daraus lässt sich nicht erkennen, wie weit der aktuelle Modellaufruf ist.",
-    unavailable:"Die Zusammenfassung ist gerade nicht verfügbar. Der eigentliche Auftrag läuft unabhängig davon weiter.",
-    paused:"Die automatischen Statusberichte pausieren nach wiederholten Fehlern oder erreichtem Berichtslimit. Der eigentliche Auftrag läuft weiter."};
-  const history=(report.history||[]).slice(0,-1).slice(-4).reverse();
-  return `<section class="status-summary" aria-label="Kurz erklärt"><strong>Kurz erklärt · Arbeitsstand</strong>
-    ${!active?'<p class="hint">Gespeicherter Kurzbericht aus dem bisherigen Lauf; keine aktuelle Tätigkeitsmeldung.</p>':""}
-    ${report.summary?`<p>${escape(report.summary)}</p>`:""}
-    ${active&&messages[report.status]?`<p class="hint">${messages[report.status]}</p>`:""}
-    ${report.generated_at?`<p class="hint">Bericht vor ${progressAge(report.generated_at)} · ${model}</p>`:`<p class="hint">${model}</p>`}
-    ${active&&!report.live_events_available?'<p class="hint">Dieser Stand basiert auf gespeicherten Ergebnissen. Für den aktuellen Aufruf liegen noch keine öffentlichen Live-Meldungen vor.</p>':""}
-    <p class="hint">${active?"Prüfung etwa alle 3 Minuten; neuer Bericht nur bei Änderungen. ":""}Statusberichte: ${Number(report.calls||0)} von ${Number(report.call_limit||100)} · zusätzlich zum Produktionsbudget${report.provider==="openrouter"?", über dein OpenRouter-Guthaben":report.provider==="claude_code"?", über dein Claude-Abo":report.provider==="auto"?", über deine Abos":", über dein Codex-Abo"}.</p>
-    ${history.length?`<details class="status-history"><summary>Bisherige Kurzberichte</summary>${history.map(row=>`<p>${escape(row.text)}<small>Vor ${progressAge(row.at)}</small></p>`).join("")}</details>`:""}</section>`;
-}
 function renderWorkInsight(job) {
   const info=job?.progress?.work_insight;
   if(!info)return "";
@@ -989,14 +970,13 @@ function renderModelTrace(job) {
   const started=job.progress.model_call_started_at;
   const currentContent=rows.some(row=>["text","reasoning"].includes(row.kind)&&(!started||Date.parse(row.at)>=Date.parse(started)));
   const insight=renderWorkInsight(job);
-  return `<section class="model-trace" aria-label="Live-Ausgabe des Modells"><strong>${insight?(active?"Aktueller Rechercheauftrag":"Letzter Rechercheauftrag"):(active?"Gerade in Arbeit":"Letzte Arbeitsschritte")}</strong>
-    ${insight|| (current?`<p class="trace-focus">${escape(current.question)}</p><p>${escape(current.activity)}</p>`:"")}${renderActiveTasks(ledger)}
-    ${!insight&&active&&started&&!currentContent?'<p class="hint">Der aktuelle Modellaufruf läuft. Inhaltliche Zwischenmeldungen liegen dafür noch nicht vor.</p>':""}
-    ${insight?'<details class="model-events" open><summary>Live-Ausgabe · letzte 20 Meldungen</summary>':""}
-    <p class="hint">Neue Textfragmente und öffentliche Reasoning-Zusammenfassungen erscheinen während des Aufrufs. Aussagen des Modells sind noch ungeprüft.</p>
-    ${trace?.updated_at?`<p class="hint">Letzte Meldung: vor ${progressAge(trace.updated_at)}</p>`:""}
+  // The live output is the point of the drawer: it stands first and open; the assignment folds underneath.
+  return `<section class="model-trace" aria-label="Live-Ausgabe des Modells"><strong>Live-Ausgabe · letzte 20 Meldungen</strong>
+    <p class="hint">${active?"Gerade in Arbeit":"Letzte Arbeitsschritte"}${trace?.updated_at?` · Letzte Meldung: vor ${progressAge(trace.updated_at)}`:""}</p>
+    ${active&&started&&!currentContent?'<p class="hint">Der aktuelle Modellaufruf läuft. Inhaltliche Zwischenmeldungen liegen dafür noch nicht vor.</p>':""}
     ${rows.length?`<ol class="trace-lines">${rows.map(row=>`<li><small>${escape(row.at?new Date(row.at).toLocaleTimeString("de-DE"):"")} · ${escape(kinds[row.kind]||"Meldung")}</small><p>${escape(row.text)}</p></li>`).join("")}</ol>`:`<p class="hint">Noch keine Meldungen verfügbar. Manche Anbieter senden Text erst am Ende des Aufrufs.</p>`}
-    ${insight?"</details>":""}</section>`;
+    <p class="hint">Neue Textfragmente und öffentliche Reasoning-Zusammenfassungen erscheinen während des Aufrufs. Aussagen des Modells sind noch ungeprüft.</p>
+    ${insight?`<details class="model-events"><summary>${active?"Aktueller Rechercheauftrag":"Letzter Rechercheauftrag"}</summary>${insight}</details>`:(current?`<p class="trace-focus">${escape(current.question)}</p><p>${escape(current.activity)}</p>`:"")}${renderActiveTasks(ledger)}</section>`;
 }
 function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="", searchLimit=0) {
   const budget=ledger.budget_projection;
@@ -1148,7 +1128,6 @@ function renderJob() {
   const r=j?.run||legacy, active=j?.status==="running", state=j?.status||legacy.status;
   const researchOpen=research?.querySelector?.(".research-quality")?.open;
   const questionOpen=new Set(Array.from(research?.querySelectorAll?.("[data-research-question][open]")||[],el=>el.dataset.researchQuestion));
-  const summaryOpen=box.querySelector?.(".status-history")?.open;
   const materialOpen=box.querySelector?.(".work-material")?.open;
   const eventsOpen=box.querySelector?.(".model-events")?.open;
   const previousTrace=box.querySelector?.(".trace-lines");
@@ -1182,11 +1161,14 @@ function renderJob() {
   const tone=active?"running":planPending||decisionNeeded||state==="review_ready"?"decision":["blocked","failed","interrupted","waiting_for_quota","pending"].includes(state)?"blocked":"done";
   const calls=Number.isSafeInteger(j?.progress?.model_call_limit)&&j.progress.model_call_limit>0?` · Aufrufe ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}`:"";
   const meta=active&&j?.started_at?` · seit ${elapsedText(j.started_at)}${calls}`:"";
+  const lastLine=active?(j?.progress?.model_trace?.lines||[]).at(-1):null;
   bar.innerHTML=`<span class="job-dot ${tone}" aria-hidden="true"></span><span class="job-text"><strong>${escape(title)}</strong>${meta}</span>`+
     (active?'<button class="danger small" data-action="stop">Auftrag anhalten</button>':resumable?'<button class="secondary small" data-action="resume">Fortsetzen</button>':"")+
     (destination!==null&&destination!==undefined&&destination!==step?`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`:"")+drawerToggle();
   if(research)research.innerHTML=j?.progress?.phase==="research"?renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable,resumable):"";
-  let body="";
+  const live=$("research-live");
+  if(live)live.innerHTML=lastLine?.text?`<section class="panel live-panel" aria-live="polite"><div class="panel-title"><h2>Live</h2><span class="hint">${lastLine.at?`vor ${progressAge(lastLine.at)}`:""}</span></div><p class="live-text">${escape(lastLine.text)}</p><button class="quiet small" data-action="drawer-toggle">Alle Meldungen im Maschinenraum</button></section>`:"";
+  let body=`<div class="model-observability">${renderModelTrace(j)}</div>`;
   if(message)body+=`<p>${escape(message)}</p>`;
   if(active)body+=`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(j.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`;
   if(r&&!isScript&&!j?.progress?.research_questions)body+=`<div class="stage-strip">${Object.entries(r.stages||{}).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`;
@@ -1202,7 +1184,6 @@ function renderJob() {
     const outlook=Number.isSafeInteger(projection?.minimum_remaining_calls)?` · mindestens ${projection.minimum_remaining_calls} weitere nötig${projection.feasible===false?" – Limit reicht nicht":""}`:"";
     body+=`<p class="hint">Modellaufrufe: ${Number(j.progress.model_calls||0)} von ${j.progress.model_call_limit}${escape(outlook)}</p>`;
   }
-  body+=`<div class="model-observability">${renderStatusSummary(j)}${renderModelTrace(j)}</div>`;
   body+=renderProgressTiming(j?.progress,active);
   body+=renderRunTextChoice(j);
   if(j?.progress?.execution?.text==="parallel"){
@@ -1210,9 +1191,7 @@ function renderJob() {
     body+=`<p class="hint">Textmodus: Parallel · bis zu 3 Folgen je Skript-, Polishing- oder Prüfstufe.${activeEpisodes.length?` In Bearbeitung: ${activeEpisodes.map(id=>escape(j.progress.episodes?.find(e=>e.episode_id===id)?.title||id)).join(", ")}.`:""}</p>`;
     if(j.progress.stage==="teaching")body+=`<p class="hint">Die Lehrkonzepte werden nacheinander ausgearbeitet, damit spätere Folgen auf den Erklärungen und Beispielen der früheren aufbauen können. Sobald alle Lehrkonzepte fertig sind, beginnt die parallele Skripterstellung.</p>`;
   }
-  box.innerHTML=drawerMarkup(escape(title)+(message?` · ${escape(message)}`:""),body||'<p class="hint">Für diesen Auftrag liegen keine weiteren Meldungen vor.</p>');
-  const history=box.querySelector?.(".status-history");
-  if(history)history.open=!!summaryOpen;
+  box.innerHTML=drawerMarkup(escape(title)+(lastLine?.text?` · Live: ${escape(lastLine.text)}`:message?` · ${escape(message)}`:""),body||'<p class="hint">Für diesen Auftrag liegen keine weiteren Meldungen vor.</p>');
   const traceList=box.querySelector?.(".trace-lines");
   const materialDetail=box.querySelector?.(".work-material"),eventsDetail=box.querySelector?.(".model-events");
   if(materialDetail)materialDetail.open=!!materialOpen;

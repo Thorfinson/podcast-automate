@@ -105,7 +105,7 @@ Gemini-Audio hat bei gewähltem Parallelmodus bis zu drei getrennte Folgenauftr�
 
 ## Stand der Prüfung
 
-Während Recherche und Ausarbeitung zeigt der Maschinenraum unter **Kurz erklärt · Arbeitsstand** kurze Zusammenfassungen der protokollierten Aktivitäten und gespeicherten Ergebnisse. Alle drei Minuten wird auf Änderungen geprüft; ohne neue Daten erscheint ein entsprechender Hinweis statt eines weiteren Modellaufrufs. Codex-Aufträge nutzen dafür `gpt-5.6-luna` mit `low`, OpenRouter-Aufträge `deepseek/deepseek-v4.1-flash` mit `low`. Das Hauptmodell bleibt unverändert. Die Zusammenfassung nennt keine erfundenen Restzeiten und behandelt Entwürfe ausdrücklich als ungeprüft.
+Während Recherche und Ausarbeitung erstellt der Lauf unter `runs/<run_id>/status_reports/` kurze Zusammenfassungen der protokollierten Aktivitäten und gespeicherten Ergebnisse; das Studio zeigt sie nicht mehr an. Alle drei Minuten wird auf Änderungen geprüft; ohne neue Daten erscheint ein entsprechender Hinweis statt eines weiteren Modellaufrufs. Codex-Aufträge nutzen dafür `gpt-5.6-luna` mit `low`, OpenRouter-Aufträge `deepseek/deepseek-v4.1-flash` mit `low`. Das Hauptmodell bleibt unverändert. Die Zusammenfassung nennt keine erfundenen Restzeiten und behandelt Entwürfe ausdrücklich als ungeprüft.
 
 Diese kleinen Zusatzaufrufe nutzen das jeweilige Abo beziehungsweise OpenRouter-Guthaben. Sie haben einen eigenen sichtbaren Zähler (höchstens 100 je Lauf), ein Zeitlimit von 90 Sekunden und pausieren nach drei aufeinanderfolgenden Fehlern. Das Produktionsbudget bleibt unverändert. Ein Fehler des Statusmodells stoppt den eigentlichen Auftrag nicht. Beim Anhalten oder Beenden endet auch der zugehörige Statusprozess; ältere Berichte bleiben lesbar.
 
