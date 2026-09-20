@@ -69,7 +69,7 @@ progress{width:100%;height:7px;accent-color:var(--green);margin-top:12px}
 .project-switch{display:flex;align-items:center;gap:6px;min-width:0}
 .project-switch select{width:auto;min-width:0;flex:0 1 auto;max-width:min(38vw,420px);padding:.4rem .6rem;font-size:14px;border-color:#b9c8c3}
 .project-switch .quiet{color:var(--green);white-space:nowrap}
-.job-bar{display:flex;align-items:center;gap:10px;margin-left:auto;min-width:0;font-size:14px;flex:1 1 auto;justify-content:flex-end}
+.job-bar{display:flex;align-items:center;gap:6px 10px;margin-left:auto;min-width:0;font-size:14px;flex:1 1 auto;justify-content:flex-end;flex-wrap:wrap}
 .job-bar button{white-space:nowrap;flex:none}
 .job-text{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .danger-text{color:#a3382f}
@@ -197,6 +197,8 @@ dd{margin:0;overflow-wrap:anywhere}
 .research-questions ul{font-size:14px;padding-left:22px}
 .research-questions .prose{line-height:1.65;margin-top:14px}
 .research-quality{margin-top:16px}
+.live-panel{border-left:4px solid var(--green)}
+.live-panel .live-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55;margin-bottom:8px}
 .decision-card{border-left:4px solid var(--amber);background:var(--amber-soft);border-color:#ecd4a8}
 .decision-card h2{font-size:17px;margin-bottom:6px}
 .decisions{list-style:none;padding:0;margin:0}
@@ -326,12 +328,6 @@ dd{margin:0;overflow-wrap:anywhere}
 .work-material summary,.model-events summary{cursor:pointer;font-weight:600}
 .work-signals{margin-top:16px;border-top:1px solid var(--line);padding:10px 0}
 .work-signals.quiet{border-left:3px solid #b17a2b;background:#fff8ec;padding:10px 14px;border-radius:3px}
-.status-summary{margin:0;padding:16px 18px;background:var(--paper);border:1px solid #c9dcd0;border-left:3px solid var(--green);border-radius:7px;max-width:82ch}
-.status-summary>p:not(.hint){font-size:16px;line-height:1.7;margin:10px 0}
-.status-summary .hint{font-size:13px;color:var(--muted);margin-top:8px}
-.status-history{margin-top:12px}
-.status-history p{padding-top:10px;border-top:1px solid var(--line)}
-.status-history small{display:block;color:var(--muted)}
 
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important;animation:none!important}}
 @media(max-width:1300px){.doc{grid-template-columns:minmax(0,1fr) 300px}.toc{display:none}}
