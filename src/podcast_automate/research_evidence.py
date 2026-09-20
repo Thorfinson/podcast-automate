@@ -11,6 +11,12 @@ from .storage import digest
 EVIDENCE_INSTRUCTIONS = fragment("evidence_instructions")
 
 SYNTHESIS_INSTRUCTIONS = fragment("synthesis_instructions")
+# The rule validate_synthesis enforces, stated to the writer: three dossier drafts of the 20 September
+# run were rejected for comparisons without a read passage on every side. Runs that started before
+# the rule keep their prompts, so their saved receipts stay valid (question_synthesis.PROMPT_GENERATION).
+SYNTHESIS_EVIDENCE_RULE = (" A synthesis relation cites in evidence_refs only references that its compared findings "
+                           "themselves cite, at least one for each compared finding; a comparison without a read "
+                           "passage on every side is not a relation.")
 
 # Typography that differs between an extracted PDF and a quote typed by a model, never wording.
 TYPOGRAPHY = str.maketrans({"“": '"', "”": '"', "„": '"', "‘": "'", "’": "'", "‚": "'",

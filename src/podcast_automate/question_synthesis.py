@@ -17,8 +17,8 @@ from .question_answering import read_context
 from .question_dependencies import invalidate_dependents
 from .question_ownership import editable_findings, finding_owners, preserve_unrelated
 from .research_gap_probe import coverage_terms, gap_id, probe, settle
-from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_INSTRUCTIONS, evidence_summary,
-                                support_errors, validate_objection, validate_synthesis)
+from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_EVIDENCE_RULE, SYNTHESIS_INSTRUCTIONS,
+                                evidence_summary, support_errors, validate_objection, validate_synthesis)
 from .research_ledger import VERSION, save_value
 from .research_models import ResearchDiscovery, ResearchDossier
 from .research_patches import edit_dossier, patch_prompt, repair_references
@@ -32,11 +32,16 @@ from .storage import atomic_text, digest, write_json
 # The instructions, the JSON framing and the answer share it, so the material a call carries stays
 # under this budget; a run with more verified material composes and audits in bounded parts.
 PROMPT_BUDGET_CHARS = 240_000
+# The generation of the composing prompts a run was started with. A rule added to those prompts
+# applies from the next generation on; earlier runs keep their prompt text and their receipts.
+PROMPT_GENERATION = 2
 # The dossier a call writes is about as long as the verified answers it integrates, and the CLI cuts
 # an answer at its output cap (claude_code.MAX_OUTPUT_TOKENS; 32 000 tokens without that setting,
 # roughly 150 000 characters of German JSON). So the answers one composing call integrates stay
 # under this budget as well, whatever the prompt would still hold.
 ANSWER_BUDGET_CHARS = 80_000
+# Closed questions a resumed run integrates per patch at most; fewer when their patch would not fit.
+SEED_BATCH_SIZE = 4
 PART_NOTE = (" This is one part of the review of this dossier: finding_support only for the supplied findings, "
              "source_assessments only for the supplied sources, issues only about the supplied findings, and "
              "objection_checks for exactly the supplied open_objections. other_findings lists the rest of the "
@@ -66,8 +71,109 @@ def source_outline(context):
             for source in context]
 
 
+# What the assessment reads of a support receipt and a source assessment when the dossier is large:
+# the verdicts and identities it judges independence and evidence by, not the review's prose.
+SUPPORT_VERDICT_FIELDS = ("finding_id", "verdict", "unsupported_clauses", "suitability", "empirical_status",
+                          "independent_evidence_refs")
+SOURCE_IDENTITY_FIELDS = ("source_id", "roles", "work_id", "evidence_family", "independence", "method",
+                          "research_group", "population", "geography", "period")
+
+
+def source_identity(context):
+    """Sources as identity only, for a call that names them after the review has judged them."""
+    return [{key: source.get(key) for key in ("source_id", "title", "url")} for source in context]
+
+
+# What the routing matches an objection against when the dossier is large: the task's question and
+# criteria, the answer's summary, the finding's statement, the objection's anchor. Never receipts.
+ROUTING_TASK_FIELDS = ("id", "question", "kind", "acceptance", "question_ids", "requirement_ids", "gap_ids",
+                       "finding_ids", "depends_on")
+ROUTING_OBJECTION_FIELDS = ("id", "rule", "task_id", "criterion_index", "finding_ids", "reason", "closure_condition",
+                            "resolution")
+
+
+# Objections routed per call when there are many: the answer names an anchor per routed task and
+# objection, so it grows with the objections, not with the dossier. One call for all 116 objections
+# of the 20 September run produced nothing in 30 minutes.
+ROUTING_PART_SIZE = 25
+ROUTING_PART_NOTE = (" This is one part of the routing: route exactly the supplied objections, whose indices count "
+                     "from 0 within this part; the other objections of this audit are routed in other parts.")
+
+
+def split_objections(objections, size):
+    return [objections[start:start + size] for start in range(0, len(objections), size)]
+
+
+def merge_route_plans(plans, size):
+    """The parts' routes as one plan, their indices moved back into the audit's objection list."""
+    return ReopenPlan(routes=[route.model_copy(update={"index": route.index + number * size})
+                              for number, plan in enumerate(plans) for route in plan.routes])
+
+
+def compact_routing_material(tasks, answers, review, dossier):
+    """Tasks, answers, anchored issues and dossier as the objection routing reads them in a large run."""
+    data = dossier.model_dump()
+    return {"tasks": [{k: v for k, v in t.model_dump().items() if k in ROUTING_TASK_FIELDS} for t in tasks],
+            "anchored_issues": [{k: v for k, v in i.objection.model_dump().items() if k in ROUTING_OBJECTION_FIELDS}
+                                for i in review.issues if i.objection],
+            "answers": {tid: None if not answer else {"summary": answer.get("summary"), "limits": answer.get("limits", []),
+                                                       "finding_ids": [f["id"] for f in answer.get("findings", [])]}
+                        for tid, answer in answers.items()},
+            "dossier": {"topic": data["topic"],
+                        "findings": [{k: f[k] for k in ("id", "kind", "statement")} for f in data["findings"]],
+                        "coverage": data["coverage"], "open_questions": data["open_questions"],
+                        "synthesis": [{k: r[k] for k in ("id", "finding_ids", "relation", "resolution")}
+                                      for r in data["synthesis"]]}}
+
+
+def compact_review_instructions(review, targets):
+    """The review as a correction of ``targets`` needs it: its issues, the closure checks and the
+    receipts of the corrected findings; source assessments and limitations stay in the review."""
+    return {"issues": [i.model_dump() for i in review.issues],
+            "objection_checks": [c.model_dump() for c in review.objection_checks],
+            "finding_support": [s.model_dump() for s in review.finding_support if s.finding_id in targets]}
+
+
+def compact_assessment_material(dossier, review):
+    """The dossier and the review receipts for an assessment that would not fit one window otherwise.
+
+    The findings keep everything the assessment judges (statement, illustration, claim contract,
+    coverage, synthesis) and only their evidence references; the excerpts were verified by the
+    review. The receipts keep their verdicts and identities without reasons and rationales, and a
+    source that several review parts assessed gets one row with their roles united; the parts'
+    full assessments stay in the review and in the report.
+    """
+    data = dossier.model_dump()
+    for finding in data["findings"]:
+        finding["evidence"] = [{"reference": e["reference"]} for e in finding["evidence"]]
+    assessments = {}
+    for assessment in review.source_assessments:
+        row = {k: v for k, v in assessment.model_dump().items() if k in SOURCE_IDENTITY_FIELDS}
+        known = assessments.get(assessment.source_id)
+        if known is None:
+            assessments[assessment.source_id] = row
+        else:
+            known["roles"] = list(dict.fromkeys(known["roles"] + row["roles"]))
+    return {"dossier": data,
+            "finding_support": [{k: v for k, v in r.model_dump().items() if k in SUPPORT_VERDICT_FIELDS}
+                                for r in review.finding_support],
+            "source_assessments": list(assessments.values())}
+
+
 class SynthesisMixin:
     """Compose, audit and, when the audit fails, reopen only the concretely challenged tasks."""
+
+    @property
+    def prompt_generation(self):
+        return int((self.state or {}).get("prompt_generation", 1))
+
+    @property
+    def prompt_tag(self):
+        """The suffix of every call tag from the second prompt generation on."""
+        return f".g{self.prompt_generation}" if self.prompt_generation >= 2 else ""
+
+    def synthesis_rule(self):
+        return SYNTHESIS_EVIDENCE_RULE if self.prompt_generation >= 2 else ""
 
     def compose(self):
         discovery = ResearchDiscovery.model_validate(self.state["discovery"])
@@ -91,36 +197,59 @@ class SynthesisMixin:
             context = merge_context(context, read_context(self.reader, seed_refs))
             # Small batches of closed questions, each editing only its related original findings.
             dirty = [item for item in answers if item["task"]["id"] in self.state["dirty_tasks"]]
-            for start in range(0, len(dirty), 4):
-                batch = dirty[start:start+4]
+            def rules_for(batch):
+                rules = {"verified_answers": batch,
+                         "assigned_gaps": {gid: self.state["gaps"][gid] for item in batch for gid in item["task"]["gap_ids"]},
+                         "all_closed_tasks": [{"task": item["task"], "answer": item["answer"]["summary"]} for item in answers],
+                         "rule": "Integrate these independently verified answers. Resolve old open questions explicitly "
+                         "when their assigned tasks fully answer them; do not carry stale editorial to-dos as evidence gaps. "
+                         "Only close a compound question when ALL its obligations are answered. Preserve all unrelated findings."
+                         + self.synthesis_rule()}
+                if gaps:
+                    rules["accepted_gaps"] = {"rule": instructions("accepted_gaps"), "tasks": gaps}
+                return rules
+
+            def passages(batch):
+                return read_context(self.reader, [e["reference"] for item in batch
+                                                  for f in item["answer"]["findings"] for e in f["evidence"]])
+
+            def fits(batch):
+                if answer_chars(batch) > ANSWER_BUDGET_CHARS:
+                    return False
+                batch_ids = {item["task"]["id"] for item in batch}
+                prompt = patch_prompt(dossier, discovery, context, self.config,
+                                      targets=editable_findings(owners, batch_ids, self.state["dirty_tasks"]),
+                                      instructions=rules_for(batch), extra_context=passages(batch),
+                                      coverage_ids={qid for item in batch for qid in item["task"]["question_ids"]})
+                return len(prompt) <= PROMPT_BUDGET_CHARS
+
+            start = 0
+            while start < len(dirty):
+                # Up to SEED_BATCH_SIZE closed questions per patch, fewer when their patch would not fit one call.
+                size = 1
+                while start + size < min(len(dirty), start + SEED_BATCH_SIZE) and fits(dirty[start:start + size + 1]):
+                    size += 1
+                batch = dirty[start:start + size]
                 question_ids = {qid for item in batch for qid in item["task"]["question_ids"]}
                 batch_ids = {item["task"]["id"] for item in batch}
                 targets = editable_findings(owners, batch_ids, self.state["dirty_tasks"])
                 legacy_targets = {fid for item in batch for fid in item["task"]["finding_ids"]}
                 legacy_targets.update(fid for c in dossier.coverage if c.question_id in question_ids for fid in c.finding_ids)
                 before = dossier
-                rules = {"verified_answers": batch,
-                         "assigned_gaps": {gid: self.state["gaps"][gid] for item in batch for gid in item["task"]["gap_ids"]},
-                         "all_closed_tasks": [{"task": item["task"], "answer": item["answer"]["summary"]} for item in answers],
-                         "rule": "Integrate these independently verified answers. Resolve old open questions explicitly "
-                         "when their assigned tasks fully answer them; do not carry stale editorial to-dos as evidence gaps. "
-                         "Only close a compound question when ALL its obligations are answered. Preserve all unrelated findings."}
-                if gaps:
-                    rules["accepted_gaps"] = {"rule": instructions("accepted_gaps"), "tasks": gaps}
                 dossier = edit_dossier(folder, f"batch_{start:03d}", dossier, discovery, context, self.config,
-                    lambda p, s: self.generate(folder, f"batch_{start:03d}", p, s, f"{VERSION}.compose_patch"),
-                    targets=targets, legacy_targets=legacy_targets, instructions=rules,
-                    extra_context=read_context(self.reader, [e["reference"] for item in batch
-                                   for f in item["answer"]["findings"] for e in f["evidence"]]), coverage_ids=question_ids)
+                    lambda p, s, start=start: self.generate(folder, f"batch_{start:03d}", p, s, f"{VERSION}{self.prompt_tag}.compose_patch"),
+                    targets=targets, legacy_targets=legacy_targets, instructions=rules_for(batch),
+                    extra_context=passages(batch), coverage_ids=question_ids)
                 added = {f.id for f in dossier.findings} - {f.id for f in before.findings}
                 dossier = repair_references(folder, f"batch_{start:03d}_references", dossier, discovery, context, self.config,
-                    lambda p, s: self.generate(folder, f"batch_{start:03d}_references", p, s, f"{VERSION}.references"),
+                    lambda p, s, start=start: self.generate(folder, f"batch_{start:03d}_references", p, s, f"{VERSION}.references"),
                     allowed_ids=targets | added)
                 preserve_unrelated(before, dossier, targets)
                 additions = dossier.model_copy(update={"findings": [f for f in dossier.findings if f.id in added]})
                 owners.update(finding_owners(additions, [t for t in plan.tasks if t.id in batch_ids], self.state["tasks"]))
+                start += size
         else:
-            text = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + SYNTHESIS_INSTRUCTIONS +
+            text = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + SYNTHESIS_INSTRUCTIONS + self.synthesis_rule() +
                     instructions("dossier_compose", language=self.config.language))
             payload = {"brief": quality_brief(self.config), "questions": [q.model_dump() for q in discovery.questions],
                        "verified_answers": answers, "sources": context}
@@ -131,7 +260,7 @@ class SynthesisMixin:
                 dossier, owners = self.compose_in_batches(folder, discovery, plan, answers, gaps, context, text)
             else:
                 dossier = self.call(folder, "dossier", ResearchDossier, text + "\n" + json.dumps(payload, ensure_ascii=False),
-                                    validate=lambda candidate, final: validate_synthesis(candidate, context))
+                                    validate=lambda candidate, final: validate_synthesis(candidate, context), tag=self.prompt_tag)
                 dossier = repair_references(folder, "references", dossier, discovery, context, self.config,
                     lambda p, s: self.generate(folder, "references", p, s, f"{VERSION}.references"))
                 owners = finding_owners(dossier, plan.tasks, self.state["tasks"])
@@ -165,7 +294,7 @@ class SynthesisMixin:
         opening_context = passages(opening)
         dossier = self.call(folder, "dossier_batch_000", ResearchDossier,
                             text + "\n" + json.dumps(opening_payload(opening), ensure_ascii=False),
-                            validate=lambda candidate, final: validate_synthesis(candidate, opening_context))
+                            validate=lambda candidate, final: validate_synthesis(candidate, opening_context), tag=self.prompt_tag)
         dossier = repair_references(folder, "dossier_batch_000_references", dossier, discovery, opening_context, self.config,
             lambda p, s: self.generate(folder, "dossier_batch_000_references", p, s, f"{VERSION}.references"))
         opening_ids = {item["task"]["id"] for item in opening}
@@ -179,7 +308,8 @@ class SynthesisMixin:
                      "all_closed_tasks": [{"task": item["task"], "answer": item["answer"]["summary"]} for item in answers],
                      "rule": "Integrate these independently verified answers. Resolve old open questions explicitly "
                      "when their assigned tasks fully answer them; do not carry stale editorial to-dos as evidence gaps. "
-                     "Only close a compound question when ALL its obligations are answered. Preserve all unrelated findings."}
+                     "Only close a compound question when ALL its obligations are answered. Preserve all unrelated findings."
+                     + self.synthesis_rule()}
             if gaps:
                 rules["accepted_gaps"] = {"rule": instructions("accepted_gaps"), "tasks": gaps}
             return rules
@@ -205,16 +335,22 @@ class SynthesisMixin:
             before = dossier
             name = f"dossier_batch_{index:03d}"
             dossier = edit_dossier(folder, name, dossier, discovery, context, self.config,
-                lambda p, s, name=name: self.generate(folder, name, p, s, f"{VERSION}.compose_patch"),
+                lambda p, s, name=name: self.generate(folder, name, p, s, f"{VERSION}{self.prompt_tag}.compose_patch"),
                 targets=targets, instructions=rules_for(batch), extra_context=passages(batch), coverage_ids=question_ids)
             added = {f.id for f in dossier.findings} - {f.id for f in before.findings}
+            # A batch repairs only its own findings; a source-wide limit that other batches share waits.
             dossier = repair_references(folder, f"{name}_references", dossier, discovery, context, self.config,
                 lambda p, s, name=name: self.generate(folder, f"{name}_references", p, s, f"{VERSION}.references"),
-                allowed_ids=targets | added)
+                allowed_ids=targets | added, defer_shared=True)
             preserve_unrelated(before, dossier, targets)
             additions = dossier.model_copy(update={"findings": [f for f in dossier.findings if f.id in added]})
             owners.update(finding_owners(additions, [t for t in plan.tasks if t.id in batch_ids], self.state["tasks"]))
             start, index = start + size, index + 1
+        # Source-wide quote and paraphrase limits are the one rule only the sum of the batches can
+        # break. Every finding is new here, so the closing pass may edit any of them, as the
+        # single-call composition does.
+        dossier = repair_references(folder, "dossier_batches_references", dossier, discovery, context, self.config,
+            lambda p, s: self.generate(folder, "dossier_batches_references", p, s, f"{VERSION}.references"))
         write_json(folder / "dossier_batches.json", {"opening": sorted(opening_ids), "batches": index - 1,
                    "budget_chars": PROMPT_BUDGET_CHARS, "answer_budget_chars": ANSWER_BUDGET_CHARS})
         return dossier, owners
@@ -271,9 +407,14 @@ class SynthesisMixin:
                 break
             before = dossier
             targets = {i.finding_id for i in review.issues}
+            guidance = review.model_dump()
+            if len(patch_prompt(dossier, discovery, context, self.config, targets=targets, instructions=guidance,
+                                allow_additions=False, coverage_ids=set(), allow_questions=False)) > PROMPT_BUDGET_CHARS:
+                # A large review: the correction reads the issues and the receipts of its own findings.
+                guidance = compact_review_instructions(review, targets)
             dossier = edit_dossier(folder, f"correction_{revision}", dossier, discovery, context, self.config,
                 lambda p, s: self.generate(folder, f"correction_{revision}", p, s, f"{VERSION}.correction"),
-                targets=targets, instructions=review.model_dump(),
+                targets=targets, instructions=guidance,
                 allow_additions=False, coverage_ids=set(), allow_questions=False)
             dossier = repair_references(folder, f"correction_{revision}_references", dossier, discovery, context, self.config,
                 lambda p, s: self.generate(folder, f"correction_{revision}_references", p, s, f"{VERSION}.references"),
@@ -292,6 +433,12 @@ class SynthesisMixin:
                 # The assessment judges coverage, explanation and independence against the reviewed
                 # dossier and the support receipts; source identity and pages suffice for that.
                 payload["sources"] = source_outline(payload["sources"])
+            if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
+                # A dossier of many answers: verdicts and identities without the review's prose,
+                # findings without their verified excerpts, then sources without their section lists.
+                payload.update(compact_assessment_material(dossier, review))
+            if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
+                payload["sources"] = source_identity(payload["sources"])
         assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
                                validate=lambda candidate, final: check_assessment(self.config, dossier, candidate))
         report = quality_report(self.config, dossier, discovery, self.index, assessment, (i.reason for i in review.issues),
@@ -432,8 +579,11 @@ class SynthesisMixin:
         if accepted:
             text += " " + instructions("accepted_gaps")
             payload["accepted_gaps"] = [{"task_id": tid, **gap} for tid, gap in accepted.items()]
+        if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
+            # Many answers: the routing reads what an objection is matched against, not the receipts.
+            payload.update(compact_routing_material(tasks, payload["answers"], review, dossier))
 
-        def well_formed(routes, final):
+        def well_formed(routes, final, objections=objections):
             if (Counter(r.index for r in routes.routes) != Counter(range(len(objections))) or
                 any(not set(r.task_ids) <= {t.id for t in tasks} for r in routes.routes)):
                 raise AppError("Prüfeinwände sind nicht vollständig bestehenden Recherchefragen zugeordnet.",
@@ -457,8 +607,22 @@ class SynthesisMixin:
                             raise AppError("The closure condition of an existing objection changed.",
                                            code="invalid_question_routing", status="blocked")
 
-        routes = self.call(self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}", "routes", ReopenPlan,
-                           text + "\n" + json.dumps(payload, ensure_ascii=False), validate=well_formed)
+        folder = self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}"
+        if len(objections) <= ROUTING_PART_SIZE:
+            routes = self.call(folder, "routes", ReopenPlan, text + "\n" + json.dumps(payload, ensure_ascii=False),
+                               validate=well_formed)
+        else:
+            # Many objections: routed in parts over the same material, merged into one plan that is
+            # checked as a whole, the way a split review merges.
+            parts = split_objections(objections, ROUTING_PART_SIZE)
+            plans = [self.call(folder, f"routes_part_{number:03d}", ReopenPlan,
+                               text + ROUTING_PART_NOTE + "\n" + json.dumps({**payload, "objections": part}, ensure_ascii=False),
+                               validate=lambda plan, final, part=part: well_formed(plan, final, objections=part))
+                     for number, part in enumerate(parts)]
+            routes = merge_route_plans(plans, ROUTING_PART_SIZE)
+            well_formed(routes, True)
+            write_json(folder / "routes_merged.json", {"parts": len(parts), "objections_per_part": [len(p) for p in parts],
+                       "routes": routes.model_dump(mode="json")})
         reasons = {}
         for route in routes.routes:
             for task_id in route.task_ids:

@@ -11,6 +11,7 @@ approved (``plan_approval.json``, see :mod:`run_budget`).
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from statistics import median
 
@@ -211,12 +212,25 @@ def budget_projection(work, state, limits, request=None, *, root=None):
             "expected_calls_source": source, "open_tasks": open_tasks}
 
 
+# From this many tasks on, the dossier no longer fits one model window: composition and review run in
+# parts, and every audit round reviews the whole dossier again. Measured on the 20 September run:
+# 16 tasks, 82 findings, 23 review parts of about 4 minutes per round, plus assessment and routing.
+LARGE_RUN_TASKS = 6
+REVIEW_PARTS_PER_TASK = 1.4
+
+
+def review_parts_per_round(tasks):
+    return math.ceil(tasks * REVIEW_PARTS_PER_TASK) if tasks >= LARGE_RUN_TASKS else 0
+
+
 def plan_projection(work, root, state, limits):
     """What carrying out the current plan is expected to cost, in calls and hours, before any task call."""
     budget = budget_projection(work, state, limits, root=root)
     seconds, seconds_source = seconds_per_call(work, root, state)
     projected = budget["expected_remaining_calls"]
-    return {"tasks": len(state["plan"]["tasks"]), "tasks_pending": budget["open_tasks"],
+    tasks = len(state["plan"]["tasks"])
+    return {"tasks": tasks, "tasks_pending": budget["open_tasks"],
+            "large_run": tasks >= LARGE_RUN_TASKS, "review_parts_per_round": review_parts_per_round(tasks),
             "expected_calls_per_task": budget["expected_calls_per_task"],
             "expected_calls_source": budget["expected_calls_source"],
             "closing_reserve": CLOSING_RESERVE, "closing_calls": budget["closing_calls"],
@@ -248,6 +262,11 @@ def plan_review_message(projection, run_id=None):
         f"genehmigtes Limit {projection['approved_limit']} Aufrufe, {projection['used']} verbraucht).")
     if not projection["within_limit"]:
         text += " Das genehmigte Aufruflimit reicht dafür voraussichtlich nicht; bei der Freigabe eine Obergrenze setzen oder das Limit erhöhen."
+    if projection.get("large_run"):
+        text += (f" Ab {LARGE_RUN_TASKS} Teilfragen passt das Dossier nicht mehr in ein Modellfenster: Zusammenstellung und "
+                 "Gesamtprüfung laufen in Teilen, und jede Prüfrunde prüft das ganze Dossier neu, hier etwa "
+                 f"{projection.get('review_parts_per_round')} Prüfteile je Runde zu je etwa 4 Minuten, zusätzlich zu Bewertung "
+                 "und Zuordnung der Einwände; jede Nachbesserung wiederholt die Runde. Weniger Teilfragen je Lauf halten das im Rahmen.")
     caps = projection.get("plan_caps") or []
     if caps and projection["tasks"] > min(caps):
         text += (f" Eine Obergrenze von {min(caps)} Teilfragen wurde bereits angefordert; die Planung konnte den Plan "
