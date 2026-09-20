@@ -48,7 +48,7 @@ from .question_synthesis import SynthesisMixin
 from .research_evidence import support_errors
 from .research_gap_probe import coverage_terms, gap_id, probe
 from .research_ledger import (CALL_VERSION, VERSION, bootstrap_legacy, check_sources, load_index, public_ledger,
-                              read_value, save_index, save_value)
+                              read_value, reopenable, save_index, save_value)
 from .research_models import ResearchDiscovery, ResearchDossier
 from .research_patches import cached_call
 from .research_quality import quality_brief, requirements_for
@@ -199,6 +199,30 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         return {tid: {"question": tasks[tid].question, "question_ids": list(tasks[tid].question_ids),
                       "requirement_ids": list(tasks[tid].requirement_ids), "reason": gap.get("reason", "")}
                 for tid, gap in self.accepted_tasks().items() if tid in tasks}
+
+    def reopen_unsearched(self):
+        """Tasks an earlier recovery rule blocked without ever searching the web get that search now.
+
+        Until 2026-09-20 the single automatic strategy change was spent on unread saved passages, so
+        a task ended as ``evidence_block`` or ``search_block`` with no web attempt while the run had
+        search rounds left. Such a task is not a concrete gap yet: it resumes at its saved step with
+        the web search as its next recovery. Accepted gaps, budget blocks and tasks blocked by the
+        new rule (a web attempt made or none left) stay as they are; prerequisite blocks that only
+        waited for such a task are decided again once it finishes.
+        """
+        with self.guarded():
+            reopened = []
+            for task_id, row in self.state["tasks"].items():
+                if reopenable(row, self.state.get("limits")):
+                    row.update(status="researching", pending=None, fallbacks=1, no_progress=2, outcome=None,
+                               activity="Websuche für diese Frage wird nachgeholt")
+                    reopened.append(task_id)
+            if reopened:
+                for row in self.state["tasks"].values():
+                    if row["status"] == "blocked" and row.get("outcome") == "prerequisite_block" and not row.get("accepted_gap"):
+                        row.update(status="pending", outcome=None, reason="", activity="Noch nicht bearbeitet")
+                self.save("Blockierte Teilfragen ohne Websuche werden mit einer Websuche fortgesetzt")
+            return reopened
 
     def adopt_accepted_gaps(self):
         with self.guarded():
@@ -563,6 +587,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
     def run(self, discovery, index, dossier=None, context=()):
         self.initialise(discovery, index, dossier, context)
         self.review_plan()
+        self.reopen_unsearched()
         while True:
             self.adopt_accepted_gaps()
             self.research_tasks()

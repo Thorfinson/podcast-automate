@@ -104,8 +104,26 @@ class StudioProgressTests(unittest.TestCase):
         write_json(self.work / "research_questions.json", ledger)
         progress = script_progress(self.root, {**self.run, "kind": "research"})
         self.assertEqual((progress["completed_segments"], progress["total_segments"]), (3, 7))
-        self.assertEqual(progress["research_questions"], ledger)
+        questions = progress["research_questions"]
+        self.assertEqual((questions["closed"], questions["total"], questions["phase"], questions["reopenable"]), (3, 7, "questions", 0))
+        self.assertEqual(questions["questions"][0]["answer"], "A supported definition")
         self.assertEqual(progress["research_quality"]["closed"], 0)
+
+    def test_an_older_ledger_learns_which_blocks_a_resume_reopens_from_the_saved_state(self):
+        write_json(self.work / "research_activity.json", {"activity": "Einzelne Recherchefragen bleiben offen"})
+        # A ledger the worker wrote before the field existed, and the state it was derived from.
+        write_json(self.work / "research_questions.json", {"closed": 1, "total": 3, "phase": "blocked", "questions": [
+            {"id": "t_done", "status": "verified"},
+            {"id": "t_unsearched", "status": "blocked", "outcome": "evidence_block"},
+            {"id": "t_searched", "status": "blocked", "outcome": "evidence_block"}]})
+        row = {"status": "blocked", "outcome": "evidence_block", "web_attempts": 0, "fallbacks": 2, "step": 3}
+        state = {"limits": {"steps_per_question": 10, "web_attempts": 2}, "tasks": {
+            "t_done": {**row, "status": "verified"}, "t_unsearched": row, "t_searched": {**row, "web_attempts": 1}}}
+        write_json(self.work / "question_research/state.json", {"value": state, "sha256": "unchecked here"})
+        questions = script_progress(self.root, {**self.run, "kind": "research"})["research_questions"]
+        self.assertEqual(questions["reopenable"], 1)
+        self.assertEqual([(q["id"], q["reopenable"], q["web_attempts"]) for q in questions["questions"]],
+                         [("t_done", False, 0), ("t_unsearched", True, 0), ("t_searched", False, 1)])
 
     def test_research_progress_reports_the_execution_mode_the_run_was_started_with(self):
         write_json(self.work / "research_activity.json", {"activity": "Drei Teilfragen laufen"})

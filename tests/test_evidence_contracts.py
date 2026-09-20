@@ -8,17 +8,20 @@ from pydantic import ValidationError
 from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
+from podcast_automate.call_activity import contract_rejection
 from podcast_automate.errors import AppError
-from podcast_automate.evidence_models import ResearchObjection, SynthesisRelation
+from podcast_automate.evidence_models import FindingSupport, ResearchObjection, SynthesisRelation
+from podcast_automate.models import Contract, EpisodeScript
 from podcast_automate.question_dependencies import ordered_tasks, invalidate_dependents
 from podcast_automate.question_research import answer_errors
 from podcast_automate.question_scope import QuestionScopeReview, scoped_plan
-from podcast_automate.research_evidence import support_errors, concentration, validate_synthesis, validate_objection, claim_changes
+from podcast_automate.research_evidence import (support_errors, concentration, validate_synthesis, validate_objection,
+                                                claim_changes, quotable)
 from podcast_automate.research_ledger import read_value, save_value
-from podcast_automate.research_models import ResearchDossier
+from podcast_automate.research_models import Finding, ResearchDiscovery, ResearchDossier
 from podcast_automate.research_patches import DossierPatch, apply_patch
 from podcast_automate.research_reader import SourceReader
-from podcast_automate.research_review import SourceReview
+from podcast_automate.research_review import Resolution, SourceReview
 from podcast_automate.research_tasks import AnswerReview, QuestionPlan, ResearchDecision
 from podcast_automate.script_evidence import validate_claim_checks
 from podcast_automate.script_models import ScriptReview
@@ -26,7 +29,62 @@ from podcast_automate.sources import extract
 from podcast_automate.storage import digest
 from tests.question_fixtures import answer_for, task_value, support_receipts, script_checks
 from tests.script_fixtures import example_script
+from tests import research_fixtures
 from tests import test_question_research as fixtures
+
+
+def own_model_validators(contract):
+    inherited = set()
+    for base in contract.__bases__:
+        inherited |= set(getattr(getattr(base, "__pydantic_decorators__", None), "model_validators", {}))
+    return set(contract.__pydantic_decorators__.model_validators) - inherited
+
+
+class ContractRuleTests(unittest.TestCase):
+    """A cross-field rule of an output contract cannot go into the JSON schema the model sees, so its
+    violation must be a named, correctable rejection and never a run-ending schema failure. Every
+    contract that defines such a rule needs a violating example here; the enumeration fails otherwise."""
+
+    SETTINGS = {"TopicBrief", "AudioChoice"}  # operator settings, never model output
+
+    def violations(self):
+        receipt = support_receipts([f.model_dump() for f in answer_for("src_one#s_one").findings],
+                                   [{"source_id": "src_one", "sections": [{"reference": "src_one#s_one", "text": "x"}]}])
+        discovery = research_fixtures.discovery(count=1).model_dump()
+        script = example_script().model_dump()
+        return {
+            FindingSupport: {**receipt["finding_support"][0], "verdict": "partially_supported", "unsupported_clauses": []},
+            ResearchObjection: dict(id="obj_x", rule="support", task_id="", criterion_index=None, finding_ids=["f_energy"],
+                                    evidence_refs=[], missing_evidence="", reason="r", correction="c",
+                                    closure_condition="c", resolution="revise"),
+            Finding: dict(id="f_x", kind="definition", statement="s", evidence=[dict(reference="src_one#s_one", excerpt="e")],
+                          illustration="an example", illustration_limit=""),
+            ResearchDiscovery: {**discovery, "questions": discovery["questions"] * 2},
+            Resolution: dict(resolution="revise", search_queries=["energy"]),
+            EpisodeScript: {**script, "segments": [{**script["segments"][0], "chapter_id": "scene_other"}]},
+        }
+
+    def test_every_output_contract_rule_is_a_named_correctable_rejection(self):
+        violations = self.violations()
+        found, pending = set(), [Contract]
+        while pending:
+            for contract in pending.pop().__subclasses__():
+                if own_model_validators(contract) and contract.__name__ not in self.SETTINGS:
+                    found.add(contract)
+                pending.append(contract)
+        self.assertEqual({c.__name__ for c in found}, {c.__name__ for c in violations},
+                         "a contract gained or lost a cross-field rule: add or remove its violating example")
+        for contract, example in violations.items():
+            with self.subTest(contract=contract.__name__):
+                with self.assertRaises(ValidationError) as caught:
+                    contract.model_validate(example)
+                failure = contract_rejection(caught.exception, example, provider="Test")
+                self.assertEqual((failure.code, failure.status), ("rejected_output", "blocked"))
+                self.assertEqual(failure.details["payload"], example)
+                self.assertTrue(failure.details["defects"])
+                first = failure.details["defects"][0]["msg"].removeprefix("Value error, ").rstrip(".")
+                self.assertIn(first, str(failure))
+                self.assertIn("corrected", str(failure))
 
 
 class EvidenceContractTests(unittest.TestCase):
@@ -69,6 +127,35 @@ class EvidenceContractTests(unittest.TestCase):
             review.finding_support[0].verdict = verdict
             with self.subTest(verdict=verdict):
                 self.assertTrue(support_errors(self.findings, review, self.context, limitations=[]))
+
+    def test_a_quote_differing_only_in_pdf_typography_is_verbatim(self):
+        # Ligatures, curly quotes, dash variants, a soft hyphen and a line-break hyphenation come from
+        # the extraction; the model types plain characters. Wording still has to match.
+        section = ("We ﬁnd that the “ﬁnancial” reces- sion path — as the non­bank data show — "
+                   "is about 4% lower than the normal recession path.")
+        for quote in ('We find that the "financial" recession path', "path - as the nonbank data show - is about 4% lower",
+                      "the non-bank data"):
+            with self.subTest(quote=quote):
+                self.assertIn(quotable(quote), quotable(section))
+        for quote in ("We find that the recession path", "the financial recession path is 4% lower"):
+            with self.subTest(quote=quote):
+                self.assertNotIn(quotable(quote), quotable(section))
+
+    def test_a_supported_verdict_with_named_clauses_is_partially_supported_by_construction(self):
+        # The clause list is the judgement; the verdict summarises it instead of being policed.
+        row = {**self.receipts["finding_support"][0], "verdict": "supported",
+               "unsupported_clauses": ["Year and publisher come from URL metadata, not from a read passage."]}
+        review = self.review(finding_support=[row])
+        self.assertEqual(review.finding_support[0].verdict, "partially_supported")
+        limitations = []
+        self.assertEqual(support_errors(self.findings, review, self.context, limitations=limitations), [])
+        self.assertEqual(limitations[0]["kind"], "partial_support")
+        self.assertIn("URL metadata", limitations[0]["text"])
+        # The judgements that only the reviewer can make keep their rules.
+        for change in ({"verdict": "partially_supported"}, {"verdict": "contradicted"},
+                       {"empirical_status": "independently_tested"}):
+            with self.subTest(change=change), self.assertRaises(ValidationError):
+                self.review(finding_support=[{**self.receipts["finding_support"][0], **change}])
 
     def test_a_receipt_over_some_cited_passages_is_accepted_with_the_omission_recorded(self):
         self.findings[0].evidence.append(self.findings[0].evidence[0].model_copy(update={"reference": "src_one#s_two"}))

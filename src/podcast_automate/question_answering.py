@@ -13,7 +13,7 @@ from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
 from .question_dependencies import prerequisite_answers
 from .question_sources import reserve_source, restore_attempts, source_identity
-from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, collapse_assessments, collapse_support,
+from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, collapse_assessments, collapse_support, quotable,
                                 evidence_summary, support_errors)
 from .research_gap_probe import settle
 from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
@@ -92,7 +92,7 @@ def answer_errors(answer, task, reader, read_refs):
             entry = reader.lookup.get(evidence.reference)
             if evidence.reference not in read_refs or entry is None:
                 errors.append(f"{finding.id}: {reference_defect(evidence.reference, reader, read_refs)}")
-            elif clean(evidence.excerpt) not in clean(entry[2].text):
+            elif quotable(evidence.excerpt) not in quotable(entry[2].text):
                 errors.append(f"{finding.id}: quote is not verbatim in the cited section.")
             if entry and entry[0].url and entry[0].final_url:
                 external = True
@@ -201,25 +201,33 @@ class TaskResearchMixin:
         row["answer_locked"] = False
 
     def recover(self, spec, row):
-        """One automatic strategy change, then a concrete block instead of an endless loop."""
+        """Two automatic strategy changes before a concrete block: unread saved passages, then one web search.
+
+        The web search is the safety net for a reader that chose blocked or kept answering instead of
+        searching: a task is not blocked for missing evidence while it still has a web attempt and the
+        run a search round. Reading saved passages first keeps the cheap step ahead of the expensive one.
+        """
         row["fallbacks"] += 1
-        if row["fallbacks"] > 1:
+        if row["fallbacks"] > 2:
             return False
-        candidates = [c["reference"] for result in row["catalog"] for c in result["candidates"]
-                      if c["reference"] not in row["read_refs"]]
-        if not candidates:
-            for result in list(row["catalog"]):
-                if result["next_offset"] is not None:
-                    extra = self.catalog(spec, row, result["query"], source_id=result["source_id"], offset=result["next_offset"])
-                    candidates.extend(c["reference"] for item in extra for c in item["candidates"]
-                                      if c["reference"] not in row["read_refs"])
-        if candidates:
-            self.read(row, [ReaderWindow(reference=r, before=1, after=1) for r in list(dict.fromkeys(candidates))[:8]])
-            row["no_progress"] = 0
-            self.unlock(row)
-            row["feedback"] = ["The previous strategy made no progress. Additional candidate sections have now been read. "
-                               "Evaluate these passages against this question's fixed criteria; do not add new research goals."]
-            return True
+        if row["fallbacks"] == 1:
+            candidates = [c["reference"] for result in row["catalog"] for c in result["candidates"]
+                          if c["reference"] not in row["read_refs"]]
+            if not candidates:
+                for result in list(row["catalog"]):
+                    if result["next_offset"] is not None:
+                        extra = self.catalog(spec, row, result["query"], source_id=result["source_id"], offset=result["next_offset"])
+                        candidates.extend(c["reference"] for item in extra for c in item["candidates"]
+                                          if c["reference"] not in row["read_refs"])
+            if candidates:
+                self.read(row, [ReaderWindow(reference=r, before=1, after=1) for r in list(dict.fromkeys(candidates))[:8]])
+                row["no_progress"] = 0
+                self.unlock(row)
+                row["feedback"] = ["The previous strategy made no progress. Additional candidate sections have now been read. "
+                                   "Evaluate these passages against this question's fixed criteria; do not add new research goals."]
+                return True
+        if row["web_attempts"] >= self.state["limits"]["web_attempts"]:
+            return False
         # Exhausted saved passages are a reason to search externally, not to
         # keep rewriting the same answer or ask the user to click again.
         self.progress(f"Neue Originalquelle für diese Frage wird gesucht: {spec.question}")
@@ -275,12 +283,14 @@ class TaskResearchMixin:
             self.save(f"Belege zu dieser Frage werden ergänzt: {spec.question}")
 
     def lock_block(self, spec, row):
-        """Locked, the web searched, still nothing new: the concrete gap goes to the operator now."""
+        """Locked, the recoveries spent, still nothing new: the concrete gap goes to the operator now."""
         lock = row.get("lock") or {}
         unmet = "; ".join(f"Kriterium {c['index']}: {c['text']}" for c in lock.get("criteria", [])) or \
             "; ".join(lock.get("reasons", []))
-        reason = ("Die unabhängige Prüfung hat die Antwort abgewiesen, und auch die Websuche brachte keine neuen "
-                  f"Belege. Unerfüllt: {unmet}")
+        # Name only what actually happened: a web search that never ran is not a finding about the web.
+        searched = ("auch die Websuche brachte keine neuen Belege" if row.get("web_attempts", 0) >= 1
+                    else "die gespeicherten Quellen brachten keine neuen Belege")
+        reason = f"Die unabhängige Prüfung hat die Antwort abgewiesen, und {searched}. Unerfüllt: {unmet}"
         row.update(status="blocked", activity="Keine neuen Belege für die abgewiesenen Kriterien",
                    reason=reason + (" " + row["reason"] if row["reason"] else ""),
                    outcome="budget_block" if row.get("outcome") == "budget_block" else "evidence_block")

@@ -18,6 +18,7 @@ from .prompts import fragment, instructions
 from .research import PLAIN_LANGUAGE, refund_call, reserve_call, unanswered
 from .research_evidence import single_group_findings
 from .research_gap_probe import coverage_terms, gap_id, hit_sources, probe, settle, statuses, unread
+from .research_patches import re_asked
 from .run_budget import effective_limits
 from .runner import run_observer
 from .script_artifacts import publish_scripts, render_script, script_metrics
@@ -59,20 +60,24 @@ class ScriptRun:
         return effective_limits(self.work, self.config.research_limits, self.input_hash)
 
     def invoke(self, prompt, output_type, version, *, search=False, research=False):
+        """One validated answer; a parsed answer the contract rejects is re-asked with the defects named."""
         # The pool applies the saved choice per call; supplementary research follows the subscription rule.
         self.adapter.require_key()
-        number = reserve_call(self.work, self.limits(), search=search)
-        try:
-            return self.adapter.structured(prompt, output_type, self.work / "calls" / f"call_{number:03d}",
-                                           prompt_version=version, search=search, research=research)[0]
-        except AppError as exc:
-            # A call without any model response is not charged; rejected model work stays charged.
-            if unanswered(exc):
+
+        def once(attempt):
+            number = reserve_call(self.work, self.limits(), search=search)
+            try:
+                return self.adapter.structured(attempt, output_type, self.work / "calls" / f"call_{number:03d}",
+                                               prompt_version=version, search=search, research=research)[0]
+            except AppError as exc:
+                # A call without any model response is not charged; rejected model work stays charged.
+                if unanswered(exc):
+                    refund_call(self.work, number, search=search)
+                raise
+            except BaseException:
                 refund_call(self.work, number, search=search)
-            raise
-        except BaseException:
-            refund_call(self.work, number, search=search)
-            raise
+                raise
+        return re_asked(once, prompt)
 
     def selected(self):
         plan = SeriesPlan.model_validate_json((self.work / "series_plan.json").read_text(encoding="utf-8"))

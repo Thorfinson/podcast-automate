@@ -29,6 +29,7 @@ from .research_gap_probe import suffix as probe_suffix
 from .research_quality import load_complete_research, requirements_for
 from .question_research import run_question_research
 from .research_ledger import read_value
+from .research_evidence import quotable
 from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash, project_lock, read_text,
                       read_optional_json, read_yaml, write_json, write_yaml)
@@ -224,7 +225,7 @@ def validate_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, con
             text = sections.get(evidence.reference)
             if text is None:
                 errors.append(f"{finding.id}: unknown or unseen reference {evidence.reference}.")
-            elif clean(evidence.excerpt) not in clean(text):
+            elif quotable(evidence.excerpt) not in quotable(text):
                 errors.append(f"{finding.id}: excerpt is not verbatim in {evidence.reference}.")
             quotes.setdefault(evidence.reference.split("#")[0], set()).add(clean(evidence.excerpt))
     for source_id, excerpts in quotes.items():

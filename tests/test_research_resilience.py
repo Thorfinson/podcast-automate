@@ -15,6 +15,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from pydantic import ValidationError
+
+from podcast_automate.call_activity import contract_rejection
 from podcast_automate.claude_code import ClaudeCodeAdapter
 from podcast_automate.cli import main
 from podcast_automate.codex import CodexAdapter
@@ -32,7 +35,7 @@ from podcast_automate.storage import digest, init_project, write_json, write_yam
 from podcast_automate.studio import make_server, read_json
 from podcast_automate.text_settings import auto_candidates
 from tests import research_fixtures as fixtures
-from tests.question_fixtures import answer_for, decision, task_value
+from tests.question_fixtures import answer_for, complete_fixture_response, decision, task_value
 from tests.test_codex_stream import SERVER, Result
 from tests.test_provider_pool import QuotaFakes
 from tests.test_question_research import QuestionResearchTests
@@ -266,6 +269,75 @@ class RejectedReceiptTests(WorkflowCase):
         self.assertIsNone(decision("read", windows=[window]).payload_error())
         self.assertIn("Action 'blocked' takes no payload; supplied: 'windows'",
                       decision("blocked", windows=[window]).payload_error())
+
+    def fixture_review(self, payload):
+        """The complete passing review of this fixture, as the parsed answer an adapter would validate."""
+        review = AnswerReview(criteria=[dict(index=0, passed=True, reason="Supported by this fixture.")],
+                              supported=True, source_adequacy=True, issues=[])
+        return complete_fixture_response(review, payload).model_dump()
+
+    def contract_violation(self, payload):
+        """A review receipt that breaks a contract rule, reported exactly as the adapters report it."""
+        review = self.fixture_review(payload)
+        review["finding_support"][0].update(verdict="partially_supported", unsupported_clauses=[])
+        try:
+            AnswerReview.model_validate(review)
+        except ValidationError as exc:
+            return contract_rejection(exc, review, provider="Fixture")
+        self.fail("the fixture review must violate the contract")
+
+    def test_a_supported_verdict_with_named_clauses_is_a_limitation_not_a_rejection(self):
+        def hook(prompt, schema, payload, kwargs):
+            if schema is AnswerReview:
+                review = self.fixture_review(payload)
+                review["finding_support"][0]["unsupported_clauses"] = ["Year and publisher known only from metadata."]
+                return AnswerReview.model_validate(review)
+        self.fixture.hook = hook
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(self.calls(AnswerReview), 1)
+        row = next(r for r in engine.state["tasks"].values() if r["status"] == "verified")
+        self.assertEqual(row["verification"]["review"]["finding_support"][0]["verdict"], "partially_supported")
+        self.assertIn("partial_support", [item["kind"] for item in row["verification"]["limitations"]])
+
+    def test_a_contract_violation_reported_by_the_adapter_is_re_asked_with_the_defects_named(self):
+        reviews = []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is AnswerReview:
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    raise self.contract_violation(payload)
+        self.fixture.hook = hook
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(len(reviews), 2)
+        self.assertIn("Rejections:", reviews[1])
+        self.assertIn("Name the unsupported or contradicted clauses", reviews[1])
+        self.assertTrue(reviews[1].endswith("\n" + reviews[0].rsplit("\n", 1)[1]), "the JSON payload stays the last line")
+        rejected = next((self.work / "question_research/tasks").glob("*/attempt_0/review_*_rejected_00.json"))
+        saved = json.loads(rejected.read_text(encoding="utf-8"))
+        self.assertEqual(saved["code"], "rejected_output")
+        self.assertEqual(saved["sha256"], digest(saved["value"]))
+        self.assertEqual(saved["value"]["finding_support"][0]["verdict"], "partially_supported")
+        self.assertTrue(rejected.with_name(rejected.name.replace("_rejected_00", "")).exists())
+
+    def test_a_persistent_contract_violation_blocks_after_named_retries(self):
+        def hook(prompt, schema, payload, kwargs):
+            if schema is AnswerReview:
+                raise self.contract_violation(payload)
+        self.fixture.hook = hook
+        with self.assertRaises(AppError) as caught:
+            self.run_engine()
+        self.assertEqual((caught.exception.code, caught.exception.status), ("rejected_output", "blocked"))
+        self.assertIn("Name the unsupported or contradicted clauses", str(caught.exception))
+        self.assertIn("wiederholt", str(caught.exception))
+        self.assertEqual(self.calls(AnswerReview), 3)
+        calls = len(self.fixture.calls)
+        with self.assertRaises(AppError) as again:
+            self.run_engine()
+        self.assertEqual(again.exception.code, "rejected_output")
+        self.assertEqual(len(self.fixture.calls), calls)
 
     def test_exhausted_rejections_block_and_resume_makes_no_further_call(self):
         self.searching([self.bad_search()])

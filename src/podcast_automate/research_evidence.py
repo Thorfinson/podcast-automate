@@ -1,6 +1,7 @@
 """Deterministic receipt validation around (fallible) semantic model judgements."""
 from collections import Counter
 import re
+import unicodedata
 
 from .prompts import fragment
 from .errors import AppError
@@ -10,6 +11,22 @@ from .storage import digest
 EVIDENCE_INSTRUCTIONS = fragment("evidence_instructions")
 
 SYNTHESIS_INSTRUCTIONS = fragment("synthesis_instructions")
+
+# Typography that differs between an extracted PDF and a quote typed by a model, never wording.
+TYPOGRAPHY = str.maketrans({"“": '"', "”": '"', "„": '"', "‘": "'", "’": "'", "‚": "'",
+                            "–": "-", "—": "-", "−": "-", "­": ""})
+
+
+def quotable(text):
+    """Text for the verbatim check, with the typography of extraction and quote made equal.
+
+    Ligatures (``ﬁnancial``), curly quotes, dash variants, soft hyphens and a hyphenation at a line
+    break (``reces- sion``) come from the PDF, not from the model. The quote still has to appear in
+    the section as the same run of words; a paraphrase or an ellipsis stays a rejected quote.
+    """
+    text = unicodedata.normalize("NFKC", text).translate(TYPOGRAPHY)
+    text = re.sub(r"(\w)-\s*(\w)", r"\1\2", text)
+    return " ".join(text.split())
 
 PROFILES = {
     "definition": "Original definition, conceptual scope and distinctions; no artificial empirical test.",

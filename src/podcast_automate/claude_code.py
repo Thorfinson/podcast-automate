@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .call_activity import CallActivity, clean_status, write_rejected_output
+from .call_activity import CallActivity, clean_status, contract_rejection, write_rejected_output
 from .codex import subscription_environment
 from .errors import AppError
 from .models import TextProbeOutput
@@ -339,19 +339,24 @@ class ClaudeCodeAdapter:
                 receipt.update(blocked_until=failure.details["blocked_until"], reason=failure.details.get("reason"))
             write_json(directory / "failure.json", receipt)
             raise failure
-        try:
-            payload = final.get("structured_output")
-            if payload is None:
-                raise ValueError("structured_output missing")
-            output = output_type.model_validate(payload)
-        except (ValueError, TypeError, ValidationError) as exc:
+        receipt = {"exit_code": result.returncode,
+                   "result_subtype": final.get("subtype") if isinstance(final.get("subtype"), str) else None,
+                   "model": self.model, "reasoning_effort": self.reasoning_effort,
+                   "prompt_version": prompt_version, "cli_version": version}
+        payload = final.get("structured_output")
+        if payload is None:
             activity.finish("invalid_model_output")
             failure = AppError("Claude Code hat keine gültige strukturierte Antwort geliefert.", code="invalid_model_output")
-            write_rejected_output(directory, exc, {
-                "code": failure.code, "message": str(failure), "exit_code": result.returncode,
-                "result_subtype": final.get("subtype") if isinstance(final.get("subtype"), str) else None,
-                "model": self.model, "reasoning_effort": self.reasoning_effort,
-                "prompt_version": prompt_version, "cli_version": version}, payload=payload)
+            write_rejected_output(directory, ValueError("structured_output missing"),
+                                  {"code": failure.code, "message": str(failure), **receipt})
+            raise failure
+        try:
+            output = output_type.model_validate(payload)
+        except (ValueError, TypeError, ValidationError) as exc:
+            # A parsed answer the contract rejects is charged model work that a caller may re-ask.
+            activity.finish("rejected_output")
+            failure = contract_rejection(exc, payload, provider="Claude Code")
+            write_rejected_output(directory, exc, {"code": failure.code, "message": str(failure), **receipt}, payload=payload)
             raise failure from exc
         research_performed = bool(search_requests) or server_searches > 0
         if search and not research_performed:

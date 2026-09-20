@@ -11,6 +11,7 @@ from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-expo
 from .run_budget import accepted_gaps, effective_limits, read_plan_approval
 from .errors import AppError
 from .models import ResearchLimits
+from .research_ledger import reopenable
 from .storage import read_yaml, write_json
 from .storage import read_optional_json as read
 from .studio_scripts import script_previews
@@ -154,6 +155,16 @@ def research_progress(root, run):
             questions["accepted"] = sum(bool(r.get("accepted_gap")) for r in questions["questions"])
             if questions.get("phase") == "blocked" and not questions["blocked"]:
                 questions["phase"] = "questions"
+        if "reopenable" not in questions:
+            # A ledger written before the field existed: decide it from the saved rows, as a resume would,
+            # so the Studio offers the resume that gives these blocks their web search.
+            state = (read(work / "question_research/state.json", {}) or {}).get("value") or {}
+            tasks = state.get("tasks") or {}
+            for row in questions["questions"]:
+                task = tasks.get(row.get("id")) or {}
+                row["reopenable"] = bool(task) and reopenable(task, state.get("limits"))
+                row.setdefault("web_attempts", task.get("web_attempts", 0))
+            questions["reopenable"] = sum(bool(r.get("reopenable")) for r in questions["questions"])
     counts = questions or report or {}
     from .research_status import work_insight
     awaiting = isinstance(questions, dict) and questions.get("phase") == "awaiting_plan_approval"

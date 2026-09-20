@@ -13,7 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import SecretStr, ValidationError
 
-from .call_activity import CallActivity
+from .call_activity import CallActivity, contract_rejection, parsed_json
 from .errors import AppError
 from .models import now
 from .storage import write_json
@@ -205,8 +205,12 @@ class OpenRouterAdapter:
         except AppError as exc:
             activity.diagnostic("failure", exc.code, code=exc.code)
             activity.finish(exc.code)
-            write_json(directory / "failure.json", {"code": exc.code, "message": str(exc),
-                       "model": self.model, "prompt_version": prompt_version})
+            receipt = {"code": exc.code, "message": str(exc), "model": self.model, "prompt_version": prompt_version}
+            if exc.code == "rejected_output":
+                # The parsed answer is model output, kept as an accepted one is kept in response.json.
+                receipt["validation_errors"] = exc.details["defects"]
+                write_json(directory / "rejected_output.json", exc.details["payload"])
+            write_json(directory / "failure.json", receipt)
             raise
         except BaseException:
             activity.finish("interrupted")
@@ -274,13 +278,21 @@ class OpenRouterAdapter:
             content = choice["message"]["content"]
             if not isinstance(content, str):
                 raise ValueError("Expected text content")
-            output = output_type.model_validate_json(content)
-            if secret in output.model_dump_json():
-                raise AppError("Modellantwort enthält Zugangsdaten und wird nicht gespeichert.",
-                               code="credential_in_response", status="blocked")
-        except (ValueError, KeyError, IndexError, TypeError, ValidationError):
+        except (ValueError, KeyError, IndexError, TypeError):
             raise AppError("OpenRouter hat keine gültige strukturierte Antwort geliefert; Entwurf nicht übernommen.",
                            code="invalid_model_output", status="blocked") from None
+        answer = parsed_json(content)
+        if answer is None:
+            raise AppError("OpenRouter hat keine gültige strukturierte Antwort geliefert; Entwurf nicht übernommen.",
+                           code="invalid_model_output", status="blocked")
+        try:
+            output = output_type.model_validate(answer)
+        except (ValueError, TypeError, ValidationError) as exc:
+            # The envelope was checked for the key above, so the answer can be kept as a receipt.
+            raise contract_rejection(exc, answer, provider="OpenRouter") from None
+        if secret in output.model_dump_json():
+            raise AppError("Modellantwort enthält Zugangsdaten und wird nicht gespeichert.",
+                           code="credential_in_response", status="blocked")
 
         raw_usage = envelope.get("usage")
         usage = {key: value for key, value in raw_usage.items()

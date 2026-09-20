@@ -1209,6 +1209,27 @@ test('blocked research questions offer an explicit gap approval only while no jo
   assert.ok(html.includes('Aufruflimit auf 12 erhöhen'));
 });
 
+test('blocked research questions that never searched the web keep the resume button and say why',()=>{
+  const app=studio();
+  const ledger={closed:1,total:3,accepted:0,blocked:2,reopenable:1,phase:'blocked',active_task:null,
+    questions:[{id:'task_definition',question:'Was ist Energie?',status:'verified',activity:'ok',steps:2,read_sections:3,acceptance:['x'],answer:'Antwort',findings:[],sources:[],limits:[],reopened:0},
+      {id:'task_norms',question:'Wie wirken Normen?',status:'blocked',outcome:'evidence_block',reopenable:true,web_attempts:0,reason:'Die gespeicherten Quellen brachten keine neuen Belege.',activity:'Beleg fehlt',steps:3,read_sections:30,acceptance:['y'],reopened:0},
+      {id:'task_other',question:'Gibt es Belege?',status:'blocked',outcome:'evidence_block',reopenable:false,web_attempts:1,reason:'Auch die Websuche brachte nichts.',activity:'Beleg fehlt',steps:5,read_sections:12,acceptance:['z'],reopened:0}]};
+  app.run(`project={id:'p',job:{id:'j1',status:'blocked',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12,model_call_limit:150,model_calls:73}}};renderJob();`);
+  let html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('>Fortsetzen<'));
+  assert.ok(html.includes('1 blockierte Teilfrage hat das Web noch nicht durchsucht'));
+  assert.ok(!html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
+  assert.equal((html.match(/holt das nach/g)||[]).length,1);
+  assert.ok(html.includes('data-action="accept-gap"'));
+  // Once every block has had its web search, the old rule applies again: no resume, gaps to accept.
+  app.run("const q=project.job.progress.research_questions;q.reopenable=0;q.questions[1].reopenable=false;q.questions[1].web_attempts=1;renderJob()");
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(!html.includes('>Fortsetzen<'));
+  assert.ok(html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
+  assert.ok(!html.includes('holt das nach'));
+});
+
 test('a paused job announces its automatic resume and a silent worker is flagged',()=>{
   const app=studio();
   app.run("project={id:'p',job:{id:'j2',status:'waiting_for_quota',started_at:new Date().toISOString(),run:{run_id:'run_y',kind:'research',stages:{}},auto_resume_at:'2026-09-22T20:31:18+00:00'}};renderJob();");

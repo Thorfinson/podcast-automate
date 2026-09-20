@@ -73,8 +73,8 @@ class ResearchDecision(Contract):
     def payload_error(self) -> str | None:
         """Why the payload contradicts the chosen action, or None.
 
-        The reader call checks this as a correctable rejection rather than a schema rule: a schema
-        failure ends the run as ``invalid_model_output``, a rejection re-asks with the defect named.
+        The reader call checks this as a correctable rejection rather than a schema rule, so the
+        re-ask names the exact payload mismatch instead of a generic contract defect.
         """
         expected = READER_PAYLOADS.get(self.action)
         supplied = [name for name in READER_PAYLOADS.values() if getattr(self, name)]

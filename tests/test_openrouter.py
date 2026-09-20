@@ -125,14 +125,25 @@ class OpenRouterTests(unittest.TestCase):
             OpenRouterAdapter(RuntimeSettings(), model="deepseek/deepseek-v4.1-flash", api_key=KEY, reasoning_effort="xhigh")
 
     def test_invalid_truncated_refused_and_incomplete_responses_are_rejected(self):
-        cases = [b"not JSON", [], {"choices": []}, {"choices": [None]}, {"choices": ["invalid"]},
-                 envelope('{"unknown":"value"}'),
-                 envelope(choices=[{"finish_reason": "length", "message": {"content": "{}"}}]),
-                 envelope(choices=[{"finish_reason": "content_filter", "message": {"content": None}}])]
-        for value in cases:
-            with self.subTest(value=value), self.assertRaises(AppError):
+        cases = [(b"not JSON", "invalid_model_output"), ([], "invalid_model_output"),
+                 ({"choices": []}, "invalid_model_output"), ({"choices": [None]}, "invalid_model_output"),
+                 ({"choices": ["invalid"]}, "invalid_model_output"), (envelope("not JSON"), "invalid_model_output"),
+                 (envelope('{"unknown":"value"}'), "rejected_output"),
+                 (envelope(choices=[{"finish_reason": "length", "message": {"content": "{}"}}]), "openrouter_truncated"),
+                 (envelope(choices=[{"finish_reason": "content_filter", "message": {"content": None}}]), "invalid_model_output")]
+        for value, code in cases:
+            with self.subTest(value=value), self.assertRaises(AppError) as caught:
                 self.call(value)
+            self.assertEqual(caught.exception.code, code)
         self.assertFalse((self.root / "call/response.json").exists())
+        # A parsed answer the contract rejects is kept as a receipt and is correctable by the caller.
+        with self.assertRaises(AppError) as caught:
+            self.call(envelope('{"unknown":"value"}'))
+        self.assertEqual(caught.exception.details["payload"], {"unknown": "value"})
+        receipt = json.loads((self.root / "call/failure.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["code"], "rejected_output")
+        self.assertEqual(receipt["validation_errors"], caught.exception.details["defects"])
+        self.assertEqual(json.loads((self.root / "call/rejected_output.json").read_text(encoding="utf-8")), {"unknown": "value"})
 
     def test_credential_echo_in_content_or_metadata_is_blocked(self):
         for value in [envelope(json.dumps({"detail": {"text": KEY, "count": 1}})), envelope(model=KEY)]:

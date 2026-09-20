@@ -93,12 +93,15 @@ if mode == "quota_text":
     sys.exit(1)
 if mode == "incomplete":
     sys.exit(0)
-emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "stop_reason": "end_turn",
-      "total_cost_usd": 0.0087, "session_id": "s",
-      "usage": {"input_tokens": 4, "output_tokens": 123, "cache_read_input_tokens": 691, "cache_creation_input_tokens": 849,
-                "server_tool_use": {"web_search_requests": 1 if search and mode != "nosearch" else 0}},
-      "modelUsage": {"claude-opus-5": {"costUSD": 0.0087, "contextWindow": 200000, "maxOutputTokens": 32000}},
-      "structured_output": structured})
+final = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "stop_reason": "end_turn",
+         "total_cost_usd": 0.0087, "session_id": "s",
+         "usage": {"input_tokens": 4, "output_tokens": 123, "cache_read_input_tokens": 691, "cache_creation_input_tokens": 849,
+                   "server_tool_use": {"web_search_requests": 1 if search and mode != "nosearch" else 0}},
+         "modelUsage": {"claude-opus-5": {"costUSD": 0.0087, "contextWindow": 200000, "maxOutputTokens": 32000}},
+         "structured_output": structured}
+if mode == "missing":
+    del final["structured_output"]
+emit(final)
 '''
 
 
@@ -170,7 +173,8 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
     def test_failures_are_classified_and_receipts_carry_no_provider_text(self):
         expectations = {"quota": ("claude_quota_exhausted", "waiting_for_quota"),
                         "quota_text": ("claude_quota_exhausted", "waiting_for_quota"),
-                        "budget": ("claude_budget_cap", "blocked"), "invalid": ("invalid_model_output", "failed"),
+                        "budget": ("claude_budget_cap", "blocked"), "invalid": ("rejected_output", "blocked"),
+                        "missing": ("invalid_model_output", "failed"),
                         "logout": ("authentication_required", "blocked"), "api": ("subscription_required", "blocked"),
                         "old": ("claude_version", "blocked"), "incomplete": ("claude_failed", "failed")}
         for mode, (code, status) in expectations.items():
@@ -185,12 +189,22 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                     path = self.root / mode / name
                     if path.exists():
                         self.assertNotIn("test-only-secret", path.read_text(encoding="utf-8"))
+        # A parsed answer the contract rejects is charged, kept and correctable; a missing one is not an answer.
         receipt = json.loads((self.root / "invalid/failure.json").read_text(encoding="utf-8"))
-        self.assertEqual((receipt["code"], receipt["result_subtype"], receipt["exit_code"]), ("invalid_model_output", "success", 0))
+        self.assertEqual((receipt["code"], receipt["result_subtype"], receipt["exit_code"]), ("rejected_output", "success", 0))
         self.assertTrue(receipt["validation_errors"])
         self.assertTrue(all(set(item) == {"loc", "msg", "type"} for item in receipt["validation_errors"]))
         self.assertEqual(json.loads((self.root / "invalid/rejected_output.json").read_text(encoding="utf-8")),
                          {"topic": "incomplete"})
+        self.assertEqual(json.loads((self.root / "invalid/activity.json").read_text(encoding="utf-8"))["status"], "rejected_output")
+        with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "invalid"}), self.assertRaises(AppError) as error:
+            self.call("invalid_details")
+        self.assertEqual(error.exception.details["payload"], {"topic": "incomplete"})
+        self.assertEqual(error.exception.details["defects"], receipt["validation_errors"])
+        self.assertIn("reason", str(error.exception))
+        missing = json.loads((self.root / "missing/failure.json").read_text(encoding="utf-8"))
+        self.assertEqual((missing["code"], missing["result_subtype"]), ("invalid_model_output", "success"))
+        self.assertFalse((self.root / "missing/rejected_output.json").exists())
         with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "quota"}), self.assertRaises(AppError) as error:
             self.call("quota_details")
         until = datetime.fromisoformat(error.exception.details["blocked_until"])
