@@ -32,6 +32,10 @@ MINIMUM_CLI_VERSION = (2, 1, 92)
 MAX_SCHEMA_CHARS = 30_000
 # Per call. The CLI reports an equivalent value; a subscription call is not billed individually.
 MAX_BUDGET_USD = 12.0
+# Output cap per answer. CLI 2.1.92 has no table entry for claude-opus-5 and falls back to 32 000
+# tokens; this is the ceiling it accepts for that model id. When input and cap together would exceed
+# the context window, the CLI retries with a reduced cap by itself.
+MAX_OUTPUT_TOKENS = 64_000
 # Claude Opus 5 has a 200 000-token window. Research prompts (German prose plus JSON) measured
 # about 1.6 characters per token, so this cap keeps a call inside the window with room for the
 # system prompt and the answer. A larger prompt is refused before the CLI starts.
@@ -45,6 +49,9 @@ QUOTA_MARKERS = ("hit your", "usage limit", "usage_limit", "rate limit", "rate_l
                  "limit reached", "out of usage", "quota")
 AUTH_MARKERS = ("not logged in", "log in", "login", "authentication", "unauthorized", "401",
                 "invalid api key", "oauth", "token expired")
+# An answer cut at the output cap: the CLI ends with an assistant message whose ``error`` is
+# ``max_output_tokens`` and a ``success`` result that carries ``is_error`` and exit code 1.
+OUTPUT_LIMIT_MARKERS = ("output token maximum", "max_output_tokens", "context window limit")
 BLOCK_LABELS = {"weekly_limit": "Wochenlimit", "opus_limit": "Opus-Limit", "session_limit": "Sitzungslimit",
                 "five_hour": "5-Stunden-Fenster", "seven_day": "Wochenfenster", "unclear_limit": "Limit"}
 
@@ -74,7 +81,8 @@ def claude_environment() -> dict[str, str]:
     """Subscription login only, no telemetry; CLAUDE_CONFIG_DIR stays untouched because it holds that login."""
     environment = subscription_environment()
     environment.update({"DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
-                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"})
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(MAX_OUTPUT_TOKENS)})
     return environment
 
 
@@ -155,8 +163,12 @@ def claude_block_window(message, *, rate_limit=None, now=None) -> tuple[datetime
     return now + timedelta(minutes=30), kind
 
 
-def classify_claude_failure(message, *, subtype=None, rate_limit=None) -> AppError:
-    """Map the CLI's error envelope to an actionable error without keeping its text."""
+def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error=None) -> AppError:
+    """Map the CLI's error envelope to an actionable error without keeping its text.
+
+    ``api_error`` is the CLI's category of a failed request from its last assistant event, such as
+    ``max_output_tokens``; the result text alone may not name the cause.
+    """
     text = str(message or "")
     lower = text.lower()
     sub = str(subtype or "").lower()
@@ -173,6 +185,16 @@ def classify_claude_failure(message, *, subtype=None, rate_limit=None) -> AppErr
                         code="claude_quota_exhausted", status="waiting_for_quota",
                         details={"provider": "claude_code", "blocked_until": until.isoformat(), "reason": kind,
                                  "message_excerpt": clean_status(text, 160)})
+    if str(api_error or "").lower() == "max_output_tokens" or any(marker in lower for marker in OUTPUT_LIMIT_MARKERS):
+        match = re.search(r"exceeded the (\d+) output token maximum", lower)
+        cap = int(match.group(1)) if match else None
+        window = cap is None and "context window" in lower
+        where = "am Kontextfenster" if window else "am Ausgabelimit des Aufrufs" + (f" ({cap} Tokens laut CLI)" if cap else "")
+        return AppError(f"Die Claude-Antwort wurde {where} abgeschnitten und nicht übernommen. Der Aufruf verlangt "
+                        "mehr Ausgabe, als ein Aufruf liefern kann; er muss in kleinere Teile zerlegt werden.",
+                        code="claude_output_limit", status="blocked",
+                        details={"provider": "claude_code", "reason": "context_window" if window else "output_tokens",
+                                 "output_limit_tokens": cap})
     if any(marker in lower for marker in AUTH_MARKERS):
         return AppError("Claude-Anmeldung muss erneuert werden: claude auth login",
                         code="authentication_required", status="blocked")
@@ -329,14 +351,20 @@ class ClaudeCodeAdapter:
             activity.finish("failed")
             errors = final.get("errors") if isinstance(final.get("errors"), list) else []
             message = " ".join([*(str(e) for e in errors), str(final.get("result") or ""), result.stderr])
-            failure = classify_claude_failure(message, subtype=final.get("subtype"), rate_limit=limit_event)
+            # The CLI's category of a failed request (for example max_output_tokens), never its text.
+            api_errors = [e["error"] for e in events if e.get("type") == "assistant" and isinstance(e.get("error"), str)]
+            api_error = api_errors[-1][:40] if api_errors else None
+            failure = classify_claude_failure(message, subtype=final.get("subtype"), rate_limit=limit_event,
+                                              api_error=api_error)
             # Keep a useful failure receipt without persisting raw provider output or prompts.
             receipt = {"code": failure.code, "message": str(failure), "exit_code": result.returncode,
                        "result_subtype": final.get("subtype") if isinstance(final.get("subtype"), str) else None,
-                       "model": self.model, "reasoning_effort": self.reasoning_effort,
+                       "api_error": api_error, "model": self.model, "reasoning_effort": self.reasoning_effort,
                        "prompt_version": prompt_version, "cli_version": version}
             if failure.details.get("blocked_until"):
                 receipt.update(blocked_until=failure.details["blocked_until"], reason=failure.details.get("reason"))
+            if failure.code == "claude_output_limit":
+                receipt.update(reason=failure.details["reason"], output_limit_tokens=failure.details["output_limit_tokens"])
             write_json(directory / "failure.json", receipt)
             raise failure
         receipt = {"exit_code": result.returncode,

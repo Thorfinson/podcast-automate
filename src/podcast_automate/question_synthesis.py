@@ -32,6 +32,11 @@ from .storage import atomic_text, digest, write_json
 # The instructions, the JSON framing and the answer share it, so the material a call carries stays
 # under this budget; a run with more verified material composes and audits in bounded parts.
 PROMPT_BUDGET_CHARS = 240_000
+# The dossier a call writes is about as long as the verified answers it integrates, and the CLI cuts
+# an answer at its output cap (claude_code.MAX_OUTPUT_TOKENS; 32 000 tokens without that setting,
+# roughly 150 000 characters of German JSON). So the answers one composing call integrates stay
+# under this budget as well, whatever the prompt would still hold.
+ANSWER_BUDGET_CHARS = 80_000
 PART_NOTE = (" This is one part of the review of this dossier: finding_support only for the supplied findings, "
              "source_assessments only for the supplied sources, issues only about the supplied findings, and "
              "objection_checks for exactly the supplied open_objections. other_findings lists the rest of the "
@@ -40,6 +45,11 @@ PART_NOTE = (" This is one part of the review of this dossier: finding_support o
 
 def chars(value):
     return len(json.dumps(value, ensure_ascii=False))
+
+
+def answer_chars(items):
+    """The material a composing call turns into dossier findings: the answers, not their passages."""
+    return sum(chars(item["answer"]) for item in items)
 
 
 def compact_baseline(answers):
@@ -117,7 +127,7 @@ class SynthesisMixin:
             if gaps:
                 text += " " + instructions("accepted_gaps")
                 payload["accepted_gaps"] = gaps
-            if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
+            if len(text) + chars(payload) > PROMPT_BUDGET_CHARS or answer_chars(answers) > ANSWER_BUDGET_CHARS:
                 dossier, owners = self.compose_in_batches(folder, discovery, plan, answers, gaps, context, text)
             else:
                 dossier = self.call(folder, "dossier", ResearchDossier, text + "\n" + json.dumps(payload, ensure_ascii=False),
@@ -131,9 +141,11 @@ class SynthesisMixin:
         return dossier, discovery, context
 
     def compose_in_batches(self, folder, discovery, plan, answers, gaps, context, text):
-        """More verified material than one window holds: the dossier starts from the first answers
-        that fit with only their passages, then every further answer is integrated in bounded
-        batches, the way a resumed run integrates newly closed questions into a saved dossier."""
+        """More verified material than one call holds, in its prompt or in its answer: the dossier
+        starts from the first answers that fit with only their passages, then every further answer
+        is integrated in bounded batches, the way a resumed run integrates newly closed questions
+        into a saved dossier. A batch is bounded twice, its prompt by PROMPT_BUDGET_CHARS and the
+        answers it integrates by ANSWER_BUDGET_CHARS, because the dossier it asks for grows with them."""
         def passages(items):
             return read_context(self.reader, [e["reference"] for item in items
                                               for f in item["answer"]["findings"] for e in f["evidence"]])
@@ -146,7 +158,8 @@ class SynthesisMixin:
             return payload
 
         first = 1
-        while first < len(answers) and len(text) + chars(opening_payload(answers[:first + 1])) <= PROMPT_BUDGET_CHARS:
+        while (first < len(answers) and answer_chars(answers[:first + 1]) <= ANSWER_BUDGET_CHARS
+               and len(text) + chars(opening_payload(answers[:first + 1])) <= PROMPT_BUDGET_CHARS):
             first += 1
         opening = answers[:first]
         opening_context = passages(opening)
@@ -172,6 +185,8 @@ class SynthesisMixin:
             return rules
 
         def fits(batch):
+            if answer_chars(batch) > ANSWER_BUDGET_CHARS:
+                return False
             batch_ids = {item["task"]["id"] for item in batch}
             prompt = patch_prompt(dossier, discovery, context, self.config, targets=editable_findings(owners, batch_ids, dirty),
                                   instructions=rules_for(batch), extra_context=passages(batch),
@@ -201,7 +216,7 @@ class SynthesisMixin:
             owners.update(finding_owners(additions, [t for t in plan.tasks if t.id in batch_ids], self.state["tasks"]))
             start, index = start + size, index + 1
         write_json(folder / "dossier_batches.json", {"opening": sorted(opening_ids), "batches": index - 1,
-                   "budget_chars": PROMPT_BUDGET_CHARS})
+                   "budget_chars": PROMPT_BUDGET_CHARS, "answer_budget_chars": ANSWER_BUDGET_CHARS})
         return dossier, owners
 
     def write_gate(self, report):

@@ -27,6 +27,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 mode = os.environ.get("PLA_CLAUDE_TEST", "ok")
 assert not any(k in os.environ for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"))
 assert os.environ.get("DISABLE_TELEMETRY") == "1" and os.environ.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") == "1"
+assert os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == "64000"
 args = sys.argv[1:]
 if args == ["auth", "status", "--json"]:
     print(json.dumps({"loggedIn": mode != "logout", "authMethod": "apiKey" if mode == "api" else "claude.ai",
@@ -69,6 +70,14 @@ delta(0, "thinking_delta", thinking="")
 delta(1, "input_json_delta", partial_json='{"reason": "Alpha')
 time.sleep(.05)
 delta(1, "input_json_delta", partial_json=' Beta"}')
+if mode == "truncated":
+    # An answer cut at the output cap, as CLI 2.1.92 reports it (observed 2026-09-20 on a dossier call).
+    cut = ("API Error: Claude's response exceeded the 32000 output token maximum. To configure this behavior, "
+           "set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable. test-only-secret")
+    emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": cut}]}, "error": "max_output_tokens"})
+    emit({"type": "result", "subtype": "success", "is_error": True, "num_turns": 1, "stop_reason": "max_tokens",
+          "result": cut, "usage": {}})
+    sys.exit(1)
 if mode == "retry":
     emit({"type": "system", "subtype": "api_retry", "attempt": 1, "error": "rate_limit"})
 structured = {"topic": "incomplete"} if mode == "invalid" else (
@@ -176,7 +185,8 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                         "budget": ("claude_budget_cap", "blocked"), "invalid": ("rejected_output", "blocked"),
                         "missing": ("invalid_model_output", "failed"),
                         "logout": ("authentication_required", "blocked"), "api": ("subscription_required", "blocked"),
-                        "old": ("claude_version", "blocked"), "incomplete": ("claude_failed", "failed")}
+                        "old": ("claude_version", "blocked"), "incomplete": ("claude_failed", "failed"),
+                        "truncated": ("claude_output_limit", "blocked")}
         for mode, (code, status) in expectations.items():
             with self.subTest(mode=mode), patch.dict(os.environ, {"PLA_CLAUDE_TEST": mode}):
                 self.adapter._version = None
@@ -189,6 +199,16 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
                     path = self.root / mode / name
                     if path.exists():
                         self.assertNotIn("test-only-secret", path.read_text(encoding="utf-8"))
+        # An answer cut at the output cap names the cap, never the connection, and keeps the CLI's category.
+        cut = json.loads((self.root / "truncated/failure.json").read_text(encoding="utf-8"))
+        self.assertEqual((cut["result_subtype"], cut["exit_code"], cut["api_error"], cut["reason"], cut["output_limit_tokens"]),
+                         ("success", 1, "max_output_tokens", "output_tokens", 32000))
+        self.assertIn("Ausgabelimit", (self.root / "truncated/activity.json").read_text(encoding="utf-8"))
+        self.assertIn("output_limit", json.loads((self.root / "truncated/diagnostics.json").read_text(encoding="utf-8"))["categories"])
+        with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "truncated"}), self.assertRaises(AppError) as error:
+            self.call("truncated_details")
+        self.assertIn("32000 Tokens", str(error.exception))
+        self.assertNotIn("Verbindung", str(error.exception))
         # A parsed answer the contract rejects is charged, kept and correctable; a missing one is not an answer.
         receipt = json.loads((self.root / "invalid/failure.json").read_text(encoding="utf-8"))
         self.assertEqual((receipt["code"], receipt["result_subtype"], receipt["exit_code"]), ("rejected_output", "success", 0))
@@ -303,6 +323,13 @@ class ClaudeHelperTests(unittest.TestCase):
         self.assertEqual(limited.details["reason"], "seven_day")
         self.assertEqual(classify_claude_failure("Not logged in").code, "authentication_required")
         self.assertEqual(classify_claude_failure("socket hang up").code, "claude_failed")
+        cut = classify_claude_failure("API Error: Claude's response exceeded the 32000 output token maximum.", subtype="success")
+        self.assertEqual((cut.code, cut.status, cut.details["reason"], cut.details["output_limit_tokens"]),
+                         ("claude_output_limit", "blocked", "output_tokens", 32000))
+        by_category = classify_claude_failure("", subtype="success", api_error="max_output_tokens")
+        self.assertEqual((by_category.code, by_category.details["output_limit_tokens"]), ("claude_output_limit", None))
+        window = classify_claude_failure("API Error: The model has reached its context window limit.", subtype="success")
+        self.assertEqual((window.code, window.details["reason"]), ("claude_output_limit", "context_window"))
 
     def test_command_resolution_prefers_path_then_home_install_and_unwraps_npm_shims(self):
         with tempfile.TemporaryDirectory() as temporary:

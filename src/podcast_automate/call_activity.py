@@ -58,6 +58,7 @@ class CallActivity:
                 ("rate_limit", ("rate limit", "rate_limit", "429")),
                 ("authentication", ("unauthorized", "authentication", "401")),
                 ("output_schema", ("invalid_json_schema", "invalid schema")),
+                ("output_limit", ("max_output_tokens", "output token")),
                 ("context_limit", ("context_length", "context window")),
                 ("connection", ("connection", "stream disconnected", "tls", "dns", "socket", "transport")),
                 ("retry", ("retry", "reconnect")),
@@ -77,6 +78,7 @@ class CallActivity:
                     "rate_limit": "Anbieter meldet eine Begrenzung der Anfragerate.",
                     "authentication": "Anbieter meldet ein Anmeldeproblem.",
                     "output_schema": "Anbieter meldet ein Problem mit dem Antwortformat.",
+                    "output_limit": "Anbieter meldet eine am Ausgabelimit abgeschnittene Antwort.",
                     "context_limit": "Anbieter meldet ein überschrittenes Kontextlimit.",
                     "connection": "Anbindung meldet ein Verbindungs- oder Streamproblem.",
                     "retry": "Anbindung versucht die Verbindung erneut.",
@@ -210,6 +212,12 @@ class CallActivity:
         elif kind == "stream_event":
             self._observe_claude_stream(event.get("event") or {})
         elif kind == "assistant":
+            error = event.get("error")
+            if isinstance(error, str) and error:
+                # The CLI's category of a failed request (max_output_tokens, rate_limit, ...), never its text.
+                self.diagnostic("api_error", error, error=error[:40])
+                if error == "max_output_tokens":
+                    self.record("Antwort am Ausgabelimit des Aufrufs abgeschnitten; sie wird nicht übernommen")
             for block in (event.get("message") or {}).get("content") or []:
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
@@ -250,7 +258,8 @@ class CallActivity:
                 self.record("Modellantwort empfangen; Validierung folgt")
             else:
                 errors = event.get("errors") if isinstance(event.get("errors"), list) else []
-                self.diagnostic("result", subtype + " " + " ".join(str(e) for e in errors[:3]), subtype=subtype)
+                self.diagnostic("result", " ".join([subtype, *(str(e) for e in errors[:3]), str(event.get("result") or "")]),
+                                subtype=subtype)
                 self.record("Modell meldet einen fehlgeschlagenen Aufruf")
 
     def _observe_claude_stream(self, event):
