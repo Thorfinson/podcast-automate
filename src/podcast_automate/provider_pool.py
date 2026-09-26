@@ -2,7 +2,8 @@
 
 ``text_generation_settings`` builds and checks the saved provider form for a run. ``AdapterPool``
 turns that form into an adapter for each call: a fixed provider as before, or the subscription
-rule (Codex while it has quota, else Claude, else pause) for ``auto``. The decision is written to
+rule for ``auto`` (the preferred subscription while it has quota, else the other, else pause; new runs
+prefer Claude). The decision is written to
 ``provider_choice.json`` in the call directory; a mid-call switch after a quota error is recorded
 in ``provider_switch.json`` and repeats the same call once with the other subscription. A call whose
 streaming output stalls is repeated once on the same provider (``stall_retry.json``), and a prompt
@@ -20,8 +21,8 @@ from .models import TextProbeOutput, now
 from .openrouter import ADAPTER_VERSION, DEFAULT_MAX_OUTPUT_TOKENS, OpenRouterAdapter
 from .prompts import instructions
 from .storage import write_json
-from .text_settings import (DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, SUBSCRIPTION_PROVIDERS, TEXT_PROVIDERS,
-                            auto_candidates, provider_model, validate_model, validate_reasoning)
+from .text_settings import (AUTO_PREFERENCE, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, SUBSCRIPTION_PROVIDERS,
+                            TEXT_PROVIDERS, auto_candidates, provider_model, validate_model, validate_reasoning)
 
 
 def subscription_selection(config, backend, *, model=None, reasoning_effort=None) -> dict:
@@ -29,7 +30,7 @@ def subscription_selection(config, backend, *, model=None, reasoning_effort=None
     if backend == "auto":
         provider_model("auto", model)
         validate_reasoning(reasoning_effort, provider="auto")
-        return {"provider": "auto", "prefer": "codex_cli", "candidates": auto_candidates(config.runtime.codex_model),
+        return {"provider": "auto", "prefer": AUTO_PREFERENCE, "candidates": auto_candidates(config.runtime.codex_model),
                 "adapter_versions": {"claude_code": CLAUDE_ADAPTER_VERSION}}
     if backend == "claude_code":
         model = provider_model("claude_code", validate_model(model)) or DEFAULT_CLAUDE_MODEL
@@ -112,7 +113,7 @@ class AdapterPool:
             if not search:
                 return "openrouter", "openrouter", {}
             # Live research needs a CLI with web tools; the subscriptions take over with catalog defaults.
-            return "auto", "codex_cli", auto_candidates(self.settings.codex_model)
+            return "auto", AUTO_PREFERENCE, auto_candidates(self.settings.codex_model)
         return "fixed", self.provider, {self.provider: {"model": self.text_generation.get("model"),
                                                          "reasoning_effort": self.text_generation.get("reasoning_effort")}}
 

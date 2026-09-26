@@ -24,7 +24,7 @@ from .teaching_research import gaps_in
 from .speech import GeminiSpeech, audio_catalog, selected_audio
 from .storage import digest, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
-from .studio import BriefProposal, TextChoice, audio_job_path, read_json
+from .studio import BriefProposal, TextChoice, audio_job_path, chat_limits, read_json
 from .studio_progress import safe_script_progress, watch
 from .status_summary import start_monitor
 from .process import stop_process_tree
@@ -65,12 +65,15 @@ def perform(root, request, sample_progress=None):
         with project_lock(root):
             conversation = read_json(root / "studio/chat.json", [])
             user_message = {"role": "user", "message": request["message"]}
+            if conversation and conversation[-1] == user_message:
+                # Sending an unanswered message again replaces it instead of repeating it.
+                conversation = conversation[:-1]
             write_json(root / "studio/chat.json", [*conversation, user_message])
             selection = text_generation_settings(config, **{key: value for key, value in kwargs.items() if key != "api_key"})
             adapter = AdapterPool(config.runtime, selection, api_key=kwargs["api_key"])
             adapter.require_key()
             work = root / "studio/assistant"
-            number = reserve_call(work, config.research_limits)
+            number = reserve_call(work, chat_limits(root, config.research_limits))
             prompt = (
                 TERMINOLOGY +
                 instructions("studio_assistant") + " " +
@@ -89,7 +92,7 @@ def perform(root, request, sample_progress=None):
                     "reasoning_efforts": REASONING_EFFORTS, "requested_text": request.get("requested_text"),
                     "conversation": conversation[-16:], "user_message": request["message"]}, ensure_ascii=False))
             proposal, _ = adapter.structured(prompt, BriefProposal, work / f"call_{number:03d}",
-                                              prompt_version="studio_brief.v3-attachments", search=False)
+                                              prompt_version="studio_brief.v4-tts-model", search=False)
             if request.get("requested_text"):
                 proposal.text = TextChoice.model_validate(request["requested_text"])
             if proposal.text:

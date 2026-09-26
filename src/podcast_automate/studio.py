@@ -11,11 +11,12 @@ import threading
 import time
 import uuid
 import webbrowser
+from contextlib import nullcontext
 from typing import Literal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
-from urllib.parse import urlsplit, unquote
+from urllib.parse import parse_qs, urlsplit, unquote
 from urllib.request import urlopen
 
 from pydantic import Field
@@ -36,6 +37,7 @@ from .storage import (atomic_text, digest, file_hash, init_project, inside, load
                       read_yaml, write_json, write_yaml)
 from .voice_samples import ready_sample, sample_inventory
 from .spoken_forms import SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report
+from .studio_messages import clean, paths_only, user_text
 from .studio_scripts import review_notes, script_previews
 from .downloads import disposition, podcast_download, podcast_zip
 from .studio_trash import has_artifacts, move_contents
@@ -50,6 +52,80 @@ VOICES = QWEN_VOICES
 # A job paused by a subscription limit is resumed automatically at its named reset, at most this often.
 MAX_AUTO_RESUMES = 3
 SCHEDULER_INTERVAL_SECONDS = 30
+# A paused text job in one of these states stays the project's job even when a later audio job exists.
+ATTENTION = {"blocked", "failed", "interrupted", "waiting_for_quota", "pending", "review_ready"}
+# Empty credit does not come back by waiting, so the scheduler never resumes it.
+NO_AUTO_RESUME = {"openrouter_credits"}
+# Jobs that never write exports: while one of them holds the project lock, downloads read without it.
+TEXT_ACTIONS = {"assistant", "research", "plan", "replan", "script", "revise", "check", "audio_sample", "audio_samples"}
+# Names start with a word character, so no segment can be "..".
+DIAGNOSTIC_FILES = re.compile(r"(runs/\w[\w.-]*/(?:\w[\w.-]*/)*\w[\w.-]*\.(?:txt|md|json)|studio/failures/\w[\w.-]*\.txt"
+                              r"|studio/stderr/[a-f0-9]{32}\.log)")
+CHAT_LIMIT_STEP = 50
+
+
+def stop_code(job):
+    """The code and stage of a stopped job: the worker's own error first, it is newer than stage records."""
+    stages = ((job or {}).get("run") or {}).get("stages") or {}
+    stage, error = next(((name, record["error"]) for name, record in stages.items()
+                         if isinstance(record, dict) and record.get("error")), (None, None))
+    if (job or {}).get("error_code"):
+        return job["error_code"], None
+    return (error or {}).get("code"), stage
+
+
+def lane(job):
+    """The work a job belongs to; a new job of the same lane replaces a paused one, another lane parks it."""
+    action = (job or {}).get("action")
+    kind = ((job or {}).get("run") or {}).get("kind")
+    if action == "research" or kind == "research":
+        return "research"
+    if action in {"plan", "replan", "script", "revise"} or kind == "script":
+        return "script"
+    if action == "audio" or kind == "episode_audio":
+        return "audio"
+    return None
+
+
+def park(root, new_job):
+    """Keep a paused text or audio job visible while a job of another lane uses studio/job.json."""
+    current = read_json(root / "studio/job.json", {}) or {}
+    parked = root / "studio/paused_job.json"
+    if parked.exists():
+        # A resume of the parked run continues it; a new job of the same lane supersedes it.
+        old = read_json(parked, {}) or {}
+        resumed = (new_job.get("action") == "resume"
+                   and (new_job.get("run") or {}).get("run_id") == (old.get("run") or {}).get("run_id"))
+        if resumed or (new_job.get("action") != "resume" and lane(new_job) is not None and lane(old) == lane(new_job)):
+            parked.unlink()
+    if (current.get("run") and current.get("status") in ATTENTION and lane(current)
+            and lane(current) != lane(new_job) and not (new_job.get("action") == "resume"
+                and (new_job.get("run") or {}).get("run_id") == current["run"].get("run_id"))):
+        write_json(parked, current)
+
+
+def chat_limits(root, limits):
+    """The editorial conversation's call allowance: the project's research limit or a raise approved in the Studio."""
+    approved = read_json(root / "studio/assistant/limit.json", {}) or {}
+    calls = approved.get("model_calls")
+    if type(calls) is int and calls > limits.model_calls:
+        return limits.model_copy(update={"model_calls": calls})
+    return limits
+
+
+def worker_stderr(root, job):
+    """The tail of a worker's error output, when it wrote any."""
+    job_id = (job or {}).get("id")
+    if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        return None
+    path = root / "studio/stderr" / (job_id + ".log")
+    try:
+        if not path.is_file() or not path.stat().st_size:
+            return None
+        lines = [line for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return None
+    return "\n".join(lines[-12:])[-1500:] or None
 
 
 def latest_provider_choice(work):
@@ -74,9 +150,10 @@ def audio_job_path(root, job_id):
     return root / "studio/audio_jobs" / (job_id + ".json")
 
 
-def record_interruption(root, *, expected_job_id=None, audio_job_id=None):
+def record_interruption(root, *, expected_job_id=None, audio_job_id=None,
+                        message="Angehalten. Fertige Arbeit bleibt gespeichert.", shared=None, crash_detail=None):
     """Persist an interruption after the owned worker and its children have exited."""
-    with project_lock(root, shared=bool(audio_job_id)):
+    with project_lock(root, shared=bool(audio_job_id) if shared is None else shared):
         job_path = audio_job_path(root, audio_job_id) if audio_job_id else root / "studio/job.json"
         job = read_json(job_path)
         if expected_job_id is not None and job.get("id") != expected_job_id:
@@ -97,7 +174,9 @@ def record_interruption(root, *, expected_job_id=None, audio_job_id=None):
                     manifest.updated_at = now()
                     write_yaml(path, manifest.model_dump(mode="json"))
                 job["run"] = manifest.model_dump(mode="json")
-        job.update(status="interrupted", finished_at=now(), message="Angehalten. Fertige Arbeit bleibt gespeichert.")
+        job.update(status="interrupted", finished_at=now(), message=message)
+        if crash_detail:
+            job["crash_detail"] = crash_detail
         from .studio_progress import safe_script_progress
         progress = safe_script_progress(root, job.get("run"))
         if progress:
@@ -232,8 +311,8 @@ class Studio:
                 "defaults": TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
                                       voice_profile={"host_a": "Aiden", "host_b": "Vivian"}).model_dump(mode="json")}
 
-    def job(self, root, *, audio_job_id=None):
-        path = audio_job_path(root, audio_job_id) if audio_job_id else root / "studio/job.json"
+    def job(self, root, *, audio_job_id=None, path=None):
+        path = path or (audio_job_path(root, audio_job_id) if audio_job_id else root / "studio/job.json")
         data = read_json(path)
         if data and data["status"] == "running":
             owner = self.audio_processes.get(audio_job_id) if audio_job_id else None
@@ -243,28 +322,35 @@ class Studio:
                 # The worker may have written its final result before poll() observed exit.
                 data = read_json(path)
                 if data["status"] == "running":
-                    data["status"] = "interrupted"
-                    data["message"] = "Auftrag unterbrochen. Gespeicherten Stand fortsetzen."
-                    write_json(path, data)
+                    data = self.vanished(root, path, data, audio_job_id)
             run = data.get("run")
             if run:
                 work = manifest_path(root, run["run_id"]).parent
-                if owned:
-                    # The worker's watcher rewrites progress.json every few seconds while it is alive.
-                    try:
-                        data["heartbeat_age_seconds"] = max(0, int(time.time() - (work / "progress.json").stat().st_mtime))
-                    except OSError:
-                        pass
                 progress = read_json(work / "progress.json")
+                nested_path = inside(root, progress["chapter_progress"]) if (progress or {}).get("chapter_progress") else None
+                if owned:
+                    # Research and script workers rewrite progress.json every few seconds; audio writes it per
+                    # chapter and the chapter's own file per segment. The newest of them is the heartbeat.
+                    stamps = [started.timestamp()] if (started := parse_iso(data.get("started_at"))) else []
+                    for candidate in filter(None, (work / "progress.json", nested_path)):
+                        try:
+                            stamps.append(candidate.stat().st_mtime)
+                        except OSError:
+                            pass
+                    if stamps:
+                        data["heartbeat_age_seconds"] = max(0, int(time.time() - max(stamps)))
                 if progress and "total_segments" in progress:
-                    if progress.get("chapter_progress"):
-                        nested = read_json(inside(root, progress["chapter_progress"]), {})
+                    if nested_path:
+                        nested = read_json(nested_path, {}) or {}
                         progress["completed_segments"] = min(progress["total_segments"],
                             progress["completed_segments"] + nested.get("completed_segments", nested.get("completed", 0)))
+                        if nested.get("status"):
+                            progress["tts_status"] = nested["status"]
                     data["progress"] = progress
         if data and (data.get("run") or {}).get("kind") in {"script", "research"}:
             from .studio_progress import safe_script_progress
-            progress = safe_script_progress(root, data["run"])
+            # Calls an earlier, stopped worker left open are not the running job's calls.
+            progress = safe_script_progress(root, data["run"], data.get("started_at") if data.get("status") == "running" else None)
             if progress:
                 data["progress"] = progress
         if data and (data.get("run") or {}).get("kind") in {"script", "research"}:
@@ -273,18 +359,75 @@ class Studio:
             request = "script_request.json" if run["kind"] == "script" else "research_request.json"
             data["text_generation"] = read_json(work / request, {}).get("text_generation")
             data["provider_choice"] = latest_provider_choice(work)
-        if (data and data.get("status") == "waiting_for_quota" and data.get("retry_at")
-                and data.get("auto_resume_count", 0) < MAX_AUTO_RESUMES):
-            data["auto_resume_at"] = data["retry_at"]
+        if data and data.get("status") == "waiting_for_quota" and data.get("retry_at"):
+            # Announced only where the scheduler acts: the project's main job with a run to resume.
+            if (audio_job_id is None and (data.get("run") or {}).get("run_id")
+                    and stop_code(data)[0] not in NO_AUTO_RESUME):
+                if data.get("auto_resume_count", 0) < MAX_AUTO_RESUMES:
+                    data["auto_resume_at"] = data["retry_at"]
+                else:
+                    data["auto_resume_exhausted"] = True
+        return self.readable(root, data) if data else data
+
+    def parked_job(self, root):
+        """A paused job moved aside by a job of another lane, while its run is still open."""
+        path = root / "studio/paused_job.json"
+        data = read_json(path)
+        run_id = ((data or {}).get("run") or {}).get("run_id")
+        if not run_id or not manifest_path(root, run_id).is_file():
+            return None
+        if read_yaml(manifest_path(root, run_id)).get("status") == "completed":
+            return None
+        return self.job(root, path=path)
+
+    def vanished(self, root, path, data, audio_job_id):
+        """A job still marked running whose worker this server does not own: it ended without a result."""
+        detail = worker_stderr(root, data)
+        message = ("Der Arbeitsprozess wurde unerwartet beendet." if detail else
+                   "Der Arbeitsprozess läuft nicht mehr, etwa nach einem Neustart des Studios.") + \
+            " Fertige Arbeit bleibt gespeichert."
+        try:
+            # The exclusive lock proves that no worker of this project is left; only then is the run reset.
+            return record_interruption(root, expected_job_id=data.get("id"), audio_job_id=audio_job_id,
+                                       message=message, shared=False, crash_detail=detail)
+        except (AppError, OSError, ValueError):
+            data.update(status="interrupted", message=message)
+            if detail:
+                data["crash_detail"] = detail
+            write_json(path, data)
+            return data
+
+    @staticmethod
+    def readable(root, data):
+        """The job as a reader sees it: a stop names its code and a German message without CLI advice or paths."""
+        if data.get("status") not in {"running", "completed"}:
+            code, stage = stop_code(data)
+            data["stop"] = {"code": code, "stage": stage, "run_kind": (data.get("run") or {}).get("kind"),
+                            **user_text(data.get("message") or "", root),
+                            "crash_detail": paths_only(data.get("crash_detail"), root)}
+        if data.get("message"):
+            data["message"] = clean(data["message"], root)
+        for gap in data.get("research_gaps") or []:
+            if isinstance(gap, dict):
+                gap.update({key: clean(gap.get(key), root) for key in ("question", "why_needed")})
         return data
 
     def approve(self, project, data):
         """Explicit run-bound approvals; each writes one receipt and never touches counters or state."""
         root = self.root(project)
+        kind = data.get("kind")
+        if kind == "chat_calls":
+            # The conversation has no run; its allowance is a project setting outside the brief's hash.
+            current = chat_limits(root, load_project(root).research_limits).model_calls
+            calls = data.get("model_calls")
+            if type(calls) is not int or not current < calls <= current + 500:
+                raise AppError("Das neue Gesprächslimit muss eine ganze Zahl über dem bisherigen Limit sein.",
+                               code="invalid_budget_approval")
+            write_json(root / "studio/assistant/limit.json", {"model_calls": calls, "approved_at": now()})
+            return {"chat_calls": calls}
         run_id = data.get("run_id") or ((self.job(root) or {}).get("run") or {}).get("run_id")
         if not isinstance(run_id, str):
             raise AppError("Kein Lauf für diese Freigabe vorhanden.", code="no_run")
-        kind = data.get("kind")
         if kind == "model_calls":
             approval = approve_model_call_limit(root, run_id, data.get("model_calls"), search_rounds=data.get("search_rounds"))
             return {"approval": approval.model_dump(mode="json")}
@@ -304,14 +447,15 @@ class Studio:
         """Paused jobs whose named reset has passed and whose automatic resumes are not used up."""
         current = time.time() if now_seconds is None else now_seconds
         due = []
-        for path in sorted(self.projects.glob("*/studio/job.json")):
+        for path in sorted([*self.projects.glob("*/studio/job.json"), *self.projects.glob("*/studio/paused_job.json")]):
             job = read_json(path)
             if not isinstance(job, dict) or job.get("status") != "waiting_for_quota":
                 continue
             retry = parse_iso(job.get("retry_at"))
             run_id = (job.get("run") or {}).get("run_id")
             count = job.get("auto_resume_count", 0)
-            if retry is None or retry.timestamp() > current or not run_id or count >= MAX_AUTO_RESUMES:
+            if (retry is None or retry.timestamp() > current or not run_id or count >= MAX_AUTO_RESUMES
+                    or stop_code(job)[0] in NO_AUTO_RESUME):
                 continue
             due.append((path.parents[1].name, run_id, count))
         return due
@@ -343,6 +487,25 @@ class Studio:
 
     def active_audio(self):
         return {key: value for key, value in self.audio_processes.items() if value[0].poll() is None}
+
+    def own_text_job(self, root):
+        """True while this server's worker for the project runs a job that never writes exports."""
+        if self.process_root != root or self.process is None or self.process.poll() is not None:
+            return False
+        job = read_json(root / "studio/job.json", {}) or {}
+        return job.get("action") in TEXT_ACTIONS or (
+            job.get("action") == "resume" and (job.get("run") or {}).get("kind") in {"research", "script"})
+
+    def diagnostic(self, project, relative):
+        """A failure receipt, worker output or run report the Studio names in a stop message, as plain text."""
+        root = self.root(project)
+        if not isinstance(relative, str) or not DIAGNOSTIC_FILES.fullmatch(relative):
+            raise AppError("Diese Datei kann das Studio nicht anzeigen.", code="not_found")
+        path = inside(root, relative)
+        if not path.is_file() or path.stat().st_size > 2_000_000:
+            raise AppError("Datei nicht gefunden.", code="not_found")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return text.replace(self.key, "[Key verborgen]") if self.key else text
 
     def audio_jobs(self, root):
         latest = {}
@@ -425,8 +588,19 @@ class Studio:
         audio = selected_audio(root, config)
         execution = selected_execution(root)
         jobs = self.audio_jobs(root)
-        candidates = [job for job in [self.job(root), *jobs] if job]
+        main = self.job(root)
+        candidates = [job for job in [main, *jobs] if job]
         latest_job = max(candidates, key=lambda job: (job["status"] == "running", job.get("started_at", "")), default=None)
+        # A running or paused job stays the project's job: a later audio job must not hide its decision,
+        # and a parked run waits behind a finished chat, check or job of another lane.
+        parked = self.parked_job(root)
+        if main and (main["status"] == "running" or (main["status"] in ATTENTION and main.get("run"))):
+            latest_job = main
+        elif parked:
+            latest_job = parked
+        elif main and main["status"] in ATTENTION:
+            latest_job = main
+        chat_budget = read_json(root / "studio/assistant/budget.json", {}) or {}
         active_audio = self.active_audio()
         active_here = sum(value[1] == root for value in active_audio.values())
         limit = MAX_PARALLEL if execution.audio == "parallel" and audio.remote else 1
@@ -442,7 +616,9 @@ class Studio:
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
                     "available": max(0, min(limit - active_here, MAX_PARALLEL - len(active_audio)))},
-                "chat": read_json(root / "studio/chat.json", []), "job": latest_job,
+                "chat": read_json(root / "studio/chat.json", []), "job": latest_job, "main_job": main,
+                "chat_budget": {"used": chat_budget.get("model_calls", 0),
+                                "limit": chat_limits(root, config.research_limits).model_calls},
                 "attachments": attachments.inventory(root),
                 "outline": None, "episodes": [], "research": None, "run": None}
         proposal = next((item for item in reversed(data["chat"]) if item.get("role") == "assistant"), None)
@@ -489,7 +665,7 @@ class Studio:
                 "pronunciation": pronunciation_report(script, table, language=config.language, overrides=overrides),
                 "listening_note": decision.get("listening_note", ""),
                 "human_listening_reviewed": bool(decision.get("human_listening_reviewed"))})
-        run = (data.get("job") or {}).get("run") or data.get("run")
+        run = (main or {}).get("run") or data.get("run")
         data["script_previews"] = script_previews(root, run)
         return data
 
@@ -761,31 +937,56 @@ class Studio:
         payload["text"] = read_json(root / "studio/text.json", TextChoice().model_dump())
         payload["api_key"] = self.key or None
         job = {"id": uuid.uuid4().hex, "action": action, "status": "running", "started_at": now(), "run": None}
+        if action == "resume":
+            # A resume refused before its first stage keeps showing the paused run and its decisions.
+            job["run"] = saved_run or None
         if action == "resume" and type(data.get("auto_resume_count")) is int:
             job["auto_resume_count"] = data["auto_resume_count"]
         if remote_episode:
             job.update(episode=remote_episode, provider="openrouter_gemini_tts")
             payload["audio_job_id"] = job["id"]
         job_path = audio_job_path(root, job["id"]) if remote_episode else root / "studio/job.json"
+        if not remote_episode:
+            park(root, job)
         write_json(job_path, job)
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
+        errors = self.stderr_file(root, job["id"])
         try:
-            process = subprocess.Popen([sys.executable, "-m", "podcast_automate.studio_worker", str(root)],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                text=True, encoding="utf-8", env=env, start_new_session=os.name != "nt",
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            # A crash before the worker's own logging starts leaves its reason in this file.
+            with errors.open("wb") as stderr:
+                process = subprocess.Popen([sys.executable, "-m", "podcast_automate.studio_worker", str(root)],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=stderr,
+                    text=True, encoding="utf-8", env=env, start_new_session=os.name != "nt",
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             if remote_episode:
                 self.audio_processes[job["id"]] = (process, root, remote_episode)
             else:
                 self.process, self.process_root = process, root
             process.stdin.write(json.dumps(payload, ensure_ascii=False))
             process.stdin.close()
-        except OSError:
-            job.update(status="failed", message="Auftrag konnte nicht gestartet werden.")
+        except OSError as exc:
+            reason = exc.strerror or type(exc).__name__
+            job.update(status="failed", error_code="worker_start",
+                       message=f"Auftrag konnte nicht gestartet werden ({reason}). Studio beenden und neu öffnen, "
+                               "dann erneut versuchen; fertige Arbeit bleibt gespeichert.")
             write_json(job_path, job)
             raise AppError(job["message"], code="worker_start") from None
         return job
+
+    def stderr_file(self, root, job_id):
+        """The worker's error output file; logs of finished jobs older than an hour are removed."""
+        folder = root / "studio/stderr"
+        folder.mkdir(parents=True, exist_ok=True)
+        keep = {job_id, (read_json(root / "studio/job.json", {}) or {}).get("id"), *self.audio_processes}
+        cutoff = time.time() - 3600
+        for old in folder.glob("*.log"):
+            try:
+                if old.stem not in keep and old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass  # A log another worker still holds open goes next time.
+        return folder / (job_id + ".log")
 
     def stop(self, project, job_id=None):
         root = self.root(project)
@@ -895,16 +1096,23 @@ class StudioHandler(BaseHTTPRequestHandler):
             elif (match := re.fullmatch(r"/api/projects/([^/]+)", path)):
                 with app.mutex:
                     result = app.detail(match[1])
+            elif (match := re.fullmatch(r"/api/projects/([^/]+)/file", path)):
+                relative = parse_qs(urlsplit(self.path).query).get("path", [None])[0]
+                self.send_data(200, app.diagnostic(match[1], relative).encode("utf-8"), "text/plain; charset=utf-8")
+                return
             elif (match := re.fullmatch(r"/media/([^/]+)/(.*)", path)):
                 self.send_audio(app.media(match[1], match[2]))
                 return
             elif (match := re.fullmatch(r"/download/([^/]+)/podcast.zip", path)):
-                with podcast_zip(app.root(match[1])) as (archive, filename):
+                root = app.root(match[1])
+                # The Studio's own research or script worker holds the project lock for hours but never
+                # writes exports; published recordings are then read without the shared lock.
+                with podcast_zip(root, locked=not app.own_text_job(root)) as (archive, filename):
                     self.send_file(archive, "application/zip", filename, allow_ranges=False)
                 return
             elif (match := re.fullmatch(r"/download/([^/]+)/file/(.*)", path)):
                 root = app.root(match[1])
-                with project_lock(root, shared=True):
+                with project_lock(root, shared=True) if not app.own_text_job(root) else nullcontext():
                     recording = next((r for r in podcast_download(root, selected_path=match[2]).recordings if r.relative == match[2]), None)
                     if recording is None:
                         raise AppError("Aufnahme nicht mehr in der aktuellen Auswahl. Übersicht neu laden.", code="missing_audio")

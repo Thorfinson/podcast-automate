@@ -1,16 +1,18 @@
 import http.client
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from podcast_automate.errors import AppError
-from podcast_automate.models import RunManifest, StageRecord, TopicBrief
+from podcast_automate.models import Failure, RunManifest, StageRecord, TopicBrief
 from podcast_automate.runner import manifest_path, outputs_valid
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.scripting import outline_hash, run_script
@@ -691,6 +693,181 @@ class StudioHttpTests(unittest.TestCase):
         before = path.read_bytes()
         self.assertEqual(record_interruption(self.root), completed)
         self.assertEqual(path.read_bytes(), before)
+
+
+
+class StudioStopTests(unittest.TestCase):
+    """Stops as the Studio reports them: a readable message, an honest automatic resume, a run that stays visible."""
+    setUp = StudioHttpTests.setUp
+    request = StudioHttpTests.request
+
+    def research_run(self, run_id="run_r", status="blocked", error=None, stage_status=None):
+        run = RunManifest(run_id=run_id, kind="research", status=status, project_hash="p", input_hash="i",
+                          stages={"dossier": StageRecord(status=stage_status or status, attempts=1, error=error)})
+        write_yaml(manifest_path(self.root, run_id).parent / "run_manifest.yaml", run.model_dump(mode="json"))
+        return run.model_dump(mode="json")
+
+    def started(self):
+        process = Mock(stdin=io.StringIO())
+        process.poll.return_value = None
+        return patch("podcast_automate.studio.subprocess.Popen", return_value=process)
+
+    def test_stop_messages_are_german_without_cli_advice_local_paths_or_internal_ids(self):
+        from podcast_automate.studio_messages import user_text
+        english = user_text("Unanchored review disagreement; no automatic new research. Der Aufruf wurde 2 Mal wiederholt.")
+        self.assertTrue(english["message"].startswith("Die Gesamtprüfung erhebt einen Einwand"))
+        self.assertIn("Der Aufruf wurde 2 Mal wiederholt.", english["message"])
+        self.assertIn("Unanchored review disagreement", english["detail"])
+        rejected = user_text("Codex answered, but the answer violates its output contract: findings.0.support: Input should be x. "
+                             "Return the complete answer again with exactly these defects corrected.")
+        self.assertEqual(rejected["message"], "Die Antwort von Codex passte nicht zum erwarteten Format (findings.0.support).")
+        self.assertEqual(user_text("Abo-Kontingent erreicht. Später mit 'pla resume' fortsetzen.")["message"],
+                         "Abo-Kontingent erreicht. Später mit „Fortsetzen“ weitermachen.")
+        needed = self.root / "runs" / "run_x" / "research_needed.md"
+        self.assertEqual(user_text(f"Erforderliche Erklärgrundlagen fehlen: {needed}", self.root)["message"],
+                         "Erforderliche Erklärgrundlagen fehlen: runs/run_x/research_needed.md")
+        receipt = user_text("Lokale Verarbeitung fehlgeschlagen. Technische Details: runs/run_x/failures/dossier_1.txt", self.root)
+        self.assertEqual((receipt["message"], receipt["file"]),
+                         ("Lokale Verarbeitung fehlgeschlagen.", "runs/run_x/failures/dossier_1.txt"))
+        self.assertEqual(user_text("Siehe src_0cca2395cb73c72c#sec_6891d807643ea0ef.")["message"], "Siehe Quellenstelle.")
+        self.assertEqual(user_text("Folge ist zu lang. Die automatische Aufteilung folgt im Serien-Meilenstein.")["message"],
+                         "Folge ist zu lang.")
+        self.assertIsNone(user_text("Gespeicherte Rechercheänderung passt nicht zu ihren Eingaben.")["detail"])
+
+    def test_a_stopped_job_names_its_newest_code_and_a_cleaned_message(self):
+        run = self.research_run(error=Failure(code="interrupted", message="Angehalten."))
+        write_json(self.root / "studio/job.json", {"id": "j", "action": "resume", "status": "blocked", "run": run,
+                   "error_code": "inputs_changed", "message": "Rechercheeingaben geändert. Später mit pla resume fortsetzen."})
+        job = self.app.job(self.root)
+        # The worker's own refusal is newer than the interruption the stage still records.
+        self.assertEqual((job["stop"]["code"], job["stop"]["run_kind"]), ("inputs_changed", "research"))
+        self.assertNotIn("pla resume", job["message"])
+        self.assertIn("pla resume", json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))["message"])
+
+    def test_only_a_resume_the_scheduler_will_start_is_announced(self):
+        past = "2026-01-01T00:00:00+00:00"
+        run = self.research_run(status="waiting_for_quota", error=Failure(code="subscriptions_exhausted", message="leer"))
+        job = {"id": "j", "action": "resume", "status": "waiting_for_quota", "retry_at": past, "run": run}
+        write_json(self.root / "studio/job.json", job)
+        self.assertEqual(self.app.job(self.root)["auto_resume_at"], past)
+        # Empty OpenRouter credit does not come back by waiting: neither announced nor scheduled.
+        credits = self.research_run(status="waiting_for_quota", error=Failure(code="openrouter_credits", message="leer"))
+        write_json(self.root / "studio/job.json", {**job, "run": credits})
+        self.assertNotIn("auto_resume_at", self.app.job(self.root))
+        self.assertEqual(self.app.due_resumes(), [])
+        # A chat has no run to resume, so no time is promised.
+        write_json(self.root / "studio/job.json", {"id": "c", "action": "assistant", "status": "waiting_for_quota",
+                                                   "retry_at": past, "run": None})
+        self.assertNotIn("auto_resume_at", self.app.job(self.root))
+        write_json(self.root / "studio/job.json", {**job, "auto_resume_count": 3})
+        self.assertTrue(self.app.job(self.root)["auto_resume_exhausted"])
+
+    def test_a_paused_run_stays_the_project_job_behind_a_chat_and_a_later_audio_job(self):
+        run = self.research_run(error=Failure(code="research_questions_blocked", message="offen"))
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "blocked",
+                                                   "started_at": "2026-09-01T10:00:00+00:00", "run": run})
+        with self.started():
+            self.app.start("example", {"action": "assistant", "message": "Kürzer bitte"})
+        self.assertEqual(json.loads((self.root / "studio/paused_job.json").read_text(encoding="utf-8"))["id"], "r")
+        chat = json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))
+        write_json(self.root / "studio/job.json", {**chat, "status": "completed"})
+        self.app.process = None
+        detail = self.app.detail("example")
+        self.assertEqual((detail["job"]["id"], detail["main_job"]["action"]), ("r", "assistant"))
+        self.assertEqual(detail["job"]["stop"]["code"], "research_questions_blocked")
+        # A newer finished audio job does not hide the paused run either.
+        audio_id = "a" * 32
+        write_json(self.root / "studio/audio_jobs" / (audio_id + ".json"), {"id": audio_id, "episode": "ep_001",
+                   "status": "completed", "started_at": "2026-09-02T10:00:00+00:00", "run": None})
+        self.assertEqual(self.app.detail("example")["job"]["id"], "r")
+        # Resuming the parked run takes it back into the job record, which keeps the run from the start.
+        with self.started():
+            resumed = self.app.start("example", {"action": "resume", "run_id": "run_r"})
+        self.assertFalse((self.root / "studio/paused_job.json").exists())
+        self.assertEqual(resumed["run"]["run_id"], "run_r")
+        self.assertTrue((self.root / "studio/stderr" / (resumed["id"] + ".log")).is_file())
+
+    def test_a_new_run_of_the_same_lane_replaces_what_was_parked(self):
+        run = self.research_run(error=Failure(code="review_disagreement", message="Einwand"))
+        write_json(self.root / "studio/paused_job.json", {"id": "r", "action": "research", "status": "blocked", "run": run})
+        with self.started():
+            self.app.start("example", {"action": "research"})
+        self.assertFalse((self.root / "studio/paused_job.json").exists())
+
+    def test_a_vanished_worker_resets_its_run_and_reports_its_last_error_output(self):
+        run = RunManifest(run_id="run_v", kind="research", status="running", project_hash="p", input_hash="i",
+                          stages={"dossier": StageRecord(status="running", attempts=1)})
+        write_yaml(manifest_path(self.root, "run_v").parent / "run_manifest.yaml", run.model_dump(mode="json"))
+        job_id = "b" * 32
+        write_json(self.root / "studio/job.json", {"id": job_id, "action": "resume", "status": "running",
+                   "started_at": "2026-09-01T10:00:00+00:00", "run": run.model_dump(mode="json")})
+        log = self.root / "studio/stderr" / (job_id + ".log")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(f'Traceback (most recent call last):\n  File "{self.root / "x.py"}", line 1\nImportError: kaputt\n',
+                       encoding="utf-8")
+        job = self.app.job(self.root)
+        self.assertEqual(job["status"], "interrupted")
+        self.assertIn("unerwartet beendet", job["message"])
+        self.assertIn("ImportError: kaputt", job["stop"]["crash_detail"])
+        self.assertNotIn(str(self.root), job["stop"]["crash_detail"])
+        saved = RunManifest.model_validate(read_yaml(manifest_path(self.root, "run_v").parent / "run_manifest.yaml"))
+        self.assertEqual((saved.status, saved.stages["dossier"].status), ("pending", "pending"))
+
+    def test_the_heartbeat_counts_the_chapter_file_the_audio_worker_writes_per_segment(self):
+        run = RunManifest(run_id="run_a", kind="episode_audio", status="running", project_hash="p", input_hash="i",
+                          stages={"synthesis": StageRecord(status="running")})
+        work = manifest_path(self.root, "run_a").parent
+        write_yaml(work / "run_manifest.yaml", run.model_dump(mode="json"))
+        nested = work / "synthesis/ch_001/tts_progress.json"
+        write_json(work / "progress.json", {"status": "synthesis", "chapter": 1, "chapters": 2, "completed_segments": 0,
+                   "total_segments": 10, "chapter_progress": nested.relative_to(self.root).as_posix()})
+        write_json(nested, {"status": "rendering", "completed": 4, "total": 6})
+        old = time.time() - 900
+        os.utime(work / "progress.json", (old, old))
+        write_json(self.root / "studio/job.json", {"id": "q", "action": "audio", "status": "running",
+                   "started_at": "2026-01-01T00:00:00+00:00", "run": run.model_dump(mode="json")})
+        self.app.process_root, self.app.process = self.root, Mock()
+        self.app.process.poll.return_value = None
+        job = self.app.job(self.root)
+        self.assertLess(job["heartbeat_age_seconds"], 60)
+        self.assertEqual((job["progress"]["completed_segments"], job["progress"]["tts_status"]), (4, "rendering"))
+
+    def test_the_conversation_limit_is_raised_by_an_explicit_approval(self):
+        from podcast_automate.studio import chat_limits
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "chat_calls", "model_calls": 200})[0], 200)
+        self.assertEqual(chat_limits(self.root, self.config.research_limits).model_calls, 200)
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "chat_calls", "model_calls": 100})[0], 400)
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["chat_budget"]["limit"], 200)
+
+    def test_named_diagnostics_open_as_text_and_nothing_else_does(self):
+        receipt = self.root / "runs/run_x/failures/dossier_1.txt"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("Traceback: Fehler", encoding="utf-8")
+        status, body, headers = self.request("/api/projects/example/file?path=runs/run_x/failures/dossier_1.txt")
+        self.assertEqual((status, body.decode("utf-8")), (200, "Traceback: Fehler"))
+        self.assertTrue(headers["Content-Type"].startswith("text/plain"))
+        for path in ("project.yaml", "runs/../project.yaml", "runs/../studio/job.json", "studio/job.json"):
+            self.assertEqual(self.request("/api/projects/example/file?path=" + path)[0], 404, path)
+
+    def test_downloads_read_past_the_lock_only_while_this_studio_runs_a_text_job(self):
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "running", "run": None})
+        self.app.process_root, self.app.process = self.root, Mock()
+        self.app.process.poll.return_value = None
+        self.assertTrue(self.app.own_text_job(self.root))
+        write_json(self.root / "studio/job.json", {"id": "q", "action": "audio", "status": "running", "run": None})
+        self.assertFalse(self.app.own_text_job(self.root), "a Qwen run writes the exports it would read")
+        self.app.process.poll.return_value = 0
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "running", "run": None})
+        self.assertFalse(self.app.own_text_job(self.root))
+
+    def test_sending_an_unanswered_message_again_replaces_it(self):
+        write_json(self.root / "studio/chat.json", [{"role": "user", "message": "Kürzer"}])
+        proposal = BriefProposal(message="Gern.", topic="Titel", central_question="Warum?", prior_knowledge="",
+                                 depth_request="Tief", focus_questions=[], excluded_topics=[])
+        with patch("podcast_automate.studio_worker.CodexAdapter.structured", return_value=(proposal, {})):
+            perform(self.root, {"action": "assistant", "message": "Kürzer", "text": {}})
+        chat = json.loads((self.root / "studio/chat.json").read_text(encoding="utf-8"))
+        self.assertEqual([row["role"] for row in chat], ["user", "assistant"])
 
 
 class ReportMergeTests(unittest.TestCase):

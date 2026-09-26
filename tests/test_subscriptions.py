@@ -46,7 +46,7 @@ if sys.argv[1:] == ["auth", "status", "--json"]:
     print(json.dumps({"loggedIn": mode != "logout", "authMethod": "apiKey" if mode == "api" else "claude.ai",
                       "subscriptionType": "max", "email": "private@example.org", "orgId": "org-private"}))
 elif sys.argv[1:] == ["--version"]:
-    print("2.1.92 (Claude Code)")
+    print("2.1.283 (Claude Code)")
 '''
 
 
@@ -126,7 +126,7 @@ class SubscriptionStoreTests(unittest.TestCase):
         quota = claude_quota(refresh=True, clock=self.clock)
         self.assertTrue(quota["available"])
         self.assertEqual(quota["plan"], "max")
-        self.assertEqual(quota["login"]["cli_version"], "2.1.92")
+        self.assertEqual(quota["login"]["cli_version"], "2.1.283")
         until = datetime.fromtimestamp(self.seconds, timezone.utc) + timedelta(hours=5)
         error = AppError("Claude-Abo-Kontingent erreicht", code="claude_quota_exhausted", status="waiting_for_quota",
                          details={"blocked_until": until.isoformat(), "reason": "opus_limit",
@@ -164,7 +164,7 @@ class SubscriptionStoreTests(unittest.TestCase):
             overview = quota_overview(self.settings, clock=self.clock)
         self.assertIn("Codex-Abo (prolite): Wochenfenster 100 % verbraucht (Reset ", overview["lines"][0])
         self.assertIn("kein Kontingent", overview["lines"][0])
-        self.assertIn("Claude-Abo (max): angemeldet über claude.ai · Claude Code 2.1.92 · bereit", overview["lines"][1])
+        self.assertIn("Claude-Abo (max): angemeldet über claude.ai · Claude Code 2.1.283 · bereit", overview["lines"][1])
         self.assertTrue(overview["any_usable"])
         self.assertTrue(overview["any_available"])
 

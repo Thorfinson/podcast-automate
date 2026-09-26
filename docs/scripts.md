@@ -1,6 +1,6 @@
 # Vom Dossier zum lesbaren Dialog
 
-Im Studio lassen sich Textmodell und Reasoning-Stufe unter **Auftrag & Stimmen** wählen. Für einen neuen Codex-Skriptlauf per Einzelbefehl entsprechen dem `--model gpt-6-astra --reasoning-effort xhigh`; angeboten werden `low`, `medium`, `high` und `xhigh`. Für das Claude-Abo gilt `--backend claude_code` mit `--model claude-opus-5` und `--reasoning-effort low|medium|high|max` (Standard `high`); `--backend auto` wählt vor jedem Aufruf zwischen beiden Abos nach Kontingent und verwendet die Katalogstandards. Alle Werte werden gespeichert und beim Fortsetzen übernommen. Eine abweichende Auswahl benötigt einen neuen Lauf. Bei OpenRouter ist die Reasoning-Stufe optional und muss vom gewählten Modell unterstützt werden. [Modellauswahl im Studio](studio.md#textmodell-und-denkaufwand-auswählen).
+Im Studio lassen sich Textmodell und Reasoning-Stufe unter **Auftrag & Stimmen** wählen. Für einen neuen Codex-Skriptlauf per Einzelbefehl entsprechen dem `--model gpt-6-astra --reasoning-effort xhigh`; angeboten werden `low`, `medium`, `high` und `xhigh`. Für das Claude-Abo gilt `--backend claude_code` mit `--model claude-opus-5-5` und `--reasoning-effort low|medium|high|xhigh|max` (Standard `xhigh`, ab Claude Code 2.1.280); `--backend auto` wählt vor jedem Aufruf zwischen beiden Abos nach Kontingent und verwendet die Katalogstandards. Alle Werte werden gespeichert und beim Fortsetzen übernommen. Eine abweichende Auswahl benötigt einen neuen Lauf. Bei OpenRouter ist die Reasoning-Stufe optional und muss vom gewählten Modell unterstützt werden. [Modellauswahl im Studio](studio.md#textmodell-und-denkaufwand-auswählen).
 
 `pla script` erstellt aus einem abgeschlossenen Recherchelauf einen Serienentwurf, quellengeprüfte Lehrpläne und Dialogskripte. Die Stufen sind `planning`, `teaching`, `writing`, `polishing`, `review` und `publish`. Der Befehl endet beim lesbaren Text. Audio wird nicht erzeugt. [Lehrplanung und verbindliche Qualitätsprüfungen](teaching-design.md).
 
@@ -24,7 +24,7 @@ Ohne `--episode` werden die Skripte aller Folgen des neu erstellten Entwurfs ges
 # Fest über Claude Code (Claude-Max-Abo, claude.ai-Anmeldung):
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --episode ep_001 --backend claude_code
 
-# Je Aufruf Codex, solange Kontingent besteht, sonst Claude; Pause erst, wenn beide leer sind:
+# Je Aufruf Claude, solange Kontingent besteht, sonst Codex; Pause erst, wenn beide leer sind:
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --backend auto
 .\.venv\Scripts\pla.exe research .\projects\windows-pilot --backend auto
 
@@ -32,7 +32,7 @@ Ohne `--episode` werden die Skripte aller Folgen des neu erstellten Entwurfs ges
 .\.venv\Scripts\pla.exe quota
 ```
 
-Bei `auto` speichert `script_request.json` beide Kandidaten (`gpt-6-astra`/`xhigh` und `claude-opus-5`/`high`); die Entscheidung je Aufruf steht in `runs/<run_id>/calls/call_NNN/provider_choice.json`, ein Wechsel innerhalb eines Aufrufs nach einem Kontingentfehler in `provider_switch.json`. Das Codex-Kontingent kommt aus `account/rateLimits/read` des App Servers und wird höchstens alle zwei Minuten neu gelesen, nach einem Kontingentfehler sofort. Claude meldet sein Kontingent nicht vorab: der erste Limitfehler kostet einen Aufruf und vermerkt danach eine Sperre bis zum gemeldeten Reset (sonst konservativ fünf Stunden, bei Wochenlimit bis Montag) in `~/.podcast-automate/subscriptions.json`. Zwischenstände bleiben beim Wechsel gültig, weil sie am Prompttext hängen, nicht am Anbieter; ein Entwurf und seine Prüfung können daher von verschiedenen Modellen stammen, `reports/script_quality.yaml` nennt die Auswahl und jeder Aufruf seinen Anbieter. `resume` behält die gespeicherte Form; ein anderer `--backend` oder eine veränderte Kandidatenliste wird als geänderte Eingabe abgewiesen.
+Bei `auto` speichert `script_request.json` beide Kandidaten (`claude-opus-5-5`/`xhigh` und `gpt-6-astra`/`xhigh`) und die erste Wahl (`prefer: claude_code`); die Entscheidung je Aufruf steht in `runs/<run_id>/calls/call_NNN/provider_choice.json`, ein Wechsel innerhalb eines Aufrufs nach einem Kontingentfehler in `provider_switch.json`. Das Codex-Kontingent kommt aus `account/rateLimits/read` des App Servers und wird höchstens alle zwei Minuten neu gelesen, nach einem Kontingentfehler sofort. Claude meldet sein Kontingent nicht vorab: der erste Limitfehler kostet einen Aufruf und vermerkt danach eine Sperre bis zum gemeldeten Reset (sonst konservativ fünf Stunden, bei Wochenlimit bis Montag) in `~/.podcast-automate/subscriptions.json`. Zwischenstände bleiben beim Wechsel gültig, weil sie am Prompttext hängen, nicht am Anbieter; ein Entwurf und seine Prüfung können daher von verschiedenen Modellen stammen, `reports/script_quality.yaml` nennt die Auswahl und jeder Aufruf seinen Anbieter. `resume` behält die gespeicherte Form; ein anderer `--backend` oder eine veränderte Kandidatenliste wird als geänderte Eingabe abgewiesen.
 
 ## OpenRouter für einen Skriptlauf
 

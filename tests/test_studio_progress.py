@@ -62,6 +62,73 @@ class StudioProgressTests(unittest.TestCase):
         stopped = script_progress(self.root, {**run, "status": "pending"})
         self.assertIsNone(stopped["model_call_started_at"])
 
+    def test_first_retrieval_reports_a_counter_and_readable_failures(self):
+        write_json(self.work / "research_activity.json", {"phase": "research", "activity": "Gefundene Originaltexte werden eingelesen",
+                   "updated_at": "2026-09-01T10:00:00+00:00"})
+        write_json(self.work / "discovery.json", {"candidates": [{}] * 30})
+        write_json(self.work / "retrieval_progress.json", {"imported": 5, "attempted": 7, "failures": [
+            {"source": "https://x.test/a.pdf", "reason": "Quellenabruf fehlgeschlagen (HTTP 403).", "code": "source_download_failed"}]})
+        run = {**self.run, "kind": "research", "stages": {"discovery": {"status": "completed"}, "retrieval": {"status": "running"}}}
+        progress = script_progress(self.root, run)
+        self.assertEqual(progress["activity"], "Originaltexte werden eingelesen: 7 von bis zu 30 Quellen abgerufen, 5 lesbar")
+        self.assertEqual(progress["retrieval"]["failures"][0]["reason"], "Quellenabruf fehlgeschlagen (HTTP 403).")
+        # The run's own change time, unlike updated_at, which only says when this view was read.
+        self.assertEqual(progress["changed_at"], "2026-09-01T10:00:00+00:00")
+        done = script_progress(self.root, {**run, "stages": {"retrieval": {"status": "completed"}}})
+        self.assertEqual(done["activity"], "Gefundene Originaltexte werden eingelesen")
+        self.assertFalse(done["retrieval"]["running"])
+
+    def test_outline_corrections_and_review_repairs_are_named(self):
+        run = {**self.run, "stages": {"planning": {"status": "running"}}}
+        write_json(self.work / "calls/call_005/output_schema.json", {"title": "SeriesPlan"})
+        self.assertEqual(script_progress(self.root, run)["activity"], "Inhaltsverzeichnis wird entworfen")
+        write_json(self.work / "planning_checkpoint.json", {"input_hash": "x", "draft": {}, "repairs": 1})
+        write_json(self.work / "plan_errors.json", ["Grundlage fehlt"])
+        progress = script_progress(self.root, run)
+        self.assertEqual(progress["activity"], "Inhaltsverzeichnis wird korrigiert · Korrekturrunde 2 von 3")
+        self.assertEqual(progress["plan_repair"], {"round": 2, "limit": 3})
+        write_json(self.work / "calls/call_006/output_schema.json", {"title": "EpisodeScript"})
+        review = {**self.run, "stages": {"planning": {"status": "completed"}, "review": {"status": "running"}}}
+        self.assertEqual(script_progress(self.root, review)["activity"], "Skript wird nach den Prüfeinwänden überarbeitet")
+
+    def test_parallel_episodes_are_listed_with_their_open_calls_and_a_failure_winds_down(self):
+        write_json(self.work / "series_plan.json", {"episodes": [{"episode_id": f"ep_00{i}", "title": title}
+                   for i, title in enumerate(("Eins", "Zwei", "Drei"), 1)]})
+        run = {**self.run, "stages": {"planning": {"status": "completed"}, "writing": {"status": "running"}}}
+        since = "2026-09-26T10:00:00+00:00"
+        write_json(self.work / "calls/call_004/response.json", {"issues": []})  # the fixture's teaching review has answered
+        for episode, status in (("ep_001", "running"), ("ep_002", "running"), ("ep_003", "interrupted")):
+            write_json(self.work / "stage_activity/writing" / f"{episode}.json", {"episode_id": episode, "status": status,
+                       "started_at": "2026-09-26T10:01:00+00:00", "finished_at": "2026-09-26T10:05:00+00:00"})
+        for number, episode, started in ((5, "ep_001", "2026-09-26T10:02:00+00:00"), (6, "ep_002", "2026-09-26T10:03:00+00:00"),
+                                         (7, None, "2026-09-26T09:00:00+00:00")):
+            directory = self.work / f"calls/call_00{number}"
+            write_json(directory / "output_schema.json", {"title": "EpisodeScript"})
+            write_json(directory / "activity.json", {"status": "running", "started_at": started, **({"subject": episode} if episode else {})})
+        progress = safe_script_progress(self.root, run, since)
+        # call_007 is older than this worker: a call an earlier, stopped worker left open.
+        self.assertEqual([(row["call"], row["label"]) for row in progress["open_calls"]], [("call_005", "Eins"), ("call_006", "Zwei")])
+        self.assertEqual(progress["model_call_started_at"], "2026-09-26T10:02:00+00:00")
+        self.assertEqual(progress["active_episodes"], ["ep_001", "ep_002"])
+        self.assertEqual([row["stage_status"] for row in progress["episodes"]], ["running", "running", "interrupted"])
+        self.assertEqual(progress["stopping"], {"episodes": ["Drei"]})
+        stopped = safe_script_progress(self.root, {**run, "status": "blocked", "stages": {"writing": {"status": "blocked"}}})
+        self.assertEqual((stopped["open_calls"], stopped["stopping"]), ([], None))
+        self.assertEqual(stopped["active_episodes"], [])
+
+    def test_research_calls_are_named_by_their_question_and_a_stopping_marker_counts_only_for_this_worker(self):
+        write_json(self.work / "research_activity.json", {"phase": "research", "activity": "Antwort wird geprüft"})
+        write_json(self.work / "calls/call_005/output_schema.json", {"title": "ResearchDecision"})
+        write_json(self.work / "calls/call_005/activity.json", {"status": "running", "started_at": "2026-09-26T10:02:00+00:00"})
+        write_json(self.work / "calls/call_005/work_context.json", {"schema": "ResearchDecision", "question": "Wie wirkt X?"})
+        write_json(self.work / "question_research/stopping.json", {"task": "t2", "question": "Warum Y?", "at": "2026-09-26T10:04:00+00:00", "code": "timeout"})
+        run = {**self.run, "kind": "research"}
+        progress = safe_script_progress(self.root, run, "2026-09-26T10:00:00+00:00")
+        self.assertEqual(progress["open_calls"][0]["label"], "Wie wirkt X?")
+        self.assertEqual(progress["stopping"], {"question": "Warum Y?", "code": "timeout"})
+        # A marker from an earlier worker is history, not a wind-down of this one.
+        self.assertIsNone(safe_script_progress(self.root, run, "2026-09-26T11:00:00+00:00")["stopping"])
+
     def test_refresh_is_distinct_from_model_activity_and_saved_results(self):
         first = script_progress(self.root, self.run)
         second = script_progress(self.root, self.run)

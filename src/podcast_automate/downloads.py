@@ -4,7 +4,7 @@ import re
 import tempfile
 import unicodedata
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -112,10 +112,11 @@ def podcast_download(root: Path, *, selected_path=None) -> PodcastDownload:
 
 
 @contextmanager
-def podcast_zip(root: Path):
+def podcast_zip(root: Path, *, locked: bool = True):
     # Take a consistent selection of published exports. Remote audio jobs can
     # continue while shared locking prevents deletion of the source project.
-    with project_lock(root, shared=True):
+    # A caller that knows the lock holder never writes exports passes ``locked=False``.
+    with project_lock(root, shared=True) if locked else nullcontext():
         download = podcast_download(root)
         if not download.recordings:
             raise AppError("Noch keine fertigen Folgen zum Herunterladen vorhanden.", code="missing_audio")

@@ -7,7 +7,7 @@ Which tests to run when, for agents and contributors. Claude Code loads this fil
 | Suite | Command | Size | Needs |
 | --- | --- | --- | --- |
 | Python | `python -m unittest discover -s tests` | about 720 tests, about 200 s | `ffmpeg` and `ffprobe` on PATH |
-| Browser logic | `node --test tests/studio_ui.test.cjs` | 93 tests, under 1 s | Node 22 |
+| Browser logic | `node --test tests/studio_ui.test.cjs` | 117 tests, under 1 s | Node 22 |
 
 Model calls, downloads and speech synthesis are simulated in both suites; FFmpeg assembly is real.
 No account, API key, GPU or network is needed. Never add a test that performs a real model call.
@@ -69,10 +69,10 @@ meaningful protection per unit of cost, not test count, lines or coverage.
 Derived from imports and patch targets in `tests/`. Regenerate with the snippet at the end when modules move.
 
 - `attachments` → `test_attachments`
-- `audio`, `episode_audio` → `test_audio`, `test_episode_audio`, `test_parallel`, `test_polishing`, `test_series_review`, `test_speech`, `test_studio`, `test_teaching`; both compose `spoken_forms`, and `assemble` needs real FFmpeg for the chapter and pause checks
+- `audio`, `episode_audio` → `test_audio`, `test_episode_audio`, `test_parallel`, `test_polishing`, `test_series_review`, `test_speech`, `test_studio`, `test_teaching`; both compose `spoken_forms`, and `assemble` needs real FFmpeg for the chapter and pause checks; the montage progress the Studio shows is asserted in `test_audio` and read back in `test_studio`
 - `claude_code` → `test_claude_code`, `test_provider_pool`
 - `cli`, `doctor` → `test_cli`, `test_provider_pool`, `test_research_plan_gate` (`--approve-plan` and `pla approve --research-plan`), `test_research_resilience`; resume through the CLI is also exercised by `test_episode_audio`, `test_openrouter`, `test_research`, `test_scripting`
-- `codex`, `codex_stream`, `call_activity`, `model_trace`, `process` → `test_codex`, `test_codex_stream`, `test_setup_schema`, `test_model_trace`, `test_status_summary`, `test_studio_progress`, `test_research_resilience`, `test_platforms`; the app-server quota RPC in `codex_stream` is covered by `test_subscriptions`, the Claude stream observer in `call_activity` by `test_claude_code`
+- `codex`, `codex_stream`, `call_activity`, `model_trace`, `process` → `test_codex`, `test_codex_stream`, `test_setup_schema`, `test_model_trace`, `test_status_summary`, `test_studio_progress`, `test_research_resilience`, `test_platforms`; the app-server quota RPC in `codex_stream` is covered by `test_subscriptions`, the Claude stream observer in `call_activity` by `test_claude_code`, and the call subject a parallel script stage sets by `test_parallel`
 - `editorial`, `prompts` → `test_prompts`, `test_teaching`, `test_episode_framing`
 - `execution`, `parallel_speech` → `test_parallel`, `test_research_parallel`
 - `logs` → `test_logs`, `test_cli`
@@ -94,7 +94,7 @@ Derived from imports and patch targets in `tests/`. Regenerate with the snippet 
 - `speech`, `voice_samples`, `qwen_worker`, `platforms` → `test_speech`, `test_voice_samples`, `test_parallel`, `test_setup_schema`, `test_studio`, `test_platforms`, `test_worker_cache`, `test_episode_audio`, `test_audio`
 - `status_summary`, `research_status` → `test_status_summary`, `test_research_status`, `test_provider_pool`, `test_research_parallel`
 - `subscriptions` → `test_subscriptions`, `test_provider_pool`
-- `studio`, `studio_worker`, `studio_progress`, `studio_scripts` → `test_studio`, `test_studio_progress`, `test_studio_scripts`, `test_studio_trash`, `test_attachments`, `test_parallel`, `test_platforms`, `test_provider_pool`, `test_research_parallel`, `test_research_plan_gate` (the plan approval route and the gated Studio resume), `test_research_resilience`, `test_setup_schema`, `test_speech`, `test_teaching`, `test_text_selection`, `test_question_research`, `test_run_budget`
+- `studio`, `studio_worker`, `studio_progress`, `studio_scripts`, `studio_messages` → `test_studio`, `test_studio_progress`, `test_studio_scripts`, `test_studio_trash`, `test_attachments`, `test_parallel`, `test_platforms`, `test_provider_pool`, `test_research_parallel`, `test_research_plan_gate` (the plan approval route and the gated Studio resume), `test_research_resilience`, `test_setup_schema`, `test_speech`, `test_teaching`, `test_text_selection`, `test_question_research`, `test_run_budget`
 - `teaching`, `teaching_research` → `test_teaching`, `test_teaching_research`, `test_polishing`, `test_scripting`, `test_run_budget`
 - `text_settings` → `test_text_selection`, `test_research_resilience`, and `test_cli` for the doctor catalog line
 

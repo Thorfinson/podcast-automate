@@ -8,7 +8,7 @@ from datetime import date
 
 from .errors import AppError
 
-CATALOG_VERIFIED_ON = date(2026, 9, 19)
+CATALOG_VERIFIED_ON = date(2026, 9, 26)
 CATALOG_STALE_DAYS = 90
 DEFAULT_CODEX_MODEL = "gpt-6-astra"
 DEFAULT_REASONING_EFFORT = "xhigh"
@@ -21,16 +21,18 @@ CODEX_MODELS = {
     "gpt-5.6-luna": "GPT-5.6 Luna",
     "gpt-5.5": "GPT-5.5",
 }
-# Claude Code CLI 2.1.92 with a claude.ai subscription login, verified on 2026-09-19. The CLI
-# accepts full model names; the catalog lists the one used for production text.
-DEFAULT_CLAUDE_MODEL = "claude-opus-5"
-DEFAULT_CLAUDE_EFFORT = "high"
-CLAUDE_MODELS = {"claude-opus-5": "Claude Opus 5"}
-CLAUDE_EFFORTS = ("low", "medium", "high", "max")
+# Claude Code CLI 2.1.283 with a claude.ai subscription login, verified on 2026-09-26. Opus 5.5 and
+# the level xhigh need CLI 2.1.280 or newer. Opus 5 stays listed for runs that saved it.
+DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+DEFAULT_CLAUDE_EFFORT = "xhigh"
+CLAUDE_MODELS = {"claude-opus-5-5": "Claude Opus 5.5", "claude-opus-5": "Claude Opus 5"}
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Which Claude Code level carries the same intent as a Codex level. Shown in catalogs and
 # documentation; never applied as a silent conversion of a saved choice.
-EFFORT_EQUIVALENTS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "max"}
+EFFORT_EQUIVALENTS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}
 SUBSCRIPTION_PROVIDERS = ("codex_cli", "claude_code")
+# The subscription the automatic rule asks first; the other one takes over when its quota is out.
+AUTO_PREFERENCE = "claude_code"
 TEXT_PROVIDERS = ("codex_cli", "claude_code", "openrouter", "auto")
 # Verified against https://openrouter.ai/api/v1/models on 2026-09-16.
 OPENROUTER_MODELS = {
@@ -42,12 +44,12 @@ OPENROUTER_MODELS = {
 OPENROUTER_EFFORTS = {model: (*REASONING_EFFORTS, "max") for model in OPENROUTER_MODELS}
 OPENROUTER_EFFORTS["deepseek/deepseek-v4.1-flash"] = ("low", "high", "max")
 TEXT_PRESETS = [
-    {"id": "auto_subscriptions", "label": "Automatisch · Codex, sonst Claude", "provider": "auto",
+    {"id": "auto_subscriptions", "label": "Automatisch · Claude, sonst Codex", "provider": "auto",
      "model": None, "reasoning_effort": None},
+    {"id": "claude_opus_sub", "label": "Opus 5.5 · Claude-Abo", "provider": "claude_code",
+     "model": "claude-opus-5-5", "reasoning_effort": "xhigh"},
     {"id": "codex_astra", "label": "Astra · Codex-Abo", "provider": "codex_cli",
      "model": "gpt-6-astra", "reasoning_effort": "xhigh"},
-    {"id": "claude_opus_sub", "label": "Opus 5 · Claude-Abo", "provider": "claude_code",
-     "model": "claude-opus-5", "reasoning_effort": "high"},
     {"id": "openrouter_astra", "label": "Astra · OpenRouter", "provider": "openrouter",
      "model": "openai/gpt-6-astra", "reasoning_effort": None},
     {"id": "openrouter_astra_pro", "label": "Astra Pro · OpenRouter", "provider": "openrouter",
@@ -62,9 +64,9 @@ PROVIDER_NOTES = {
     "claude_code": "Claude Code CLI mit Claude-Max-Abo (claude.ai-Anmeldung); keine API-Kosten. Ein erreichtes "
                    "Limit wird erst beim Aufruf sichtbar und danach bis zum Reset vermerkt.",
     "openrouter": "OpenRouter-API mit eigenem Key und Guthaben.",
-    "auto": "Automatische Abo-Wahl je Modellaufruf: Codex, solange dessen Kontingent reicht, sonst Claude über das "
-            "Claude-Max-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Modell und Stufe kommen "
-            "aus dem Katalog und werden nicht einzeln angegeben.",
+    "auto": "Automatische Abo-Wahl je Modellaufruf: Claude über das Claude-Max-Abo, bis dessen Kontingent erschöpft "
+            "ist, dann Codex über das ChatGPT-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Modell "
+            "und Stufe kommen aus dem Katalog und werden nicht einzeln angegeben.",
 }
 
 
@@ -97,8 +99,10 @@ def provider_model(provider, model):
         raise AppError("Astra Pro bitte mit OpenRouter auswählen. Für das Codex-Abo steht Astra zur Verfügung.",
                        code="invalid_backend")
     if provider == "claude_code":
-        if model in {"opus", "claude-opus", "anthropic/claude-opus-5"}:
+        if model in {"opus", "claude-opus"}:
             return DEFAULT_CLAUDE_MODEL
+        if model == "anthropic/claude-opus-5":
+            return "claude-opus-5"
         if model and "/" in model:
             raise AppError("Für das Claude-Abo eine Claude-Modell-ID wie claude-opus-5 wählen; "
                            "OpenRouter-IDs gehören zur OpenRouter-Auswahl.", code="invalid_backend")

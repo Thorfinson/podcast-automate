@@ -3,7 +3,8 @@
 Same contract as :class:`CodexAdapter`: ``structured(prompt, output_type, directory, ...)`` returns a
 validated object and public metadata. The CLI runs non-interactively with ``--output-format
 stream-json``; the last ``result`` line carries ``structured_output``. Verified against Claude Code
-2.1.92 on 2026-09-19 (``docs/claude-backend-plan.md``, Phase 0).
+2.1.92 on 2026-09-19 (``docs/claude-backend-plan.md``, Phase 0) and against 2.1.283 with Opus 5.5 on
+2026-09-26.
 """
 from __future__ import annotations
 
@@ -27,7 +28,8 @@ from .storage import write_json
 from .text_settings import DEFAULT_CLAUDE_MODEL, validate_model, validate_reasoning
 
 ADAPTER_VERSION = "claude_code.v1"
-MINIMUM_CLI_VERSION = (2, 1, 92)
+# Opus 5.5 and the level xhigh are refused by older CLIs (2.1.92 names 2.1.280 as the minimum).
+MINIMUM_CLI_VERSION = (2, 1, 280)
 # Windows accepts 32 767 characters per command line; the schema travels as one argument.
 MAX_SCHEMA_CHARS = 30_000
 # Per call. The CLI reports an equivalent value; a subscription call is not billed individually.

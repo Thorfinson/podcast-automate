@@ -10,7 +10,7 @@ from .storage import digest, file_hash, file_lock, write_json
 
 class LockedGeminiSpeech(GeminiSpeech):
     def synthesize(self, text, voice, language, cache, spoken=None):
-        key = digest(speech_settings(text, voice, language, spoken))
+        key = digest(speech_settings(text, voice, language, spoken, self.model))
         with file_lock(cache / "locks" / (key + ".lock"), timeout=self.timeout + 30):
             # Recursive splits use this method as well. Each child is shorter,
             # so lock dependencies cannot form a cycle.
@@ -18,7 +18,7 @@ class LockedGeminiSpeech(GeminiSpeech):
 
 
 def run_parallel_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None):
-    engine = LockedGeminiSpeech(api_key, timeout=config.runtime.tts_timeout_seconds)
+    engine = LockedGeminiSpeech(api_key, timeout=config.runtime.tts_timeout_seconds, model=choice.model)
     table = table if table is not None else SpokenForms()
     rows, paths = [], []
     for segment in script.segments:
@@ -29,7 +29,7 @@ def run_parallel_gemini_tts(config, script, root, work, choice, api_key=None, *,
         path = engine.synthesize(segment.text, voice, config.language, root / "cache/audio/gemini", spoken=spoken)
         paths.append(path)
         rows.append({"segment_id": segment.segment_id, "path": path.relative_to(root / "cache/audio").as_posix(),
-            "sha256": file_hash(path), "settings": speech_settings(segment.text, voice, config.language, spoken)})
+            "sha256": file_hash(path), "settings": speech_settings(segment.text, voice, config.language, spoken, choice.model)})
     write_json(work / "tts_report.json", {"segments": rows})
     write_json(work / "tts_progress.json", {"completed_segments": len(rows), "total_segments": len(rows)})
     return paths

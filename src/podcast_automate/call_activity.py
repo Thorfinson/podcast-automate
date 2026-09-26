@@ -3,6 +3,7 @@ import json
 import re
 import threading
 import time
+from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -14,6 +15,9 @@ from .storage import write_json
 
 # Defects named in a contract rejection; the receipt keeps them all.
 MAX_NAMED_DEFECTS = 8
+# The unit a call serves when several run side by side, such as an episode of a parallel script stage.
+# Its runner sets it; the receipt names it so the Studio can say which episode a live line belongs to.
+CALL_SUBJECT = ContextVar("call_subject", default=None)
 
 
 def clean_status(value, limit=600):
@@ -37,6 +41,8 @@ class CallActivity:
         self.diagnostics = {"model": model, "schema": schema, "status": "running", "started_at": now(),
                             "stdout_lines": 0, "stderr_lines": 0, "events": []}
         self.data = {"schema": schema, "model": model, "status": "running", "started_at": now(), "events": []}
+        if CALL_SUBJECT.get():
+            self.data["subject"] = CALL_SUBJECT.get()
         self.record("Aufruf gestartet")
 
     def record(self, message):

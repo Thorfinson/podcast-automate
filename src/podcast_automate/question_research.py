@@ -54,6 +54,7 @@ from .research_patches import cached_call
 from .research_quality import quality_brief, requirements_for
 from .research_reader import SourceReader
 from .research_tasks import AnswerReview, QuestionAnswer, QuestionPlan
+from .models import now
 from .storage import atomic_text, digest, inside, write_json
 
 __all__ = ["QuestionResearch", "run_question_research", "validate_plan", "answer_errors", "review_passes",
@@ -188,7 +189,15 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         """``tag`` marks a call whose prompt changed with a prompt generation (question_synthesis.PROMPT_GENERATION)."""
         return cached_call(folder, name, schema, prompt,
             lambda p, s: self.generate(folder, name, p, s, f"{self.call_version}{tag}.{name}", search=search), validate=validate,
-            on_retry=lambda number: self.save(f"{self.last_activity or 'Modellaufruf'} · Anlauf {number} nach Abweisung"))
+            on_retry=self.retry_note)
+
+    def retry_note(self, number):
+        """Name a repeated attempt. The planning call runs before the ledger exists, so it only updates the progress line."""
+        activity = f"{self.last_activity or 'Modellaufruf'} · Anlauf {number} nach Abweisung"
+        if self.state is None:
+            self.progress(activity)
+        else:
+            self.save(activity)
 
     def set_index(self, index):
         self.index = index
@@ -588,9 +597,15 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         def perform(task):
             try:
                 self.research_task(task)
-            except BaseException:
+            except BaseException as exc:
                 # The other workers finish their current call and stop at their next step boundary.
                 self.stopping.set()
+                # The Studio shows this wind-down; without it the run looks normal until the last call ends.
+                try:
+                    write_json(self.folder / "stopping.json", {"task": task.id, "question": task.question, "at": now(),
+                               "code": getattr(exc, "code", type(exc).__name__)})
+                except OSError:
+                    pass
                 raise
 
         def fill(pool):
@@ -651,7 +666,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 reopened, newly_blocked = self.reopen(dossier, review, report)
                 if reopened or newly_blocked:
                     continue
-                # Every objection targets an explicitly accepted gap: nothing is left to research.
+                # Every objection targets an explicitly accepted gap or was routed as an unsupported demand
+                # (a review disagreement): nothing is left to research.
                 report = self.tolerate(dossier, review, report)
             self.state.update(phase="completed", active_tasks=[])
             for objection in self.state.get("objections", {}).values():

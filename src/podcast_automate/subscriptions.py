@@ -292,7 +292,7 @@ def describe_snapshot(provider, snapshot) -> str:
 
 def choose_subscription(settings, candidates: dict, *, prefer="codex_cli", exclude=(), refresh=False,
                         clock=time.time) -> dict:
-    """Codex when it has quota, else Claude when not blocked, else pause naming the earliest reset."""
+    """The preferred subscription while it is available, else the other one, else pause naming the earliest reset."""
     order = [prefer] + [provider for provider in candidates if provider != prefer]
     snapshots = {}
     for provider in order:

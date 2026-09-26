@@ -16,7 +16,7 @@ from .runner import execute_stages, manifest_path, outputs_valid
 from .script_models import SeriesPlan
 from .series_review import load_series_review, require_passing_series, reviewed_scripts
 from .scripting import load_research, validate_script
-from .speech import (AudioChoice, GEMINI_MODEL, SPEECH_VERSION, audio_generation_record, check_gemini_rows,
+from .speech import (AudioChoice, SPEECH_VERSION, audio_generation_record, check_gemini_rows,
                      run_gemini_tts, same_audio_generation)
 from .spoken_forms import SpokenForms, load_forms, report as pronunciation_report, spoken_text
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash,
@@ -284,7 +284,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
         if audio_choice is not None:
             inputs["audio_generation"] = audio_generation_record(choice)
         if choice.remote:
-            inputs["speech_model"] = GEMINI_MODEL
+            inputs["speech_model"] = choice.model
             inputs["speech_version"] = SPEECH_VERSION
             inputs["worker_sha256"] = file_hash(Path(__file__).with_name("speech.py"))
         audio_config = config.model_copy(update={"voice_profile": choice.voices})
@@ -399,9 +399,14 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 part = select_script(script, [script.segments[i] for i in indices],
                     title=script.title if len(groups) == 1 else f"{script.title} – Teil {number} von {len(groups)}")
                 folder = destination if len(groups) == 1 else destination / f"part_{number:02d}"
+
+                def assembly_progress(step, done=0, total=0, number=number):
+                    # The Studio shows the montage step instead of a finished synthesis counter.
+                    write_json(work / "progress.json", {"status": "assembly", "step": step, "part": number,
+                        "parts": len(groups), "completed_segments": done, "total_segments": total})
                 outputs.extend(assemble(part, [paths[i] for i in indices], folder,
                     max_seconds=config.max_episode_minutes * 60, language=config.language,
-                    labels=host_labels(config), pauses=choice.pauses))
+                    labels=host_labels(config), pauses=choice.pauses, progress=assembly_progress))
                 audio_report = json.loads((folder / "audio_report.json").read_text(encoding="utf-8"))
                 parts.append({"part": number, "audio": (folder / "audio.mp3").relative_to(root).as_posix(),
                               "duration_seconds": audio_report["duration_seconds"],

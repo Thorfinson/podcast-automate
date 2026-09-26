@@ -8,7 +8,7 @@ from collections import Counter
 from unittest.mock import patch
 
 from podcast_automate.errors import AppError
-from podcast_automate.execution import MAX_PARALLEL
+from podcast_automate.execution import MAX_PARALLEL_TEXT
 from podcast_automate.question_research import QuestionResearch
 from podcast_automate.question_scope import QuestionScopeReview, pending_task
 from podcast_automate.research import run_research
@@ -27,7 +27,7 @@ from tests.question_fixtures import decision, task_value
 
 MODEL = "podcast_automate.research.CodexAdapter.structured"
 PARALLEL = {"text": "parallel", "audio": "sequential"}
-TASKS = ("task_a", "task_b", "task_c")
+TASKS = ("task_a", "task_b", "task_c", "task_d", "task_e")
 
 
 class Probe:
@@ -69,7 +69,7 @@ class ParallelResearchCase(fixtures.ResearchProjectCase):
         super().setUp()
         # The plan is sized to the worker cap: a rendezvous of every task needs a worker each, and a cap
         # that no longer matches must fail here, not as a barrier timeout five seconds into a test.
-        self.assertEqual(len(TASKS), MAX_PARALLEL, "resize TASKS together with MAX_PARALLEL")
+        self.assertEqual(len(TASKS), MAX_PARALLEL_TEXT, "resize TASKS together with MAX_PARALLEL_TEXT")
         write_json(self.root / "studio/execution.json", PARALLEL)
         self.work = self.root / "runs/run_test"
         self.index = None
@@ -147,33 +147,35 @@ class IndependentTasksTests(ParallelResearchCase):
         with patch(MODEL, side_effect=self.model):
             run = run_research(self.root)
         self.assertEqual(run.status, "completed", run.model_dump())
-        self.assertEqual(self.probe.peak, MAX_PARALLEL, "every worker of the cap was inside the model at once")
+        self.assertEqual(self.probe.peak, MAX_PARALLEL_TEXT, "every worker of the cap was inside the model at once")
         work = self.work_of(run)
         # Discovery, plan and scope; one reading decision and one review per task; dossier, source review, assessment.
-        self.assertEqual(len(self.calls), 3 + 2 * 3 + 3)
+        self.assertEqual(len(self.calls), 3 + 2 * len(TASKS) + 3)
         budget = json.loads((work / "budget.json").read_text(encoding="utf-8"))
         self.assertEqual((budget["model_calls"], budget["sequence"]), (len(self.calls), len(self.calls)))
         state = read_value(work / "question_research/state.json")
-        self.assertEqual([row["status"] for row in state["tasks"].values()], ["verified"] * 3)
+        self.assertEqual([row["status"] for row in state["tasks"].values()], ["verified"] * len(TASKS))
         self.assertEqual(state["active_tasks"], [])
         self.assertNotIn("active_task", state)
         self.assertEqual(Counter(row["task"] for row in state["call_timings"]),
-                         Counter({None: 6, "task_a": 2, "task_b": 2, "task_c": 2}))
+                         Counter({None: 6, **{task: 2 for task in TASKS}}))
         ledger = json.loads((work / "research_questions.json").read_text(encoding="utf-8"))
         self.assertEqual([row["id"] for row in ledger["questions"]], list(TASKS))
-        self.assertEqual((ledger["closed"], ledger["active_task"], ledger["active_tasks"]), (3, None, []))
+        self.assertEqual((ledger["closed"], ledger["active_task"], ledger["active_tasks"]), (len(TASKS), None, []))
         text = (work / "research_questions.md").read_text(encoding="utf-8")
         positions = [text.index(f"## What is energy in {task}?") for task in TASKS]
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(json.loads((work / "research_request.json").read_text(encoding="utf-8"))["execution"], PARALLEL)
         self.assertEqual(research_progress(self.root, run.model_dump(mode="json"))["execution"], PARALLEL)
-        self.assertEqual(json.loads((self.root / "research/questions.json").read_text(encoding="utf-8"))["closed"], 3)
+        self.assertEqual(json.loads((self.root / "research/questions.json").read_text(encoding="utf-8"))["closed"], len(TASKS))
         with patch(MODEL, side_effect=AssertionError("No repeat calls on resume")):
             resumed = run_research(self.root, resume=True)
         self.assertEqual((resumed.status, resumed.run_id), ("completed", run.run_id))
 
 
 class PrerequisiteTests(ParallelResearchCase):
+    # Three tasks keep the overlap exact: two independent ones meet, the dependent one waits.
+    tasks = ("task_a", "task_b", "task_c")
     depends = {"task_c": ["task_a"]}
 
     def test_a_dependent_task_starts_only_after_its_prerequisite_is_verified(self):
@@ -202,7 +204,7 @@ class PrerequisiteTests(ParallelResearchCase):
             run = run_research(self.root)
         self.assertEqual((run.status, run.stages["dossier"].error.code), ("blocked", "research_questions_blocked"))
         state = read_value(self.work_of(run) / "question_research/state.json")
-        self.assertEqual([state["tasks"][task]["status"] for task in TASKS], ["blocked", "verified", "blocked"])
+        self.assertEqual([state["tasks"][task]["status"] for task in self.tasks], ["blocked", "verified", "blocked"])
         self.assertEqual(state["tasks"]["task_c"]["outcome"], "prerequisite_block")
         self.assertNotIn(("ResearchDecision", "task_c"), self.events)
         self.assertEqual(state["active_tasks"], [])
@@ -218,10 +220,10 @@ class SequentialModeTests(ParallelResearchCase):
         self.assertEqual(self.events, [(name, task) for task in TASKS for name in ("ResearchDecision", "AnswerReview")])
         # As in the one-task production test (8 calls), plus a reading decision and a review for each further task.
         self.assertEqual(self.calls, [ResearchDiscovery, QuestionPlan, QuestionScopeReview,
-                                      ResearchDecision, AnswerReview, ResearchDecision, AnswerReview, ResearchDecision, AnswerReview,
+                                      *[ResearchDecision, AnswerReview] * len(TASKS),
                                       ResearchDossier, SourceReview, ResearchAssessment])
         work = self.work_of(sequential)
-        self.assertEqual(json.loads((work / "budget.json").read_text(encoding="utf-8"))["model_calls"], 12)
+        self.assertEqual(json.loads((work / "budget.json").read_text(encoding="utf-8"))["model_calls"], 6 + 2 * len(TASKS))
         self.assertEqual(json.loads((work / "research_request.json").read_text(encoding="utf-8"))["execution"]["text"], "sequential")
         self.assertEqual(research_progress(self.root, sequential.model_dump(mode="json"))["execution"]["text"], "sequential")
         # The same brief in parallel mode writes the same receipts: same paths, prompt bindings and values.
@@ -234,7 +236,7 @@ class SequentialModeTests(ParallelResearchCase):
             parallel = run_research(other)
         self.assertEqual(parallel.status, "completed", parallel.model_dump())
         self.assertEqual(self.probe.peak, len(TASKS))
-        self.assertEqual(len(self.calls), 12)
+        self.assertEqual(len(self.calls), 6 + 2 * len(TASKS))
         self.assertEqual(self.receipts(other / "runs" / parallel.run_id), self.receipts(work))
 
 
@@ -258,6 +260,9 @@ class FailureTests(ParallelResearchCase):
         with self.assertRaises(AppError) as raised:
             engine.run(fixtures.discovery(), self.index)
         self.assertEqual(raised.exception.status, "waiting_for_quota")
+        # The failing task leaves a marker, so the Studio can show the wind-down while the others finish.
+        marker = json.loads((self.work / "question_research/stopping.json").read_text(encoding="utf-8"))
+        self.assertEqual((marker["task"], marker["code"]), ("task_b", raised.exception.code))
         self.assertEqual(Counter(self.calls), Counter({QuestionPlan: 1, QuestionScopeReview: 1, ResearchDecision: 1}))
         self.assertEqual(Counter(name for name, _ in self.events), Counter({"ResearchDecision": 2}))
         state = read_value(self.work / "question_research/state.json")
@@ -330,10 +335,10 @@ class ActiveTasksTests(ParallelResearchCase):
         self.assertEqual(run.status, "completed", run.model_dump())
         ledger = seen["ledger"]
         self.assertEqual((ledger["active_task"], ledger["active_tasks"]), ("task_a", list(TASKS)))
-        self.assertEqual([row["status"] for row in ledger["questions"]], ["researching"] * 3)
+        self.assertEqual([row["status"] for row in ledger["questions"]], ["researching"] * len(TASKS))
         facts = {fact["id"]: fact["text"] for fact in seen["facts"]}
-        self.assertEqual(facts["active_tasks"], "3 Teilfragen in Arbeit: " + "; ".join(f"What is energy in {t}?" for t in TASKS))
-        self.assertEqual({key for key in facts if re.fullmatch(r"question_\d+", key)}, {"question_0", "question_1", "question_2"})
+        self.assertEqual(facts["active_tasks"], f"{len(TASKS)} Teilfragen in Arbeit: " + "; ".join(f"What is energy in {t}?" for t in TASKS))
+        self.assertEqual({key for key in facts if re.fullmatch(r"question_\d+", key)}, {f"question_{n}" for n in range(len(TASKS))})
         self.assertTrue(all(f"What is energy in {task}?" in facts[f"question_{n}"] for n, task in enumerate(TASKS)))
 
     def test_the_public_ledger_keeps_the_first_active_task_for_older_readers(self):
@@ -365,7 +370,7 @@ class PlanGateTests(ParallelResearchCase):
             resumed = run_research(self.root, resume=True, plan_review="required")
         self.assertEqual((resumed.status, resumed.run_id), ("completed", first.run_id))
         self.assertEqual(self.probe.peak, len(TASKS))
-        self.assertEqual(len(self.calls), 12)
+        self.assertEqual(len(self.calls), 6 + 2 * len(TASKS))
 
 
 if __name__ == "__main__":
