@@ -170,6 +170,17 @@ test('a block without advice offers to resume, because the run asks the advisor 
   // A new attempt is a new block; the advice from before no longer counts.
   app.run("project.job.progress.research_questions.questions[1].retries=1;lastJobView='';render();");
   assert.ok(jobView(app).includes('>Fortsetzen<'));
+  // Without room for the advice and one new attempt the run would stop at once: no resume promise, but the raise that makes room.
+  app.run("project.job.progress.research_questions.budget_projection={used:278,limit:289,remaining:11,minimum_remaining_calls:3,expected_calls_per_task:10};lastJobView='';render();");
+  const page=jobView(app);
+  assert.ok(!page.includes('>Fortsetzen<'));
+  assert.ok(!page.includes('„Fortsetzen“ lässt sie zuerst beraten'));
+  assert.ok(page.includes('Für eine Beratung reicht das Aufruflimit nicht (11 Aufrufe frei, der Abschluss braucht mindestens 3)'));
+  // 278 used + (3 closing + 1 question × (1 advice + 10 per attempt)) × 1.1 = 278 + 16
+  assert.ok(page.includes('data-action="approve-calls" data-run-id="run_x" data-model-calls="294" data-then-resume="1">Aufruflimit auf 294 erhöhen und beraten lassen'));
+  // A question waiting on the blocked one needs its own attempt afterwards: + 10 per task, 278 + ceil(24 × 1.1) = 305.
+  app.run(`project.job.progress.research_questions.questions.push({id:'c',question:'Vergleich?',status:'blocked',outcome:'prerequisite_block',depends_on:['b'],web_attempts:0,reason:'',activity:'y',steps:0,read_sections:0,acceptance:['v'],reopened:0});lastJobView='';render();`);
+  assert.ok(jobView(app).includes('data-model-calls="305"'));
 });
 
 test('the machine room and the overview keep opened sections while polling',()=>{
