@@ -6,6 +6,7 @@ from podcast_automate.question_scope import QuestionScopeReview
 from podcast_automate.evidence_models import ResearchObjection, ObjectionClosure
 from podcast_automate.research_review import SourceReview
 from podcast_automate.research_tasks import QuestionSearch, ReopenPlan
+from podcast_automate.research_advisor import BlockAdvice
 
 
 def claim_contract():
@@ -101,4 +102,8 @@ def question_response(prompt, schema):
                             supported=True, source_adequacy=True, issues=[]), payload)
     if schema is SourceReview:
         return complete_fixture_response(SourceReview(issues=[], limitations=[]), payload)
+    if schema is BlockAdvice:
+        # The default advice starts nothing on its own, so a blocked fixture run still stops for its decisions.
+        return BlockAdvice(diagnosis="Synthetische Beratung ohne neuen Zugang.", recommendation="accept_gap",
+                           limit="none", hint="", sources=[])
     return None

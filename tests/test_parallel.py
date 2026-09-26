@@ -200,6 +200,61 @@ class StudioParallelTests(unittest.TestCase):
         self.assertEqual(self.app.job(self.root, audio_job_id=second["id"])["status"], "running")
         self.app.audio_processes[second["id"]][0].wait.assert_not_called()
 
+    def project(self, name):
+        root = self.workspace / "projects" / name
+        init_project(root, self.config)
+        return root
+
+    def local_audio(self, name):
+        """A project with local Qwen voices and one approved episode; returns the start request."""
+        root = self.project(name)
+        local = AudioChoice(provider="qwen3_local", voices={"host_a": "Aiden", "host_b": "Vivian"}).model_dump()
+        write_json(root / "studio/audio.json", local)
+        folder = root / "episodes/ep_001"
+        write_yaml(folder / "script.yaml", example_script().model_copy(update={"episode_id": "ep_001"}).model_dump())
+        (folder / "script.md").write_text("Read this script.")
+        return {"action": "audio", "episode": "ep_001", "approve_audio": True,
+            "script_hash": file_hash(folder / "script.yaml"), "readable_hash": file_hash(folder / "script.md"),
+            "config_hash": project_hash(self.config), "audio_hash": digest(local)}
+
+    def test_projects_work_in_parallel_up_to_the_limit_with_one_main_job_each(self):
+        from podcast_automate.studio import MAX_PROJECT_JOBS
+        names = ["example", *(self.project(f"other_{n}").name for n in range(1, MAX_PROJECT_JOBS + 1))]
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
+            for name in names[:MAX_PROJECT_JOBS]:
+                self.app.start(name, {"action": "research"})
+            self.assertEqual(launch.call_count, MAX_PROJECT_JOBS)
+            # A project still runs one job at a time, and its own audio waits for its text work.
+            for request in ({"action": "research"}, self.approval("ep_001")):
+                with self.assertRaises(AppError) as busy:
+                    self.app.start("example", request)
+                self.assertEqual(busy.exception.code, "project_busy")
+            with self.assertRaises(AppError) as full:
+                self.app.start(names[-1], {"action": "research"})
+            self.assertEqual(full.exception.code, "studio_capacity")
+            self.assertEqual(launch.call_count, MAX_PROJECT_JOBS)
+            # Every project owns its worker: stopping one leaves the others running, and its place is free.
+            with patch("podcast_automate.studio.stop_process_tree",
+                       side_effect=lambda worker: setattr(worker.poll, "return_value", 0)):
+                self.app.stop("example")
+            self.assertEqual(self.app.job(self.root)["status"], "interrupted")
+            for name in names[1:MAX_PROJECT_JOBS]:
+                self.assertEqual(self.app.job(self.app.root(name))["status"], "running")
+            self.app.start(names[-1], {"action": "research"})
+            self.assertEqual(launch.call_count, MAX_PROJECT_JOBS + 1)
+
+    def test_local_qwen_uses_the_graphics_card_in_one_project_at_a_time(self):
+        first, second = self.local_audio("qwen_a"), self.local_audio("qwen_b")
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
+            self.app.start("qwen_a", first)
+            with self.assertRaises(AppError) as denied:
+                self.app.start("qwen_b", second)
+            self.assertEqual(denied.exception.code, "gpu_busy")
+            # Text work and Gemini audio in other projects do not need the graphics card.
+            self.app.start("qwen_b", {"action": "research"})
+            self.app.start("example", self.approval("ep_001"))
+            self.assertEqual(launch.call_count, 3)
+
     def test_overview_delete_and_restore_preserve_every_project_artifact(self):
         marker = self.root / "episodes/ep_001/script.md"
         before = marker.read_bytes()

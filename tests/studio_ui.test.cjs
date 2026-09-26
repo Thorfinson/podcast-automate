@@ -109,6 +109,93 @@ test('expanded question remains open in the regenerated status panel',()=>{
   assert.ok(jobView(app).includes('data-research-question="q_one" open'));
 });
 
+function blockedResearch(app, extra='') {
+  app.run(`project={id:'test',job:{status:'blocked',progress:{phase:'research',updated_at:'2026-09-26T20:00:00Z',${extra}research_questions:{
+    closed:0,total:1,phase:'blocked',questions:[{id:'q_one',question:'One',status:'blocked',outcome:'evidence_block',reason:'Fehlt.',
+    steps:1,read_sections:2,acceptance:['Explain']}]}}}};renderJob();`);
+  return app.elements.get('research-progress');
+}
+
+test('a poll that brings only a new read time leaves the research page untouched',()=>{
+  const app=studio(), panel=blockedResearch(app);
+  let markup=panel.innerHTML, writes=0;
+  Object.defineProperty(panel,'innerHTML',{get:()=>markup,set:value=>{markup=value;writes++;}});
+  app.run("project.job.progress.updated_at='2026-09-26T20:00:02Z';project.job.heartbeat_age_seconds=4;renderJob();");
+  assert.equal(writes,0,'the read time and heartbeat age alone redraw nothing');
+  app.run("project.job.progress.research_questions.questions[0].reason='Fehlt weiterhin.';renderJob();");
+  assert.equal(writes,1);
+});
+
+test('a redraw keeps every section the reader opened or closed in the research panel',()=>{
+  const app=studio(), panel=blockedResearch(app,"retrieval:{failed:1,failures:[{source:'https://a.example',reason:'HTTP 403'}]},");
+  assert.ok(panel.innerHTML.includes('class="retrieval-report"'));
+  let markup=panel.innerHTML, report={dataset:{},className:'retrieval-report',open:true}, quality={dataset:{},className:'tech-details',open:false};
+  panel.querySelectorAll=selector=>selector==='details'?[report,quality]:[];
+  Object.defineProperty(panel,'innerHTML',{get:()=>markup,set:value=>{
+    markup=value;report={dataset:{},className:'retrieval-report',open:false};quality={dataset:{},className:'tech-details',open:true};
+  }});
+  app.run("project.job.progress.research_questions.questions[0].reason='Fehlt weiterhin.';renderJob();");
+  assert.equal(report.open,true,'an opened report stays open');
+  assert.equal(quality.open,false,'a closed section stays closed');
+});
+
+test('the advisor’s cause, recommendation, sources and hint stand with the blocked question',()=>{
+  const app=studio();
+  const advice={diagnosis:'Der Verlag sperrt den Download <PNAS>.',recommendation:'raise_limit',limit:'sources',hint:'Freie Fassung in PubMed Central lesen.',
+    sources:[{title:'Salganik 2020',url:'https://pmc.example/salganik',note:'frei lesbar'},{title:'Ohne Adresse',url:'',note:''}]};
+  const ledger={closed:0,total:1,accepted:0,phase:'blocked',questions:[{id:'t18',question:'Vorhersage?',status:'blocked',outcome:'evidence_block',
+    reason:'Kriterium 1 fehlt.',web_attempts:1,steps:9,read_sections:3,acceptance:['k'],reopened:0,advice,auto_retries:1}]};
+  const card=app.run(`renderResearchDecisions({status:'blocked',progress:{research_questions:${JSON.stringify(ledger)},search_rounds:1,search_round_limit:24,source_limit:150}},{run_id:'run_x'},false,0,true,24)`);
+  assert.ok(card.includes('<strong>Beratung:</strong> Der Verlag sperrt den Download &lt;PNAS&gt;.'));
+  assert.ok(card.includes('Empfehlung: Quellenlimit erhöhen · Ein automatischer neuer Versuch nach der Beratung lief bereits.'));
+  assert.ok(card.includes('<a href="https://pmc.example/salganik" target="_blank" rel="noopener noreferrer">Salganik 2020</a>'));
+  assert.ok(card.includes('<li>Ohne Adresse</li>'));
+  // The advisor's hint is already in the field of a new attempt; the editor may change it before retrying.
+  assert.ok(card.includes('id="retry-hint-t18" value="Freie Fassung in PubMed Central lesen."'));
+  const html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)},new Set(),false,'run_x',24,1,150)`);
+  assert.ok(html.includes('<p><strong>Beratung:</strong> Der Verlag sperrt den Download &lt;PNAS&gt;.</p>'));
+});
+
+test('a block without advice offers to resume, because the run asks the advisor first',()=>{
+  const app=studio();
+  const ledger={closed:1,total:2,accepted:0,phase:'blocked',questions:[
+    {id:'a',question:'Beantwortet',status:'verified',activity:'ok',steps:2,read_sections:3,acceptance:['x'],answer:'Antwort',findings:[],sources:[],limits:[],reopened:0},
+    {id:'b',question:'Offen?',status:'blocked',outcome:'evidence_block',web_attempts:1,reason:'Fehlt.',activity:'x',steps:5,read_sections:2,acceptance:['k'],reopened:0}]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:24}}};step=PAGE.research;render();`);
+  assert.ok(jobView(app).includes('>Fortsetzen<'));
+  assert.ok(jobView(app).includes('„Fortsetzen“ lässt sie zuerst beraten'));
+  // Advice for the current block: no blind resume, the decision is the editor's.
+  app.run("project.job.progress.research_questions.questions[1].advice={key:'0.0',diagnosis:'d',recommendation:'accept_gap',limit:'none',hint:'',sources:[]};lastJobView='';render();");
+  assert.ok(!jobView(app).includes('>Fortsetzen<'));
+  // A new attempt is a new block; the advice from before no longer counts.
+  app.run("project.job.progress.research_questions.questions[1].retries=1;lastJobView='';render();");
+  assert.ok(jobView(app).includes('>Fortsetzen<'));
+});
+
+test('the machine room and the overview keep opened sections while polling',()=>{
+  const app=studio();
+  blockedResearch(app);
+  const box=app.elements.get('job-status');
+  let markup=box.innerHTML, events={dataset:{},className:'model-events',open:true};
+  box.querySelectorAll=selector=>selector==='details'?[events]:[];
+  Object.defineProperty(box,'innerHTML',{get:()=>markup,set:value=>{markup=value;events={dataset:{},className:'model-events',open:false};}});
+  app.run("project.job.progress.research_questions.questions[0].reason='Fehlt weiterhin.';renderJob();");
+  assert.equal(events.open,true,'an opened section of the machine room stays open');
+  // A new message redraws the machine room; the reader's place in it stays where it was.
+  let body={className:'drawer-body',scrollTop:320};
+  box.querySelectorAll=selector=>selector==='details'?[events]:selector==='[class]'?[body]:[];
+  Object.defineProperty(box,'innerHTML',{get:()=>markup,set:value=>{markup=value;body={className:'drawer-body',scrollTop:0};}});
+  app.run("project.job.progress.research_questions.questions[0].reason='Noch immer offen.';renderJob();");
+  assert.equal(body.scrollTop,320,'the machine room keeps its scroll position');
+  // The browser marks an opened trash with open=""; an unchanged trash must not be redrawn, and closed, by the next poll.
+  app.run(`overviewData={projects:[],trash:[{id:'${'a'.repeat(32)}',topic:'Alt',deleted_at:'2026-09-26'}]};refreshOverview();`);
+  const trash=app.elements.get('overview-trash');
+  assert.ok(trash.innerHTML.includes('<details class="panel">'));
+  trash.innerHTML=trash.innerHTML.replace('<details class="panel">','<details class="panel" open="">');
+  app.run('refreshOverview();');
+  assert.ok(trash.innerHTML.includes('<details class="panel" open="">'));
+});
+
 test('evidence status distinguishes automated support, empirical testing and supported uncertainty',()=>{
   const app=studio();
   app.run(`project={id:'test',job:{status:'running',action:'research',progress:{phase:'research',
@@ -1187,7 +1274,7 @@ test('blocked research questions offer an explicit gap approval only while no jo
   const ledger={closed:1,total:2,accepted:0,phase:'blocked',active_task:null,
     budget_projection:{feasible:true,used:5,remaining:10,minimum_remaining_calls:2,closing_calls:2,expected_remaining_calls:7,expected_calls_per_task:5},
     questions:[{id:'task_definition',question:'Was ist Energie?',status:'verified',activity:'ok',steps:2,read_sections:3,acceptance:['x'],answer:'Antwort',findings:[],sources:[],limits:[],reopened:0},
-      {id:'task_empirical',question:'Gibt es <Belege>?',status:'blocked',outcome:'budget_block',reason:'Das Web-Suchbudget ist ausgeschöpft.',activity:'Beleg fehlt',steps:4,read_sections:2,acceptance:['y'],reopened:0}]};
+      {id:'task_empirical',question:'Gibt es <Belege>?',status:'blocked',outcome:'budget_block',advice:{key:'0.0',diagnosis:'Beraten.',recommendation:'accept_gap',limit:'none',hint:'',sources:[]},reason:'Das Web-Suchbudget ist ausgeschöpft.',activity:'Beleg fehlt',steps:4,read_sections:2,acceptance:['y'],reopened:0}]};
   app.run(`project={id:'p',job:{id:'j1',status:'blocked',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12,model_call_limit:150,model_calls:5}}};renderJob();`);
   let html=jobView(app);
   assert.ok(html.includes('data-action="accept-gap"'));
@@ -1218,8 +1305,8 @@ test('blocked research questions that never searched the web keep the resume but
   const app=studio();
   const ledger={closed:1,total:3,accepted:0,blocked:2,reopenable:1,phase:'blocked',active_task:null,
     questions:[{id:'task_definition',question:'Was ist Energie?',status:'verified',activity:'ok',steps:2,read_sections:3,acceptance:['x'],answer:'Antwort',findings:[],sources:[],limits:[],reopened:0},
-      {id:'task_norms',question:'Wie wirken Normen?',status:'blocked',outcome:'evidence_block',reopenable:true,web_attempts:0,reason:'Die gespeicherten Quellen brachten keine neuen Belege.',activity:'Beleg fehlt',steps:3,read_sections:30,acceptance:['y'],reopened:0},
-      {id:'task_other',question:'Gibt es Belege?',status:'blocked',outcome:'evidence_block',reopenable:false,web_attempts:1,reason:'Auch die Websuche brachte nichts.',activity:'Beleg fehlt',steps:5,read_sections:12,acceptance:['z'],reopened:0}]};
+      {id:'task_norms',question:'Wie wirken Normen?',status:'blocked',outcome:'evidence_block',advice:{key:'0.0',diagnosis:'Beraten.',recommendation:'accept_gap',limit:'none',hint:'',sources:[]},reopenable:true,web_attempts:0,reason:'Die gespeicherten Quellen brachten keine neuen Belege.',activity:'Beleg fehlt',steps:3,read_sections:30,acceptance:['y'],reopened:0},
+      {id:'task_other',question:'Gibt es Belege?',status:'blocked',outcome:'evidence_block',advice:{key:'0.0',diagnosis:'Beraten.',recommendation:'accept_gap',limit:'none',hint:'',sources:[]},reopenable:false,web_attempts:1,reason:'Auch die Websuche brachte nichts.',activity:'Beleg fehlt',steps:5,read_sections:12,acceptance:['z'],reopened:0}]};
   app.run(`project={id:'p',job:{id:'j1',status:'blocked',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12,model_call_limit:150,model_calls:73}}};renderJob();`);
   let html=jobView(app);
   assert.ok(html.includes('>Fortsetzen<'));
@@ -1233,6 +1320,49 @@ test('blocked research questions that never searched the web keep the resume but
   assert.ok(!html.includes('>Fortsetzen<'));
   assert.ok(html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
   assert.ok(!html.includes('holt das nach'));
+});
+
+test('a blocked question shows its own mark, its cause and when it is decided, also while the run works',()=>{
+  const app=studio();
+  const q=(id,question,extra)=>({id,question,activity:'x',steps:1,read_sections:1,acceptance:['k'],reopened:0,...extra});
+  const ledger={closed:1,total:4,accepted:0,phase:'questions',questions:[
+    q('t1','Erste Frage?',{status:'verified',answer:'Antwort',findings:[],sources:[],limits:[]}),
+    q('t2','Merton?',{status:'blocked',outcome:'evidence_block',reason:'Mertons Original fehlt.',web_attempts:2}),
+    q('t3','Vergleich?',{status:'blocked',outcome:'prerequisite_block',reason:'A required prerequisite has not passed evidence review.',depends_on:['t1','t2']}),
+    q('t4','Scheffer?',{status:'blocked',outcome:'evidence_block',reason:'Scheffer fehlt.',retry_requested:true,web_attempts:2}),
+    q('t5','Salganik?',{status:'blocked',outcome:'evidence_block',reason:'Nach zwei Websuchen nichts gefunden.',web_attempts:0,steps:8})]};
+  let html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)},new Set(),true,'run_x',12,12)`);
+  // The counted web searches stand next to the model's wording; used-up rounds explain a question that never searched the web.
+  assert.ok(html.includes('Websuchen für diese Frage: 2 · Suchrunden des Laufs aufgebraucht (12 von 12).'));
+  assert.ok(html.includes('Websuchen für diese Frage: 0 · Suchrunden des Laufs aufgebraucht (12 von 12). Sie hat deshalb nur in den schon gelesenen Quellen gesucht'));
+  assert.equal((html.match(/Websuchen für diese Frage/g)||[]).length,3,'not for a question that only waits for its prerequisite');
+  const card=app.run(`renderResearchDecisions({status:'blocked',progress:{research_questions:${JSON.stringify(ledger)},search_rounds:12,search_round_limit:12}},{run_id:'run_x'},false,0,true,12)`);
+  assert.ok(card.includes('Beleg fehlt · keine Websuche'));
+  assert.ok(!card.includes('Salganik?</strong><p class="hint">Beleg fehlt · noch nicht bearbeitet'));
+  assert.ok(card.includes('Suchrunden auf 18 erhöhen'));
+  assert.ok(html.includes('⛔ Merton? · Blockiert</summary>'));
+  assert.ok(html.includes('⛔ Vergleich? · Blockiert</summary>'));
+  assert.ok(html.includes('<strong>Blockiert: Beleg fehlt</strong> · Mertons Original fehlt.'));
+  assert.ok(html.includes('Entscheiden musst du erst, wenn der Lauf anhält'));
+  // The cause stands once, in the note at the top of the question, not again further down.
+  assert.equal((html.match(/Mertons Original fehlt/g)||[]).length,1);
+  // A question behind a blocked prerequisite names that question instead of the pipeline's internal reason.
+  assert.ok(html.includes('Wartet auf: Merton?'));
+  assert.ok(!html.includes('A required prerequisite'));
+  assert.ok(html.includes('nimmt diese Frage automatisch wieder auf. Entscheiden kannst du, wenn der Lauf anhält.'));
+  assert.ok(html.includes('↻ Scheffer? · Neuer Versuch angefordert</summary>'));
+  assert.ok(html.includes('„Fortsetzen“ startet ihn'));
+  html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)},new Set(),false,'run_x',12)`);
+  assert.ok(html.includes('Entscheide oben unter „Wartet auf dich“'));
+  assert.ok(!html.includes('Entscheiden musst du erst'));
+  // At the run's source limit a web search cannot load anything: the question and the card name that limit.
+  const full={...ledger,source_attempt_count:150};
+  html=app.run(`renderResearchQuestions(${JSON.stringify(full)},new Set(),false,'run_x',24,12,150)`);
+  assert.ok(html.includes('Websuchen für diese Frage: 0 · Quellenlimit des Laufs erreicht (150 von 150 Quellen). Sie hat deshalb nur in den schon gelesenen Quellen gesucht; auch ein neuer Versuch sucht erst wieder im Web, wenn du das Quellenlimit erhöhst.'));
+  const fullCard=app.run(`renderResearchDecisions({status:'blocked',progress:{research_questions:${JSON.stringify(full)},search_rounds:12,search_round_limit:24,source_limit:150}},{run_id:'run_x'},false,0,true,24)`);
+  assert.ok(fullCard.includes('Quellen: 150 von 150 abgerufen'));
+  assert.ok(fullCard.includes('data-action="approve-sources" data-run-id="run_x" data-sources="190"'));
+  assert.ok(!fullCard.includes('data-action="approve-search"'));
 });
 
 test('a paused job announces its automatic resume on its page and a silent worker is flagged',()=>{
@@ -1448,7 +1578,7 @@ test('blocked questions are decided from a card above the ledger without expandi
   const app=studio();
   const ledger={closed:2,total:4,accepted:0,blocked:2,reopenable:0,phase:'blocked',active_task:null,
     budget_projection:{feasible:true,used:10,remaining:20,minimum_remaining_calls:3,closing_calls:3,expected_remaining_calls:3,expected_calls_per_task:5},
-    questions:[{id:'root',question:'Wurzelfrage <x>',status:'blocked',outcome:'search_block',web_attempts:1,reason:'Keine Belege.',activity:'x',steps:6,read_sections:2,acceptance:['a'],depends_on:[]},
+    questions:[{id:'root',question:'Wurzelfrage <x>',status:'blocked',outcome:'search_block',advice:{key:'0.0',diagnosis:'Beraten.',recommendation:'accept_gap',limit:'none',hint:'',sources:[]},web_attempts:1,reason:'Keine Belege.',activity:'x',steps:6,read_sections:2,acceptance:['a'],depends_on:[]},
       {id:'child',question:'Folgefrage',status:'blocked',outcome:'prerequisite_block',web_attempts:0,reason:'A required prerequisite has not passed evidence review.',activity:'y',steps:0,read_sections:0,acceptance:['b'],depends_on:['root']},
       {id:'ok',question:'Geklärt',status:'verified',answer:'A',findings:[],sources:[],limits:[],activity:'z',steps:2,read_sections:3,acceptance:['c'],depends_on:[]}]};
   app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:12}}};step=PAGE.research;render();`);

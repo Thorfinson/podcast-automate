@@ -276,6 +276,7 @@ def research_progress(root, run, since=None):
             "total_segments": counts.get("total", 0), "completed_segments": counts.get("closed", 0),
             "model_calls": budget.get("model_calls", 0), "search_rounds": budget.get("search_rounds", 0),
             "model_call_limit": effective.model_calls, "search_round_limit": effective.search_rounds,
+            "source_limit": effective.sources,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "model_call_started_at": pending[0]["started_at"] if pending else None, "open_calls": pending,
             "stopping": stopping,

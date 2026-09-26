@@ -104,7 +104,7 @@ class DownloadTests(unittest.TestCase):
         write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "running", "run": None})
         worker = Mock()
         worker.poll.return_value = None
-        self.app.process, self.app.process_root = worker, self.root
+        self.app.workers[self.root] = (worker, False)
         with project_lock(self.root):
             # Stands in for the research worker's exclusive lock; research never writes exports.
             self.assertEqual(self.request("/download/example/podcast.zip")[0], 200)

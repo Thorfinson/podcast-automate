@@ -783,10 +783,12 @@ class StudioApprovalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/projects/example/approve",
                                       {"kind": "retry", "run_id": "run_x", "task_id": "task_a"})[0], 400)
         status, _ = self.request("/api/projects/example/approve",
-                                 {"kind": "model_calls", "run_id": "run_x", "model_calls": 200, "search_rounds": 20})
+                                 {"kind": "model_calls", "run_id": "run_x", "model_calls": 300, "search_rounds": 30})
+        self.assertEqual(status, 200)
+        status, _ = self.request("/api/projects/example/approve", {"kind": "model_calls", "run_id": "run_x", "sources": 190})
         self.assertEqual(status, 200)
         limits = effective_limits(self.work, TopicBrief(topic="x").research_limits, "b" * 64)
-        self.assertEqual((limits.model_calls, limits.search_rounds), (200, 20))
+        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources), (300, 30, 190))
         self.assertEqual(self.request("/api/projects/example/approve",
                                       {"kind": "model_calls", "run_id": "run_x", "model_calls": 100})[0], 400)
         self.assertEqual(self.request("/api/projects/example/approve",

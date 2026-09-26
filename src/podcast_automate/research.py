@@ -28,6 +28,7 @@ from .runner import execute_stages, manifest_path, outputs_valid, run_observer
 from .research_gap_probe import suffix as probe_suffix
 from .research_quality import load_complete_research, requirements_for
 from .question_research import run_question_research
+from .research_advisor import advisor_selection
 from .research_ledger import read_value
 from .research_evidence import quotable
 from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source
@@ -410,6 +411,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             (root / "studio/outline.json").unlink()
         pool = AdapterPool(config.runtime, selection or {"provider": "codex_cli", "model": config.runtime.codex_model,
                                                         "reasoning_effort": None})
+        # The advice on a blocked question asks the deepest setting of the run's subscription (research_advisor).
+        advisor_pool = AdapterPool(config.runtime, advisor_selection(pool.text_generation))
 
         def limits():
             return effective_limits(work, config.research_limits, input_hash)
@@ -449,7 +452,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 if observer:
                     observer(manifest)
 
-        def invoke(prompt, output_type, version, *, search=False):
+        def invoke(prompt, output_type, version, *, search=False, advisor=False):
             number = reserve_call(work, limits(), search=search)
             from .research_status import record_request
             directory = work / "calls" / f"call_{number:03d}"
@@ -458,7 +461,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 progress("Quellen zu offenen Leitfragen werden gesucht")
             started_at, started = datetime.now(timezone.utc).isoformat(), time.monotonic()
             try:
-                result = pool.structured(prompt, output_type, directory, prompt_version=version, search=search)
+                result = (advisor_pool if advisor else pool).structured(prompt, output_type, directory,
+                                                                        prompt_version=version, search=search)
             except AppError as exc:
                 if unanswered(exc):
                     refund_call(work, number, search=search)
@@ -521,7 +525,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 if identity in seen:
                     continue
                 seen.add(identity)
-                if attempted >= config.research_limits.sources:
+                if attempted >= limits().sources:
                     failures.append({"source": address, "reason": "Quellenlimit erreicht; nicht abgerufen.", "code": "source_limit"})
                     continue
                 attempted += 1
@@ -593,7 +597,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             return run_question_research(root, work, config, discovery, index, invoke, progress, dossier=dossier,
                                          context=context if with_context else (), limits=limits, accepted=accepted,
                                          retries=retries, plan_gate=plan_gate if review_mode else None,
-                                         workers=execution.text_workers)
+                                         workers=execution.text_workers, advisor=True)
 
         def dossier_stage():
             progress("Belege werden zu Grundlagen und Erklärungen verbunden")

@@ -1,7 +1,9 @@
 import io
 import json
 import socket
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from pypdf import PdfWriter
@@ -12,12 +14,13 @@ from podcast_automate.errors import AppError
 from podcast_automate.research import run_research, validate_dossier
 from podcast_automate.research_patches import DossierPatch
 from podcast_automate.research_review import SourceReview, SourceReviewIssue
-from podcast_automate.research_models import Evidence, Finding, QuestionCoverage, ResearchDiscovery, ResearchDossier
+from podcast_automate.research_models import (Evidence, Finding, QuestionCoverage, ResearchDiscovery, ResearchDossier,
+                                              SourceCandidate)
 from podcast_automate.research_quality import requirements_for
 from podcast_automate.research_tasks import QuestionPlan, ReopenPlan, ResearchDecision
 from podcast_automate.run_budget import approve_research_gap
 from podcast_automate.runner import status
-from podcast_automate.sources import canonical_url, extract, public_url, PublicRedirect
+from podcast_automate.sources import canonical_url, extract, import_source, public_url, PublicRedirect
 from podcast_automate.storage import write_yaml
 from tests import research_fixtures as fixtures
 from tests.research_fixtures import TEXT, HTML, discovery, dossier_from_prompt
@@ -51,6 +54,79 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(kind, "pdf")
         self.assertIn("Models assign an energy", sections[0].text)
         self.assertEqual(sections[0].page, 1)
+        # A readable PDF whose own title field holds only a space is imported under the search result's title.
+        writer.add_metadata({"/Title": " "})
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        candidate = SourceCandidate(url="https://example.org/paper.pdf", title="Search title", authors=[],
+                                    published_date="", rationale="Test", primary_source=False)
+        with tempfile.TemporaryDirectory() as temporary:
+            document, _ = import_source(candidate, Path(temporary), "run_test",
+                                        downloaded=(buffer.getvalue(), "application/pdf", candidate.url))
+        self.assertEqual(document.title, "Search title")
+        self.assertIn("Models assign an energy", document.sections[0].text)
+
+    def open_access_case(self, url, title, answers):
+        """Import one candidate while ``download`` answers from ``answers``; returns the document and the fetched URLs."""
+        fetched = []
+        def fetch(address):
+            fetched.append(address)
+            answer = answers[address]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        candidate = SourceCandidate(url=url, title=title, authors=[], published_date="", rationale="Test", primary_source=False)
+        with patch("podcast_automate.sources.download", side_effect=fetch), tempfile.TemporaryDirectory() as temporary:
+            try:
+                return import_source(candidate, Path(temporary), "run_test")[0], fetched
+            except AppError as exc:
+                return exc, fetched
+
+    def test_a_refused_download_is_replaced_by_a_free_copy_of_the_same_work(self):
+        blocked = AppError("Quellenabruf fehlgeschlagen (HTTP 403).", code="source_download_failed", details={"http_status": 403})
+        work = {"best_oa_location": {"is_oa": True, "pdf_url": None, "landing_page_url": "https://publisher.example/abstract"},
+                "locations": [{"is_oa": True, "pdf_url": "https://repository.example/paper.pdf"},
+                              {"is_oa": False, "pdf_url": "https://paywall.example/paper.pdf"}]}
+        url = "https://www.pnas.org/doi/10.1073/pnas.1915006117"
+        document, fetched = self.open_access_case(url, "Measuring the predictability", {
+            url: blocked,
+            "https://api.openalex.org/works/doi:10.1073/pnas.1915006117": (json.dumps(work).encode(), "application/json", ""),
+            "https://repository.example/paper.pdf": (HTML, "text/html", "https://repository.example/paper.pdf")})
+        # The copy keeps the address it was found under as its identity and names where it was read.
+        self.assertEqual((document.url, document.final_url), (url, "https://repository.example/paper.pdf"))
+        self.assertIn("Open-access copy of the same work found via OpenAlex", document.reliability_note)
+        self.assertIn(TEXT, " ".join(s.text for s in document.sections))
+        # An abstract-only landing page and a closed location are never fetched.
+        self.assertEqual(fetched, [url, "https://api.openalex.org/works/doi:10.1073/pnas.1915006117", "https://repository.example/paper.pdf"])
+
+    def test_without_a_doi_only_an_exactly_matching_title_counts_and_a_closed_work_keeps_its_refusal(self):
+        unreachable = AppError("Quellenabruf fehlgeschlagen (URLError).", code="source_download_failed",
+                               details={"network_error": "URLError"})
+        url = "https://www.uu.nl/sites/default/files/scheffer_science_2012.pdf"
+        search = "https://api.openalex.org/works?search=Anticipating%20Critical%20Transitions&per_page=3"
+        results = {"results": [{"title": "Anticipating critical transitions in finance", "locations": [{"is_oa": True, "pdf_url": "https://other.example/a.pdf"}]},
+                               {"title": "Anticipating Critical Transitions", "locations": [{"is_oa": True, "pdf_url": "https://pmc.example/scheffer.pdf"}]}]}
+        document, fetched = self.open_access_case(url, "Anticipating Critical Transitions", {
+            url: unreachable, search: (json.dumps(results).encode(), "application/json", ""),
+            "https://pmc.example/scheffer.pdf": (HTML, "text/html", "https://pmc.example/scheffer.pdf")})
+        self.assertEqual(document.final_url, "https://pmc.example/scheffer.pdf")
+        self.assertNotIn("https://other.example/a.pdf", fetched)
+        closed_url = "https://pubs.aeaweb.org/doi/pdfplus/10.1257/jep.14.3.137"
+        refused = AppError("Quellenabruf fehlgeschlagen (HTTP 403).", code="source_download_failed", details={"http_status": 403})
+        error, _ = self.open_access_case(closed_url, "Collective Action", {
+            closed_url: refused,
+            "https://api.openalex.org/works/doi:10.1257/jep.14.3.137": (json.dumps({"locations": []}).encode(), "application/json", "")})
+        self.assertIs(error, refused)
+
+    def test_other_failures_ask_for_no_copy(self):
+        url = "https://example.org/paper.pdf"
+        for failure in (AppError("Quellenabruf fehlgeschlagen (HTTP 404).", code="source_download_failed", details={"http_status": 404}),
+                        AppError("Unavailable", code="source_download_failed"),
+                        AppError("Quelle überschreitet 20 MiB.", code="source_too_large")):
+            with self.subTest(failure=str(failure)):
+                error, fetched = self.open_access_case(url, "A paper", {url: failure})
+                self.assertIs(error, failure)
+                self.assertEqual(fetched, [url])
 
     def test_unreadable_and_challenge_pages_are_rejected(self):
         for raw, content_type in ((b"short", "text/plain"), (b"\0" * 400, "text/plain"),

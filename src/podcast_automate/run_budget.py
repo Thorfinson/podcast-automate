@@ -2,7 +2,7 @@
 
 Four receipts live next to a run and are written only by an explicit user action:
 
-- ``budget_approval.json`` raises the model-call limit and, optionally, the search-round limit.
+- ``budget_approval.json`` raises the model-call limit and, optionally, the search-round and source limits.
 - ``gap_approvals.json`` lists blocked research tasks the user accepts as documented gaps, so the
   dossier can be finished and published without them.
 - ``retry_requests.json`` lists blocked research tasks the user wants attempted again; the next
@@ -31,6 +31,8 @@ class BudgetApproval(Contract):
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     model_calls: int = Field(strict=True, gt=0)
     search_rounds: int | None = Field(default=None, strict=True, gt=0)
+    # Sources a run may fetch: a web search that could load none ends a blocked question without searching.
+    sources: int | None = Field(default=None, strict=True, gt=0)
     approved_at: datetime
 
 
@@ -102,12 +104,14 @@ def effective_limits(work, limits, input_hash):
         return limits
     if (approval.run_id != work.name or approval.input_hash != input_hash or
         approval.model_calls < limits.model_calls or
-            (approval.search_rounds is not None and approval.search_rounds < limits.search_rounds)):
+            (approval.search_rounds is not None and approval.search_rounds < limits.search_rounds) or
+            (approval.sources is not None and approval.sources < limits.sources)):
         raise AppError("Die Erhöhung des Aufruflimits gehört nicht zu diesem Auftrag.",
                        code="invalid_budget_approval", status="blocked")
     update = {"model_calls": approval.model_calls}
-    if approval.search_rounds is not None:
-        update["search_rounds"] = approval.search_rounds
+    for key in ("search_rounds", "sources"):
+        if getattr(approval, key) is not None:
+            update[key] = getattr(approval, key)
     return limits.model_copy(update=update)
 
 
@@ -119,17 +123,17 @@ def _text_run(root, run_id):
     return work, manifest
 
 
-def approve_model_call_limit(root, run_id, model_calls=None, *, search_rounds=None):
+def approve_model_call_limit(root, run_id, model_calls=None, *, search_rounds=None, sources=None):
     """Call only after the user explicitly approves these limits for this text run.
 
     The separate atomic receipt can be written while the worker is busy. Its counters,
     checkpoints, project configuration and outline/audio approvals remain untouched. A previously
-    raised search-round limit is kept when only the call limit is raised again; ``model_calls``
-    may be omitted to raise only the search rounds.
+    raised search-round or source limit is kept when another limit is raised; ``model_calls``
+    may be omitted to raise only the search rounds or the sources.
     """
     work, manifest = _text_run(root, run_id)
     limits = effective_limits(work, load_project(root).research_limits, manifest.input_hash)
-    if model_calls is None and search_rounds is not None:
+    if model_calls is None and (search_rounds is not None or sources is not None):
         model_calls = limits.model_calls
     if type(model_calls) is not int or model_calls < limits.model_calls:
         raise AppError("Das neue Aufruflimit muss eine ganze Zahl mindestens in Höhe des bisherigen Limits sein.",
@@ -137,11 +141,16 @@ def approve_model_call_limit(root, run_id, model_calls=None, *, search_rounds=No
     if search_rounds is not None and (type(search_rounds) is not int or search_rounds < limits.search_rounds):
         raise AppError("Das neue Suchrundenlimit muss eine ganze Zahl mindestens in Höhe des bisherigen Limits sein.",
                        code="invalid_budget_approval")
+    if sources is not None and (type(sources) is not int or sources < limits.sources):
+        raise AppError("Das neue Quellenlimit muss eine ganze Zahl mindestens in Höhe des bisherigen Limits sein.",
+                       code="invalid_budget_approval")
     previous = read_budget_approval(work)
     if search_rounds is None and previous is not None:
         search_rounds = previous.search_rounds
-    approval = BudgetApproval(run_id=manifest.run_id, input_hash=manifest.input_hash,
-                              model_calls=model_calls, search_rounds=search_rounds, approved_at=now())
+    if sources is None and previous is not None:
+        sources = previous.sources
+    approval = BudgetApproval(run_id=manifest.run_id, input_hash=manifest.input_hash, model_calls=model_calls,
+                              search_rounds=search_rounds, sources=sources, approved_at=now())
     write_json(work / "budget_approval.json", approval.model_dump(mode="json"))
     return approval
 

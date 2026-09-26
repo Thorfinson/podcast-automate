@@ -69,7 +69,9 @@ class PlanGateTests(fixtures.ResearchProjectCase):
         # One task at the default rate plus the three identifiable closing calls (dossier, grounding, assessment).
         self.assertEqual((projection["expected_calls_per_task"], projection["expected_calls_source"]), (DEFAULT_CALLS_PER_TASK, "default"))
         self.assertEqual((projection["closing_calls"], projection["closing_reserve"], projection["projected_calls"]), (3, 4, 11))
-        self.assertEqual((projection["approved_limit"], projection["used"], projection["within_limit"]), (150, 3, True))
+        # The approved limit is the project's own allowance.
+        self.assertEqual((projection["approved_limit"], projection["used"], projection["within_limit"]),
+                         (self.config.research_limits.model_calls, 3, True))
         # Three answered calls carry timings, so the hours come from this run's own median.
         self.assertEqual(projection["seconds_per_call_source"], "run")
         self.assertEqual(len(state["call_timings"]), 3)
@@ -359,7 +361,7 @@ class PlanGateTests(fixtures.ResearchProjectCase):
         work = self.work(first)
         allowance = read_value(work / "question_research/planning_budget.json")
         self.assertEqual((allowance["expected_calls_per_task"], allowance["expected_calls_source"]), (6, "project"))
-        self.assertEqual(allowance["max_tasks"], affordable_tasks(1, 150, 6))
+        self.assertEqual(allowance["max_tasks"], affordable_tasks(1, self.config.research_limits.model_calls, 6))
         projection = self.projection(first)
         self.assertEqual((projection["expected_calls_per_task"], projection["expected_calls_source"], projection["projected_calls"]), (6, "project", 9))
         self.assertIn("(6 je offener Teilfrage, Erfahrungswert des Projekts)", (work / "research_questions.md").read_text(encoding="utf-8"))

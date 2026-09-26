@@ -15,6 +15,7 @@ from podcast_automate.evidence_models import ResearchObjection
 from podcast_automate.question_synthesis import (SUPPORT_VERDICT_FIELDS, compact_assessment_material,
                                                  compact_review_instructions, compact_routing_material)
 from podcast_automate.research import run_research
+from podcast_automate.research_advisor import BlockAdvice
 from podcast_automate.research_ledger import bootstrap_legacy, public_ledger, read_value, save_value
 from podcast_automate.research_models import ResearchDossier, SourceIndex, SourceSection
 from podcast_automate.research_patches import DossierPatch
@@ -464,6 +465,113 @@ class QuestionResearchTests(unittest.TestCase):
         engine.run(self.discovery, self.index)
         self.assertEqual(engine.state["phase"], "completed")
         self.assertFalse(any(c[0] is QuestionSearch for c in self.calls))
+
+    def web_recovery(self):
+        """The reader blocks once, so the recovery ladder reaches its web search."""
+        decisions = []
+        def recover(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                decisions.append(1)
+                if len(decisions) == 1:
+                    return decision("blocked")
+            if schema is QuestionSearch:
+                return QuestionSearch(candidates=fixtures.discovery(count=2).candidates[1:], limitations=[])
+        self.hook = recover
+        self.download.side_effect = lambda url: (fixtures.HTML.replace(b"These sentences", b"Additional independent evidence. These sentences"), "text/html", url)
+
+    def test_a_full_source_limit_ends_the_web_search_and_says_so(self):
+        self.config.research_limits.sources = 1
+        self.web_recovery()
+        with self.assertRaises(AppError) as raised:
+            self.engine().run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        row = next(iter(read_value(self.work / "question_research/state.json")["tasks"].values()))
+        self.assertEqual((row["status"], row["web_attempts"]), ("blocked", 0))
+        # The reader's own reason stays, and the limit that stopped the search stands next to it.
+        self.assertIn("A concrete next step.", row["reason"])
+        self.assertIn("Das Quellenlimit des Laufs ist erreicht (1 Quellen)", row["reason"])
+        self.assertFalse(any(c[0] is QuestionSearch for c in self.calls))
+
+    def test_an_approved_source_limit_lets_the_web_search_load_new_sources(self):
+        self.config.research_limits.sources = 1
+        self.web_recovery()
+        approved = self.config.research_limits.model_copy(update={"sources": 3})
+        engine = QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None,
+                                  limits=lambda: approved)
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(sum(c[0] is QuestionSearch for c in self.calls), 1)
+        self.assertEqual(len(engine.index.sources), 2)
+
+    def advised(self):
+        return QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None, advisor=True)
+
+    def rejecting(self, advice, recover=False):
+        """Every answer is rejected and the advisor answers ``advice``. With ``recover`` the attempt after the
+        advice searches the web, finds a new source and answers from it, and that answer passes."""
+        seen = []
+        self.download.side_effect = lambda url: (fixtures.HTML.replace(b"These sentences", b"Additional independent evidence. These sentences"), "text/html", url)
+        def hook(prompt, schema, payload, kwargs):
+            advised = any(call[0] is BlockAdvice for call in self.calls)
+            if schema is BlockAdvice:
+                self.assertTrue(kwargs.get("advisor"))
+                return advice
+            if schema is ResearchDecision and advised:
+                seen.append(json.dumps(payload.get("feedback", []), ensure_ascii=False))
+                if recover:
+                    new = [section["reference"] for source in payload["sources"] for section in source["sections"]
+                           if "Additional independent evidence" in section["text"] and "Models assign an energy" in section["text"]]
+                    return decision("answer", answer=answer_for(new[0])) if new else decision("search_web", web_queries=["energy"])
+            if schema is QuestionSearch and advised and recover:
+                return QuestionSearch(candidates=fixtures.discovery(count=2).candidates[1:], limitations=[])
+            if schema is AnswerReview and not (recover and advised):
+                return AnswerReview(criteria=[dict(index=0, passed=False, reason="Mechanism absent")],
+                                    supported=False, source_adequacy=False, issues=["Read the missing mechanism"])
+        self.hook = hook
+        return seen
+
+    def test_the_advisor_starts_one_automatic_attempt_with_its_hint(self):
+        advice = BlockAdvice(diagnosis="Der Verlag sperrt den Download.", recommendation="retry", limit="none",
+                             hint="Freie Fassung in PubMed Central lesen.",
+                             sources=[dict(title="Paper", url="https://pmc.example/paper", note="frei lesbar")])
+        seen = self.rejecting(advice, recover=True)
+        engine = self.advised()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        row = next(iter(engine.state["tasks"].values()))
+        self.assertEqual((row["status"], row["auto_retries"], row["advice"]["recommendation"]), ("verified", 1, "retry"))
+        self.assertEqual(sum(call[0] is BlockAdvice for call in self.calls), 1)
+        # The new attempt reads the hint and the suggested source as feedback.
+        self.assertTrue(seen and "PubMed Central" in seen[0] and "https://pmc.example/paper" in seen[0])
+
+    def test_advice_against_a_new_attempt_stops_the_run_with_the_advice_stored(self):
+        self.rejecting(BlockAdvice(diagnosis="Die geforderte Studie gibt es nicht frei.", recommendation="accept_gap",
+                                   limit="none", hint="", sources=[]))
+        with self.assertRaises(AppError) as raised:
+            self.advised().run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        row = public_ledger(read_value(self.work / "question_research/state.json"))["questions"][0]
+        self.assertEqual((row["status"], row["auto_retries"]), ("blocked", 0))
+        self.assertEqual(row["advice"]["diagnosis"], "Die geforderte Studie gibt es nicht frei.")
+
+    def test_a_question_gets_at_most_one_automatic_attempt(self):
+        self.rejecting(BlockAdvice(diagnosis="Neue Quelle nötig.", recommendation="retry", limit="none",
+                                   hint="Andere Suchbegriffe.", sources=[]))
+        with self.assertRaises(AppError) as raised:
+            self.advised().run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        row = public_ledger(read_value(self.work / "question_research/state.json"))["questions"][0]
+        # One advice per block: the first started the attempt, the second stands for the editor's decision.
+        self.assertEqual((row["status"], row["auto_retries"]), ("blocked", 1))
+        self.assertEqual(sum(call[0] is BlockAdvice for call in self.calls), 2)
+
+    def test_without_room_in_the_call_budget_the_advisor_is_not_asked(self):
+        write_json(self.work / "budget.json", {"model_calls": self.config.research_limits.model_calls - 8, "search_rounds": 0})
+        self.rejecting(BlockAdvice(diagnosis="x", recommendation="retry", limit="none", hint="", sources=[]))
+        with self.assertRaises(AppError) as raised:
+            self.advised().run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        self.assertFalse(any(call[0] is BlockAdvice for call in self.calls))
 
     def test_exhausted_local_passages_trigger_one_focused_web_recovery(self):
         decisions = []

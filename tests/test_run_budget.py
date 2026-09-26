@@ -8,7 +8,7 @@ from podcast_automate.run_budget import approve_model_call_limit, effective_limi
 from podcast_automate.script_budget import calls_per_episode
 from podcast_automate.script_models import ScriptIssue, ScriptReview
 from podcast_automate.scripting import outline_hash, run_script
-from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
+from podcast_automate.storage import file_hash, load_project, read_yaml, write_json, write_yaml
 from podcast_automate.studio_progress import script_progress
 from podcast_automate.teaching import TeachingPlan
 from tests import script_fixtures as fixtures
@@ -115,15 +115,33 @@ class RunBudgetTests(unittest.TestCase):
         with self.assertRaises(AppError):
             reserve_call(self.work, limits)
 
+    def test_a_source_limit_is_raised_explicitly_and_kept_when_another_limit_follows(self):
+        baseline = self.fixture.config.research_limits
+        approve_model_call_limit(self.root, self.run.run_id, search_rounds=baseline.search_rounds + 6)
+        approve_model_call_limit(self.root, self.run.run_id, sources=baseline.sources + 40)
+        limits = effective_limits(self.work, baseline, self.run.input_hash)
+        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources),
+                         (baseline.model_calls, baseline.search_rounds + 6, baseline.sources + 40))
+        # Raising the calls later keeps both raised limits; nothing in the project changes.
+        approve_model_call_limit(self.root, self.run.run_id, baseline.model_calls + 10)
+        limits = effective_limits(self.work, baseline, self.run.input_hash)
+        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources),
+                         (baseline.model_calls + 10, baseline.search_rounds + 6, baseline.sources + 40))
+        self.assertEqual(load_project(self.root).research_limits, baseline)
+        for value in (True, baseline.sources + 39, 0, "200", 200.5):
+            with self.subTest(sources=value), self.assertRaises(AppError):
+                approve_model_call_limit(self.root, self.run.run_id, sources=value)
+
     def test_limit_must_be_an_explicit_integer_increase(self):
         for limit in (True, 39, 0, "120", 120.5):
             with self.subTest(limit=limit), self.assertRaises(AppError):
                 approve_model_call_limit(self.root, self.run.run_id, limit)
         self.assertFalse((self.work / "budget_approval.json").exists())
 
-    def test_new_projects_default_to_150_without_overwriting_explicit_limits(self):
+    def test_new_projects_get_the_raised_defaults_without_overwriting_explicit_limits(self):
         from podcast_automate.models import TopicBrief
-        self.assertEqual(TopicBrief(topic="New project").research_limits.model_calls, 150)
+        limits = TopicBrief(topic="New project").research_limits
+        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources), (250, 24, 150))
         self.assertEqual(TopicBrief(topic="Existing project", research_limits={"model_calls": 40}).research_limits.model_calls, 40)
 
 

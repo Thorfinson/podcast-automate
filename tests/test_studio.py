@@ -232,9 +232,9 @@ class StudioHttpTests(unittest.TestCase):
         progress = {"phase": "script", "model_calls": 41, "total_segments": 6, "updated_at": "2026-09-13T20:00:00+00:00"}
         write_json(self.root / "studio/job.json", {"id": "active", "status": "running", "run": run})
         write_json(self.root / "runs/run_test/progress.json", progress)
-        self.app.process_root = self.root
-        self.app.process = Mock()
-        self.app.process.poll.return_value = None
+        worker = Mock()
+        worker.poll.return_value = None
+        self.app.workers[self.root] = (worker, False)
         with patch("podcast_automate.studio_progress.script_progress", side_effect=PermissionError("temporarily locked")):
             status, body, _ = self.request("/api/projects/example")
         self.assertEqual(status, 200)
@@ -309,15 +309,15 @@ class StudioHttpTests(unittest.TestCase):
         write_json(work / "script_request.json", {"episode": None})
         write_json(work / "drafts/ep_001.json", example_script().model_dump())
         write_json(work / "drafts/ep_001.checkpoint.json", {"sha256": file_hash(work / "drafts/ep_001.json")})
-        self.app.process_root = self.root
-        self.app.process = Mock()
-        self.app.process.poll.return_value = None
+        worker = Mock()
+        worker.poll.return_value = None
+        self.app.workers[self.root] = (worker, False)
         detail = json.loads(self.request("/api/projects/example")[1])
         self.assertEqual(detail["episodes"], [])
         self.assertEqual(detail["script_previews"][0]["state"], "draft")
         self.assertEqual(detail["job"]["progress"]["script_previews"], detail["script_previews"])
         # Even after an interruption, a preview has no publish record or audio approval.
-        self.app.process.poll.return_value = 0
+        worker.poll.return_value = 0
         with patch("podcast_automate.studio.subprocess.Popen") as launch:
             status, _, _ = self.request("/api/projects/example/start", {"action": "audio", "episode": "ep_001",
                 "approve_audio": True, "script_hash": detail["script_previews"][0]["hash"]})
@@ -623,7 +623,7 @@ class StudioHttpTests(unittest.TestCase):
         # A missing saved run fails before any provider or GPU access, exercising the real IPC path.
         status, _, _ = self.request("/api/projects/example/start", {"action":"resume", "run_id":"run_missing"})
         self.assertEqual(status, 200)
-        self.app.process.wait(timeout=10)
+        self.app.worker(self.root).wait(timeout=10)
         result = self.app.job(self.root)
         self.assertEqual(result["status"], "blocked")
         self.assertIn("message", result)
@@ -644,7 +644,7 @@ class StudioHttpTests(unittest.TestCase):
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(lambda: process.kill() if process.poll() is None else None)
-        self.app.process, self.app.process_root = process, self.root
+        self.app.workers[self.root] = (process, False)
         write_json(self.root / "studio/job.json", {"id":"owned", "status":"running", "action":"assistant"})
         init_project(self.workspace / "projects/other", self.config)
         self.assertEqual(self.request("/api/projects/other/stop", {})[0], 400)
@@ -771,7 +771,7 @@ class StudioStopTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "studio/paused_job.json").read_text(encoding="utf-8"))["id"], "r")
         chat = json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))
         write_json(self.root / "studio/job.json", {**chat, "status": "completed"})
-        self.app.process = None
+        self.app.workers.clear()
         detail = self.app.detail("example")
         self.assertEqual((detail["job"]["id"], detail["main_job"]["action"]), ("r", "assistant"))
         self.assertEqual(detail["job"]["stop"]["code"], "research_questions_blocked")
@@ -826,18 +826,21 @@ class StudioStopTests(unittest.TestCase):
         os.utime(work / "progress.json", (old, old))
         write_json(self.root / "studio/job.json", {"id": "q", "action": "audio", "status": "running",
                    "started_at": "2026-01-01T00:00:00+00:00", "run": run.model_dump(mode="json")})
-        self.app.process_root, self.app.process = self.root, Mock()
-        self.app.process.poll.return_value = None
+        worker = Mock()
+        worker.poll.return_value = None
+        self.app.workers[self.root] = (worker, False)
         job = self.app.job(self.root)
         self.assertLess(job["heartbeat_age_seconds"], 60)
         self.assertEqual((job["progress"]["completed_segments"], job["progress"]["tts_status"]), (4, "rendering"))
 
     def test_the_conversation_limit_is_raised_by_an_explicit_approval(self):
         from podcast_automate.studio import chat_limits
-        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "chat_calls", "model_calls": 200})[0], 200)
-        self.assertEqual(chat_limits(self.root, self.config.research_limits).model_calls, 200)
+        # A raise must lie above the current limit, which starts at the project's research allowance.
+        raised = self.config.research_limits.model_calls + 50
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "chat_calls", "model_calls": raised})[0], 200)
+        self.assertEqual(chat_limits(self.root, self.config.research_limits).model_calls, raised)
         self.assertEqual(self.request("/api/projects/example/approve", {"kind": "chat_calls", "model_calls": 100})[0], 400)
-        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["chat_budget"]["limit"], 200)
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["chat_budget"]["limit"], raised)
 
     def test_named_diagnostics_open_as_text_and_nothing_else_does(self):
         receipt = self.root / "runs/run_x/failures/dossier_1.txt"
@@ -851,12 +854,13 @@ class StudioStopTests(unittest.TestCase):
 
     def test_downloads_read_past_the_lock_only_while_this_studio_runs_a_text_job(self):
         write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "running", "run": None})
-        self.app.process_root, self.app.process = self.root, Mock()
-        self.app.process.poll.return_value = None
+        worker = Mock()
+        worker.poll.return_value = None
+        self.app.workers[self.root] = (worker, False)
         self.assertTrue(self.app.own_text_job(self.root))
         write_json(self.root / "studio/job.json", {"id": "q", "action": "audio", "status": "running", "run": None})
         self.assertFalse(self.app.own_text_job(self.root), "a Qwen run writes the exports it would read")
-        self.app.process.poll.return_value = 0
+        worker.poll.return_value = 0
         write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "running", "run": None})
         self.assertFalse(self.app.own_text_job(self.root))
 

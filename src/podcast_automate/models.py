@@ -43,9 +43,10 @@ class Contract(BaseModel):
 
 
 class ResearchLimits(Contract):
-    search_rounds: int = Field(default=12, gt=0)
-    sources: int = Field(default=60, gt=0)
-    model_calls: int = Field(default=150, gt=0)
+    # Defaults for new projects since 2026-09-26; a saved project keeps the limits in its project.yaml.
+    search_rounds: int = Field(default=24, gt=0)
+    sources: int = Field(default=150, gt=0)
+    model_calls: int = Field(default=250, gt=0)
 
 
 class RuntimeSettings(Contract):

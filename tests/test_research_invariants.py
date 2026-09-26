@@ -189,6 +189,8 @@ class ResearchInvariantTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "invalid_research_patch")
 
     def test_impossible_plan_blocks_before_answer_calls_and_keeps_scope(self):
+        # 77 tasks cannot fit a 150-call allowance, whatever a new project's default is.
+        self.fixture.config.research_limits.model_calls = 150
         tasks = [task_value(f"task_{n}") for n in range(77)]
         self.engine.state.update(plan=QuestionPlan(tasks=tasks).model_dump(),
             tasks={t["id"]: pending_task() for t in tasks}, dirty_tasks=[t["id"] for t in tasks])
