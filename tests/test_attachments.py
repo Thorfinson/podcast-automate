@@ -190,8 +190,9 @@ class AttachmentHttpTests(unittest.TestCase):
         response = connection.getresponse()
         self.assertEqual(response.status, 400)
         response.read()
-        self.app.process = Mock()
-        self.app.process.poll.return_value = None
+        worker = Mock()
+        worker.poll.return_value = None
+        self.app.workers[self.root] = (worker, False)
         self.assertEqual(self.request("/api/projects/example/upload", {"files": [upload()]})[0], 400)
         row = attachments.inventory(self.root)[0]
         self.assertEqual(self.request("/api/projects/example/remove_attachment", {"id": row["id"]})[0], 400)

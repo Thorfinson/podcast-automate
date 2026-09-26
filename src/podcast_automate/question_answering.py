@@ -348,12 +348,18 @@ class TaskResearchMixin:
         budget = json.loads(read_text(budget_path)) if budget_path.exists() else {}
         if self.attempts is None:
             self.attempts = restore_attempts(self.folder, self.index)
-        remaining = self.config.research_limits.sources - len(self.attempts)
+        source_limit = self.limits().sources
+        remaining = source_limit - len(self.attempts)
         folder = self.task_folder(spec, row) / f"step_{row['step']:03d}"
         receipt = folder / "downloads.json"
         request_path = folder / "search_request.json"
         resuming = (folder / "search.json").exists() or request_path.exists()
-        if not resuming and (row["web_attempts"] >= self.web_attempt_limit(row) or remaining <= 0):
+        if not resuming and remaining <= 0:
+            row["reason"] = (f"Das Quellenlimit des Laufs ist erreicht ({source_limit} Quellen); eine Websuche könnte "
+                             "keine neuen Quellen laden. Ein höheres Quellenlimit kann ausdrücklich genehmigt werden.")
+            row["outcome"] = "budget_block"
+            return False
+        if not resuming and row["web_attempts"] >= self.web_attempt_limit(row):
             row["reason"] = "Für diese Frage wurden die begrenzten zusätzlichen Quellenversuche ausgeschöpft."
             row["outcome"] = "budget_block"
             return False
@@ -367,7 +373,7 @@ class TaskResearchMixin:
             # Reconstruct the old prompt for pre-ledger cached searches only.
             # The actual downloads below still obey the corrected global limit.
             attempted = {s.url or s.raw_path for s in self.index.sources} | {f["source"] for f in self.index.failures}
-            remaining = self.config.research_limits.sources - len(attempted)
+            remaining = source_limit - len(attempted)
         maximum = min(4, remaining)
         prompt = (instructions("question_search", maximum=maximum) + "\n" +
             json.dumps({"task": spec.model_dump(), "queries": queries, "known_sources": source_catalog(self.index),
@@ -398,7 +404,7 @@ class TaskResearchMixin:
                 continue
             address = source_identity(candidate.url)
             if address not in known and not reserve_source(self.folder, receipt, result, self.attempts, address,
-                                                           self.config.research_limits.sources):
+                                                           source_limit):
                 continue
             try:
                 address = canonical_url(candidate.url)
@@ -530,8 +536,10 @@ class TaskResearchMixin:
                 if self.recover(spec, row):
                     novel = True
                 else:
-                    row.update(status="blocked", reason=decision.reason, activity="Konkrete Beleglücke bleibt offen",
-                               outcome=(decision.block_kind or "evidence") + "_block")
+                    # A web search the run's limits stopped says so next to the reader's own reason.
+                    stopped = row["reason"] if row.get("outcome") == "budget_block" else ""
+                    row.update(status="blocked", reason=" ".join(filter(None, [decision.reason, stopped])),
+                               activity="Konkrete Beleglücke bleibt offen", outcome=(decision.block_kind or "evidence") + "_block")
             row["actions"].append({"action": action, "reason": decision.reason,
                                    "new_evidence": novel, "read_sections": len(row["read_refs"])})
             row["step"] += 1

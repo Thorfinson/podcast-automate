@@ -102,12 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--max-output-tokens", type=int,
                              help="OpenRouter-Ausgabelimit pro Modellaufruf; Standard 32768")
     approve = commands.add_parser("approve", help="Ausdrückliche Freigabe für einen Lauf: Rechercheplan freigeben, "
-                                                   "höheres Aufruf- oder Suchrundenlimit oder eine blockierte "
+                                                   "höheres Aufruf-, Suchrunden- oder Quellenlimit oder eine blockierte "
                                                    "Teilfrage als Lücke akzeptieren")
     approve.add_argument("project_dir", type=Path)
     approve.add_argument("--run-id", help="Standard: der letzte Lauf des Projekts")
     approve.add_argument("--model-calls", type=int, help="Neues Limit für Modellaufrufe dieses Laufs")
     approve.add_argument("--search-rounds", type=int, help="Neues Limit für Web-Suchrunden dieses Laufs")
+    approve.add_argument("--sources", type=int, help="Neues Limit für abgerufene Quellen dieses Laufs")
     approve.add_argument("--accept-gap", metavar="TASK_ID",
                          help="Blockierte Teilfrage, die im Dossier als Lücke dokumentiert bleibt")
     approve.add_argument("--reason", default="", help="Kurze Begründung der akzeptierten Lücke")
@@ -206,18 +207,19 @@ def run_command(args) -> int:
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
-            if (args.model_calls is None and args.search_rounds is None and not args.accept_gap
+            if (args.model_calls is None and args.search_rounds is None and args.sources is None and not args.accept_gap
                     and not args.retry and args.research_plan is None):
-                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --accept-gap oder --retry.",
-                               code="invalid_request", status="blocked")
+                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --sources, --accept-gap "
+                               "oder --retry.", code="invalid_request", status="blocked")
             if args.max_tasks is not None and args.research_plan is None:
                 raise AppError("--max-tasks gilt nur zusammen mit --research-plan.", code="invalid_request", status="blocked")
             data = {"status": "approved", "run_id": run_id}
             if args.research_plan is not None:
                 plan = approve_research_plan(root, run_id, max_tasks=args.max_tasks, source="pla approve --research-plan")
                 data["plan_approval"] = plan.model_dump(mode="json")
-            if args.model_calls is not None or args.search_rounds is not None:
-                approval = approve_model_call_limit(root, run_id, args.model_calls, search_rounds=args.search_rounds)
+            if args.model_calls is not None or args.search_rounds is not None or args.sources is not None:
+                approval = approve_model_call_limit(root, run_id, args.model_calls, search_rounds=args.search_rounds,
+                                                    sources=args.sources)
                 data["budget_approval"] = approval.model_dump(mode="json")
             if args.accept_gap:
                 gap = approve_research_gap(root, run_id, args.accept_gap, args.reason)

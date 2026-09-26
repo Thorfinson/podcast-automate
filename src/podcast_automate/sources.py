@@ -100,7 +100,8 @@ def download(url: str) -> tuple[bytes, str, str]:
         raise AppError(f"Quellenabruf fehlgeschlagen (HTTP {exc.code}).", code="source_download_failed",
                        details={"http_status": exc.code}) from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        raise AppError(f"Quellenabruf fehlgeschlagen ({type(exc).__name__}).", code="source_download_failed") from exc
+        raise AppError(f"Quellenabruf fehlgeschlagen ({type(exc).__name__}).", code="source_download_failed",
+                       details={"network_error": type(exc).__name__}) from exc
 
 
 class ArticleParser(HTMLParser):
@@ -264,6 +265,67 @@ def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, l
     return kind, suffix, metadata, sections_from_blocks(blocks)
 
 
+# A publisher that refuses an unattended download, or a host that cannot be reached, often has the same
+# work in a free repository. OpenAlex (no key needed) lists those copies; the lookup is an ordinary download.
+OPENALEX = "https://api.openalex.org/works"
+ACCESS_BLOCKS = {401, 402, 403, 451}
+# Repository pages that carry the full text themselves; other landing pages usually show an abstract only.
+FULL_TEXT_PAGES = ("ncbi.nlm.nih.gov/pmc/", "pmc.ncbi.nlm.nih.gov/", "europepmc.org/")
+DOI = re.compile(r"10\.\d{4,9}/[^\s?#]+", re.I)
+
+
+def access_blocked(exc):
+    details = getattr(exc, "details", None) or {}
+    return getattr(exc, "code", "") == "source_download_failed" and (
+        details.get("http_status") in ACCESS_BLOCKS or bool(details.get("network_error")))
+
+
+def comparable_title(text):
+    return re.sub(r"\W+", " ", (text or "").casefold()).strip()
+
+
+def open_access_copies(candidate, limit=3):
+    """Free copies of the same work that OpenAlex knows: PDF files first, then full-text repository pages.
+
+    The work is found by the DOI in its address, otherwise by an exactly matching title. A failed or
+    unreadable lookup means no copies."""
+    found = DOI.search(urllib.parse.unquote(candidate.url))
+    if found:
+        doi = re.sub(r"(\.pdf|/full|/abstract|/epdf|/pdf)$", "", found.group(0).rstrip("/."), flags=re.I)
+        query = f"{OPENALEX}/doi:{urllib.parse.quote(doi, safe='/')}"
+    elif comparable_title(candidate.title) and not candidate.title.startswith(("http://", "https://")):
+        query = f"{OPENALEX}?search={urllib.parse.quote(candidate.title)}&per_page=3"
+    else:
+        return []
+    try:
+        data = json.loads(download(query)[0])
+        works = [data] if found else [work for work in data.get("results", [])
+                                      if comparable_title(work.get("title")) == comparable_title(candidate.title)][:1]
+    except (AppError, ValueError, TypeError, AttributeError):
+        return []
+    files, pages = [], []
+    for work in works:
+        for location in [work.get("best_oa_location") or {}, *(work.get("locations") or [])]:
+            if not isinstance(location, dict) or not location.get("is_oa"):
+                continue
+            if location.get("pdf_url"):
+                files.append(location["pdf_url"])
+            elif any(host in (location.get("landing_page_url") or "") for host in FULL_TEXT_PAGES):
+                pages.append(location["landing_page_url"])
+    return [url for url in dict.fromkeys(files + pages) if url != candidate.url][:limit]
+
+
+def open_access_copy(candidate, blocked):
+    """The first readable free copy of a work whose own address refused the download, else that refusal."""
+    for url in open_access_copies(candidate):
+        try:
+            raw, content_type, final_url = download(url)
+            return (raw, content_type, final_url), extract(raw, content_type, url)
+        except AppError:
+            continue
+    raise blocked
+
+
 def import_failure(address, exc):
     """One failure row of the source index: the address, the reason shown to the user and a stable code
     (``source_unreadable``, ``source_download_failed``, ...) that a later step can select on."""
@@ -274,6 +336,7 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
                   downloaded: tuple[bytes, str, str] | None = None) -> tuple[SourceDocument, Path]:
     address = str(local.resolve()) if local else canonical_url(candidate.url)
     source_id = "src_" + hashlib.sha256(address.encode()).hexdigest()[:16]
+    extracted = None
     if downloaded is not None:
         raw, content_type, final_url = downloaded
     elif local:
@@ -281,21 +344,29 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
             raise AppError("Lokale Quelle überschreitet 20 MiB.", code="source_too_large")
         raw, content_type, final_url = local.read_bytes(), "", ""
     else:
-        raw, content_type, final_url = download(address)
-    kind, suffix, metadata, sections = extract(raw, content_type, address)
+        try:
+            raw, content_type, final_url = download(address)
+        except AppError as exc:
+            if not access_blocked(exc):
+                raise
+            # The same work from a free repository; it keeps the address it was found under as its identity.
+            (raw, content_type, final_url), extracted = open_access_copy(candidate, exc)
+    kind, suffix, metadata, sections = extracted or extract(raw, content_type, address)
+    copy_note = f"Open-access copy of the same work found via OpenAlex: {final_url}. " if extracted else ""
     raw_path = root / "sources/raw" / run_id / f"{source_id}{suffix}"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     pending = raw_path.with_suffix(suffix + ".pending")
     pending.write_bytes(raw)
     pending.replace(raw_path)
     document = SourceDocument(
-        id=source_id, extraction_version=EXTRACTION_VERSION, type=kind, title=metadata.get("title") or candidate.title,
+        # A document's own title can be blank, as in a PDF whose title field holds one space; the candidate always has one.
+        id=source_id, extraction_version=EXTRACTION_VERSION, type=kind, title=clean(metadata.get("title") or "") or candidate.title,
         authors=metadata.get("authors") or candidate.authors,
         published_date=metadata.get("published_date") or candidate.published_date,
         imported_at=now(), url=candidate.url if not local else "", final_url=final_url,
         language=metadata.get("language", "unknown"),
         reliability_note=("User-supplied local material; provenance and factual claims have not been independently verified. "
-                          if local else "Search selection (not independently certified): ") + candidate.rationale,
+                          if local else copy_note + "Search selection (not independently certified): ") + candidate.rationale,
         uncertainties=["Publication metadata may come from search results; verify bibliographic details.",
                        "Automatic text extraction can omit images, tables and mathematical notation."],
         raw_path=raw_path.relative_to(root).as_posix(), raw_hash=file_hash(raw_path),

@@ -52,6 +52,9 @@ VOICES = QWEN_VOICES
 # A job paused by a subscription limit is resumed automatically at its named reset, at most this often.
 MAX_AUTO_RESUMES = 3
 SCHEDULER_INTERVAL_SECONDS = 30
+# Each project runs one main job (text work, or local Qwen audio); this many projects work at once.
+# Local Qwen needs the graphics card, so only one project renders with it at a time.
+MAX_PROJECT_JOBS = 3
 # A paused text job in one of these states stays the project's job even when a later audio job exists.
 ATTENTION = {"blocked", "failed", "interrupted", "waiting_for_quota", "pending", "review_ready"}
 # Empty credit does not come back by waiting, so the scheduler never resumes it.
@@ -247,8 +250,7 @@ class Studio:
         self.token = secrets.token_urlsafe(32)
         self.key = ""
         self.mutex = threading.RLock()
-        self.process = None
-        self.process_root = None
+        self.workers = {}  # project root -> (process, uses the GPU) of its main job
         self.audio_processes = {}
         self.scheduler = None
         configure_path(self.workspace)
@@ -317,7 +319,7 @@ class Studio:
         if data and data["status"] == "running":
             owner = self.audio_processes.get(audio_job_id) if audio_job_id else None
             owned = (owner is not None and owner[1] == root and owner[0].poll() is None) if audio_job_id else (
-                self.process_root == root and self.process is not None and self.process.poll() is None)
+                self.worker(root) is not None)
             if not owned:
                 # The worker may have written its final result before poll() observed exit.
                 data = read_json(path)
@@ -429,7 +431,8 @@ class Studio:
         if not isinstance(run_id, str):
             raise AppError("Kein Lauf für diese Freigabe vorhanden.", code="no_run")
         if kind == "model_calls":
-            approval = approve_model_call_limit(root, run_id, data.get("model_calls"), search_rounds=data.get("search_rounds"))
+            approval = approve_model_call_limit(root, run_id, data.get("model_calls"), search_rounds=data.get("search_rounds"),
+                                                sources=data.get("sources"))
             return {"approval": approval.model_dump(mode="json")}
         if kind == "gap":
             approval = approve_research_gap(root, run_id, data.get("task_id"), data.get("reason", ""))
@@ -488,9 +491,17 @@ class Studio:
     def active_audio(self):
         return {key: value for key, value in self.audio_processes.items() if value[0].poll() is None}
 
+    def active_workers(self):
+        return {root: value for root, value in self.workers.items() if value[0].poll() is None}
+
+    def worker(self, root):
+        """This server's running main-job process for the project, or None."""
+        value = self.active_workers().get(root)
+        return value[0] if value else None
+
     def own_text_job(self, root):
         """True while this server's worker for the project runs a job that never writes exports."""
-        if self.process_root != root or self.process is None or self.process.poll() is not None:
+        if self.worker(root) is None:
             return False
         job = read_json(root / "studio/job.json", {}) or {}
         return job.get("action") in TEXT_ACTIONS or (
@@ -542,8 +553,7 @@ class Studio:
         root = self.root(project)
         if data.get("confirm_id") != project:
             raise AppError("Das Löschen dieses Projekts bitte ausdrücklich bestätigen.", code="delete_confirmation")
-        if ((self.process_root == root and self.process is not None and self.process.poll() is None) or
-                any(value[1] == root for value in self.active_audio().values())):
+        if self.worker(root) is not None or any(value[1] == root for value in self.active_audio().values()):
             raise AppError("Laufende Aufträge dieses Projekts zuerst abschließen oder anhalten.", code="project_busy")
         with project_lock(root):
             config = load_project(root)
@@ -670,8 +680,12 @@ class Studio:
         return data
 
     def idle(self, root=None):
-        if (self.process is not None and self.process.poll() is None) or self.active_audio():
-            raise AppError("Ein Auftrag läuft bereits. Erst fertigstellen oder anhalten.", code="project_busy")
+        """No job of this project runs, and nobody holds its lock; without a project, no job runs at all."""
+        audio = self.active_audio().values()
+        busy = (self.worker(root) is not None or any(value[1] == root for value in audio)) if root else (
+            bool(self.active_workers()) or bool(audio))
+        if busy:
+            raise AppError("In diesem Projekt läuft bereits ein Auftrag. Erst fertigstellen oder anhalten.", code="project_busy")
         if root:
             with project_lock(root):
                 pass
@@ -922,7 +936,7 @@ class Studio:
             payload["run_id"] = run_id
         if remote_episode:
             active = self.active_audio()
-            if self.process is not None and self.process.poll() is None:
+            if self.worker(root) is not None:
                 raise AppError("Zuerst den laufenden Auftrag abschließen oder anhalten.", code="project_busy")
             if any(value[1:] == (root, remote_episode) for value in active.values()):
                 raise AppError("Diese Folge wird bereits vertont.", code="episode_busy")
@@ -934,6 +948,15 @@ class Studio:
             payload["parallel_remote"] = True
         else:
             self.idle(root)
+            # Outside the remote lane every audio job is local Qwen: a new one or a resumed one.
+            gpu = action == "audio" or (action == "resume" and saved_run.get("kind") == "episode_audio")
+            workers = self.active_workers()
+            if len(workers) >= MAX_PROJECT_JOBS:
+                raise AppError(f"In {MAX_PROJECT_JOBS} Projekten laufen bereits Aufträge. Einen davon fertigstellen "
+                               "oder anhalten.", code="studio_capacity")
+            if gpu and any(uses_gpu for _, uses_gpu in workers.values()):
+                raise AppError("Qwen vertont gerade in einem anderen Projekt auf der Grafikkarte. Diese Vertonung "
+                               "zuerst fertigstellen oder anhalten.", code="gpu_busy")
         payload["text"] = read_json(root / "studio/text.json", TextChoice().model_dump())
         payload["api_key"] = self.key or None
         job = {"id": uuid.uuid4().hex, "action": action, "status": "running", "started_at": now(), "run": None}
@@ -962,7 +985,7 @@ class Studio:
             if remote_episode:
                 self.audio_processes[job["id"]] = (process, root, remote_episode)
             else:
-                self.process, self.process_root = process, root
+                self.workers[root] = (process, gpu)
             process.stdin.write(json.dumps(payload, ensure_ascii=False))
             process.stdin.close()
         except OSError as exc:
@@ -990,11 +1013,14 @@ class Studio:
 
     def stop(self, project, job_id=None):
         root = self.root(project)
-        owner = self.audio_processes.get(job_id) if job_id else None
-        process, process_root = owner[:2] if owner else (self.process, self.process_root)
-        if job_id and owner is None:
-            raise AppError("Audioauftrag nicht gefunden.", code="no_active_job")
-        if root != process_root or process is None or process.poll() is not None:
+        if job_id:
+            owner = self.audio_processes.get(job_id)
+            if owner is None:
+                raise AppError("Audioauftrag nicht gefunden.", code="no_active_job")
+            process = owner[0] if owner[1] == root else None
+        else:
+            process = self.worker(root)
+        if process is None or process.poll() is not None:
             raise AppError("Kein aktiver Studio-Auftrag für dieses Projekt.", code="no_active_job")
         stop_process_tree(process)
         return record_interruption(root, expected_job_id=job_id, audio_job_id=job_id)
@@ -1002,8 +1028,8 @@ class Studio:
     def stop_all(self):
         for job_id, (_, root, _) in list(self.active_audio().items()):
             self.stop(root.name, job_id)
-        if self.process is not None and self.process.poll() is None:
-            self.stop(self.process_root.name)
+        for root in list(self.active_workers()):
+            self.stop(root.name)
 
     def media(self, project, relative):
         root = self.root(project)

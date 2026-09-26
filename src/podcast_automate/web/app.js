@@ -898,7 +898,7 @@ function refreshRecordings(p=project?recordingsProject():null) {
   const count=$("project-audio-count-"+p.id);
   if(count)count.textContent=`${(p.episodes||[]).filter(e=>e.audio?.length).length} fertige Folgen zum Anhören.`;
   const download=$("project-download-"+p.id),downloadContent=podcastDownload(p);
-  if(download&&download.innerHTML!==downloadContent)download.innerHTML=downloadContent;
+  redraw(download,downloadContent);
   (p.episodes||[]).forEach((e,i)=>{
     if(!e.audio?.length)return;
     const audioCard=$("podcast-"+p.id+"-"+e.episode_id);
@@ -984,7 +984,7 @@ function refreshOverview() {
   const container=$("overview-projects");
   if(!container)return;
   const inbox=$("overview-inbox"),inboxContent=renderInbox();
-  if(inbox&&inbox.innerHTML!==inboxContent)inbox.innerHTML=inboxContent;
+  redraw(inbox,inboxContent);
   for(const card of container.querySelectorAll?.("[data-project-card]")||[])
     if(!overviewData.projects.some(p=>p.id===card.dataset.projectCard))card.remove();
   if(overviewData.projects.length&&$("overview-empty"))$("overview-empty").hidden=true;
@@ -993,12 +993,12 @@ function refreshOverview() {
     if(!card){container.insertAdjacentHTML?.("beforeend",overviewCard(p));continue;}
     $("project-state-"+p.id).textContent=overviewStatus(p);
     const pipe=$("pipe-"+p.id),pipeContent=pipeMarkup(pipelineStates(p));
-    if(pipe&&pipe.innerHTML!==pipeContent)pipe.innerHTML=pipeContent;
+    redraw(pipe,pipeContent);
     const button=card.querySelector?.("[data-delete-project]");
     if(button)button.disabled=p.unavailable||runningOf(p)||!boot.capabilities?.project_overview;
   }
   const trash=$("overview-trash"),content=trashMarkup();
-  if(trash&&trash.innerHTML!==content)trash.innerHTML=content;
+  redraw(trash,content);
 }
 const AUDIO_STEPS={normalize:"Sprechabschnitte werden angeglichen",loudness:"Lautheit wird gemessen",encode:"MP3 mit Kapitelmarken wird erstellt"};
 // What an audio job does right now: loading the voice model, speaking a chapter or assembling the episode.
@@ -1284,12 +1284,16 @@ function stopInfo(job) {
   return {...info,message:scrub(stop.message??job.message??""),detail:stop.detail||null,file:stop.file||null,crash:stop.crash_detail||job.crash_detail||null};
 }
 // "Fortsetzen" is offered where it can help: retry, wait and fix stops, an approved plan, decided questions.
+// Blocked questions whose current block has no advice yet (research_advisor.block_key); a waiting question gets none.
+const unadvised=ledger=>(ledger?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&!q.retry_requested
+  &&q.outcome!=="prerequisite_block"&&q.advice?.key!==`${Number(q.retries||0)}.${Number(q.auto_retries||0)}`).length;
 function canResume(job,info=stopInfo(job)) {
   if(!job?.run||!info)return false;
   const ledger=job.progress?.research_questions, review=job.progress?.plan_review;
   if(info.code==="research_plan_review")return !review?.awaiting||!!review.approved;
-  // The server lifts the ledger out of "blocked" once every blocked question is decided.
-  if(info.code==="research_questions_blocked")return Number(ledger?.reopenable||0)>0||Number(ledger?.retry_requested||0)>0||ledger?.phase!=="blocked";
+  // The server lifts the ledger out of "blocked" once every blocked question is decided; a block without advice
+  // resumes too, because the run asks the advisor first.
+  if(info.code==="research_questions_blocked")return Number(ledger?.reopenable||0)>0||Number(ledger?.retry_requested||0)>0||ledger?.phase!=="blocked"||unadvised(ledger)>0;
   return ["retry","wait","fix"].includes(info.kind)&&!info.actions.includes("key");
 }
 function restartAction(job) {
@@ -1367,29 +1371,51 @@ function renderStopCard(job,info) {
   return `<section class="panel stop-card ${escape(info.kind)}" role="alert"><div class="panel-title"><h2>${escape(info.title)}</h2><span class="tag">${escape(STOP_KIND_LABELS[info.kind]||"Angehalten")}</span></div>${stopBody(job,info)}</section>`;
 }
 
-function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="", searchLimit=0) {
+function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="", searchLimit=0, searchRounds=0, sourceLimit=0) {
   const budget=ledger.budget_projection;
   const expected=Number.isSafeInteger(budget?.expected_remaining_calls)?` Erfahrungsgemäß etwa ${Number(budget.expected_remaining_calls)} Aufrufe (${Number(budget.expected_calls_per_task)} je offener Teilfrage).`:"";
   const suggested=budget?Number(budget.used)+Math.max(Number(budget.expected_remaining_calls||0),Number(budget.minimum_remaining_calls||0)):0;
   const approveCalls=budget&&!budget.feasible&&!active?`<button class="secondary small" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${suggested}">Aufruflimit auf ${suggested} erhöhen</button>`:"";
   const budgetNote=budget?`<p class="${budget.feasible?"hint":"note"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar.${escape(expected)} ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>${approveCalls}`:"";
-  const states={pending:"Wartet",researching:"Wird untersucht",reviewing:"Antwort wird geprüft",verified:"Geprüft abgeschlossen",blocked:"Beleg fehlt"};
+  const states={pending:"Wartet",researching:"Wird untersucht",reviewing:"Antwort wird geprüft",verified:"Geprüft abgeschlossen",blocked:"Blockiert"};
   const phases={awaiting_plan_approval:"Wartet auf Freigabe des Rechercheplans",questions:"Einzelne Fragen untersuchen und prüfen",synthesis:"Dossier aus geprüften Antworten erstellen",audit:"Gesamtdossier prüfen",completed:"Recherche abgeschlossen",blocked:"Offene Belegfragen"};
-  const activeIds=activeTasks(ledger);
-  const rows=(ledger.questions||[]).map(row=>{
+  const outcomes={supported_answer:"Belegte Antwort",supported_uncertainty:"Belegte wissenschaftliche Unsicherheit",access_block:"Quelle nicht zugänglich",extraction_block:"Text nicht zuverlässig extrahiert",search_block:"Suche ohne ausreichenden Abschluss",budget_block:"Recherchebudget ausgeschöpft",evidence_block:"Beleg fehlt",prerequisite_block:"Voraussetzung noch offen",accepted_gap:"Als Lücke akzeptiert"};
+  const activeIds=activeTasks(ledger), all=ledger.questions||[];
+  // A blocked question names its cause and when it is decided: the decision card appears only once the run stops.
+  const blockedNote=row=>{
+    const prerequisites=all.filter(q=>(row.depends_on||[]).includes(q.id)&&q.status!=="verified");
+    const waiting=row.outcome==="prerequisite_block"&&prerequisites.length&&!prerequisites.some(q=>q.accepted_gap);
+    const cause=waiting?`Wartet auf: ${prerequisites.map(q=>q.question).join("; ")}`:row.reason;
+    // The counted web searches, next to the model's own wording: with the run's rounds used up it searched only what was read.
+    const web=Number(row.web_attempts||0), exhausted=searchLimit>0&&searchRounds>=searchLimit;
+    const fetched=Number(ledger.source_attempt_count||0), full=sourceLimit>0&&fetched>=sourceLimit;
+    const spent=[exhausted?`Suchrunden des Laufs aufgebraucht (${Number(searchRounds)} von ${Number(searchLimit)})`:"",
+      full?`Quellenlimit des Laufs erreicht (${fetched} von ${Number(sourceLimit)} Quellen)`:""].filter(Boolean);
+    const raise=exhausted&&full?"Suchrunden und Quellenlimit":full?"das Quellenlimit":"die Suchrunden";
+    const searched=waiting?"":`<p class="hint">Websuchen für diese Frage: ${web}${spent.map(text=>` · ${text}`).join("")}.${spent.length&&!web?` Sie hat deshalb nur in den schon gelesenen Quellen gesucht; auch ein neuer Versuch sucht erst wieder im Web, wenn du ${raise} erhöhst.`:""}</p>`;
+    const decision=row.retry_requested?"Ein neuer Versuch ist angefordert; „Fortsetzen“ startet ihn."
+      :row.reopenable?"Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ holt das nach."
+      :waiting?`Ein neuer Versuch der Voraussetzung nimmt diese Frage automatisch wieder auf.${active?" Entscheiden kannst du, wenn der Lauf anhält.":""}`
+      :active?"Entscheiden musst du erst, wenn der Lauf anhält. Dann steht diese Frage oben unter „Wartet auf dich“, mit „Noch einmal versuchen“ und „Als Lücke akzeptieren“. Bis dahin arbeitet der Lauf an den übrigen Fragen weiter."
+      :"Entscheide oben unter „Wartet auf dich“: noch einmal versuchen oder als Lücke akzeptieren.";
+    return `<div class="note"><p><strong>Blockiert: ${escape(outcomes[row.outcome]||"Beleg fehlt")}</strong>${cause?` · ${escape(cause)}`:""}</p>${searched}${row.advice?`<p><strong>Beratung:</strong> ${escape(row.advice.diagnosis)}</p>`:""}<p>${decision}</p></div>`;
+  };
+  const rows=all.map(row=>{
+    const blocked=row.status==="blocked"&&!row.accepted_gap;
     const answer=row.status==="verified"&&row.answer?`
       <div class="prose">${renderMarkdown(row.answer)}</div>
       ${(row.findings||[]).map(f=>`<p>${escape(f.statement)}</p>`).join("")}
       ${row.sources?.length?`<p>Gelesene Belege:</p><ul>${row.sources.map(source=>`<li>${markdownLink(escape(source.title),source.url)}${source.page?`, Seite ${Number(source.page)}`:""}</li>`).join("")}</ul>`:""}
       ${row.limits?.length?`<p>Grenzen der Antwort:</p><ul>${row.limits.map(l=>`<li>${escape(l)}</li>`).join("")}</ul>`:""}`:"";
     return `<details data-research-question="${escape(row.id)}"${opened.has(row.id)?" open":""}>
-      <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":active&&activeIds.includes(row.id)?"●":"○"} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":!active&&["researching","reviewing"].includes(row.status)?"Begonnen · geht beim Fortsetzen weiter":(states[row.status]||row.status))}</summary>
+      <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":blocked?(row.retry_requested?"↻":"⛔"):active&&activeIds.includes(row.id)?"●":"○"} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":blocked&&row.retry_requested?"Neuer Versuch angefordert":!active&&["researching","reviewing"].includes(row.status)?"Begonnen · geht beim Fortsetzen weiter":(states[row.status]||row.status))}</summary>
+      ${blocked?blockedNote(row):""}
       <p>${escape(row.activity)}</p>
       <p class="hint">${Number(row.read_sections)} Abschnitte gelesen · ${Number(row.steps)} Bearbeitungsschritte${row.reopened?` · ${Number(row.reopened)} Mal mit Einwand wieder geöffnet`:""}</p>
       ${row.support?`<p class="hint">Textbelege vorhanden · Inhalt automatisch je Befund geprüft · ${row.support.findings.filter(f=>f.empirical_status==="independently_tested").length} Befunde mit dokumentierter unabhängiger empirischer Prüfung</p>`:""}
-      ${row.outcome?`<p class="hint">Ergebnis: ${escape(({supported_answer:"Belegte Antwort",supported_uncertainty:"Belegte wissenschaftliche Unsicherheit",access_block:"Quelle nicht zugänglich",extraction_block:"Text nicht zuverlässig extrahiert",search_block:"Suche ohne ausreichenden Abschluss",budget_block:"Recherchebudget ausgeschöpft",evidence_block:"Beleg fehlt",prerequisite_block:"Voraussetzung noch offen",accepted_gap:"Als Lücke akzeptiert"})[row.outcome]||row.outcome)}</p>`:""}
+      ${row.outcome&&!blocked?`<p class="hint">Ergebnis: ${escape(outcomes[row.outcome]||row.outcome)}</p>`:""}
       <p>Abschlusskriterien:</p><ul>${(row.acceptance||[]).map(c=>`<li>${escape(c)}</li>`).join("")}</ul>
-      ${row.reason?`<p><strong>Noch offen:</strong> ${escape(row.reason)}</p>`:""}${row.reopenable?`<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ holt das nach.</p>`:""}${row.accepted_gap?`<p class="hint">Diese Teilfrage bleibt im Dossier als dokumentierte Lücke${row.accepted_reason?`: ${escape(row.accepted_reason)}`:"."}</p>`:""}${answer}</details>`;
+      ${row.reason&&!blocked?`<p><strong>Noch offen:</strong> ${escape(row.reason)}</p>`:""}${row.reopenable&&!blocked?`<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ holt das nach.</p>`:""}${row.accepted_gap?`<p class="hint">Diese Teilfrage bleibt im Dossier als dokumentierte Lücke${row.accepted_reason?`: ${escape(row.accepted_reason)}`:"."}</p>`:""}${answer}</details>`;
   }).join("");
   return `<section class="research-questions">
     <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
@@ -1428,7 +1454,7 @@ function renderPlanReview(job, runId) {
 function gapActionsFor(row, runId, searchLimit) {
   const searchBlocked=row.outcome==="budget_block"&&/Suchbudget|Suchrunden/.test(row.reason||"");
   // A question that only waits for its prerequisite has no failed attempt of its own; retrying the prerequisite takes it up again.
-  const retry=row.outcome==="prerequisite_block"?'<span class="hint">Ein neuer Versuch der Voraussetzung nimmt diese Frage automatisch wieder auf.</span>':`<input id="retry-hint-${escape(row.id)}" placeholder="Hinweis für den neuen Versuch (optional)" aria-label="Hinweis für den neuen Versuch"><button class="small" data-action="retry-task" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Noch einmal versuchen</button>`;
+  const retry=row.outcome==="prerequisite_block"?'<span class="hint">Ein neuer Versuch der Voraussetzung nimmt diese Frage automatisch wieder auf.</span>':`<input id="retry-hint-${escape(row.id)}" value="${escape(row.advice?.hint||"")}" placeholder="Hinweis für den neuen Versuch (optional)" aria-label="Hinweis für den neuen Versuch"><button class="small" data-action="retry-task" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Noch einmal versuchen</button>`;
   const gap=`<input id="gap-reason-${escape(row.id)}" placeholder="Begründung für die Lücke (optional)" aria-label="Begründung für die akzeptierte Lücke"><button class="secondary small" data-action="accept-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Als Lücke akzeptieren</button>`;
   return `<div class="actions">${retry}</div><div class="actions">${gap}${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`;
 }
@@ -1443,16 +1469,29 @@ function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimi
   if(!open.length&&!(accepted.length&&(!code||code==="research_questions_blocked")))return "";
   const rounds=Number(j.progress.search_rounds||0), roundLimit=Number(j.progress.search_round_limit||0);
   const roundsNote=roundLimit&&roundLimit-rounds<=1?`<p class="hint">Suchrunden: ${rounds} von ${roundLimit} verbraucht. Ein neuer Versuch braucht meist eine Websuche. <button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${roundLimit+6}">Suchrunden auf ${roundLimit+6} erhöhen</button></p>`:"";
+  // Every web search loads new sources; at the run's source limit it ends before it starts.
+  const fetched=Number(ledger.source_attempt_count||0), sourceLimit=Number(j.progress.source_limit||0);
+  const sourcesNote=sourceLimit&&fetched>=sourceLimit?`<p class="hint">Quellen: ${fetched} von ${sourceLimit} abgerufen. Eine Websuche kann keine neuen Quellen laden, bis du das Quellenlimit erhöhst. <button class="secondary small" data-action="approve-sources" data-run-id="${escape(runId)}" data-sources="${sourceLimit+40}">Quellenlimit auf ${sourceLimit+40} erhöhen</button></p>`:"";
   const names=new Map(rows.map(q=>[q.id,q.question]));
   const outcomes={extraction_block:"Quelle nicht lesbar",search_block:"Keine neuen Belege gefunden",evidence_block:"Beleg fehlt",budget_block:"Recherchebudget ausgeschöpft",access_block:"Quelle nicht zugänglich",prerequisite_block:"Voraussetzung offen"};
+  // The advisor's second opinion stands with the question: cause, recommendation, the sources it found.
+  const recommendations={retry:"Noch einmal versuchen",accept_gap:"Als Lücke akzeptieren",raise_limit:"Limit erhöhen"};
+  const limitNames={sources:"Quellenlimit erhöhen",search_rounds:"Suchrunden erhöhen",model_calls:"Aufruflimit erhöhen"};
+  const advice=q=>{
+    const a=q.advice;
+    if(!a)return "";
+    const recommendation=a.recommendation==="raise_limit"&&limitNames[a.limit]?limitNames[a.limit]:recommendations[a.recommendation]||a.recommendation;
+    const sources=(a.sources||[]).map(s=>`<li>${s.url?markdownLink(escape(s.title),s.url):escape(s.title)}${s.note?`<span class="hint"> · ${escape(s.note)}</span>`:""}</li>`).join("");
+    return `<div class="advice"><p><strong>Beratung:</strong> ${escape(a.diagnosis)}</p><p class="hint">Empfehlung: ${escape(recommendation)}${Number(q.auto_retries||0)?" · Ein automatischer neuer Versuch nach der Beratung lief bereits.":""}</p>${sources?`<ul>${sources}</ul>`:""}</div>`;
+  };
   const item=q=>{
     const deps=(q.depends_on||[]).filter(id=>rows.some(x=>x.id===id&&x.status!=="verified")).map(id=>names.get(id)||id);
     const attempts=Number(q.web_attempts||0);
-    return `<li><strong>${escape(q.question)}</strong><p class="hint">${escape(outcomes[q.outcome]||q.outcome||"Blockiert")}${attempts?` · ${attempts} ${attempts===1?"Websuche":"Websuchen"}`:" · noch nicht bearbeitet"}${deps.length?` · hängt an: ${deps.map(escape).join("; ")}`:""}</p>${q.reason?`<p class="hint">${escape(q.reason)}</p>`:""}${q.retry_requested?`<p class="hint">↻ Neuer Versuch angefordert${q.retry_hint?` · Hinweis: ${escape(q.retry_hint)}`:""}. „Fortsetzen“ startet ihn.</p>`:q.reopenable?'<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ führt diese Websuche aus.</p>':gapActionsFor(q,runId,searchLimit)}</li>`;
+    return `<li><strong>${escape(q.question)}</strong><p class="hint">${escape(outcomes[q.outcome]||q.outcome||"Blockiert")}${attempts?` · ${attempts} ${attempts===1?"Websuche":"Websuchen"}`:Number(q.steps||0)?" · keine Websuche":" · noch nicht bearbeitet"}${deps.length?` · hängt an: ${deps.map(escape).join("; ")}`:""}</p>${q.reason?`<p class="hint">${escape(q.reason)}</p>`:""}${advice(q)}${q.retry_requested?`<p class="hint">↻ Neuer Versuch angefordert${q.retry_hint?` · Hinweis: ${escape(q.retry_hint)}`:""}. „Fortsetzen“ startet ihn.</p>`:q.reopenable?'<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ führt diese Websuche aus.</p>':gapActionsFor(q,runId,searchLimit)}</li>`;
   };
   const closing=Number(ledger.budget_projection?.closing_calls||0);
-  const intro=undecided.length?`${undecided.length===1?"Eine Teilfrage ist":`${undecided.length} Teilfragen sind`} blockiert. ${reopenable?"„Fortsetzen“ holt zuerst die fehlende Websuche nach.":`Für jede: noch einmal versuchen oder als Lücke akzeptieren. Danach schließt „Fortsetzen“ das Dossier mit ${Number(ledger.closed)} geprüften Antworten ab${closing?` (${closing} Aufrufe)`:""}.`}`:retrying.length?`Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ startet ${retrying.length===1?"den neuen Versuch":`die ${retrying.length} neuen Versuche`}.`:"Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ schließt das Dossier ab.";
-  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${roundsNote}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
+  const intro=undecided.length?`${undecided.length===1?"Eine Teilfrage ist":`${undecided.length} Teilfragen sind`} blockiert. ${reopenable?"„Fortsetzen“ holt zuerst die fehlende Websuche nach.":unadvised(ledger)?"„Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf dann selbst, einmal je Frage. Du kannst auch direkt entscheiden: noch einmal versuchen oder als Lücke akzeptieren.":`Für jede: noch einmal versuchen oder als Lücke akzeptieren. Danach schließt „Fortsetzen“ das Dossier mit ${Number(ledger.closed)} geprüften Antworten ab${closing?` (${closing} Aufrufe)`:""}.`}`:retrying.length?`Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ startet ${retrying.length===1?"den neuen Versuch":`die ${retrying.length} neuen Versuche`}.`:"Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ schließt das Dossier ab.";
+  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${roundsNote}${sourcesNote}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
 }
 // The first retrieval reads every found source; its counter and its report stand where the ledger will appear.
 function renderRetrieval(retrieval) {
@@ -1474,8 +1513,9 @@ function renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocke
   const next=active?`<p class="next-step"><strong>Nächster Schritt:</strong> Nichts zu tun, der Lauf arbeitet${p.activity?` (${escape(p.activity)})`:""}. Ein Modellaufruf dauert meist 3 bis 8 Minuten; Zusammenstellung und Prüfung eines großen Dossiers laufen in vielen Teilen und können Stunden dauern.</p>`:"";
   if(ledger){
     if(reopenable)html+=`<p>${Number(ledger.reopenable)} blockierte ${Number(ledger.reopenable)===1?"Teilfrage hat":"Teilfragen haben"} das Web noch nicht durchsucht. „Fortsetzen“ holt diese Websuche nach; erst danach gilt eine Frage als konkrete Lücke. Fertige Antworten bleiben gespeichert.</p>`;
+    else if(researchBlocked&&unadvised(ledger))html+=`<p>${unadvised(ledger)} blockierte ${unadvised(ledger)===1?"Teilfrage hat":"Teilfragen haben"} noch keine Beratung. „Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf selbst, jede andere Entscheidung bleibt bei dir.</p>`;
     else if(researchBlocked)html+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht. Eine blockierte Teilfrage kann als Lücke akzeptiert werden; das Dossier wird dann ohne sie abgeschlossen und nennt die Lücke ausdrücklich.</p>`;
-    html+=current+next+renderResearchQuestions(ledger,questionOpen,active,runId,p.search_round_limit);
+    html+=current+next+renderResearchQuestions(ledger,questionOpen,active,runId,p.search_round_limit,p.search_rounds,p.source_limit);
   }
   else html+=current+next;
   html+=`<p class="hint">Rechercherunden: ${Number(p.search_rounds||0)} von ${Number(p.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
@@ -1541,11 +1581,40 @@ function runningTitle(job) {
 function offlineMark() {
   return connectionLost?`<span class="offline-mark" role="status">Keine Verbindung · Stand ${escape(new Date(lastSyncAt).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}))}</span>`:"";
 }
-// Replacing a panel keeps what the user typed into its fields: hints, reasons, a key or feedback.
+// Each <details> of a panel under a stable key: its data attributes or class, numbered when several share one.
+function detailKeys(el) {
+  const seen=new Map();
+  return Array.from(el.querySelectorAll?.("details")||[],detail=>{
+    const base=Object.entries(detail.dataset||{}).map(([k,v])=>`${k}=${v}`).join("&")||detail.className||"details";
+    const n=(seen.get(base)||0)+1;seen.set(base,n);
+    return [`${base}#${n}`,detail];
+  });
+}
+// Each classed element of a panel under its class, numbered like detailKeys; used to keep scroll positions.
+function scrollKeys(el) {
+  const seen=new Map();
+  return Array.from(el.querySelectorAll?.("[class]")||[],node=>{
+    const base=String(node.className||"");
+    const n=(seen.get(base)||0)+1;seen.set(base,n);
+    return [`${base}#${n}`,node];
+  });
+}
+// A redraw keeps typed input, every section the reader opened or closed and where each scrolling area stood.
 function replaceKeeping(el, html) {
   const values=new Map(Array.from(el.querySelectorAll?.("input[id]:not([type=checkbox]),textarea[id]")||[],field=>[field.id,field.value]));
+  const states=new Map(detailKeys(el).map(([key,detail])=>[key,detail.open]));
+  const scrolls=new Map(scrollKeys(el).filter(([,node])=>node.scrollTop>0).map(([key,node])=>[key,node.scrollTop]));
   el.innerHTML=html;
+  for(const [key,detail] of detailKeys(el))if(states.has(key))detail.open=states.get(key);
+  for(const [key,node] of scrollKeys(el))if(scrolls.has(key))node.scrollTop=scrolls.get(key);
   for(const [id,value] of values){const field=value?document.getElementById(id):null;if(field)field.value=value;}
+}
+// Redraw a container only when its own markup changed. The browser adds open="" to an opened <details>,
+// so comparing with innerHTML would redraw, and close, it on every poll.
+const drawnMarkup=new WeakMap();
+function redraw(el, html) {
+  if(!el||drawnMarkup.get(el)===html)return;
+  drawnMarkup.set(el,html);replaceKeeping(el,html);
 }
 // One line in the topbar carries the state and the stop, resume or next-step action. Telemetry goes to the docked drawer.
 // Page panels (stop card, production, research, audio jobs) are filled first because they belong to their step, not to the drawer.
@@ -1580,7 +1649,7 @@ function renderJob() {
     if(view===lastJobView)return;
     lastJobView=view;
     bar.innerHTML=offlineMark()+renderAudioJobBar();
-    box.innerHTML=drawerMarkup(audioJobSummary(),step===PAGE.audio?'<p class="hint">Fortschritt, Anhalten und Fortsetzen je Folge stehen auf der Seite Vertonung.</p>':renderAudioJobs());
+    replaceKeeping(box,drawerMarkup(audioJobSummary(),step===PAGE.audio?'<p class="hint">Fortschritt, Anhalten und Fortsetzen je Folge stehen auf der Seite Vertonung.</p>':renderAudioJobs()));
     return;
   }
   const research=$("research-progress");
@@ -1589,14 +1658,14 @@ function renderJob() {
   const r=job.run, active=job.status==="running", state=job.status;
   const researchOpen=research?.querySelector?.(".research-quality")?.open;
   const questionOpen=new Set(Array.from(research?.querySelectorAll?.("[data-research-question][open]")||[],el=>el.dataset.researchQuestion));
-  const materialOpen=box.querySelector?.(".work-material")?.open;
-  const eventsOpen=box.querySelector?.(".model-events")?.open;
   const previousTrace=box.querySelector?.(".trace-lines");
   const traceAtEnd=!previousTrace||previousTrace.scrollHeight-previousTrace.scrollTop-previousTrace.clientHeight<32;
   const traceScroll=previousTrace?.scrollTop||0;
   const isScript=r?.kind==="script"||job.progress?.phase==="script";
   const audioRunning=(project.audio_jobs||[]).filter(a=>a.status==="running");
-  const view=JSON.stringify({project:project?.id,job,drawerOpen,connectionLost,audio:audioRunning.map(a=>[a.id,a.progress?.completed_segments]),
+  // The server stamps each answer with its read time and the worker's heartbeat age; those alone are no change to redraw.
+  const steady={...job,heartbeat_age_seconds:undefined,progress:job.progress&&{...job.progress,updated_at:undefined}};
+  const view=JSON.stringify({project:project?.id,job:steady,drawerOpen,connectionLost,audio:audioRunning.map(a=>[a.id,a.progress?.completed_segments]),
     progressClock:active&&["script","research"].includes(job.progress?.phase)?Math.floor(Date.now()/10000):null,
     page:job.sample?null:step,minute:active?Math.floor((Date.now()-Date.parse(job.started_at))/60000):null});
   // A freshly rendered research page has an empty ledger container even when the job itself is unchanged.
@@ -1654,11 +1723,8 @@ function renderJob() {
     if(job.progress.stage==="teaching")body+=`<p class="hint">Die Lehrkonzepte werden nacheinander ausgearbeitet, damit spätere Folgen auf den Erklärungen und Beispielen der früheren aufbauen können. Sobald alle Lehrkonzepte fertig sind, beginnt die parallele Skripterstellung.</p>`;
   }
   if(info)body+=`<p class="hint">Haltegrund: ${escape(info.title)}${info.code?` · Code ${escape(info.code)}`:""}. Was zu tun ist, steht auf der Seite ${escape(steps[owner??PAGE.brief])}.</p>`;
-  box.innerHTML=drawerMarkup(escape(title)+(lastLine?.text?` · Live: ${escape(lastLine.text)}`:info?.message?` · ${escape(info.message)}`:""),body);
+  replaceKeeping(box,drawerMarkup(escape(title)+(lastLine?.text?` · Live: ${escape(lastLine.text)}`:info?.message?` · ${escape(info.message)}`:""),body));
   const traceList=box.querySelector?.(".trace-lines");
-  const materialDetail=box.querySelector?.(".work-material"),eventsDetail=box.querySelector?.(".model-events");
-  if(materialDetail)materialDetail.open=!!materialOpen;
-  if(eventsDetail)eventsDetail.open=!!eventsOpen;
   if(traceList)traceList.scrollTop=traceAtEnd?traceList.scrollHeight:traceScroll;
 }
 // Unfinished input survives a re-render of the same project; a project switch starts clean.
@@ -1864,9 +1930,11 @@ document.addEventListener("click",event=>{
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();
       notice(payload.max_tasks?`Obergrenze von ${payload.max_tasks} Teilfragen gespeichert. „Fortsetzen“ schneidet den Plan neu zu und legt ihn erneut zur Freigabe vor.`:"Rechercheplan freigegeben. „Fortsetzen“ beginnt mit der ersten Teilfrage.","ok");return;
     }
-    if(action==="approve-calls"||action==="approve-search"){
+    if(action==="approve-calls"||action==="approve-search"||action==="approve-sources"){
       const payload={kind:"model_calls",run_id:button.dataset.runId};
-      if(action==="approve-calls")payload.model_calls=Number(button.dataset.modelCalls);else payload.search_rounds=Number(button.dataset.searchRounds);
+      if(action==="approve-calls")payload.model_calls=Number(button.dataset.modelCalls);
+      else if(action==="approve-sources")payload.sources=Number(button.dataset.sources);
+      else payload.search_rounds=Number(button.dataset.searchRounds);
       await api(`/api/projects/${project.id}/approve`,payload);
       if(button.dataset.thenResume&&!running()){await resumeFrom(button);notice("Limit genehmigt. Der Auftrag läuft weiter.","ok");return;}
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Limit genehmigt. Ein laufender Auftrag übernimmt es beim nächsten Aufruf, ein angehaltener mit „Fortsetzen“.","ok");return;

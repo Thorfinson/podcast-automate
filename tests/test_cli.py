@@ -151,6 +151,9 @@ class CliTests(unittest.TestCase):
             self.assertIn("noch keinen Rechercheplan", data["message"])
             code, data = self.invoke("approve", root, "--max-tasks", "2", "--json")
             self.assertEqual((code, data["code"]), (1, "invalid_request"))
+            # A higher source limit is its own explicit approval for the run.
+            code, data = self.invoke("approve", root, "--sources", "200", "--json")
+            self.assertEqual((code, data["budget_approval"]["sources"]), (0, 200))
 
     def test_invalid_user_configuration_has_no_traceback(self):
         with tempfile.TemporaryDirectory() as root:

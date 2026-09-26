@@ -10,6 +10,7 @@ from podcast_automate.research_models import (Evidence, Finding, QuestionCoverag
     ResearchDossier, ResearchQuestion, SourceCandidate)
 from podcast_automate.research_quality import ResearchAssessment, RequirementAssessment, requirements_for
 from podcast_automate.research_patches import DossierPatch
+from podcast_automate.research_advisor import BlockAdvice
 from podcast_automate.research_tasks import QuestionPlan, QuestionSearch, ReopenPlan
 from podcast_automate.storage import init_project
 from tests.question_fixtures import claim_contract, question_response, complete_fixture_response
@@ -67,7 +68,9 @@ class ResearchProjectCase(unittest.TestCase):
 
     def model(self, prompt, output_type, directory, **kwargs):
         self.calls.append(output_type)
-        self.assertEqual(kwargs["search"], output_type in (ResearchDiscovery, QuestionSearch))
+        # The advisor searches while the run still has search rounds; every other call keeps its fixed rule.
+        if output_type is not BlockAdvice:
+            self.assertEqual(kwargs["search"], output_type in (ResearchDiscovery, QuestionSearch))
         payload = json.loads(prompt.splitlines()[-1])
         result = question_response(prompt, output_type)
         if isinstance(result, QuestionPlan):
