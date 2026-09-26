@@ -67,19 +67,19 @@ class QuotaFakes:
 
 
 class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
-    def test_codex_limit_switches_the_failing_call_to_claude_without_repeating_finished_work(self):
+    def test_claude_limit_switches_the_failing_call_to_codex_without_repeating_finished_work(self):
         fakes = QuotaFakes(self)
         codex_calls, claude_calls = [], []
 
-        def codex(adapter, prompt, output_type, directory, **kwargs):
-            codex_calls.append((directory.name, adapter.settings.codex_model, adapter.reasoning_effort))
-            if len(codex_calls) == 3:
-                fakes.codex = False
-                raise AppError("Abo-Kontingent erreicht", code="quota_exhausted", status="waiting_for_quota")
-            return self.model(prompt, output_type, directory, **kwargs)
-
         def claude(adapter, prompt, output_type, directory, **kwargs):
             claude_calls.append((directory.name, adapter.model, adapter.reasoning_effort))
+            if len(claude_calls) == 3:
+                fakes.claude = False
+                raise AppError("Claude-Abo-Kontingent erreicht", code="claude_quota_exhausted", status="waiting_for_quota")
+            return self.model(prompt, output_type, directory, **kwargs)
+
+        def codex(adapter, prompt, output_type, directory, **kwargs):
+            codex_calls.append((directory.name, adapter.settings.codex_model, adapter.reasoning_effort))
             return self.model(prompt, output_type, directory, **kwargs)
 
         with patch("podcast_automate.scripting.CodexAdapter.structured", autospec=True, side_effect=codex), \
@@ -87,23 +87,23 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
             run = run_script(self.root, backend="auto")
         self.assertEqual(run.status, "completed")
         self.assertEqual(len(self.calls), 11)
-        self.assertEqual([c[0] for c in codex_calls], ["call_001", "call_002", "call_003"])
-        self.assertEqual(codex_calls[0][1:], ("gpt-6-astra", "xhigh"))
-        self.assertEqual(claude_calls[0], ("call_003", "claude-opus-5", "high"))
-        self.assertEqual(len(claude_calls), 9)
+        self.assertEqual([c[0] for c in claude_calls], ["call_001", "call_002", "call_003"])
+        self.assertEqual(claude_calls[0][1:], ("claude-opus-5-5", "xhigh"))
+        self.assertEqual(codex_calls[0], ("call_003", "gpt-6-astra", "xhigh"))
+        self.assertEqual(len(codex_calls), 9)
         work = self.root / "runs" / run.run_id
         self.assertEqual(json.loads((work / "budget.json").read_text())["model_calls"], 1 + calls_per_episode() + 1)
         first = json.loads((work / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))
-        self.assertEqual((first["provider"], first["mode"], first["reason"]), ("codex_cli", "auto", "codex_available"))
+        self.assertEqual((first["provider"], first["mode"], first["reason"]), ("claude_code", "auto", "claude_available"))
         switched = json.loads((work / "calls/call_003/provider_choice.json").read_text(encoding="utf-8"))
-        self.assertEqual(switched["provider"], "claude_code")
-        self.assertIn("codex_exhausted_until", switched["reason"])
+        self.assertEqual(switched["provider"], "codex_cli")
+        self.assertIn("claude_exhausted_until", switched["reason"])
         switch = json.loads((work / "calls/call_003/provider_switch.json").read_text(encoding="utf-8"))
-        self.assertEqual((switch["from"], switch["to"], switch["error_code"]), ("codex_cli", "claude_code", "quota_exhausted"))
+        self.assertEqual((switch["from"], switch["to"], switch["error_code"]), ("claude_code", "codex_cli", "claude_quota_exhausted"))
         self.assertFalse((work / "calls/call_004/provider_switch.json").exists())
         request = json.loads((work / "script_request.json").read_text(encoding="utf-8"))
-        self.assertEqual(request["text_generation"]["provider"], "auto")
-        self.assertEqual(request["text_generation"]["candidates"]["claude_code"], {"model": "claude-opus-5", "reasoning_effort": "high"})
+        self.assertEqual((request["text_generation"]["provider"], request["text_generation"]["prefer"]), ("auto", "claude_code"))
+        self.assertEqual(request["text_generation"]["candidates"]["claude_code"], {"model": "claude-opus-5-5", "reasoning_effort": "xhigh"})
         self.assertEqual(request["text_generation"]["adapter_versions"], {"claude_code": "claude_code.v1"})
         self.assertEqual(read_yaml(self.root / "reports/script_quality.yaml")["text_generation"]["provider"], "auto")
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=AssertionError("finished")), \
@@ -112,7 +112,8 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
 
     def test_resume_rejects_a_changed_candidate_form_or_provider(self):
         QuotaFakes(self)
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=self.model):
             planned = run_script(self.root, backend="auto", plan_only=True)
         work = self.root / "runs" / planned.run_id
         with self.assertRaises(AppError) as changed:
@@ -184,7 +185,7 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
                 patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
             run = run_script(self.root, backend="claude_code", reasoning_effort="max")
         self.assertEqual(run.status, "completed")
-        self.assertEqual(set(seen), {("claude-opus-5", "max")})
+        self.assertEqual(set(seen), {("claude-opus-5-5", "max")})
         request = json.loads((self.root / "runs" / run.run_id / "script_request.json").read_text(encoding="utf-8"))
         self.assertEqual(request["text_generation"]["adapter_version"], "claude_code.v1")
         choice = json.loads((self.root / "runs" / run.run_id / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))
@@ -198,18 +199,23 @@ class PoolUnitTests(unittest.TestCase):
                            api_key="test-key")
         self.assertEqual(pool.plan()[0], "openrouter")
         mode, prefer, candidates = pool.plan(search=True)
-        self.assertEqual((mode, prefer, set(candidates)), ("auto", "codex_cli", {"codex_cli", "claude_code"}))
+        self.assertEqual((mode, prefer, set(candidates)), ("auto", "claude_code", {"codex_cli", "claude_code"}))
         auto = text_generation_settings(config, backend="auto")
         self.assertEqual(auto["candidates"]["codex_cli"], {"model": "gpt-6-astra", "reasoning_effort": "xhigh"})
+        self.assertEqual(auto["candidates"]["claude_code"], {"model": "claude-opus-5-5", "reasoning_effort": "xhigh"})
+        self.assertEqual(auto["prefer"], "claude_code")
         self.assertIsNone(auto["model"])
         for kwargs in ({"model": "x"}, {"reasoning_effort": "low"}, {"max_output_tokens": 10}):
             with self.subTest(kwargs=kwargs), self.assertRaises(AppError):
                 text_generation_settings(config, backend="auto", **kwargs)
         claude = text_generation_settings(config, backend="claude_code")
-        self.assertEqual((claude["model"], claude["reasoning_effort"]), ("claude-opus-5", "high"))
+        self.assertEqual((claude["model"], claude["reasoning_effort"]), ("claude-opus-5-5", "xhigh"))
         with self.assertRaises(AppError):
             text_generation_settings(config, backend="claude_code", model="anthropic/claude-fable-5.1")
-        self.assertEqual(text_generation_settings(config, backend="claude_code", model="opus")["model"], "claude-opus-5")
+        self.assertEqual(text_generation_settings(config, backend="claude_code", model="opus")["model"], "claude-opus-5-5")
+        # A named Opus 5 stays Opus 5; only the bare alias follows the catalog default.
+        self.assertEqual(text_generation_settings(config, backend="claude_code", model="anthropic/claude-opus-5")["model"],
+                         "claude-opus-5")
 
 
 class ProbeCliAndDoctorTests(unittest.TestCase):
@@ -312,7 +318,7 @@ class StatusAndStudioTests(test_studio.StudioHttpTests):
 
         with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
             perform(self.root, {"action": "assistant", "message": "Hilfe", "text": {"provider": "claude_code"}})
-        self.assertEqual(seen, [("claude-opus-5", "high")])
+        self.assertEqual(seen, [("claude-opus-5-5", "xhigh")])
         QuotaFakes(self, codex=False)
         with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude), \
                 patch("podcast_automate.studio_worker.CodexAdapter.structured", side_effect=AssertionError("codex is out")):
@@ -346,8 +352,8 @@ class StatusAndStudioTests(test_studio.StudioHttpTests):
         boot = json.loads(self.request("/api/bootstrap")[1])
         self.assertEqual(boot["text_defaults"]["provider"], "auto")
         self.assertTrue(boot["capabilities"]["subscription_auto"])
-        self.assertEqual(boot["text_catalog"]["auto_candidates"]["claude_code"]["model"], "claude-opus-5")
-        self.assertEqual(boot["text_catalog"]["effort_equivalents"]["xhigh"], "high")
+        self.assertEqual(boot["text_catalog"]["auto_candidates"]["claude_code"]["model"], "claude-opus-5-5")
+        self.assertEqual(boot["text_catalog"]["effort_equivalents"]["xhigh"], "xhigh")
         self.assertEqual(detail["text"]["provider"], "codex_cli")
 
 

@@ -4,10 +4,14 @@ from typing import Literal
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextvars import copy_context
 
+from .call_activity import CALL_SUBJECT
 from .models import Contract, now
 from .storage import write_json
 
+# Parallel Gemini audio jobs across the Studio; local Qwen always runs alone.
 MAX_PARALLEL = 3
+# Parallel text mode: independent research questions, or the episodes of one script stage, at once.
+MAX_PARALLEL_TEXT = 5
 
 
 class ExecutionChoice(Contract):
@@ -16,7 +20,7 @@ class ExecutionChoice(Contract):
 
     @property
     def text_workers(self):
-        return MAX_PARALLEL if self.text == "parallel" else 1
+        return MAX_PARALLEL_TEXT if self.text == "parallel" else 1
 
 
 def selected_execution(root: Path):
@@ -34,11 +38,15 @@ def run_episode_stage(entries, action, *, workers, work, stage):
         path = work / "stage_activity" / stage / (entry.episode_id + ".json")
         record = {"episode_id": entry.episode_id, "status": "running", "started_at": now()}
         write_json(path, record)
+        # Every call of this episode names it, so parallel live output stays attributable.
+        token = CALL_SUBJECT.set(entry.episode_id)
         try:
             result = action(entry)
         except BaseException:
             write_json(path, {**record, "status": "interrupted", "finished_at": now()})
             raise
+        finally:
+            CALL_SUBJECT.reset(token)
         write_json(path, {**record, "status": "completed", "finished_at": now()})
         return result
 

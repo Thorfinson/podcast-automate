@@ -576,6 +576,44 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual((ledger["audit_round"], ledger["reopened"]), (1, 1))
         self.assertEqual(engine.last_activity, "Konkrete Einwände werden ihren ursprünglichen Recherchefragen zugeordnet")
 
+    def test_a_routed_review_disagreement_starts_no_research_and_the_other_objections_still_route(self):
+        # Regression, Psychohistorie run of 2026-09-20: the router called a status-note complaint an
+        # unsupported demand. The run stopped after registering the objections routed so far, so the
+        # resumed audit rebuilt its prompts with them and refused every saved part as a changed input.
+        self.hook = lambda prompt, schema, payload, kwargs: QuestionPlan(tasks=[task_value(),
+            task_value("task_empirical", "empirical")]) if schema is QuestionPlan else None
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        old = dict(engine.state["tasks"]["task_definition"])
+        dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text())
+
+        def anchor(task_id, resolution):
+            return ResearchObjection(id=f"obj_{resolution}", rule="criterion", task_id=task_id, criterion_index=0,
+                finding_ids=[], evidence_refs=[], missing_evidence=f"{resolution}: a check is missing.",
+                reason="Named by the audit.", correction="Supply the check.",
+                closure_condition="The check is met by read evidence.", resolution=resolution)
+        plan = ReopenPlan(routes=[
+            dict(index=0, task_ids=["task_definition"], reason="Only a status note disagrees with the answer.",
+                 anchors=[anchor("task_definition", "review_disagreement")]),
+            dict(index=1, task_ids=["task_empirical"], reason="Validation is challenged.",
+                 anchors=[anchor("task_empirical", "research")])])
+
+        def routed(folder, name, schema, prompt, *, validate=None, **kwargs):
+            validate(plan, True)
+            return plan
+
+        with patch.object(engine, "call", side_effect=routed):
+            reopened, blocked = engine.reopen(dossier, SourceReview(issues=[], limitations=[]),
+                {"blocking_gaps": ["The scope note calls answered blocks unresearched.", "An empirical check is missing."],
+                 "requirements": []})
+        self.assertEqual((reopened, blocked), (["task_empirical"], []))
+        self.assertEqual(engine.state["tasks"]["task_definition"], old)
+        saved = read_value(self.work / "question_research/state.json")
+        self.assertEqual([row["task_id"] for row in saved["objections"].values()], ["task_empirical"])
+        self.assertEqual([row["task_id"] for row in saved["review_disagreements"]], ["task_definition"])
+        # The registered objections and the next audit round are saved together, never one without the other.
+        self.assertEqual((saved["audit_round"], saved["phase"]), (1, "questions"))
+
     def test_full_audit_reopens_only_empirical_task_then_rechecks_before_publish(self):
         reviews, reviewed_tasks = [], []
         def revise(prompt, schema, payload, kwargs):

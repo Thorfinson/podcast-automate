@@ -145,7 +145,9 @@ def embedded_chapters(path: Path) -> list[dict]:
 
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
              *, max_seconds: float = 1800, language: str = "de-DE", labels: dict | None = None,
-             pauses=None) -> list[Path]:
+             pauses=None, progress=None) -> list[Path]:
+    """Mix, measure and encode one episode part; ``progress(step, done, total)`` reports each step."""
+    report = progress or (lambda step, done=0, total=0: None)
     if len(paths) != len(script.segments):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
     output.mkdir(parents=True, exist_ok=True)
@@ -160,6 +162,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                 if not source.is_file():
                     raise AppError(f"Segment fehlt: {segment.segment_id}", code="invalid_audio")
                 normalized = work / f"segment_{index}.wav"
+                report("normalize", index, len(paths))
                 ffmpeg(["-i", str(source), "-ar", "44100", "-ac", "2",
                         "-c:a", "pcm_s16le", str(normalized)])
                 with wave.open(str(normalized), "rb") as stream:
@@ -187,6 +190,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                     "end_seconds": position / 44100,
                     "pause_ms": pause_ms, "pause_reason": reason,
                 })
+        report("loudness", len(paths), len(paths))
         measurement = ffmpeg([
             "-i", str(mixed), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
             "-f", "null", "-",
@@ -215,6 +219,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         metadata = work / "chapters.ffmetadata"
         atomic_text(metadata, chapter_metadata(script.title, chapters))
         encoded = work / "audio.mp3"
+        report("encode", len(paths), len(paths))
         ffmpeg(["-i", str(mixed), "-i", str(metadata), "-map", "0:a", "-map_metadata", "1",
                 "-id3v2_version", "3", "-write_id3v1", "1",
                 "-af", loudnorm, "-ar", "44100", "-ac", "2",

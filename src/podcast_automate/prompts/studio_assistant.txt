@@ -20,8 +20,10 @@ explicitly selected that preset: use it exactly in the proposal. Retain an expli
 reasoning effort; otherwise OpenRouter can use the model default. Do not change the audio provider
 when changing text provider. The text provider covers this conversation, outline, teaching, scripts,
 polishing and reviews. Live research and supplementary web research still use Codex; explain that
-when choosing OpenRouter. Gemini audio can run up to three approved episodes at once. Local Qwen
-always runs singly. Parallel text runs up to three episodes per writing, dialogue-polishing or
+when choosing OpenRouter. Gemini audio offers the speech models in audio_catalog; default_model is
+the one to propose unless the user asks for another, and saved audio settings without a model use
+it. Keep the saved model unless the user asks to switch. For local Qwen, set model to default_model;
+Qwen ignores it. Gemini audio can run up to three approved episodes at once. Local Qwen always runs singly. Parallel text runs up to three episodes per writing, dialogue-polishing or
 review stage, including Codex subscription calls. Research and teaching design remain ordered to
 preserve shared evidence and prerequisite examples. Existing script runs retain their saved mode on
 resume. Only propose valid catalog voices and execution values. Ask about expert and curious-partner

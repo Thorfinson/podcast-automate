@@ -144,7 +144,7 @@ test('exhausted research questions explain the block without a futile resume but
     progress:{phase:'research',research_questions:{closed:1,total:2,phase:'blocked',questions:[]}}}};renderJob();`);
   const html=jobView(app);
   assert.ok(html.includes('Fortsetzen allein wiederholt diese Versuche nicht'));
-  assert.ok(html.includes('Auftrag ansehen'));
+  assert.ok(!html.includes('data-step="0"'),'no detour to the brief page, where nothing about the block can be decided');
   assert.ok(!html.includes('data-action="resume"'));
 });
 
@@ -196,7 +196,7 @@ test('automatic subscription choice shows both models, the current provider and 
     switch:{from:'codex_cli',to:'claude_code',error_code:'quota_exhausted'}};
   app.run(`boot.capabilities={conversational_setup:true};boot.text_catalog={auto_candidates:{codex_cli:{model:'gpt-6-astra',reasoning_effort:'xhigh'},claude_code:{model:'claude-opus-5',reasoning_effort:'high'}}};project=${JSON.stringify(p)};`);
   const brief=app.run('renderBrief()');
-  assert.ok(brief.includes('Automatisch · Codex-Abo, sonst Claude-Abo'));
+  assert.ok(brief.includes('Automatisch · Claude-Abo, sonst Codex-Abo'));
   assert.ok(brief.includes('claude-opus-5 (high)'));
   assert.ok(brief.includes('gpt-6-astra (xhigh)'));
   const status=app.run('renderRunTextChoice(project.job)');
@@ -280,9 +280,9 @@ test('model presets remain distinct and sending one carries its explicit choice 
   const app=studio();
   const p=app.run(`({id:'test',config:boot.defaults,chat:[]})`);
   await app.run(`selectProject('test',${JSON.stringify(p)})`);
-  const presets=[{id:'auto_subscriptions',label:'Automatisch · Codex, sonst Claude',provider:'auto',model:null,reasoning_effort:null},
+  const presets=[{id:'auto_subscriptions',label:'Automatisch · Claude, sonst Codex',provider:'auto',model:null,reasoning_effort:null},
+    {id:'claude_opus_sub',label:'Opus 5.5 · Claude-Abo',provider:'claude_code',model:'claude-opus-5-5',reasoning_effort:'xhigh'},
     {id:'codex_astra',label:'Astra · Codex-Abo',provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'},
-    {id:'claude_opus_sub',label:'Opus 5 · Claude-Abo',provider:'claude_code',model:'claude-opus-5',reasoning_effort:'high'},
     {id:'openrouter_astra',label:'Astra · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra',reasoning_effort:null},
     {id:'openrouter_astra_pro',label:'Astra Pro · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra-pro',reasoning_effort:null},
     {id:'openrouter_fable',label:'Claude Fable 5.1 · OpenRouter',provider:'openrouter',model:'anthropic/claude-fable-5.1',reasoning_effort:null},
@@ -291,7 +291,7 @@ test('model presets remain distinct and sending one carries its explicit choice 
   const html=app.run('renderBrief()');
   for(const preset of presets)assert.ok(html.includes(`data-text-preset="${preset.id}"`));
   assert.ok(html.includes('Live-Recherche läuft über das gewählte Abo'));
-  assert.ok(html.includes('springt bei leerem Kontingent auf Claude um'));
+  assert.ok(html.includes('springt bei leerem Kontingent auf Codex um'));
   app.responses.set('/api/projects/test',p);
   await app.run(`sendSetupMessage('Nutze DeepSeek mit max','openrouter_deepseek')`);
   const request=app.requests.find(r=>r.path==='/api/projects/test/start');
@@ -422,15 +422,24 @@ test('job duration, pending call, saved result and stale progress are distinguis
   assert.ok(html.includes('Gesamte Laufzeit seit Start/Fortsetzung: 22 Min.'));
   assert.ok(html.includes('Aktueller Modellaufruf: seit 2 Min.'));
   assert.ok(html.includes('Letztes gespeichertes Modellergebnis: vor 3 Min.'));
-  assert.ok(!html.includes('nicht aktualisiert'));
-  app.run(`project.job.progress.updated_at=new Date(Date.now()-24*60000).toISOString();renderJob();`);
+  assert.ok(!html.includes('Keine Antwort vom Studio'));
+  // The server stamps updated_at at every read, so an old stamp alone is no staleness; the run's own change time is shown.
+  app.run(`project.job.progress.updated_at=new Date(Date.now()-24*60000).toISOString();project.job.progress.changed_at=new Date(Date.now()-5*60000).toISOString();lastJobView='';renderJob();`);
   html=app.elements.get('job-status').innerHTML;
-  assert.ok(html.includes('Fortschrittsanzeige seit 24 Min. nicht aktualisiert'));
+  assert.ok(!html.includes('Keine Antwort vom Studio'));
+  assert.ok(html.includes('Letzte Änderung im Lauf: vor 5 Min.'));
+  // Staleness is a missing answer from the Studio: the view says whose state it shows and stops pulsing.
+  app.run(`connectionLost=true;lastJobView='';renderJob();`);
+  html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('Keine Antwort vom Studio seit'));
   assert.ok(html.includes('Zuletzt gemeldeter Modellaufruf gestartet vor'));
   assert.ok(!html.includes('Aktueller Modellaufruf: seit'));
   assert.ok(!app.run('renderScriptProgress(project.job.progress,true)').includes('class="activity-dot"'));
-  app.run(`project.job.status='completed';renderJob();`);
-  assert.ok(!app.elements.get('job-status').innerHTML.includes('nicht aktualisiert'));
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('Keine Verbindung'));
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('job-dot running offline'));
+  app.run(`markSynced();project.job.status='completed';renderJob();`);
+  assert.ok(!app.elements.get('job-status').innerHTML.includes('Keine Antwort vom Studio'));
+  assert.ok(!app.elements.get('job-bar').innerHTML.includes('Keine Verbindung'));
 });
 test('polling refreshes saved results without changing the job identity or status',async()=>{
   const app=studio(), p=workflowProject(app);
@@ -499,7 +508,7 @@ function studio() {
 }
 // The job UI spans the topbar line, the docked drawer and the panel a step page owns.
 function jobView(app) {
-  return ['job-bar','job-status','research-progress','production-progress'].map(id=>app.elements.get(id)?.innerHTML||'').join('');
+  return ['job-bar','job-status','stop-card','research-progress','production-progress','audio-jobs'].map(id=>app.elements.get(id)?.innerHTML||'').join('');
 }
 function jobBarView(app) {
   return ['job-bar','job-status'].map(id=>app.elements.get(id)?.innerHTML||'').join('');
@@ -518,7 +527,7 @@ test('the conversational summary shows model, reasoning and independent executio
   const html=app.run('renderBrief()');
   assert.ok(html.includes('custom-model'));
   assert.ok(html.includes('Reasoning: high'));
-  assert.ok(html.includes('Parallel · bis zu 3 Folgen'));
+  assert.ok(html.includes('Parallel · bis zu 5 gleichzeitig'));
   assert.ok(!html.includes('id="model-preset"'));
 });
 
@@ -987,9 +996,15 @@ test('chat summary and previews distinguish Gemini audio from the Codex writer',
 });
 test('Gemini approval names the remote provider, chosen voices and API charge',()=>{
   const app=studio();
-  app.run(`project={config:boot.defaults,id:'test',audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},episodes:[{script:{title:'Episode',episode_id:'ep_001'},audio:[]}]}`);
+  app.run(`boot.audio_catalog={openrouter_gemini_tts:{label:'Gemini TTS · OpenRouter',voices:['Sadaltager','Aoede'],
+      models:{'google/gemini-3.8-flash-tts':'Gemini 3.8 Flash TTS','google/gemini-3.8-flash-lite-tts':'Gemini 3.8 Flash Lite TTS'},
+      default_model:'google/gemini-3.8-flash-tts'}};
+    project={config:boot.defaults,id:'test',audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},episodes:[{script:{title:'Episode',episode_id:'ep_001'},audio:[]}]}`);
   const html=app.run('renderAudio()');
-  assert.ok(html.includes('Gemini 3.1 Flash TTS · OpenRouter'));
+  // A choice saved without a model uses the default; the card names the model the approval binds.
+  assert.ok(html.includes('Gemini 3.8 Flash TTS · OpenRouter'));
+  app.run(`project.audio_settings={...project.audio_settings,model:'google/gemini-3.8-flash-lite-tts'}`);
+  assert.ok(app.run('renderAudio()').includes('Gemini 3.8 Flash Lite TTS · OpenRouter'));
   assert.ok(html.includes('Sadaltager & Aoede'));
   assert.ok(html.includes('API-Guthaben'));
   assert.ok(html.includes('id="audio-start" data-action="audio" disabled'));
@@ -1220,16 +1235,25 @@ test('blocked research questions that never searched the web keep the resume but
   assert.ok(!html.includes('holt das nach'));
 });
 
-test('a paused job announces its automatic resume and a silent worker is flagged',()=>{
+test('a paused job announces its automatic resume on its page and a silent worker is flagged',()=>{
   const app=studio();
-  app.run("project={id:'p',job:{id:'j2',status:'waiting_for_quota',started_at:new Date().toISOString(),run:{run_id:'run_y',kind:'research',stages:{}},auto_resume_at:'2026-09-22T20:31:18+00:00'}};renderJob();");
-  assert.ok(app.elements.get('job-status').innerHTML.includes('Automatische Fortsetzung geplant'));
-  app.run("project.job.status='running';project.job.auto_resume_at=null;project.job.heartbeat_age_seconds=900;renderJob();");
-  const html=app.elements.get('job-status').innerHTML;
-  assert.ok(html.includes('seit 15 Min. keinen Fortschritt'));
-  assert.ok(!html.includes('Automatische Fortsetzung'));
+  app.run("project={id:'p',job:{id:'j2',action:'resume',status:'waiting_for_quota',started_at:new Date().toISOString(),run:{run_id:'run_y',kind:'research',stages:{}},auto_resume_at:'2099-09-22T20:31:18+00:00'}};step=PAGE.research;renderJob();");
+  let card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Anbieterlimit erreicht'));
+  assert.ok(card.includes('Automatische Fortsetzung geplant'));
+  assert.ok(card.includes('Versuch 1 von 3'));
+  assert.ok(card.includes('data-action="resume" data-run-id="run_y"'));
+  // A due resume that waits for another job says so instead of showing a time in the past.
+  app.run("project.job.auto_resume_at=new Date(Date.now()-60000).toISOString();renderJob();");
+  assert.ok(app.elements.get('stop-card').innerHTML.includes('ist fällig'));
+  app.run("delete project.job.auto_resume_at;project.job.auto_resume_exhausted=true;renderJob();");
+  assert.ok(app.elements.get('stop-card').innerHTML.includes('automatischen Fortsetzungen sind aufgebraucht'));
+  app.run("project.job.status='running';project.job.auto_resume_exhausted=false;project.job.heartbeat_age_seconds=900;renderJob();");
+  card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Seit 15 Min. keine neue Meldung vom Arbeitsprozess'));
+  assert.ok(!card.includes('Automatische Fortsetzung'));
   app.run("project.job.heartbeat_age_seconds=4;renderJob();");
-  assert.ok(!app.elements.get('job-status').innerHTML.includes('keinen Fortschritt'));
+  assert.ok(!app.elements.get('stop-card').innerHTML.includes('keine neue Meldung'));
 });
 
 test('a waiting research plan offers the approval and the cap field only while blocked and unapproved',()=>{
@@ -1478,12 +1502,375 @@ test('the research card names the audit round and the job names the next step',(
   assert.ok(html.includes('Prüfrunde 2 · 12 Teilfragen wieder geöffnet'));
   assert.ok(html.includes('Nächster Schritt:'));
   assert.ok(html.includes('Nichts zu tun, der Lauf arbeitet (Zuordnung der Einwände: Teil 1 von 5)'));
-  app.run(`project.job.status='failed';project.job.run={stages:{dossier:{status:'failed',error:{code:'timeout',message:'Zeitlimit'}}}};renderJob();`);
-  assert.ok(jobView(app).includes('Fortsetzen wiederholt den unterbrochenen Aufruf'));
-  app.run(`project.job.status='blocked';project.job.run={stages:{dossier:{status:'blocked',error:{code:'prompt_too_large',message:'zu groß'}}}};renderJob();`);
-  assert.ok(jobView(app).includes('passt nicht in das Modellfenster'));
-  app.run(`project.job.run={stages:{dossier:{status:'blocked',error:{code:'research_budget_insufficient',message:'Limit'}}}};renderJob();`);
-  assert.ok(jobView(app).includes('Aufruflimit erhöhen, dann fortsetzen'));
+  const panel=app.elements.get('research-progress').innerHTML;
+  assert.ok(panel.indexOf('Gerade:</strong> Zuordnung der Einwände: Teil 1 von 5')<panel.indexOf('Teilfragen geprüft abgeschlossen'),'the current step stands above the question rows');
+  assert.ok(panel.indexOf('Nächster Schritt:')<panel.indexOf('Teilfragen geprüft abgeschlossen'),'the next step stands above the question rows');
+  // A stop is explained on the research page itself, with the control its rule names.
+  app.run(`step=PAGE.research;project.job.status='failed';project.job.run={run_id:'run_t',kind:'research',stages:{dossier:{status:'failed',error:{code:'timeout',message:'Zeitlimit'}}}};renderJob();`);
+  html=jobView(app);
+  assert.ok(html.includes('Zeitlimit eines Modellaufrufs'));
+  assert.ok(html.includes('„Fortsetzen“ wiederholt ihn'));
+  assert.ok(html.includes('data-action="resume" data-run-id="run_t"'));
+  app.run(`project.job.status='blocked';project.job.run={run_id:'run_t',kind:'research',stages:{dossier:{status:'blocked',error:{code:'prompt_too_large',message:'zu groß'}}}};renderJob();`);
+  html=jobView(app);
+  assert.ok(html.includes('passt nicht in das Kontextfenster'));
+  assert.ok(!html.includes('data-action="resume"'),'a prompt that does not fit is not offered the same attempt again');
+  assert.ok(html.includes('data-action="research"'),'the way on is a new research run');
+  app.run(`project.job.run={run_id:'run_t',kind:'research',stages:{dossier:{status:'blocked',error:{code:'research_budget_insufficient',message:'Limit'}}}};project.job.progress.model_calls=150;project.job.progress.model_call_limit=150;renderJob();`);
+  html=jobView(app);
+  assert.ok(html.includes('data-action="approve-calls" data-run-id="run_t" data-model-calls="200" data-then-resume="1"'));
   app.run(`project.job.progress.research_questions={closed:1,total:2,phase:'questions',audit_round:0,reopened:0,questions:[]};project.job.run={stages:{}};renderJob();`);
   assert.ok(!jobView(app).includes('Prüfrunde'));
+});
+
+// Stops as the user meets them: the page that owns the job says what happened, whether "Fortsetzen"
+// can help and which control leads on (docs/studio.md, "Anhalten und Fortsetzen").
+test('a dead end names its exit instead of a futile resume, and accepted gaps alone make no decision card',()=>{
+  const app=studio();
+  const ledger={closed:16,total:18,accepted:2,phase:'audit',questions:[
+    {id:'a',question:'Angenommene Lücke',status:'blocked',accepted_gap:true,outcome:'accepted_gap',activity:'x',steps:3,read_sections:2,acceptance:['a']}]};
+  app.run(`project={id:'p',config:boot.defaults,research:'Dossier',job:{id:'j1',action:'resume',status:'blocked',message:'Gespeicherte Rechercheänderung passt nicht zu ihren Eingaben.',
+    stop:{code:'invalid_research_checkpoint',stage:'dossier',message:'Gespeicherte Rechercheänderung passt nicht zu ihren Eingaben.',detail:null,file:null},
+    run:{run_id:'run_p',kind:'research',status:'blocked',stages:{dossier:{status:'blocked',error:{code:'invalid_research_checkpoint'}}}},
+    progress:{phase:'research',activity:'Quellenprüfung in Teilen: Teil 1 von 30',research_questions:${JSON.stringify(ledger)}}}};step=PAGE.research;render();`);
+  const card=app.elements.get('stop-card').innerHTML, page=app.elements.get('research-progress').innerHTML, bar=app.elements.get('job-bar').innerHTML;
+  assert.ok(card.includes('Gespeicherter Zwischenstand passt nicht mehr'));
+  assert.ok(card.includes('Meldung: Gespeicherte Rechercheänderung passt nicht zu ihren Eingaben.'));
+  assert.ok(card.includes('data-action="research" data-confirm='),'the exit is a new research run, confirmed first');
+  assert.ok(!card.includes('data-action="resume"')&&!bar.includes('data-action="resume"'),'resuming would stop at the same place');
+  assert.ok(bar.includes('Gespeicherter Zwischenstand passt nicht mehr'));
+  assert.ok(!page.includes('decision-card'),'accepted gaps alone are no pending decision');
+  assert.ok(!page.includes('Nächster Schritt: Fortsetzen'));
+  assert.ok(page.includes('Ergebnis: Als Lücke akzeptiert'));
+  assert.equal(app.run('navigationStates()[1][0]'),'Neustart nötig');
+});
+
+test('a script run over its call limit gets the approval as a button that also resumes',()=>{
+  const app=studio(), p=workflowProject(app);
+  Object.assign(p.job,{status:'blocked',message:'Mindestens 40 weitere Modellaufrufe erforderlich',run:{run_id:'run_s',kind:'script',status:'blocked',stages:{planning:{status:'completed',attempts:1},teaching:{status:'completed',attempts:1},writing:{status:'blocked',attempts:1,error:{code:'script_budget_insufficient'}},polishing:{status:'pending'},review:{status:'pending'},publish:{status:'pending'}}},
+    progress:{phase:'script',stage:'writing',activity:'Skript wird ausgearbeitet',episodes:[],model_calls:138,model_call_limit:150,budget_projection:{used:138,limit:150,remaining:12,minimum_remaining_calls:40,feasible:false}}});
+  app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Aufruflimit reicht nicht'));
+  // The minimum without repairs plus a quarter for corrections.
+  assert.ok(card.includes('data-action="approve-calls" data-run-id="run_s" data-model-calls="188" data-then-resume="1"'));
+  assert.ok(!card.includes('>Fortsetzen<'),'without a higher limit the run would stop again at once');
+  assert.ok(!app.elements.get('job-bar').innerHTML.includes('data-action="resume"'));
+});
+
+test('a teaching concept that stays incomplete offers a new outline, never a futile resume',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.research='Dossier';
+  Object.assign(p.job,{status:'blocked',message:'Das Lehrkonzept hat auch nach der gezielten automatischen Korrektur noch offene Punkte: X',run:{run_id:'run_s',kind:'script',status:'blocked',stages:{planning:{status:'completed',attempts:1},teaching:{status:'blocked',attempts:3,error:{code:'teaching_design_failed'}},writing:{status:'pending'},polishing:{status:'pending'},review:{status:'pending'},publish:{status:'pending'}}},progress:{phase:'script',stage:'teaching',activity:'Lehrkonzept wird geprüft',episodes:[],review_issues:['Beispiel fehlt']}});
+  app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
+  const html=jobView(app);
+  assert.ok(html.includes('Lehrkonzept bleibt unvollständig'));
+  assert.ok(html.includes('data-action="plan" data-confirm='));
+  assert.ok(!html.includes('data-action="resume"'));
+  assert.ok(!html.includes('Fortsetzen wiederholt den unterbrochenen Schritt'));
+  assert.ok(html.includes('Beispiel fehlt'));
+});
+
+test('a refused resume keeps its run, is named by the worker code and shows the interrupted stage',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.research='Dossier';
+  Object.assign(p.job,{action:'resume',status:'blocked',error_code:'inputs_changed',message:'Skripteingaben geändert; einen neuen Skriptlauf starten.',run:{run_id:'run_s',kind:'script',status:'pending',stages:{planning:{status:'completed',attempts:1},teaching:{status:'pending',attempts:1,error:{code:'interrupted'}},writing:{status:'pending'},polishing:{status:'pending'},review:{status:'pending'},publish:{status:'pending'}}}});
+  app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
+  const html=jobView(app);
+  assert.ok(html.includes('Eingaben seit dem Anhalten geändert'),'the newer worker code wins over the older stage record');
+  assert.ok(!html.includes('data-action="resume"'));
+  assert.ok(html.includes('data-action="plan"'));
+  assert.ok(app.elements.get('production-progress').innerHTML.includes('Unterbrochen'));
+});
+
+test('the chat shows the partner writing, a failed answer with its reason and a resend, and a limit raise',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.chat=[{role:'user',message:'Mach es kürzer'}];
+  p.job={id:'c1',action:'assistant',status:'running',started_at:new Date().toISOString(),run:null};
+  app.run(`boot.capabilities={conversational_setup:true};project=${JSON.stringify(p)};step=PAGE.brief;`);
+  let html=app.run('renderBrief()');
+  assert.ok(html.includes('schreibt …'));
+  assert.ok(!html.includes('data-action="resend-chat"'));
+  app.run(`project.job={id:'c1',action:'assistant',status:'failed',error_code:'codex_failed',message:'Codex-Aufruf fehlgeschlagen.',run:null};`);
+  html=app.run('renderBrief()');
+  assert.ok(html.includes('Keine Antwort · Codex-Aufruf fehlgeschlagen'));
+  assert.ok(html.includes('„Erneut senden“ wiederholt den Aufruf'));
+  assert.ok(!html.includes('„Fortsetzen“'),'a chat has no run to continue');
+  assert.ok(html.includes('data-action="resend-chat"'));
+  app.run(`project.job={id:'c1',action:'assistant',status:'blocked',error_code:'research_budget_exhausted',message:'Limit von 150 Modellaufrufen erreicht.',run:null};project.chat_budget={used:150,limit:150};`);
+  html=app.run('renderBrief()');
+  assert.ok(html.includes('Gesprächslimit erreicht'));
+  assert.ok(html.includes('data-action="approve-chat" data-model-calls="200"'));
+  // A paused run shown as the project's job keeps the chat's own state in main_job.
+  app.run(`project.main_job=project.job;project.job={id:'r1',action:'research',status:'blocked',run:{run_id:'run_r',kind:'research',stages:{}}};`);
+  assert.ok(app.run('renderBrief()').includes('Gesprächslimit erreicht'));
+});
+
+test('a failed connection check is restarted by its own button and names its diagnostics file',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,chat:[],job:{id:'k',action:'check',status:'failed',error_code:'processing_failed',message:'Auftrag unterbrochen oder Verarbeitung fehlgeschlagen.',stop:{code:'processing_failed',file:'studio/failures/worker_1.txt',message:'Auftrag unterbrochen oder Verarbeitung fehlgeschlagen.'},run:null}};step=PAGE.brief;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Unerwarteter Programmfehler'));
+  assert.ok(card.includes('data-action="check"'));
+  assert.ok(!card.includes('data-action="resume"'));
+  assert.ok(!card.includes('„Fortsetzen“'));
+  assert.ok(card.includes('/api/projects/p/file?path=studio%2Ffailures%2Fworker_1.txt'));
+  assert.ok(!app.elements.get('job-bar').innerHTML.includes('data-action="resume"'));
+});
+
+test('a Gemini job stopped for a missing key carries the key field and resumes the episode from it',()=>{
+  const app=studio();
+  app.run(`boot.key_available=false;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Kore',host_b:'Puck'}},audio_capacity:{limit:3,active:0,available:3},
+    episodes:[{script:{episode_id:'ep_001',title:'Eins',segments:[],chapters:[]},hash:'h',readable_hash:'r',audio:[],metrics:{words:1,estimated_minutes:1}}],
+    audio_jobs:[{id:'a1',episode:'ep_001',status:'blocked',message:'Für Gemini-Audio den OpenRouter-Key im Studio hinterlegen.',stop:{code:'openrouter_key_required',message:'Für Gemini-Audio den OpenRouter-Key im Studio hinterlegen.'},run:{run_id:'run_a',kind:'episode_audio',stages:{}}}]};
+    project.job=project.audio_jobs[0];step=PAGE.audio;render();`);
+  const panel=app.elements.get('audio-jobs').innerHTML;
+  assert.ok(panel.includes('OpenRouter-Key fehlt'));
+  assert.ok(panel.includes('id="stop-key"'));
+  assert.ok(panel.includes('data-then-resume="1" data-run-id="run_a" data-episode="ep_001"'));
+  assert.ok(!panel.includes('Diese Folge fortsetzen'),'a resume without the key would fail at its first request');
+  const approval=app.run('renderAudio()');
+  assert.ok(approval.includes('id="audio-key"'));
+  assert.ok(approval.includes('Zuerst den OpenRouter-Key hinterlegen.'));
+});
+
+test('audio jobs show model loading, chapters and the montage instead of a finished counter',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[{script:{episode_id:'ep_001',title:'Eins',segments:[],chapters:[]},hash:'h',readable_hash:'r',audio:[],metrics:{words:1,estimated_minutes:1}}],audio_jobs:[],
+    job:{id:'q1',action:'audio',episode:'ep_001',status:'running',started_at:new Date().toISOString(),heartbeat_age_seconds:600,run:{run_id:'run_q',kind:'episode_audio',stages:{synthesis:{status:'running'}}},
+      progress:{status:'synthesis',chapter:2,chapters:5,chapter_title:'Zwei',completed_segments:10,total_segments:40,tts_status:'loading_model'}}};step=PAGE.audio;render();`);
+  let panel=app.elements.get('audio-jobs').innerHTML;
+  assert.ok(panel.includes('Eins · Wird vertont'),'the local job has its card on the audio page');
+  assert.ok(panel.includes('10 von 40 Sprechabschnitten fertig · Kapitel 2 von 5: Zwei'));
+  assert.ok(panel.includes('Sprachmodell wird für dieses Kapitel geladen'));
+  assert.ok(!panel.includes('keine neue Meldung'),'loading the model may take longer than a segment');
+  assert.ok(panel.includes('data-action="stop"'));
+  app.run(`project.job.progress={status:'assembly',step:'normalize',part:1,parts:2,completed_segments:12,total_segments:40};project.job.heartbeat_age_seconds=20;lastJobView='';renderJob();`);
+  panel=app.elements.get('audio-jobs').innerHTML;
+  assert.ok(panel.includes('Audio wird zusammengefügt: Sprechabschnitte werden angeglichen · 12 von 40 · Teil 1 von 2'));
+  app.run(`project.job.progress={status:'assembly',step:'encode',part:1,parts:1,completed_segments:40,total_segments:40};renderJob();`);
+  panel=app.elements.get('audio-jobs').innerHTML;
+  assert.ok(panel.includes('MP3 mit Kapitelmarken wird erstellt'));
+  assert.ok(!panel.includes('40 von 40 Sprechabschnitten'));
+  app.run(`project.job.progress={status:'synthesis',completed_segments:10,total_segments:40};project.job.heartbeat_age_seconds=600;renderJob();`);
+  assert.ok(app.elements.get('audio-jobs').innerHTML.includes('Seit 10 Min. keine neue Meldung'));
+});
+
+test('the overview lists a stopped audio episode and marks reading as done once audio exists',()=>{
+  const app=studio();
+  const project={id:'p',topic:'Serie',has_research:true,has_outline:true,script_count:2,episodes:[{episode_id:'ep_001',title:'Eins',audio:['exports/a.mp3']},{episode_id:'ep_002',title:'Zwei',audio:[]}],
+    job:{id:'a1',status:'completed',action:'audio'},audio_jobs:[{id:'a2',episode:'ep_002',status:'failed',error_code:'openrouter_credits',message:'Guthaben erschöpft',run:{run_id:'r2',kind:'episode_audio',stages:{}}}]};
+  app.run(`overviewData={projects:[${JSON.stringify(project)}],trash:[]};overviewPage=true;`);
+  const attention=app.run(`attentionOf(overviewData.projects[0])`);
+  assert.equal(attention.page,5);
+  assert.ok(attention.text.includes('Vertonung von „Zwei“ angehalten: OpenRouter-Guthaben erschöpft'));
+  assert.equal(app.run('pipelineStates(overviewData.projects[0])[4]'),'done');
+  app.run('renderNavigation()');
+  assert.equal(app.run('document.title'),'(1) Podcast Studio');
+});
+
+test('saving what a paused run is bound to warns before the save',()=>{
+  const app=studio(), p=workflowProject(app);
+  Object.assign(p.job,{status:'review_ready',run:{run_id:'run_o',kind:'script',status:'pending',stages:{planning:{status:'completed',attempts:1}}}});
+  p.style_notes='';
+  app.run(`project=${JSON.stringify(p)};`);
+  assert.ok(app.run('renderStyleNotes()').includes('Ein angehaltener Lauf (Inhaltsverzeichnis oder Ausarbeitung)'));
+  app.run(`window.confirm=message=>{window.lastConfirm=message;return false;};`);
+  assert.equal(app.run('confirmPaused(["notes"])'),false);
+  assert.ok(app.run('window.lastConfirm').includes('lässt sich nach dem Speichern nicht mehr fortsetzen'));
+  assert.equal(app.run('confirmPaused(["audio"])'),true,'spoken forms do not bind an outline');
+  app.run(`project.job.status='completed';project.job.run.status='completed';`);
+  assert.ok(!app.run('renderStyleNotes()').includes('angehaltener Lauf'));
+});
+
+test('drafting and revising the outline are named as such, with the previous draft marked as not approvable',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.outline.approval=null;
+  Object.assign(p.job,{action:'replan',status:'running',run:{run_id:'run_o',kind:'script',status:'running',stages:{planning:{status:'running',attempts:1}}},progress:{phase:'script',stage:'planning',activity:'Inhaltsverzeichnis wird korrigiert · Korrekturrunde 2 von 3',episodes:[]}});
+  app.run(`project=${JSON.stringify(p)};step=PAGE.outline;render();`);
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('Inhaltsverzeichnis wird überarbeitet'));
+  const html=app.elements.get('content').innerHTML;
+  assert.ok(html.includes('Das Inhaltsverzeichnis wird überarbeitet.'));
+  assert.ok(html.includes('Korrekturrunde 2 von 3'));
+  app.run(`project.job.action='plan';project.outline=null;lastJobView='';render();`);
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('Inhaltsverzeichnis entsteht'));
+  assert.ok(!app.elements.get('job-bar').innerHTML.includes('Ausarbeitung läuft'));
+});
+
+test('an outline that stays contradictory is redrafted with a hint instead of resumed',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,research:'Dossier',outline:null,job:{id:'j',action:'plan',status:'blocked',message:'Das Inhaltsverzeichnis enthält nach der automatischen Korrektur noch einen Widerspruch.',
+    run:{run_id:'run_o',kind:'script',status:'blocked',stages:{planning:{status:'blocked',attempts:1,error:{code:'invalid_plan'}}}}}};step=PAGE.outline;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Inhaltsverzeichnis bleibt widersprüchlich'));
+  assert.ok(card.includes('id="stop-feedback"'));
+  assert.ok(card.includes('data-action="replan" data-feedback="stop-feedback"'));
+  assert.ok(!card.includes('data-action="resume"'));
+});
+
+test('a restarted server renews the session token once instead of failing every click',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read replaces boot first
+  // Reads need no token; only the POST meets the restarted server's check.
+  app.run(`window.fetchCalls=0;fetch=async(path,options)=>{if(path==='/api/bootstrap')return{ok:true,json:async()=>({token:'fresh',key_available:false,projects:[]})};
+    if(!options?.method)return{ok:true,json:async()=>({projects:[],trash:[]})};window.fetchCalls++;
+    if(options?.headers?.['X-Studio-Token']!=='fresh')return{ok:false,status:403,json:async()=>({error:'Studio-Sitzung neu laden.',code:'forbidden'})};
+    return{ok:true,json:async()=>({saved:true})};};boot.key_available=true;`);
+  const result=await app.run(`api('/api/projects/p/save',{a:1})`);
+  assert.equal(result.saved,true);
+  assert.equal(app.run('boot.token'),'fresh');
+  assert.equal(app.run('window.fetchCalls'),2);
+  assert.ok(app.elements.get('notice').textContent.includes('OpenRouter-Key muss erneut eingegeben werden'));
+});
+
+test('a refusal of the running server is not reported as a lost connection',async()=>{
+  const app=studio(), p=workflowProject(app);
+  await app.run(`selectProject('test',${JSON.stringify(p)})`);
+  app.run(`fetch=async()=>({ok:false,status:400,json:async()=>({error:'Projekt nicht gefunden.',code:'unknown_project'})});`);
+  await app.run('poll()');
+  assert.ok(app.elements.get('notice').textContent.includes('Das Studio meldet: Projekt nicht gefunden.'));
+  assert.equal(app.run('connectionLost'),false);
+});
+
+test('the first source retrieval shows a counter and a readable report of unread sources',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j',action:'research',status:'running',started_at:new Date().toISOString(),run:{run_id:'run_r',kind:'research',status:'running',stages:{retrieval:{status:'running'}}},
+    progress:{phase:'research',activity:'Originaltexte werden eingelesen',retrieval:{running:true,attempted:7,imported:5,total:20,failed:2,failures:[{source:'https://x.test/a.pdf',reason:'Quellenabruf fehlgeschlagen (HTTP 403).'},{source:'https://x.test/b',reason:'Identischer Quellentext bereits eingelesen.'}]}}}};step=PAGE.research;render();`);
+  const page=app.elements.get('research-progress').innerHTML;
+  assert.ok(page.includes('7 von bis zu 20 Quellen abgerufen, 5 lesbar, 2 nicht eingelesen'));
+  assert.ok(page.includes('Abrufbericht · 2 Quellen nicht eingelesen'));
+  assert.ok(page.includes('HTTP 403'));
+});
+
+test('an accepted gap can carry its reason and the connection check names fixes in German',()=>{
+  const app=studio();
+  const html=app.run(`gapActionsFor({id:'t1',outcome:'evidence_block',reason:'x'},'run_x',12)`);
+  assert.ok(html.includes('id="gap-reason-t1"'));
+  const checks=app.run(`renderChecks({ready:false,checks:[{name:'codex_login',ok:false,detail:'Nicht angemeldet'},{name:'ffmpeg',ok:true,detail:'C:/ffmpeg.exe'}]})`);
+  assert.ok(checks.includes('Codex-Anmeldung'));
+  assert.ok(checks.includes('codex login'));
+  assert.ok(!checks.includes('codex_login'));
+  assert.ok(checks.includes('Noch nicht startbereit'));
+  assert.ok(!checks.split('FFmpeg')[1].includes('setup-ffmpeg'),'a passed check needs no fix');
+});
+
+test('the plan approval starts the research in one click and offers a higher limit when the plan does not fit',()=>{
+  const app=studio();
+  const projection={tasks:20,expected_calls_per_task:5,expected_calls_source:'default',closing_calls:3,projected_calls:180,used:7,approved_limit:150,within_limit:false,seconds_per_call:270,seconds_per_call_source:'default',projected_hours:13,plan_caps:[]};
+  const html=app.run(`renderPlanReview({status:'blocked',progress:{plan_review:{awaiting:true,approved:false,projection:${JSON.stringify(projection)}}}},'run_x')`);
+  assert.ok(html.includes('data-action="approve-plan" data-run-id="run_x" data-then-resume="1"'));
+  assert.ok(html.includes('Rechercheplan freigeben und starten'));
+  assert.ok(html.includes('data-action="approve-calls" data-run-id="run_x" data-model-calls="205"'));
+});
+
+test('the tab title shows a running job, a decision or a stop',()=>{
+  const app=studio(), p=workflowProject(app);
+  app.run(`project=${JSON.stringify(p)};renderNavigation();`);
+  assert.ok(app.run('document.title').startsWith('● '));
+  app.run(`project.job.status='review_ready';renderNavigation();`);
+  assert.ok(app.run('document.title').startsWith('▲ '));
+  app.run(`project.job.status='failed';renderNavigation();`);
+  assert.ok(app.run('document.title').startsWith('! '));
+});
+
+test('a chat reply does not move the page to a paused run that waits behind it',async()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job={id:'c1',action:'assistant',status:'running',started_at:new Date().toISOString(),run:null};
+  p.main_job=p.job;
+  await app.run(`selectProject('test',${JSON.stringify(p)},PAGE.brief)`);
+  app.run('followWorkflow=true');
+  const next=structuredClone(p);
+  next.main_job={...p.job,status:'completed'};
+  next.job={id:'r1',action:'research',status:'blocked',run:{run_id:'run_r',kind:'research',stages:{}}};
+  app.responses.set('/api/projects/test',next);
+  await app.run('poll()');
+  assert.equal(app.run('step'),0);
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('Recherche ansehen'),'the paused run is one click away');
+});
+
+// Parallel runs: several sub-questions, episodes or voicings at once are shown as several, and a stop of one is visible.
+test('a stopped parallel research run no longer shows its tasks as in work',()=>{
+  const app=studio();
+  const q=(id,status)=>({id,question:'Frage '+id,status,activity:'…',steps:2,read_sections:3,acceptance:['x']});
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j',action:'resume',status:'failed',error_code:'processing_failed',message:'Fehler',run:{run_id:'r',kind:'research',status:'failed',stages:{}},
+    progress:{phase:'research',activity:'Antwort wird geprüft',research_questions:{closed:1,total:4,phase:'questions',active_tasks:['a','b','c'],questions:${JSON.stringify([q('a','researching'),q('b','reviewing'),q('c','researching'),q('d','verified')])}}}}};step=PAGE.research;render();`);
+  const page=app.elements.get('research-progress').innerHTML;
+  assert.ok(!page.includes('● Frage'),'nothing is in work while the run is stopped');
+  assert.ok(!page.includes('Teilfragen in Arbeit'));
+  assert.ok(page.includes('○ Frage a · Begonnen · geht beim Fortsetzen weiter'));
+});
+
+test('a running parallel research run names every open call, labels its live lines and shows the wind-down after a failure',()=>{
+  const app=studio(), now=Date.now(), at=m=>new Date(now-m*60000).toISOString();
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j',action:'research',status:'running',started_at:'${at(30)}',run:{run_id:'r',kind:'research',status:'running',stages:{}},
+    progress:{phase:'research',activity:'Antwort wird geprüft',model_call_started_at:'${at(6)}',updated_at:new Date().toISOString(),
+      open_calls:[{call:'call_011',started_at:'${at(6)}',label:'Wie wirkt X?'},{call:'call_012',started_at:'${at(2)}',label:'Warum Y?'}],
+      call_labels:{call_011:'Wie wirkt X?',call_012:'Warum Y?'},stopping:{question:'Was ist Z?',code:'timeout'},
+      model_trace:{lines:[{call:'call_012',kind:'text',at:'${at(1)}',text:'Belege vergleichen'}]},
+      research_questions:{closed:0,total:3,phase:'questions',active_tasks:['a','b'],questions:[{id:'a',question:'Wie wirkt X?',status:'researching',activity:'x',steps:1,read_sections:1,acceptance:['x']},{id:'b',question:'Warum Y?',status:'researching',activity:'y',steps:1,read_sections:1,acceptance:['y']}]}}}};step=PAGE.research;render();`);
+  const page=app.elements.get('research-progress').innerHTML;
+  assert.ok(page.includes('2 Modellaufrufe laufen gleichzeitig: Wie wirkt X? · seit 6 Min.; Warum Y? · seit 2 Min.'));
+  assert.ok(page.includes('Zuletzt gemeldet:'),'the single activity line is the latest report, not the one current step');
+  assert.ok(page.includes('Eine Teilfrage ist angehalten: „Was ist Z?“'));
+  assert.ok(page.includes('● Wie wirkt X?')&&page.includes('● Warum Y?'));
+  const drawer=app.elements.get('job-status').innerHTML;
+  assert.ok(drawer.includes('Live-Text · Warum Y?'),'a live line names its sub-question');
+  assert.ok(drawer.includes('2 Modellaufrufe laufen gleichzeitig, der älteste seit 6 Min.'));
+});
+
+test('parallel script episodes are all shown in work, with their time, and a failed one winds the stage down',()=>{
+  const app=studio(), p=workflowProject(app), started=new Date(Date.now()-5*60000).toISOString();
+  Object.assign(p.job,{action:'script',run:{run_id:'r',kind:'script',status:'running',stages:{planning:{status:'completed',attempts:1},teaching:{status:'completed',attempts:1},writing:{status:'running',attempts:1}}},
+    progress:{phase:'script',stage:'writing',activity:'Skript wird ausgearbeitet',current_episode:'ep_001',episode_number:1,episode_title:'Eins',completed_segments:0,total_segments:4,
+      active_episodes:['ep_001','ep_002'],stopping:{episodes:['Drei']},execution:{text:'parallel'},
+      episodes:[{episode_id:'ep_001',title:'Eins',stage_status:'running',stage_started_at:started},{episode_id:'ep_002',title:'Zwei',stage_status:'running',stage_started_at:started},
+        {episode_id:'ep_003',title:'Drei',stage_status:'interrupted'},{episode_id:'ep_004',title:'Vier',stage_status:'pending'}]}});
+  app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
+  const html=app.elements.get('production-progress').innerHTML;
+  assert.ok(html.includes('2 Folgen in Arbeit · Skript'));
+  assert.ok(html.includes('● Eins <span class="hint">· seit 5 Min.</span>'));
+  assert.ok(html.includes('● Zwei'));
+  assert.ok(html.includes('! Drei'));
+  assert.ok(html.includes('○ Vier'));
+  assert.ok(html.includes('Drei: angehalten.'));
+  assert.ok(html.includes('Zuletzt gestartet: Skript wird ausgearbeitet'));
+  assert.ok(!app.elements.get('job-status').innerHTML.includes('Folge 1 von 4 · Skript wird ausgearbeitet'),'the drawer does not single out one episode');
+  // The issues of a stopped parallel stage name their episode.
+  app.run(`project.job.status='blocked';project.job.run.status='blocked';project.job.progress.stage='review';project.job.progress.review_issues=['Beleg fehlt'];project.job.progress.issues_episode='Drei';lastJobView='';renderJob();`);
+  assert.ok(app.elements.get('production-progress').innerHTML.includes('Offene Punkte der Qualitätsprüfung · Drei'));
+});
+
+test('a stopped Gemini episode stays visible while the others are voiced and resumes within the free slots',()=>{
+  const app=studio();
+  app.run(`boot.key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Kore',host_b:'Puck'}},audio_capacity:{limit:3,active:2,available:1},
+    episodes:['ep_001','ep_002','ep_003','ep_004'].map((id,i)=>({script:{episode_id:id,title:'F'+(i+1),segments:[],chapters:[]},hash:'h',readable_hash:'r',audio:i===3?['exports/a.mp3']:[],audio_current:i===3,metrics:{words:1,estimated_minutes:1}})),
+    audio_jobs:[{id:'a1',episode:'ep_001',status:'running',started_at:new Date().toISOString(),progress:{completed_segments:3,total_segments:9},run:{run_id:'x1',kind:'episode_audio'}},
+      {id:'a2',episode:'ep_002',status:'failed',error_code:'openrouter_speech_request',message:'Anfrage fehlgeschlagen',run:{run_id:'x2',kind:'episode_audio',stages:{}}},
+      {id:'a3',episode:'ep_003',status:'running',started_at:new Date().toISOString(),progress:{completed_segments:1,total_segments:9},run:{run_id:'x3',kind:'episode_audio'}},
+      {id:'a4',episode:'ep_004',status:'failed',error_code:'openrouter_speech_request',message:'alt',run:{run_id:'x4',kind:'episode_audio',stages:{}}}]};
+    project.job=project.audio_jobs[0];step=PAGE.audio;render();`);
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('2 Folgen werden vertont · 1 angehalten'),'an older stop of a since voiced episode is not counted');
+  assert.deepEqual(JSON.parse(JSON.stringify(app.run('navigationStates()[5]'))),['Läuft · 1 angehalten','running']);
+  const panel=app.elements.get('audio-jobs').innerHTML;
+  const card=panel.slice(panel.indexOf('F2 ·'),panel.indexOf('F3 ·'));
+  assert.ok(card.includes('data-action="resume" data-run-id="x2" data-episode="ep_002" >'),'a free slot lets it resume beside the running ones');
+  app.run(`project.audio_capacity={limit:3,active:3,available:0};lastJobView='';renderJob();`);
+  const full=app.elements.get('audio-jobs').innerHTML;
+  assert.ok(full.includes('Alle Plätze sind belegt'));
+  const overview={id:'p',topic:'Serie',episodes:[{episode_id:'ep_001',title:'F1',audio:[]},{episode_id:'ep_002',title:'F2',audio:[]},{episode_id:'ep_003',title:'F3',audio:[]}],
+    job:{id:'a1',status:'running',action:'audio'},audio_jobs:[{id:'a2',episode:'ep_002',status:'failed',error_code:'openrouter_speech_request',run:{run_id:'x2'}},{id:'a3',episode:'ep_003',status:'failed',error_code:'openrouter_credits',run:{run_id:'x3'}}]};
+  const attention=app.run(`attentionOf(${JSON.stringify(overview)})`);
+  assert.ok(attention.text.startsWith('2 Folgen angehalten: „F2“'),attention.text);
+  assert.ok(attention.text.includes('„F3“ (OpenRouter-Guthaben erschöpft)'));
+});
+
+test('a paused text run waits for running episodes instead of offering a resume that would fail',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,audio_jobs:[{id:'a1',episode:'ep_001',status:'running',started_at:new Date().toISOString(),run:{run_id:'x1',kind:'episode_audio'}}],
+    job:{id:'j',action:'resume',status:'interrupted',run:{run_id:'r',kind:'research',status:'pending',stages:{dossier:{status:'pending',error:{code:'interrupted'}}}}}};step=PAGE.research;render();`);
+  const bar=app.elements.get('job-bar').innerHTML, card=app.elements.get('stop-card').innerHTML;
+  assert.ok(!bar.includes('data-action="resume"'));
+  assert.ok(bar.includes('Fortsetzen, sobald die Vertonung fertig ist'));
+  assert.ok(card.includes('data-action="resume" data-run-id="r" disabled'));
+  assert.ok(card.includes('Gerade wird eine Folge vertont. Fortsetzen und Neustart gehen, sobald die Vertonung fertig ist'));
 });

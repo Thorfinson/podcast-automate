@@ -68,6 +68,14 @@ class AudioTests(unittest.TestCase):
             tone(path)
             self.paths.append(path)
 
+    def test_montage_reports_each_step_to_its_caller(self):
+        steps = []
+        assemble(self.script, self.paths, self.root / "reported",
+                 progress=lambda step, done=0, total=0: steps.append((step, done, total)))
+        count = len(self.paths)
+        self.assertEqual(steps[:count], [("normalize", index, count) for index in range(count)])
+        self.assertEqual([row[0] for row in steps[count:]], ["loudness", "encode"])
+
     def test_montage_real_mp3_and_measured_chapters(self):
         output = self.root / "result"
         produced = assemble(self.script, self.paths, output)

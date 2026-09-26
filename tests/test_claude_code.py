@@ -34,7 +34,8 @@ if args == ["auth", "status", "--json"]:
                       "apiProvider": "firstParty", "subscriptionType": "max", "email": "private@example.org"}))
     sys.exit(0)
 if args == ["--version"]:
-    print("2.0.1 (Claude Code)" if mode == "old" else "2.1.92 (Claude Code)")
+    # 2.1.92 is the last CLI before Opus 5.5 and xhigh; it must count as too old.
+    print("2.1.92 (Claude Code)" if mode == "old" else "2.1.283 (Claude Code)")
     sys.exit(0)
 def value(flag):
     return args[args.index(flag) + 1]
@@ -153,7 +154,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertEqual(metadata["provider"], "claude_code")
         self.assertEqual(metadata["auth_mode"], "claude.ai")
         self.assertEqual(metadata["adapter_version"], "claude_code.v1")
-        self.assertEqual(metadata["cli_version"], "2.1.92")
+        self.assertEqual(metadata["cli_version"], "2.1.283")
         self.assertEqual(metadata["requested_model"], "claude-opus-5")
         self.assertEqual(metadata["actual_model"], "claude-opus-5")
         self.assertEqual(metadata["requested_reasoning_effort"], "high")
@@ -288,7 +289,7 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertIsInstance(result, TextProbeOutput)
         self.assertEqual(metadata["provider"], "claude_code")
         with self.assertRaises(AppError):
-            ClaudeCodeAdapter(RuntimeSettings(), reasoning_effort="xhigh")
+            ClaudeCodeAdapter(RuntimeSettings(), reasoning_effort="ultra")
         with self.assertRaises(AppError):
             ClaudeCodeAdapter(RuntimeSettings(), model="--untrusted-flag")
 

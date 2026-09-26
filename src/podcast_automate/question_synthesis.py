@@ -549,7 +549,8 @@ class SynthesisMixin:
             *(row["reason"] + " " + " ".join(row["missing"]) for row in report["requirements"] if not row["passed"])]))
 
     def tolerate(self, dossier, review, report):
-        """Every remaining objection targets an accepted gap: finish, with those objections on record."""
+        """Every remaining objection targets an accepted gap or is a recorded review disagreement: finish, with
+        those objections on record."""
         report = {**report, "passed": True, "passed_with_accepted_gaps": True,
                   "residual_objections": self.objections(review, report)}
         self.write_gate(report)
@@ -634,23 +635,30 @@ class SynthesisMixin:
             well_formed(routes, True)
             write_json(folder / "routes_merged.json", {"parts": len(parts), "objections_per_part": [len(p) for p in parts],
                        "routes": routes.model_dump(mode="json")})
-        reasons = {}
+        reasons, disagreements = {}, []
         for route in routes.routes:
             for task_id in route.task_ids:
+                routed = False
                 for anchor in [a for a in route.anchors if a.task_id == task_id]:
                     identifier = validate_objection(anchor, tasks, dossier.findings, context,
                                                     target_task=task_id, owners=owners)
                     if anchor.resolution == "review_disagreement":
-                        self.state.setdefault("review_disagreements", []).append(anchor.model_dump())
-                        self.save("Prüfeinwand benötigt Klärung statt weiterer Suche")
-                        raise AppError("Review disagreement cannot trigger more research.", code="review_disagreement", status="blocked")
+                        # An unsupported demand starts no research (objection_routes.txt): it is recorded and
+                        # the other objections are still routed. Stopping here would leave the objections
+                        # registered so far in the state, and the resumed audit would no longer match its receipts.
+                        disagreements.append(anchor.model_dump())
+                        continue
+                    routed = True
                     identifier = self.existing_objection(registry, closed, anchor, identifier)
                     if task_id in accepted:
                         self.state.setdefault("accepted_gap_objections", {})[identifier] = {
                             **anchor.model_dump(), "id": identifier, "objection": objections[route.index], "status": "accepted_gap"}
                     else:
                         registry[identifier] = {**anchor.model_dump(), "id": identifier, "status": "open"}
-                reasons.setdefault(task_id, []).append(objections[route.index] + " " + route.reason)
+                if routed:
+                    reasons.setdefault(task_id, []).append(objections[route.index] + " " + route.reason)
+        if disagreements:
+            self.state.setdefault("review_disagreements", []).extend(disagreements)
         reopened, blocked = [], []
         for task_id, texts in reasons.items():
             if task_id in accepted:
@@ -670,5 +678,6 @@ class SynthesisMixin:
         self.state.update(seed_dossier=dossier.model_dump(), dirty_tasks=dirty, finding_owners=owners,
                           audit_round=self.state["audit_round"]+1, phase="questions")
         self.save("Konkrete Einwände werden ihren ursprünglichen Recherchefragen zugeordnet" if reopened or blocked
+                  else "Verbliebene Einwände betreffen nur akzeptierte Lücken oder unbelegte Prüfforderungen" if disagreements
                   else "Verbliebene Einwände betreffen nur akzeptierte Lücken")
         return reopened, blocked

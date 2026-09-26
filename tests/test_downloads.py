@@ -3,11 +3,12 @@ import json
 import unittest
 import zipfile
 from pathlib import Path, PureWindowsPath
+from unittest.mock import Mock
 from urllib.parse import unquote
 
 from podcast_automate.downloads import episode_filename, podcast_download, podcast_zip
 from podcast_automate.errors import AppError
-from podcast_automate.storage import project_hash, write_json, write_yaml
+from podcast_automate.storage import project_hash, project_lock, write_json, write_yaml
 from tests.script_fixtures import example_script
 from tests import test_studio
 
@@ -97,6 +98,21 @@ class DownloadTests(unittest.TestCase):
         write_json(self.root / "episodes/ep_001/audio_latest.json", {"parts": [{"audio": "../../private.mp3"}]})
         self.assertNotEqual(self.request("/download/example/podcast.zip")[0], 200)
         self.assertEqual(self.request("/download/example/podcast.zip", headers={"Origin": "https://elsewhere.example"})[0], 403)
+
+    def test_downloads_stay_available_while_this_studio_runs_a_text_job(self):
+        self.episode(1)
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "running", "run": None})
+        worker = Mock()
+        worker.poll.return_value = None
+        self.app.process, self.app.process_root = worker, self.root
+        with project_lock(self.root):
+            # Stands in for the research worker's exclusive lock; research never writes exports.
+            self.assertEqual(self.request("/download/example/podcast.zip")[0], 200)
+            self.assertEqual(self.request("/download/example/file/exports/ep_001/run_test/part_01/audio.mp3")[0], 200)
+            write_json(self.root / "studio/job.json", {"id": "q", "action": "audio", "status": "running", "run": None})
+            status, body, _ = self.request("/download/example/podcast.zip")
+            self.assertEqual(status, 400)
+            self.assertEqual(json.loads(body)["code"], "project_busy")
 
     def test_zip_cleanup_and_lock_survive_an_aborted_download(self):
         self.episode(1)

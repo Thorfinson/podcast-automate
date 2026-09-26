@@ -196,6 +196,61 @@ class SpeechTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 AudioChoice(provider="openrouter_gemini_tts", voices=voices)
 
+    def test_the_chosen_model_is_requested_and_keys_its_own_cache_entry(self):
+        lite = GeminiSpeech("test-key", model="google/gemini-3.8-flash-lite-tts")
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = lambda *a, **k: response()
+            default = self.engine.synthesize("Ein Beispiel.", "Aoede", "de-DE", self.cache)
+            path = lite.synthesize("Ein Beispiel.", "Aoede", "de-DE", self.cache)
+            again = lite.synthesize("Ein Beispiel.", "Aoede", "de-DE", self.cache)
+            models = [json.loads(call.args[0].data)["model"] for call in build.return_value.open.call_args_list]
+        self.assertEqual(GEMINI_MODEL, "google/gemini-3.8-flash-tts")
+        self.assertEqual(models, [GEMINI_MODEL, "google/gemini-3.8-flash-lite-tts"])
+        self.assertNotEqual(default, path)
+        self.assertEqual(path, again)
+        record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["settings"]
+        self.assertEqual(record, speech_settings("Ein Beispiel.", "Aoede", "de-DE", model="google/gemini-3.8-flash-lite-tts"))
+        # The retired model is no longer offered.
+        with self.assertRaises(AppError):
+            GeminiSpeech("test-key", model="google/gemini-3.1-flash-tts-preview")
+
+    def test_a_choice_without_a_model_means_the_default_and_keeps_its_stored_shape(self):
+        from podcast_automate.models import Chapter, EpisodeScript, Segment
+        from podcast_automate.speech import check_gemini_rows
+        saved = {"provider": "openrouter_gemini_tts", "voices": {"host_a": "Aoede", "host_b": "Puck"}}
+        default = AudioChoice.model_validate(saved)
+        # Choices saved before the model was selectable dump exactly as before, so stored choices,
+        # their hashes and the approvals made for them stay valid.
+        self.assertEqual(default.model, GEMINI_MODEL)
+        self.assertEqual(default.model_dump(), {**saved, "pauses": PausePolicy().model_dump()})
+        self.assertEqual(AudioChoice(**saved, model=GEMINI_MODEL).model_dump(), default.model_dump())
+        self.assertEqual(audio_generation_record(default), saved)
+        lite = AudioChoice(**saved, model="google/gemini-3.8-flash-lite-tts")
+        self.assertEqual(AudioChoice.model_validate(lite.model_dump()), lite)
+        self.assertEqual(audio_generation_record(lite), {**saved, "model": "google/gemini-3.8-flash-lite-tts"})
+        # Approvals and resumes compare these records, so a model switch is a new audio choice.
+        self.assertFalse(same_audio_generation(saved, lite.model_dump()))
+        with self.assertRaises(ValidationError):
+            AudioChoice(**saved, model="google/gemini-3.1-flash-tts-preview")
+        # The model applies to Gemini only; a local choice never carries one.
+        local = AudioChoice(provider="qwen3_local", voices={"host_a": "Aiden", "host_b": "Vivian"},
+                            model="google/gemini-3.8-flash-lite-tts")
+        self.assertNotIn("model", local.model_dump())
+        # A recording made with one model does not verify for the other.
+        script = EpisodeScript(episode_id="ep_001", title="T", purpose="deep_dive",
+            chapters=[Chapter(chapter_id="c", title="C")],
+            segments=[Segment(segment_id="seg_001", scene_id="c", chapter_id="c",
+                              speaker_id="host_a", text="Hallo.")])
+        wav = self.cache / "cache/audio/gemini/x.wav"
+        wav.parent.mkdir(parents=True, exist_ok=True)
+        wav.write_bytes(b"audio")
+        report = {"segments": [{"segment_id": "seg_001", "path": "gemini/x.wav", "sha256": file_hash(wav),
+                                "settings": speech_settings("Hallo.", "Aoede", "de-DE")}]}
+        self.assertEqual(check_gemini_rows(self.cache, script, report, default, "de-DE"), [wav])
+        with self.assertRaises(AppError) as caught:
+            check_gemini_rows(self.cache, script, report, lite, "de-DE")
+        self.assertEqual(caught.exception.code, "invalid_audio")
+
 
 class GeminiEpisodeTests(unittest.TestCase):
     def setUp(self):
@@ -266,6 +321,27 @@ class GeminiEpisodeTests(unittest.TestCase):
             completed = run_episode_audio(self.root, resume=True, run_id=run.run_id, api_key="rotated-key")
             self.assertEqual(completed.status, "completed")
             self.assertEqual(build.return_value.open.call_count, 1)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_switching_the_model_renders_every_segment_again_and_binds_the_run(self):
+        segments = read_yaml(self.root / "episodes/ep_001/script.yaml")["segments"]
+        lite = {**self.choice, "model": "google/gemini-3.8-flash-lite-tts"}
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = lambda *a, **k: response(self.pcm)
+            first = run_episode_audio(self.root, episode="ep_001", approve_audio=True,
+                                      audio_choice=self.choice, api_key="test-key")
+            self.assertEqual(first.status, "completed")
+            # The approval named the default model, so the switch needs its own approval.
+            with self.assertRaises(AppError):
+                run_episode_audio(self.root, episode="ep_001", audio_choice=lite, api_key="test-key")
+            # No cache entry is shared between models: every segment is requested again.
+            second = run_episode_audio(self.root, episode="ep_001", approve_audio=True,
+                                       audio_choice=lite, api_key="test-key")
+            self.assertEqual(second.status, "completed")
+            models = [json.loads(call.args[0].data)["model"] for call in build.return_value.open.call_args_list]
+        self.assertEqual(models, [GEMINI_MODEL] * len(segments) + ["google/gemini-3.8-flash-lite-tts"] * len(segments))
+        report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text())
+        self.assertEqual(report["audio_generation"]["model"], "google/gemini-3.8-flash-lite-tts")
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_one_override_costs_exactly_one_gemini_call_and_the_rest_come_from_cache(self):

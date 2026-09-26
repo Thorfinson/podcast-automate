@@ -81,6 +81,25 @@ class LockAndBudgetTests(unittest.TestCase):
         self.assertEqual(peak, 3)
         self.assertEqual(result, [e.episode_id for e in entries])
 
+    def test_every_call_of_a_parallel_stage_names_its_episode(self):
+        from podcast_automate.call_activity import CALL_SUBJECT, CallActivity
+        entries = [SimpleNamespace(episode_id=f"ep_{i:03}") for i in range(3)]
+
+        def action(entry):
+            directory = self.root / "calls" / ("call_" + entry.episode_id)
+            directory.mkdir(parents=True)
+            CallActivity(directory, "EpisodeScript", "model")
+            return [directory / "activity.json"]
+        for workers in (3, 1):
+            paths = run_episode_stage(entries, action, workers=workers, work=self.root / str(workers), stage="writing")
+            subjects = [json.loads(path.read_text(encoding="utf-8"))["subject"] for path in paths]
+            self.assertEqual(subjects, [entry.episode_id for entry in entries])
+            for path in paths:
+                path.unlink()
+            for entry in entries:
+                (self.root / "calls" / ("call_" + entry.episode_id)).rmdir()
+        self.assertIsNone(CALL_SUBJECT.get(), "the sequential path restores the caller's context")
+
     def test_sequential_setting_keeps_one_task_at_a_time(self):
         seen = []
         entries = [SimpleNamespace(episode_id=f"ep_{i:03}") for i in range(3)]
