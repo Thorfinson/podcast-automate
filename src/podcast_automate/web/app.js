@@ -1287,13 +1287,25 @@ function stopInfo(job) {
 // Blocked questions whose current block has no advice yet (research_advisor.block_key); a waiting question gets none.
 const unadvised=ledger=>(ledger?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&!q.retry_requested
   &&q.outcome!=="prerequisite_block"&&q.advice?.key!==`${Number(q.retries||0)}.${Number(q.auto_retries||0)}`).length;
+// The run asks the advisor only with room for the advice and one new attempt (question_research.advice_affordable).
+const adviceAffordable=ledger=>{
+  const b=ledger?.budget_projection;
+  return !b||Number(b.remaining)-Number(b.minimum_remaining_calls)>=1+Number(b.expected_calls_per_task);
+};
+// The call limit that leaves that room for every question still without advice and for the questions waiting on
+// them, with a tenth to spare.
+const adviceCallLimit=ledger=>{
+  const b=ledger.budget_projection, perTask=Number(b.expected_calls_per_task);
+  const waiting=(ledger.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&q.outcome==="prerequisite_block").length;
+  return Number(b.used)+Math.ceil((Number(b.minimum_remaining_calls)+unadvised(ledger)*(1+perTask)+waiting*perTask)*11/10);
+};
 function canResume(job,info=stopInfo(job)) {
   if(!job?.run||!info)return false;
   const ledger=job.progress?.research_questions, review=job.progress?.plan_review;
   if(info.code==="research_plan_review")return !review?.awaiting||!!review.approved;
   // The server lifts the ledger out of "blocked" once every blocked question is decided; a block without advice
   // resumes too, because the run asks the advisor first.
-  if(info.code==="research_questions_blocked")return Number(ledger?.reopenable||0)>0||Number(ledger?.retry_requested||0)>0||ledger?.phase!=="blocked"||unadvised(ledger)>0;
+  if(info.code==="research_questions_blocked")return Number(ledger?.reopenable||0)>0||Number(ledger?.retry_requested||0)>0||ledger?.phase!=="blocked"||(unadvised(ledger)>0&&adviceAffordable(ledger));
   return ["retry","wait","fix"].includes(info.kind)&&!info.actions.includes("key");
 }
 function restartAction(job) {
@@ -1490,8 +1502,8 @@ function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimi
     return `<li><strong>${escape(q.question)}</strong><p class="hint">${escape(outcomes[q.outcome]||q.outcome||"Blockiert")}${attempts?` · ${attempts} ${attempts===1?"Websuche":"Websuchen"}`:Number(q.steps||0)?" · keine Websuche":" · noch nicht bearbeitet"}${deps.length?` · hängt an: ${deps.map(escape).join("; ")}`:""}</p>${q.reason?`<p class="hint">${escape(q.reason)}</p>`:""}${advice(q)}${q.retry_requested?`<p class="hint">↻ Neuer Versuch angefordert${q.retry_hint?` · Hinweis: ${escape(q.retry_hint)}`:""}. „Fortsetzen“ startet ihn.</p>`:q.reopenable?'<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ führt diese Websuche aus.</p>':gapActionsFor(q,runId,searchLimit)}</li>`;
   };
   const closing=Number(ledger.budget_projection?.closing_calls||0);
-  const intro=undecided.length?`${undecided.length===1?"Eine Teilfrage ist":`${undecided.length} Teilfragen sind`} blockiert. ${reopenable?"„Fortsetzen“ holt zuerst die fehlende Websuche nach.":unadvised(ledger)?"„Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf dann selbst, einmal je Frage. Du kannst auch direkt entscheiden: noch einmal versuchen oder als Lücke akzeptieren.":`Für jede: noch einmal versuchen oder als Lücke akzeptieren. Danach schließt „Fortsetzen“ das Dossier mit ${Number(ledger.closed)} geprüften Antworten ab${closing?` (${closing} Aufrufe)`:""}.`}`:retrying.length?`Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ startet ${retrying.length===1?"den neuen Versuch":`die ${retrying.length} neuen Versuche`}.`:"Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ schließt das Dossier ab.";
-  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${roundsNote}${sourcesNote}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
+  const intro=undecided.length?`${undecided.length===1?"Eine Teilfrage ist":`${undecided.length} Teilfragen sind`} blockiert. ${reopenable?"„Fortsetzen“ holt zuerst die fehlende Websuche nach.":unadvised(ledger)&&adviceAffordable(ledger)?"„Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf dann selbst, einmal je Frage. Du kannst auch direkt entscheiden: noch einmal versuchen oder als Lücke akzeptieren.":unadvised(ledger)?`Für eine Beratung reicht das Aufruflimit nicht (${Number(ledger.budget_projection.remaining)} Aufrufe frei, der Abschluss braucht mindestens ${Number(ledger.budget_projection.minimum_remaining_calls)}). Mit einem höheren Limit berät der Lauf zuerst; sonst entscheidest du direkt: noch einmal versuchen oder als Lücke akzeptieren.`:`Für jede: noch einmal versuchen oder als Lücke akzeptieren. Danach schließt „Fortsetzen“ das Dossier mit ${Number(ledger.closed)} geprüften Antworten ab${closing?` (${closing} Aufrufe)`:""}.`}`:retrying.length?`Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ startet ${retrying.length===1?"den neuen Versuch":`die ${retrying.length} neuen Versuche`}.`:"Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ schließt das Dossier ab.";
+  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${roundsNote}${sourcesNote}${unadvised(ledger)&&!adviceAffordable(ledger)&&!running()?`<div class="actions"><button class="secondary" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${adviceCallLimit(ledger)}" data-then-resume="1">Aufruflimit auf ${adviceCallLimit(ledger)} erhöhen und beraten lassen</button></div>`:""}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
 }
 // The first retrieval reads every found source; its counter and its report stand where the ledger will appear.
 function renderRetrieval(retrieval) {
@@ -1513,7 +1525,7 @@ function renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocke
   const next=active?`<p class="next-step"><strong>Nächster Schritt:</strong> Nichts zu tun, der Lauf arbeitet${p.activity?` (${escape(p.activity)})`:""}. Ein Modellaufruf dauert meist 3 bis 8 Minuten; Zusammenstellung und Prüfung eines großen Dossiers laufen in vielen Teilen und können Stunden dauern.</p>`:"";
   if(ledger){
     if(reopenable)html+=`<p>${Number(ledger.reopenable)} blockierte ${Number(ledger.reopenable)===1?"Teilfrage hat":"Teilfragen haben"} das Web noch nicht durchsucht. „Fortsetzen“ holt diese Websuche nach; erst danach gilt eine Frage als konkrete Lücke. Fertige Antworten bleiben gespeichert.</p>`;
-    else if(researchBlocked&&unadvised(ledger))html+=`<p>${unadvised(ledger)} blockierte ${unadvised(ledger)===1?"Teilfrage hat":"Teilfragen haben"} noch keine Beratung. „Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf selbst, jede andere Entscheidung bleibt bei dir.</p>`;
+    else if(researchBlocked&&unadvised(ledger)&&adviceAffordable(ledger))html+=`<p>${unadvised(ledger)} blockierte ${unadvised(ledger)===1?"Teilfrage hat":"Teilfragen haben"} noch keine Beratung. „Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf selbst, jede andere Entscheidung bleibt bei dir.</p>`;
     else if(researchBlocked)html+=`<p>Die automatischen Versuche sind für die aufgeführten Fragen ausgeschöpft. Fertige Antworten bleiben gespeichert. Fortsetzen allein wiederholt diese Versuche nicht. Eine blockierte Teilfrage kann als Lücke akzeptiert werden; das Dossier wird dann ohne sie abgeschlossen und nennt die Lücke ausdrücklich.</p>`;
     html+=current+next+renderResearchQuestions(ledger,questionOpen,active,runId,p.search_round_limit,p.search_rounds,p.source_limit);
   }
