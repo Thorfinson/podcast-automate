@@ -38,7 +38,7 @@ from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
-from .question_answering import TaskResearchMixin, answer_errors, read_context, review_passes
+from .question_answering import ACCESS_GAP_READER, TaskResearchMixin, answer_errors, read_context, review_passes
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
                               plan_projection, plan_review_message, run_timings)
 from .question_dependencies import ordered_tasks, prerequisite_answers
@@ -49,7 +49,7 @@ from .research_evidence import support_errors
 from .research_gap_probe import coverage_terms, gap_id, probe
 from .research_ledger import (CALL_VERSION, VERSION, bootstrap_legacy, check_sources, load_index, public_ledger,
                               read_value, reopenable, save_index, save_value)
-from .research_advisor import ADVICE_VERSION, MAX_AUTO_RETRIES, BlockAdvice, advice_request, block_key, retry_feedback
+from .research_advisor import ADVICE_VERSION, BlockAdvice, advice_request, automatic_retry, block_key, retry_feedback
 from .research_models import ResearchDiscovery, ResearchDossier
 from .research_patches import cached_call
 from .research_quality import quality_brief, requirements_for
@@ -91,8 +91,8 @@ def _gaps(dossier, migration):
 
 
 class QuestionResearch(TaskResearchMixin, SynthesisMixin):
-    def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None, retries=None, plan_gate=None,
-                 workers=1, advisor=False):
+    def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None, retries=None, access_gaps=None,
+                 plan_gate=None, workers=1, advisor=False):
         self.root, self.work, self.config, self.invoke, self.progress = root, work, config, invoke, progress
         # Whether a blocked question gets the advisor's second opinion before the run stops (research_advisor).
         self.advisor = advisor
@@ -106,6 +106,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.accepted = accepted or (lambda: {})
         # Explicit requests to attempt a blocked task again; each is adopted once, at the start of a resume.
         self.retries = retries or (lambda: {})
+        # Criteria accepted as access gaps (run_budget.approve_criterion_gap); each reopens its blocked task once.
+        self.access_gaps = access_gaps or (lambda: [])
         # ``plan_gate(projection)`` returns the valid approval of the projected plan or None. Without a
         # gate the caller has taken that decision (the CLI and Studio always pass one).
         self.plan_gate = plan_gate
@@ -283,12 +285,36 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 self.save("Blockierte Teilfragen werden auf ausdrücklichen Wunsch erneut versucht")
             return reopened
 
+    def adopt_access_gaps(self):
+        """Criteria the user accepted as access gaps: the blocked task returns with them narrowed to what
+        the readable sources can show. The answer and the next review see the refused source and its
+        evidence (``access_gaps`` on the row); every other criterion is judged as before."""
+        with self.guarded():
+            reopened = []
+            approvals = self.access_gaps()
+            for task_id, row in self.state["tasks"].items():
+                known = row.get("access_gaps", [])
+                new = [gap for gap in approvals if gap["task_id"] == task_id and gap not in known]
+                if not new or row["status"] != "blocked" or row.get("accepted_gap"):
+                    continue
+                names = ", ".join(f"criterion {gap['criterion']}" for gap in new)
+                self.reopen_task(row, activity="Zugangslücke akzeptiert; die Antwort wird ohne den gesperrten Teil geprüft",
+                                 feedback=[f"The editor accepted an access gap for {names}. " + ACCESS_GAP_READER],
+                                 access_gaps=[*known, *new],
+                                 resubmit=digest(row["draft_answer"]) if row.get("draft_answer") else None)
+                reopened.append(task_id)
+            if reopened:
+                self.release_dependents()
+                self.save("Akzeptierte Zugangslücken werden übernommen")
+            return reopened
+
     def reopen_task(self, row, *, activity, feedback, **fields):
         """A blocked task returns to research with a fresh recovery ladder and the allowance of a new
         question on top of what it used. The caller holds the ledger lock."""
         limits = self.state["limits"]
         row.update(status="researching", pending=None, outcome=None, reason="", no_progress=0, fallbacks=0,
-                   answer_locked=False, extra_steps=row.get("extra_steps", 0) + limits["steps_per_question"],
+                   answer_locked=False, auto_stop=None, revise_only=False,
+                   extra_steps=row.get("extra_steps", 0) + limits["steps_per_question"],
                    extra_web_attempts=row.get("extra_web_attempts", 0) + limits["web_attempts"],
                    activity=activity, feedback=feedback, **fields)
 
@@ -343,10 +369,14 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                                            search=search, advisor=True), on_retry=self.retry_note)
             with self.guarded():
                 row["advice"] = {**advice.model_dump(), "key": key, "at": now()}
-                if advice.recommendation == "retry" and row.get("auto_retries", 0) < MAX_AUTO_RETRIES:
+                allowed, stopped = automatic_retry(row)
+                if advice.recommendation == "retry" and allowed:
                     self.reopen_task(row, activity="Neuer Versuch nach Beratung", feedback=retry_feedback(advice),
-                                     auto_retries=row.get("auto_retries", 0) + 1)
+                                     auto_retries=row.get("auto_retries", 0) + 1,
+                                     auto_retry_read=len(row.get("read_refs", [])))
                     reopened.append(task_id)
+                elif advice.recommendation == "retry":
+                    row["auto_stop"] = stopped
                 self.save(f"Beratung zur blockierten Frage gespeichert: {spec.question}")
         if reopened:
             with self.guarded():
@@ -717,6 +747,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.adopt_retries()
         while True:
             self.adopt_accepted_gaps()
+            self.adopt_access_gaps()
             self.research_tasks()
             self.adopt_accepted_gaps()
             blocked = [r for r in public_ledger(self.state)["questions"] if r["status"] == "blocked" and not r["accepted_gap"]]
@@ -760,6 +791,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
 
 
 def run_question_research(root, work, config, discovery, index, invoke, progress, *, dossier=None, context=(),
-                          limits=None, accepted=None, retries=None, plan_gate=None, workers=1, advisor=False):
+                          limits=None, accepted=None, retries=None, access_gaps=None, plan_gate=None, workers=1,
+                          advisor=False):
     return QuestionResearch(root, work, config, invoke, progress, limits=limits, accepted=accepted, retries=retries,
-                            plan_gate=plan_gate, workers=workers, advisor=advisor).run(discovery, index, dossier, context)
+                            access_gaps=access_gaps, plan_gate=plan_gate, workers=workers,
+                            advisor=advisor).run(discovery, index, dossier, context)

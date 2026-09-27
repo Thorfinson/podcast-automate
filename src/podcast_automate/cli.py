@@ -115,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--retry", metavar="TASK_ID",
                          help="Blockierte Teilfrage beim nächsten Fortsetzen erneut versuchen, mit dem Spielraum einer neuen Frage")
     approve.add_argument("--hint", default="", help="Hinweis für den neuen Versuch; geht als Rückmeldung an das Modell")
+    approve.add_argument("--access-gap", nargs=2, metavar=("TASK_ID", "CRITERION"),
+                         help="Ein Kriterium einer blockierten Teilfrage als Zugangslücke akzeptieren (Nummer ab 0); "
+                              "verlangt --blocked-source")
+    approve.add_argument("--blocked-source", metavar="URL",
+                         help="Adresse, deren Abruf in diesem Lauf nachweislich gesperrt war (research_questions.json, blocked_sources)")
     approve.add_argument("--research-plan", nargs="?", const=True, default=None, metavar="RUN_ID",
                          help="Den wartenden Rechercheplan dieses Laufs freigeben (Hochrechnung in "
                               "runs/<run_id>/question_research/plan_projection.json); ohne RUN_ID gilt --run-id oder der letzte Lauf")
@@ -202,15 +207,17 @@ def run_command(args) -> int:
                     "waiting_for_quota" if overview["any_usable"] else "blocked", **overview}
             code = 0 if overview["any_available"] else 2 if overview["any_usable"] else 1
         elif args.command == "approve":
-            from .run_budget import (approve_model_call_limit, approve_research_gap, approve_research_plan,
-                                     approve_research_retry)
+            from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap,
+                                     approve_research_plan, approve_research_retry)
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
             if (args.model_calls is None and args.search_rounds is None and args.sources is None and not args.accept_gap
-                    and not args.retry and args.research_plan is None):
-                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --sources, --accept-gap "
-                               "oder --retry.", code="invalid_request", status="blocked")
+                    and not args.retry and not args.access_gap and args.research_plan is None):
+                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --sources, --accept-gap, "
+                               "--access-gap oder --retry.", code="invalid_request", status="blocked")
+            if bool(args.access_gap) != bool(args.blocked_source):
+                raise AppError("--access-gap und --blocked-source gehören zusammen.", code="invalid_request", status="blocked")
             if args.max_tasks is not None and args.research_plan is None:
                 raise AppError("--max-tasks gilt nur zusammen mit --research-plan.", code="invalid_request", status="blocked")
             data = {"status": "approved", "run_id": run_id}
@@ -227,6 +234,12 @@ def run_command(args) -> int:
             if args.retry:
                 request = approve_research_retry(root, run_id, args.retry, args.hint)
                 data["retry_request"] = request.model_dump(mode="json")
+            if args.access_gap:
+                task_id, criterion = args.access_gap
+                if not criterion.isdigit():
+                    raise AppError("Das Kriterium ist eine Nummer ab 0.", code="invalid_request", status="blocked")
+                access = approve_criterion_gap(root, run_id, task_id, int(criterion), args.blocked_source, args.reason)
+                data["access_gap"] = access.model_dump(mode="json")
             data["message"] = "Freigabe gespeichert. Der Lauf übernimmt sie beim nächsten Aufruf oder mit pla resume."
             code = 0
         elif args.command == "schemas":

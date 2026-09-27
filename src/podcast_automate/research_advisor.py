@@ -5,10 +5,12 @@ review's objections, the sources read, the downloads that failed and why, and th
 search the web itself. It names the cause in plain German and recommends a new attempt, an explicit
 gap or a higher limit, with a concrete hint (works, free copies, other search routes).
 
-A recommended new attempt starts automatically, at most ``MAX_AUTO_RETRIES`` times per question. Every
-other decision stays with the operator, who sees the advice next to the question with the hint already
-filled in. The advice is search guidance, never evidence: whatever the new attempt finds still passes
-the independent review.
+A recommended new attempt starts automatically, at most ``MAX_AUTO_RETRIES`` times per question, and
+never after an automatic attempt that read no new passage: that attempt was stuck, and the next one
+would repeat it. Only then does the question wait for the operator, who can adopt every open retry
+recommendation with one click. Accepting a gap and raising a limit always stay with the operator. The
+advice is search guidance, never evidence: whatever a new attempt finds still passes the independent
+review.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from .models import Contract, NonEmpty
 from .text_settings import DEFAULT_CLAUDE_MODEL
 
 ADVICE_VERSION = "block_advice.v1"
-MAX_AUTO_RETRIES = 1
+MAX_AUTO_RETRIES = 5
 # The advisor's own setting: Opus 5.5 at its deepest level where the run already uses the Claude subscription.
 ADVISOR_EFFORT = "xhigh"
 
@@ -45,6 +47,17 @@ def advisor_selection(selection):
     if selection and selection.get("provider") == "claude_code":
         return {**selection, "model": DEFAULT_CLAUDE_MODEL, "reasoning_effort": ADVISOR_EFFORT}
     return selection
+
+
+def automatic_retry(row):
+    """Whether a retry recommendation may start by itself, else why not: ``limit`` after MAX_AUTO_RETRIES
+    automatic attempts, ``no_progress`` when the last automatic attempt read no new passage."""
+    if row.get("auto_retries", 0) >= MAX_AUTO_RETRIES:
+        return False, "limit"
+    basis = row.get("auto_retry_read")
+    if basis is not None and len(row.get("read_refs", [])) <= basis:
+        return False, "no_progress"
+    return True, None
 
 
 def block_key(row):

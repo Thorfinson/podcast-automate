@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch
 from pydantic import ValidationError
 
 from podcast_automate.call_activity import contract_rejection
-from podcast_automate.claude_code import ClaudeCodeAdapter
+from podcast_automate.claude_code import ClaudeCodeAdapter, prompt_limit
 from podcast_automate.cli import main
 from podcast_automate.codex import CodexAdapter
 from podcast_automate.errors import AppError
@@ -27,13 +27,16 @@ from podcast_automate.provider_pool import AdapterPool
 from podcast_automate.question_research import QuestionResearch
 from podcast_automate.research import reconcile_budget, reserve_call
 from podcast_automate.research_ledger import load_index, read_value, save_value
+from podcast_automate.research_models import SourceIndex
 from podcast_automate.research_quality import ResearchAssessment
 from podcast_automate.research_tasks import AnswerReview, QuestionPlan, QuestionSearch, ReopenPlan, ResearchDecision
-from podcast_automate.run_budget import (accepted_gaps, approve_research_gap, approve_research_retry, effective_limits,
+from podcast_automate.run_budget import (accepted_gaps, approve_criterion_gap, approve_research_gap, approve_research_retry,
+                                        criterion_gaps, effective_limits,
                                          retry_requests)
 from podcast_automate.sources import download, extract, import_failure, public_url
-from podcast_automate.storage import digest, init_project, write_json, write_yaml
+from podcast_automate.storage import digest, init_project, read_yaml, write_json, write_yaml
 from podcast_automate.studio import make_server, read_json
+from podcast_automate.studio_progress import research_progress
 from podcast_automate.text_settings import auto_candidates
 from tests import research_fixtures as fixtures
 from tests.question_fixtures import answer_for, complete_fixture_response, decision, task_value
@@ -60,7 +63,8 @@ class WorkflowCase(unittest.TestCase):
         return QuestionResearch(f.root, f.work, f.config, f.model,
                                 lambda activity: write_json(f.work / "research_activity.json", {"activity": activity}),
                                 accepted=lambda: accepted_gaps(f.work, INPUT_HASH),
-                                retries=lambda: retry_requests(f.work, INPUT_HASH))
+                                retries=lambda: retry_requests(f.work, INPUT_HASH),
+                                access_gaps=lambda: criterion_gaps(f.work, INPUT_HASH))
 
     def run_engine(self):
         engine = self.engine()
@@ -156,6 +160,83 @@ class RetryRequestTests(WorkflowCase):
         self.assertEqual(engine.state["phase"], "completed")
         self.assertEqual((engine.state["tasks"]["task_empirical"]["status"], engine.state["tasks"]["task_empirical"]["retries"]),
                          ("verified", 2))
+
+
+class AccessGapTests(WorkflowCase):
+    REFUSED = "https://publisher.example/chapter"
+
+    def test_a_criterion_whose_source_refused_retrieval_is_accepted_and_the_rest_is_still_judged(self):
+        self.fixture.index = SourceIndex(sources=self.fixture.index.sources, failures=[
+            {"source": self.REFUSED, "reason": "Quellenabruf fehlgeschlagen (HTTP 403).", "code": "source_download_failed"},
+            {"source": "https://publisher.example/moved", "reason": "Quellenabruf fehlgeschlagen (HTTP 404).",
+             "code": "source_download_failed"}])
+        prompts = []
+
+        def flow(prompt, schema, payload, kwargs):
+            prompts.append((schema, payload["task"]["id"] if "task" in payload else "", prompt))
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                if "answer" in payload["allowed_actions"]:
+                    return decision("answer", answer=answer_for(self.fixture.ref))
+                return decision("search_web", web_queries=["the chapter itself"])
+            if schema is AnswerReview and payload["task"]["id"] == "task_empirical":
+                # The reviewer still judges the criterion; only with the accepted gap is the rest enough.
+                passed = [g["criterion"] for g in payload.get("accepted_access_gaps", [])] == [0]
+                return AnswerReview(criteria=[dict(index=0, passed=passed, reason="The figure is only in the refused chapter.")],
+                                    supported=True, source_adequacy=True, issues=[])
+        self.fixture.hook = flow
+        with self.assertRaises(AppError) as blocked:
+            self.run_engine()
+        self.assertEqual(blocked.exception.code, "research_questions_blocked")
+        public = json.loads((self.work / "research_questions.json").read_text(encoding="utf-8"))
+        self.assertEqual([row["url"] for row in public["blocked_sources"]], [self.REFUSED])
+        for task_id, criterion, source in (("task_definition", 0, self.REFUSED),      # verified, nothing to narrow
+                                           ("task_unknown", 0, self.REFUSED),
+                                           ("task_empirical", 1, self.REFUSED),       # the task has one criterion
+                                           ("task_empirical", 0, "https://publisher.example/moved"),  # 404: not a refusal
+                                           ("task_empirical", 0, "https://elsewhere.example/")):
+            with self.subTest(task=task_id, criterion=criterion, source=source), self.assertRaises(AppError) as refused:
+                approve_criterion_gap(self.root, "run_test", task_id, criterion, source)
+            self.assertEqual(refused.exception.code, "invalid_gap_approval")
+        self.assertEqual(criterion_gaps(self.work, INPUT_HASH), [])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["approve", str(self.root), "--run-id", "run_test", "--access-gap", "task_empirical", "0",
+                         "--blocked-source", self.REFUSED, "--reason", "Publisher login only", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["access_gap"]["evidence"], "Quellenabruf fehlgeschlagen (HTTP 403).")
+        # Repeating the approval is harmless.
+        approve_criterion_gap(self.root, "run_test", "task_empirical", 0, self.REFUSED)
+        self.assertEqual(len(criterion_gaps(self.work, INPUT_HASH)), 1)
+        # The Studio shows the decision at once; the resume adopts it.
+        shown = research_progress(self.root, read_yaml(self.work / "run_manifest.yaml"))["research_questions"]
+        row = next(r for r in shown["questions"] if r["id"] == "task_empirical")
+        self.assertEqual((row["access_gap_requested"], [g["criterion"] for g in row["requested_access_gaps"]]), (True, [0]))
+        self.assertEqual(shown["phase"], "questions", "the only blocked question is decided")
+        before = len(prompts)
+        # The reader resubmits its earlier answer unchanged: it failed under the old criterion, and the
+        # narrowed one reviews it once more instead of refusing it as a repeat.
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        row = engine.state["tasks"]["task_empirical"]
+        self.assertEqual((row["status"], [g["criterion"] for g in row["access_gaps"]]), ("verified", [0]))
+        gap_limits = [item["text"] for item in row["verification"]["limitations"] if item["kind"] == "accepted_access_gap"]
+        self.assertEqual(len(gap_limits), 1)
+        self.assertIn(self.REFUSED, gap_limits[0])
+        self.assertIn("Publisher login only", gap_limits[0])
+        # The narrowed criterion reaches the reader and the reviewer of that task, and no other prompt.
+        after = prompts[before:]
+        reader = [p for schema, task, p in after if schema is ResearchDecision and task == "task_empirical"]
+        review = [p for schema, task, p in after if schema is AnswerReview and task == "task_empirical"]
+        self.assertTrue(reader and all("accepted_access_gaps lists acceptance criteria the editor accepted" in p for p in reader))
+        self.assertTrue(review and all("does not count against source_adequacy" in p for p in review))
+        self.assertFalse(any("accepted_access_gaps" in p for schema, task, p in prompts if task == "task_definition"))
+        self.assertIn(self.REFUSED, (self.work / "research_quality.md").read_text(encoding="utf-8"))
+        # A resumed run stays complete without new calls.
+        calls = len(self.fixture.calls)
+        self.assertEqual(self.run_engine().state["phase"], "completed")
+        self.assertEqual(len(self.fixture.calls), calls)
 
 
 class AcceptedGapTests(WorkflowCase):
@@ -721,7 +802,7 @@ class PromptSizeTests(unittest.TestCase):
         self.assertEqual((caught.exception.code, caught.exception.status), ("prompt_too_large", "blocked"))
         fakes = QuotaFakes(self, codex=False)
         pool = AdapterPool(RuntimeSettings(), {"provider": "auto", "prefer": "codex_cli", "candidates": auto_candidates()})
-        with patch("podcast_automate.provider_pool.PROMPT_LIMIT_CHARS", 10), \
+        with patch("podcast_automate.provider_pool.prompt_limit", return_value=10), \
                 patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=AssertionError("excluded")):
             with self.assertRaises(AppError) as paused:
                 pool.structured("x" * 11, TextProbeOutput, self.root / "auto", prompt_version="test")
@@ -733,6 +814,26 @@ class PromptSizeTests(unittest.TestCase):
                 output, _ = pool.structured("x" * 11, TextProbeOutput, self.root / "auto", prompt_version="test")
         self.assertEqual(output.topic, "t")
         self.assertEqual(json.loads((self.root / "auto/provider_choice.json").read_text(encoding="utf-8"))["provider"], "codex_cli")
+
+    def test_opus_5_5_takes_the_prompts_its_window_holds_and_opus_5_refuses_them(self):
+        # The 330 407-character audit part the Asimov run stopped on: Opus 5.5 has a native
+        # 1 000 000-token window (CLI 2.1.283), Opus 5 keeps the 200 000-token calibration.
+        prompt = "x" * 330_407
+        self.assertEqual((prompt_limit("claude-opus-5"), prompt_limit("claude-opus-5-5")), (300_000, 1_500_000))
+        started = AppError("login reached", code="started")
+        for model, code in (("claude-opus-5", "prompt_too_large"), ("claude-opus-5-5", "started")):
+            adapter = ClaudeCodeAdapter(RuntimeSettings(), model=model, reasoning_effort="high")
+            with self.subTest(model=model), patch.object(ClaudeCodeAdapter, "check_login", side_effect=started):
+                with self.assertRaises(AppError) as caught:
+                    adapter.structured(prompt, TextProbeOutput, self.root / model, prompt_version="test")
+                self.assertEqual(caught.exception.code, code)
+        QuotaFakes(self, codex=False)
+        pool = AdapterPool(RuntimeSettings(), {"provider": "auto", "prefer": "claude_code", "candidates": auto_candidates()})
+        with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured",
+                   return_value=(TextProbeOutput(topic="t", focus_questions=["q"], note="n"), {"provider": "claude_code"})):
+            pool.structured(prompt, TextProbeOutput, self.root / "auto", prompt_version="test")
+        self.assertFalse((self.root / "auto/prompt_size.json").exists())
+        self.assertEqual(json.loads((self.root / "auto/provider_choice.json").read_text(encoding="utf-8"))["provider"], "claude_code")
 
 
 class StudioApprovalTests(unittest.TestCase):
@@ -765,6 +866,24 @@ class StudioApprovalTests(unittest.TestCase):
         body = response.read()
         connection.close()
         return response.status, body
+
+    def test_an_access_gap_names_a_criterion_and_a_source_this_run_could_not_read(self):
+        index_hash = "c" * 64
+        save_value(self.work / "question_research/state.json",
+                   {"plan": {"tasks": [{"id": "task_c", "acceptance": ["Reports the benchmark", "Verifies the figures"]}]},
+                    "tasks": {"task_c": {"status": "blocked"}}, "index_hash": index_hash})
+        save_value(self.work / "question_research/indexes" / f"{index_hash}.json", {"schema_version": "1.0", "sources": [], "failures": [
+            {"source": "https://publisher.example/chapter", "reason": "Quellenabruf fehlgeschlagen (HTTP 403).",
+             "code": "source_download_failed"}]})
+        request = {"kind": "access_gap", "run_id": "run_x", "task_id": "task_c", "criterion": 1,
+                   "source": "https://publisher.example/chapter"}
+        for wrong in ({"source": "https://elsewhere.example/"}, {"criterion": "1"}, {"criterion": 2}):
+            with self.subTest(wrong=wrong):
+                self.assertEqual(self.request("/api/projects/example/approve", {**request, **wrong})[0], 400)
+        status, body = self.request("/api/projects/example/approve", request)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["access_gap"]["evidence"], "Quellenabruf fehlgeschlagen (HTTP 403).")
+        self.assertEqual([(g["task_id"], g["criterion"]) for g in criterion_gaps(self.work, "b" * 64)], [("task_c", 1)])
 
     def test_approvals_are_explicit_actions_bound_to_the_run(self):
         status, _ = self.request("/api/projects/example/approve",

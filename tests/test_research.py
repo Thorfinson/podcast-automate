@@ -15,12 +15,13 @@ from podcast_automate.research import run_research, validate_dossier
 from podcast_automate.research_patches import DossierPatch
 from podcast_automate.research_review import SourceReview, SourceReviewIssue
 from podcast_automate.research_models import (Evidence, Finding, QuestionCoverage, ResearchDiscovery, ResearchDossier,
-                                              SourceCandidate)
+                                              SourceCandidate, SourceIndex, SourceSection)
 from podcast_automate.research_quality import requirements_for
 from podcast_automate.research_tasks import QuestionPlan, ReopenPlan, ResearchDecision
 from podcast_automate.run_budget import approve_research_gap
 from podcast_automate.runner import status
-from podcast_automate.sources import canonical_url, extract, import_source, public_url, PublicRedirect
+from podcast_automate.sources import (blocked_sources, canonical_url, extract, import_source, public_url,
+                                      PublicRedirect)
 from podcast_automate.storage import write_yaml
 from tests import research_fixtures as fixtures
 from tests.research_fixtures import TEXT, HTML, discovery, dossier_from_prompt
@@ -127,6 +128,63 @@ class SourceTests(unittest.TestCase):
                 error, fetched = self.open_access_case(url, "A paper", {url: failure})
                 self.assertIs(error, failure)
                 self.assertEqual(fetched, [url])
+
+    # Springer's bot check as the Ontologies run received it: a noscript notice and one loading error, 300 characters.
+    CHALLENGE = (b"<!DOCTYPE html><html><head><title>Client Challenge</title></head><body><noscript>JavaScript is "
+                 b"disabled in your browser. Please enable JavaScript to proceed.</noscript><div id=\"loading-error\">"
+                 b"A required part of this site couldn't load. This may be due to a browser extension, network issues, "
+                 b"or browser settings. Please check your connection, disable any ad blockers, or try using a different "
+                 b"browser.</div><script>loadScript('/_fs-ch/script.js')</script></body></html>")
+
+    def test_a_bot_check_counts_as_a_refused_download_and_brings_the_free_copy(self):
+        with self.assertRaises(AppError) as refused:
+            extract(self.CHALLENGE, "text/html", "page")
+        self.assertEqual((refused.exception.code, refused.exception.details), ("source_access_blocked", {"interstitial": True}))
+        url = "https://link.springer.com/chapter/10.1007/978-3-031-77847-6_18"
+        work = {"locations": [{"is_oa": True, "pdf_url": "https://repository.example/chapter.pdf"}]}
+        document, fetched = self.open_access_case(url, "Increasing the accuracy", {
+            url: (self.CHALLENGE, "text/html", url),
+            "https://api.openalex.org/works/doi:10.1007/978-3-031-77847-6_18": (json.dumps(work).encode(), "application/json", ""),
+            "https://repository.example/chapter.pdf": (HTML, "text/html", "https://repository.example/chapter.pdf")})
+        self.assertEqual((document.url, document.final_url), (url, "https://repository.example/chapter.pdf"))
+        self.assertIn("Open-access copy of the same work found via OpenAlex", document.reliability_note)
+        # Without a free copy the refusal itself is the failure, and an ordinary page never gets the copy note.
+        closed, _ = self.open_access_case(url, "Increasing the accuracy", {
+            url: (self.CHALLENGE, "text/html", url),
+            "https://api.openalex.org/works/doi:10.1007/978-3-031-77847-6_18": (json.dumps({"locations": []}).encode(),
+                                                                               "application/json", "")})
+        self.assertEqual(closed.code, "source_access_blocked")
+        plain, _ = self.open_access_case("https://example.org/paper", "Paper",
+                                         {"https://example.org/paper": (HTML, "text/html", "https://example.org/paper")})
+        self.assertNotIn("Open-access copy", plain.reliability_note)
+
+    def test_a_script_banner_above_a_real_article_is_not_a_bot_check(self):
+        article = (b"<html><head><title>A real article</title></head><body><div>JavaScript is disabled in your browser."
+                   b"</div><article>" + b"".join(b"<p>Paragraph %d: ontologies constrain what a model may state about "
+                                                 b"a schema.</p>" % n for n in range(60)) + b"</article></body></html>")
+        kind, _, _, sections = extract(article, "text/html", "page")
+        self.assertEqual(kind, "html")
+        self.assertTrue(sections)
+
+    def test_only_refused_addresses_count_as_blocked_sources(self):
+        with patch("podcast_automate.sources.download", return_value=(self.CHALLENGE + b" " * 10, "text/html", "")), \
+                patch("podcast_automate.sources.extract", side_effect=lambda raw, kind, name: (
+                    "html", ".html", {"title": "Client Challenge"},
+                    [SourceSection(id="sec_1", text="A required part of this site couldn't load. " * 6, page=None)])), \
+                tempfile.TemporaryDirectory() as temporary:
+            # A check imported before such pages were recognised still stands in older indexes.
+            imported, _ = import_source(SourceCandidate(url="https://link.springer.com/chapter/x", title="Chapter",
+                                                        authors=[], published_date="", rationale="Test", primary_source=True),
+                                        Path(temporary), "run_test")
+        index = SourceIndex(sources=[imported], failures=[
+            {"source": "https://publisher.example/a", "reason": "Quellenabruf fehlgeschlagen (HTTP 403).", "code": "source_download_failed"},
+            {"source": "https://publisher.example/b", "reason": "Quellenabruf fehlgeschlagen (HTTP 404).", "code": "source_download_failed"},
+            {"source": "https://publisher.example/c", "reason": "Quellenabruf fehlgeschlagen (TimeoutError).", "code": "source_download_failed"},
+            {"source": "https://publisher.example/d", "reason": "Quelle liefert eine Zugriffssperre statt Artikeltext.",
+             "code": "source_access_blocked"}])
+        self.assertEqual([row["url"] for row in blocked_sources(index)],
+                         ["https://publisher.example/a", "https://publisher.example/d", "https://link.springer.com/chapter/x"])
+        self.assertIn("Client Challenge", blocked_sources(index)[-1]["evidence"])
 
     def test_unreadable_and_challenge_pages_are_rejected(self):
         for raw, content_type in ((b"short", "text/plain"), (b"\0" * 400, "text/plain"),

@@ -28,9 +28,10 @@ from .research_review import ROUTING_INSTRUCTIONS, SourceReview, needs_research
 from .research_tasks import QuestionPlan, ReopenPlan
 from .storage import atomic_text, digest, write_json
 
-# One Claude window (claude_code.PROMPT_LIMIT_CHARS, 300 000 characters) bounds every synthesis call.
+# One Opus 5 window (claude_code.PROMPT_LIMIT_CHARS, 300 000 characters) bounds every synthesis call.
 # The instructions, the JSON framing and the answer share it, so the material a call carries stays
-# under this budget; a run with more verified material composes and audits in bounded parts.
+# under this budget; a run with more verified material composes and audits in bounded parts. A
+# model with a larger window (claude_code.prompt_limit) takes the part reviews that outgrow it.
 PROMPT_BUDGET_CHARS = 240_000
 # The generation of the composing prompts a run was started with. A rule added to those prompts
 # applies from the next generation on; earlier runs keep their prompt text and their receipts.
@@ -46,6 +47,10 @@ PART_NOTE = (" This is one part of the review of this dossier: finding_support o
              "source_assessments only for the supplied sources, issues only about the supplied findings, and "
              "objection_checks for exactly the supplied open_objections. other_findings lists the rest of the "
              "dossier as context; do not assess it.")
+# Only in a part whose objections cite passages its findings do not: those sources are context for the
+# closure checks, and the source check expects assessments of exactly the sources the findings cite.
+OBJECTION_SOURCES_NOTE = (" objection_sources holds passages that only the open objections cite: use them for "
+                          "objection_checks, and give source_assessments only for sources listed under sources.")
 
 
 def chars(value):
@@ -98,6 +103,10 @@ ROUTING_OBJECTION_FIELDS = ("id", "rule", "task_id", "criterion_index", "finding
 ROUTING_PART_SIZE = 25
 ROUTING_PART_NOTE = (" This is one part of the routing: route exactly the supplied objections, whose indices count "
                      "from 0 within this part; the other objections of this audit are routed in other parts.")
+# The feedback of a task reopened only to correct its wording; the reader may then only answer.
+REVISE_NOTE = ("Correction only: the audit found that the supplied passages suffice and only the wording, scope or "
+               "attribution of the named findings must change. Answer directly with the corrected answer; keep every "
+               "other finding, reference and limit as it was.")
 
 
 def split_objections(objections, size):
@@ -245,13 +254,20 @@ class SynthesisMixin:
                     targets=targets, legacy_targets=legacy_targets, instructions=rules_for(batch),
                     extra_context=passages(batch), coverage_ids=question_ids)
                 added = {f.id for f in dossier.findings} - {f.id for f in before.findings}
+                # A batch repairs only its own findings; a source-wide limit other findings share waits (as in
+                # compose_in_batches). Strictly, a longer reworked answer stopped the whole run here.
                 dossier = repair_references(folder, f"batch_{start:03d}_references", dossier, discovery, context, self.config,
                     lambda p, s, start=start: self.generate(folder, f"batch_{start:03d}_references", p, s, f"{VERSION}.references"),
-                    allowed_ids=targets | added)
+                    allowed_ids=targets | added, defer_shared=True)
                 preserve_unrelated(before, dossier, targets)
                 additions = dossier.model_copy(update={"findings": [f for f in dossier.findings if f.id in added]})
                 owners.update(finding_owners(additions, [t for t in plan.tasks if t.id in batch_ids], self.state["tasks"]))
                 start += size
+            # Source-wide quote and paraphrase limits only the sum of the batches can break: the closing pass
+            # repairs them in the findings that cite the source, which the next audit reviews like any other.
+            self.save("Belegkorrektur über das ganze Dossier läuft")
+            dossier = repair_references(folder, "reopened_references", dossier, discovery, context, self.config,
+                lambda p, s: self.generate(folder, "reopened_references", p, s, f"{VERSION}.references"))
         else:
             text = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + SYNTHESIS_INSTRUCTIONS + self.synthesis_rule() +
                     instructions("dossier_compose", language=self.config.language))
@@ -489,19 +505,27 @@ class SynthesisMixin:
         def part_payload(part):
             part_ids = {f.id for f in part}
             objections = {oid: expected[oid] for f in part for oid in objections_of.get(f.id, [])}
-            refs = ({e.reference for f in part for e in f.evidence}
-                    | {ref for objection in objections.values() for ref in objection.get("evidence_refs", [])})
-            return {"brief": brief, "dossier": {**outline, "findings": [f.model_dump() for f in part]},
-                    "other_findings": [{"id": f.id, "kind": f.kind, "statement": f.statement}
-                                       for f in findings if f.id not in part_ids],
-                    "sources": select_context(context, refs), "open_objections": objections,
-                    "tasks": tasks, "verified_baseline": baseline}
+            cited = {e.reference for f in part for e in f.evidence}
+            named = {ref for objection in objections.values() for ref in objection.get("evidence_refs", [])} - cited
+            payload = {"brief": brief, "dossier": {**outline, "findings": [f.model_dump() for f in part]},
+                       "other_findings": [{"id": f.id, "kind": f.kind, "statement": f.statement}
+                                          for f in findings if f.id not in part_ids],
+                       "sources": select_context(context, cited), "open_objections": objections,
+                       "tasks": tasks, "verified_baseline": baseline}
+            if named:
+                payload["objection_sources"] = select_context(context, named)
+            return payload
 
+        # Every part repeats the outline, the other findings, the tasks and the baseline. Once that
+        # shared context leaves less than ANSWER_BUDGET_CHARS of the budget, a part still checks that
+        # much of its own material rather than one finding per call, and needs the larger window.
+        shared = len(text) + len(PART_NOTE) + chars(part_payload([]))
+        room = max(PROMPT_BUDGET_CHARS, shared + ANSWER_BUDGET_CHARS)
         parts, start = [], 0
         while start < len(findings):
             size = 1
             while (start + size < len(findings)
-                   and len(text) + len(PART_NOTE) + chars(part_payload(findings[start:start + size + 1])) <= PROMPT_BUDGET_CHARS):
+                   and len(text) + len(PART_NOTE) + chars(part_payload(findings[start:start + size + 1])) <= room):
                 size += 1
             parts.append(findings[start:start + size])
             start += size
@@ -509,8 +533,9 @@ class SynthesisMixin:
         for index, part in enumerate(parts):
             payload = part_payload(part)
             self.save(f"Quellenprüfung in Teilen: Teil {index + 1} von {len(parts)} mit {len(part)} Befunden")
+            note = PART_NOTE + (OBJECTION_SOURCES_NOTE if "objection_sources" in payload else "")
             reviews.append(self.call(folder, f"grounding_{revision}_part_{index:03d}", SourceReview,
-                text + PART_NOTE + "\n" + json.dumps(payload, ensure_ascii=False),
+                text + note + "\n" + json.dumps(payload, ensure_ascii=False),
                 validate=lambda review, final, part=part, objections=payload["open_objections"]:
                     well_formed(review, final, findings=part, objections=objections)))
         merged = {}
@@ -523,7 +548,7 @@ class SynthesisMixin:
         review = SourceReview.model_validate(merged)
         well_formed(review, True)
         write_json(folder / f"grounding_{revision}_merged.json", {"parts": len(parts), "findings_per_part": [len(p) for p in parts],
-                   "budget_chars": PROMPT_BUDGET_CHARS, "review": review.model_dump(mode="json")})
+                   "budget_chars": room, "review": review.model_dump(mode="json")})
         return review
 
     def probe_declared_gaps(self, dossier):
@@ -580,6 +605,8 @@ class SynthesisMixin:
         context = read_context(self.reader, [e.reference for f in dossier.findings for e in f.evidence])
         registry = self.state.setdefault("objections", {})
         closed = {c["objection_id"] for c in report.get("objection_checks", []) if c["verdict"] == "closed"}
+        # Which earlier objections this audit closed: the ledger shows each question's still open ones.
+        self.state["closed_objections"] = sorted(closed)
         text = instructions("objection_routes")
         payload = {"objections": objections, "tasks": [t.model_dump() for t in tasks],
                    "anchored_issues": [i.objection.model_dump() for i in review.issues if i.objection],
@@ -636,6 +663,9 @@ class SynthesisMixin:
             write_json(folder / "routes_merged.json", {"parts": len(parts), "objections_per_part": [len(p) for p in parts],
                        "routes": routes.model_dump(mode="json")})
         reasons, disagreements = {}, []
+        # Per task, how its objections resolve and which passages they cite: a task whose objections all
+        # say "revise" (the read passages suffice) only corrects its answer instead of researching again.
+        resolutions, cited = {}, {}
         for route in routes.routes:
             for task_id in route.task_ids:
                 routed = False
@@ -649,6 +679,8 @@ class SynthesisMixin:
                         disagreements.append(anchor.model_dump())
                         continue
                     routed = True
+                    resolutions.setdefault(task_id, set()).add(anchor.resolution)
+                    cited.setdefault(task_id, []).extend(anchor.evidence_refs)
                     identifier = self.existing_objection(registry, closed, anchor, identifier)
                     if task_id in accepted:
                         self.state.setdefault("accepted_gap_objections", {})[identifier] = {
@@ -670,9 +702,16 @@ class SynthesisMixin:
                 continue
             row["reopenings"].append({"reason": texts, "previous_answer": row["answer"],
                                      "previous_verification": row.get("verification")})
+            revise = resolutions.get(task_id) == {"revise"}
+            previous_refs = [e["reference"] for f in (row["answer"] or {}).get("findings", []) for e in f.get("evidence", [])]
             row.update(status="researching", answer=None, draft_answer=row["reopenings"][-1]["previous_answer"],
-                       feedback=texts, step=0, no_progress=0, fallbacks=0, pending=None,
-                       activity="Mit konkretem Einwand aus der Gesamtprüfung wieder geöffnet")
+                       feedback=[*texts, *([REVISE_NOTE] if revise else [])], step=0, no_progress=0, fallbacks=0, pending=None,
+                       revise_only=revise, activity=("Einwand der Gesamtprüfung betrifft nur den Wortlaut: Antwort wird an den "
+                       "gelesenen Stellen korrigiert") if revise else "Mit konkretem Einwand aus der Gesamtprüfung wieder geöffnet")
+            if revise:
+                # The passages the answer cited and the objections name: everything the correction may rest on.
+                row["current_refs"] = [ref for ref in dict.fromkeys([*previous_refs, *cited.get(task_id, [])])
+                                       if ref in self.reader.lookup]
             reopened.append(task_id)
         dirty = invalidate_dependents(self.state, [t for t in reasons if t not in accepted])
         self.state.update(seed_dossier=dossier.model_dump(), dirty_tasks=dirty, finding_owners=owners,

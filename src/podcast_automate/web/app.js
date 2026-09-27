@@ -274,14 +274,19 @@ function defaultTextChoice(provider="codex_cli") {
 }
 const providerLabels={codex_cli:"Codex · Abo",claude_code:"Claude · Abo",openrouter:"OpenRouter · API",auto:"Automatisch · Claude-Abo, sonst Codex-Abo"};
 const providerNames={codex_cli:"Codex",claude_code:"Claude",openrouter:"OpenRouter"};
-function autoCandidates() {
-  return boot.text_catalog?.auto_candidates||{codex_cli:{model:"gpt-6-astra",reasoning_effort:"xhigh"},claude_code:{model:"claude-opus-5-5",reasoning_effort:"xhigh"}};
+// The automatic choice's two candidates; a shared level (e.g. high) replaces both catalog levels.
+function autoCandidates(effort=null) {
+  const catalog=boot.text_catalog?.auto_candidates||{codex_cli:{model:"gpt-6-astra",reasoning_effort:"xhigh"},claude_code:{model:"claude-opus-5-5",reasoning_effort:"xhigh"}};
+  return effort?{codex_cli:{...catalog.codex_cli,reasoning_effort:effort},claude_code:{...catalog.claude_code,reasoning_effort:effort}}:catalog;
 }
+// A preset matches a choice; the automatic ones differ only in their shared level, so that level must match exactly.
+const presetMatches=(p,t)=>t.provider===p.provider&&t.model===p.model&&(p.provider==="auto"
+  ?(p.reasoning_effort||null)===(t.reasoning_effort||null):(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort));
 function candidateText(c) {
   return `Codex ${escape(c?.codex_cli?.model||"Standard")} (${escape(c?.codex_cli?.reasoning_effort||"Standard")}) · Claude ${escape(c?.claude_code?.model||"Standard")} (${escape(c?.claude_code?.reasoning_effort||"Standard")})`;
 }
 function textChoiceSummary(t) {
-  if(t.provider==="auto")return `${providerLabels.auto} · ${candidateText(autoCandidates())}`;
+  if(t.provider==="auto")return `${providerLabels.auto} · ${candidateText(autoCandidates(t.reasoning_effort))}`;
   return `${providerLabels[t.provider]||escape(t.provider)} · ${escape(t.model||"Standard")} · Reasoning: ${escape(t.reasoning_effort||"Standard")}`;
 }
 function renderRunTextChoice(job) {
@@ -399,7 +404,7 @@ function renderBrief() {
   const nextPage=recommendedPage()===PAGE.brief?PAGE.research:recommendedPage();
   const voices=audioCatalog()[a.provider]?.voices||[];
   const presets=boot.text_catalog?.presets||[];
-  const chosen=presets.find(p=>t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort));
+  const chosen=presets.find(p=>presetMatches(p,t));
   const attachmentCount=(project?.attachments?.length||0)+pendingAttachments.length;
   const messages=chat.length?chat.map(m=>`<div class="chat-message ${m.role==="user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<div class="chat-message"><strong>Redaktion</strong><p>Worum soll dein Podcast gehen – und was möchtest du danach besser verstehen? Du kannst direkt auch Wünsche zu Sprache, Tiefe oder Stimmen nennen.</p></div>';
   const otherJob=running()&&(project?.main_job??project?.job)?.action!=="assistant";
@@ -412,7 +417,7 @@ function renderBrief() {
     ${otherJob?'<p class="hint composer-lock">Während ein Auftrag läuft, ruht das Gespräch. Danach kannst du wieder schreiben.</p>':""}
     <form id="chat-form" class="composer"><fieldset ${running()||setupSending||readingAttachments||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}
     <div class="composer-tools">
-    ${presets.length?`<details class="composer-menu"><summary>Textmodell: ${chosen?escape(chosen.label):textChoiceSummary(t)}</summary><div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${t.provider===p.provider&&t.model===p.model&&(!p.reasoning_effort||t.reasoning_effort===p.reasoning_effort)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Claude und springt bei leerem Kontingent auf Codex um. Live-Recherche läuft über das gewählte Abo; Stimmen wählst du separat.</p></div></details>`:""}
+    ${presets.length?`<details class="composer-menu"><summary>Textmodell: ${chosen?escape(chosen.label):textChoiceSummary(t)}</summary><div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${presetMatches(p,t)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Claude und springt bei leerem Kontingent auf Codex um. Live-Recherche läuft über das gewählte Abo; Stimmen wählst du separat.</p></div></details>`:""}
     ${boot.capabilities?.project_attachments?`<details class="composer-menu"${attachmentCount?" open":""}><summary>Dateien anhängen${attachmentCount?` · ${attachmentCount}`:""}</summary><div class="attachment-picker"><label for="chat-files">Dateien anhängen · .md / .txt / .docx</label><input id="chat-files" type="file" accept=".md,.txt,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple aria-describedby="attachment-hint"><p id="attachment-hint" class="hint">Für deine Projektidee und als Ausgangsmaterial der Recherche. Bis zu 10 Dateien: Text je 256 KiB, DOCX je 2 MiB, insgesamt 1 MiB eingelesener Text. DOCX übernimmt Text und Tabellen, keine Bilder. Mit „Senden“ erhält dein Textmodell den Inhalt; bei langen Dateien zunächst gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein.</p><div id="attachment-list">${renderAttachments()}</div></div></details>`:'<p class="hint">Dateianhänge benötigen einen Studio-Neustart nach Ende laufender Aufträge.</p>'}
     <button type="submit">${setupSending?"Wird gesendet …":readingAttachments?"Dateien werden eingelesen …":"Senden"}</button></div></fieldset></form></section>
     </div><aside class="split-rail">
@@ -1148,7 +1153,13 @@ function researchRound(ledger) {
   // The round counts from the first whole-dossier audit; reopened questions belong to a later round.
   const round=Number(ledger?.audit_round||0), reopened=Number(ledger?.reopened||0);
   if(!(round>0||reopened>0||["synthesis","audit"].includes(ledger?.phase)))return "";
-  return `<p><strong>Prüfrunde ${round+1}${reopened>0?` · ${reopened} ${reopened===1?"Teilfrage":"Teilfragen"} wieder geöffnet`:""}</strong></p>`;
+  // After an audit its reopened questions are reworked first; the dossier is recomposed and reviewed once they pass.
+  if(ledger?.phase==="questions"&&round>0){
+    const rows=ledger.questions||[], open=rows.filter(q=>Number(q.reopened||0)>0&&q.status!=="verified").length;
+    return `<p><strong>Nachbesserung nach Prüfrunde ${round}</strong> · ${reopened} ${reopened===1?"Teilfrage":"Teilfragen"} wieder geöffnet${rows.length?`, davon ${open} noch offen`:""}. Danach wird das Dossier neu zusammengesetzt und in Prüfrunde ${round+1} geprüft.</p>`;
+  }
+  const doing={synthesis:" · Dossier wird zusammengesetzt",audit:" · Gesamtprüfung läuft"}[ledger?.phase]||"";
+  return `<p><strong>Prüfrunde ${round+1}</strong>${doing}${reopened>0&&!doing?` · ${reopened} ${reopened===1?"Teilfrage":"Teilfragen"} wieder geöffnet`:""}</p>`;
 }
 
 // Every stop names what happened, whether "Fortsetzen" can help and which control leads on:
@@ -1233,7 +1244,7 @@ const STOP_RULES={
   teaching_design_failed:{kind:"dead",title:"Lehrkonzept bleibt unvollständig",text:"Die automatische Überarbeitung hat nicht alle Kritikpunkte gelöst; „Fortsetzen“ würde dieselben Punkte wieder vorlegen. Die offenen Punkte stehen auf dieser Seite. Weiter geht es mit einem neuen Inhaltsverzeichnis: die Recherche bleibt, Lehrkonzepte und Skripte dieses Laufs entstehen neu.",actions:["new_outline"]},
   teaching_research_required:{kind:"dead",title:"Erklärgrundlagen fehlen",text:"Für das Lehrkonzept fehlen belegte Grundlagen, und die automatische Nachrecherche konnte sie nicht schließen. Die offenen Fragen stehen auf dieser Seite. Weiter geht es mit einer neuen Recherche, die diese Fragen abdeckt, oder mit einem neuen Inhaltsverzeichnis, das ohne sie auskommt.",actions:["new_research","new_outline"]},
   research_gap_unread:{kind:"dead",title:"Ungelesene Belege zu gemeldeten Lücken",text:"Die Prüfung meldet Lücken, zu denen das Quellenmaterial noch ungelesene Stellen enthält. Das klärt nur eine neue Recherche.",actions:["new_research"]},
-  prompt_too_large:{kind:"dead",title:"Auftrag zu groß für das Modell",text:"Der Auftrag passt nicht in das Kontextfenster des gewählten Modells, und der Lauf bleibt an sein Modell gebunden. Unter „Auftrag & Stimmen“ ein Modell mit größerem Fenster wählen, etwa Automatisch oder Codex, und den Schritt neu starten.",actions:["open_brief","restart"]},
+  prompt_too_large:{kind:"fix",title:"Auftrag zu groß für das Modell",text:"Der Auftrag passt nicht in das Kontextfenster des gewählten Modells. Der Aufruf wurde nicht gestartet und nicht angerechnet. „Fortsetzen“ versucht es erneut, denn der Auftrag einer Teilfrage ändert sich zwischen den Versuchen und nach Studio-Updates; passt er weiterhin nicht, hält der Lauf sofort und kostenlos wieder an. Sonst unter „Auftrag & Stimmen“ ein Modell mit größerem Fenster wählen, etwa Automatisch oder Codex, und den Schritt neu starten.",actions:["open_brief","restart"]},
   claude_output_limit:{kind:"dead",title:"Antwort zu lang für einen Aufruf",text:"Die Antwort war länger, als ein Claude-Aufruf liefern kann, und „Fortsetzen“ würde sie unverändert wiederholen. Unter „Auftrag & Stimmen“ ein anderes Modell wählen und den Schritt neu starten.",actions:["open_brief","restart"]},
   claude_budget_cap:{kind:"dead",title:"Kostengrenze eines Aufrufs erreicht",text:"Ein einzelner Claude-Aufruf hat seine Kostengrenze erreicht. Unter „Auftrag & Stimmen“ ein anderes Modell wählen und den Schritt neu starten.",actions:["open_brief","restart"]},
   openrouter_truncated:{kind:"dead",title:"Antwort am Tokenlimit abgeschnitten",text:"OpenRouter hat die Antwort abgeschnitten. Unter „Auftrag & Stimmen“ ein Modell mit höherem Ausgabelimit wählen und den Schritt neu starten.",actions:["open_brief","restart"]},
@@ -1247,7 +1258,8 @@ for(const code of ["rejected_output","invalid_evidence_review","invalid_question
   "invalid_search_receipt","invalid_question_review","invalid_evidence","invalid_question_plan","invalid_question_scope","question_scope_unresolved",
   "invalid_supplement","invalid_teaching_review","invalid_script_evidence_review","invalid_polish_review","invalid_series_review","invalid_script","invalid_revision"])
   STOP_RULES[code]=c=>c.kind==="script"?{kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat die automatischen Korrekturversuche dieses Schritts verbraucht. „Fortsetzen“ startet sie neu; hält der Schritt erneut an, hilft ein neues Inhaltsverzeichnis.",actions:["new_outline"]}:
-    {kind:"dead",title:"Korrekturversuche aufgebraucht",text:`${EXHAUSTED} Die geprüften Teilantworten bleiben lesbar; weiter geht es mit einer neuen Recherche.`,actions:["restart"]};
+    // A research run keeps hours of checked answers: resuming retries the step first (an update may have fixed it).
+    {kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat für diesen Prüfschritt die automatischen Korrekturversuche verbraucht, oder eine Prüfregel hat eine Änderung abgelehnt; die Details liegen im Laufordner. „Fortsetzen“ versucht den Schritt erneut, die geprüften Teilantworten bleiben erhalten. Hält er an derselben Stelle wieder an, geht es mit einer neuen Recherche weiter.",actions:["restart"]};
 // A chat, a check or a voice sample has no run to continue: the same button starts it again.
 const RESTART_VERBS={assistant:"„Erneut senden“",check:"„Verbindungen prüfen“",audio_sample:"„Hörprobe erzeugen“",audio_samples:"„Fehlende Hörproben erzeugen“"};
 function stopCodeOf(job) {
@@ -1287,6 +1299,9 @@ function stopInfo(job) {
 // Blocked questions whose current block has no advice yet (research_advisor.block_key); a waiting question gets none.
 const unadvised=ledger=>(ledger?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&!q.retry_requested
   &&q.outcome!=="prerequisite_block"&&q.advice?.key!==`${Number(q.retries||0)}.${Number(q.auto_retries||0)}`).length;
+// Blocked questions whose advice for the current block recommends a new attempt the automatic ones did not start.
+const adviceRetries=ledger=>(ledger?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&!q.retry_requested
+  &&q.advice?.recommendation==="retry"&&q.advice?.key===`${Number(q.retries||0)}.${Number(q.auto_retries||0)}`);
 // The run asks the advisor only with room for the advice and one new attempt (question_research.advice_affordable).
 const adviceAffordable=ledger=>{
   const b=ledger?.budget_projection;
@@ -1412,16 +1427,30 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
       :"Entscheide oben unter „Wartet auf dich“: noch einmal versuchen oder als Lücke akzeptieren.";
     return `<div class="note"><p><strong>Blockiert: ${escape(outcomes[row.outcome]||"Beleg fehlt")}</strong>${cause?` · ${escape(cause)}`:""}</p>${searched}${row.advice?`<p><strong>Beratung:</strong> ${escape(row.advice.diagnosis)}</p>`:""}<p>${decision}</p></div>`;
   };
+  // The second mark is the whole-dossier audit: a ledger without objection data (an older run) shows none.
+  const round=Number(ledger.audit_round||0), audited=all.some(row=>Array.isArray(row.objections));
+  const auditMark=row=>{
+    if(!Array.isArray(row.objections)||row.accepted_gap)return null;
+    const open=row.objections.length, many=open===1?"Einwand":"Einwände";
+    // Reworked and checked again: the objections wait for the next round to close them, nothing is wrong meanwhile.
+    if(open&&row.status==="verified")return {mark:"◐",kind:"reworked",text:`Gesamtprüfung: ${open} ${many} nachgebessert, Prüfrunde ${round+1} prüft nach`};
+    if(open)return {mark:"⚠",kind:"open",text:`Gesamtprüfung: ${open} ${many} offen, wird nachgebessert`};
+    if(ledger.phase==="completed"||(round>0&&row.status==="verified"))return {mark:"✓",kind:"passed",text:"Gesamtprüfung bestanden"};
+    return {mark:"○",kind:"pending",text:"Gesamtprüfung steht noch aus"};
+  };
+  const marks=all.map(auditMark).filter(Boolean), count=kind=>marks.filter(m=>m.kind===kind).length;
+  const auditLegend=audited?`<p class="hint">Erstes Zeichen: Prüfung der einzelnen Frage (✓ geprüft, ● in Arbeit, ○ wartet, ⛔ blockiert). Zweites Zeichen: Gesamtprüfung des Dossiers (✓ bestanden, ◐ nachgebessert, wartet auf die nächste Prüfrunde, ⚠ Einwand offen, ○ steht noch aus).${round>0||ledger.phase==="completed"?` Gesamtprüfung: ${[[count("passed"),"bestanden"],[count("reworked"),`nachgebessert, warten auf Prüfrunde ${round+1}`],[count("open"),"mit offenem Einwand in Arbeit"],[count("pending"),"ausstehend"]].filter(([n])=>n).map(([n,label])=>`${n} ${label}`).join(", ")}.`:""}</p>`:"";
   const rows=all.map(row=>{
-    const blocked=row.status==="blocked"&&!row.accepted_gap;
+    const blocked=row.status==="blocked"&&!row.accepted_gap, audit=auditMark(row);
     const answer=row.status==="verified"&&row.answer?`
       <div class="prose">${renderMarkdown(row.answer)}</div>
       ${(row.findings||[]).map(f=>`<p>${escape(f.statement)}</p>`).join("")}
       ${row.sources?.length?`<p>Gelesene Belege:</p><ul>${row.sources.map(source=>`<li>${markdownLink(escape(source.title),source.url)}${source.page?`, Seite ${Number(source.page)}`:""}</li>`).join("")}</ul>`:""}
-      ${row.limits?.length?`<p>Grenzen der Antwort:</p><ul>${row.limits.map(l=>`<li>${escape(l)}</li>`).join("")}</ul>`:""}`:"";
+      ${row.limits?.length?`<p>Grenzen der Antwort:</p><ul>${row.limits.map(l=>`<li>${escape(l)}</li>`).join("")}</ul>`:""}
+      ${row.access_gaps?.length?`<p class="note">Akzeptierte Zugangslücke: ${row.access_gaps.map(g=>`Kriterium ${Number(g.criterion)} · ${escape(g.source)} (${escape(g.evidence)})`).join("; ")}</p>`:""}`:"";
     return `<details data-research-question="${escape(row.id)}"${opened.has(row.id)?" open":""}>
-      <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":blocked?(row.retry_requested?"↻":"⛔"):active&&activeIds.includes(row.id)?"●":"○"} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":blocked&&row.retry_requested?"Neuer Versuch angefordert":!active&&["researching","reviewing"].includes(row.status)?"Begonnen · geht beim Fortsetzen weiter":(states[row.status]||row.status))}</summary>
-      ${blocked?blockedNote(row):""}
+      <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":blocked?(row.retry_requested||row.access_gap_requested?"↻":"⛔"):active&&activeIds.includes(row.id)?"●":"○"}${audit?`<span class="audit-mark" title="${escape(audit.text)}">${audit.mark}</span>`:""} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":blocked&&row.access_gap_requested?"Zugangslücke akzeptiert":blocked&&row.retry_requested?"Neuer Versuch angefordert":!active&&["researching","reviewing"].includes(row.status)?"Begonnen · geht beim Fortsetzen weiter":(states[row.status]||row.status))}${audit?` · ${escape(audit.text)}`:""}</summary>
+      ${blocked?blockedNote(row):""}${["open","reworked"].includes(audit?.kind)?`<div class="note"><p><strong>Einwände der Gesamtprüfung${audit.kind==="reworked"?` (nachgebessert, Prüfrunde ${round+1} prüft nach)`:""}:</strong></p><ul>${row.objections.map(o=>`<li>${escape(o.reason)}</li>`).join("")}</ul></div>`:""}
       <p>${escape(row.activity)}</p>
       <p class="hint">${Number(row.read_sections)} Abschnitte gelesen · ${Number(row.steps)} Bearbeitungsschritte${row.reopened?` · ${Number(row.reopened)} Mal mit Einwand wieder geöffnet`:""}</p>
       ${row.support?`<p class="hint">Textbelege vorhanden · Inhalt automatisch je Befund geprüft · ${row.support.findings.filter(f=>f.empirical_status==="independently_tested").length} Befunde mit dokumentierter unabhängiger empirischer Prüfung</p>`:""}
@@ -1431,7 +1460,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   }).join("");
   return `<section class="research-questions">
     <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
-    ${researchRound(ledger)}
+    ${researchRound(ledger)}${auditLegend}
     <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}" aria-label="Geprüft abgeschlossene Teilfragen"></progress>
     <p>${escape(phases[ledger.phase]||"")}</p>${renderActiveTasks(ledger,active)}${budgetNote}
     <p class="hint">Die Abschlusskriterien bleiben fest. Eine geprüfte Antwort wird nur bei einem konkreten Einwand aus der Gesamtprüfung erneut geöffnet.</p>${rows}</section>`;
@@ -1463,19 +1492,28 @@ function renderPlanReview(job, runId) {
     <div class="actions"><button data-action="approve-plan" data-run-id="${escape(runId)}" data-then-resume="1" ${running()?"disabled":""}>Rechercheplan freigeben und starten</button>${raise>Number(p.approved_limit)?`<button class="secondary" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${raise}">Aufruflimit auf ${raise} erhöhen</button>`:""}</div>
     <p class="hint">Ohne Freigabe wird kein Modellaufruf verbraucht. Mit einer Obergrenze wird der Plan einmal neu zugeschnitten (Planungsaufrufe) und erneut zur Freigabe vorgelegt; die Freigabe gilt immer genau für den angezeigten Plan.</p></section>`;
 }
-function gapActionsFor(row, runId, searchLimit) {
+// A criterion that needs a source the run could not read: accepted as an access gap, the question keeps its verified parts.
+function accessGapForm(row, runId, blocked) {
+  if(!blocked.length||row.outcome==="prerequisite_block"||!(row.acceptance||[]).length)return "";
+  const failed=Number((/Kriterium (\d+)/.exec(row.reason||"")||[])[1]);
+  const criteria=row.acceptance.map((text,i)=>`<option value="${i}"${i===failed?" selected":""}>Kriterium ${i}: ${escape(shortText(text,90))}</option>`).join("");
+  const sources=blocked.map(s=>`<option value="${escape(s.url)}">${escape(shortText(s.url,70))} · ${escape(shortText(s.evidence,50))}</option>`).join("");
+  // No address is preselected: which refused source the criterion needs is the editor's call, not the list order.
+  return `<div class="actions access-gap"><select id="access-criterion-${escape(row.id)}" aria-label="Kriterium">${criteria}</select><select id="access-source-${escape(row.id)}" aria-label="Gesperrte Quelle"><option value="" selected>Gesperrte Quelle wählen …</option>${sources}</select><button class="secondary small" data-action="accept-access-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Kriterium als Zugangslücke akzeptieren</button></div><p class="hint">Nur für eine Quelle, deren Abruf in diesem Lauf nachweislich gesperrt war. Die Teilfrage behält ihre geprüften Teile; nur der Teil des Kriteriums, der diese Quelle braucht, entfällt und steht als Lücke im Qualitätsbericht.</p>`;
+}
+function gapActionsFor(row, runId, searchLimit, blocked=[]) {
   const searchBlocked=row.outcome==="budget_block"&&/Suchbudget|Suchrunden/.test(row.reason||"");
   // A question that only waits for its prerequisite has no failed attempt of its own; retrying the prerequisite takes it up again.
   const retry=row.outcome==="prerequisite_block"?'<span class="hint">Ein neuer Versuch der Voraussetzung nimmt diese Frage automatisch wieder auf.</span>':`<input id="retry-hint-${escape(row.id)}" value="${escape(row.advice?.hint||"")}" placeholder="Hinweis für den neuen Versuch (optional)" aria-label="Hinweis für den neuen Versuch"><button class="small" data-action="retry-task" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Noch einmal versuchen</button>`;
   const gap=`<input id="gap-reason-${escape(row.id)}" placeholder="Begründung für die Lücke (optional)" aria-label="Begründung für die akzeptierte Lücke"><button class="secondary small" data-action="accept-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Als Lücke akzeptieren</button>`;
-  return `<div class="actions">${retry}</div><div class="actions">${gap}${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`;
+  return `<div class="actions">${retry}</div>${accessGapForm(row,runId,blocked)}<div class="actions">${gap}${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`;
 }
 // Every open decision stands in one card above the ledger with its buttons visible: nothing to expand, no dialog.
 function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimit) {
   const ledger=j.progress.research_questions, rows=ledger?.questions||[], runId=r?.run_id||"";
   if(active||!rows.length)return "";
   const open=rows.filter(q=>q.status==="blocked"&&!q.accepted_gap), accepted=rows.filter(q=>q.accepted_gap);
-  const undecided=open.filter(q=>!q.retry_requested), retrying=open.filter(q=>q.retry_requested);
+  const undecided=open.filter(q=>!q.retry_requested&&!q.access_gap_requested), retrying=open.filter(q=>q.retry_requested||q.access_gap_requested);
   // Accepted gaps alone are no decision; they only lead the card while the run stopped for the blocked questions.
   const code=stopInfo(j)?.code;
   if(!open.length&&!(accepted.length&&(!code||code==="research_questions_blocked")))return "";
@@ -1488,29 +1526,35 @@ function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimi
   const outcomes={extraction_block:"Quelle nicht lesbar",search_block:"Keine neuen Belege gefunden",evidence_block:"Beleg fehlt",budget_block:"Recherchebudget ausgeschöpft",access_block:"Quelle nicht zugänglich",prerequisite_block:"Voraussetzung offen"};
   // The advisor's second opinion stands with the question: cause, recommendation, the sources it found.
   const recommendations={retry:"Noch einmal versuchen",accept_gap:"Als Lücke akzeptieren",raise_limit:"Limit erhöhen"};
+  const limit=Number(ledger.auto_retry_limit||5);
   const limitNames={sources:"Quellenlimit erhöhen",search_rounds:"Suchrunden erhöhen",model_calls:"Aufruflimit erhöhen"};
   const advice=q=>{
     const a=q.advice;
     if(!a)return "";
     const recommendation=a.recommendation==="raise_limit"&&limitNames[a.limit]?limitNames[a.limit]:recommendations[a.recommendation]||a.recommendation;
     const sources=(a.sources||[]).map(s=>`<li>${s.url?markdownLink(escape(s.title),s.url):escape(s.title)}${s.note?`<span class="hint"> · ${escape(s.note)}</span>`:""}</li>`).join("");
-    return `<div class="advice"><p><strong>Beratung:</strong> ${escape(a.diagnosis)}</p><p class="hint">Empfehlung: ${escape(recommendation)}${Number(q.auto_retries||0)?" · Ein automatischer neuer Versuch nach der Beratung lief bereits.":""}</p>${sources?`<ul>${sources}</ul>`:""}</div>`;
+    const auto=Number(q.auto_retries||0), stop={limit:`Die ${limit} automatischen Versuche sind ausgeschöpft.`,
+      no_progress:"Der letzte automatische Versuch hat keinen neuen Abschnitt gelesen; die Automatik hat deshalb aufgehört."}[q.auto_stop]||"";
+    return `<div class="advice"><p><strong>Beratung:</strong> ${escape(a.diagnosis)}</p><p class="hint">Empfehlung: ${escape(recommendation)}${auto?` · Automatische neue Versuche: ${auto} von ${limit}`:""}${stop?` · ${stop}`:""}</p>${sources?`<ul>${sources}</ul>`:""}</div>`;
   };
+  // Retry advice the automatic attempts did not act on: one click adopts every hint and resumes.
+  const advised=adviceRetries(ledger);
+  const adoptAll=advised.length&&!running()?`<div class="actions"><button data-action="apply-advice" data-run-id="${escape(runId)}">Empfehlungen übernehmen und fortsetzen</button><span class="hint">${advised.length===1?"Eine Teilfrage":`${advised.length} Teilfragen`} mit dem Hinweis des Beraters erneut versuchen.</span></div>`:"";
   const item=q=>{
     const deps=(q.depends_on||[]).filter(id=>rows.some(x=>x.id===id&&x.status!=="verified")).map(id=>names.get(id)||id);
     const attempts=Number(q.web_attempts||0);
-    return `<li><strong>${escape(q.question)}</strong><p class="hint">${escape(outcomes[q.outcome]||q.outcome||"Blockiert")}${attempts?` · ${attempts} ${attempts===1?"Websuche":"Websuchen"}`:Number(q.steps||0)?" · keine Websuche":" · noch nicht bearbeitet"}${deps.length?` · hängt an: ${deps.map(escape).join("; ")}`:""}</p>${q.reason?`<p class="hint">${escape(q.reason)}</p>`:""}${advice(q)}${q.retry_requested?`<p class="hint">↻ Neuer Versuch angefordert${q.retry_hint?` · Hinweis: ${escape(q.retry_hint)}`:""}. „Fortsetzen“ startet ihn.</p>`:q.reopenable?'<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ führt diese Websuche aus.</p>':gapActionsFor(q,runId,searchLimit)}</li>`;
+    return `<li><strong>${escape(q.question)}</strong><p class="hint">${escape(outcomes[q.outcome]||q.outcome||"Blockiert")}${attempts?` · ${attempts} ${attempts===1?"Websuche":"Websuchen"}`:Number(q.steps||0)?" · keine Websuche":" · noch nicht bearbeitet"}${deps.length?` · hängt an: ${deps.map(escape).join("; ")}`:""}</p>${q.reason?`<p class="hint">${escape(q.reason)}</p>`:""}${advice(q)}${q.access_gap_requested?`<p class="hint">↻ Zugangslücke akzeptiert: ${(q.requested_access_gaps||[]).map(g=>`Kriterium ${Number(g.criterion)} · ${escape(g.source)}`).join("; ")}. „Fortsetzen“ prüft die Antwort ohne den gesperrten Teil.</p>`:q.retry_requested?`<p class="hint">↻ Neuer Versuch angefordert${q.retry_hint?` · Hinweis: ${escape(q.retry_hint)}`:""}. „Fortsetzen“ startet ihn.</p>`:q.reopenable?'<p class="hint">Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ führt diese Websuche aus.</p>':gapActionsFor(q,runId,searchLimit,ledger.blocked_sources||[])}</li>`;
   };
   const closing=Number(ledger.budget_projection?.closing_calls||0);
   const intro=undecided.length?`${undecided.length===1?"Eine Teilfrage ist":`${undecided.length} Teilfragen sind`} blockiert. ${reopenable?"„Fortsetzen“ holt zuerst die fehlende Websuche nach.":unadvised(ledger)&&adviceAffordable(ledger)?"„Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf dann selbst, einmal je Frage. Du kannst auch direkt entscheiden: noch einmal versuchen oder als Lücke akzeptieren.":unadvised(ledger)?`Für eine Beratung reicht das Aufruflimit nicht (${Number(ledger.budget_projection.remaining)} Aufrufe frei, der Abschluss braucht mindestens ${Number(ledger.budget_projection.minimum_remaining_calls)}). Mit einem höheren Limit berät der Lauf zuerst; sonst entscheidest du direkt: noch einmal versuchen oder als Lücke akzeptieren.`:`Für jede: noch einmal versuchen oder als Lücke akzeptieren. Danach schließt „Fortsetzen“ das Dossier mit ${Number(ledger.closed)} geprüften Antworten ab${closing?` (${closing} Aufrufe)`:""}.`}`:retrying.length?`Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ startet ${retrying.length===1?"den neuen Versuch":`die ${retrying.length} neuen Versuche`}.`:"Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ schließt das Dossier ab.";
-  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${roundsNote}${sourcesNote}${unadvised(ledger)&&!adviceAffordable(ledger)&&!running()?`<div class="actions"><button class="secondary" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${adviceCallLimit(ledger)}" data-then-resume="1">Aufruflimit auf ${adviceCallLimit(ledger)} erhöhen und beraten lassen</button></div>`:""}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
+  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${adoptAll}${roundsNote}${sourcesNote}${unadvised(ledger)&&!adviceAffordable(ledger)&&!running()?`<div class="actions"><button class="secondary" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${adviceCallLimit(ledger)}" data-then-resume="1">Aufruflimit auf ${adviceCallLimit(ledger)} erhöhen und beraten lassen</button></div>`:""}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
 }
 // The first retrieval reads every found source; its counter and its report stand where the ledger will appear.
 function renderRetrieval(retrieval) {
   if(!retrieval)return "";
   const failures=retrieval.failures||[], failed=Number(retrieval.failed||0);
   const running=retrieval.running?`<p><strong>Originaltexte einlesen:</strong> ${Number(retrieval.attempted)} von bis zu ${Number(retrieval.total)} Quellen abgerufen, ${Number(retrieval.imported)} lesbar${failed?`, ${failed} nicht eingelesen`:""}.</p><progress value="${Number(retrieval.attempted)}" max="${Math.max(1,Number(retrieval.total))}" aria-label="Abgerufene Quellen"></progress>`:"";
-  const report=failed?`<details class="retrieval-report"><summary>Abrufbericht · ${failed} ${failed===1?"Quelle":"Quellen"} nicht eingelesen</summary><ul>${failures.map(row=>`<li>${escape(row.source)}<span class="hint"> · ${escape(row.reason)}</span></li>`).join("")}</ul>${failed>failures.length?`<p class="hint">Weitere ${failed-failures.length} stehen im Laufordner.</p>`:""}</details>`:"";
+  const report=failed?`<details class="retrieval-report"><summary>Abrufbericht · ${failed} ${failed===1?"Quelle":"Quellen"} nicht eingelesen${retrieval.running?"":" · erster Abruf"}</summary>${retrieval.running?"":'<p class="hint">Stand des ersten Abrufs vor der Arbeit an den Teilfragen. Danach hat die Recherche weitere Quellen und freie Kopien gelesen; was einer Teilfrage noch fehlt, steht bei der Frage selbst.</p>'}<ul>${failures.map(row=>`<li>${escape(row.source)}<span class="hint"> · ${escape(row.reason)}</span></li>`).join("")}</ul>${failed>failures.length?`<p class="hint">Weitere ${failed-failures.length} stehen im Laufordner.</p>`:""}</details>`:"";
   return running+report;
 }
 // The research page owns the decision and the ledger; the drawer only carries telemetry.
@@ -1846,6 +1890,26 @@ async function start(action, extra={}) {
 function jobSignature(job) { return job?`${job.id}:${job.status}`:""; }
 function projectJobSignature(p) { return [jobSignature(p?.job),jobSignature(p?.main_job),...(p?.audio_jobs||[]).map(jobSignature)].join("|"); }
 // Resuming after an approval or a stored key is one click; the resume target travels on the button.
+// Adopt every open retry recommendation with its hint (as edited in its field), then resume once.
+async function applyAdvice(button) {
+  for(const q of adviceRetries(project.job?.progress?.research_questions)){
+    const hint=$("retry-hint-"+q.id)?.value||q.advice.hint||"";
+    await api(`/api/projects/${project.id}/approve`,{kind:"retry",run_id:button.dataset.runId,task_id:q.id,hint});
+  }
+  await resumeFrom(button);
+}
+// The accepted access gap; when it was the last open decision, the run resumes with it at once.
+async function acceptAccessGap(button) {
+  const id=button.dataset.taskId, source=$("access-source-"+id)?.value||"";
+  if(!source)throw new Error("Bitte die gesperrte Quelle wählen, die dieses Kriterium braucht.");
+  await api(`/api/projects/${project.id}/approve`,{kind:"access_gap",run_id:button.dataset.runId,task_id:id,
+    criterion:Number($("access-criterion-"+id)?.value),source});
+  project=await api(`/api/projects/${project.id}`);lastJobView="";
+  const rows=project.job?.progress?.research_questions?.questions||[];
+  // A question that only waits for its prerequisite is decided with it.
+  if(!running()&&!rows.some(q=>q.status==="blocked"&&q.outcome!=="prerequisite_block"&&!q.accepted_gap&&!q.retry_requested&&!q.access_gap_requested)){await resumeFrom(button);return true;}
+  render();return false;
+}
 async function resumeFrom(button) {
   await start("resume",{run_id:button.dataset.runId||project.job?.run?.run_id||project.run?.run_id,...(button.dataset.episode?{episode:button.dataset.episode}:{})});
 }
@@ -1925,10 +1989,16 @@ document.addEventListener("click",event=>{
     }
     if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
+    if(action==="apply-advice"){await applyAdvice(button);notice("Empfehlungen übernommen. Der Lauf versucht die Teilfragen mit den Hinweisen des Beraters erneut.","ok");return;}
     if(action==="retry-task"){
       const hint=$("retry-hint-"+button.dataset.taskId)?.value||"";
       await api(`/api/projects/${project.id}/approve`,{kind:"retry",run_id:button.dataset.runId,task_id:button.dataset.taskId,hint});
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Neuer Versuch angefordert. „Fortsetzen“ startet ihn mit dem Spielraum einer neuen Frage.","ok");return;
+    }
+    if(action==="accept-access-gap"){
+      const criterion=Number($("access-criterion-"+button.dataset.taskId)?.value);
+      const resumed=await acceptAccessGap(button);
+      notice(`Kriterium ${criterion} als Zugangslücke akzeptiert. ${resumed?"Der Lauf":"„Fortsetzen“"} prüft die Antwort ohne den gesperrten Teil.`,"ok");return;
     }
     if(action==="accept-gap"){
       const reason=$("gap-reason-"+button.dataset.taskId)?.value||"";

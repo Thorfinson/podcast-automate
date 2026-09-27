@@ -12,12 +12,13 @@ from podcast_automate.question_answering import (READER_ACTIONS, normalise_answe
 from podcast_automate.question_research import QuestionResearch, answer_errors, validate_plan
 from podcast_automate.question_scope import QuestionScopeReview
 from podcast_automate.evidence_models import ResearchObjection
-from podcast_automate.question_synthesis import (SUPPORT_VERDICT_FIELDS, compact_assessment_material,
+from podcast_automate.question_synthesis import (SUPPORT_VERDICT_FIELDS, SynthesisMixin, compact_assessment_material,
                                                  compact_review_instructions, compact_routing_material)
 from podcast_automate.research import run_research
 from podcast_automate.research_advisor import BlockAdvice
+from podcast_automate.research_evidence import support_errors
 from podcast_automate.research_ledger import bootstrap_legacy, public_ledger, read_value, save_value
-from podcast_automate.research_models import ResearchDossier, SourceIndex, SourceSection
+from podcast_automate.research_models import Evidence, Finding, ResearchDossier, SourceIndex, SourceSection
 from podcast_automate.research_patches import DossierPatch
 from podcast_automate.research_quality import ResearchAssessment
 from podcast_automate.research_reader import SourceReader
@@ -32,7 +33,7 @@ from podcast_automate.studio_progress import research_progress
 from tests import research_fixtures as fixtures
 
 
-from tests.question_fixtures import (task_value, decision, answer_for, question_response, complete_fixture_response,
+from tests.question_fixtures import (task_value, decision, answer_for, question_response, complete_fixture_response, claim_contract,
                                      support_receipts)
 
 
@@ -169,6 +170,88 @@ class QuestionResearchTests(unittest.TestCase):
             count = len(self.calls)
             self.engine().run(self.discovery, self.index)
             self.assertEqual(len(self.calls), count, "a replay makes no calls")
+
+    def test_audit_parts_keep_their_own_material_when_the_shared_context_outgrows_the_budget(self):
+        # The Asimov round-two audit: outline, other findings, tasks and baseline alone passed the
+        # budget, so every part held one finding, still overran it, and the run stopped.
+        findings = [Finding(id=f"f_{n}", kind="claim", statement=f"Claim {n}.", claim_contract=claim_contract(),
+                            evidence=[Evidence(reference=f"src#s{n}", excerpt=f"Passage {n}")]) for n in range(6)]
+        dossier = ResearchDossier(topic="Test topic", scope_note="Bounded.", findings=findings, coverage=[], open_questions=[])
+        context = [{"source_id": "src", "title": "Paper", "url": "https://example.org/p",
+                    "sections": [{"reference": f"src#s{n}", "text": f"Passage {n} " + "z" * 2_000} for n in range(6)]}]
+        self.work.mkdir(parents=True, exist_ok=True)
+
+        def split(shared_chars, budget, answer_budget):
+            sizes = []
+
+            class Engine:
+                config = self.config
+                state = {"plan": {"tasks": [{"id": "t", "question": "q" * shared_chars}]}, "verified_baseline": []}
+
+                def save(self, activity):
+                    pass
+
+                def call(self, folder, name, schema, prompt, validate):
+                    sizes.append(len(prompt))
+                    return SourceReview(issues=[], limitations=[])
+
+            with patch("podcast_automate.question_synthesis.PROMPT_BUDGET_CHARS", budget), \
+                    patch("podcast_automate.question_synthesis.ANSWER_BUDGET_CHARS", answer_budget):
+                SynthesisMixin.grounding_review(Engine(), self.work, 0, dossier, context, {}, lambda *a, **k: None)
+            merged = json.loads((self.work / "grounding_0_merged.json").read_text(encoding="utf-8"))
+            return merged["findings_per_part"], sizes
+
+        # A shared context within the budget: the budget alone bounds each part, as before.
+        parts, sizes = split(1_000, 12_000, 1)
+        self.assertEqual(sum(parts), 6)
+        self.assertTrue(len(parts) > 1 and all(size <= 12_000 for size in sizes), (parts, sizes))
+        # A shared context beyond the budget: without room of its own a part holds one finding and still
+        # overruns; with ANSWER_BUDGET_CHARS of room it holds what fits. Each finding brings its 2 000-character
+        # passage and about 600 characters of JSON, so two fit into 7 000 characters and three do not.
+        parts, sizes = split(60_000, 12_000, 1)
+        self.assertEqual(parts, [1] * 6)
+        parts, sizes = split(60_000, 12_000, 7_000)
+        self.assertEqual(parts, [2, 2, 2])
+        self.assertTrue(all(size > 60_000 for size in sizes), sizes)
+
+    def test_a_part_assesses_only_the_sources_its_findings_cite_while_objections_bring_their_own(self):
+        # The Asimov round-two audit: an objection cited a source no finding of its part cites; the part
+        # listed it under sources, the model assessed it as told, and the source check refused all three tries.
+        findings = [Finding(id=f"f_{n}", kind="claim", statement=f"Claim {n}.", claim_contract=claim_contract(),
+                            evidence=[Evidence(reference=f"a#s{n}", excerpt=f"Passage {n}")]) for n in range(2)]
+        dossier = ResearchDossier(topic="Test topic", scope_note="Bounded.", findings=findings, coverage=[], open_questions=[])
+        context = [{"source_id": sid, "title": sid, "url": f"https://example.org/{sid}",
+                    "sections": [{"reference": f"{sid}#s{n}", "text": f"Passage {n}"} for n in range(2)]} for sid in ("a", "b")]
+        objection = {"finding_ids": ["f_0"], "evidence_refs": ["b#s1", "a#s1"], "reason": "Source b qualifies the claim."}
+        self.work.mkdir(parents=True, exist_ok=True)
+        prompts = []
+
+        class Engine:
+            config = self.config
+            state = {"plan": {"tasks": [{"id": "t", "question": "q"}]}, "verified_baseline": []}
+
+            def save(self, activity):
+                pass
+
+            def call(self, folder, name, schema, prompt, validate):
+                prompts.append(prompt)
+                payload = json.loads(prompt.splitlines()[-1])
+                return SourceReview(issues=[], limitations=[], **support_receipts(payload["dossier"]["findings"], payload["sources"]))
+
+        with patch("podcast_automate.question_synthesis.PROMPT_BUDGET_CHARS", 1),                 patch("podcast_automate.question_synthesis.ANSWER_BUDGET_CHARS", 1):
+            review = SynthesisMixin.grounding_review(Engine(), self.work, 0, dossier, context, {"o1": objection},
+                                                     lambda *a, **k: None)
+        first, second = (json.loads(p.splitlines()[-1]) for p in prompts)
+        self.assertEqual([s["source_id"] for s in first["sources"]], ["a"])
+        # a#s1 belongs to the finding of the other part: here it is objection material, like all of source b.
+        self.assertEqual([(s["source_id"], [p["reference"] for p in s["sections"]]) for s in first["objection_sources"]],
+                         [("a", ["a#s1"]), ("b", ["b#s1"])])
+        self.assertIn("objection_sources holds passages", prompts[0])
+        # A part without objection-only passages keeps the prompt it had before.
+        self.assertNotIn("objection_sources", second)
+        self.assertNotIn("objection_sources holds passages", prompts[1])
+        # Assessing exactly the listed sources is what the source check expects, part by part and merged.
+        support_errors(findings, review, context)
 
     def test_answers_beyond_one_output_are_composed_in_parts_even_when_the_prompt_fits(self):
         # The prompt budget is untouched: the answers alone bound the opening batch, because the
@@ -503,6 +586,23 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(sum(c[0] is QuestionSearch for c in self.calls), 1)
         self.assertEqual(len(engine.index.sources), 2)
 
+    def test_the_reader_sees_unread_search_hits_newest_first_within_a_budget(self):
+        from podcast_automate.question_answering import open_candidates
+        hit = lambda ref: {"reference": ref, "excerpt": "x" * 400}
+        catalog = [{"query": "old", "candidates": [hit("s#1"), hit("s#2")]},
+                   {"query": "read", "candidates": [hit("s#3")]},
+                   {"query": "new", "candidates": [hit("s#4"), hit("s#5")]}]
+        # A search whose hits are all read disappears; a partly read one keeps its unread hits; order stays oldest first.
+        shown = open_candidates(catalog, ["s#3", "s#5"])
+        self.assertEqual([(r["query"], [c["reference"] for c in r["candidates"]]) for r in shown],
+                         [("old", ["s#1", "s#2"]), ("new", ["s#4"])])
+        # Over the budget the older searches go first; the newest with unread hits always stays.
+        self.assertEqual([r["query"] for r in open_candidates(catalog, [], budget=1_000)], ["new"])
+        self.assertEqual([r["query"] for r in open_candidates(catalog, [], budget=10)], ["new"])
+        self.assertEqual(open_candidates(catalog, ["s#1", "s#2", "s#3", "s#4", "s#5"]), [])
+        # The catalog in the ledger itself stays whole: recovery still finds every unread hit there.
+        self.assertEqual(len(catalog), 3)
+
     def advised(self):
         return QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None, advisor=True)
 
@@ -554,16 +654,40 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual((row["status"], row["auto_retries"]), ("blocked", 0))
         self.assertEqual(row["advice"]["diagnosis"], "Die geforderte Studie gibt es nicht frei.")
 
-    def test_a_question_gets_at_most_one_automatic_attempt(self):
+    def test_an_automatic_attempt_that_read_nothing_new_stops_the_automatic_ones(self):
         self.rejecting(BlockAdvice(diagnosis="Neue Quelle nötig.", recommendation="retry", limit="none",
                                    hint="Andere Suchbegriffe.", sources=[]))
         with self.assertRaises(AppError) as raised:
             self.advised().run(self.discovery, self.index)
         self.assertEqual(raised.exception.code, "research_questions_blocked")
-        row = public_ledger(read_value(self.work / "question_research/state.json"))["questions"][0]
-        # One advice per block: the first started the attempt, the second stands for the editor's decision.
-        self.assertEqual((row["status"], row["auto_retries"]), ("blocked", 1))
+        ledger = public_ledger(read_value(self.work / "question_research/state.json"))
+        row = ledger["questions"][0]
+        # One advice per block: the first started an attempt; that attempt read no new passage, so the second
+        # advice waits for the editor instead of starting the same attempt again.
+        self.assertEqual((row["status"], row["auto_retries"], row["auto_stop"]), ("blocked", 1, "no_progress"))
         self.assertEqual(sum(call[0] is BlockAdvice for call in self.calls), 2)
+        self.assertEqual(ledger["auto_retry_limit"], 5)
+
+    def test_the_ledger_names_each_question_s_still_open_audit_objections(self):
+        from podcast_automate.question_scope import pending_task
+        state = {"plan": {"tasks": [task_value("t1"), task_value("t2")]}, "phase": "questions", "audit_round": 2,
+                 "tasks": {"t1": {**pending_task(), "status": "verified"}, "t2": {**pending_task(), "status": "verified"}},
+                 "objections": {"o1": {"task_id": "t1", "rule": "support", "reason": "Beleg fehlt.", "status": "open"},
+                                "o2": {"task_id": "t1", "rule": "claim_preservation", "reason": "Wortlaut.", "status": "open"},
+                                "o3": {"task_id": "t2", "rule": "scope", "reason": "Umfang.", "status": "closed"}},
+                 # The latest audit closed o2; o3 was closed when an earlier run completed.
+                 "closed_objections": ["o2"]}
+        rows = {row["id"]: row for row in public_ledger(state)["questions"]}
+        self.assertEqual(rows["t1"]["objections"], [{"rule": "support", "reason": "Beleg fehlt."}])
+        self.assertEqual(rows["t2"]["objections"], [])
+
+    def test_automatic_attempts_stop_at_five_or_after_one_without_new_passages(self):
+        from podcast_automate.research_advisor import automatic_retry
+        self.assertEqual(automatic_retry({"auto_retries": 0, "read_refs": []}), (True, None))
+        # Each automatic attempt that read something new earns the next one, up to five.
+        self.assertEqual(automatic_retry({"auto_retries": 4, "auto_retry_read": 10, "read_refs": ["r"] * 12}), (True, None))
+        self.assertEqual(automatic_retry({"auto_retries": 5, "auto_retry_read": 10, "read_refs": ["r"] * 12}), (False, "limit"))
+        self.assertEqual(automatic_retry({"auto_retries": 2, "auto_retry_read": 12, "read_refs": ["r"] * 12}), (False, "no_progress"))
 
     def test_without_room_in_the_call_budget_the_advisor_is_not_asked(self):
         write_json(self.work / "budget.json", {"model_calls": self.config.research_limits.model_calls - 8, "search_rounds": 0})
@@ -721,6 +845,115 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual([row["task_id"] for row in saved["review_disagreements"]], ["task_definition"])
         # The registered objections and the next audit round are saved together, never one without the other.
         self.assertEqual((saved["audit_round"], saved["phase"]), (1, "questions"))
+
+    def reopened_for_wording(self):
+        """A completed two-task run whose audit objects to task_definition's wording only and to task_empirical
+        with a wording and a research objection; returns the engine after routing."""
+        self.hook = lambda prompt, schema, payload, kwargs: QuestionPlan(tasks=[task_value(),
+            task_value("task_empirical", "empirical")]) if schema is QuestionPlan else None
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text())
+
+        def anchor(task_id, resolution):
+            return ResearchObjection(id=f"obj_{task_id}_{resolution}", rule="criterion", task_id=task_id, criterion_index=0,
+                finding_ids=[], evidence_refs=[self.ref], missing_evidence="", reason="The wording widens the source.",
+                correction="Restore the source's limit.", closure_condition="The answer keeps the source's limit.",
+                resolution=resolution)
+        plan = ReopenPlan(routes=[
+            dict(index=0, task_ids=["task_definition"], reason="Wording only.", anchors=[anchor("task_definition", "revise")]),
+            dict(index=1, task_ids=["task_empirical"], reason="Wording and a missing test.",
+                 anchors=[anchor("task_empirical", "revise"), anchor("task_empirical", "research")])])
+
+        def routed(folder, name, schema, prompt, *, validate=None, **kwargs):
+            validate(plan, True)
+            return plan
+        with patch.object(engine, "call", side_effect=routed):
+            engine.reopen(dossier, SourceReview(issues=[], limitations=[]),
+                          {"blocking_gaps": ["The wording widens the source.", "A test is missing."], "requirements": []})
+        return engine
+
+    def test_a_wording_objection_reopens_its_question_only_to_correct_the_answer(self):
+        engine = self.reopened_for_wording()
+        wording, mixed = engine.state["tasks"]["task_definition"], engine.state["tasks"]["task_empirical"]
+        # Only-revise objections: the reader may only answer, from the passages the answer and the objection cite.
+        self.assertEqual((wording["status"], wording["revise_only"]), ("researching", True))
+        self.assertEqual(engine.allowed_actions(wording), ["answer"])
+        self.assertIn(self.ref, wording["current_refs"])
+        self.assertTrue(wording["feedback"][-1].startswith("Correction only"))
+        # A research objection among them keeps the ordinary reopening with search and reading.
+        self.assertFalse(mixed["revise_only"])
+        self.assertIn("search_web", engine.allowed_actions(mixed))
+        offered = []
+        def correct(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision and payload["task"]["id"] == "task_definition":
+                offered.append(payload["allowed_actions"])
+                answer = answer_for(self.ref)
+                answer.summary += " Limited to the configurations the source names."
+                return decision("answer", answer=answer)
+        self.hook = correct
+        task = next(t for t in QuestionPlan.model_validate(engine.state["plan"]).tasks if t.id == "task_definition")
+        engine.research_task(task)
+        # One reader call and the independent review: verified again without another research round.
+        self.assertEqual(engine.state["tasks"]["task_definition"]["status"], "verified")
+        self.assertEqual(offered, [["answer"]])
+
+    def test_a_rejected_correction_falls_back_to_an_ordinary_reopening(self):
+        engine = self.reopened_for_wording()
+        offered = []
+        def reject(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision and payload["task"]["id"] == "task_definition":
+                offered.append(payload["allowed_actions"])
+                if len(offered) == 1:
+                    answer = answer_for(self.ref)
+                    answer.summary += " Still too broad."
+                    return decision("answer", answer=answer)
+                return decision("blocked")
+            if schema is AnswerReview and payload["task"]["id"] == "task_definition":
+                return AnswerReview(criteria=[dict(index=0, passed=False, reason="Still widens the source.")],
+                                    supported=False, source_adequacy=False, issues=["Keep the source's limit."])
+        self.hook = reject
+        task = next(t for t in QuestionPlan.model_validate(engine.state["plan"]).tasks if t.id == "task_definition")
+        engine.research_task(task)
+        self.assertEqual(offered[0], ["answer"])
+        # After the rejection the question may read and search again; the correction mode is over.
+        self.assertIn("read", offered[1])
+        self.assertFalse(engine.state["tasks"]["task_definition"]["revise_only"])
+
+    def test_reworked_answers_leave_source_wide_limits_to_one_closing_pass(self):
+        # Regression, Asimov run of 2026-09-27: a reworked answer paraphrased more of a source that other findings
+        # also cite. The batch's strict reference repair stopped the run instead of deferring that shared limit.
+        from podcast_automate import question_synthesis
+        real, seen, reviews = question_synthesis.repair_references, [], []
+
+        def spy(folder, name, *args, **kwargs):
+            seen.append((name, kwargs.get("allowed_ids") is not None, kwargs.get("defer_shared", False)))
+            return real(folder, name, *args, **kwargs)
+
+        def revise(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is SourceReview:
+                reviews.append(1)
+                if len(reviews) == 1:
+                    return SourceReview(issues=[SourceReviewIssue(finding_id="f_energy", reason="An empirical boundary is missing.",
+                        resolution="research", search_queries=["independent test"])], limitations=[])
+            if schema is ReopenPlan:
+                return ReopenPlan(routes=[dict(index=i, task_ids=["task_empirical"], reason="Empirical boundary only.")
+                    for i in range(len(payload["objections"]))])
+            if schema is ResearchDecision and payload["reopening"]:
+                answer = answer_for(self.ref)
+                answer.summary += " The empirical scope is restricted to the synthetic fixture."
+                return decision("answer", answer=answer)
+        self.hook = revise
+        engine = self.engine()
+        with patch("podcast_automate.question_synthesis.repair_references", side_effect=spy):
+            engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        batches = [entry for entry in seen if entry[0].startswith("batch_")]
+        self.assertTrue(batches, "the reworked answer was integrated in a batch")
+        self.assertTrue(all(allowed and deferred for _, allowed, deferred in batches))
+        self.assertIn(("reopened_references", False, False), seen)
 
     def test_full_audit_reopens_only_empirical_task_then_rechecks_before_publish(self):
         reviews, reviewed_tasks = [], []

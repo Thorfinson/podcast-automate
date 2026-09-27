@@ -205,7 +205,11 @@ class PoolUnitTests(unittest.TestCase):
         self.assertEqual(auto["candidates"]["claude_code"], {"model": "claude-opus-5-5", "reasoning_effort": "xhigh"})
         self.assertEqual(auto["prefer"], "claude_code")
         self.assertIsNone(auto["model"])
-        for kwargs in ({"model": "x"}, {"reasoning_effort": "low"}, {"max_output_tokens": 10}):
+        # One level both subscriptions know applies to both candidates; a level only one knows is refused.
+        high = text_generation_settings(config, backend="auto", reasoning_effort="high")
+        self.assertEqual(high["candidates"]["codex_cli"], {"model": "gpt-6-astra", "reasoning_effort": "high"})
+        self.assertEqual(high["candidates"]["claude_code"], {"model": "claude-opus-5-5", "reasoning_effort": "high"})
+        for kwargs in ({"model": "x"}, {"reasoning_effort": "max"}, {"max_output_tokens": 10}):
             with self.subTest(kwargs=kwargs), self.assertRaises(AppError):
                 text_generation_settings(config, backend="auto", **kwargs)
         claude = text_generation_settings(config, backend="claude_code")

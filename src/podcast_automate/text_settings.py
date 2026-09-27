@@ -27,6 +27,8 @@ DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 DEFAULT_CLAUDE_EFFORT = "xhigh"
 CLAUDE_MODELS = {"claude-opus-5-5": "Claude Opus 5.5", "claude-opus-5": "Claude Opus 5"}
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# The levels an automatic choice may set for both subscriptions at once.
+SHARED_EFFORTS = tuple(effort for effort in REASONING_EFFORTS if effort in CLAUDE_EFFORTS)
 # Which Claude Code level carries the same intent as a Codex level. Shown in catalogs and
 # documentation; never applied as a silent conversion of a saved choice.
 EFFORT_EQUIVALENTS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}
@@ -46,6 +48,8 @@ OPENROUTER_EFFORTS["deepseek/deepseek-v4.1-flash"] = ("low", "high", "max")
 TEXT_PRESETS = [
     {"id": "auto_subscriptions", "label": "Automatisch · Claude, sonst Codex", "provider": "auto",
      "model": None, "reasoning_effort": None},
+    {"id": "auto_subscriptions_high", "label": "Automatisch · Claude, sonst Codex · high", "provider": "auto",
+     "model": None, "reasoning_effort": "high"},
     {"id": "claude_opus_sub", "label": "Opus 5.5 · Claude-Abo", "provider": "claude_code",
      "model": "claude-opus-5-5", "reasoning_effort": "xhigh"},
     {"id": "codex_astra", "label": "Astra · Codex-Abo", "provider": "codex_cli",
@@ -65,8 +69,8 @@ PROVIDER_NOTES = {
                    "Limit wird erst beim Aufruf sichtbar und danach bis zum Reset vermerkt.",
     "openrouter": "OpenRouter-API mit eigenem Key und Guthaben.",
     "auto": "Automatische Abo-Wahl je Modellaufruf: Claude über das Claude-Max-Abo, bis dessen Kontingent erschöpft "
-            "ist, dann Codex über das ChatGPT-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Modell "
-            "und Stufe kommen aus dem Katalog und werden nicht einzeln angegeben.",
+            "ist, dann Codex über das ChatGPT-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Die Modelle "
+            "kommen aus dem Katalog; die Stufe ist deren Standard oder eine gemeinsame Stufe wie high für beide.",
 }
 
 
@@ -83,10 +87,11 @@ def text_preset(preset_id):
     return {key: preset[key] for key in ("provider", "model", "reasoning_effort")}
 
 
-def auto_candidates(codex_model=None):
-    """The two subscription configurations an automatic run may use, one per provider."""
-    return {"codex_cli": {"model": codex_model or DEFAULT_CODEX_MODEL, "reasoning_effort": DEFAULT_REASONING_EFFORT},
-            "claude_code": {"model": DEFAULT_CLAUDE_MODEL, "reasoning_effort": DEFAULT_CLAUDE_EFFORT}}
+def auto_candidates(codex_model=None, effort=None):
+    """The two subscription configurations an automatic run may use, one per provider. ``effort`` is one level
+    both providers know, applied to both; without it each keeps its catalog default."""
+    return {"codex_cli": {"model": codex_model or DEFAULT_CODEX_MODEL, "reasoning_effort": effort or DEFAULT_REASONING_EFFORT},
+            "claude_code": {"model": DEFAULT_CLAUDE_MODEL, "reasoning_effort": effort or DEFAULT_CLAUDE_EFFORT}}
 
 
 def provider_model(provider, model):
@@ -118,10 +123,8 @@ def validate_reasoning(effort, *, provider="codex_cli", model=None):
     elif provider == "claude_code":
         allowed = CLAUDE_EFFORTS
     elif provider == "auto":
-        if effort is not None:
-            raise AppError("Die automatische Abo-Wahl verwendet die Katalogstandards beider Anbieter. "
-                           "Eine Reasoning-Stufe nur für einen festen Anbieter angeben.", code="invalid_backend")
-        return None
+        # One level for both subscriptions, so only a level both know.
+        allowed = SHARED_EFFORTS
     else:
         allowed = REASONING_EFFORTS
     if effort is not None and effort not in allowed:
