@@ -217,6 +217,23 @@ def pdf_failure(stdout: bytes) -> AppError:
     return AppError("PDF konnte nicht zuverlässig als Text eingelesen werden.", code="source_unreadable")
 
 
+# Bot checks and sign-in walls answer with a page of their own instead of the document. The first
+# markers name a check outright; the others and a check's title also occur as a banner above a real
+# article, so they count only on a page too short to be one (Springer's "Client Challenge" has 300 characters).
+CHALLENGE_MARKERS = ("just a moment...", "verify you are human", "enable javascript and cookies")
+SHORT_PAGE_MARKERS = ("enable javascript to proceed", "javascript is disabled in your browser", "checking your browser")
+CHALLENGE_TITLES = ("client challenge", "just a moment", "attention required", "access denied", "security check")
+SHORT_PAGE_CHARS = 3000
+
+
+def interstitial(title, text):
+    """True for a bot check or sign-in wall that stands in for the requested document."""
+    text = clean(text or "").lower()
+    return (any(marker in text[:700] for marker in CHALLENGE_MARKERS)
+            or len(text) < SHORT_PAGE_CHARS and (any(marker in text for marker in SHORT_PAGE_MARKERS)
+                                                 or clean(title or "").lower().rstrip(". ") in CHALLENGE_TITLES))
+
+
 def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, list[SourceSection]]:
     metadata = {}
     if raw.startswith(b"%PDF-"):
@@ -249,8 +266,9 @@ def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, l
                     "authors": values.get("citation_author", values.get("author", [])),
                     "published_date": (values.get("citation_publication_date") or values.get("article:published_time") or [""])[0],
                     "language": values.get("language", ["unknown"])[0]}
-        if any(marker in clean(body).lower()[:700] for marker in ("just a moment...", "verify you are human", "enable javascript and cookies")):
-            raise AppError("Quelle liefert eine Zugriffssperre statt Artikeltext.", code="source_unreadable")
+        if interstitial(clean("".join(parser.title)), body):
+            raise AppError("Quelle liefert eine Zugriffssperre statt Artikeltext.", code="source_access_blocked",
+                           details={"interstitial": True})
         kind, suffix = "html", ".html"
         blocks = [(block, None) for block in re.split(r"\n\s*\n", body)]
     elif "text/" in content_type or Path(name).suffix.lower() in {".txt", ".md"}:
@@ -276,8 +294,27 @@ DOI = re.compile(r"10\.\d{4,9}/[^\s?#]+", re.I)
 
 def access_blocked(exc):
     details = getattr(exc, "details", None) or {}
-    return getattr(exc, "code", "") == "source_download_failed" and (
+    return getattr(exc, "code", "") == "source_access_blocked" or getattr(exc, "code", "") == "source_download_failed" and (
         details.get("http_status") in ACCESS_BLOCKS or bool(details.get("network_error")))
+
+
+def blocked_sources(index):
+    """The addresses this run could not read because the publisher refused them: an HTTP refusal or a
+    bot check in place of the document. Only these can justify accepting a criterion as an access gap."""
+    rows = {}
+    for failure in index.failures:
+        # The reason is this module's own message, "Quellenabruf fehlgeschlagen (HTTP 403)."
+        status = re.search(r"\(HTTP (\d{3})\)", failure.get("reason", ""))
+        if failure.get("code") == "source_access_blocked" or (
+                failure.get("code") == "source_download_failed" and status and int(status.group(1)) in ACCESS_BLOCKS):
+            rows.setdefault(failure["source"], {"url": failure["source"], "evidence": failure["reason"]})
+    for source in index.sources:
+        # Imported before such pages were recognised: the check stands in the index as if it were the document.
+        if (source.type == "html" and sum(len(s.text) for s in source.sections) < SHORT_PAGE_CHARS
+                and interstitial(source.title, " ".join(s.text for s in source.sections))):
+            address = source.url or source.final_url
+            rows.setdefault(address, {"url": address, "evidence": f"Bot-Abwehrseite statt Inhalt („{source.title}“)"})
+    return list(rows.values())
 
 
 def comparable_title(text):
@@ -351,8 +388,18 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
                 raise
             # The same work from a free repository; it keeps the address it was found under as its identity.
             (raw, content_type, final_url), extracted = open_access_copy(candidate, exc)
-    kind, suffix, metadata, sections = extracted or extract(raw, content_type, address)
-    copy_note = f"Open-access copy of the same work found via OpenAlex: {final_url}. " if extracted else ""
+    copied = extracted is not None
+    if not copied:
+        try:
+            extracted = extract(raw, content_type, address)
+        except AppError as exc:
+            # A bot check that answered with a page of its own refused the download just the same.
+            if local or not access_blocked(exc):
+                raise
+            (raw, content_type, final_url), extracted = open_access_copy(candidate, exc)
+            copied = True
+    kind, suffix, metadata, sections = extracted
+    copy_note = f"Open-access copy of the same work found via OpenAlex: {final_url}. " if copied else ""
     raw_path = root / "sources/raw" / run_id / f"{source_id}{suffix}"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     pending = raw_path.with_suffix(suffix + ".pending")

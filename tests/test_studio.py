@@ -634,6 +634,23 @@ class StudioHttpTests(unittest.TestCase):
             serve(self.workspace, self.server.server_port)
         opened.assert_called_once_with(f"http://127.0.0.1:{self.server.server_port}")
 
+    def test_a_refused_request_is_answered_after_its_body_is_read(self):
+        # A stale tab after a Studio restart posts with the old token. Refused before its body was read, the
+        # connection was reset on Windows and the page reported "not reachable" instead of renewing its token.
+        # The reset depends on timing, so the test pins the mechanism: the refusal reads the whole declared body first.
+        from podcast_automate.studio import StudioHandler
+        payload = {"kind": "gap", "run_id": "run_x", "task_id": "task_a", "reason": "x" * 100_000}
+        real, drained = StudioHandler.drain, []
+
+        def spy(handler):
+            drained.append(handler.unread)
+            real(handler)
+            drained.append(handler.unread)
+        with patch.object(StudioHandler, "drain", spy):
+            status, body, _ = self.request("/api/projects/example/approve", payload, {"X-Studio-Token": "stale"})
+        self.assertEqual((status, json.loads(body)["code"]), (403, "forbidden"))
+        self.assertEqual(drained, [len(json.dumps(payload)), 0])
+
     def test_quit_is_a_protected_explicit_action(self):
         self.assertEqual(self.request("/api/quit", {}, {"X-Studio-Token":"wrong"})[0], 403)
         self.assertEqual(self.request("/api/quit", {})[0], 200)

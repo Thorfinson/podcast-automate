@@ -147,13 +147,121 @@ test('the advisor’s cause, recommendation, sources and hint stand with the blo
     reason:'Kriterium 1 fehlt.',web_attempts:1,steps:9,read_sections:3,acceptance:['k'],reopened:0,advice,auto_retries:1}]};
   const card=app.run(`renderResearchDecisions({status:'blocked',progress:{research_questions:${JSON.stringify(ledger)},search_rounds:1,search_round_limit:24,source_limit:150}},{run_id:'run_x'},false,0,true,24)`);
   assert.ok(card.includes('<strong>Beratung:</strong> Der Verlag sperrt den Download &lt;PNAS&gt;.'));
-  assert.ok(card.includes('Empfehlung: Quellenlimit erhöhen · Ein automatischer neuer Versuch nach der Beratung lief bereits.'));
+  assert.ok(card.includes('Empfehlung: Quellenlimit erhöhen · Automatische neue Versuche: 1 von 5</p>'));
+  // A limit raise is the editor's decision: no one-click adoption for it.
+  assert.ok(!card.includes('data-action="apply-advice"'));
   assert.ok(card.includes('<a href="https://pmc.example/salganik" target="_blank" rel="noopener noreferrer">Salganik 2020</a>'));
   assert.ok(card.includes('<li>Ohne Adresse</li>'));
   // The advisor's hint is already in the field of a new attempt; the editor may change it before retrying.
   assert.ok(card.includes('id="retry-hint-t18" value="Freie Fassung in PubMed Central lesen."'));
   const html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)},new Set(),false,'run_x',24,1,150)`);
   assert.ok(html.includes('<p><strong>Beratung:</strong> Der Verlag sperrt den Download &lt;PNAS&gt;.</p>'));
+});
+
+test('the automatic choice at high names the shared level and its own preset',()=>{
+  const app=studio();
+  app.run(`boot.text_catalog={presets:[{id:'auto_subscriptions',label:'Automatisch · Claude, sonst Codex',provider:'auto',model:null,reasoning_effort:null},
+    {id:'auto_subscriptions_high',label:'Automatisch · Claude, sonst Codex · high',provider:'auto',model:null,reasoning_effort:'high'}],
+    auto_candidates:{codex_cli:{model:'gpt-6-astra',reasoning_effort:'xhigh'},claude_code:{model:'claude-opus-5-5',reasoning_effort:'xhigh'}}};`);
+  assert.ok(app.run(`textChoiceSummary({provider:'auto',model:null,reasoning_effort:'high'})`).includes('Codex gpt-6-astra (high) · Claude claude-opus-5-5 (high)'));
+  assert.ok(app.run(`textChoiceSummary({provider:'auto',model:null,reasoning_effort:null})`).includes('Codex gpt-6-astra (xhigh) · Claude claude-opus-5-5 (xhigh)'));
+  // Each automatic preset matches only its own level.
+  const high={provider:'auto',model:null,reasoning_effort:'high'}, plain={provider:'auto',model:null,reasoning_effort:null};
+  assert.equal(app.run(`boot.text_catalog.presets.filter(p=>presetMatches(p,${JSON.stringify(high)})).map(p=>p.id).join()`),'auto_subscriptions_high');
+  assert.equal(app.run(`boot.text_catalog.presets.filter(p=>presetMatches(p,${JSON.stringify(plain)})).map(p=>p.id).join()`),'auto_subscriptions');
+});
+
+test('a second mark shows the whole-dossier audit next to the question’s own check',()=>{
+  const app=studio();
+  const q=(id,status,objections)=>({id,question:id,status,activity:'x',steps:3,read_sections:2,acceptance:['k'],reopened:1,objections});
+  const ledger={closed:2,total:4,accepted:0,phase:'questions',audit_round:1,questions:[
+    q('a','verified',[{rule:'claim_preservation',reason:'„potential“ fehlt.'}]),q('b','verified',[]),
+    q('c','researching',[{rule:'support',reason:'Beleg fehlt.'},{rule:'criterion',reason:'Kriterium 2.'}]),q('d','pending',[])]};
+  const html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)},new Set(),true,'run_x',24,1,150)`);
+  // Reworked and checked again: the objection waits for the next round; that is no warning.
+  assert.ok(html.includes('✓<span class="audit-mark" title="Gesamtprüfung: 1 Einwand nachgebessert, Prüfrunde 2 prüft nach">◐</span> a · Geprüft abgeschlossen · Gesamtprüfung: 1 Einwand nachgebessert, Prüfrunde 2 prüft nach</summary>'));
+  assert.ok(html.includes('✓<span class="audit-mark" title="Gesamtprüfung bestanden">✓</span> b · Geprüft abgeschlossen · Gesamtprüfung bestanden</summary>'));
+  assert.ok(html.includes('<span class="audit-mark" title="Gesamtprüfung: 2 Einwände offen, wird nachgebessert">⚠</span> c'));
+  assert.ok(html.includes('○<span class="audit-mark" title="Gesamtprüfung steht noch aus">○</span> d'));
+  assert.ok(html.includes('Erstes Zeichen: Prüfung der einzelnen Frage'));
+  assert.ok(html.includes('Gesamtprüfung: 1 bestanden, 1 nachgebessert, warten auf Prüfrunde 2, 1 mit offenem Einwand in Arbeit, 1 ausstehend.'));
+  // The open objections stand in the question itself.
+  assert.ok(html.includes('<strong>Einwände der Gesamtprüfung (nachgebessert, Prüfrunde 2 prüft nach):</strong></p><ul><li>„potential“ fehlt.</li></ul>'));
+  // Before the first audit no question has passed it; a ledger without objection data shows no second mark at all.
+  const before={...ledger,audit_round:0,questions:[q('b','verified',[])]};
+  assert.ok(app.run(`renderResearchQuestions(${JSON.stringify(before)},new Set(),false,'run_x',24,1,150)`).includes('✓<span class="audit-mark" title="Gesamtprüfung steht noch aus">○</span> b'));
+  const old={...ledger,questions:[{...q('b','verified',[]),objections:undefined}]};
+  const plain=app.run(`renderResearchQuestions(${JSON.stringify(old)},new Set(),false,'run_x',24,1,150)`);
+  assert.ok(!plain.includes('audit-mark')&&!plain.includes('Zweites Zeichen'));
+});
+
+test('when the automatic attempts stop, one click adopts every retry advice and resumes',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const advice=(key,hint)=>({key,diagnosis:'Neue Quelle nötig.',recommendation:'retry',limit:'none',hint,sources:[]});
+  const row=(id,extra)=>({id,question:id,status:'blocked',outcome:'evidence_block',web_attempts:1,reason:'Fehlt.',activity:'x',steps:9,read_sections:3,acceptance:['k'],reopened:0,...extra});
+  const ledger={closed:0,total:4,accepted:0,phase:'blocked',auto_retry_limit:5,questions:[
+    row('a',{auto_retries:5,auto_stop:'limit',advice:advice('0.5','Hinweis A')}),
+    row('b',{auto_retries:2,auto_stop:'no_progress',advice:advice('0.2','Hinweis B')}),
+    row('c',{auto_retries:1,advice:{...advice('0.1',''),recommendation:'accept_gap'}}),
+    row('d',{auto_retries:0,advice:advice('0.0','alt'),retries:1})]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:24}}};overviewPage=false;step=PAGE.research;render();`);
+  const page=jobView(app);
+  assert.ok(page.includes('Automatische neue Versuche: 5 von 5 · Die 5 automatischen Versuche sind ausgeschöpft.'));
+  assert.ok(page.includes('Automatische neue Versuche: 2 von 5 · Der letzte automatische Versuch hat keinen neuen Abschnitt gelesen'));
+  // Only current retry advice counts: not a gap recommendation, not advice from before a new attempt.
+  assert.ok(page.includes('data-action="apply-advice" data-run-id="run_x">Empfehlungen übernehmen und fortsetzen</button><span class="hint">2 Teilfragen mit dem Hinweis des Beraters erneut versuchen.'));
+  app.run(`$('retry-hint-b').value='Hinweis B, ergänzt';`);
+  app.responses.set('/api/projects/p',app.run('structuredClone(project)'));
+  await app.run(`applyAdvice({dataset:{runId:'run_x'}})`);
+  const approvals=app.requests.filter(r=>r.path==='/api/projects/p/approve').map(r=>JSON.parse(r.options.body));
+  assert.deepEqual(approvals,[{kind:'retry',run_id:'run_x',task_id:'a',hint:'Hinweis A'},{kind:'retry',run_id:'run_x',task_id:'b',hint:'Hinweis B, ergänzt'}]);
+  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/start').options.body),{action:'resume',run_id:'run_x'});
+  // Reworking reopened questions is named as such, with what is still open.
+  const round=app.run(`researchRound({phase:'questions',audit_round:1,reopened:18,questions:[{reopened:1,status:'verified'},{reopened:1,status:'researching'}]})`);
+  assert.ok(round.includes('Nachbesserung nach Prüfrunde 1</strong> · 18 Teilfragen wieder geöffnet, davon 1 noch offen. Danach wird das Dossier neu zusammengesetzt und in Prüfrunde 2 geprüft.'));
+  assert.ok(app.run(`researchRound({phase:'audit',audit_round:1,reopened:18})`).includes('Prüfrunde 2</strong> · Gesamtprüfung läuft'));
+});
+
+test('a criterion whose source refused retrieval is accepted as an access gap from the card and the run resumes',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const refused='https://link.springer.com/chapter/10.1007/978-3-031-77847-6_18';
+  const row={id:'t03',question:'Benchmark',status:'blocked',outcome:'evidence_block',web_attempts:2,steps:57,read_sections:9,reopened:0,activity:'x',
+    reason:'Die unabhängige Prüfung hat die Antwort abgewiesen. Unerfüllt: Kriterium 2: Verifies the 65.63% figure',
+    acceptance:['Explains the mechanism','Reports the design','Verifies the 16% vs 54% and 72% vs 65.63% figures'],
+    advice:{key:'6.1',diagnosis:'Zugriffssperre.',recommendation:'accept_gap',limit:'none',hint:'',sources:[]}};
+  const ledger={closed:16,total:18,accepted:0,phase:'blocked',questions:[row,
+      {id:'t17',question:'Synthese',status:'blocked',outcome:'prerequisite_block',web_attempts:0,steps:0,read_sections:0,reopened:0,activity:'y',reason:'',acceptance:['s'],depends_on:['t03']}],
+    blocked_sources:[{url:refused,evidence:'Bot-Abwehrseite statt Inhalt („Client Challenge“)'},{url:'https://publisher.example/b',evidence:'Quellenabruf fehlgeschlagen (HTTP 403).'}]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:46}}};overviewPage=false;step=PAGE.research;render();`);
+  const page=jobView(app);
+  assert.ok(page.includes('data-action="accept-access-gap" data-run-id="run_x" data-task-id="t03"'));
+  // The criterion the review failed is preselected; every refused address of the run is offered.
+  assert.ok(page.includes('<option value="2" selected>Kriterium 2: Verifies the 16% vs 54% and 72% vs 65.63% figures</option>'));
+  assert.ok(page.includes(`<option value="${refused}">`)&&page.includes('Bot-Abwehrseite statt Inhalt'));
+  // The refused source is chosen, never preselected: the first address of the list was the wrong one once.
+  assert.ok(page.includes('<option value="" selected>Gesperrte Quelle wählen …</option>'));
+  await assert.rejects(app.run(`acceptAccessGap({dataset:{runId:'run_x',taskId:'t03'}})`),/gesperrte Quelle wählen/);
+  assert.ok(!app.requests.some(r=>r.path==='/api/projects/p/approve'),'nothing is approved without a chosen source');
+  assert.ok(!page.includes('id="access-criterion-t17"'),'a question that only waits for its prerequisite has nothing to narrow');
+  app.run(`project.job.progress.research_questions.blocked_sources=[];lastJobView='';render();`);
+  assert.ok(!jobView(app).includes('data-action="accept-access-gap"'),'without a refused source there is no access gap to accept');
+  app.run(`project.job.progress.research_questions.blocked_sources=${JSON.stringify(ledger.blocked_sources)};lastJobView='';render();`);
+  // The reloaded project shows the gap as requested: the last open decision, so the run resumes at once.
+  const decided=app.run('structuredClone(project)');
+  decided.job.progress.research_questions.questions[0]={...row,access_gap_requested:true,requested_access_gaps:[{task_id:'t03',criterion:2,source:refused}]};
+  decided.job.progress.research_questions.phase='questions';
+  app.responses.set('/api/projects/p',decided);
+  app.run(`$('access-criterion-t03').value='2';$('access-source-t03').value=${JSON.stringify(refused)};`); // what the selects hold
+  assert.equal(await app.run(`acceptAccessGap({dataset:{runId:'run_x',taskId:'t03'}})`),true);
+  const approval=app.requests.find(r=>r.path==='/api/projects/p/approve');
+  assert.deepEqual(JSON.parse(approval.options.body),{kind:'access_gap',run_id:'run_x',task_id:'t03',criterion:2,source:refused});
+  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/start').options.body),{action:'resume',run_id:'run_x'});
+  app.run(`project.job.status='blocked';lastJobView='';render();`);
+  const shown=jobView(app);
+  assert.ok(shown.includes(`↻ Zugangslücke akzeptiert: Kriterium 2 · ${refused}. „Fortsetzen“ prüft die Antwort ohne den gesperrten Teil.`));
+  assert.ok(!shown.includes('data-task-id="t03"'),'an accepted access gap offers no further buttons');
 });
 
 test('a block without advice offers to resume, because the run asks the advisor first',()=>{
@@ -1640,7 +1748,8 @@ test('the research card names the audit round and the job names the next step',(
   app.run(`project={id:'test',job:{id:'j1',status:'running',action:'research',run:{stages:{}},progress:{phase:'research',activity:'Zuordnung der Einwände: Teil 1 von 5',
     research_questions:{closed:16,total:18,phase:'questions',audit_round:1,reopened:12,questions:[]}}}};renderJob();`);
   let html=jobView(app);
-  assert.ok(html.includes('Prüfrunde 2 · 12 Teilfragen wieder geöffnet'));
+  // Reopened questions are reworked before the next round: the label says so instead of "round 2 · 12 reopened".
+  assert.ok(html.includes('<strong>Nachbesserung nach Prüfrunde 1</strong> · 12 Teilfragen wieder geöffnet. Danach wird das Dossier neu zusammengesetzt und in Prüfrunde 2 geprüft.'));
   assert.ok(html.includes('Nächster Schritt:'));
   assert.ok(html.includes('Nichts zu tun, der Lauf arbeitet (Zuordnung der Einwände: Teil 1 von 5)'));
   const panel=app.elements.get('research-progress').innerHTML;
@@ -1652,11 +1761,20 @@ test('the research card names the audit round and the job names the next step',(
   assert.ok(html.includes('Zeitlimit eines Modellaufrufs'));
   assert.ok(html.includes('„Fortsetzen“ wiederholt ihn'));
   assert.ok(html.includes('data-action="resume" data-run-id="run_t"'));
+  // A research step whose corrections ran out, or a check refused a change, keeps its checked answers and may resume.
+  app.run(`project.job.status='blocked';project.job.run={run_id:'run_t',kind:'research',stages:{dossier:{status:'blocked',error:{code:'invalid_evidence',message:'Belegkorrektur'}}}};renderJob();`);
+  html=jobView(app);
+  assert.ok(html.includes('Korrekturversuche aufgebraucht'));
+  assert.ok(html.includes('data-action="resume" data-run-id="run_t"'));
+  assert.ok(html.includes('die geprüften Teilantworten bleiben erhalten'));
   app.run(`project.job.status='blocked';project.job.run={run_id:'run_t',kind:'research',stages:{dossier:{status:'blocked',error:{code:'prompt_too_large',message:'zu groß'}}}};renderJob();`);
   html=jobView(app);
   assert.ok(html.includes('passt nicht in das Kontextfenster'));
-  assert.ok(!html.includes('data-action="resume"'),'a prompt that does not fit is not offered the same attempt again');
-  assert.ok(html.includes('data-action="research"'),'the way on is a new research run');
+  // A prompt that did not fit was refused before the call and not charged, and a task's prompt changes between
+  // attempts and with Studio updates: resuming costs nothing and is offered, next to the new run with another model.
+  assert.ok(html.includes('data-action="resume" data-run-id="run_t"'),'a refused prompt may be tried again at no cost');
+  assert.ok(html.includes('nicht angerechnet'));
+  assert.ok(html.includes('data-action="research"'),'a new research run with another model stays the way out');
   app.run(`project.job.run={run_id:'run_t',kind:'research',stages:{dossier:{status:'blocked',error:{code:'research_budget_insufficient',message:'Limit'}}}};project.job.progress.model_calls=150;project.job.progress.model_call_limit=150;renderJob();`);
   html=jobView(app);
   assert.ok(html.includes('data-action="approve-calls" data-run-id="run_t" data-model-calls="200" data-then-resume="1"'));

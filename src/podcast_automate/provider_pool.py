@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 
 from . import subscriptions
-from .claude_code import ADAPTER_VERSION as CLAUDE_ADAPTER_VERSION, MAX_BUDGET_USD, PROMPT_LIMIT_CHARS, ClaudeCodeAdapter
+from .claude_code import ADAPTER_VERSION as CLAUDE_ADAPTER_VERSION, MAX_BUDGET_USD, ClaudeCodeAdapter, prompt_limit
 from .codex import CodexAdapter
 from .errors import AppError
 from .models import TextProbeOutput, now
@@ -29,8 +29,8 @@ def subscription_selection(config, backend, *, model=None, reasoning_effort=None
     """The saved form of a subscription choice: one fixed Claude provider or the automatic candidate pair."""
     if backend == "auto":
         provider_model("auto", model)
-        validate_reasoning(reasoning_effort, provider="auto")
-        return {"provider": "auto", "prefer": AUTO_PREFERENCE, "candidates": auto_candidates(config.runtime.codex_model),
+        effort = validate_reasoning(reasoning_effort, provider="auto")
+        return {"provider": "auto", "prefer": AUTO_PREFERENCE, "candidates": auto_candidates(config.runtime.codex_model, effort),
                 "adapter_versions": {"claude_code": CLAUDE_ADAPTER_VERSION}}
     if backend == "claude_code":
         model = provider_model("claude_code", validate_model(model)) or DEFAULT_CLAUDE_MODEL
@@ -141,11 +141,12 @@ class AdapterPool:
             self.openrouter.require_key()
             return self.openrouter.structured(prompt, output_type, directory, prompt_version=prompt_version, search=search)
         tried = []
-        too_large = [name for name in candidates if name == "claude_code" and len(prompt) > PROMPT_LIMIT_CHARS]
+        too_large = [name for name, choice in candidates.items()
+                     if name == "claude_code" and len(prompt) > prompt_limit(choice["model"])]
         if mode == "auto" and too_large:
             # Excluded before the choice: the fixed provider path lets the adapter refuse the call itself.
-            write_json(directory / "prompt_size.json", {"prompt_chars": len(prompt), "limit_chars": PROMPT_LIMIT_CHARS,
-                       "excluded": too_large})
+            write_json(directory / "prompt_size.json", {"prompt_chars": len(prompt),
+                       "limit_chars": prompt_limit(candidates["claude_code"]["model"]), "excluded": too_large})
             tried.extend(too_large)
         choice = self.choose(mode, prefer, candidates, exclude=tried)
         stalled = False

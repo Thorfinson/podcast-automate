@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .runner import manifest_path
 from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-exported for callers)
-from .run_budget import accepted_gaps, effective_limits, read_plan_approval, retry_requests
+from .run_budget import accepted_gaps, criterion_gaps, effective_limits, read_plan_approval, retry_requests
 from .errors import AppError
 from .models import ResearchLimits
 from .research_ledger import reopenable
@@ -237,6 +237,21 @@ def research_progress(root, run, since=None):
             questions["retry_requested"] = sum(bool(r.get("retry_requested")) for r in questions["questions"])
             undecided = [r for r in questions["questions"]
                          if r.get("status") == "blocked" and not r.get("accepted_gap") and not r.get("retry_requested")]
+            if questions.get("phase") == "blocked" and not undecided:
+                questions["phase"] = "questions"
+        # So is an accepted access gap; the resume reopens the question with the criterion narrowed.
+        try:
+            access = criterion_gaps(work, run.get("input_hash"))
+        except AppError:
+            access = []
+        if access:
+            for row in questions["questions"]:
+                known = row.get("access_gaps") or []
+                requested = [gap for gap in access if gap["task_id"] == row.get("id") and gap not in known]
+                if requested and row.get("status") == "blocked" and not row.get("accepted_gap"):
+                    row.update(access_gap_requested=True, requested_access_gaps=requested)
+            undecided = [r for r in questions["questions"] if r.get("status") == "blocked" and not r.get("accepted_gap")
+                         and not r.get("retry_requested") and not r.get("access_gap_requested")]
             if questions.get("phase") == "blocked" and not undecided:
                 questions["phase"] = "questions"
         if "reopenable" not in questions:

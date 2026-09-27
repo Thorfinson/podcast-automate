@@ -28,7 +28,8 @@ from .logs import configure_logging, logger
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, host_labels, now
 from .episode_audio import saved_approval
 from .runner import manifest_path
-from .run_budget import approve_model_call_limit, approve_research_gap, approve_research_plan, approve_research_retry
+from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
+                         approve_research_retry)
 from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics, style_notes
 from .speech import (AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
@@ -440,6 +441,10 @@ class Studio:
         if kind == "retry":
             request = approve_research_retry(root, run_id, data.get("task_id"), data.get("hint", ""))
             return {"retry": request.model_dump(mode="json")}
+        if kind == "access_gap":
+            approval = approve_criterion_gap(root, run_id, data.get("task_id"), data.get("criterion"), data.get("source"),
+                                             data.get("reason", ""))
+            return {"access_gap": approval.model_dump(mode="json")}
         if kind == "plan":
             # The receipt binds to the projected plan; a cap asks the next resume to plan again and present anew.
             approval = approve_research_plan(root, run_id, max_tasks=data.get("max_tasks"), source="studio")
@@ -1071,19 +1076,45 @@ class StudioHandler(BaseHTTPRequestHandler):
         if mutation and not secrets.compare_digest(self.headers.get("X-Studio-Token", ""), self.server.studio.token):
             raise AppError("Studio-Sitzung neu laden.", code="forbidden")
 
+    def drain(self):
+        """Read the body a refused request already sent. On Windows, closing a socket with unread data resets
+        the connection, and the browser sees an abort instead of the refusal it can act on (a stale session
+        token renews itself only on the 403)."""
+        remaining, self.unread = getattr(self, "unread", 0), 0
+        if remaining <= 0:
+            return
+        previous = self.connection.gettimeout()
+        try:
+            # A client that sends less than it declared must not hold this thread.
+            self.connection.settimeout(5)
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            pass
+        finally:
+            self.connection.settimeout(previous)
+
     def dispatch(self, mutation=False):
         app = self.server.studio
         try:
-            self.guard(mutation)
             path = unquote(urlsplit(self.path).path)
+            limit = attachments.MAX_BODY_BYTES if re.fullmatch(r"/api/projects/[^/]+/upload", path) else 128000
+            length = self.headers.get("Content-Length", "0")
+            # Only a body within the endpoint's limit is ever read, also to refuse it; an oversized one never is.
+            self.unread = int(length) if mutation and length.isdigit() and 0 < int(length) <= limit else 0
+            self.guard(mutation)
             if mutation:
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     raise AppError("JSON-Anfrage erwartet.", code="invalid_request")
                 size = int(self.headers.get("Content-Length", "0"))
-                limit = attachments.MAX_BODY_BYTES if re.fullmatch(r"/api/projects/[^/]+/upload", path) else 128000
                 if not 0 < size <= limit:
                     raise AppError("Anfrage zu groß oder leer.", code="invalid_request")
-                data = json.loads(self.rfile.read(size))
+                raw = self.rfile.read(size)
+                self.unread = 0
+                data = json.loads(raw)
                 if not isinstance(data, dict):
                     raise AppError("Ungültige Anfrage.", code="invalid_request")
                 with app.mutex:
@@ -1169,6 +1200,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             if not isinstance(exc, AppError):
                 # Request bodies and paths stay out of the log; the traceback names the failing code.
                 logger("studio").warning("Anfrage %s abgewiesen: %s", urlsplit(self.path).path, type(exc).__name__, exc_info=exc)
+            self.drain()
             self.send_data(403 if code == "forbidden" else 404 if code == "not_found" else 400,
                            json.dumps({"error": message, "code": code}, ensure_ascii=False).encode("utf-8"))
 

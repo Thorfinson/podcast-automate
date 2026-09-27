@@ -25,6 +25,17 @@ from .sources import canonical_url, clean, import_failure, import_source
 from .storage import digest, read_text
 
 READER_ACTIONS = ["search_local", "read", "search_web", "answer", "blocked"]
+# Criteria the user narrowed because the source they need refused retrieval (run_budget.approve_criterion_gap).
+# Added to a prompt only for a task that has one, so every other prompt keeps its text and its receipts.
+ACCESS_GAP_READER = ("accepted_access_gaps lists acceptance criteria the editor accepted as access gaps: the named source "
+                     "refused retrieval, so the part of the criterion that needs it cannot be verified. Answer those criteria "
+                     "with what the read sources show, do not state or explain the refused part as verified, and do not search "
+                     "for that source again. Name the gap in limits as missing source access, not as scientific uncertainty, "
+                     "and keep the outcome supported_answer when the rest is supported.")
+ACCESS_GAP_REVIEW = ("accepted_access_gaps lists acceptance criteria the editor accepted as access gaps because the named "
+                     "source refused retrieval. Judge those criteria on their remaining parts: pass one when those parts are "
+                     "met and the answer names the gap in its limits without claiming the refused part. The refused source "
+                     "does not count against source_adequacy.")
 LOCK_FEEDBACK = ("The answer is locked after a failed review: read or search new passages first and answer only "
                  "with new evidence. If a criterion needs a kind of source the corpus lacks, search_web for it; "
                  "if the web search brings nothing, choose blocked and name the criterion.")
@@ -145,10 +156,39 @@ def review_outcome(review, task, findings, passages):
     return blocking, limitations
 
 
+def access_gap_rows(spec, row):
+    return [{"criterion": gap["criterion"], "criterion_text": spec.acceptance[gap["criterion"]], "source": gap["source"],
+             "evidence": gap["evidence"], "editor_note": gap.get("reason", "")} for gap in row.get("access_gaps", [])]
+
+
 def read_context(reader, refs):
     """Exact passages for the given references, in stable order and without neighbours."""
     return reader.read([ReaderWindow(reference=ref, before=0, after=0) for ref in dict.fromkeys(refs)],
                        max_chars=2_000_000)["context"]
+
+
+# The search results a reader prompt carries. Every local search adds its hits to the task's catalog; after
+# several attempts that catalog alone outgrew a model window.
+CANDIDATE_CHARS = 40_000
+
+
+def open_candidates(catalog, read_refs, budget=CANDIDATE_CHARS):
+    """Search results the reader has not read yet, newest search first, within ``budget`` characters.
+
+    Read passages are named in ``read_refs`` already; an older search that no longer fits can be run again.
+    The newest search with unread hits always stays, so the reader never loses its latest results."""
+    read, kept, used = set(read_refs), [], 0
+    for result in reversed(catalog):
+        unread = [c for c in result.get("candidates", []) if c.get("reference") not in read]
+        if not unread:
+            continue
+        entry = {**result, "candidates": unread}
+        size = len(json.dumps(entry, ensure_ascii=False))
+        if kept and used + size > budget:
+            break
+        kept.append(entry)
+        used += size
+    return kept[::-1]
 
 
 class TaskResearchMixin:
@@ -252,12 +292,13 @@ class TaskResearchMixin:
         answer = QuestionAnswer.model_validate(row["answer"])
         refs = [e.reference for f in answer.findings for e in f.evidence]
         passages = read_context(self.reader, refs)
-        prompt = (TERMINOLOGY + EVIDENCE_INSTRUCTIONS +
-            instructions("question_verify") + "\n" + json.dumps({
-                "task": spec.model_dump(), "answer": answer.model_dump(),
-                "evidence_profile": PROFILES[spec.kind],
-                "prerequisite_answers": prerequisite_answers(spec, self.state),
-                "sources": passages}, ensure_ascii=False))
+        text = TERMINOLOGY + EVIDENCE_INSTRUCTIONS + instructions("question_verify")
+        payload = {"task": spec.model_dump(), "answer": answer.model_dump(), "evidence_profile": PROFILES[spec.kind],
+                   "prerequisite_answers": prerequisite_answers(spec, self.state), "sources": passages}
+        if row.get("access_gaps"):
+            text += " " + ACCESS_GAP_REVIEW
+            payload["accepted_access_gaps"] = access_gap_rows(spec, row)
+        prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
 
         def well_formed(verdict, final):
             # Shape defects are corrected by a repeated call; substantive non-passes are feedback.
@@ -266,6 +307,12 @@ class TaskResearchMixin:
         verdict = normalise_review(self.call(self.task_folder(spec, row),
                                              f"review_{row['step']:03d}", AnswerReview, prompt, validate=well_formed), spec)
         blocking, limitations = review_outcome(verdict, spec, answer.findings, passages)
+        # The accepted gap travels with the verified answer whatever the answer's own limits say.
+        limitations += [{"finding_id": "", "kind": "accepted_access_gap",
+                         "text": f"Kriterium {gap['criterion']} ({gap['criterion_text']}): akzeptierte Zugangslücke, "
+                                 f"{gap['source']} war nicht abrufbar ({gap['evidence']})."
+                                 + (f" {gap['editor_note']}" if gap["editor_note"] else "")}
+                        for gap in access_gap_rows(spec, row)]
         if not blocking:
             row.update(status="verified", activity="Antwort und Belege geprüft", reason="", feedback=[], no_progress=0,
                        answer_locked=False, lock=None)
@@ -280,7 +327,9 @@ class TaskResearchMixin:
             # The answer is locked: the same passages cannot pass a second time, so the reader
             # must bring new evidence, search the web for the missing kind of source, or block.
             failed = [c.index for c in verdict.criteria if not c.passed]
-            row.update(status="researching", draft_answer=row["answer"], answer=None, answer_locked=True,
+            # A rejected correction becomes an ordinary reopening: new passages, a search, or a block.
+            row.update(status="researching", draft_answer=row["answer"], answer=None, answer_locked=True, revise_only=False,
+                       resubmit=None,
                        lock={"step": row["step"], "web_attempts": row["web_attempts"],
                              "criteria": [{"index": i, "text": spec.acceptance[i]} for i in failed],
                              "finding_ids": [r.finding_id for r in verdict.finding_support if blocks(r)],
@@ -303,6 +352,9 @@ class TaskResearchMixin:
                    outcome="budget_block" if row.get("outcome") == "budget_block" else "evidence_block")
 
     def allowed_actions(self, row):
+        if row.get("revise_only"):
+            # Reopened to correct wording against passages it already cites: the answer is the only step.
+            return ["answer"]
         return [a for a in READER_ACTIONS if a != "answer" or not row.get("answer_locked")]
 
     def review_limitations(self):
@@ -485,18 +537,24 @@ class TaskResearchMixin:
             if row["pending"]:
                 decision = ResearchDecision.model_validate(row["pending"])
             else:
-                prompt = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
-                    instructions("question_reader", language=self.config.language) + "\n" + json.dumps({
-                        "task": spec.model_dump(), "task_groups": self.state.get("task_groups", {}),
-                        "evidence_profile": PROFILES[spec.kind],
-                        "prerequisite_answers": prerequisite_answers(spec, self.state),
-                        "allowed_actions": self.allowed_actions(row),
-                        "answer_lock": row.get("lock") if row.get("answer_locked") else None,
-                        "source_catalog": source_catalog(self.index), "candidates": row["catalog"],
-                        "sources": read_context(self.reader, row["current_refs"]), "read_refs": row["read_refs"],
-                        "deferred": row.get("deferred", []), "feedback": row["feedback"],
-                        "previous_answer": row["draft_answer"], "previous_actions": row["actions"][-4:],
-                        "reopening": row["reopenings"][-1:]}, ensure_ascii=False))
+                text = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
+                        instructions("question_reader", language=self.config.language))
+                payload = {
+                    "task": spec.model_dump(), "task_groups": self.state.get("task_groups", {}),
+                    "evidence_profile": PROFILES[spec.kind],
+                    "prerequisite_answers": prerequisite_answers(spec, self.state),
+                    "allowed_actions": self.allowed_actions(row),
+                    "answer_lock": row.get("lock") if row.get("answer_locked") else None,
+                    "source_catalog": source_catalog(self.index),
+                    "candidates": open_candidates(row["catalog"], row["read_refs"]),
+                    "sources": read_context(self.reader, row["current_refs"]), "read_refs": row["read_refs"],
+                    "deferred": row.get("deferred", []), "feedback": row["feedback"],
+                    "previous_answer": row["draft_answer"], "previous_actions": row["actions"][-4:],
+                    "reopening": row["reopenings"][-1:]}
+                if row.get("access_gaps"):
+                    text += " " + ACCESS_GAP_READER
+                    payload["accepted_access_gaps"] = access_gap_rows(spec, row)
+                prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
                 decision = self.call(folder, "reader", ResearchDecision, prompt, validate=well_formed_decision)
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
@@ -526,7 +584,9 @@ class TaskResearchMixin:
                 errors = answer_errors(answer, spec, self.reader, set(row["read_refs"]))
                 if any(f.claim_contract is None for f in answer.findings):
                     errors.append("Supply a structured claim_contract for every finding.")
-                if row["draft_answer"] and digest(answer.model_dump()) == digest(row["draft_answer"]):
+                # ``resubmit``: the draft failed under criteria an accepted access gap has narrowed since.
+                if (row["draft_answer"] and digest(answer.model_dump()) == digest(row["draft_answer"])
+                        and row.get("resubmit") != digest(row["draft_answer"])):
                     errors.append("This identical answer already failed independent review. Address the specific feedback before resubmitting.")
                 if errors:
                     row["feedback"] = list(dict.fromkeys([*row["feedback"], *errors]))

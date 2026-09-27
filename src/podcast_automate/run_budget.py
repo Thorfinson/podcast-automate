@@ -48,6 +48,21 @@ class GapApprovals(Contract):
     gaps: list[GapApproval]
 
 
+class CriterionGap(Contract):
+    task_id: Identifier
+    criterion: int = Field(ge=0)
+    source: str = Field(min_length=1, max_length=2000)
+    evidence: str = ""
+    reason: str = ""
+    approved_at: datetime
+
+
+class CriterionGaps(Contract):
+    run_id: Identifier
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    gaps: list[CriterionGap]
+
+
 class PlanApproval(Contract):
     run_id: Identifier
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -197,6 +212,67 @@ def approve_research_gap(root, run_id, task_id, reason=""):
     approvals = GapApprovals(run_id=manifest.run_id, input_hash=manifest.input_hash,
                              gaps=[*(GapApproval.model_validate(g) for g in existing.values()), approval])
     write_json(work / "gap_approvals.json", approvals.model_dump(mode="json"))
+    return approval
+
+
+def criterion_gaps(work, input_hash) -> list[dict]:
+    """Access gaps accepted for single criteria of this run; empty when none was ever written."""
+    path = work / "criterion_gaps.json"
+    if not path.exists():
+        return []
+    try:
+        approvals = CriterionGaps.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AppError("Die gespeicherten Zugangslücken sind ungültig.", code="invalid_gap_approval", status="blocked") from exc
+    if approvals.run_id != work.name or approvals.input_hash != input_hash:
+        raise AppError("Die Zugangslücken gehören nicht zu diesem Auftrag.", code="invalid_gap_approval", status="blocked")
+    return [gap.model_dump(mode="json") for gap in approvals.gaps]
+
+
+def approve_criterion_gap(root, run_id, task_id, criterion, source, reason=""):
+    """Accept that one criterion of a blocked task cannot be met in full because the source it needs
+    refused retrieval, after the user explicitly asked for it.
+
+    Unlike an accepted task gap, the task keeps its verified parts: the next resume reopens it, the
+    answer and the review see the criterion narrowed to what the readable sources can show, and the
+    verified answer carries the gap as a limitation into the dossier and the quality report. Only an
+    address this run demonstrably could not read qualifies (``sources.blocked_sources``), so a model
+    cannot turn a hard question into an access problem.
+    """
+    from .research_ledger import load_index, read_value
+    from .sources import blocked_sources
+    work, manifest = _text_run(root, run_id)
+    if manifest.kind != "research":
+        raise AppError("Zugangslücken gibt es nur in einem Rechercheauftrag.", code="invalid_gap_approval")
+    state_path = work / "question_research/state.json"
+    if not state_path.exists():
+        raise AppError("Für diesen Lauf gibt es noch keine Recherchefragen.", code="invalid_gap_approval")
+    state = read_value(state_path)
+    row = state.get("tasks", {}).get(task_id)
+    spec = next((t for t in state["plan"]["tasks"] if t["id"] == task_id), None)
+    if row is None or spec is None:
+        raise AppError("Unbekannte Recherchefrage.", code="invalid_gap_approval")
+    if row.get("status") != "blocked" or row.get("accepted_gap"):
+        raise AppError("Nur bei einer blockierten Teilfrage kann ein Kriterium als Zugangslücke akzeptiert werden.",
+                       code="invalid_gap_approval")
+    if isinstance(criterion, bool) or not isinstance(criterion, int) or not 0 <= criterion < len(spec["acceptance"]):
+        raise AppError("Unbekanntes Kriterium dieser Teilfrage.", code="invalid_gap_approval")
+    if not isinstance(reason, str) or len(reason) > 2000:
+        raise AppError("Die Begründung muss ein kurzer Text sein.", code="invalid_gap_approval")
+    index = load_index(root, work / "question_research/indexes" / f"{state['index_hash']}.json")
+    refused = {entry["url"]: entry for entry in blocked_sources(index)}
+    if source not in refused:
+        raise AppError("Diese Quelle wurde in diesem Lauf nicht nachweislich gesperrt; nur eine verweigerte Quelle "
+                       "begründet eine Zugangslücke.", code="invalid_gap_approval")
+    existing = criterion_gaps(work, manifest.input_hash)
+    for gap in existing:
+        if (gap["task_id"], gap["criterion"], gap["source"]) == (task_id, criterion, source):
+            return CriterionGap.model_validate(gap)
+    approval = CriterionGap(task_id=task_id, criterion=criterion, source=source, evidence=refused[source]["evidence"],
+                            reason=reason.strip(), approved_at=now())
+    approvals = CriterionGaps(run_id=manifest.run_id, input_hash=manifest.input_hash,
+                              gaps=[*(CriterionGap.model_validate(g) for g in existing), approval])
+    write_json(work / "criterion_gaps.json", approvals.model_dump(mode="json"))
     return approval
 
 

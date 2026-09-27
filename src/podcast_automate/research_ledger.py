@@ -5,8 +5,10 @@ import hashlib
 import json
 
 from .errors import AppError
+from .research_advisor import MAX_AUTO_RETRIES
 from .research_models import ResearchDiscovery, ResearchDossier, SourceDocument, SourceIndex
 from .research_retrieval import merge_context
+from .sources import blocked_sources
 from .storage import digest, file_hash, inside, write_json
 
 VERSION = "question_research.v1"
@@ -173,8 +175,19 @@ def reopenable(task, limits):
             and (steps is None or task["step"] < steps))
 
 
+def open_objections(state):
+    """Per task, the whole-dossier audit's objections that no later audit closed, briefly."""
+    closed, found = set(state.get("closed_objections", [])), {}
+    for identifier, objection in state.get("objections", {}).items():
+        if objection.get("status") == "open" and identifier not in closed:
+            found.setdefault(objection.get("task_id"), []).append(
+                {"rule": objection.get("rule"), "reason": (objection.get("reason") or "")[:300]})
+    return found
+
+
 def public_ledger(state, index=None):
     rows = []
+    objections = open_objections(state)
     sections = {f"{source.id}#{section.id}": (source, section) for source in index.sources
                 for section in source.sections} if index else {}
     for spec in state["plan"]["tasks"]:
@@ -189,6 +202,8 @@ def public_ledger(state, index=None):
                      "web_attempts": task.get("web_attempts", 0), "reopenable": reopenable(task, state.get("limits")),
                      "retry_adopted": task.get("retry_adopted"), "retries": task.get("retries", 0),
                      "advice": task.get("advice"), "auto_retries": task.get("auto_retries", 0),
+                     "auto_stop": task.get("auto_stop"), "objections": objections.get(spec["id"], []),
+                     "access_gaps": task.get("access_gaps", []),
                      "support": task.get("verification", {}).get("support_summary") if answer else None,
                      "review_limitations": (task.get("verification") or {}).get("limitations", []) if answer else [],
                      "search_count": len(task.get("search_receipts", [])),
@@ -210,7 +225,8 @@ def public_ledger(state, index=None):
             "reopenable": sum(r["reopenable"] for r in rows),
             "audit_round": int(state.get("audit_round", 0)), "reopened": sum(1 for r in rows if r["reopened"]),
             "source_count": len(index.sources) if index else None,
+            "blocked_sources": blocked_sources(index) if index else [],
             "source_failures": len(index.failures) if index else None,
-            "source_attempt_count": state.get("source_attempt_count"),
+            "source_attempt_count": state.get("source_attempt_count"), "auto_retry_limit": MAX_AUTO_RETRIES,
             "budget_projection": state.get("budget_projection"),
             "active_task": active[0] if active else None, "active_tasks": active, "questions": rows}
