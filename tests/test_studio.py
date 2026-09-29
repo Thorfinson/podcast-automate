@@ -1,3 +1,4 @@
+import contextlib
 import http.client
 import io
 import json
@@ -214,6 +215,87 @@ class StudioHttpTests(unittest.TestCase):
         self.assertFalse((script / "plan_approval.json").exists())
         self.assertEqual(self.request("/api/projects/example/approve", {"kind": "plan", "run_id": "run_plan"},
                                       {"X-Studio-Token": "wrong"})[0], 403)
+
+    def test_a_stopped_teaching_design_is_named_on_the_job_and_takes_a_redesign_request(self):
+        work = self.root / "runs/run_teach"
+        stopped = StageRecord(status="blocked", error=Failure(code="teaching_design_failed", message="Scene 4 reads SPARQL aloud."))
+        write_yaml(work / "run_manifest.yaml", RunManifest(run_id="run_teach", kind="script", project_hash="0" * 64,
+                                                           input_hash="c" * 64, status="blocked",
+                                                           stages={"teaching": stopped}).model_dump(mode="json"))
+        write_json(work / "series_plan.json", example_plan().model_dump())
+        write_json(work / "teaching/ep_001/checkpoint.json", {"focused_repair": True, "repairs": 2})
+        job = Studio.readable(self.root, {"status": "blocked", "message": "Scene 4 reads SPARQL aloud.",
+                                          "run": {"run_id": "run_teach", "kind": "script",
+                                                  "stages": {"teaching": stopped.model_dump(mode="json")}}})
+        self.assertEqual(job["teaching_failure"], {"episode_id": "ep_001", "title": example_plan().episodes[0].title})
+        for payload in ({"episode_id": "ep_001"}, {"episode_id": "ep_404", "note": "Plain words."}):
+            self.assertEqual(self.request("/api/projects/example/approve",
+                                          {"kind": "teaching_redesign", "run_id": "run_teach", **payload})[0], 400)
+        status, body, _ = self.request("/api/projects/example/approve", {"kind": "teaching_redesign", "run_id": "run_teach",
+                                                                         "episode_id": "ep_001", "note": "Plain words."})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["teaching_redesign"]["note"], "Plain words.")
+        saved = json.loads((work / "teaching_redesigns.json").read_text(encoding="utf-8"))
+        self.assertEqual((saved["run_id"], saved["input_hash"], [r["episode_id"] for r in saved["requests"]]),
+                         ("run_teach", "c" * 64, ["ep_001"]))
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "teaching_redesign", "run_id": "run_teach",
+                                      "episode_id": "ep_001", "note": "x"}, {"X-Studio-Token": "wrong"})[0], 403)
+
+    def test_the_home_network_is_served_like_this_computer_only_when_started_for_it(self):
+        """2026-09-28: the user steers the Studio from the phone in the home WLAN, with protection only against
+        the outside. This computer is always served; the home network only after ``pla studio --lan``; an
+        address from the internet never. A device names this computer by the address it connected to, so a
+        rebound domain and a foreign page stay refused, and every mutation still needs the session token."""
+        from podcast_automate.studio import client_scope
+        self.assertEqual([client_scope(a, False) for a in ("127.0.0.1", "::1", "::ffff:127.0.0.1")], ["local"] * 3)
+        self.assertIsNone(client_scope("192.168.178.40", False), "without --lan the home network is refused")
+        for address in ("192.168.178.40", "10.0.0.5", "172.16.1.1", "169.254.3.3", "fe80::1"):
+            self.assertEqual(client_scope(address, True), "lan", address)
+        for address in ("8.8.8.8", "100.64.1.1", "2001:4860:4860::8888", "no address"):
+            self.assertIsNone(client_scope(address, True), address)
+        port = self.server.server_port
+        bootstrap = json.loads(self.request("/api/bootstrap")[1])
+        self.assertEqual((bootstrap["lan"], bootstrap["client"]), ({"enabled": False, "urls": []}, "local"))
+        # The test client always connects from 127.0.0.1, so the phone's scope is patched; the address it
+        # connected to is then 127.0.0.1 as well.
+        with patch("podcast_automate.studio.client_scope", return_value=None):
+            self.assertEqual(self.request("/api/bootstrap")[0], 403)
+        here = f"127.0.0.1:{port}"
+        with patch("podcast_automate.studio.client_scope", return_value="lan"):
+            status, body, _ = self.request("/api/bootstrap", headers={"Host": here})
+            self.assertEqual((status, json.loads(body)["client"]), (200, "lan"))
+            self.assertEqual(self.request("/api/projects/example", headers={"Host": here, "Origin": f"http://{here}"})[0], 200)
+            self.assertEqual(self.request("/api/bootstrap", headers={"Host": f"localhost:{port}"})[0], 403)
+            self.assertEqual(self.request("/api/bootstrap", headers={"Host": f"evil.example:{port}"})[0], 403)
+            self.assertEqual(self.request("/api/bootstrap", headers={"Host": here, "Origin": "http://evil.example"})[0], 403)
+            self.assertEqual(self.request("/api/key", {"key": "secret"}, {"Host": here, "X-Studio-Token": "wrong"})[0], 403)
+            self.assertEqual(self.app.key, "")
+        self.app.lan = True
+        with patch("podcast_automate.studio.lan_addresses", return_value=["192.168.178.75"]):
+            self.assertEqual(json.loads(self.request("/api/bootstrap")[1])["lan"],
+                             {"enabled": True, "urls": [f"http://192.168.178.75:{port}"]})
+
+    def test_only_the_wlan_start_listens_beyond_this_computer(self):
+        from podcast_automate.studio import serve
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+        self.assertFalse(self.app.lan)
+        with patch("podcast_automate.studio.ThreadingHTTPServer") as server:
+            server.return_value.server_port = 8765
+            made = make_server(self.workspace, 8765, lan=True)
+        self.assertEqual(server.call_args[0][0], ("0.0.0.0", 8765))
+        self.assertEqual((made.studio.lan, made.studio.port), (True, 8765))
+        # A Studio already running only here is not silently reused by the WLAN start: it says to quit it first.
+        running = json.dumps({"app": "podcast-studio", "workspace": str(self.workspace.resolve()),
+                              "lan": {"enabled": False, "urls": []}}).encode("utf-8")
+        output = io.StringIO()
+        with patch("podcast_automate.studio.urlopen", return_value=io.BytesIO(running)), \
+             patch("podcast_automate.studio.make_server") as started, \
+             patch("podcast_automate.studio.webbrowser.open") as opened, \
+             contextlib.redirect_stdout(output):
+            serve(self.workspace, 8765, lan=True)
+        started.assert_not_called()
+        opened.assert_not_called()
+        self.assertIn("nur auf diesem Computer", output.getvalue())
 
     def test_local_page_and_project_are_real_and_mutations_need_csrf_token(self):
         status, body, headers = self.request("/")

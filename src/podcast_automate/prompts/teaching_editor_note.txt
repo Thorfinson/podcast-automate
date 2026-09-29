@@ -1,0 +1,4 @@
+The payload's editor_note is the editor's instruction for this episode, written after the automatic
+corrections of an earlier design failed. Design anew and follow it in every scene, the worked example and
+the synthesis. It overrides your own stylistic choices but never the evidence, the findings or the
+approved outline of the series.

@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .runner import manifest_path
 from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-exported for callers)
-from .run_budget import accepted_gaps, criterion_gaps, effective_limits, read_plan_approval, retry_requests
+from .run_budget import (accepted_gaps, criterion_gaps, dispute_decisions, disputed_checks, effective_limits,
+                         read_plan_approval, residual_finish, retry_requests)
 from .errors import AppError
 from .models import ResearchLimits
 from .research_ledger import reopenable
@@ -44,6 +45,46 @@ ACTIVITIES = {
 
 
 CALL_NAME = re.compile(r"call_\d+")
+
+
+def disputed_objections(work, run, questions):
+    """Every objection the current audit round disputed, the one the run stopped on first, each with the
+    editor's decision once there is one; empty unless the round's stop file exists."""
+    if not isinstance(questions, dict):
+        return []
+    audit_round = int(questions.get("audit_round") or 0)
+    path = work / "question_research/synthesis" / f"audit_{audit_round:02d}" / "review_disagreement.json"
+    stopped = (read(path, {}) or {}).get("value")
+    if not isinstance(stopped, dict) or not stopped.get("objection_id"):
+        return []
+    checks = {stopped["objection_id"]: stopped}
+    for check in disputed_checks(work, audit_round):
+        checks.setdefault(check["objection_id"], check)
+    known = {oid: check["objection"] for oid, check in checks.items() if check.get("objection")}
+    if len(known) < len(checks):
+        # Only the stop file carries its objection; the ledger has the others.
+        state = (read(work / "question_research/state.json", {}) or {}).get("value") or {}
+        known.update({oid: row for oid, row in (state.get("objections") or {}).items() if oid in checks and oid not in known})
+    try:
+        decisions = dispute_decisions(work, run.get("input_hash"))
+    except AppError:
+        decisions = {}
+    rows = []
+    for oid, check in checks.items():
+        objection = known.get(oid) or {}
+        question = next((row.get("question") for row in questions.get("questions") or []
+                         if row.get("id") == objection.get("task_id")), objection.get("task_id"))
+        rows.append({"objection_id": oid, "task_id": objection.get("task_id"), "question": question,
+                     "objection": {key: objection.get(key, "") for key in ("reason", "correction", "closure_condition")},
+                     "review": {"reason": check.get("reason", ""), "references": check.get("references", [])},
+                     "decision": decisions.get(oid)})
+    return rows
+
+
+def disputed_objection(work, run, questions):
+    """The objection the current audit round stopped on (the first of ``disputed_objections``), or None."""
+    rows = disputed_objections(work, run, questions)
+    return rows[0] if rows else None
 
 
 def open_calls(work, run, since=None):
@@ -264,6 +305,12 @@ def research_progress(root, run, since=None):
                 row["reopenable"] = bool(task) and reopenable(task, state.get("limits"))
                 row.setdefault("web_attempts", task.get("web_attempts", 0))
             questions["reopenable"] = sum(bool(r.get("reopenable")) for r in questions["questions"])
+    disputes = disputed_objections(work, run, questions)
+    if isinstance(questions, dict):
+        try:
+            questions["residual_finish"] = residual_finish(work, run.get("input_hash"))
+        except AppError:
+            questions["residual_finish"] = None
     counts = questions or report or {}
     from .research_status import work_insight
     awaiting = isinstance(questions, dict) and questions.get("phase") == "awaiting_plan_approval"
@@ -284,7 +331,8 @@ def research_progress(root, run, since=None):
             # research_activity.json keeps the time of its last real change; updated_at below is the read time.
             "changed_at": data.get("updated_at"), "retrieval": retrieval,
             "work_insight": insight,
-            "research_questions": questions,
+            "research_questions": questions, "review_disagreement": disputes[0] if disputes else None,
+            "review_disagreements": disputes,
             "plan_review": plan_review_state(work, run.get("input_hash"), awaiting),
             # The mode the run was started with; older runs without the field ran one task at a time.
             "execution": request.get("execution") or {"text": "sequential", "audio": "sequential"},

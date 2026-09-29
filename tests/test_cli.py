@@ -32,6 +32,22 @@ class CliTests(unittest.TestCase):
             self.assertTrue((schemas / "series_review.schema.json").is_file())
             self.assertTrue((schemas / "teaching_plan_repair.schema.json").is_file())
 
+    def test_a_teaching_redesign_is_requested_with_its_hint(self):
+        with tempfile.TemporaryDirectory() as root, \
+             patch("podcast_automate.run_budget.request_teaching_redesign") as request:
+            request.return_value.model_dump.return_value = {"episode_id": "ep_001", "note": "Plain words."}
+            code, data = self.invoke("approve", root, "--run-id", "run_teach", "--redesign-teaching", "ep_001",
+                                     "--hint", "Plain words.", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(request.call_args[0][1:], ("run_teach", "ep_001", "Plain words."))
+        self.assertEqual(data["teaching_redesign"]["episode_id"], "ep_001")
+
+    def test_the_studio_opens_for_the_home_network_only_on_request(self):
+        with patch("podcast_automate.studio.serve") as serve:
+            self.assertEqual(main(["studio", ".", "--no-browser"]), 0)
+            self.assertEqual(main(["studio", ".", "--no-browser", "--lan"]), 0)
+        self.assertEqual([call.kwargs["lan"] for call in serve.call_args_list], [False, True])
+
     def test_doctor_can_skip_optional_local_tts_for_remote_audio(self):
         with patch("podcast_automate.cli.inspect", return_value={"ready": True, "checks": []}) as inspect:
             code, _ = self.invoke("doctor", "--skip-tts", "--json")

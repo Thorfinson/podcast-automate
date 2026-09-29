@@ -11,18 +11,20 @@ from collections import Counter
 
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
-from .evidence_models import EVIDENCE_VERSION
+from .evidence_models import EVIDENCE_VERSION, FindingSupport
 from .prompts import instructions
 from .question_answering import read_context
 from .question_dependencies import invalidate_dependents
 from .question_ownership import editable_findings, finding_owners, preserve_unrelated
 from .research_gap_probe import coverage_terms, gap_id, probe, settle
 from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_EVIDENCE_RULE, SYNTHESIS_INSTRUCTIONS,
-                                evidence_summary, support_errors, validate_objection, validate_synthesis)
-from .research_ledger import VERSION, save_value
+                                blocks, evidence_summary, scope_assessments, support_errors, validate_objection,
+                                validate_synthesis)
+from .research_ledger import VERSION, read_value, save_value
 from .research_models import ResearchDiscovery, ResearchDossier
 from .research_patches import edit_dossier, patch_prompt, repair_references
-from .research_quality import ResearchAssessment, check_assessment, quality_brief, quality_report, render_quality
+from .research_quality import (ResearchAssessment, check_assessment, cite_findings, quality_brief, quality_report,
+                               render_quality)
 from .research_retrieval import merge_context, references, select_context
 from .research_review import ROUTING_INSTRUCTIONS, SourceReview, needs_research
 from .research_tasks import QuestionPlan, ReopenPlan
@@ -242,7 +244,7 @@ class SynthesisMixin:
                 while start + size < min(len(dirty), start + SEED_BATCH_SIZE) and fits(dirty[start:start + size + 1]):
                     size += 1
                 batch = dirty[start:start + size]
-                self.save(f"Einarbeitung wieder geöffneter Antworten: {start + size} von {len(dirty)}")
+                self.save(f"Überarbeitete Antworten werden ins Dossier eingearbeitet: {start + size} von {len(dirty)}")
                 question_ids = {qid for item in batch for qid in item["task"]["question_ids"]}
                 batch_ids = {item["task"]["id"] for item in batch}
                 targets = editable_findings(owners, batch_ids, self.state["dirty_tasks"])
@@ -396,16 +398,21 @@ class SynthesisMixin:
                 # merged review and a whole-dossier review against everything.
                 findings = list(dossier.findings) if findings is None else findings
                 objections = expected if objections is None else objections
+                scope_assessments(review, findings, context)
                 if Counter(c.objection_id for c in review.objection_checks) != Counter(objections.keys()):
                     raise AppError("Every existing objection needs an explicit closure check.", code="invalid_evidence_review", status="blocked")
                 for check in review.objection_checks:
                     if not set(check.references) <= references(context) or (check.verdict == "closed" and not check.references):
                         raise AppError("Objection closure requires read source evidence.", code="invalid_evidence_review", status="blocked")
                 semantic_errors = support_errors(findings, review, context)
-                rejected = {s.finding_id for s in review.finding_support if s.verdict != "supported" or
-                            s.suitability != "suitable" or not s.contract_preserved}
-                if semantic_errors and (not rejected or not rejected <= {i.finding_id for i in review.issues}):
-                    raise AppError("Failing support receipts require explicit corrective issues.", code="invalid_evidence_review", status="blocked")
+                # The receipts that fail on their own (research_evidence.blocks), as in a question's review: a
+                # partially supported finding whose contract and source hold is a limitation and needs no issue.
+                rejected = {s.finding_id for s in review.finding_support if blocks(s)}
+                missing = sorted(rejected - {i.finding_id for i in review.issues})
+                if semantic_errors and (not rejected or missing):
+                    raise AppError("Failing support receipts require explicit corrective issues."
+                                   + (f" Add one issue for each of: {', '.join(missing)}." if missing else ""),
+                                   code="invalid_evidence_review", status="blocked")
                 for issue in review.issues:
                     if (issue.objection is None or issue.finding_id not in issue.objection.finding_ids or
                             issue.objection.resolution not in {issue.resolution, "review_disagreement"}):
@@ -416,11 +423,19 @@ class SynthesisMixin:
                     raise AppError("Gesamtprüfung nennt unbekannte Befunde.", code="invalid_model_output", status="blocked")
 
             review = self.grounding_review(folder, revision, dossier, context, expected, well_formed)
-            # A reviewer's disagreement is a legitimate verdict, not a malformed one: it stops the run.
+            # A reviewer's disagreement is a legitimate verdict, not a malformed one: it stops the run until
+            # the editor takes a side (run_budget.decide_review_disagreement); the decision is kept on record.
+            decided = self.disputes()
             for check in review.objection_checks:
                 if check.verdict == "review_disagreement" or (check.verdict == "open" and not review.issues):
-                    save_value(folder / "review_disagreement.json", check.model_dump())
-                    raise AppError("An unresolved review disagreement cannot trigger unanchored research.", code="review_disagreement", status="blocked")
+                    decision = decided.get(check.objection_id)
+                    if decision is None:
+                        save_value(folder / "review_disagreement.json",
+                                   {**check.model_dump(), "objection": expected.get(check.objection_id)})
+                        raise AppError("An unresolved review disagreement cannot trigger unanchored research.", code="review_disagreement", status="blocked")
+                    self.state.setdefault("disputed_objections", {})[check.objection_id] = {
+                        "objection_id": check.objection_id, "objection": expected.get(check.objection_id),
+                        "review": check.model_dump(), "audit_round": self.state["audit_round"], **decision}
             for issue in review.issues:
                 if issue.objection.resolution == "review_disagreement":
                     self.state.setdefault("review_disagreements", []).append(issue.objection.model_dump())
@@ -464,10 +479,14 @@ class SynthesisMixin:
                 payload["sources"] = source_identity(payload["sources"])
         self.save("Bewertung des Gesamtdossiers gegen alle Leitfragen läuft")
         assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
-                               validate=lambda candidate, final: check_assessment(self.config, dossier, candidate))
-        report = quality_report(self.config, dossier, discovery, self.index, assessment, (i.reason for i in review.issues),
+                               validate=lambda candidate, final: check_assessment(self.config, dossier,
+                                                                                   cite_findings(dossier, candidate)))
+        report = quality_report(self.config, dossier, discovery, self.index, assessment,
+                                [*(i.reason for i in review.issues), *self.upheld_objections().values()],
                                 accepted=accepted, gap_probes=self.probe_declared_gaps(dossier),
                                 review_limitations=self.review_limitations())
+        if self.state.get("disputed_objections"):
+            report["disputed_objections"] = list(self.state["disputed_objections"].values())
         dossier = dossier.model_copy(update={"evidence_version": EVIDENCE_VERSION,
                                             "source_assessments": review.source_assessments})
         report["dossier_hash"] = digest(dossier.model_dump())
@@ -481,21 +500,81 @@ class SynthesisMixin:
         self.save()
         return dossier, review, report
 
+    def settled_findings(self, folder, revision, dossier, context, expected):
+        """What the last round's final review already settled, for a targeted audit from the second round on.
+
+        A finding unchanged since that review, whose receipt passed, that drew no issue and that no objection
+        still to be checked names, keeps its receipt; a closed objection whose findings are all unchanged stays
+        closed. Only the rest is reviewed again: without this, every round re-reviewed the whole dossier and
+        found new details in unchanged findings as well, so the loop never settled (Asimov, 2026-09-27: 9 and
+        then 16 new objections on unchanged findings). None means a whole review: the first round, a
+        correction revision, a round begun as a whole review, or no saved receipt. The choice is saved with
+        the round (``grounding_N_targeted.json``), so a resume keeps it."""
+        marker = folder / f"grounding_{revision}_targeted.json"
+        if marker.exists():
+            return read_value(marker)
+        if (revision != 0 or int(self.state.get("audit_round", 0)) < 1 or not self.state.get("seed_dossier")
+                or any(folder.glob(f"grounding_{revision}_part_*.json")) or (folder / f"grounding_{revision}.json").exists()):
+            return None
+        previous = self.folder / "synthesis" / f"audit_{int(self.state['audit_round']) - 1:02d}"
+        review = None
+        for number in (2, 1, 0):
+            merged, whole = previous / f"grounding_{number}_merged.json", previous / f"grounding_{number}.json"
+            if merged.exists():
+                review = json.loads(merged.read_text(encoding="utf-8"))["review"]
+                break
+            if whole.exists():
+                review = json.loads(whole.read_text(encoding="utf-8"))["value"]
+                break
+        if review is None:
+            return None
+        before = {f["id"]: digest(f) for f in self.state["seed_dossier"]["findings"]}
+        unchanged = {f.id for f in dossier.findings if before.get(f.id) == digest(f.model_dump())}
+        read = references(context)
+        receipts = {r["finding_id"]: r for r in review.get("finding_support", [])}
+        issued = {i["finding_id"] for i in review.get("issues", [])}
+        closed = {c["objection_id"]: c for c in review.get("objection_checks", [])
+                  if c["verdict"] == "closed" and set(c.get("references", [])) <= read}
+        checks = {oid: closed[oid] for oid, objection in expected.items()
+                  if oid in closed and set(objection.get("finding_ids") or []) <= unchanged}
+        named = {fid for oid, objection in expected.items() if oid not in checks for fid in objection.get("finding_ids") or []}
+        kept = sorted(fid for fid in unchanged if fid in receipts and fid not in issued and fid not in named
+                      and not blocks(FindingSupport.model_validate(receipts[fid]))
+                      and set(receipts[fid].get("references", [])) <= read)
+        if len(kept) == len(dossier.findings) and len(checks) < len(expected):
+            return None  # an objection to check needs a finding under review to travel with
+        source_of = {section["reference"]: source["source_id"] for source in context for section in source["sections"]}
+        cited = {source_of[e.reference] for f in dossier.findings if f.id in set(kept) for e in f.evidence
+                 if e.reference in source_of}
+        settled = {"findings": kept, "support": [receipts[fid] for fid in kept], "checks": list(checks.values()),
+                   "source_assessments": [a for a in review.get("source_assessments", []) if a["source_id"] in cited]}
+        save_value(marker, settled)
+        return settled
+
     def grounding_review(self, folder, revision, dossier, context, expected, well_formed):
         """One review of the whole dossier when it fits the window; otherwise the same review in
         parts. Each part sees the dossier outline, its own findings with their passages and the
-        objections that concern them, and the parts merge into one receipt checked as a whole."""
+        objections that concern them, and the parts merge into one receipt checked as a whole.
+        From the second round on only what changed or is still contested is reviewed (settled_findings)."""
         text = (EVIDENCE_INSTRUCTIONS + SYNTHESIS_INSTRUCTIONS + ROUTING_INSTRUCTIONS + " " +
                 instructions("dossier_audit"))
         brief, tasks = quality_brief(self.config), self.state["plan"]["tasks"]
+        settled = self.settled_findings(folder, revision, dossier, context, expected)
         whole = {"brief": brief, "dossier": dossier.model_dump(), "sources": context, "open_objections": expected,
                  "tasks": tasks, "verified_baseline": self.state.get("verified_baseline", [])}
-        if len(text) + chars(whole) <= PROMPT_BUDGET_CHARS:
+        if settled is None and len(text) + chars(whole) <= PROMPT_BUDGET_CHARS:
             return self.call(folder, f"grounding_{revision}", SourceReview, text + "\n" + json.dumps(whole, ensure_ascii=False),
                              validate=well_formed)
         baseline = compact_baseline(self.state.get("verified_baseline", []))
         outline = dossier.model_dump(exclude={"findings"})
-        findings = list(dossier.findings)
+        everything = list(dossier.findings)
+        kept = set(settled["findings"]) if settled else set()
+        findings = [f for f in everything if f.id not in kept]
+        if settled:
+            carried = {check["objection_id"] for check in settled["checks"]}
+            expected = {oid: objection for oid, objection in expected.items() if oid not in carried}
+            self.save(f"Gezielte Quellenprüfung: {len(findings)} geänderte oder beanstandete Befunde, "
+                      f"{len(kept)} unverändert bestandene übernommen")
         # Every objection travels with the first finding it names, so each is checked exactly once.
         objections_of = {}
         for identifier, objection in expected.items():
@@ -509,7 +588,7 @@ class SynthesisMixin:
             named = {ref for objection in objections.values() for ref in objection.get("evidence_refs", [])} - cited
             payload = {"brief": brief, "dossier": {**outline, "findings": [f.model_dump() for f in part]},
                        "other_findings": [{"id": f.id, "kind": f.kind, "statement": f.statement}
-                                          for f in findings if f.id not in part_ids],
+                                          for f in everything if f.id not in part_ids],
                        "sources": select_context(context, cited), "open_objections": objections,
                        "tasks": tasks, "verified_baseline": baseline}
             if named:
@@ -538,17 +617,23 @@ class SynthesisMixin:
                 text + note + "\n" + json.dumps(payload, ensure_ascii=False),
                 validate=lambda review, final, part=part, objections=payload["open_objections"]:
                     well_formed(review, final, findings=part, objections=objections)))
-        merged = {}
+        merged = {"issues": [], "limitations": []}
         for review in reviews:
             for key, value in review.model_dump().items():
                 if isinstance(value, list):
                     merged.setdefault(key, []).extend(value)
                 else:
                     merged.setdefault(key, value)
+        if settled:
+            # What the last round settled joins the new receipts, so the whole is checked as one review.
+            for key, rows in (("finding_support", settled["support"]), ("objection_checks", settled["checks"]),
+                              ("source_assessments", settled["source_assessments"])):
+                merged.setdefault(key, []).extend(rows)
         review = SourceReview.model_validate(merged)
         well_formed(review, True)
         write_json(folder / f"grounding_{revision}_merged.json", {"parts": len(parts), "findings_per_part": [len(p) for p in parts],
-                   "budget_chars": room, "review": review.model_dump(mode="json")})
+                   "budget_chars": room, "review": review.model_dump(mode="json"),
+                   **({"targeted": {"carried_findings": len(kept), "carried_checks": len(settled["checks"])}} if settled else {})})
         return review
 
     def probe_declared_gaps(self, dossier):
@@ -569,27 +654,44 @@ class SynthesisMixin:
                                     for row in rows.values()]
         return [row for row in self.state["gap_probes"] if row["gap_id"] in wanted]
 
+    def upheld_objections(self):
+        """This round's disputed objections the editor upheld, as the text that sends each back to its question."""
+        return {oid: f"Einwand von der Redaktion aufrechterhalten: {row['objection']['reason']} {row['objection']['correction']}"
+                for oid, row in self.state.get("disputed_objections", {}).items()
+                if row["audit_round"] == self.state["audit_round"] and row["decision"] == "objection" and row.get("objection")}
+
     def objections(self, review, report):
         return list(dict.fromkeys([*(i.reason for i in review.issues), *report["blocking_gaps"],
             *(row["reason"] + " " + " ".join(row["missing"]) for row in report["requirements"] if not row["passed"])]))
 
-    def tolerate(self, dossier, review, report):
+    def tolerate(self, dossier, review, report, finish=None):
         """Every remaining objection targets an accepted gap or is a recorded review disagreement: finish, with
-        those objections on record."""
-        report = {**report, "passed": True, "passed_with_accepted_gaps": True,
+        those objections on record. ``finish`` is the editor's request to finish with residual objections
+        (run_budget.approve_residual_finish): the audit's remaining objections are recorded the same way."""
+        report = {**report, "passed": True, "passed_with_accepted_gaps": bool(self.accepted_summary()) if finish else True,
                   "residual_objections": self.objections(review, report)}
+        if finish:
+            report.update(passed_with_residual_objections=True, residual_note=finish.get("note", ""))
         self.write_gate(report)
-        self.save("Verbliebene Einwände betreffen nur akzeptierte Lücken; die Recherche wird abgeschlossen")
+        self.save("Abschluss mit dokumentierten Resteinwänden auf Wunsch der Redaktion" if finish else
+                  "Verbliebene Einwände betreffen nur akzeptierte Lücken; die Recherche wird abgeschlossen")
         return report
 
     @staticmethod
     def existing_objection(registry, closed, anchor, identifier):
         # Keep an unresolved objection stable even when a later reviewer paraphrases
         # its missing-evidence description. A new defect is allowed after explicit closure.
+        # A different closure condition is a second defect of the same finding, not a reworded first
+        # one: it gets an id of its own, and neither replaces the other (Asimov, round two: eleven
+        # such defects refused the whole routing as "closure condition changed").
+        current = anchor.model_dump()
         for old_id, old in registry.items():
-            if old_id not in closed and all(old.get(key) == anchor.model_dump().get(key)
-                    for key in ("rule", "task_id", "criterion_index", "finding_ids")):
+            if old_id not in closed and all(old.get(key) == current.get(key)
+                    for key in ("rule", "task_id", "criterion_index", "finding_ids", "closure_condition")):
                 return old_id
+        if (identifier in registry and identifier not in closed
+                and registry[identifier].get("closure_condition") != anchor.closure_condition):
+            return "obj_" + digest([identifier, anchor.closure_condition])[:16]
         return identifier
 
     def reopen(self, dossier, review, report):
@@ -600,11 +702,16 @@ class SynthesisMixin:
             raise AppError("Befundzuordnung passt nicht zum geprüften Dossier.",
                            code="invalid_research_checkpoint", status="blocked")
         owners = finding_owners(dossier, tasks, self.state["tasks"], composed["owners"] if composed else None)
-        objections = self.objections(review, report)
+        # An upheld disputed objection goes back to its question as it stands; the router never rewords it.
+        upheld = self.upheld_objections()
+        objections = [text for text in self.objections(review, report) if text not in set(upheld.values())]
         accepted = self.accepted_summary()
         context = read_context(self.reader, [e.reference for f in dossier.findings for e in f.evidence])
         registry = self.state.setdefault("objections", {})
         closed = {c["objection_id"] for c in report.get("objection_checks", []) if c["verdict"] == "closed"}
+        # Following the reviewer closes the disputed objection; the dispute itself stays in the report.
+        closed |= {oid for oid, row in self.state.get("disputed_objections", {}).items()
+                   if row["audit_round"] == self.state["audit_round"] and row["decision"] == "reviewer"}
         # Which earlier objections this audit closed: the ledger shows each question's still open ones.
         self.state["closed_objections"] = sorted(closed)
         text = instructions("objection_routes")
@@ -645,7 +752,9 @@ class SynthesisMixin:
                                            code="invalid_question_routing", status="blocked")
 
         folder = self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}"
-        if len(objections) <= ROUTING_PART_SIZE:
+        if not objections:
+            routes = None
+        elif len(objections) <= ROUTING_PART_SIZE:
             routes = self.call(folder, "routes", ReopenPlan, text + "\n" + json.dumps(payload, ensure_ascii=False),
                                validate=well_formed)
         else:
@@ -666,7 +775,14 @@ class SynthesisMixin:
         # Per task, how its objections resolve and which passages they cite: a task whose objections all
         # say "revise" (the read passages suffice) only corrects its answer instead of researching again.
         resolutions, cited = {}, {}
-        for route in routes.routes:
+        for oid, text in upheld.items():
+            anchor = registry[oid]
+            if anchor["task_id"] in accepted:
+                continue
+            reasons.setdefault(anchor["task_id"], []).append(text)
+            resolutions.setdefault(anchor["task_id"], set()).add(anchor["resolution"])
+            cited.setdefault(anchor["task_id"], []).extend(anchor.get("evidence_refs", []))
+        for route in (routes.routes if routes else []):
             for task_id in route.task_ids:
                 routed = False
                 for anchor in [a for a in route.anchors if a.task_id == task_id]:
@@ -697,7 +813,8 @@ class SynthesisMixin:
                 continue
             row = self.state["tasks"][task_id]
             if len(row["reopenings"]) >= self.state["limits"]["reopenings"]:
-                row.update(status="blocked", reason="Wiederholte Gesamtprüfung widerspricht dem Abschluss: " + " ".join(texts))
+                row.update(status="blocked", outcome="audit_block",
+                           reason="Wiederholte Gesamtprüfung widerspricht dem Abschluss: " + " ".join(texts))
                 blocked.append(task_id)
                 continue
             row["reopenings"].append({"reason": texts, "previous_answer": row["answer"],

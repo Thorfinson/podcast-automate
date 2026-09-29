@@ -5,14 +5,16 @@ from unittest.mock import patch
 from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
 from podcast_automate.errors import AppError
 from podcast_automate.models import EpisodeScript
+from podcast_automate.research_ledger import read_value, save_value
 from podcast_automate.research_models import (Evidence, Finding, ResearchDiscovery, SourceDocument,
                                               SourceSection)
+from podcast_automate.runner import manifest_path
 from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.scripting import episode_sources, load_research, outline_hash, run_script
-from podcast_automate.storage import file_hash, read_yaml, write_json
+from podcast_automate.storage import digest, file_hash, read_yaml, write_json
 from podcast_automate.teaching import ResearchGap, TeachingPlanReview
 from podcast_automate.teaching_research import (FoundationSupplement, FoundationReview,
-    apply_foundations, research_foundations, gaps_in, validate_supplement)
+    apply_foundations, named_question, research_foundations, gaps_in, source_budget, validate_supplement)
 from tests.research_fixtures import HTML, discovery
 from tests import script_fixtures as fixtures
 from tests.question_fixtures import claim_contract, support_receipts
@@ -165,18 +167,247 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual(gaps_in(work), [])
         self.assertFalse(read_yaml(self.root / "episodes/audio_review.yaml")["audio_approved"])
 
-    def test_invalid_evidence_blocks_and_is_not_regenerated_on_resume(self):
-        def invoke(*args, **kwargs):
-            value = self.invoke(*args, **kwargs)
+    def test_invalid_evidence_is_corrected_twice_then_blocks_and_is_not_regenerated_on_resume(self):
+        """A rejected answer is asked again with its defects, twice; then the run stops, and a resume
+        replays the stored stop instead of buying more attempts. Until 2026-09-27 the first rejection
+        stopped the run, and "Fortsetzen" replayed that one answer (Ontologies)."""
+        prompts = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
             if isinstance(value, FoundationSupplement):
+                prompts.append(prompt)
                 value.explanations[0].evidence[0].excerpt = "An invented quote"
             return value
         for _ in range(2):
             with self.assertRaises(AppError) as caught:
                 self.research(invoke)
             self.assertEqual(caught.exception.code, "teaching_research_required")
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationSupplement, FoundationSupplement])
+        first, *retries = [json.loads(prompt.splitlines()[-1]) for prompt in prompts]
+        self.assertNotIn("rejected_attempt", first)
+        for retry in retries:
+            self.assertEqual(retry["questions"], first["questions"])
+            self.assertIn("An invented quote", json.dumps(retry["rejected_attempt"]["answer"]))
+            self.assertIn("Eine ergänzende Aussage hat keinen gültigen Textbeleg.", retry["rejected_attempt"]["defects"])
+        folder = self.work / "teaching/ep_001/supplement"
+        self.assertEqual(sorted(p.name for p in folder.glob("evidence*.json")),
+                         ["evidence.json", "evidence_rejected_00.json", "evidence_rejected_01.json"])
         self.assertEqual(self.apply()[0], self.dossier)
+
+    def test_a_corrected_answer_passes_on_its_second_attempt(self):
+        attempts = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if isinstance(value, FoundationSupplement):
+                attempts.append(prompt)
+                if len(attempts) == 1:
+                    value.explanations[0].evidence[0].excerpt = "An invented quote"
+            return value
+        self.research(invoke)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationSupplement, FoundationReview])
+        self.assertIn("better match", self.apply()[0].findings[0].statement)
+        self.research(invoke)
+        self.assertEqual(len(self.calls), 4, "a verified supplement is reused on resume")
+
+    def test_a_review_that_also_assesses_an_uncited_source_needs_no_correction(self):
+        """The Ontologies stop of 2026-09-28: the review assessed every supplied source, not only the cited
+        ones, and the exactly-once check stopped the run. An out-of-scope assessment is dropped, as in a
+        dossier review part."""
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if isinstance(value, FoundationReview):
+                value.source_assessments.append(value.source_assessments[0].model_copy(
+                    update={"source_id": "src_uncited", "evidence_refs": []}))
+            return value
+        self.research(invoke)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationReview])
+        saved = json.loads((self.work / "teaching/ep_001/supplement/review.json").read_text(encoding="utf-8"))
+        self.assertNotIn("src_uncited", [a["source_id"] for a in saved["value"]["source_assessments"]])
+        self.assertIn("better match", self.apply()[0].findings[0].statement)
+
+    def test_a_review_that_leaves_a_cited_source_unassessed_is_asked_again(self):
+        prompts = []
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if isinstance(value, FoundationReview):
+                prompts.append(prompt)
+                if len(prompts) == 1:
+                    value.source_assessments = []
+            return value
+        self.research(invoke)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationReview, FoundationReview])
+        self.assertIn("Assess the suitability and identity of every cited source exactly once.", prompts[1])
+        self.assertIn("better match", self.apply()[0].findings[0].statement)
+
+    def test_only_a_critical_review_point_blocks_the_supplement_and_it_is_corrected_first(self):
+        """Asimov, 2026-09-28: the supplement review listed wording, an unexplained term and an attribution, and
+        each stopped the run at once. Now an uncritical point is an advisory, and a critical one goes back to the
+        supplement as a correction within its attempts; the next review sees what the earlier one raised."""
+        critical = "The explanation drops the source's limit to accelerating production functions."
+        wording = "'Produktionsfunktion' is used without a short explanation."
+        reviews, supplements = [], []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            payload = json.loads(prompt.splitlines()[-1])
+            if schema is FoundationSupplement:
+                supplements.append(payload.get("rejected_attempt"))
+            if schema is FoundationReview:
+                reviews.append(payload.get("previous_issues"))
+                if len(reviews) == 1:
+                    value.issues = [critical, wording]  # no basis: corrected before it counts
+                elif len(reviews) == 2:
+                    value.issues, value.issue_basis, value.advisories = [critical], ["unsupported_claim"], [wording]
+                else:
+                    value.issues, value.advisories = [], [wording]
+            return value
+        self.research(invoke)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationReview, FoundationReview,
+                                      FoundationSupplement, FoundationReview])
+        self.assertEqual(reviews, [None, None, [critical]])
+        self.assertIsNone(supplements[0])
+        self.assertEqual(supplements[1]["defects"], ["Die Prüfung der Ergänzung beanstandet: " + critical])
+        folder = self.work / "teaching/ep_001/supplement"
+        self.assertTrue((folder / "receipt.json").exists())
+        self.assertEqual(json.loads((folder / "review.json").read_text(encoding="utf-8"))["value"]["advisories"], [wording])
+        self.assertEqual(json.loads((folder / "review_rejected_00.json").read_text(encoding="utf-8"))["value"]["issues"], [critical])
+        self.assertIn("better match", self.apply()[0].findings[0].statement)
+
+    def test_review_corrections_and_check_corrections_have_their_own_attempts(self):
+        """Ontologies ep_004, 2026-09-28: two corrections the review asked for used both attempts, the third answer
+        then broke the per-source word limit, and nothing was left to fix it. Each kind now has its own two."""
+        critical = "The explanation says the builders' experience is unknown; the passage states it."
+        answers, reviews = [], []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if schema is FoundationSupplement:
+                answers.append(json.loads(prompt.splitlines()[-1]).get("rejected_attempt"))
+                if len(answers) == 3:
+                    value.explanations[0].evidence[0].excerpt = "An invented quote"
+            if schema is FoundationReview:
+                reviews.append(schema)
+                if len(reviews) <= 2:
+                    value.issues, value.issue_basis = [critical], ["source_contradiction"]
+            return value
+        self.research(invoke)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationReview, FoundationSupplement,
+                                      FoundationReview, FoundationSupplement, FoundationSupplement, FoundationReview])
+        self.assertIn("Eine ergänzende Aussage hat keinen gültigen Textbeleg.", answers[3]["defects"])
+        folder = self.work / "teaching/ep_001/supplement"
+        self.assertEqual(len(list(folder.glob("evidence_rejected_*.json"))), 3)
+        self.assertTrue((folder / "receipt.json").exists())
+
+    def test_a_stuck_supplement_gets_fresh_attempts_only_when_asked_and_keeps_its_earlier_issues(self):
+        """Ontologies ep_004, 2026-09-28: the review's point stayed unresolved after both corrections. On the user's
+        request the spent corrections move aside, the next review still knows every earlier point, and the
+        supplement passes once the point is fixed."""
+        from podcast_automate.models import RunManifest, StageRecord
+        from podcast_automate.run_budget import approve_fresh_attempts
+        from podcast_automate.storage import write_yaml
+        from podcast_automate.teaching_research import stuck_supplements
+        point = "The gap is listed although the passage answers its first half."
+        reviews = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if schema is FoundationReview:
+                reviews.append(json.loads(prompt.splitlines()[-1]).get("previous_issues"))
+                if len(reviews) <= 3:
+                    value.issues, value.issue_basis = [point], ["source_contradiction"]
+            return value
+        with self.assertRaises(AppError):
+            self.research(invoke)
+        folder = self.work / "teaching/ep_001/supplement"
+        self.assertEqual(stuck_supplements(self.work), [folder])
+        write_yaml(self.work / "run_manifest.yaml", RunManifest(run_id="run_foundations", kind="script", project_hash="0" * 64,
+            input_hash="d" * 64, status="blocked", stages={"teaching": StageRecord(status="blocked")}).model_dump(mode="json"))
+        record = approve_fresh_attempts(self.root, "run_foundations")
+        self.assertEqual(record["supplements"], ["teaching/ep_001/supplement"])
+        self.assertEqual(sorted(p.name for p in folder.glob("*_rejected_*.json")), [])
+        self.assertEqual(len(list(folder.glob("evidence_superseded_01_*.json"))), 2)
+        self.assertEqual(stuck_supplements(self.work), [])
+        self.research(invoke)
+        self.assertEqual(reviews[3], [point], "the fresh round's review knows the earlier point")
+        self.assertTrue((folder / "receipt.json").exists())
+        with self.assertRaises(AppError):
+            approve_fresh_attempts(self.root, "run_foundations")
+
+    def test_a_partly_supported_explanation_is_corrected_before_it_stops_the_run(self):
+        """Asimov ep_012, 2026-09-29: the review judged the explanation only partly supported, and the run stopped
+        right after the review without a correction. Such a receipt now goes back like a critical issue."""
+        reviews = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if schema is FoundationReview:
+                reviews.append(schema)
+                if len(reviews) == 1:
+                    # As at Asimov ep_012: partly supported, and the explanation shortens the source's own claim.
+                    value.finding_support[0].verdict = "partially_supported"
+                    value.finding_support[0].contract_preserved = False
+            return value
+        self.research(invoke)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationReview,
+                                      FoundationSupplement, FoundationReview])
+        folder = self.work / "teaching/ep_001/supplement"
+        defects = json.loads((folder / "evidence_rejected_00.json").read_text(encoding="utf-8"))["errors"]
+        self.assertTrue(defects and all(d.startswith("Die Prüfung der Ergänzung beanstandet: ") for d in defects))
+        self.assertTrue((folder / "receipt.json").exists())
+
+    def test_a_supplement_review_stored_before_the_basis_rule_is_asked_again(self):
+        self.research()
+        folder = self.work / "teaching/ep_001/supplement"
+        (folder / "receipt.json").unlink()
+        stored = {"issues": ["Teixeira is not named."], "scope_change_required": False,
+                  "finding_support": [], "source_assessments": []}
+        write_json(folder / "review.json", {"value": stored, "sha256": digest(stored)})
+        self.research()
+        self.assertEqual(self.calls.count(FoundationReview), 2, "the stored review without a basis is asked again")
+        self.assertEqual(json.loads((folder / "review_before_check.json").read_text(encoding="utf-8"))["value"], stored)
+        self.assertTrue((folder / "receipt.json").exists())
+
+    def test_a_page_the_research_stored_is_reused_not_fetched_again(self):
+        """Ontologies, 2026-09-28: the supplement fetched the dbt MetricFlow page again, the page had changed since
+        the research, and the two versions stopped the run when the supplement joined the dossier."""
+        with patch("podcast_automate.sources.download", side_effect=AssertionError("a stored page is not fetched")):
+            research_foundations(self.root, self.work, self.config, self.entry, self.dossier, self.invoke,
+                                 known_sources=self.sources)
+        index = json.loads((self.work / "teaching/ep_001/supplement/source_index.json").read_text(encoding="utf-8"))
+        stored = {s.id: s.raw_hash for s in self.sources.sources}
+        self.assertTrue(index["sources"])
+        self.assertTrue(all(stored.get(s["id"]) == s["raw_hash"] for s in index["sources"]))
+        self.assertIn("better match", self.apply()[0].findings[0].statement)
+
+    def test_a_changed_copy_of_a_stored_page_is_left_out_unless_an_explanation_cites_it(self):
+        self.research()
+        folder = self.work / "teaching/ep_001/supplement"
+        cited = {e["reference"].split("#")[0] for a in json.loads((folder / "evidence.json").read_text(encoding="utf-8"))["value"]["explanations"]
+                 for e in a["evidence"]}
+        index_path = folder / "source_index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        source = next(s for s in index["sources"] if s["id"] in cited)
+        index["sources"].append({**source, "id": "src_uncited"})
+        write_json(index_path, index)
+        receipt = json.loads((folder / "receipt.json").read_text(encoding="utf-8"))
+        receipt["outputs"][index_path.relative_to(self.root).as_posix()] = file_hash(index_path)
+        write_json(folder / "receipt.json", receipt)
+        # The research holds the uncited page in another version: the supplement's copy is left out.
+        stored = self.sources.model_copy(deep=True)
+        stored.sources.append(SourceDocument.model_validate({**source, "id": "src_uncited", "raw_hash": "f" * 64}))
+        dossier, _, merged, _ = apply_foundations(self.root, self.work, self.config, [self.entry], self.dossier,
+                                                  self.context, stored)
+        self.assertIn("better match", dossier.findings[0].statement)
+        self.assertEqual([s.raw_hash for s in merged.sources if s.id == "src_uncited"], ["f" * 64])
+        # A changed page an explanation cites still stops: its passages may not be the stored ones.
+        changed = self.sources.model_copy(deep=True)
+        changed.sources = [s for s in changed.sources if s.id != source["id"]]
+        changed.sources.append(SourceDocument.model_validate({**source, "raw_hash": "f" * 64}))
+        with self.assertRaises(AppError) as caught:
+            apply_foundations(self.root, self.work, self.config, [self.entry], self.dossier, self.context, changed)
+        self.assertEqual(caught.exception.code, "invalid_source_snapshot")
 
     def test_scope_change_blocks_instead_of_silently_replanning(self):
         def invoke(*args, **kwargs):
@@ -199,6 +430,101 @@ class FoundationResearchTests(unittest.TestCase):
         write_json(self.work / "teaching/ep_001/supplement/evidence.json", {})
         with self.assertRaises(AppError):
             self.apply()
+
+    def test_a_quoted_gap_with_a_reason_after_it_still_names_its_question(self):
+        """Ontologies, 2026-09-27: the supplement wrote every confirmed gap as "'question' reason", and the
+        exact-text check counted none of them. The question must still stand in the entry verbatim."""
+        gap = self.SEEDED["gap_seed"]
+        self.assertEqual(named_question(f"'{gap}' The pinned section does not state it.", [gap]),
+                         (gap, "The pinned section does not state it."))
+        self.assertEqual(named_question(f"„{gap}“", [gap]), (gap, ""))
+        self.assertEqual(named_question(gap, [gap]), (gap, ""))
+        self.assertEqual(named_question(gap[:-1] + " anywhere.", [gap]), (None, None))
+        self.assertEqual(named_question(gap[:-1] + "s.", [gap[:-1]]), (None, None), "a question must end where the entry says")
+        probes = [{"question": gap, "references": ["src_a#sec_1"]}]
+        context = [{"source_id": "src_a", "sections": [{"reference": "src_a#sec_1", "text": "Read."}]}]
+        quoted = FoundationSupplement(explanations=[], remaining_gaps=[f"'{gap}' No passage states the rule."])
+        self.assertEqual(validate_supplement(quoted, [gap], self.entry, context, self.dossier, probes), [])
+        paraphrased = FoundationSupplement(explanations=[], remaining_gaps=["The energy rule is not stated."])
+        errors = validate_supplement(paraphrased, [gap], self.entry, context, self.dossier, probes)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Weder beantwortet noch als Lücke genannt", errors[0])
+        self.assertIn("The energy rule is not stated.", errors[0])
+
+    def test_a_supplement_that_only_confirms_probe_gaps_needs_no_review(self):
+        """Ontologies, 2026-09-28: the supplement read the pinned sections and confirmed all three gaps; the
+        review then assessed eight uncited sources and blocked the run for explaining nothing. With nothing to
+        assess, no review is asked, and a review stored under the old rule is kept beside the empty one."""
+        section = next(s for source in self.context for s in source["sections"])
+        gap = "The rule that assigns an energy to each configuration is missing."
+        write_json(self.work / "teaching/ep_001/research_needed.json", {"episode_id": "ep_001", "questions": [
+            {"question": gap, "why_needed": "Unread corpus hits.", "references": [section["reference"]]}]})
+        pinned = [{"source_id": section["reference"].split("#")[0], "sections": [section]}]
+
+        def invoke(prompt, schema, version, **kwargs):
+            if schema is FoundationSupplement:
+                self.calls.append(schema)
+                return FoundationSupplement(explanations=[], remaining_gaps=[gap])
+            if schema is FoundationReview:
+                self.fail("a supplement without explanations is not reviewed")
+            return self.invoke(prompt, schema, version, **kwargs)
+
+        def research():
+            with patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
+                return research_foundations(self.root, self.work, self.config, self.entry, self.dossier, invoke, pinned=pinned)
+        supplement = research()
+        self.assertEqual((supplement.explanations, supplement.remaining_gaps), ([], [gap]))
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement])
+        folder = self.work / "teaching/ep_001/supplement"
+        self.assertTrue((folder / "receipt.json").exists())
+        self.assertEqual(self.apply()[0], self.dossier, "a confirmed gap adds nothing to the dossier")
+        # A run stopped under the old rule: its model review blocked and no receipt was written.
+        (folder / "receipt.json").unlink()
+        stored = {"issues": ["The supplement contains no explanations."], "scope_change_required": False,
+                  "finding_support": [], "source_assessments": []}
+        write_json(folder / "review.json", {"value": stored, "sha256": "x"})
+        research()
+        self.assertEqual(len(self.calls), 2, "the resume asks no model")
+        self.assertEqual(json.loads((folder / "review_before_skip.json").read_text(encoding="utf-8"))["value"], stored)
+        self.assertEqual(json.loads((folder / "review.json").read_text(encoding="utf-8"))["value"]["issues"], [])
+        self.assertTrue((folder / "receipt.json").exists())
+
+    def test_the_supplement_sees_what_each_source_has_left_and_an_overlong_answer_names_the_source(self):
+        """The source-wide limits count the findings that already cite a source; the answer is told what is
+        left, and a rejection names the source and its counts (Ontologies: 149 of 150 words already spent). A
+        supplement may add 10 quoted and 40 paraphrased words on top of the dossier's 25 and 150 (2026-09-29)."""
+        cited = self.dossier.findings[0].evidence[0].reference
+        source_id = cited.split("#")[0]
+        context = [{"source_id": source_id, "sections": [{"reference": cited, "text": "Irrelevant here."}]},
+                   {"source_id": "src_new", "sections": [{"reference": "src_new#s1", "text": "Fresh."}]}]
+        budget = source_budget(context, self.dossier)
+        used = sum(len(f.statement.split()) for f in self.dossier.findings
+                   if any(e.reference.startswith(source_id + "#") for e in f.evidence))
+        self.assertEqual(budget[source_id]["paraphrased_words_left"], 190 - used)
+        self.assertEqual(budget["src_new"], {"quoted_words_left": 35, "paraphrased_words_left": 190})
+        seen = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            if schema is FoundationSupplement:
+                seen.append(json.loads(prompt.splitlines()[-1])["source_budget"])
+            return self.invoke(prompt, schema, version, **kwargs)
+        self.research(invoke)
+        self.assertTrue(seen and all(set(row) == {"quoted_words_left", "paraphrased_words_left"}
+                                     for row in seen[0].values()))
+        long = FoundationSupplement(explanations=[{
+            "questions": ["How are scores compared?"], "finding_ids": ["f_energy"],
+            "explanation": " ".join(["word"] * (191 - used)), "claim_contract": claim_contract(),
+            "evidence": [{"reference": cited, "excerpt": self.dossier.findings[0].evidence[0].excerpt}]}], remaining_gaps=[])
+        context = [{"source_id": source_id, "sections": [{"reference": cited,
+                    "text": next(s["text"] for src in self.context for s in src["sections"] if s["reference"] == cited)}]}]
+        errors = validate_supplement(long, ["How are scores compared?"], self.entry, context, self.dossier)
+        self.assertEqual(len(errors), 1)
+        self.assertIn(f"{source_id}: ", errors[0])
+        self.assertIn("191 von 190 umschriebenen Wörtern", errors[0])
+        # Within the allowance the same answer passes: one word fewer.
+        fits = long.model_copy(deep=True)
+        fits.explanations[0].explanation = " ".join(["word"] * (190 - used))
+        self.assertEqual(validate_supplement(fits, ["How are scores compared?"], self.entry, context, self.dossier), [])
 
     def test_pinned_sections_join_a_supplement_context_without_duplicating_it(self):
         from podcast_automate.teaching_research import merge_pinned
@@ -237,8 +563,20 @@ class FoundationResearchTests(unittest.TestCase):
     def probes_of(self, run):
         return json.loads((self.root / "runs" / run.run_id / "gap_probes.json").read_text(encoding="utf-8"))
 
+    def research_ledger(self):
+        return manifest_path(self.root, self.fixture.research.run_id).parent / "question_research/state.json"
+
+    def forget_research_reads(self):
+        """The fixture's research read the section the seeded gap hits, so its probe row would stand as
+        read (settle_by_research). These tests need hits nobody read: the research ledger forgets its reads."""
+        state = read_value(self.research_ledger())
+        for row in state["tasks"].values():
+            row["read_refs"] = []
+        save_value(self.research_ledger(), state)
+
     def test_a_gap_with_unread_corpus_hits_costs_exactly_one_supplement_round(self):
         """The probe routes the gap, the supplement answers it, and the gap is then closed."""
+        self.forget_research_reads()
         rounds = []
         with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.SEEDED), \
              patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.script_model(rounds)), \
@@ -268,6 +606,7 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual((work / "gap_probes.json").read_bytes(), before)
 
     def test_a_gap_whose_hits_stay_unread_blocks_the_review(self):
+        self.forget_research_reads()
         with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.SEEDED), \
              patch("podcast_automate.script_pipeline.ScriptRun.route_probe_gaps", autospec=True,
                    side_effect=lambda self, entry: None), \
@@ -280,6 +619,7 @@ class FoundationResearchTests(unittest.TestCase):
     def test_a_gap_owned_by_two_episodes_is_routed_once_and_settled_by_the_first(self):
         """Both episodes cite the source holding the hit. The first episode's supplement settles the
         run-level row, so the second episode spends no supplement round on it."""
+        self.forget_research_reads()
         rounds = []
         plan = two_episode_plan(("f_energy",))
         with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.SEEDED), \
@@ -344,6 +684,57 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual((resumed.status, len(rounds)), ("completed", 1))
         self.assertEqual((work / "gap_probes.json").read_bytes(), before)
 
+    def test_hits_the_research_already_read_are_not_routed_again(self):
+        """Ontologies, 2026-09-27: 102 of 140 hits had been read by the research's question readers, yet the
+        script lane counted all of them as unread and sent 18 gaps to one supplement. A hit the research read
+        settles its row, as the research lane's own closing probe does, also in a probe file saved before this
+        rule; the run needs no supplement round and a resume leaves the file unchanged."""
+        rounds = []
+        with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.SEEDED), \
+             patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.script_model(rounds)), \
+             patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
+            plan = run_script(self.root, plan_only=True)
+            work = self.root / "runs" / plan.run_id
+            probes = self.probes_of(plan)
+            self.assertEqual([(row["status"], row["settled_by"]) for row in probes], [("hits_read_confirmed", "research")])
+            read = {ref for row in read_value(self.research_ledger())["tasks"].values() for ref in row["read_refs"]}
+            self.assertEqual(probes[0]["research_read"], [h["reference"] for h in probes[0]["hits"] if h["reference"] in read])
+            # A file saved before the rule: the row as the probe wrote it, unread.
+            write_json(work / "gap_probes.json", [{key: value for key, value in row.items()
+                                                   if key not in {"research_read", "settled_by", "unread_references"}}
+                                                  | {"status": "hits_unread"} for row in probes])
+            run = run_script(self.root, resume=True, run_id=plan.run_id, approved_plan_hash=outline_hash(work))
+            self.assertEqual(run.status, "completed")
+            self.assertEqual(rounds, [])
+            self.assertFalse((work / "teaching/ep_001/research_needed.json").exists())
+            settled = self.probes_of(run)
+            self.assertEqual([(row["status"], row["settled_by"]) for row in settled], [("hits_read_confirmed", "research")])
+            before = (work / "gap_probes.json").read_bytes()
+            run_script(self.root, resume=True, run_id=plan.run_id)
+        self.assertEqual((work / "gap_probes.json").read_bytes(), before)
+
+    def test_a_confirmed_gap_keeps_the_reason_written_after_it(self):
+        rounds = []
+        gap = "The update of the bias term for an overloaded expert is missing."
+
+        def confirming(prompt, schema, version, **kwargs):
+            if schema is FoundationSupplement:
+                self.calls.append(schema)
+                data = json.loads(prompt.splitlines()[-1])
+                return FoundationSupplement(explanations=[], remaining_gaps=[
+                    f"'{question}' The pinned section names the update, not its size." for question in data["questions"]])
+            return self.invoke(prompt, schema, version, **kwargs)
+
+        with patch("podcast_automate.scripting.load_research", side_effect=self.research_with_extra_source), \
+             patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value={"gap_extra": gap}), \
+             patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.script_model(rounds, plan=two_episode_plan(("f_extra",)), invoke=confirming)), \
+             patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["teaching"].error)
+        self.assertEqual([(row["status"], row["settled_by"], row["confirmation_note"]) for row in self.probes_of(run)],
+                         [("hits_read_confirmed", "ep_002", "The pinned section names the update, not its size.")])
+
     def test_a_gap_with_hits_in_no_episode_source_is_reported_not_blocking(self):
         """A hit in a source no episode cites cannot be read in this lane; the row is recorded as
         ``hits_unowned`` for the report and the run completes without a supplement."""
@@ -366,6 +757,39 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual([(row["status"], row["owner_episodes"]) for row in probes], [("hits_unowned", [])])
         self.assertEqual(seen[0], [{"gap_id": "gap_extra", "text": gap, "status": "hits_unowned",
                                     "references": ["src_extra#sec_001"]}])
+
+    def test_a_quote_across_a_line_break_hyphen_is_verbatim_and_a_paraphrase_is_not(self):
+        """Asimov ep_012, 2026-09-29: the PDF split "pol- icies" at a line end, and the supplement's exact quote
+        "institutions and policies" was rejected three times as invented. The dossier's rule applies here too."""
+        context = [{"source_id": "src_pdf", "sections": [{"reference": "src_pdf#s1",
+                    "text": "Which one dominates depends on the institutions and pol- icies that societies choose."}]}]
+
+        def supplement(excerpt):
+            return FoundationSupplement(explanations=[{
+                "questions": ["How are scores compared?"], "finding_ids": ["f_energy"], "claim_contract": claim_contract(),
+                "explanation": "Institutions decide which force dominates.",
+                "evidence": [{"reference": "src_pdf#s1", "excerpt": excerpt}]}], remaining_gaps=[])
+        self.assertEqual(validate_supplement(supplement("institutions and policies"), ["How are scores compared?"],
+                                             self.entry, context, self.dossier), [])
+        errors = validate_supplement(supplement("institutions and laws"), ["How are scores compared?"],
+                                     self.entry, context, self.dossier)
+        self.assertIn("Eine ergänzende Aussage hat keinen gültigen Textbeleg.", errors)
+
+    def test_a_question_answered_in_part_may_also_stand_as_a_remaining_gap(self):
+        """Asimov ep_014, 2026-09-29: the question stated what is known and what stays open; the supplement
+        answered the known part and named the question a gap, and the exact-once rule rejected that three
+        times without naming a defect. Now each question counts once it appears at least once."""
+        gap = self.SEEDED["gap_seed"]
+        probes = [{"question": gap, "references": ["src_a#sec_1"]}]
+        context = [{"source_id": "src_a", "sections": [{"reference": "src_a#sec_1", "text": "Lower energy represents compatibility."}]}]
+        both = FoundationSupplement(explanations=[{
+            "questions": [gap], "finding_ids": ["f_energy"], "claim_contract": claim_contract(),
+            "explanation": "A lower energy means a better fit.",
+            "evidence": [{"reference": "src_a#sec_1", "excerpt": "Lower energy represents compatibility"}]}],
+            remaining_gaps=[gap])
+        self.assertEqual(validate_supplement(both, [gap], self.entry, context, self.dossier, probes), [])
+        other = both.model_copy(update={"remaining_gaps": [gap, "A question nobody asked."]})
+        self.assertTrue(validate_supplement(other, [gap], self.entry, context, self.dossier, probes))
 
     def test_confirming_a_probe_gap_requires_its_pinned_sections_in_the_context(self):
         gap = self.SEEDED["gap_seed"]

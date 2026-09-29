@@ -1,10 +1,12 @@
 """Local browser workspace. Reuses the production pipelines in isolated workers."""
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -29,9 +31,11 @@ from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettin
 from .episode_audio import saved_approval
 from .runner import manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
-                         approve_research_retry)
+                         approve_fresh_attempts, approve_research_retry, approve_residual_finish, decide_review_disagreement,
+                         request_teaching_redesign)
 from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics, style_notes
+from .script_pipeline import failed_teaching
 from .speech import (AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
                      same_audio_generation)
 from .storage import (atomic_text, digest, file_hash, init_project, inside, load_project, project_hash, project_lock,
@@ -254,6 +258,8 @@ class Studio:
         self.workers = {}  # project root -> (process, uses the GPU) of its main job
         self.audio_processes = {}
         self.scheduler = None
+        # Reachable from the home network too (``pla studio --lan``); the port is the one actually bound.
+        self.lan, self.port = False, None
         configure_path(self.workspace)
 
     def root(self, project):
@@ -308,6 +314,8 @@ class Studio:
                                  "claude_efforts": CLAUDE_EFFORTS, "effort_equivalents": EFFORT_EQUIVALENTS,
                                  "provider_notes": PROVIDER_NOTES, "auto_candidates": auto_candidates()},
                 "token": self.token, "projects": projects, "voices": VOICES,
+                "lan": {"enabled": self.lan,
+                        "urls": [f"http://{address}:{self.port}" for address in lan_addresses()] if self.lan else []},
                 "audio_catalog": audio_catalog(),
                 "voice_samples": sample_inventory(self.projects),
                 "key_available": bool(self.key or os.environ.get("OPENROUTER_API_KEY")),
@@ -413,6 +421,13 @@ class Studio:
         for gap in data.get("research_gaps") or []:
             if isinstance(gap, dict):
                 gap.update({key: clean(gap.get(key), root) for key in ("question", "why_needed")})
+        run_id = (data.get("run") or {}).get("run_id")
+        if (data.get("stop") or {}).get("code") == "teaching_design_failed" and isinstance(run_id, str):
+            # The episode a new design with the editor's note is for; read from the run, so older jobs have it too.
+            try:
+                data["teaching_failure"] = failed_teaching(manifest_path(root, run_id).parent)
+            except (AppError, OSError, ValueError):
+                data["teaching_failure"] = None
         return data
 
     def approve(self, project, data):
@@ -441,10 +456,24 @@ class Studio:
         if kind == "retry":
             request = approve_research_retry(root, run_id, data.get("task_id"), data.get("hint", ""))
             return {"retry": request.model_dump(mode="json")}
+        if kind == "fresh_attempts":
+            if self.worker(root) is not None:
+                raise AppError("Der Auftrag läuft gerade; neue Anläufe erst, wenn er angehalten hat.", code="studio_busy")
+            return {"fresh_attempts": approve_fresh_attempts(root, run_id)}
+        if kind == "residual":
+            finish = approve_residual_finish(root, run_id, data.get("note", ""))
+            return {"residual": finish.model_dump(mode="json")}
+        if kind == "dispute":
+            choice = decide_review_disagreement(root, run_id, data.get("objection_id"), data.get("decision"),
+                                                data.get("note", ""))
+            return {"dispute": choice.model_dump(mode="json")}
         if kind == "access_gap":
             approval = approve_criterion_gap(root, run_id, data.get("task_id"), data.get("criterion"), data.get("source"),
                                              data.get("reason", ""))
             return {"access_gap": approval.model_dump(mode="json")}
+        if kind == "teaching_redesign":
+            request = request_teaching_redesign(root, run_id, data.get("episode_id"), data.get("note", ""))
+            return {"teaching_redesign": request.model_dump(mode="json")}
         if kind == "plan":
             # The receipt binds to the projected plan; a cap asks the next resume to plan again and present anew.
             approval = approve_research_plan(root, run_id, max_tasks=data.get("max_tasks"), source="studio")
@@ -1044,6 +1073,37 @@ class Studio:
         return path
 
 
+def client_scope(address, lan):
+    """``local`` for this computer; ``lan`` for a device in the home network, only when the Studio was started
+    for it (``pla studio --lan``); None for everything else, such as an address from the internet. The home
+    network counts as this computer: the user asked for exactly that, with protection only against outside."""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return None
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback:
+        return "local"
+    return "lan" if lan and (ip.is_private or ip.is_link_local) else None
+
+
+def lan_addresses():
+    """This computer's addresses in the home network, the one on the default route first."""
+    found = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+            route.connect(("192.0.2.1", 9))  # Chooses the outgoing interface; a UDP connect sends nothing.
+            found.append(route.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        found += [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    return [address for address in dict.fromkeys(found) if client_scope(address, True) == "lan"]
+
+
 class StudioHandler(BaseHTTPRequestHandler):
     server_version = "PodcastStudio/1.0"
 
@@ -1065,7 +1125,13 @@ class StudioHandler(BaseHTTPRequestHandler):
 
     def guard(self, mutation=False):
         port = self.server.server_port
-        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        scope = client_scope(self.client_address[0], self.server.studio.lan)
+        if scope is None:
+            raise AppError("Zugriff nur von diesem Computer oder, mit der WLAN-Startdatei, aus dem Heimnetz.", code="forbidden")
+        # A device in the home network names this computer by the address it connected to. Any other name is
+        # refused as before, which keeps a web page from steering the Studio through a rebound domain.
+        allowed = ({f"127.0.0.1:{port}", f"localhost:{port}"} if scope == "local"
+                   else {f"{self.connection.getsockname()[0]}:{port}"})
         if self.headers.get("Host") not in allowed:
             raise AppError("Zugriff nur über die lokale Studio-Adresse.", code="forbidden")
         origin = self.headers.get("Origin")
@@ -1146,7 +1212,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                 self.send_data(200, body, {"index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css"}[name] + "; charset=utf-8")
                 return
             elif path == "/api/bootstrap":
-                result = app.bootstrap()
+                result = {**app.bootstrap(), "client": client_scope(self.client_address[0], app.lan)}
             elif path == "/api/projects":
                 with app.mutex:
                     result = app.overview()
@@ -1247,20 +1313,26 @@ class StudioHandler(BaseHTTPRequestHandler):
         self.dispatch(True)
 
 
-def make_server(workspace, port=8765):
-    server = ThreadingHTTPServer(("127.0.0.1", port), StudioHandler)
+def make_server(workspace, port=8765, *, lan=False):
+    """``lan`` listens on every interface, so devices in the home network reach the Studio (client_scope)."""
+    server = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), StudioHandler)
     server.studio = Studio(Path(workspace))
+    server.studio.lan, server.studio.port = lan, server.server_port
     server.daemon_threads = True
     return server
 
 
-def serve(workspace, port=8765, open_browser=True):
+def serve(workspace, port=8765, open_browser=True, *, lan=False):
     url = f"http://127.0.0.1:{port}"
     # A second double-click reopens this workspace instead of starting another server.
     try:
         with urlopen(url + "/api/bootstrap", timeout=2) as response:
             existing = json.load(response)
         if isinstance(existing, dict) and existing.get("app") == "podcast-studio" and existing.get("workspace") == str(Path(workspace).resolve()):
+            if lan and not (existing.get("lan") or {}).get("enabled"):
+                print("Podcast Studio läuft bereits, aber nur auf diesem Computer. Zuerst im Studio „Studio beenden“ "
+                      "klicken, sobald kein Auftrag mehr läuft, dann die WLAN-Startdatei erneut öffnen.", flush=True)
+                return
             if open_browser:
                 webbrowser.open(url)
             print(f"Podcast Studio läuft bereits: {url}", flush=True)
@@ -1269,11 +1341,15 @@ def serve(workspace, port=8765, open_browser=True):
         pass
     with project_lock(Path(workspace) / ".studio"):
         configure_logging(Path(workspace) / ".studio/studio.log")
-        server = make_server(workspace, port)
+        server = make_server(workspace, port, lan=lan)
         server.studio.start_scheduler()
         url = f"http://127.0.0.1:{server.server_port}"
-        logger("studio").info("Studio gestartet: %s", url)
+        logger("studio").info("Studio gestartet: %s%s", url, " (auch im Heimnetz)" if lan else "")
         print(f"Podcast Studio: {url}\nDieses Fenster geöffnet lassen. Beenden mit Strg+C.", flush=True)
+        if lan:
+            addresses = [f"http://{address}:{server.server_port}" for address in lan_addresses()]
+            print("Im WLAN, etwa vom Handy: " + (" oder ".join(addresses) if addresses else
+                  "keine Heimnetz-Adresse gefunden; die Adresse zeigt „ipconfig“ unter IPv4-Adresse"), flush=True)
         if open_browser:
             webbrowser.open(url)
         try:

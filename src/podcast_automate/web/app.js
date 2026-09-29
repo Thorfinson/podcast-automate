@@ -1149,6 +1149,13 @@ function renderModelTrace(job) {
     <p class="hint">Neue Textfragmente und öffentliche Reasoning-Zusammenfassungen erscheinen während des Aufrufs. Aussagen des Modells sind noch ungeprüft.</p>
     ${insight?`<details class="model-events"><summary>${active?(open.length>1?`Zuletzt gestarteter Rechercheauftrag · einer von ${open.length}`:"Aktueller Rechercheauftrag"):"Letzter Rechercheauftrag"}</summary>${insight}</details>`:(current&&active?`<p class="trace-focus">${escape(current.question)}</p><p>${escape(current.activity)}</p>`:"")}${renderActiveTasks(ledger,active)}</section>`;
 }
+// Ending the audit loop: after the next whole-dossier audit the run finishes, its open objections on record.
+function residualFinish(ledger, runId) {
+  if(!ledger||Number(ledger.audit_round||0)<1||ledger.phase==="completed")return "";
+  const requested=ledger.residual_finish;
+  if(requested)return `<p class="note">Abschluss mit dokumentierten Resteinwänden angefordert${requested.note?` (${escape(requested.note)})`:""}. Nach der nächsten Gesamtprüfung schließt der Lauf ab, statt Teilfragen erneut zu öffnen; verbliebene Einwände stehen im Qualitätsbericht.</p>`;
+  return `<div class="actions residual-finish"><input id="residual-note" placeholder="Notiz für den Qualitätsbericht (optional)" aria-label="Notiz zum Abschluss mit Resteinwänden"><button class="secondary small" data-action="finish-residual" data-run-id="${escape(runId)}">Nach der nächsten Gesamtprüfung mit Resteinwänden abschließen</button></div><p class="hint">Beendet die Prüfschleife: keine weitere Nachbesserungsrunde; was die Gesamtprüfung dann noch beanstandet, steht als offene Grenze im Qualitätsbericht.</p>`;
+}
 function researchRound(ledger) {
   // The round counts from the first whole-dossier audit; reopened questions belong to a later round.
   const round=Number(ledger?.audit_round||0), reopened=Number(ledger?.reopened||0);
@@ -1205,10 +1212,12 @@ const STOP_RULES={
   tts_environment:{kind:"fix",title:"Lokale Sprachausgabe nicht eingerichtet",text:"Die Qwen-Umgebung ist nicht einsatzbereit. Die Einrichtung laut docs/qwen-windows.md prüfen oder unter „Auftrag & Stimmen“ Gemini wählen; danach „Fortsetzen“.",actions:["check"]},
   search_not_observed:{kind:"retry",title:"Websuche nicht nachweisbar",text:"Ein Rechercheaufruf hat keine beobachtbare Websuche ausgeführt und wurde abgewiesen. „Fortsetzen“ wiederholt ihn."},
   invalid_model_output:{kind:"retry",title:"Unlesbare Modellantwort",text:"Die Antwort des Modells war unvollständig oder nicht lesbar. „Fortsetzen“ fragt erneut an."},
-  script_review_failed:{kind:"retry",title:"Qualitätsprüfung hat Einwände",text:reviewAgain("Die Qualitätsprüfung"),actions:["new_outline"]},
+  // The stored review is replayed on a resume; clarity, depth and dialogue points no longer stop it (review_episode).
+  script_review_failed:{kind:"retry",title:"Qualitätsprüfung hat Einwände",text:"Die Qualitätsprüfung meldet nach den automatischen Korrekturen weiter Belegfehler, Einwände zum Umfang oder zur Struktur; die offenen Punkte stehen auf dieser Seite. Punkte zu Verständlichkeit, Tiefe und Dialog halten nicht mehr an, sie stehen als Notiz beim Skript. „Mit neuen Anläufen fortsetzen“ gibt der Prüfung drei neue Korrekturen. „Fortsetzen“ allein hilft nur nach einem Studio-Update; sonst hält der Lauf ohne neue Aufrufe wieder an.",actions:["fresh_attempts","new_outline"]},
   series_review_failed:{kind:"retry",title:"Serienprüfung hat Einwände",text:reviewAgain("Die Prüfung der gesamten Serie"),actions:["new_outline"]},
   teaching_review_failed:{kind:"retry",title:"Lehrprüfung nicht bestanden",text:reviewAgain("Die Lehrprüfung"),actions:["new_outline"]},
-  dialogue_polish_failed:{kind:"retry",title:"Dialog-Polishing braucht Korrektur",text:reviewAgain("Die Prüfung des Dialog-Polishings"),actions:["new_outline"]},
+  // The stored verdict is replayed on a resume (polishing.polish_dialogue); only an update can change the outcome.
+  dialogue_polish_failed:{kind:"retry",title:"Dialog-Polishing braucht Korrektur",text:"Die Prüfung des Dialog-Polishings meldet nach beiden automatischen Korrekturen weiter Einwände zu Bedeutung, Vollständigkeit, Sprecherrollen oder Intro und Outro; die offenen Punkte stehen auf dieser Seite. „Fortsetzen“ hilft, wenn sich seit dem Anhalten die Regeln geändert haben, etwa nach einem Studio-Update; sonst hält der Lauf ohne neue Aufrufe an derselben Stelle wieder an. Dann hilft ein neues Inhaltsverzeichnis.",actions:["new_outline"]},
   subscriptions_exhausted:{kind:"wait",title:"Beide Abos ausgeschöpft",text:"Codex und Claude haben gerade kein Kontingent. Nach dem Reset geht es mit „Fortsetzen“ weiter."},
   claude_quota_exhausted:{kind:"wait",title:"Claude-Kontingent erschöpft",text:"Nach dem Reset geht es mit „Fortsetzen“ weiter; bei automatischer Abo-Wahl übernimmt Codex, sobald es Kontingent hat."},
   quota_exhausted:{kind:"wait",title:"Codex-Kontingent erschöpft",text:"Nach dem Reset geht es mit „Fortsetzen“ weiter."},
@@ -1235,14 +1244,19 @@ const STOP_RULES={
   script_budget_insufficient:{kind:"decision",title:"Aufruflimit reicht nicht",text:"Für die restlichen Schritte reicht das genehmigte Aufruflimit nicht. Fertige Arbeit bleibt gespeichert; ein höheres Limit genehmigst du hier.",actions:["approve_calls"]},
   plan_exceeds_allowance:{kind:"decision",title:"Rechercheplan passt nicht ins Aufruflimit",text:"Der Rechercheplan braucht mehr Modellaufrufe, als genehmigt sind. Ein höheres Limit genehmigen, dann plant die Recherche weiter.",actions:["approve_calls"]},
   chat_budget:{kind:"decision",title:"Gesprächslimit erreicht",text:"Das Gespräch mit der Redaktion hat sein Aufruflimit für dieses Projekt verbraucht. Ein höheres Limit genehmigen, dann erneut senden."},
-  review_disagreement:{kind:"dead",title:"Unbelegter Prüfeinwand",text:"Die Gesamtprüfung erhebt einen Einwand, den sie selbst nicht mit gelesenen Belegen verankern kann. Dafür startet keine automatische Nachrecherche, und „Fortsetzen“ würde dieselbe Prüfung erneut vorlegen. Die geprüften Teilantworten bleiben lesbar; weiter geht es mit einer neuen Recherche.",actions:["restart"]},
+  // A disputed earlier objection is the editor's call (research page); an unanchored new one still ends the run.
+  review_disagreement:c=>c.progress?.review_disagreement?{kind:"decision",title:"Streitfall in der Gesamtprüfung",card:true,
+    text:"Die Gesamtprüfung widerspricht einem früheren Einwand. Auf der Seite Recherche entscheidest du, wem du folgst; danach läuft der Auftrag weiter."}:
+    {kind:"dead",title:"Unbelegter Prüfeinwand",text:"Die Gesamtprüfung erhebt einen Einwand, den sie selbst nicht mit gelesenen Belegen verankern kann. Dafür startet keine automatische Nachrecherche, und „Fortsetzen“ würde dieselbe Prüfung erneut vorlegen. Die geprüften Teilantworten bleiben lesbar; weiter geht es mit einer neuen Recherche.",actions:["restart"]},
   invalid_research_checkpoint:{kind:"dead",title:"Gespeicherter Zwischenstand passt nicht mehr",text:STORED_STATE,actions:["restart"]},
   inputs_changed:{kind:"dead",title:"Eingaben seit dem Anhalten geändert",text:"Seit dem Anhalten haben sich Angaben geändert, an die dieser Lauf gebunden ist, etwa Auftrag, Stimmen, Hostnamen, Notizen, Sprechformen oder eine Studio-Aktualisierung. Er lässt sich nicht fortsetzen; fertige Ergebnisse bleiben lesbar.",actions:["restart"]},
   script_edited:{kind:"dead",title:"Skript seit der Freigabe geändert",text:"Das Skript wurde seit deiner Freigabe geändert. Die aktuelle Fassung lesen und erneut für Audio freigeben.",actions:["restart"]},
   invalid_plan:{kind:"dead",title:"Inhaltsverzeichnis bleibt widersprüchlich",text:"Die automatische Korrektur hat den Widerspruch nach drei Runden nicht aufgelöst; „Fortsetzen“ würde dieselbe Prüfung wiederholen. Mit einem Änderungswunsch entsteht ein neuer Entwurf mit neuen Korrekturrunden.",actions:["replan_feedback","new_outline"]},
   research_required:{kind:"dead",title:"Recherche fehlt oder passt nicht",text:"Für das Inhaltsverzeichnis fehlt ein geprüftes, aktuelles Dossier. Zuerst die Recherche abschließen oder neu beginnen.",actions:["open_research","new_research"]},
-  teaching_design_failed:{kind:"dead",title:"Lehrkonzept bleibt unvollständig",text:"Die automatische Überarbeitung hat nicht alle Kritikpunkte gelöst; „Fortsetzen“ würde dieselben Punkte wieder vorlegen. Die offenen Punkte stehen auf dieser Seite. Weiter geht es mit einem neuen Inhaltsverzeichnis: die Recherche bleibt, Lehrkonzepte und Skripte dieses Laufs entstehen neu.",actions:["new_outline"]},
-  teaching_research_required:{kind:"dead",title:"Erklärgrundlagen fehlen",text:"Für das Lehrkonzept fehlen belegte Grundlagen, und die automatische Nachrecherche konnte sie nicht schließen. Die offenen Fragen stehen auf dieser Seite. Weiter geht es mit einer neuen Recherche, die diese Fragen abdeckt, oder mit einem neuen Inhaltsverzeichnis, das ohne sie auskommt.",actions:["new_research","new_outline"]},
+  teaching_design_failed:{kind:"dead",title:"Lehrkonzept bleibt unvollständig",text:"Die automatische Überarbeitung hat nicht alle Kritikpunkte gelöst; „Fortsetzen“ würde dieselben Punkte wieder vorlegen. Die offenen Punkte stehen unter „Meldung“. Mit deinem Hinweis entwirft der Lauf das Lehrkonzept dieser Folge neu, mit neuen Korrekturrunden; das freigegebene Inhaltsverzeichnis und die übrigen Folgen bleiben. Oder ein neues Inhaltsverzeichnis: die Recherche bleibt, Lehrkonzepte und Skripte dieses Laufs entstehen neu.",actions:["redesign_teaching","new_outline"]},
+  // Resumable like a research check: an update may have changed the rule that stopped it (Ontologies, 2026-09-27);
+  // without a change the stored answers replay and the run stops at the same place without a new call.
+  teaching_research_required:{kind:"retry",title:"Erklärgrundlagen fehlen",text:"Für das Lehrkonzept fehlen belegte Grundlagen, und die automatische Nachrecherche konnte sie nicht schließen. Die offenen Fragen stehen auf dieser Seite. „Fortsetzen“ hilft, wenn sich seit dem Anhalten die Regeln geändert haben, etwa nach einem Studio-Update; sonst hält der Lauf ohne neue Aufrufe an derselben Stelle wieder an. Hat die Nachrecherche ihre Korrekturen aufgebraucht, gibt „Mit neuen Anläufen fortsetzen“ ihr neue; die beanstandeten Punkte bleiben der Prüfung bekannt. Sonst geht es mit einer neuen Recherche weiter, die diese Fragen abdeckt, oder mit einem neuen Inhaltsverzeichnis, das ohne sie auskommt.",actions:["fresh_attempts","new_research","new_outline"]},
   research_gap_unread:{kind:"dead",title:"Ungelesene Belege zu gemeldeten Lücken",text:"Die Prüfung meldet Lücken, zu denen das Quellenmaterial noch ungelesene Stellen enthält. Das klärt nur eine neue Recherche.",actions:["new_research"]},
   prompt_too_large:{kind:"fix",title:"Auftrag zu groß für das Modell",text:"Der Auftrag passt nicht in das Kontextfenster des gewählten Modells. Der Aufruf wurde nicht gestartet und nicht angerechnet. „Fortsetzen“ versucht es erneut, denn der Auftrag einer Teilfrage ändert sich zwischen den Versuchen und nach Studio-Updates; passt er weiterhin nicht, hält der Lauf sofort und kostenlos wieder an. Sonst unter „Auftrag & Stimmen“ ein Modell mit größerem Fenster wählen, etwa Automatisch oder Codex, und den Schritt neu starten.",actions:["open_brief","restart"]},
   claude_output_limit:{kind:"dead",title:"Antwort zu lang für einen Aufruf",text:"Die Antwort war länger, als ein Claude-Aufruf liefern kann, und „Fortsetzen“ würde sie unverändert wiederholen. Unter „Auftrag & Stimmen“ ein anderes Modell wählen und den Schritt neu starten.",actions:["open_brief","restart"]},
@@ -1252,6 +1266,9 @@ const STOP_RULES={
   duration_exceeded:{kind:"dead",title:"Folge zu lang",text:"Die Folge überschreitet die maximale Länge. Auf der Seite „Skripte lesen“ eine kürzere Fassung anfordern und diese erneut freigeben.",actions:["open_scripts"]},
 };
 for(const code of ["invalid_source_snapshot","invalid_plan_approval","invalid_budget_approval","invalid_gap_approval","invalid_retry_request"])STOP_RULES[code]=STOP_RULES.invalid_research_checkpoint;
+// In a script run the changed source is a page a supplement fetched again (Ontologies, 2026-09-28); an update keeps the
+// research's copy, so a resume can pass. A research run's changed source file stays a dead end.
+STOP_RULES.invalid_source_snapshot=c=>c.kind==="script"?{kind:"retry",title:"Quelle in zwei Fassungen",text:"Eine Nachrecherche hat eine Quelle erneut geladen, die sich seit der Recherche geändert hat. „Fortsetzen“ hilft, wenn eine Studio-Aktualisierung die Regel geändert hat; sonst hält der Lauf ohne neue Aufrufe an derselben Stelle wieder an. Dann geht es mit einem neuen Inhaltsverzeichnis weiter.",actions:["new_outline"]}:STOP_RULES.invalid_research_checkpoint;
 for(const code of ["research_coverage_incomplete","invalid_research"])STOP_RULES[code]=STOP_RULES.research_required;
 // Correction loops: a research check replays its saved rejections on a resume, a script stage starts them anew.
 for(const code of ["rejected_output","invalid_evidence_review","invalid_question_routing","invalid_research_patch","invalid_research_assessment",
@@ -1259,7 +1276,7 @@ for(const code of ["rejected_output","invalid_evidence_review","invalid_question
   "invalid_supplement","invalid_teaching_review","invalid_script_evidence_review","invalid_polish_review","invalid_series_review","invalid_script","invalid_revision"])
   STOP_RULES[code]=c=>c.kind==="script"?{kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat die automatischen Korrekturversuche dieses Schritts verbraucht. „Fortsetzen“ startet sie neu; hält der Schritt erneut an, hilft ein neues Inhaltsverzeichnis.",actions:["new_outline"]}:
     // A research run keeps hours of checked answers: resuming retries the step first (an update may have fixed it).
-    {kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat für diesen Prüfschritt die automatischen Korrekturversuche verbraucht, oder eine Prüfregel hat eine Änderung abgelehnt; die Details liegen im Laufordner. „Fortsetzen“ versucht den Schritt erneut, die geprüften Teilantworten bleiben erhalten. Hält er an derselben Stelle wieder an, geht es mit einer neuen Recherche weiter.",actions:["restart"]};
+    {kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat für diesen Prüfschritt die automatischen Korrekturversuche verbraucht, oder eine Prüfregel hat eine Änderung abgelehnt; die Details liegen im Laufordner. „Fortsetzen“ versucht den Schritt erneut, die geprüften Teilantworten bleiben erhalten; ein inzwischen behobener Fehler lässt ihn dann durchgehen. Hält er an derselben Stelle wieder an, gibt „Mit neuen Anläufen fortsetzen“ dem Schritt drei frische Versuche; die abgewiesenen Antworten bleiben lesbar.",actions:["fresh_attempts","restart"]};
 // A chat, a check or a voice sample has no run to continue: the same button starts it again.
 const RESTART_VERBS={assistant:"„Erneut senden“",check:"„Verbindungen prüfen“",audio_sample:"„Hörprobe erzeugen“",audio_samples:"„Fehlende Hörproben erzeugen“"};
 function stopCodeOf(job) {
@@ -1298,7 +1315,7 @@ function stopInfo(job) {
 // "Fortsetzen" is offered where it can help: retry, wait and fix stops, an approved plan, decided questions.
 // Blocked questions whose current block has no advice yet (research_advisor.block_key); a waiting question gets none.
 const unadvised=ledger=>(ledger?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&!q.retry_requested
-  &&q.outcome!=="prerequisite_block"&&q.advice?.key!==`${Number(q.retries||0)}.${Number(q.auto_retries||0)}`).length;
+  &&!["prerequisite_block","audit_block"].includes(q.outcome)&&q.advice?.key!==`${Number(q.retries||0)}.${Number(q.auto_retries||0)}`).length;
 // Blocked questions whose advice for the current block recommends a new attempt the automatic ones did not start.
 const adviceRetries=ledger=>(ledger?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&!q.retry_requested
   &&q.advice?.recommendation==="retry"&&q.advice?.key===`${Number(q.retries||0)}.${Number(q.auto_retries||0)}`);
@@ -1314,13 +1331,34 @@ const adviceCallLimit=ledger=>{
   const waiting=(ledger.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&q.outcome==="prerequisite_block").length;
   return Number(b.used)+Math.ceil((Number(b.minimum_remaining_calls)+unadvised(ledger)*(1+perTask)+waiting*perTask)*11/10);
 };
+// Blocked questions a resume moves on without a decision of their own: with the finish requested, those whose
+// reworks are spent; and one that only waits for prerequisites that passed or are themselves moving on.
+function blockedSettled(ledger) {
+  const rows=ledger?.questions||[], byId=new Map(rows.map(q=>[q.id,q])), memo=new Map();
+  const settled=(q,seen=new Set())=>{
+    if(memo.has(q.id))return memo.get(q.id);
+    let result=false;
+    if(ledger?.residual_finish&&q.outcome==="audit_block")result=true;
+    else if(q.outcome==="prerequisite_block"&&!seen.has(q.id)){
+      seen.add(q.id);
+      result=(q.depends_on||[]).every(id=>{const d=byId.get(id);return d&&(d.status==="verified"||(d.status==="blocked"&&!d.accepted_gap&&settled(d,seen)));});
+    }
+    memo.set(q.id,result);return result;
+  };
+  return rows.filter(q=>q.status==="blocked"&&!q.accepted_gap&&settled(q));
+}
 function canResume(job,info=stopInfo(job)) {
   if(!job?.run||!info)return false;
   const ledger=job.progress?.research_questions, review=job.progress?.plan_review;
   if(info.code==="research_plan_review")return !review?.awaiting||!!review.approved;
   // The server lifts the ledger out of "blocked" once every blocked question is decided; a block without advice
   // resumes too, because the run asks the advisor first.
-  if(info.code==="research_questions_blocked")return Number(ledger?.reopenable||0)>0||Number(ledger?.retry_requested||0)>0||ledger?.phase!=="blocked"||(unadvised(ledger)>0&&adviceAffordable(ledger));
+  if(info.code==="research_questions_blocked"){
+    const settled=new Set(blockedSettled(ledger).map(q=>q.id));
+    const undecided=(ledger?.questions||[]).filter(q=>q.status==="blocked"&&!q.accepted_gap&&!q.retry_requested&&!q.access_gap_requested&&!settled.has(q.id));
+    return Number(ledger?.reopenable||0)>0||Number(ledger?.retry_requested||0)>0||ledger?.phase!=="blocked"||(unadvised(ledger)>0&&adviceAffordable(ledger))
+      ||(settled.size>0&&!undecided.length);
+  }
   return ["retry","wait","fix"].includes(info.kind)&&!info.actions.includes("key");
 }
 function restartAction(job) {
@@ -1346,11 +1384,17 @@ function stopButton(action,job,info,target) {
   switch(action){
     case "approve_calls":{const n=suggestedCalls(job);return `<button data-action="approve-calls" data-run-id="${runId}" data-model-calls="${n}" data-then-resume="1" ${running()?"disabled":""}>Aufruflimit auf ${n} erhöhen und fortsetzen</button>`;}
     case "approve_search":{const n=(Number(job.progress?.search_round_limit)||0)+6;return `<button data-action="approve-search" data-run-id="${runId}" data-search-rounds="${n}" data-then-resume="1" ${running()?"disabled":""}>Suchrunden auf ${n} erhöhen und fortsetzen</button>`;}
+    case "fresh_attempts":return job.run?.kind==="research"||(job.run?.kind==="script"&&["teaching_research_required","script_review_failed"].includes(info.code))?`<button class="secondary" data-action="fresh-attempts" data-run-id="${runId}" data-then-resume="1" ${running()?"disabled":""}>Mit neuen Anläufen fortsetzen</button>`:"";
     case "key":return inlineKey("stop-key",!!job.run,target||`data-run-id="${runId}"`);
     case "check":return `<button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button>`;
     case "samples":return `<button class="secondary" data-action="audio_samples" ${disabled()}>Fehlende Hörproben erzeugen · API</button>`;
     case "new_research":return `<button class="secondary" data-action="research" data-confirm="Neu recherchieren startet einen neuen Recherchelauf mit neuem Plan. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt. Fortfahren?" ${disabled()}>Neu recherchieren</button>`;
     case "new_outline":return project?.research?`<button class="secondary" data-action="plan" data-confirm="Ein neues Inhaltsverzeichnis entsteht aus der vorhandenen Recherche und braucht wieder deine Freigabe. Lehrkonzepte und Skripte des angehaltenen Laufs werden nicht fortgesetzt. Fortfahren?" ${disabled()}>Neues Inhaltsverzeichnis entwerfen</button>`:"";
+    case "redesign_teaching":{
+      const failed=job.teaching_failure;
+      if(!failed?.episode_id)return "";
+      return `<div class="stop-feedback">${area("redesign-note",`Hinweis für das neue Lehrkonzept von „${escape(failed.title||failed.episode_id)}“`,"",3)}<button data-action="redesign-teaching" data-run-id="${runId}" data-teaching-episode="${escape(failed.episode_id)}" ${disabled()}>Lehrkonzept mit Hinweis neu entwerfen</button></div>`;
+    }
     case "replan_feedback":return `<div class="stop-feedback">${area("stop-feedback","Was soll der neue Entwurf anders machen?",info.message||"",3)}<button data-action="replan" data-feedback="stop-feedback" ${disabled()}>Mit diesem Hinweis neu entwerfen</button></div>`;
     case "audio_again":return step===PAGE.audio?'<button class="secondary" data-scroll="audio-panel">Zur Audio-Freigabe</button>':`<button class="secondary" data-step="${PAGE.audio}">Zur Audio-Freigabe</button>`;
     case "open_research":return onPage(PAGE.research);
@@ -1406,7 +1450,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   const budgetNote=budget?`<p class="${budget.feasible?"hint":"note"}">Mindestens ${Number(budget.minimum_remaining_calls)} weitere Modellaufrufe, davon ${Number(budget.closing_calls)} für Dossier und Abschlussprüfung; ${Number(budget.remaining)} verfügbar.${escape(expected)} ${budget.feasible?"Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.":`Das genehmigte Limit reicht um mindestens ${Number(budget.shortfall)} Aufrufe nicht aus. Antworten und Umfang bleiben erhalten; ein höheres Limit erfordert eine ausdrückliche Genehmigung.`}</p>${approveCalls}`:"";
   const states={pending:"Wartet",researching:"Wird untersucht",reviewing:"Antwort wird geprüft",verified:"Geprüft abgeschlossen",blocked:"Blockiert"};
   const phases={awaiting_plan_approval:"Wartet auf Freigabe des Rechercheplans",questions:"Einzelne Fragen untersuchen und prüfen",synthesis:"Dossier aus geprüften Antworten erstellen",audit:"Gesamtdossier prüfen",completed:"Recherche abgeschlossen",blocked:"Offene Belegfragen"};
-  const outcomes={supported_answer:"Belegte Antwort",supported_uncertainty:"Belegte wissenschaftliche Unsicherheit",access_block:"Quelle nicht zugänglich",extraction_block:"Text nicht zuverlässig extrahiert",search_block:"Suche ohne ausreichenden Abschluss",budget_block:"Recherchebudget ausgeschöpft",evidence_block:"Beleg fehlt",prerequisite_block:"Voraussetzung noch offen",accepted_gap:"Als Lücke akzeptiert"};
+  const outcomes={audit_block:"Einwände nach zwei Nachbesserungen offen",supported_answer:"Belegte Antwort",supported_uncertainty:"Belegte wissenschaftliche Unsicherheit",access_block:"Quelle nicht zugänglich",extraction_block:"Text nicht zuverlässig extrahiert",search_block:"Suche ohne ausreichenden Abschluss",budget_block:"Recherchebudget ausgeschöpft",evidence_block:"Beleg fehlt",prerequisite_block:"Voraussetzung noch offen",accepted_gap:"Als Lücke akzeptiert"};
   const activeIds=activeTasks(ledger), all=ledger.questions||[];
   // A blocked question names its cause and when it is decided: the decision card appears only once the run stops.
   const blockedNote=row=>{
@@ -1460,7 +1504,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   }).join("");
   return `<section class="research-questions">
     <p><strong>${Number(ledger.closed)} von ${Number(ledger.total)} Teilfragen geprüft abgeschlossen${Number(ledger.accepted)>0?` · ${Number(ledger.accepted)} als Lücke akzeptiert`:""}</strong></p>
-    ${researchRound(ledger)}${auditLegend}
+    ${researchRound(ledger)}${auditLegend}${residualFinish(ledger,runId)}
     <progress value="${Number(ledger.closed)}" max="${Number(ledger.total)}" aria-label="Geprüft abgeschlossene Teilfragen"></progress>
     <p>${escape(phases[ledger.phase]||"")}</p>${renderActiveTasks(ledger,active)}${budgetNote}
     <p class="hint">Die Abschlusskriterien bleiben fest. Eine geprüfte Antwort wird nur bei einem konkreten Einwand aus der Gesamtprüfung erneut geöffnet.</p>${rows}</section>`;
@@ -1508,22 +1552,47 @@ function gapActionsFor(row, runId, searchLimit, blocked=[]) {
   const gap=`<input id="gap-reason-${escape(row.id)}" placeholder="Begründung für die Lücke (optional)" aria-label="Begründung für die akzeptierte Lücke"><button class="secondary small" data-action="accept-gap" data-run-id="${escape(runId)}" data-task-id="${escape(row.id)}">Als Lücke akzeptieren</button>`;
   return `<div class="actions">${retry}</div>${accessGapForm(row,runId,blocked)}<div class="actions">${gap}${searchBlocked?`<button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${Number(searchLimit)+6}">Suchrunden auf ${Number(searchLimit)+6} erhöhen</button>`:""}</div>`;
 }
+// Disputes of the current audit round: every one side by side with its two positions; once all are decided,
+// the run resumes once instead of stopping at each in turn.
+function disputes(j) {
+  const rows=j.progress?.review_disagreements;
+  return Array.isArray(rows)&&rows.length?rows:(j.progress?.review_disagreement?[j.progress.review_disagreement]:[]);
+}
+function renderDisputeCard(j, runId, active) {
+  const rows=disputes(j);
+  if(active||!rows.length||stopInfo(j)?.code!=="review_disagreement")return "";
+  const open=rows.filter(d=>!d.decision?.decision);
+  const item=(d,n)=>{
+    const decided=d.decision?.decision, id=escape(d.objection_id);
+    const choice=decided?`<p class="hint">✓ Entschieden: ${decided==="reviewer"?"dem Prüfer gefolgt":"Einwand aufrechterhalten"}${d.decision.note?` (${escape(d.decision.note)})`:""}.</p>`:
+      `<input id="dispute-note-${id}" placeholder="Notiz für den Qualitätsbericht (optional)" aria-label="Notiz zur Entscheidung"><div class="actions"><button data-action="decide-dispute" data-decision="reviewer" data-objection-id="${id}" data-run-id="${escape(runId)}">Dem Prüfer folgen</button><button class="secondary" data-action="decide-dispute" data-decision="objection" data-objection-id="${id}" data-run-id="${escape(runId)}">Einwand aufrechterhalten</button></div>`;
+    return `<li><p>${rows.length>1?`<strong>${n+1}.</strong> `:""}Teilfrage: <strong>${escape(d.question||d.task_id||"")}</strong></p>
+      <div class="note"><p><strong>Früherer Einwand:</strong> ${escape(d.objection?.reason||"")}</p>${d.objection?.correction?`<p class="hint">Verlangt: ${escape(d.objection.correction)}</p>`:""}
+      <p><strong>Prüfer jetzt:</strong> ${escape(d.review?.reason||"")}</p></div>${choice}</li>`;
+  };
+  const resume=!open.length?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>`:"";
+  return `<section class="panel decision-card" aria-label="Streitfall"><h2>${rows.length>1?`${rows.length} Streitfälle`:"Streitfall"} in der Gesamtprüfung</h2>
+    <p class="hint">„Dem Prüfer folgen“ schließt den Einwand; der Streit steht im Qualitätsbericht. „Einwand aufrechterhalten“ schickt ihn unverändert an die Teilfrage zurück, die dann nachgebessert wird.${rows.length>1?" Der Auftrag läuft weiter, sobald alle entschieden sind.":" Danach läuft der Auftrag weiter."}</p>
+    <ol class="decisions">${rows.map(item).join("")}</ol>${resume}</section>`;
+}
 // Every open decision stands in one card above the ledger with its buttons visible: nothing to expand, no dialog.
 function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimit) {
   const ledger=j.progress.research_questions, rows=ledger?.questions||[], runId=r?.run_id||"";
   if(active||!rows.length)return "";
-  const open=rows.filter(q=>q.status==="blocked"&&!q.accepted_gap), accepted=rows.filter(q=>q.accepted_gap);
+  // With the finish requested, a question blocked only by spent reworks is decided: its objections go on record.
+  const residual=rows.filter(q=>ledger.residual_finish&&q.status==="blocked"&&!q.accepted_gap&&q.outcome==="audit_block");
+  const open=rows.filter(q=>q.status==="blocked"&&!q.accepted_gap&&!residual.includes(q)), accepted=rows.filter(q=>q.accepted_gap);
   const undecided=open.filter(q=>!q.retry_requested&&!q.access_gap_requested), retrying=open.filter(q=>q.retry_requested||q.access_gap_requested);
   // Accepted gaps alone are no decision; they only lead the card while the run stopped for the blocked questions.
   const code=stopInfo(j)?.code;
-  if(!open.length&&!(accepted.length&&(!code||code==="research_questions_blocked")))return "";
+  if(!open.length&&!((accepted.length||residual.length)&&(!code||code==="research_questions_blocked")))return "";
   const rounds=Number(j.progress.search_rounds||0), roundLimit=Number(j.progress.search_round_limit||0);
   const roundsNote=roundLimit&&roundLimit-rounds<=1?`<p class="hint">Suchrunden: ${rounds} von ${roundLimit} verbraucht. Ein neuer Versuch braucht meist eine Websuche. <button class="secondary small" data-action="approve-search" data-run-id="${escape(runId)}" data-search-rounds="${roundLimit+6}">Suchrunden auf ${roundLimit+6} erhöhen</button></p>`:"";
   // Every web search loads new sources; at the run's source limit it ends before it starts.
   const fetched=Number(ledger.source_attempt_count||0), sourceLimit=Number(j.progress.source_limit||0);
   const sourcesNote=sourceLimit&&fetched>=sourceLimit?`<p class="hint">Quellen: ${fetched} von ${sourceLimit} abgerufen. Eine Websuche kann keine neuen Quellen laden, bis du das Quellenlimit erhöhst. <button class="secondary small" data-action="approve-sources" data-run-id="${escape(runId)}" data-sources="${sourceLimit+40}">Quellenlimit auf ${sourceLimit+40} erhöhen</button></p>`:"";
   const names=new Map(rows.map(q=>[q.id,q.question]));
-  const outcomes={extraction_block:"Quelle nicht lesbar",search_block:"Keine neuen Belege gefunden",evidence_block:"Beleg fehlt",budget_block:"Recherchebudget ausgeschöpft",access_block:"Quelle nicht zugänglich",prerequisite_block:"Voraussetzung offen"};
+  const outcomes={audit_block:"Einwände nach zwei Nachbesserungen offen",extraction_block:"Quelle nicht lesbar",search_block:"Keine neuen Belege gefunden",evidence_block:"Beleg fehlt",budget_block:"Recherchebudget ausgeschöpft",access_block:"Quelle nicht zugänglich",prerequisite_block:"Voraussetzung offen"};
   // The advisor's second opinion stands with the question: cause, recommendation, the sources it found.
   const recommendations={retry:"Noch einmal versuchen",accept_gap:"Als Lücke akzeptieren",raise_limit:"Limit erhöhen"};
   const limit=Number(ledger.auto_retry_limit||5);
@@ -1547,7 +1616,7 @@ function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimi
   };
   const closing=Number(ledger.budget_projection?.closing_calls||0);
   const intro=undecided.length?`${undecided.length===1?"Eine Teilfrage ist":`${undecided.length} Teilfragen sind`} blockiert. ${reopenable?"„Fortsetzen“ holt zuerst die fehlende Websuche nach.":unadvised(ledger)&&adviceAffordable(ledger)?"„Fortsetzen“ lässt sie zuerst beraten; einen empfohlenen neuen Versuch startet der Lauf dann selbst, einmal je Frage. Du kannst auch direkt entscheiden: noch einmal versuchen oder als Lücke akzeptieren.":unadvised(ledger)?`Für eine Beratung reicht das Aufruflimit nicht (${Number(ledger.budget_projection.remaining)} Aufrufe frei, der Abschluss braucht mindestens ${Number(ledger.budget_projection.minimum_remaining_calls)}). Mit einem höheren Limit berät der Lauf zuerst; sonst entscheidest du direkt: noch einmal versuchen oder als Lücke akzeptieren.`:`Für jede: noch einmal versuchen oder als Lücke akzeptieren. Danach schließt „Fortsetzen“ das Dossier mit ${Number(ledger.closed)} geprüften Antworten ab${closing?` (${closing} Aufrufe)`:""}.`}`:retrying.length?`Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ startet ${retrying.length===1?"den neuen Versuch":`die ${retrying.length} neuen Versuche`}.`:"Jede blockierte Teilfrage ist entschieden. „Fortsetzen“ schließt das Dossier ab.";
-  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${adoptAll}${roundsNote}${sourcesNote}${unadvised(ledger)&&!adviceAffordable(ledger)&&!running()?`<div class="actions"><button class="secondary" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${adviceCallLimit(ledger)}" data-then-resume="1">Aufruflimit auf ${adviceCallLimit(ledger)} erhöhen und beraten lassen</button></div>`:""}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
+  return `<section class="panel decision-card" aria-label="Wartet auf dich"><h2>Wartet auf dich</h2><p>${intro}</p>${adoptAll}${roundsNote}${sourcesNote}${unadvised(ledger)&&!adviceAffordable(ledger)&&!running()?`<div class="actions"><button class="secondary" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${adviceCallLimit(ledger)}" data-then-resume="1">Aufruflimit auf ${adviceCallLimit(ledger)} erhöhen und beraten lassen</button></div>`:""}<ol class="decisions">${open.map(item).join("")}${accepted.map(q=>`<li class="done">✓ ${escape(q.question)} · als Lücke akzeptiert${q.accepted_reason?` (${escape(q.accepted_reason)})`:""}</li>`).join("")}${residual.map(q=>`<li class="done">✓ ${escape(q.question)} · Einwände kommen als Resteinwände in den Qualitätsbericht</li>`).join("")}</ol>${resumable?`<div class="actions"><button data-action="resume" data-run-id="${escape(runId)}" ${running()?"disabled":""}>Fortsetzen</button></div>${running()?`<p class="hint">${escape(otherJobText())}</p>`:""}`:""}</section>`;
 }
 // The first retrieval reads every found source; its counter and its report stand where the ledger will appear.
 function renderRetrieval(retrieval) {
@@ -1560,7 +1629,7 @@ function renderRetrieval(retrieval) {
 // The research page owns the decision and the ledger; the drawer only carries telemetry.
 function renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocked,reopenable,resumable) {
   const p=j.progress, ledger=p.research_questions, quality=p.research_quality, runId=r?.run_id||"";
-  let html=renderPlanReview(j,runId)+renderResearchDecisions(j,r,active,reopenable,resumable,p.search_round_limit)+renderRetrieval(p.retrieval);
+  let html=renderPlanReview(j,runId)+renderDisputeCard(j,runId,active)+renderResearchDecisions(j,r,active,reopenable,resumable,p.search_round_limit)+renderRetrieval(p.retrieval);
   // What runs right now and what the user can do stand above the question rows, never below them.
   const open=active?(p.open_calls||[]):[];
   const current=`<p class="current-step"><strong>${active?(open.length>1?"Zuletzt gemeldet":"Gerade"):"Zuletzt"}:</strong> ${escape(p.activity||"")}</p>`+
@@ -1804,8 +1873,14 @@ function render() {
   renderJob(); formRestore(saved); syncPlayButtons();
   if(!overviewPage&&window.matchMedia?.("(max-width: 720px)")?.matches)$("steps").querySelector?.('[aria-current="page"]')?.scrollIntoView?.({inline:"center",block:"nearest"});
 }
+// Where this Studio is reachable: on the computer that runs it the address for the phone, when it was started for the WLAN.
+function studioPlace(b) {
+  const where=b?.client==="lan"?"Im Heimnetz verbunden":b?.lan?.enabled&&b.lan.urls?.length?`Lokal · im WLAN unter ${b.lan.urls[0]}`:"Lokal auf diesem Computer";
+  return `<span class="live-dot"></span>${escape(where)}`;
+}
 async function refreshProjects() {
   boot=await api("/api/bootstrap");
+  $("studio-place").innerHTML=studioPlace(boot);
   $("project-select").innerHTML='<option value="">Neues Projekt</option>'+boot.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.topic)}</option>`).join("");
   $("project-select").value=project?.id||"";
 }
@@ -1898,6 +1973,16 @@ async function applyAdvice(button) {
   }
   await resumeFrom(button);
 }
+// The editor's side in a disputed objection; the run stopped only for it, so it resumes at once.
+async function decideDispute(button) {
+  const id=button.dataset.objectionId;
+  await api(`/api/projects/${project.id}/approve`,{kind:"dispute",run_id:button.dataset.runId,objection_id:id,
+    decision:button.dataset.decision,note:$("dispute-note-"+id)?.value||""});
+  project=await api(`/api/projects/${project.id}`);lastJobView="";
+  // The run resumes once, when the last dispute of the round is decided.
+  if(!running()&&!disputes(project.job||{}).some(d=>!d.decision?.decision)){await resumeFrom(button);return true;}
+  render();return false;
+}
 // The accepted access gap; when it was the last open decision, the run resumes with it at once.
 async function acceptAccessGap(button) {
   const id=button.dataset.taskId, source=$("access-source-"+id)?.value||"";
@@ -1909,6 +1994,13 @@ async function acceptAccessGap(button) {
   // A question that only waits for its prerequisite is decided with it.
   if(!running()&&!rows.some(q=>q.status==="blocked"&&q.outcome!=="prerequisite_block"&&!q.accepted_gap&&!q.retry_requested&&!q.access_gap_requested)){await resumeFrom(button);return true;}
   render();return false;
+}
+// A new teaching design of the stopped episode with the editor's note, then the resume that starts it.
+async function redesignTeaching(button) {
+  const note=($("redesign-note")?.value||"").trim();
+  if(!note)throw new Error("Bitte einen Hinweis für das neue Lehrkonzept eingeben.");
+  await api(`/api/projects/${project.id}/approve`,{kind:"teaching_redesign",run_id:button.dataset.runId,episode_id:button.dataset.teachingEpisode,note});
+  await resumeFrom(button);
 }
 async function resumeFrom(button) {
   await start("resume",{run_id:button.dataset.runId||project.job?.run?.run_id||project.run?.run_id,...(button.dataset.episode?{episode:button.dataset.episode}:{})});
@@ -1994,6 +2086,20 @@ document.addEventListener("click",event=>{
       const hint=$("retry-hint-"+button.dataset.taskId)?.value||"";
       await api(`/api/projects/${project.id}/approve`,{kind:"retry",run_id:button.dataset.runId,task_id:button.dataset.taskId,hint});
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Neuer Versuch angefordert. „Fortsetzen“ startet ihn mit dem Spielraum einer neuen Frage.","ok");return;
+    }
+    if(action==="redesign-teaching"){await redesignTeaching(button);notice("Hinweis gespeichert. Das Lehrkonzept dieser Folge wird neu entworfen.","ok");return;}
+    if(action==="fresh-attempts"){
+      await api(`/api/projects/${project.id}/approve`,{kind:"fresh_attempts",run_id:button.dataset.runId});
+      await resumeFrom(button);notice("Neue Anläufe freigegeben. Der Schritt wird erneut versucht.","ok");return;
+    }
+    if(action==="finish-residual"){
+      await api(`/api/projects/${project.id}/approve`,{kind:"residual",run_id:button.dataset.runId,note:$("residual-note")?.value||""});
+      project=await api(`/api/projects/${project.id}`);lastJobView="";render();
+      notice(running()?"Abschluss angefordert. Nach der laufenden Gesamtprüfung schließt der Lauf mit Resteinwänden ab.":"Abschluss angefordert. „Fortsetzen“ schließt nach der nächsten Gesamtprüfung mit Resteinwänden ab.","ok");return;
+    }
+    if(action==="decide-dispute"){
+      const resumed=await decideDispute(button), side=button.dataset.decision==="reviewer"?"Dem Prüfer gefolgt":"Einwand aufrechterhalten";
+      notice(`${side}. ${resumed?"Der Auftrag läuft weiter.":"„Fortsetzen“ übernimmt die Entscheidung."}`,"ok");return;
     }
     if(action==="accept-access-gap"){
       const criterion=Number($("access-criterion-"+button.dataset.taskId)?.value);

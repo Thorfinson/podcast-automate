@@ -264,6 +264,106 @@ test('a criterion whose source refused retrieval is accepted as an access gap fr
   assert.ok(!shown.includes('data-task-id="t03"'),'an accepted access gap offers no further buttons');
 });
 
+test('a disputed objection shows both positions and one click decides and resumes',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const dispute={objection_id:'obj_1',task_id:'t14',question:'Turchin <Modell>',decision:null,
+    objection:{reason:'Die Neuformulierung steht in keiner Stelle.',correction:'Neuformulierung streichen.',closure_condition:'x'},
+    review:{reason:'Die Stelle trägt die Neuformulierung jetzt.',references:['src#s1']}};
+  const ledger={closed:18,total:18,accepted:0,phase:'audit',audit_round:1,questions:[]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'resume',stop:{code:'review_disagreement'},started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},review_disagreement:${JSON.stringify(dispute)},search_round_limit:40}}};overviewPage=false;step=PAGE.research;render();`);
+  const page=jobView(app);
+  assert.ok(page.includes('Streitfall in der Gesamtprüfung'));
+  assert.ok(page.includes('Turchin &lt;Modell&gt;'));
+  assert.ok(page.includes('Die Neuformulierung steht in keiner Stelle.')&&page.includes('Die Stelle trägt die Neuformulierung jetzt.'));
+  assert.ok(page.includes('data-action="decide-dispute" data-decision="reviewer" data-objection-id="obj_1" data-run-id="run_x"'));
+  assert.ok(page.includes('data-action="decide-dispute" data-decision="objection"'));
+  assert.ok(!page.includes('Neu recherchieren'),'a dispute never ends the run');
+  app.run(`$('dispute-note-obj_1').value='Stelle 4147 trägt.';`);
+  const decided=app.run('structuredClone(project)');
+  decided.job.progress.review_disagreement.decision={decision:'reviewer',note:'Stelle 4147 trägt.'};
+  app.responses.set('/api/projects/p',decided);
+  assert.equal(await app.run(`decideDispute({dataset:{runId:'run_x',objectionId:'obj_1',decision:'reviewer'}})`),true);
+  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/approve').options.body),
+    {kind:'dispute',run_id:'run_x',objection_id:'obj_1',decision:'reviewer',note:'Stelle 4147 trägt.'});
+  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/start').options.body),{action:'resume',run_id:'run_x'});
+  // A disagreement without a stored dispute, a new unanchored objection, still ends the run as before.
+  const rule=app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'review_disagreement'},run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research'}})`);
+  assert.equal(rule.kind,'dead');
+});
+
+test('with the finish requested, spent reworks and questions waiting on passed prerequisites make the run resumable',()=>{
+  const app=studio();
+  const row=(id,extra)=>({id,question:id,status:'verified',activity:'x',steps:3,read_sections:2,acceptance:['k'],reopened:2,answer:'A',findings:[],sources:[],limits:[],depends_on:[],...extra});
+  const ledger={closed:12,total:16,accepted:0,phase:'blocked',audit_round:3,residual_finish:{note:'',approved_at:'x'},questions:[
+    row('t14'),row('t01',{status:'blocked',outcome:'audit_block'}),
+    row('t15',{status:'blocked',outcome:'prerequisite_block',depends_on:['t14']}),
+    row('t16',{status:'blocked',outcome:'prerequisite_block',depends_on:['t14','t15']})]};
+  const job=l=>({status:'blocked',action:'resume',stop:{code:'research_questions_blocked'},run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:l}});
+  assert.equal(app.run(`canResume(${JSON.stringify(job(ledger))})`),true);
+  // Without the finish, the spent rework is an open decision.
+  assert.equal(app.run(`canResume(${JSON.stringify(job({...ledger,residual_finish:null}))})`),false);
+  // A prerequisite accepted as a gap never lets its dependent move on by itself.
+  const gap={...ledger,questions:ledger.questions.map(q=>q.id==='t14'?{...q,status:'blocked',accepted_gap:true}:q)};
+  assert.equal(app.run(`blockedSettled(${JSON.stringify(gap)}).map(q=>q.id).join(',')`),'t01');
+});
+
+test('a research step that spent its correction attempts offers fresh attempts, a script step does not',()=>{
+  const app=studio();
+  const job=kind=>({id:'j',status:'blocked',action:'resume',stop:{code:'invalid_question_routing'},run:{run_id:'run_x',kind,stages:{}},progress:{phase:kind}});
+  const research=app.run(`renderStopCard(${JSON.stringify(job('research'))},stopInfo(${JSON.stringify(job('research'))}))`);
+  assert.ok(research.includes('data-action="fresh-attempts" data-run-id="run_x" data-then-resume="1"'));
+  assert.ok(research.includes('Mit neuen Anläufen fortsetzen'));
+  const script=app.run(`renderStopCard(${JSON.stringify(job('script'))},stopInfo(${JSON.stringify(job('script'))}))`);
+  assert.ok(!script.includes('fresh-attempts'),'a script stage starts its attempts anew on a resume');
+});
+
+test('every dispute of a round stands in one card, and the run resumes once, after the last decision',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const dispute=(id,question)=>({objection_id:id,task_id:'t',question,decision:null,
+    objection:{reason:`Einwand ${id}`,correction:'x',closure_condition:'y'},review:{reason:`Prüfer ${id}`,references:[]}});
+  const rows=[dispute('obj_a','Frage A'),dispute('obj_b','Frage B'),dispute('obj_c','Frage C')];
+  const ledger={closed:18,total:18,accepted:0,phase:'audit',audit_round:1,questions:[]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'resume',stop:{code:'review_disagreement'},started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},review_disagreement:${JSON.stringify(rows[0])},review_disagreements:${JSON.stringify(rows)},search_round_limit:40}}};overviewPage=false;step=PAGE.research;render();`);
+  const page=jobView(app);
+  assert.ok(page.includes('3 Streitfälle in der Gesamtprüfung'));
+  for(const id of ['obj_a','obj_b','obj_c'])assert.ok(page.includes(`data-decision="reviewer" data-objection-id="${id}"`),id);
+  assert.ok(!page.includes('data-action="resume"'),'no resume while a dispute is open');
+  // The first two decisions only record; the run starts once, after the third.
+  const answer=decisions=>{const next=app.run('structuredClone(project)');next.job.progress.review_disagreements.forEach((d,i)=>{d.decision=decisions[i]?{decision:decisions[i]}:null;});return next;};
+  app.responses.set('/api/projects/p',answer(['reviewer']));
+  assert.equal(await app.run(`decideDispute({dataset:{runId:'run_x',objectionId:'obj_a',decision:'reviewer'}})`),false);
+  app.responses.set('/api/projects/p',answer(['reviewer','objection']));
+  assert.equal(await app.run(`decideDispute({dataset:{runId:'run_x',objectionId:'obj_b',decision:'objection'}})`),false);
+  assert.ok(jobView(app).includes('✓ Entschieden: Einwand aufrechterhalten'));
+  assert.ok(!app.requests.some(r=>r.path==='/api/projects/p/start'));
+  app.responses.set('/api/projects/p',answer(['reviewer','objection','reviewer']));
+  assert.equal(await app.run(`decideDispute({dataset:{runId:'run_x',objectionId:'obj_c',decision:'reviewer'}})`),true);
+  assert.equal(app.requests.filter(r=>r.path==='/api/projects/p/start').length,1);
+});
+
+test('after the first audit the loop can be ended with residual objections, and the request shows in place',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const row=(id,extra)=>({id,question:id,status:'verified',activity:'x',steps:3,read_sections:2,acceptance:['k'],reopened:1,answer:'A',findings:[],sources:[],limits:[],...extra});
+  const ledger={closed:17,total:18,accepted:0,phase:'blocked',audit_round:2,questions:[row('a'),
+    row('b',{status:'blocked',outcome:'audit_block',reason:'Wiederholte Gesamtprüfung widerspricht dem Abschluss: x'})]};
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'resume',stop:{code:'research_questions_blocked'},started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:48}}};overviewPage=false;step=PAGE.research;render();`);
+  let page=jobView(app);
+  assert.ok(page.includes('data-action="finish-residual" data-run-id="run_x">Nach der nächsten Gesamtprüfung mit Resteinwänden abschließen'));
+  assert.ok(page.includes('Einwände nach zwei Nachbesserungen offen'));
+  // Requested: the note replaces the button, and the question blocked only by spent reworks is decided.
+  app.run(`project.job.progress.research_questions.residual_finish={note:'Reicht <so>',approved_at:'x'};lastJobView='';render();`);
+  page=jobView(app);
+  assert.ok(!page.includes('data-action="finish-residual"'));
+  assert.ok(page.includes('Abschluss mit dokumentierten Resteinwänden angefordert (Reicht &lt;so&gt;)'));
+  assert.ok(page.includes('Jede blockierte Teilfrage ist entschieden'));
+  // Before the first audit there is nothing to finish with.
+  app.run(`project.job.progress.research_questions.audit_round=0;project.job.progress.research_questions.residual_finish=null;lastJobView='';render();`);
+  assert.ok(!jobView(app).includes('finish-residual'));
+});
+
 test('a block without advice offers to resume, because the run asks the advisor first',()=>{
   const app=studio();
   const ledger={closed:1,total:2,accepted:0,phase:'blocked',questions:[
@@ -682,7 +782,59 @@ test('a blocked final review displays readable escaped findings',()=>{
   assert.ok(!html.includes('[object Object]'));
 });
 
-test('foundation research runs without a retry button and exposes real unresolved questions',()=>{
+test('a teaching design that keeps its defects offers a new design with the editor\'s note, then resumes',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j1',status:'blocked',action:'resume',message:'Scene 4 reads <SPARQL> aloud.',stop:{code:'teaching_design_failed',stage:'teaching',run_kind:'script'},teaching_failure:{episode_id:'ep_001',title:'Die <Antwort>'},started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{teaching:{status:'blocked',error:{code:'teaching_design_failed'}}}}}};overviewPage=false;step=PAGE.production;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Hinweis für das neue Lehrkonzept von „Die &lt;Antwort&gt;“'));
+  assert.ok(card.includes('data-action="redesign-teaching" data-run-id="run_s" data-teaching-episode="ep_001"'));
+  assert.ok(card.includes('Neues Inhaltsverzeichnis entwerfen'));
+  assert.ok(!card.includes('data-action="resume"'),'a plain resume would replay the same verdict');
+  await assert.rejects(()=>app.run(`redesignTeaching({dataset:{runId:'run_s',teachingEpisode:'ep_001'}})`),/Hinweis/);
+  assert.equal(app.requests.filter(r=>r.path==='/api/projects/p/approve').length,0,'no request without a note');
+  app.run(`$('redesign-note').value='  Keine Abfragesprache vorlesen.  ';`);
+  await app.run(`redesignTeaching({dataset:{runId:'run_s',teachingEpisode:'ep_001'}})`);
+  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/approve').options.body),
+    {kind:'teaching_redesign',run_id:'run_s',episode_id:'ep_001',note:'Keine Abfragesprache vorlesen.'});
+  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/start').options.body),{action:'resume',run_id:'run_s'});
+  // A job without the episode (an older server) shows no redesign control rather than a broken one.
+  assert.equal(app.run(`stopButton('redesign_teaching',{run:{run_id:'run_s'}},{},'')`),'');
+});
+
+test('a supplementary research that spent its corrections offers fresh attempts in a script run',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j1',status:'blocked',action:'resume',message:'m',stop:{code:'teaching_research_required',stage:'teaching',run_kind:'script'},started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{teaching:{status:'blocked',error:{code:'teaching_research_required'}}}}}};overviewPage=false;step=PAGE.production;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('data-action="fresh-attempts" data-run-id="run_s" data-then-resume="1"'));
+  assert.ok(card.includes('die beanstandeten Punkte bleiben der Prüfung bekannt'));
+  // The script review offers them too; another script stop keeps its own controls.
+  assert.ok(app.run(`stopButton('fresh_attempts',{run:{run_id:'run_s',kind:'script'}},{code:'script_review_failed'},'')`).includes('data-action="fresh-attempts"'));
+  assert.ok(app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'script_review_failed'},run:{run_id:'run_s',kind:'script',stages:{}}})`).actions.includes('fresh_attempts'));
+  assert.equal(app.run(`stopButton('fresh_attempts',{run:{run_id:'run_s',kind:'script'}},{code:'teaching_design_failed'},'')`),'');
+});
+
+test('a source in two versions resumes in a script run and stays a dead end in a research run',()=>{
+  const app=studio();
+  const stop=kind=>app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'invalid_source_snapshot'},run:{run_id:'run_x',kind:'${kind}',stages:{}}})`);
+  const script=stop('script');
+  assert.equal(script.kind,'retry');
+  assert.ok(script.text.includes('ohne neue Aufrufe an derselben Stelle'));
+  assert.equal(app.run(`canResume({status:'blocked',action:'resume',stop:{code:'invalid_source_snapshot'},run:{run_id:'run_x',kind:'script',stages:{}}})`),true);
+  assert.equal(stop('research').kind,'dead');
+});
+
+test('the sidebar names where the Studio is reachable: here, here and in the WLAN, or from the home network',()=>{
+  const app=studio();
+  assert.ok(app.run(`studioPlace({lan:{enabled:false,urls:[]},client:'local'})`).includes('Lokal auf diesem Computer'));
+  const both=app.run(`studioPlace({lan:{enabled:true,urls:['http://192.168.178.75:8765']},client:'local'})`);
+  assert.ok(both.includes('im WLAN unter http://192.168.178.75:8765'));
+  assert.ok(app.run(`studioPlace({lan:{enabled:true,urls:['http://192.168.178.75:8765']},client:'lan'})`).includes('Im Heimnetz verbunden'));
+  assert.ok(app.run(`studioPlace({lan:{enabled:true,urls:['http://<b>']},client:'local'})`).includes('&lt;b&gt;'));
+  assert.ok(app.run(`studioPlace(null)`).includes('Lokal auf diesem Computer'), 'an older server without the field');
+});
+
+test('foundation research runs without a retry button, and its stop exposes real unresolved questions and an honest resume',()=>{
   const app=studio();
   app.run(`project={id:'test',job:{status:'running',action:'resume',started_at:new Date().toISOString(),progress:{phase:'foundation_research'},run:{stages:{teaching:{status:'running'}}}}};renderJob();`);
   let html=app.elements.get('job-status').innerHTML;
@@ -695,7 +847,15 @@ test('foundation research runs without a retry button and exposes real unresolve
   assert.ok(html.includes('What changes &lt;script&gt;?'));
   assert.ok(html.includes('Missing mechanism'));
   assert.ok(!html.includes('C:/private'));
-  assert.ok(!html.includes('data-action="resume"'));
+  assert.ok(!html.includes('data-action="resume"'), 'a stop without a script run behind it offers nothing to resume');
+  // The stop card of a script run: since 2026-09-27 it offers "Fortsetzen" (an update may have changed the
+  // rule that stopped it) and says when that helps, beside the new outline.
+  app.run(`project.research='dossier';project.job.run.run_id='run_script';project.job.run.kind='script';project.job.run.stages.teaching.status='blocked';renderJob();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('data-action="resume" data-run-id="run_script"'));
+  assert.ok(card.includes('ohne neue Aufrufe an derselben Stelle'));
+  assert.ok(card.includes('Neues Inhaltsverzeichnis entwerfen'));
+  assert.ok(!card.includes('C:/private'));
 });
 function studio() {
   const elements = new Map(), registered = new Map(), requests = [], responses = new Map(), events = new Map();

@@ -17,7 +17,7 @@ from .prompts import instructions as prompt_instructions
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .models import Contract, NonEmpty
-from .research_models import Finding, QuestionCoverage, ResearchDossier
+from .research_models import MAX_FINDINGS, Finding, QuestionCoverage, ResearchDossier
 from .research_retrieval import references, select_context
 from .storage import digest, write_json
 from .evidence_models import SynthesisRelation
@@ -82,6 +82,29 @@ def re_asked(call, prompt):
                                "die abgewiesenen Antworten liegen bei den Aufrufen.", code=exc.code, status="blocked") from exc
 
 
+def corrected_call(invoke, prompt, schema, version, check, **kwargs):
+    """``invoke``'s answer once ``check(answer)`` accepts it, asked again with every rejection named at most
+    ``MAX_REJECTIONS`` times, like ``cached_call``'s ``validate`` for callers without a receipt store.
+
+    ``check`` raises ``AppError`` for an answer that breaks the stage's contract: a review that skips a
+    criterion, cites text the script does not contain or leaves a cited source unassessed. Such an answer
+    is correctable model work, not the end of a run; before, the script stages stopped at the first one
+    and a resume replayed it (Ontologies, 2026-09-28). Every attempt is a charged call whose receipts stay
+    in its call folder; the last rejection stops as ``blocked`` with the check's own code.
+    """
+    rejections = []
+    while True:
+        answer = invoke(rejected_prompt(prompt, rejections), schema, version, **kwargs)
+        try:
+            check(answer)
+            return answer
+        except AppError as exc:
+            rejections.append({"code": exc.code, "message": str(exc)})
+            if len(rejections) > MAX_REJECTIONS:
+                raise AppError(f"{exc} Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; "
+                               "die abgewiesenen Antworten liegen bei den Aufrufen.", code=exc.code, status="blocked") from exc
+
+
 def call_signature(folder, name, schema, prompt):
     attempt = rejected_prompt(prompt, rejected_receipts(folder, name))
     return digest({"prompt": attempt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
@@ -124,6 +147,19 @@ def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=T
                 _reject(folder, name, len(rejections), signature, exc, value)
                 path.unlink()
                 continue
+        if validate is not None and heal:
+            # A rejected answer that today's rules accept (a rule was fixed since) is paid model work:
+            # the latest such one becomes the receipt instead of a new call or a stop. It is checked as a
+            # first attempt, so advisory checks that stand down only on the last attempt still apply.
+            for row in reversed(rejections):
+                try:
+                    value = schema.model_validate(row["value"])
+                    validate(value, False)
+                except (AppError, ValueError):
+                    continue
+                write_json(path, {"input_hash": signature, "sha256": digest(value.model_dump()), "value": value.model_dump(),
+                                  "adopted_rejection": rejections.index(row)})
+                return value
         if len(rejections) > MAX_REJECTIONS:
             last = rejections[-1]
             raise AppError(f"{last['message']} Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; "
@@ -200,6 +236,12 @@ def apply_patch(dossier, patch, allowed_ids, *, allow_additions=True, coverage_i
               + [f.model_dump() for f in patch.additions], "coverage": [c.model_dump() for c in rows],
               "open_questions": list(dict.fromkeys([q for q in dossier.open_questions
                   if q not in patch.resolved_open_questions] + patch.new_open_questions))}
+    if len(result["findings"]) > MAX_FINDINGS:
+        # A correctable rejection like any other patch defect, not a crash of the run (Asimov, 2026-09-27:
+        # the third round's reworked answers took the dossier from 116 to 121 findings).
+        raise AppError(f"The patch would leave {len(result['findings'])} findings; a dossier holds at most {MAX_FINDINGS}. "
+                       "Fold the new statements into the editable findings (updates) instead of adding findings.",
+                       code="invalid_research_patch", status="blocked")
     return ResearchDossier.model_validate(result)
 
 

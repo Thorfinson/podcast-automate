@@ -55,7 +55,8 @@ class PlanGateTests(fixtures.ResearchProjectCase):
         self.assertEqual(first.status, "blocked")
         error = first.stages["dossier"].error
         self.assertEqual(error.code, "research_plan_review")
-        self.assertIn("1 Teilfragen, voraussichtlich 11 Aufrufe, etwa", error.message)
+        # One task at the default of 16 calls, plus the dossier, its review and the assessment still to come.
+        self.assertIn("1 Teilfragen, voraussichtlich 19 Aufrufe, etwa", error.message)
         self.assertIn("Stunden bei", error.message)
         self.assertIn(f"--research-plan {first.run_id}", error.message)
         # Discovery, plan and scope were spent; no reading or review call before the approval.
@@ -68,7 +69,7 @@ class PlanGateTests(fixtures.ResearchProjectCase):
         self.assertEqual((projection["tasks"], projection["tasks_pending"]), (1, 1))
         # One task at the default rate plus the three identifiable closing calls (dossier, grounding, assessment).
         self.assertEqual((projection["expected_calls_per_task"], projection["expected_calls_source"]), (DEFAULT_CALLS_PER_TASK, "default"))
-        self.assertEqual((projection["closing_calls"], projection["closing_reserve"], projection["projected_calls"]), (3, 4, 11))
+        self.assertEqual((projection["closing_calls"], projection["closing_reserve"], projection["projected_calls"]), (3, 4, 19))
         # The approved limit is the project's own allowance.
         self.assertEqual((projection["approved_limit"], projection["used"], projection["within_limit"]),
                          (self.config.research_limits.model_calls, 3, True))
@@ -407,8 +408,9 @@ class CalibrationTests(unittest.TestCase):
     def test_affordable_tasks_follows_the_per_task_rate(self):
         # The 19 September run: 150 approved calls, one spent, planned at 5 per task, gave 29 tasks.
         self.assertEqual(affordable_tasks(1, 150, 5), 29)
-        self.assertEqual(affordable_tasks(1, 150, DEFAULT_CALLS_PER_TASK), 18)
-        self.assertEqual(affordable_tasks(1, 150), 18)
+        # (150 - 1 - 4) // 16: the measured default of the Opus 5.5 runs carries half as many tasks.
+        self.assertEqual(affordable_tasks(1, 150, DEFAULT_CALLS_PER_TASK), 9)
+        self.assertEqual(affordable_tasks(1, 150), 9)
         self.assertEqual(affordable_tasks(10, 12, 8), 1)
 
     def test_the_message_names_calls_hours_and_the_approval_command(self):

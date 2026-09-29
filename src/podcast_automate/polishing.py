@@ -11,6 +11,7 @@ from .prompts import instructions
 from .errors import AppError
 from .editorial import CONTINUITY, TERMINOLOGY, EPISODE_FRAMING
 from .models import Contract, EpisodeScript, Identifier, NonEmpty
+from .research_patches import corrected_call
 from .storage import digest, write_json
 from .teaching import Passage
 
@@ -166,10 +167,26 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
     if candidate is None:
         candidate = invoke(prompt, EpisodeScript, POLISH_PROMPT_VERSION)
         save()
+    kept_draft = False
+
+    def well_formed(answer, candidate):
+        validate_polish_review(answer, original, candidate)
+
+    def checked(candidate):
+        # compare_dialogue stays one call for the eval; here a malformed comparison is asked again.
+        return lambda prompt, schema, version: corrected_call(invoke, prompt, schema, version,
+                                                             lambda answer: well_formed(answer, candidate))
+
     while True:
         errors = validate(candidate, entry)
+        if review is not None:
+            try:
+                well_formed(review, candidate)
+            except AppError:
+                # Saved before its check ran: compared again instead of stopping every resume here.
+                review = None
         if not errors and review is None:
-            review = compare_dialogue(payload["brief"], entry, original, candidate, invoke,
+            review = compare_dialogue(payload["brief"], entry, original, candidate, checked(candidate),
                                       series_context=series_context,
                                       prerequisite_context=payload["prerequisite_context"])
             save()
@@ -180,6 +197,21 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
             break
         write_json(work / "issues.json", issues)
         if repairs >= 2:
+            # Both repairs spent and only the spoken language still faulted, never meaning, completeness, roles or
+            # framing: the candidate stands with its points on record, and the script review reads the whole dialogue
+            # again. Each repair had left a new wording detail (Asimov ep_007, 2026-09-29: an inserted sentence that
+            # repeated the next one), so those points no longer stop the run.
+            failing = {c.criterion for c in review.checks if c.verdict == "fail"} if review else {"meaning"}
+            if not errors and failing <= {"spoken_language"}:
+                write_json(work / "accepted_notes.json", issues)
+                break
+            # The polish still changes the meaning or drops a step the draft has: the checked draft stays the script,
+            # so the loss never reaches publication and the run goes on (Asimov ep_012, 2026-09-29: a reasoning
+            # step lost in both repairs). Roles and framing the draft may lack as well keep stopping the run.
+            if review and failing <= {"meaning", "completeness", "spoken_language"} and not validate(original, entry):
+                write_json(work / "kept_draft.json", issues)
+                candidate, kept_draft = original, True
+                break
             raise AppError(f"Dialogüberarbeitung benötigt Korrektur: {work / 'issues.json'}",
                            code="dialogue_polish_failed", status="blocked")
         candidate = invoke(prompt + "\n" + instructions("dialogue_polish_repair") + "\n" + json.dumps({
@@ -191,7 +223,7 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
     write_json(work / "script.json", candidate.model_dump())
     write_json(work / "review.json", review.model_dump())
     write_json(work / "result.json", {"version": POLISH_VERSION, "prompt_version": POLISH_PROMPT_VERSION,
-        "status": "passed", "host_roles": HOST_ROLES,
+        "status": "kept_draft" if kept_draft else "passed", "host_roles": HOST_ROLES,
         "original_digest": digest(original.model_dump()), "polished_digest": digest(candidate.model_dump()),
         "repairs": repairs, "review": review.model_dump(), "human_reviewed": False})
     return candidate, [work / name for name in ("script.json", "review.json", "result.json", "checkpoint.json")]

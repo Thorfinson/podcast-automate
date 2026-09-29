@@ -18,9 +18,10 @@ from .prompts import fragment, instructions
 from .research import PLAIN_LANGUAGE, refund_call, reserve_call, unanswered
 from .research_evidence import single_group_findings
 from .research_gap_probe import coverage_terms, gap_id, hit_sources, probe, settle, statuses, unread
-from .research_patches import re_asked
-from .run_budget import effective_limits
-from .runner import run_observer
+from .research_ledger import read_value
+from .research_patches import corrected_call, re_asked
+from .run_budget import effective_limits, teaching_redesigns
+from .runner import manifest_path, run_observer
 from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_sources,
@@ -31,11 +32,41 @@ from .series_review import assess_series, load_series_review, require_passing_se
 from .storage import atomic_text, digest, file_hash, write_json
 from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, build_teaching_plan,
                        prerequisite_context)
-from .teaching_research import apply_foundations, research_foundations
+from .teaching_research import apply_foundations, named_question, research_foundations
 
 SPOKEN_DIALOGUE = fragment("spoken_dialogue")
 WRITE_EPISODE_VERSION = "write_episode.v7-audit-notes"
 MAX_REVIEW_REPAIRS = 3
+# Script review points that no longer stop the run once its repairs are spent (review_episode).
+NOTED_CATEGORIES = {"clarity", "depth", "dialogue"}
+# v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
+# repair restated such claims and the next review flagged them again).
+REVIEW_REPAIR_VERSION = "script_review_repair.v2-delete-absence"
+
+
+def failed_teaching(work):
+    """The episode whose teaching design stopped after its focused repair, as ``{episode_id, title}``, or None.
+    The stop card of ``teaching_design_failed`` offers a new design of exactly this episode."""
+    try:
+        plan = SeriesPlan.model_validate_json((work / "series_plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for entry in plan.episodes:
+        directory = work / "teaching" / entry.episode_id
+        checkpoint = directory / "checkpoint.json"
+        if (directory / "plan.json").exists() or not checkpoint.exists():
+            continue
+        try:
+            if json.loads(checkpoint.read_text(encoding="utf-8")).get("focused_repair"):
+                return {"episode_id": entry.episode_id, "title": entry.title}
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def unread_references(row):
+    """The hits of a probe row nobody has read yet: all of them until a reader settled some."""
+    return row.get("unread_references") or [hit["reference"] for hit in row["hits"]]
 
 
 class ScriptRun:
@@ -154,7 +185,8 @@ class ScriptRun:
                 try:
                     self.route_probe_gaps(entry)
                     _, files = build_teaching_plan(self.config, entry, self.dossier, teaching_sources, self.invoke, directory,
-                                                   continuity=continuity, series_context=episode_series_context(plan, entry))
+                                                   continuity=continuity, series_context=episode_series_context(plan, entry),
+                                                   editor_note=self.adopt_redesign(entry, directory))
                     break
                 except AppError as exc:
                     if exc.code != "teaching_research_required":
@@ -164,6 +196,26 @@ class ScriptRun:
             outputs.extend([*files, directory / "source_context.json", directory / "continuity.json"])
         supplements = self.refresh_foundations(entries)
         return [*outputs, *supplements, self.probe_path()]
+
+    def adopt_redesign(self, entry, directory):
+        """The editor's note for a new teaching design of this episode (run_budget.request_teaching_redesign), or None.
+
+        Each request is adopted once: the stopped design, its checkpoint and its focused repair move to
+        ``redesign_NN``, so the note starts a fresh design with fresh correction rounds. The note stays part of
+        the design prompt on every later resume, which keeps the new checkpoint valid (``redesign.json``)."""
+        request = teaching_redesigns(self.work, self.input_hash).get(entry.episode_id)
+        if request is None:
+            return None
+        marker = directory / "redesign.json"
+        adopted = json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else []
+        if request["requested_at"] not in {row["requested_at"] for row in adopted}:
+            archive = directory / f"redesign_{len(adopted) + 1:02d}"
+            archive.mkdir(parents=True, exist_ok=True)
+            for name in ("checkpoint.json", "focused_repair.json", "review.json", "plan.md", "dismissed_gaps.json"):
+                if (directory / name).exists():
+                    (directory / name).replace(archive / name)
+            write_json(marker, [*adopted, {**request, "archive": archive.name}])
+        return request["note"]
 
     # --- gap probe ------------------------------------------------------------------------------
 
@@ -199,25 +251,63 @@ class ScriptRun:
         Each row records ``owner_episodes``, the episodes whose sources hold a hit. A row with
         hits that no episode's sources contain is ``hits_unowned``: nobody in this lane can be
         asked to read those sections, so it is reported at publish, never routed or blocking.
+        Hits the research's readers already read are settled (settle_by_research), also in a
+        file saved before that rule; settling again changes nothing, so a resume keeps the file.
         """
         path = self.probe_path()
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
         plan = plan or self.selected()[0]
         owned = {episode.episode_id: self.episode_source_ids(episode) for episode in plan.episodes}
+        if path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            rows = self.settle_by_research(saved, owned)
+            if rows != saved:
+                write_json(path, rows)
+            return rows
         rows = []
         for row in probe(self.sources, self.knowledge_gaps(), gap_terms=coverage_terms(self.dossier)):
             owners = [eid for eid, sources in owned.items() if hit_sources(row) & sources]
             status = "hits_unowned" if row["hits"] and not owners else row["status"]
             rows.append({**row, "status": status, "owner_episodes": owners})
+        rows = self.settle_by_research(rows, owned)
         write_json(path, rows)
         return rows
 
+    def research_reads(self):
+        """Every section the research's question readers read; empty for research without a question ledger."""
+        path = manifest_path(self.root, self.research_id).parent / "question_research/state.json"
+        if not path.exists():
+            return set()
+        return {ref for row in read_value(path)["tasks"].values() for ref in row.get("read_refs", [])}
+
+    def settle_by_research(self, rows, owned):
+        """A hit the research already read is not unread, as in the research lane's own closing probe
+        (question_synthesis.probe_declared_gaps). A row keeps only its unread references and the episodes
+        holding them; with every hit read it stands as ``hits_read_confirmed``, and with the rest in no
+        episode's sources as ``hits_unowned`` (Ontologies, 2026-09-27: 102 of 140 hits had been read by the
+        research, yet all 28 gaps counted as unread and 18 went to the first episode's supplement)."""
+        reads, settled = None, []
+        for row in rows:
+            if row["status"] == "hits_unread" and "research_read" not in row:
+                reads = self.research_reads() if reads is None else reads
+                read = [hit["reference"] for hit in row["hits"] if hit["reference"] in reads]
+                if read:
+                    row = {**settle(row, read_refs=read), "research_read": read}
+                    if row["status"] == "hits_read_confirmed":
+                        row["settled_by"] = "research"
+                    else:
+                        left = {reference.split("#")[0] for reference in row["unread_references"]}
+                        row["owner_episodes"] = [eid for eid, sources in owned.items() if left & sources]
+                        if not row["owner_episodes"]:
+                            row["status"] = "hits_unowned"
+            settled.append(row)
+        return settled
+
     def routable_probes(self, entry):
-        """Unread rows with a hit in this episode's sources: exactly what its supplement can read
+        """Unread rows with an unread hit in this episode's sources: exactly what its supplement can read
         and exactly what its review waits for. A row settled by an earlier episode is not unread."""
         owned = self.episode_source_ids(entry)
-        return [row for row in unread(self.run_probes()) if hit_sources(row) & owned]
+        return [row for row in unread(self.run_probes())
+                if {reference.split("#")[0] for reference in unread_references(row)} & owned]
 
     def route_probe_gaps(self, entry):
         """Send gaps with unread corpus hits into the existing supplementary research path.
@@ -231,9 +321,9 @@ class ScriptRun:
         directory = self.work / "teaching" / entry.episode_id
         questions = [{"question": row["text"], "kind": "evidence",
                       "why_needed": "Die Korpusprobe hat zu dieser gemeldeten Lücke passende, noch ungelesene "
-                                    "Abschnitte gefunden: " + ", ".join(hit["reference"] for hit in row["hits"]) +
+                                    "Abschnitte gefunden: " + ", ".join(unread_references(row)) +
                                     ". Diese Abschnitte müssen gelesen werden, bevor die Lücke behauptet wird.",
-                      "references": [hit["reference"] for hit in row["hits"]]}
+                      "references": unread_references(row)}
                      for row in routed]
         write_json(directory / "research_needed.json", {"episode_id": entry.episode_id, "questions": questions,
                                                         "gap_ids": [row["gap_id"] for row in routed]})
@@ -245,8 +335,9 @@ class ScriptRun:
                        details={"gap_ids": [row["gap_id"] for row in routed]})
 
     def pinned_sections(self, gap_ids):
-        """The full text of every section the probe matched for the routed gaps."""
-        wanted = {hit["reference"] for row in self.run_probes() if row["gap_id"] in set(gap_ids) for hit in row["hits"]}
+        """The full text of every section the probe matched for the routed gaps and nobody has read yet."""
+        wanted = {reference for row in self.run_probes() if row["gap_id"] in set(gap_ids)
+                  for reference in unread_references(row)}
         pinned = []
         for source in self.sources.sources:
             sections = [{"reference": f"{source.id}#{s.id}", "text": s.text, "page": s.page}
@@ -261,19 +352,24 @@ class ScriptRun:
 
         A gap the supplement answered is ``resolved``. A gap it lists in ``remaining_gaps`` is
         ``hits_read_confirmed``: ``validate_supplement`` has already checked that every pinned
-        section was in the reader's context, so the confirmation is an informed one.
+        section was in the reader's context, so the confirmation is an informed one. A reason the
+        supplement wrote after the question is kept as ``confirmation_note``.
         """
         if not gap_ids:
             return []
-        answered = {q.strip() for answer in supplement.explanations for q in answer.questions}
-        confirmed = {gap.strip() for gap in supplement.remaining_gaps}
+        texts = [row["text"] for row in self.run_probes() if row["gap_id"] in set(gap_ids)]
+        answered = {named_question(q, texts)[0] for answer in supplement.explanations for q in answer.questions}
+        confirmed = dict(named_question(gap, texts) for gap in supplement.remaining_gaps)
         rows, settled = [], []
         for row in self.run_probes():
             if row["gap_id"] in set(gap_ids) and row["status"] == "hits_unread":
-                if row["text"].strip() in answered:
+                # A question answered in part and still named a gap stands as a confirmed gap, not as resolved.
+                if row["text"] in answered and row["text"] not in confirmed:
                     row = settle(row, resolved=True)
-                elif row["text"].strip() in confirmed:
+                elif row["text"] in confirmed:
                     row = settle(row, read_refs=[hit["reference"] for hit in row["hits"]])
+                    if confirmed[row["text"]]:
+                        row["confirmation_note"] = confirmed[row["text"]]
                 if row["status"] != "hits_unread":
                     row["settled_by"] = entry.episode_id
                     settled.append(row["gap_id"])
@@ -299,7 +395,8 @@ class ScriptRun:
             observer(self.manifest)
         try:
             supplement = research_foundations(self.root, self.work, self.config, entry, self.base_dossier, self.invoke,
-                                              current_dossier=self.dossier, pinned=self.pinned_sections(routed))
+                                              current_dossier=self.dossier, pinned=self.pinned_sections(routed),
+                                              known_sources=self.sources)
         finally:
             write_json(self.work / "progress.json", {})
             if observer:
@@ -315,9 +412,12 @@ class ScriptRun:
 
     def writing_prompt(self, plan, entry):
         config, dossier = self.config, self.dossier
+        design_review = json.loads((self.work / "teaching" / entry.episode_id / "review.json").read_text(encoding="utf-8"))
+        # The design review's non-blocking notes (teaching.review_scope); a design without them keeps its prompt.
+        advisories = " " + instructions("write_episode_advisories") if design_review.get("advisories") else ""
         prompt = (instructions("write_episode_opening", language=config.language) + " "
                   + PLAIN_LANGUAGE + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
-                  instructions("write_episode") + "\n" +
+                  instructions("write_episode") + advisories + "\n" +
                   json.dumps({"brief": {"language": config.language, "voices": config.voice_profile,
                                         "host_names": config.host_names,
                                         "audience": config.audience_level, "prior_knowledge": config.prior_knowledge,
@@ -327,7 +427,7 @@ class ScriptRun:
                               "series_context": episode_series_context(plan, entry),
                               "prerequisite_context": prerequisite_context(plan, entry, self.work),
                               "teaching_design": self.teaching_for(entry).model_dump(),
-                              "teaching_design_review": json.loads((self.work / "teaching" / entry.episode_id / "review.json").read_text(encoding="utf-8")),
+                              "teaching_design_review": design_review,
                               "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
                               "single_group_findings": self.single_group(entry),
                               "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(entry.finding_ids)],
@@ -336,6 +436,13 @@ class ScriptRun:
             prompt += ("\n" + instructions("write_episode_revision") + "\n" +
                        json.dumps(self.revision, ensure_ascii=False))
         return prompt
+
+    def script_defects(self, draft, entry, errors_file, message):
+        """Raise for a rewritten script that breaks its plan, naming every defect so the correction can fix it."""
+        errors = validate_script(draft, entry)
+        if errors:
+            write_json(errors_file, errors)
+            raise AppError(message + " " + " ".join(errors), code="invalid_script", status="blocked")
 
     def write_episode(self, plan, entry):
         destination = self.work / "drafts" / f"{entry.episode_id}.json"
@@ -349,13 +456,11 @@ class ScriptRun:
         draft = self.invoke(prompt, EpisodeScript, WRITE_EPISODE_VERSION)
         errors = validate_script(draft, entry)
         if errors:
-            draft = self.invoke(prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
+            draft = corrected_call(self.invoke, prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
                 {"errors": errors, "draft": draft.model_dump()}, ensure_ascii=False),
-                EpisodeScript, "write_episode_repair.v1")
-            errors = validate_script(draft, entry)
-        if errors:
-            write_json(self.work / f"{entry.episode_id}_script_errors.json", errors)
-            raise AppError("Skript verletzt Struktur- oder Quellenzuordnung.", code="invalid_script", status="blocked")
+                EpisodeScript, "write_episode_repair.v1",
+                lambda answer: self.script_defects(answer, entry, self.work / f"{entry.episode_id}_script_errors.json",
+                                                   "Skript verletzt Struktur- oder Quellenzuordnung."))
         write_json(destination, draft.model_dump())
         write_json(stamp, {"input_hash": signature, "sha256": file_hash(destination)})
         return [destination, stamp]
@@ -438,23 +543,26 @@ class ScriptRun:
                 reviewed.issues.extend(teaching_issues)
             return reviewed
 
+        if result is not None:
+            try:
+                drift = validate_claim_checks(result, draft, dossier.findings, required=bool(dossier.evidence_version))
+            except AppError:
+                # Saved before its check ran: reviewed again instead of stopping every resume here.
+                result = None
+            else:
+                for issue in drift:
+                    if issue not in result.issues:
+                        result.issues.append(issue)
         if result is None:
             result = check()
             save()
-        else:
-            for issue in validate_claim_checks(result, draft, dossier.findings, required=bool(dossier.evidence_version)):
-                if issue not in result.issues:
-                    result.issues.append(issue)
         while result.issues and repairs < MAX_REVIEW_REPAIRS:
-            draft = self.invoke(self.writing_prompt(plan, entry) +
+            draft = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
                 "\n" + instructions("script_review_repair") + "\n" +
                 json.dumps({"draft": draft.model_dump(), "review": result.model_dump()}, ensure_ascii=False),
-                EpisodeScript, "script_review_repair.v1")
-            errors = validate_script(draft, entry)
-            if errors:
-                write_json(work / f"{entry.episode_id}_review_errors.json", errors)
-                raise AppError("Überarbeitetes Skript verletzt die Quellenzuordnung oder Struktur.",
-                               code="invalid_script", status="blocked")
+                EpisodeScript, REVIEW_REPAIR_VERSION,
+                lambda answer: self.script_defects(answer, entry, work / f"{entry.episode_id}_review_errors.json",
+                                                   "Überarbeitetes Skript verletzt die Quellenzuordnung oder Struktur."))
             repairs += 1
             result = None
             save()
@@ -462,12 +570,18 @@ class ScriptRun:
             save()
         report = work / "reviews" / f"{entry.episode_id}.json"
         write_json(report, result.model_dump())
-        if result.issues:
+        # Repairs spent and only clarity, depth or dialogue left: the script stands, the points stay in its review
+        # report, and the user reads them before approving audio. Grounding, scope and structure keep stopping the
+        # run (the user's choice, 2026-09-29: Ontologies episodes 2 and 4 held only listener-clarity points).
+        accepted = bool(result.issues) and all(issue.category in NOTED_CATEGORIES for issue in result.issues)
+        if result.issues and not accepted:
             raise AppError("Skriptreview meldet weiterhin Einwände; Reviewbericht prüfen.",
                            code="script_review_failed", status="blocked")
+        if accepted:
+            write_json(work / "reviews" / f"{entry.episode_id}_accepted_notes.json", [i.model_dump() for i in result.issues])
         reviewed_file = work / "reviewed" / f"{entry.episode_id}.json"
         teaching_issues, teaching_report, teaching_outputs = self.assess_episode_teaching(plan, entry, draft)
-        if teaching_issues:
+        if teaching_issues and not (accepted and all(issue.category in NOTED_CATEGORIES for issue in teaching_issues)):
             raise AppError("Lehrprüfung nicht bestanden.", code="teaching_review_failed", status="blocked")
         teaching_report_file = work / "reviews" / f"{entry.episode_id}_teaching.json"
         write_json(teaching_report_file, teaching_report)
@@ -477,7 +591,17 @@ class ScriptRun:
     def review_script(self, plan, entry, draft, original_draft, probes):
         """One evidence-bound script review call, with its deterministic claim checks."""
         config, dossier, work = self.config, self.dossier, self.work
-        reviewed = self.invoke(
+        required = bool(dossier.evidence_version)
+        ids = {s.segment_id for s in draft.segments}
+
+        def well_formed(answer):
+            validate_claim_checks(answer, draft, dossier.findings, required=required)
+            unknown = sorted({key for issue in answer.issues for key in issue.segment_ids} - ids)
+            if unknown:
+                raise AppError("Review verweist auf unbekannte Segmente: " + ", ".join(unknown) + ".",
+                               code="invalid_model_output", status="blocked")
+
+        reviewed = corrected_call(self.invoke,
             TERMINOLOGY + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
             instructions("script_review") + "\n" + json.dumps(
                 {"brief": {"audience": config.audience_level, "depth": config.depth_request,
@@ -491,12 +615,9 @@ class ScriptRun:
                  "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
                  "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(entry.finding_ids)],
                  "sources": episode_sources(entry, dossier, self.context, self.sources)}, ensure_ascii=False),
-            ScriptReview, SCRIPT_REVIEW_VERSION)
-        reviewed.issues.extend(validate_claim_checks(reviewed, draft, dossier.findings,
-                                                     required=bool(dossier.evidence_version)))
-        ids = {s.segment_id for s in draft.segments}
-        if any(not set(issue.segment_ids) <= ids for issue in reviewed.issues):
-            raise AppError("Review verweist auf unbekannte Segmente.", code="invalid_model_output")
+            ScriptReview, SCRIPT_REVIEW_VERSION, well_formed)
+        # The drift receipts become issues; well_formed accepted their shape, so this cannot raise.
+        reviewed.issues.extend(validate_claim_checks(reviewed, draft, dossier.findings, required=required))
         return reviewed
 
     def repair_series(self, plan, grouped):
@@ -520,15 +641,12 @@ class ScriptRun:
             draft = EpisodeScript.model_validate_json(reviewed_file.read_text(encoding="utf-8"))
             review = ScriptReview(issues=issues, limitations=[
                 "Cross-episode correction from the series review; the episode's own review passed before."])
-            repaired = self.invoke(self.writing_prompt(plan, entry) +
+            repaired = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
                 "\n" + instructions("script_review_repair") + "\n" +
                 json.dumps({"draft": draft.model_dump(), "review": review.model_dump()}, ensure_ascii=False),
-                EpisodeScript, "script_review_repair.v1")
-            errors = validate_script(repaired, entry)
-            if errors:
-                write_json(self.work / f"{episode_id}_series_repair_errors.json", errors)
-                raise AppError("Die Korrektur der Serienprüfung verletzt die Quellenzuordnung oder Struktur.",
-                               code="invalid_script", status="blocked")
+                EpisodeScript, REVIEW_REPAIR_VERSION,
+                lambda answer: self.script_defects(answer, entry, self.work / f"{episode_id}_series_repair_errors.json",
+                                                   "Die Korrektur der Serienprüfung verletzt die Quellenzuordnung oder Struktur."))
             probes = json.loads(self.probe_path(entry).read_text(encoding="utf-8")) if self.probe_path(entry).exists() else []
             checked = self.review_script(plan, entry, repaired, draft.model_dump(), probes)
             review_file = self.work / "reviews" / f"{episode_id}.json"

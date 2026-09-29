@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     studio.add_argument("workspace", type=Path, nargs="?", default=Path.cwd())
     studio.add_argument("--port", type=int, default=8765)
     studio.add_argument("--no-browser", action="store_true")
+    studio.add_argument("--lan", action="store_true",
+                        help="Auch im Heimnetz erreichbar, etwa vom Handy im WLAN; aus dem Internet nicht")
     studio.set_defaults(json_output=False)
     init = commands.add_parser("init", help="Persönliches Projekt anlegen")
     init.add_argument("project_dir", type=Path)
@@ -115,9 +117,21 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--retry", metavar="TASK_ID",
                          help="Blockierte Teilfrage beim nächsten Fortsetzen erneut versuchen, mit dem Spielraum einer neuen Frage")
     approve.add_argument("--hint", default="", help="Hinweis für den neuen Versuch; geht als Rückmeldung an das Modell")
+    approve.add_argument("--redesign-teaching", metavar="EPISODE_ID",
+                         help="Das angehaltene Lehrkonzept dieser Folge beim nächsten Fortsetzen neu entwerfen; "
+                              "--hint ist dabei der verbindliche Hinweis")
     approve.add_argument("--access-gap", nargs=2, metavar=("TASK_ID", "CRITERION"),
                          help="Ein Kriterium einer blockierten Teilfrage als Zugangslücke akzeptieren (Nummer ab 0); "
                               "verlangt --blocked-source")
+    approve.add_argument("--fresh-attempts", action="store_true",
+                         help="Schritte, die ihre Korrekturversuche verbraucht haben, beim nächsten Fortsetzen mit neuen "
+                              "Anläufen wiederholen (die abgewiesenen Antworten bleiben lesbar)")
+    approve.add_argument("--finish-with-residuals", action="store_true",
+                         help="Nach der nächsten Gesamtprüfung abschließen; verbliebene Einwände stehen im Qualitätsbericht "
+                              "(--reason wird als Notiz gespeichert)")
+    approve.add_argument("--dispute", nargs=2, metavar=("OBJECTION_ID", "SEITE"),
+                         help="Streitfall der Gesamtprüfung entscheiden: reviewer (dem Prüfer folgen) oder objection "
+                              "(Einwand aufrechterhalten); --reason wird als Notiz gespeichert")
     approve.add_argument("--blocked-source", metavar="URL",
                          help="Adresse, deren Abruf in diesem Lauf nachweislich gesperrt war (research_questions.json, blocked_sources)")
     approve.add_argument("--research-plan", nargs="?", const=True, default=None, metavar="RUN_ID",
@@ -181,7 +195,7 @@ def run_command(args) -> int:
     try:
         if args.command == "studio":
             from .studio import serve
-            serve(args.workspace, port=args.port, open_browser=not args.no_browser)
+            serve(args.workspace, port=args.port, open_browser=not args.no_browser, lan=args.lan)
             return 0
         if args.command == "init":
             runtime = RuntimeSettings()
@@ -207,15 +221,19 @@ def run_command(args) -> int:
                     "waiting_for_quota" if overview["any_usable"] else "blocked", **overview}
             code = 0 if overview["any_available"] else 2 if overview["any_usable"] else 1
         elif args.command == "approve":
-            from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap,
-                                     approve_research_plan, approve_research_retry)
+            from .run_budget import (approve_criterion_gap, approve_fresh_attempts, approve_model_call_limit,
+                                     approve_research_gap, approve_research_plan, approve_research_retry,
+                                     approve_residual_finish, decide_review_disagreement, request_teaching_redesign)
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
             if (args.model_calls is None and args.search_rounds is None and args.sources is None and not args.accept_gap
-                    and not args.retry and not args.access_gap and args.research_plan is None):
+                    and not args.retry and not args.access_gap and not args.dispute and not args.finish_with_residuals
+                    and not args.fresh_attempts and args.research_plan is None and not args.redesign_teaching):
                 raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --sources, --accept-gap, "
-                               "--access-gap oder --retry.", code="invalid_request", status="blocked")
+                               "--access-gap, --dispute, --finish-with-residuals, --fresh-attempts, --retry oder "
+                               "--redesign-teaching.",
+                               code="invalid_request", status="blocked")
             if bool(args.access_gap) != bool(args.blocked_source):
                 raise AppError("--access-gap und --blocked-source gehören zusammen.", code="invalid_request", status="blocked")
             if args.max_tasks is not None and args.research_plan is None:
@@ -234,6 +252,17 @@ def run_command(args) -> int:
             if args.retry:
                 request = approve_research_retry(root, run_id, args.retry, args.hint)
                 data["retry_request"] = request.model_dump(mode="json")
+            if args.fresh_attempts:
+                data["fresh_attempts"] = approve_fresh_attempts(root, run_id)
+            if args.redesign_teaching:
+                redesign = request_teaching_redesign(root, run_id, args.redesign_teaching, args.hint)
+                data["teaching_redesign"] = redesign.model_dump(mode="json")
+            if args.finish_with_residuals:
+                data["residual_finish"] = approve_residual_finish(root, run_id, args.reason).model_dump(mode="json")
+            if args.dispute:
+                objection_id, side = args.dispute
+                choice = decide_review_disagreement(root, run_id, objection_id, side, args.reason)
+                data["dispute"] = choice.model_dump(mode="json")
             if args.access_gap:
                 task_id, criterion = args.access_gap
                 if not criterion.isdigit():

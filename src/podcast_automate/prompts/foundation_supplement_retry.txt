@@ -1,0 +1,3 @@
+Your previous answer to this request was rejected: rejected_attempt holds it with the defects the
+check found. Answer the whole request again and correct exactly these defects; keep what the check
+did not name.

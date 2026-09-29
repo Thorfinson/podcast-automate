@@ -141,7 +141,8 @@ class RunBudgetTests(unittest.TestCase):
     def test_new_projects_get_the_raised_defaults_without_overwriting_explicit_limits(self):
         from podcast_automate.models import TopicBrief
         limits = TopicBrief(topic="New project").research_limits
-        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources), (250, 24, 150))
+        # The two 18-question runs of 2026-09-26/27 needed 600 to 750 calls and up to 46 search rounds.
+        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources), (750, 48, 150))
         self.assertEqual(TopicBrief(topic="Existing project", research_limits={"model_calls": 40}).research_limits.model_calls, 40)
 
 

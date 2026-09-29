@@ -19,9 +19,10 @@ from .errors import AppError
 from .storage import digest, read_optional_json, read_text, write_json
 
 # Measured cost of an ordinary task with evidence contracts: reading decisions, an answer, one or
-# two reviews and the rejected shapes in between. The earlier 5 came from the Codex pipeline
-# without claim contracts; a task of the first Claude run needed at least 6.
-DEFAULT_CALLS_PER_TASK = 8
+# two reviews, the rejected shapes in between and its share of audit reworks. The earlier 5 came from
+# the Codex pipeline without claim contracts; the 30 verified tasks of the two Opus 5.5 runs of
+# 2026-09-26/27 needed a median of 15.5 (10 to 55 without the one outlier).
+DEFAULT_CALLS_PER_TASK = 16
 # Wall-clock time of one call when neither this run nor the project measured one yet.
 DEFAULT_SECONDS_PER_CALL = 240
 # Dossier, grounding review, assessment and one repair, kept out of the task allowance.

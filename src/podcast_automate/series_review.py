@@ -11,6 +11,7 @@ from .prompts import instructions
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .models import Contract, EpisodeScript, Identifier, NonEmpty
+from .research_patches import corrected_call
 from .script_models import ScriptIssue
 from .storage import digest, write_json
 
@@ -48,8 +49,9 @@ def reviewed_scripts(work, plan, episode=None):
 def validate_review(review, scripts):
     expected = [script.episode_id for script in scripts]
     if review.checked_episodes != expected or Counter(c.criterion for c in review.checks) != Counter(CRITERIA):
-        raise AppError("Die Serienprüfung muss alle Folgen und jedes Kriterium genau einmal prüfen.",
-                       code="invalid_series_review", status="blocked")
+        raise AppError("Die Serienprüfung muss alle Folgen und jedes Kriterium genau einmal prüfen. "
+                       f"checked_episodes genau in dieser Reihenfolge: {', '.join(expected)}; "
+                       f"Kriterien: {', '.join(CRITERIA)}.", code="invalid_series_review", status="blocked")
     passages = {(script.episode_id, segment.segment_id): segment.text
                 for script in scripts for segment in script.segments}
     cited = set()
@@ -135,8 +137,8 @@ def series_report(config, plan, scripts, input_hash, invoke, repairs=0):
                                   "focus_questions": config.focus_questions, "depth": config.depth_request,
                                   "language": config.language}, "plan": plan.model_dump(),
                         "scripts": [s.model_dump() for s in scripts]}, ensure_ascii=False))
-        review = invoke(prompt, SeriesReview, SERIES_REVIEW_VERSION)
-        validate_review(review, scripts)
+        review = corrected_call(invoke, prompt, SeriesReview, SERIES_REVIEW_VERSION,
+                                lambda answer: validate_review(answer, scripts))
         report.update(review=review.model_dump(),
                       status="passed" if all(c.verdict == "pass" for c in review.checks) else "blocked")
     return report

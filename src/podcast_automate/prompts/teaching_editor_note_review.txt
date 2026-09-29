@@ -1,0 +1,2 @@
+The payload's editor_note is the editor's instruction for this design. A design that disregards it
+does not pass: name each place where it does as an issue.
