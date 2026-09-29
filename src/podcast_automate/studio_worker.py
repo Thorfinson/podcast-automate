@@ -4,13 +4,16 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from pathlib import Path
 
 from .prompts import instructions
 from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.studio_worker.CodexAdapter.structured)
 from . import attachments
 from .doctor import inspect
-from .episode_audio import run_episode_audio
+from .episode_audio import run_episode_audio, saved_expression, tag_episode
+from .expression import TAG
 from .errors import AppError
 from .execution import selected_execution
 from .editorial import TERMINOLOGY
@@ -23,7 +26,7 @@ from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
 from .speech import GeminiSpeech, audio_catalog, selected_audio
-from .storage import digest, load_project, project_lock, read_yaml, write_json
+from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
 from .studio import BriefProposal, TextChoice, audio_job_path, chat_limits, read_json
 from .studio_progress import safe_script_progress, watch
@@ -32,6 +35,67 @@ from .process import stop_process_tree
 from .voice_samples import generate_sample, generate_samples
 from .text_settings import (CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, EFFORT_EQUIVALENTS, OPENROUTER_EFFORTS,
                             OPENROUTER_MODELS, PROVIDER_NOTES, REASONING_EFFORTS)
+
+
+def tag_episodes(root, episodes, api_key=None, *, run_id=None, progress=None):
+    """Inline audio tags for several published episodes at once (episode_audio.tag_episode). One that fails is
+    reported with its reason and does not stop the others; only when every one fails does the first reason stop.
+
+    ``studio/expression/progress.json`` says while it runs how many are done, so the Studio can show when the
+    tags are placed, also at the end of a script run (``run_id``); ``progress`` also receives the counts."""
+    results, failures = {}, []
+    state = {"status": "running", "run_id": run_id, "done": 0, "total": len(episodes), "started_at": now()}
+    report = root / "studio" / "expression" / "progress.json"
+
+    def publish():
+        write_json(report, {**state, "updated_at": now()})
+        if progress:
+            progress({"phase": "expression", "completed_segments": state["done"], "total_segments": state["total"]})
+    publish()
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, min(5, len(episodes))), thread_name_prefix="expression") as pool:
+            futures = {pool.submit(copy_context().run, tag_episode, root, episode, api_key=api_key): episode
+                       for episode in episodes}
+            for future in as_completed(futures):
+                episode = futures[future]
+                try:
+                    record = future.result()
+                    results[episode] = {"tags": sum(len(TAG.findall(text)) for text in record["segments"].values()),
+                                        "rejected": record.get("rejected", "")}
+                except AppError as exc:
+                    failures.append(exc)
+                    results[episode] = {"error": str(exc), "code": exc.code}
+                state["done"] += 1
+                publish()
+    finally:
+        state["status"] = "completed" if len(failures) < len(episodes) or not episodes else "stopped"
+        publish()
+    if episodes and len(failures) == len(episodes):
+        raise failures[0]
+    return {episode: results[episode] for episode in episodes}
+
+
+def express_published(root, run, api_key=None):
+    """After a script run finished, place the tags of the episodes it published, when the project records with
+    Gemini and its expression layer; the reader then sees them before approving audio. A failure here never
+    undoes the finished run: the reading page offers "Ausdruck setzen" for any episode still without tags."""
+    if run.kind != "script" or run.status != "completed":
+        return None
+    audio = selected_audio(root, load_project(root))
+    if not (audio.remote and audio.expression):
+        return None
+    missing = []
+    for folder in sorted((root / "episodes").glob("ep_*")):
+        pointer = read_json(folder / "latest.json", {})
+        script = folder / "script.yaml"
+        if (pointer.get("run_id") == run.run_id and script.is_file()
+                and saved_expression(root, folder.name, file_hash(script)) is None):
+            missing.append(folder.name)
+    try:
+        return tag_episodes(root, missing, api_key, run_id=run.run_id) if missing else None
+    except AppError as exc:
+        logger.warning("Ausdruck nach dem Skriptlauf nicht gesetzt (%s); auf der Leseseite erneut anstoßen.", exc.code)
+        return None
 
 
 def probe_key(root, request, run_id=None):
@@ -136,6 +200,10 @@ def perform(root, request, sample_progress=None):
     elif action == "revise":
         run = run_script(root, revise=request["episode"], feedback=request["message"],
                          probe_key=probe_key(root, request), **kwargs)
+    elif action == "expression":
+        episodes = request.get("episodes") or sorted(folder.name for folder in (root / "episodes").glob("ep_*")
+                                                     if (folder / "script.yaml").is_file())
+        return {"expression": tag_episodes(root, episodes, request.get("api_key"), progress=sample_progress)}
     elif action == "audio":
         rerender = request.get("rerender") is True
         run = run_episode_audio(root, episode=request["episode"], approve_audio=not rerender,
@@ -144,7 +212,7 @@ def perform(root, request, sample_progress=None):
             expected_script_hash=request["script_hash"], expected_readable_hash=request["readable_hash"],
             expected_config_hash=request["config_hash"], audio_choice=request.get("audio_settings"),
             expected_audio_hash=request.get("audio_hash"), api_key=request.get("api_key"),
-            parallel_remote=request.get("parallel_remote", False))
+            parallel_remote=request.get("parallel_remote", False), expected_expression_hash=request.get("expression_hash"))
     elif action == "resume":
         run_id = request["run_id"]
         path = manifest_path(root, run_id)
@@ -169,6 +237,8 @@ def perform(root, request, sample_progress=None):
             raise AppError("Diesen älteren Probentyp über die vorhandenen Werkzeuge fortsetzen.", code="unsupported_run")
     else:
         raise AppError("Unbekannter Auftrag.", code="invalid_action")
+    if action in {"script", "revise", "resume"}:
+        express_published(root, run, request.get("api_key"))
     return {"run": run.model_dump(mode="json")}
 
 

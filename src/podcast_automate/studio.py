@@ -29,7 +29,8 @@ from .execution import (ExecutionChoice, MAX_PARALLEL, jev_probe_enabled, select
                         settings_execution)
 from .logs import configure_logging, logger
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, host_labels, now
-from .episode_audio import saved_approval
+from .episode_audio import saved_approval, saved_expression
+from .expression import TAG
 from .runner import manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
                          approve_fresh_attempts, approve_research_retry, approve_residual_finish, approve_text_switch,
@@ -247,6 +248,33 @@ class TextChoice(Contract):
 
 
 BriefProposal.model_rebuild()
+
+
+def read_queue(root):
+    """Approved Gemini recordings of a project waiting for a free place (Studio.enqueue_audio), in approval order."""
+    rows = read_json(root / "studio/audio_queue.json", [])
+    return rows if isinstance(rows, list) else []
+
+
+def write_queue(root, rows):
+    write_json(root / "studio/audio_queue.json", rows)
+
+
+def queue_view(rows):
+    return [{"episode": row.get("episode"), "position": number, "queued_at": row.get("queued_at"),
+             **({"error": row["error"]} if row.get("error") else {})} for number, row in enumerate(rows, 1)]
+
+
+def reading_expression(root, episode, script_hash):
+    """The inline tags placed for an episode's current script (episode_audio.tag_episode), for reading and approval."""
+    saved = saved_expression(root, episode, script_hash)
+    if saved is None:
+        return None
+    rows = [{"segment_id": key, "text": text, "spoken": (saved.get("spoken") or {}).get(key, "")}
+            for key, text in saved["segments"].items() if isinstance(text, str)]
+    return {"tags": sum(len(TAG.findall(row["text"])) for row in rows), "segments": rows,
+            "rejected": saved.get("rejected", ""), "placed_at": saved.get("placed_at"),
+            "hash": file_hash(root / "episodes" / episode / "expression.json")}
 
 
 class Studio:
@@ -488,6 +516,51 @@ class Studio:
             return {"plan": approval.model_dump(mode="json")}
         raise AppError("Unbekannte Freigabe.", code="invalid_action")
 
+    def enqueue_audio(self, root, episode, data):
+        """Keep an approved Gemini recording until a place is free; a newer approval of the episode replaces it."""
+        rows = [row for row in read_queue(root) if row.get("episode") != episode]
+        request = {key: value for key, value in data.items() if key not in {"from_queue", "api_key"}}
+        rows.append({"episode": episode, "queued_at": now(), "data": request})
+        write_queue(root, rows)
+        return {"queued": True, "episode": episode, "position": len(rows)}
+
+    def audio_queue(self, project, data):
+        """Take an episode out of the recording queue."""
+        root = self.root(project)
+        episode = data.get("episode")
+        if not isinstance(episode, str):
+            raise AppError("Folge angeben.", code="unknown_episode")
+        rows = [row for row in read_queue(root) if row.get("episode") != episode]
+        write_queue(root, rows)
+        return {"audio_queue": queue_view(rows)}
+
+    def start_queued(self):
+        """Approved Gemini recordings waiting in a project's queue start in approval order once a place is free.
+        Each start checks the approval again (start's own rules): one that no longer holds stays in the queue with
+        its reason instead of starting, and one waiting for a place or a key simply waits."""
+        started = []
+        for path in sorted(self.projects.glob("*/studio/audio_queue.json")):
+            root, project = path.parents[1], path.parents[1].name
+            with self.mutex:
+                for row in [row for row in read_queue(root) if not row.get("error")]:
+                    if not (self.key or os.environ.get("OPENROUTER_API_KEY")):
+                        break
+                    try:
+                        self.start(project, {**row["data"], "from_queue": True})
+                    except AppError as exc:
+                        if exc.code in {"audio_capacity", "project_busy", "studio_capacity", "episode_busy"}:
+                            break
+                        rows = read_queue(root)
+                        for saved in rows:
+                            if saved.get("episode") == row["episode"]:
+                                saved.update(error=str(exc), error_code=exc.code)
+                        write_queue(root, rows)
+                        logger("studio").warning("Vertonung aus der Warteschlange nicht gestartet (%s): %s", exc.code, exc)
+                        continue
+                    started.append((project, row["episode"]))
+                    logger("studio").info("Vertonung aus der Warteschlange gestartet: %s %s", project, row["episode"])
+        return started
+
     def due_resumes(self, now_seconds=None):
         """Paused jobs whose named reset has passed and whose automatic resumes are not used up."""
         current = time.time() if now_seconds is None else now_seconds
@@ -529,6 +602,10 @@ class Studio:
                 self.resume_due()
             except Exception:  # The scheduler must outlive any single project's trouble.
                 logger("studio").warning("Automatische Fortsetzung übersprungen.", exc_info=True)
+            try:
+                self.start_queued()
+            except Exception:
+                logger("studio").warning("Warteschlange der Vertonung übersprungen.", exc_info=True)
 
     def active_audio(self):
         return {key: value for key, value in self.audio_processes.items() if value[0].poll() is None}
@@ -667,6 +744,9 @@ class Studio:
                 "voice_samples": sample_inventory(self.projects),
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
                 "jev_probe": jev_probe_enabled(root),
+                "audio_queue": queue_view(read_queue(root)),
+                # When the tags a Gemini recording speaks are placed for reading (studio_worker.tag_episodes).
+                "expression_progress": read_json(root / "studio/expression/progress.json", None),
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
                     "available": max(0, min(limit - active_here, MAX_PARALLEL - len(active_audio)))},
                 "chat": read_json(root / "studio/chat.json", []), "job": latest_job, "main_job": main,
@@ -712,6 +792,7 @@ class Studio:
                 and same_audio_generation(report.get("audio_generation",
                     {"provider": "qwen3_local", "voices": report.get("voices")}), audio.model_dump()),
                 "review_notes": review_notes((reported or {}).get(folder.name)),
+                "expression": reading_expression(root, folder.name, file_hash(folder / "script.yaml")),
                 "spoken_overrides": overrides,
                 # Computed from the published text, the table and the overrides, with no model
                 # call, so a reader sees the difficult tokens before the first audio run.
@@ -918,7 +999,8 @@ class Studio:
     def start(self, project, data):
         root = self.root(project)
         action = data.get("action")
-        if action not in {"assistant", "research", "plan", "replan", "script", "revise", "audio", "audio_sample", "audio_samples", "resume", "check"}:
+        if action not in {"assistant", "research", "plan", "replan", "script", "revise", "audio", "audio_sample", "audio_samples",
+                          "resume", "check", "expression"}:
             raise AppError("Unbekannter Arbeitsschritt.", code="invalid_action")
         payload = {"action": action, "message": str(data.get("message", ""))[:12000]}
         if action == "assistant" and data.get("text_preset") is not None:
@@ -938,6 +1020,13 @@ class Studio:
             if data.get("approve_samples") is not True:
                 raise AppError("Fehlende Gemini-Hörproben ausdrücklich erzeugen lassen.", code="audio_approval_required")
             payload["language"] = data["language"]
+        if action == "expression":
+            # Inline audio tags for reading before approval (episode_audio.tag_episode); none named means every episode.
+            episodes = data.get("episodes") or []
+            if not isinstance(episodes, list) or any(not isinstance(e, str) or not re.fullmatch(r"ep_[a-z0-9_]+", e)
+                                                     or not (root / "episodes" / e / "script.yaml").is_file() for e in episodes):
+                raise AppError("Folgen mit veröffentlichtem Skript auswählen.", code="unknown_episode")
+            payload["episodes"] = episodes
         if action in {"assistant", "replan", "revise"} and not payload["message"].strip():
             raise AppError("Bitte deinen Änderungswunsch eingeben.", code="missing_feedback")
         if action in {"replan", "script"}:
@@ -976,6 +1065,13 @@ class Studio:
                     payload["rerender"] = True
                 payload["audio_settings"] = audio.model_dump()
                 payload["audio_hash"] = data["audio_hash"]
+                if audio.remote and audio.expression and not rerender:
+                    # The approval covers the tags the reader saw with the script (tag_episode), or none.
+                    tags_file = root / "episodes" / episode / "expression.json"
+                    if data.get("expression_hash", "") != (file_hash(tags_file) if tags_file.is_file() else ""):
+                        raise AppError("Der Ausdruck wurde seit dem Lesen neu gesetzt. Bitte das Skript mit den aktuellen "
+                                       "Tags lesen und erneut freigeben.", code="script_edited")
+                    payload["expression_hash"] = data.get("expression_hash", "")
                 if audio.remote:
                     remote_episode = episode
         if action == "resume":
@@ -992,12 +1088,17 @@ class Studio:
             payload["run_id"] = run_id
         if remote_episode:
             active = self.active_audio()
-            if self.worker(root) is not None:
-                raise AppError("Zuerst den laufenden Auftrag abschließen oder anhalten.", code="project_busy")
             if any(value[1:] == (root, remote_episode) for value in active.values()):
                 raise AppError("Diese Folge wird bereits vertont.", code="episode_busy")
             limit = MAX_PARALLEL if selected_execution(root).audio == "parallel" else 1
-            if len(active) >= MAX_PARALLEL or sum(value[1] == root for value in active.values()) >= limit:
+            busy = self.worker(root) is not None
+            full = len(active) >= MAX_PARALLEL or sum(value[1] == root for value in active.values()) >= limit
+            if (busy or full) and action == "audio" and not data.get("from_queue"):
+                # A new approval waits its turn instead of being refused (start_queued starts it when a place is free).
+                return self.enqueue_audio(root, remote_episode, data)
+            if busy:
+                raise AppError("Zuerst den laufenden Auftrag abschließen oder anhalten.", code="project_busy")
+            if full:
                 raise AppError(f"Alle {limit} Plätze für die Vertonung sind belegt. Eine laufende Folge fertigstellen oder anhalten.", code="audio_capacity")
             with project_lock(root, shared=True):
                 pass
@@ -1024,6 +1125,9 @@ class Studio:
         if remote_episode:
             job.update(episode=remote_episode, provider="openrouter_gemini_tts")
             payload["audio_job_id"] = job["id"]
+            if action == "audio":
+                # Started now, whether from the queue or directly: it no longer waits.
+                write_queue(root, [row for row in read_queue(root) if row.get("episode") != remote_episode])
         job_path = audio_job_path(root, job["id"]) if remote_episode else root / "studio/job.json"
         if not remote_episode:
             park(root, job)
@@ -1223,7 +1327,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = app.restore(data)
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
-                                             r"|remove_attachment|approve|spoken_override|listening_review|jev_probe)", path)
+                                             r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
+                                             r"|audio_queue)", path)
                         if not match:
                             raise AppError("Seite nicht gefunden.", code="not_found")
                         project, action = match.groups()

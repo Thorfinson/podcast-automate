@@ -2,14 +2,16 @@ import json
 import unittest
 from unittest.mock import patch
 
-from podcast_automate.episode_audio import run_episode_audio
+from podcast_automate.episode_audio import run_episode_audio, tag_episode
 from podcast_automate.errors import AppError
 from podcast_automate.expression import (ALLOWED_TAGS, EXPRESSION_VERSION, ExpressionPlan, episode_tag_limit,
                                          expression_defects, plan_expression, untagged)
 from podcast_automate.runner import manifest_path
 from podcast_automate.scripting import run_script
 from podcast_automate.speech import AudioChoice, same_audio_generation, selected_audio
-from podcast_automate.storage import write_json
+from podcast_automate.models import RunManifest
+from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
+from podcast_automate.studio_worker import express_published
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_script
 from tests.test_speech import response
@@ -47,6 +49,13 @@ class ExpressionDefectsTests(unittest.TestCase):
         rows = [(sid, "<breath> Gut.") for sid in many]
         self.assertEqual(episode_tag_limit(8), 3)
         self.assertTrue(any("At most 3 tags in this episode" in error for error in expression_defects(plan(*rows), many)))
+
+    def test_the_studio_names_exactly_the_allowed_tags(self):
+        from pathlib import Path
+        import re
+        script = (Path(__file__).resolve().parents[1] / "src/podcast_automate/web/app.js").read_text(encoding="utf-8")
+        table = script[script.index("const EXPRESSION_KINDS"):script.index("function expressionKinds")]
+        self.assertEqual(set(re.findall(r'"(<[^"]+>)":"', table)), set(ALLOWED_TAGS))
 
     def test_the_allowed_tags_are_vocal_events_that_fit_a_factual_podcast(self):
         self.assertIn("<laugh>", ALLOWED_TAGS)
@@ -150,6 +159,82 @@ class ExpressionRecordingTests(unittest.TestCase):
             resumed = run_episode_audio(self.root, resume=True, run_id=run.run_id)
         self.assertEqual(resumed.status, "completed")
         self.assertEqual(prompts, [EXPRESSION_VERSION], "the tags are placed once")
+
+    def gemini(self):
+        choice = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"},
+                             expression=True)
+        write_json(self.root / "studio/audio.json", choice.model_dump())
+        return choice
+
+    def placing(self, rows, calls):
+        class Pool:
+            def __init__(self, runtime, text_generation, api_key=None):
+                pass
+
+            def structured(self, prompt, schema, directory, prompt_version):
+                calls.append(prompt_version)
+                return schema(segments=[{"segment_id": key, "text": text} for key, text in rows.items()]), {}
+        return Pool
+
+    def recording(self, choice, sent, **kwargs):
+        def audio(request, **options):
+            sent.append(json.loads(request.data)["input"])
+            return response()
+
+        def assemble(script, paths, folder, **options):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "audio.mp3").write_bytes(b"test-audio")
+            write_json(folder / "audio_report.json", {"duration_seconds": 3})
+            return [folder / "audio.mp3", folder / "audio_report.json"]
+        with patch("podcast_automate.episode_audio.AdapterPool", side_effect=AssertionError("no model call")),              patch("podcast_automate.speech.build_opener") as build,              patch("podcast_automate.episode_audio.assemble", side_effect=assemble):
+            build.return_value.open.side_effect = audio
+            return run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=choice,
+                                     api_key="test-key", **kwargs)
+
+    def test_tags_placed_for_reading_are_spoken_as_read_and_bind_the_approval(self):
+        """The user's wish of 2026-09-29: the expression belongs in the script check, so the recording speaks
+        exactly the tags the reader saw, and tags placed anew afterwards need a new reading."""
+        choice = self.gemini()
+        first, second = example_script().segments
+        tagged, calls = "<chuckle> " + first.text, []
+        with patch("podcast_automate.episode_audio.AdapterPool", self.placing({first.segment_id: tagged}, calls)):
+            record = tag_episode(self.root, "ep_001")
+        self.assertEqual((record["segments"], calls), ({first.segment_id: tagged}, [EXPRESSION_VERSION]))
+        read_hash = file_hash(self.root / "episodes/ep_001/expression.json")
+        with self.assertRaises(AppError) as stale:
+            self.recording(choice, [], expected_expression_hash="0" * 64)
+        self.assertEqual(stale.exception.code, "script_edited")
+        sent = []
+        run = self.recording(choice, sent, expected_expression_hash=read_hash)
+        self.assertEqual((run.status, sent), ("completed", [tagged, second.text]))
+        used = json.loads((manifest_path(self.root, run.run_id).parent / "expression.json").read_text(encoding="utf-8"))
+        self.assertEqual((used["segments"], used["source"]), ({first.segment_id: tagged}, "reading"))
+
+    def test_a_segment_whose_spoken_form_changed_after_reading_is_spoken_without_its_tag(self):
+        choice = self.gemini()
+        first, second = example_script().segments
+        with patch("podcast_automate.episode_audio.AdapterPool", self.placing({first.segment_id: "<sigh> " + first.text}, [])):
+            tag_episode(self.root, "ep_001")
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"spoken_overrides": {first.segment_id: "Was vergleicht es?"}})
+        sent = []
+        self.assertEqual(self.recording(choice, sent).status, "completed")
+        self.assertEqual(sent, ["Was vergleicht es?", second.text])
+
+    def test_a_finished_script_run_places_the_tags_of_a_gemini_project_for_reading(self):
+        manifest = RunManifest.model_validate(read_yaml(manifest_path(self.root)))
+        first = example_script().segments[0]
+        calls = []
+        # Recorded with Qwen: no tags, since Qwen would read them aloud.
+        with patch("podcast_automate.episode_audio.AdapterPool", self.placing({first.segment_id: "<laugh> " + first.text}, calls)):
+            self.assertIsNone(express_published(self.root, manifest))
+            self.gemini()
+            placed = express_published(self.root, manifest, "test-key")
+            self.assertIsNone(express_published(self.root, manifest), "tags already placed are not placed again")
+        self.assertEqual((placed, calls), ({"ep_001": {"tags": 1, "rejected": ""}}, [EXPRESSION_VERSION]))
+        progress = json.loads((self.root / "studio/expression/progress.json").read_text(encoding="utf-8"))
+        self.assertEqual((progress["status"], progress["done"], progress["total"], progress["run_id"]),
+                         ("completed", 1, 1, manifest.run_id))
+        self.assertTrue((self.root / "episodes/ep_001/expression.json").is_file())
 
 
 if __name__ == "__main__":

@@ -243,6 +243,37 @@ class StudioProgressTests(unittest.TestCase):
             watch(self.root, "job_one")
         self.assertEqual(sleep.call_count, 29)
 
+    def review_done(self, episode, issues):
+        draft = {"episode_id": episode, "segments": []}
+        write_json(self.work / "reviewed" / f"{episode}.json", draft)
+        write_json(self.work / "reviews" / f"{episode}.json", {"issues": issues})
+        write_json(self.work / "reviews" / f"{episode}_checkpoint.json", {"draft": draft, "review": {"issues": issues}})
+
+    def test_an_episode_accepted_with_noted_points_counts_as_reviewed_and_the_series_review_is_named(self):
+        """2026-09-29: the Studio showed Asimov at 5 of 14 and Ontologies at 2 of 10 for hours, because an episode
+        whose review kept only clarity or depth notes counted as open; the budget projection counted it too."""
+        run = {**self.run, "stages": {"planning": {"status": "completed"}, "review": {"status": "running"}}}
+        self.review_done("ep_001", [{"category": "depth", "segment_ids": ["s1"], "reason": "Note."}])
+        self.review_done("ep_002", [{"category": "grounding", "segment_ids": ["s1"], "reason": "Unsupported."}])
+        progress = script_progress(self.root, run)
+        self.assertEqual((progress["completed_segments"], progress["current_episode"]), (1, "ep_002"))
+        self.review_done("ep_002", [])
+        write_json(self.work / "calls/call_005/output_schema.json", {"title": "SeriesReview"})
+        progress = script_progress(self.root, run)
+        self.assertEqual((progress["completed_segments"], progress["current_episode"]), (2, None))
+        self.assertEqual(progress["activity"], "Serienprüfung: alle Folgen werden im Zusammenhang geprüft")
+        write_json(self.work / "series_repair.json", {"receipt": {"episodes": ["ep_002", "ep_001"]}})
+        write_json(self.work / "calls/call_006/output_schema.json", {"title": "ScriptReview"})
+        self.assertEqual(script_progress(self.root, run)["activity"],
+                         "Korrektur der Serienprüfung: Folgen 1, 2 werden überarbeitet und nachgeprüft")
+
+    def test_placing_the_tags_after_a_script_run_is_named_while_it_runs(self):
+        run = {**self.run, "status": "running", "stages": {"publish": {"status": "completed"}}}
+        write_json(self.root / "studio/expression/progress.json", {"status": "running", "run_id": "run_test", "done": 3, "total": 14})
+        self.assertEqual(script_progress(self.root, run)["activity"], "Ausdruck für die Vertonung wird gesetzt · 3 von 14 Folgen")
+        write_json(self.root / "studio/expression/progress.json", {"status": "running", "run_id": "run_other", "done": 3, "total": 14})
+        self.assertNotIn("Ausdruck", script_progress(self.root, run)["activity"], "another run's tagging is not this run's")
+
     def test_stale_accepted_file_does_not_mark_pending_review_complete(self):
         write_json(self.work / "teaching/ep_001/checkpoint.json", {"design": {"episode_id": "ep_001"}, "review": None})
         progress = script_progress(self.root, self.run)

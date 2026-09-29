@@ -210,6 +210,10 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
         return
     work = manifest_path(root, run["run_id"]).parent
     state = read(work / "status_reports/state.json", {})
+    if state.get("job_id") != job["id"]:
+        # A new start of the run gets its report back: three failed attempts once paused it for the rest of the run
+        # (Ontologies and Asimov, 2026-09-29: frozen for hours after three timeouts of the small status model).
+        state["errors"] = 0
     seconds = clock()
     if seconds - state.get("last_attempt", 0) < INTERVAL_SECONDS:
         return

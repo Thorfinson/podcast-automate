@@ -384,4 +384,4 @@ dd{margin:0;overflow-wrap:anywhere}
 .job-dot.offline{animation:none;background:#9db3ac}
 .audio-job.stopped .job-top strong{color:#8a2f22}
 .current-step{overflow-wrap:anywhere}
-
+.expression-tag{background:var(--amber-soft);color:#7a4a0c;border-radius:4px;padding:0 3px;font-size:.88em;white-space:nowrap}

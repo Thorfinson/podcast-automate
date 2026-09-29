@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .audio import applied_pause, assemble, run_tts, worker_path
 from .errors import AppError
-from .expression import EXPRESSION_VERSION, plan_expression
+from .expression import EXPRESSION_VERSION, plan_expression, untagged
 from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels
 from .provider_pool import AdapterPool
 from .research import refund_call, reserve_call, unanswered
@@ -233,6 +233,66 @@ def saved_approval(root, episode, script_hash, audio_generation):
             and same_audio_generation(decision.get("audio_generation"), audio_generation))
 
 
+def episode_spoken(root, episode, script):
+    """What each segment of a published episode would be spoken as: the table and the episode's overrides applied."""
+    decision_path = root / "episodes" / episode / "audio_review.yaml"
+    decision = read_yaml(decision_path) if decision_path.is_file() else {}
+    overrides = {k: v for k, v in (decision.get("spoken_overrides") or {}).items()
+                 if isinstance(k, str) and isinstance(v, str) and v.strip()}
+    table = load_forms(root)
+    return {s.segment_id: spoken_text(s, table, overrides) for s in script.segments}
+
+
+def expression_invoke(pool, work, limits):
+    """One text-model call of the expression layer, charged against ``work``'s own small allowance."""
+    def invoke(prompt, schema, version):
+        number = reserve_call(work, limits)
+        try:
+            return pool.structured(prompt, schema, work / "calls" / f"call_{number:03d}", prompt_version=version)[0]
+        except AppError as exc:
+            if unanswered(exc):
+                refund_call(work, number)
+            raise
+        except BaseException:
+            refund_call(work, number)
+            raise
+    return invoke
+
+
+def saved_expression(root, episode, script_hash):
+    """The tags placed for an episode's published script while it is read (tag_episode), if they still belong to it."""
+    path = root / "episodes" / episode / "expression.json"
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    except (OSError, ValueError):
+        return None
+    if isinstance(saved, dict) and saved.get("version") == EXPRESSION_VERSION and saved.get("script_sha256") == script_hash             and isinstance(saved.get("segments"), dict):
+        return saved
+    return None
+
+
+def tag_episode(root, episode, *, api_key=None):
+    """Place the inline audio tags of one published episode, so the reader sees them before approving audio
+    (the user's wish of 2026-09-29: the expression belongs in the script check). The text model of the episode's
+    script run answers once, with at most two corrections, under a fresh allowance of its own in
+    ``studio/expression/<episode>/<time>``. ``episodes/<episode>/expression.json`` binds the tags to the script
+    hash and records the spoken text they were placed on; a Gemini recording speaks exactly these."""
+    root = root.resolve()
+    config = load_project(root)
+    script_manifest, script, script_hash = reviewed_episode(root, config, episode)
+    spoken = episode_spoken(root, episode, script)
+    work = root / "studio" / "expression" / episode / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    pool = AdapterPool(config.runtime, script_text_generation(root, config, script_manifest.run_id), api_key=api_key)
+    limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1)
+    tags, rejected = plan_expression(expression_invoke(pool, work, limits), script, spoken,
+                                     language=config.language, labels=host_labels(config))
+    record = {"version": EXPRESSION_VERSION, "script_sha256": script_hash, "segments": tags,
+              "spoken": {key: spoken[key] for key in tags}, "placed_at": datetime.now(timezone.utc).isoformat(),
+              **({"rejected": rejected} if rejected else {})}
+    write_json(root / "episodes" / episode / "expression.json", record)
+    return record
+
+
 def script_text_generation(root, config, script_run_id):
     """The text model the episode's script run used, for the expression layer; the Codex default before runs saved one."""
     # A script run the user switched to another provider keeps that choice here too.
@@ -243,7 +303,7 @@ def script_text_generation(root, config, script_run_id):
 def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval_note="",
                       resume=False, run_id=None, expected_script_hash=None, expected_readable_hash=None,
                       expected_config_hash=None, audio_choice=None, api_key=None, expected_audio_hash=None,
-                      parallel_remote=False):
+                      parallel_remote=False, expected_expression_hash=None):
     root = root.resolve()
     with project_lock(root, shared=parallel_remote), ExitStack() as locks:
         config = load_project(root)
@@ -283,6 +343,11 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 (expected_readable_hash is not None and expected_readable_hash != file_hash(root / "episodes" / episode / "script.md")) or
                 (expected_config_hash is not None and expected_config_hash != config_hash)):
             raise AppError("Skript oder Stimmen seit der Freigabe geändert. Bitte erneut prüfen.", code="script_edited", status="blocked")
+        tags_file = episode_folder / "expression.json"
+        if expected_expression_hash is not None and expected_expression_hash != (file_hash(tags_file) if tags_file.is_file() else ""):
+            # The approval covers the tags the reader saw; tags placed anew afterwards need a new reading.
+            raise AppError("Der Ausdruck wurde seit dem Lesen neu gesetzt. Bitte das Skript mit den aktuellen Tags lesen "
+                           "und erneut freigeben.", code="script_edited", status="blocked")
         table = load_forms(root)
         decision_now = read_yaml(episode_folder / "audio_review.yaml") if (episode_folder / "audio_review.yaml").is_file() else {}
         overrides = {k: v for k, v in (decision_now.get("spoken_overrides") or {}).items()
@@ -371,22 +436,20 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             """Inline audio tags for this recording, placed once by the script's text model and reused on a resume.
             Only tags are added; the check in expression.py keeps every word as it would be spoken anyway."""
             spoken = {s.segment_id: spoken_text(s, table, overrides) for s in script.segments}
+            saved = saved_expression(root, episode, script_hash)
+            if saved is not None:
+                # The tags the reader saw with the script: a segment whose spoken form changed since goes without.
+                tags = {key: text for key, text in saved["segments"].items()
+                        if key in spoken and untagged(text) == " ".join(spoken[key].split())}
+                write_json(work / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": script_hash,
+                                                      "segments": tags, "source": "reading",
+                                                      **({"rejected": saved["rejected"]} if saved.get("rejected") else {})})
+                return [work / "expression.json"]
             pool = AdapterPool(config.runtime, script_text_generation(root, config, script_manifest.run_id), api_key=api_key)
             limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1)
             write_json(work / "progress.json", {"status": "expression", "total_segments": len(script.segments)})
-
-            def invoke(prompt, schema, version):
-                number = reserve_call(work, limits)
-                try:
-                    return pool.structured(prompt, schema, work / "calls" / f"call_{number:03d}", prompt_version=version)[0]
-                except AppError as exc:
-                    if unanswered(exc):
-                        refund_call(work, number)
-                    raise
-                except BaseException:
-                    refund_call(work, number)
-                    raise
-            tags, rejected = plan_expression(invoke, script, spoken, language=config.language, labels=host_labels(config))
+            tags, rejected = plan_expression(expression_invoke(pool, work, limits), script, spoken,
+                                             language=config.language, labels=host_labels(config))
             write_json(work / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": script_hash,
                                                   "segments": tags, **({"rejected": rejected} if rejected else {})})
             return [work / "expression.json"]

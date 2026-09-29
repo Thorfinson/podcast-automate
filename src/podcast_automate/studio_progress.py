@@ -174,6 +174,20 @@ def script_progress(root, run, since=None):
             activity = f"Inhaltsverzeichnis wird korrigiert · Korrekturrunde {plan_repair['round']} von {MAX_PLAN_REPAIRS}"
     if stage == "publish":
         activity = "Ergebnisse werden bereitgestellt" if run.get("status") == "running" else "Ergebnisse bereit zur Durchsicht"
+    if stage == "review" and rows and all(row["completed"] for row in rows) and run.get("status") == "running":
+        # Every episode passed its own review: what runs now is the series review or its one bounded correction.
+        repaired = ((read(work / "series_repair.json", {}) or {}).get("receipt") or {}).get("episodes") or []
+        numbers = ", ".join(str(int(e.rsplit("_", 1)[-1])) for e in sorted(repaired) if e.rsplit("_", 1)[-1].isdigit())
+        if schema == "SeriesReview":
+            activity = ("Serienprüfung nach der Korrektur: alle Folgen werden erneut im Zusammenhang geprüft" if repaired
+                        else "Serienprüfung: alle Folgen werden im Zusammenhang geprüft")
+        elif repaired:
+            activity = f"Korrektur der Serienprüfung: Folgen {numbers} werden überarbeitet und nachgeprüft"
+    tagging = read(root / "studio" / "expression" / "progress.json", {}) or {}
+    if tagging.get("status") == "running" and tagging.get("run_id") == run.get("run_id"):
+        # After a finished script run, the tags a Gemini recording speaks are placed for reading (tag_episodes).
+        activity = (f"Ausdruck für die Vertonung wird gesetzt · {tagging.get('done', 0)} von {tagging.get('total', 0)} "
+                    "Folgen")
     jev = read(work / "jev_probe.json", {}) or {}
     if jev.get("status") == "running" and run.get("status") == "running":
         activity = f"Jev sucht die Lücken im Quellenbestand · {jev.get('done', 0)} von {jev.get('total', 0)} Anfragen"

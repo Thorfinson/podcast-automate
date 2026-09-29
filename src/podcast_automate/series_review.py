@@ -199,12 +199,20 @@ def assess_series(work, config, plan, scripts, input_hash, invoke, *, repair=Non
     if receipt and receipt.get("failure"):
         failure = receipt["failure"]
         raise AppError(failure["message"], code=failure["code"], status="blocked")
-    if saved_report is not None:
-        require_passing_series(saved_report)
     repairs = receipt["repairs"] if receipt else 0
+    if (receipt and receipt.get("finished") is False and saved_report is not None
+            and saved_report.get("input_hash") == receipt.get("scripts_before")):
+        # The round started on these very scripts and never reached its re-check: a stop inside it (the user's, a
+        # quota pause, a crash) resumes the round instead of counting it as spent (Ontologies, 2026-09-29: stopped
+        # during the correction of episode 2, the resume only repeated the verdict).
+        repairs -= 1
+    # A saved verdict on today's scripts is not bought again: with its round spent it stops as before, and after
+    # the user set a failed round aside (run_budget.approve_fresh_attempts) it is what the new round corrects.
+    report = saved_report
     while True:
-        report = series_report(config, plan, scripts, input_hash, invoke, repairs)
-        write_json(path, {"report": report, "sha256": digest(report)})
+        if report is None:
+            report = series_report(config, plan, scripts, input_hash, invoke, repairs)
+            write_json(path, {"report": report, "sha256": digest(report)})
         if report["status"] != "blocked" or repair is None or repairs >= MAX_SERIES_REPAIRS:
             break
         grouped = series_issues(SeriesReview.model_validate(report["review"]))
@@ -214,15 +222,17 @@ def assess_series(work, config, plan, scripts, input_hash, invoke, *, repair=Non
         # The round is spent when it starts; the receipt outlives a failure inside it.
         receipt = {"version": SERIES_REVIEW_VERSION, "binding": repair_binding(plan, input_hash),
                    "repairs": repairs, "scripts_before": report["input_hash"],
-                   "episodes": list(grouped), "failure": None}
+                   "episodes": list(grouped), "failure": None, "finished": False}
         write_repair_receipt(work, receipt)
         try:
             repaired = repair(grouped)
         except AppError as exc:
             write_repair_receipt(work, {**receipt, "failure": {"code": exc.code, "message": str(exc)}})
             raise
+        # Only a round that got this far is spent; one stopped inside it resumes (see above).
+        write_repair_receipt(work, {**receipt, "finished": True})
         if not repaired:
             break
-        scripts = repaired
+        scripts, report = repaired, None
     require_passing_series(report)
     return outputs()

@@ -27,6 +27,7 @@ const actionNames = {
   research: "Recherche läuft",
   plan: "Inhaltsverzeichnis entsteht",
   replan: "Inhaltsverzeichnis wird überarbeitet",
+  expression: "Ausdruck wird gesetzt",
   script: "Skripte entstehen",
   revise: "Skript wird überarbeitet",
   audio: "Audio entsteht",
@@ -63,7 +64,7 @@ const audioLabel = a => {
 const mediaUrl = path => "/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
 const running = () => submitting || project?.job?.status === "running" || (project?.audio_jobs||[]).some(j=>j.status==="running");
 const disabled = () => running() ? "disabled" : "";
-function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.episode_id) {
+function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.episode_id, queueable=false) {
   if(submitting)return "Der Auftrag wird gestartet.";
   // Gemini fails at its first request without a key; the approval card offers the key field instead.
   if(currentAudio().provider==="openrouter_gemini_tts"&&boot.key_available===false)return "Zuerst den OpenRouter-Key hinterlegen.";
@@ -71,6 +72,8 @@ function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.epi
     return running()?"Ein Auftrag läuft bereits.":"";
   const active=(project.audio_jobs||[]).filter(j=>j.status==="running");
   if(active.some(j=>j.episode===episode))return "Diese Folge wird bereits vertont.";
+  // A new approval waits in the queue when no place is free; it starts by itself.
+  if(queueable)return "";
   if(project.job?.status==="running"&&!active.some(j=>j.id===project.job.id))return "Zuerst den laufenden Auftrag abschließen oder anhalten.";
   if(project.audio_capacity?.available===0)return "Alle Plätze sind belegt. Sobald eine Folge fertig ist, kannst du die nächste starten.";
   return "";
@@ -141,7 +144,7 @@ function jobPage(p=project) {
   const action=p?.job?.action;
   return ({assistant:PAGE.brief,check:PAGE.brief,audio_sample:PAGE.brief,audio_samples:PAGE.brief,
     research:PAGE.research,plan:PAGE.outline,replan:PAGE.outline,script:PAGE.production,
-    revise:PAGE.production,audio:PAGE.audio}[action]??runPage(currentRun(p),p));
+    revise:PAGE.production,audio:PAGE.audio,expression:PAGE.scripts}[action]??runPage(currentRun(p),p));
 }
 function recommendedPage(p=project) {
   if(!p)return PAGE.brief;
@@ -352,7 +355,7 @@ function setupSummary() {
     <dt>Textmodell</dt><dd>${textChoiceSummary(t)}</dd>
     ${t.provider==="openrouter"?'<dt>Live-Recherche</dt><dd>Über die Abos (Claude, sonst Codex) · Textarbeit wird separat über OpenRouter abgerechnet.</dd>':""}
     <dt>Stimmen</dt><dd>${escape(audioLabel(a))} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
-    <dt>Textausarbeitung</dt><dd>${mode(x.text,"5 gleichzeitig")}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio,"3 Folgen")}</dd>
+    <dt>Textausarbeitung</dt><dd>${mode(x.text,"5 gleichzeitig")}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio,"alle freigegebenen Folgen")}</dd>
     <dt>Lückenprobe</dt><dd>${project.jev_probe?"Wortsuche und Jev · OpenRouter":"Wortsuche"} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${project.jev_probe?"Jev ausschalten":"Jev dazunehmen"}</button></dd></dl>
     <p class="hint">Jev findet die Stellen, an denen eine gemeldete Lücke vielleicht doch beantwortet ist, auch wenn Lücke und Quelle verschiedene Sprachen sprechen. Gelesen und bestätigt werden sie weiterhin vom Textmodell. Das kostet etwa 0,60 USD OpenRouter-Guthaben je neuem Skriptlauf und braucht den OpenRouter-Key; laufende Aufträge behalten ihre Lückenproben.</p>
     <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing, Prüfung und unabhängige Recherche-Teilfragen; das Lehrkonzept bleibt in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
@@ -623,7 +626,7 @@ function renderProductionDetails() {
     // A stopped stage goes back to pending with the interruption noted; it resumes, it does not simply follow.
     const status=record?.status==="pending"&&record?.error?.code==="interrupted"?"interrupted":record?.status||(finished?"completed":"pending");
     return `<li class="${escape(status)}"><span class="phase-marker" aria-hidden="true">${status==="completed"?"✓":status==="running"?"●":status==="pending"?"○":"!"}</span><div><strong>${title}</strong><p>${description}</p></div><span class="phase-status">${labels[status]||"Ausstehend"}</span></li>`;
-  }).join("")}</ol><p class="hint">Notwendige Nachrecherche und interne Korrekturen gehören zu diesen Schritten. Gespeicherte Skriptfassungen lassen sich bereits während der Ausarbeitung lesen.</p></section>`;
+  }).join("")}${renderExpressionStage(finished)}</ol><p class="hint">Notwendige Nachrecherche und interne Korrekturen gehören zu diesen Schritten. Gespeicherte Skriptfassungen lassen sich bereits während der Ausarbeitung lesen.</p></section>`;
   html+=renderScriptProgress(project?.job?.progress,active);
   const readable=readableScripts().length;
   if(!finished&&readable)html+=`<section class="panel tinted"><h2>${readable} ${readable===1?"Folge ist bereits lesbar":"Folgen sind bereits lesbar"}.</h2><p>Du kannst die gespeicherten Texte jetzt lesen. Der Prüfstand steht bei jeder Folge; die Ausarbeitung läuft weiter.</p><button data-step="${PAGE.scripts}">Skripte jetzt lesen →</button></section>`;
@@ -652,6 +655,52 @@ function renderReaderControls() {
     <p class="hint">Weitere Folgen erscheinen hier automatisch, sobald ein vollständiger Entwurf gespeichert ist.</p>`;
 }
 const reviewNoteLabels={script_review:"Quellen- und Skriptprüfung",teaching_review:"Lehrprüfung",editorial_review:"Redaktionelle Prüfung",dialogue_polish:"Dialogvergleich",dismissed_gaps:"Eingeordnete Erklärlücken",advisories:"Deterministische Hinweise"};
+// Inline audio tags a Gemini recording speaks (episode_audio.tag_episode), shown where the reader reads the script.
+function expressionActive() {
+  const a=currentAudio();
+  return a.provider==="openrouter_gemini_tts"&&a.expression!==false;
+}
+const EXPRESSION_TAG=/<[^<>\n]{1,40}>/g;
+// The twelve kinds a recording may use (expression.ALLOWED_TAGS), in the reader's words.
+const EXPRESSION_KINDS={"<laugh>":"Lachen","<chuckle>":"Schmunzeln","<giggle>":"Kichern","<breath>":"Atmen","<exhales>":"Ausatmen",
+  "<sigh>":"Seufzen","<phew>":"Aufatmen","<gasp>":"Staunen","<tsk>":"Schnalzen","<throat-clearing>":"Räuspern",
+  "<short pause>":"kurze Pause","<long pause>":"lange Pause"};
+function expressionKinds(x) {
+  const counts={};
+  for(const row of x.segments||[])for(const tag of row.text.match(EXPRESSION_TAG)||[])counts[tag]=(counts[tag]||0)+1;
+  return Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([tag,n])=>`${n}× ${escape(EXPRESSION_KINDS[tag]||tag)}`).join(", ");
+}
+function markTags(text) {
+  return escape(text).replace(/&lt;[^&<>]{1,40}&gt;/g,tag=>`<mark class="expression-tag">${tag}</mark>`);
+}
+function expressiveText(segment, expression) {
+  const row=expression?.segments?.find(r=>r.segment_id===segment.segment_id);
+  if(!row)return `<p>${escape(segment.text)}</p>`;
+  const words=text=>text.replace(EXPRESSION_TAG," ").split(/\s+/).filter(Boolean).join(" ");
+  // A segment read with a spoken form shows the tags on what is spoken, below the written text.
+  if(words(row.text)===words(segment.text))return `<p>${markTags(row.text)}</p>`;
+  return `<p>${escape(segment.text)}</p><p class="hint">Gesprochen mit Ausdruck: ${markTags(row.text)}</p>`;
+}
+function renderExpressionPanel(e) {
+  if(!expressionActive())return "";
+  const x=e.expression, id=escape(e.script.episode_id);
+  const body=x?`<p>${Number(x.tags)} Tags in ${x.segments.length} Abschnitten, im Text markiert${x.tags?`: ${expressionKinds(x)}`:""}. Gemini spielt sie als Laut oder Pause; vorgelesen werden sie nicht.</p>${x.rejected?`<p class="hint">Das Modell hat keine gültigen Tags geliefert; diese Folge wird ohne Ausdruck vertont.</p>`:""}
+      <button class="secondary" data-action="expression" data-episode="${id}" ${disabled()}>Ausdruck neu setzen</button><p class="hint">Neu setzen fragt das Textmodell erneut; danach die Folge noch einmal lesen und freigeben.</p>`:
+    `<p>Noch kein Ausdruck gesetzt. Er entsteht nach jedem Skriptlauf automatisch; für diese Folge fehlt er noch.</p>
+      <div class="actions"><button class="secondary" data-action="expression" data-episode="${id}" ${disabled()}>Ausdruck setzen</button><button class="quiet" data-action="expression" ${disabled()}>Für alle Folgen</button></div>
+      <p class="hint">Ohne gesetzten Ausdruck setzt die Vertonung ihn selbst, dann ohne dass du ihn vorher gelesen hast.</p>`;
+  return `<section class="panel"><h2>Ausdruck für die Vertonung</h2>${body}</section>`;
+}
+// The step after publishing for a Gemini project: the tags are placed so the reader sees them (tag_episodes).
+function renderExpressionStage(finished) {
+  if(!expressionActive())return "";
+  const published=project?.episodes||[], tagged=published.filter(e=>e.expression).length, p=project?.expression_progress;
+  const running=p?.status==="running"&&project?.job?.status==="running";
+  const status=running?"running":published.length&&tagged===published.length?"completed":finished&&published.length?"open":"pending";
+  const label={running:`In Arbeit · ${Number(p?.done||0)} von ${Number(p?.total||0)} Folgen`,completed:`Fertig · ${tagged} von ${published.length} Folgen`,
+    open:`${tagged} von ${published.length} Folgen · auf „Skripte lesen“ setzen`,pending:"Folgt automatisch"}[status];
+  return `<li class="${status==="open"?"blocked":status}"><span class="phase-marker" aria-hidden="true">${status==="completed"?"✓":status==="running"?"●":status==="open"?"!":"○"}</span><div><strong>Ausdruck für die Vertonung</strong><p>Das Textmodell wählt aus zwölf Arten (${Object.values(EXPRESSION_KINDS).join(", ")}) und setzt sie sparsam an passende Stellen, höchstens in etwa jedem vierten Abschnitt. Du siehst sie beim Lesen markiert; die Gemini-Vertonung spricht genau diese.</p></div><span class="phase-status">${label}</span></li>`;
+}
 function renderReviewNotes(entry) {
   // The published report is the only source; a preview has been through no full review yet.
   const notes=entry.preview?null:project.episodes.find(row=>row.script.episode_id===entry.script.episode_id)?.review_notes;
@@ -698,7 +747,8 @@ function audioRequest(episodeId, rerender=false) {
   // checks the saved approval by the pipeline's own rule before it starts anything.
   const e=episodeId?project.episodes.find(row=>row.script.episode_id===episodeId):project.episodes[episodeIndex];
   return {episode:e.script.episode_id,approve_audio:!rerender&&!!$("audio-approval")?.checked,
-    ...(rerender?{rerender:true}:{}),script_hash:e.hash,readable_hash:e.readable_hash,
+    // A new approval also covers the tags the reader saw; a re-render keeps the saved approval.
+    ...(rerender?{rerender:true}:{expression_hash:e.expression?.hash||""}),script_hash:e.hash,readable_hash:e.readable_hash,
     config_hash:project.config_hash,audio_hash:project.audio_hash};
 }
 async function rerenderEpisode(episodeId) {
@@ -751,12 +801,13 @@ function renderScript() {
   if(!e.preview)episodeIndex=Math.max(0,project.episodes.findIndex(row=>row.script.episode_id===s.episode_id));
   const published=e.preview?null:project.episodes.find(row=>row.script.episode_id===s.episode_id);
   const spoken=published?.audio?.length?(published.spoken_overrides||{}):null;
+  const expression=expressionActive()?published?.expression:null;
   const toc=s.chapters.map((chapter,i)=>({level:1,id:`ch-${chapter.chapter_id}`,html:`${i+1}. ${escape(chapter.title)}`}));
   let text=`<h2 class="reader-title">${escape(s.title)}</h2>`;
-  for(const chapter of s.chapters) text+=`<span class="doc-anchor" id="ch-${escape(chapter.chapter_id)}"></span><h3>${escape(chapter.title)}</h3>`+s.segments.filter(x=>x.chapter_id===chapter.chapter_id).map(x=>`<div class="utterance ${x.speaker_id}"><strong>${escape(hostLabels()[x.speaker_id])}</strong><p>${escape(x.text)}</p>${spoken?renderSpokenOverride(s.episode_id,x,spoken):""}</div>`).join("");
+  for(const chapter of s.chapters) text+=`<span class="doc-anchor" id="ch-${escape(chapter.chapter_id)}"></span><h3>${escape(chapter.title)}</h3>`+s.segments.filter(x=>x.chapter_id===chapter.chapter_id).map(x=>`<div class="utterance ${x.speaker_id}"><strong>${escape(hostLabels()[x.speaker_id])}</strong>${expressiveText(x,expression)}${spoken?renderSpokenOverride(s.episode_id,x,spoken):""}</div>`).join("");
   const feedback=e.preview?`<section class="panel"><p class="hint">Nach Abschluss der Ausarbeitung kannst du Rückmeldung für eine weitere Überarbeitung geben und über die Vertonung entscheiden.</p><button class="secondary" data-step="${PAGE.production}">Ausarbeitung verfolgen</button></section>`
     :`<section class="panel"><h2>Deine redaktionelle Rückmeldung</h2>${area("script-feedback","Was fehlt oder klingt noch nicht richtig?","",4)}<div class="actions"><button class="secondary" data-action="revise" ${disabled()}>Diese Folge überarbeiten lassen</button><button data-step="${PAGE.audio}">Weiter zur Audio-Freigabe →</button></div><p class="hint">Eine Überarbeitung durchläuft erneut Polishing und Prüfung. Sie erhält eine neue Audio-Freigabe.</p></section>`;
-  html+=`<div id="script-reader-controls" class="reader-bar">${renderReaderControls()}</div><div class="doc">${tocMarkup(toc,"Kapitel")}<article id="script-text" class="panel reader doc-main">${text}</article><aside class="doc-rail"><div class="outline-summary"><span>${e.metrics.words.toLocaleString("de-DE")} Wörter</span><span>ca. ${Math.round(e.metrics.estimated_minutes)} Min. geschätzt</span><span>${s.chapters.length} Kapitel</span></div>${renderReviewNotes(e)}${feedback}</aside></div>`;
+  html+=`<div id="script-reader-controls" class="reader-bar">${renderReaderControls()}</div><div class="doc">${tocMarkup(toc,"Kapitel")}<article id="script-text" class="panel reader doc-main">${text}</article><aside class="doc-rail"><div class="outline-summary"><span>${e.metrics.words.toLocaleString("de-DE")} Wörter</span><span>ca. ${Math.round(e.metrics.estimated_minutes)} Min. geschätzt</span><span>${s.chapters.length} Kapitel</span></div>${renderReviewNotes(e)}${published?renderExpressionPanel(published):""}${feedback}</aside></div>`;
   return html;
 }
 const NEWLINE=String.fromCharCode(10);
@@ -844,6 +895,40 @@ function renderListeningReview(e) {
     <div class="actions"><button class="secondary" data-action="listening-review" ${disabled()}>Hörprüfung eintragen</button></div></section>`;
 }
 // Audio: the approval is a checks card that names exactly what it binds; the recordings follow on the same page.
+// Approved Gemini recordings wait here for a free place (Studio.start_queued starts them in approval order).
+function audioWouldQueue() {
+  const active=(project.audio_jobs||[]).filter(j=>j.status==="running");
+  return project.audio_capacity?.available===0||(project.job?.status==="running"&&!active.some(j=>j.id===project.job.id));
+}
+function queuedEntry(episode) { return (project.audio_queue||[]).find(row=>row.episode===episode); }
+function renderQueueState(e) {
+  const row=queuedEntry(e.script.episode_id);
+  if(!row)return "";
+  return row.error?`<p class="note">Freigabe wartete in der Warteschlange, startet aber nicht: ${escape(row.error)} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`:
+    `<p class="hint">Freigegeben · wartet in der Warteschlange auf Platz ${Number(row.position)}. <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`;
+}
+function renderAudioQueue() {
+  const rows=project?.audio_queue||[];
+  if(!rows.length)return "";
+  const title=id=>project.episodes.find(e=>e.script.episode_id===id)?.script.title||id;
+  return `<section class="panel"><h2>Warteschlange der Vertonung · ${rows.length}</h2><ol>${rows.map(row=>`<li><strong>${escape(title(row.episode))}</strong> · ${row.error?`startet nicht: ${escape(row.error)}`:"wartet auf einen freien Platz"} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Entfernen</button></li>`).join("")}</ol><p class="hint">Freigegebene Folgen starten in dieser Reihenfolge von selbst, sobald ein Platz frei ist; das Studio muss dafür geöffnet bleiben. Vor jedem Start wird geprüft, ob Skript, Stimmen und Ausdruck noch dem freigegebenen Stand entsprechen.</p></section>`;
+}
+// Every published episode without a current recording, not recording and not queued: what "approve all" covers.
+function pendingRecordings() {
+  const active=new Set((project.audio_jobs||[]).filter(j=>j.status==="running").map(j=>j.episode));
+  return (project.episodes||[]).filter(e=>!e.audio_current&&!active.has(e.script.episode_id)&&!queuedEntry(e.script.episode_id));
+}
+function renderApproveAll(remote) {
+  const rows=pendingRecordings();
+  if(!remote||rows.length<2)return "";
+  // Why the button waits, and the key field when that is the reason (the key lives only in the server's memory).
+  const blocked=audioBlockReason(undefined,true);
+  return `<section class="panel"><h2>Alle gelesenen Folgen freigeben · ${rows.length}</h2><ul>${rows.map(e=>`<li>${escape(e.script.title)}${e.expression?` · ${Number(e.expression.tags)} Tags`:""}</li>`).join("")}</ul>
+    <label class="approval"><input id="audio-approve-all" type="checkbox"><span>Ich habe diese ${rows.length} Skripte gelesen, samt ihrem Ausdruck, und gebe sie mit dem angezeigten Audioanbieter und den Stimmen für Audio frei. Ich möchte die API-Vertonung starten.</span></label>
+    <div class="actions"><button data-action="audio-all" ${blocked?"disabled":""}>Alle ${rows.length} freigeben</button></div>
+    ${blocked?`<p class="hint">${escape(blocked)}</p>${boot.key_available===false?inlineKey("audio-all-key"):""}`:""}
+    <p class="hint">So viele starten sofort, wie Plätze frei sind; die übrigen reihen sich ein und starten von selbst.</p></section>`;
+}
 function renderApprovalCard(e,a,remote) {
   const blocked=audioBlockReason();
   const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
@@ -855,10 +940,12 @@ function renderApprovalCard(e,a,remote) {
     <dt>Anbieter</dt><dd class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</dd>
     ${remote&&boot.key_available===false?`<dt>Zugang</dt><dd>${inlineKey("audio-key")}</dd>`:""}
     <dt>Aussprache</dt><dd>${pronunciation||'<span class="hint">Keine auffälligen Wörter im veröffentlichten Text.</span>'}</dd>
+    ${remote&&a.expression!==false?`<dt>Ausdruck</dt><dd>${e.expression?`${Number(e.expression.tags)} Tags · beim Lesen im Text markiert; die Freigabe gilt für genau diese.`:"Noch nicht gesetzt: die Vertonung setzt ihn selbst, ohne dass du ihn gelesen hast."} <button class="quiet small" data-step="${PAGE.scripts}">Im Skript ansehen</button></dd>`:""}
     <dt>Pausen</dt><dd class="hint">${Number(pauses.same_speaker_ms)} / ${Number(pauses.speaker_change_ms)} / ${Number(pauses.chapter_break_ms)} ms · gleiche Stimme, Stimmwechsel, Kapitel</dd>
     </dl>
     <label class="approval"><input id="audio-approval" type="checkbox" ${blocked?"disabled":""}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label>
-    <div class="actions"><button id="audio-start" data-action="audio" disabled>Audio erzeugen</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div>${blocked?`<p class="hint">${escape(blocked)}</p>`:""}`;
+    ${renderQueueState(e)}
+    <div class="actions"><button id="audio-start" data-action="audio" disabled>${remote&&audioWouldQueue()?"Freigeben und einreihen":"Audio erzeugen"}</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div>${blocked?`<p class="hint">${escape(blocked)}</p>`:""}`;
 }
 function refreshAudioPanel() {
   const panel=$("audio-panel");
@@ -874,7 +961,7 @@ function renderAudio() {
   const a=currentAudio(),remote=a.provider==="openrouter_gemini_tts";
   const hasAudio=project.episodes.some(row=>row.audio?.length);
   const capacity=remote?(boot.capabilities?.parallel_audio?`<p class="hint">${project.execution?.audio==="parallel"?"Parallel":"Sequenziell"} · ${project.audio_capacity?.active||0} von ${project.audio_capacity?.limit||1} Plätzen belegt. Weitere gelesene Folgen kannst du oben auswählen und einzeln freigeben.</p>`:'<p class="note">Parallele Vertonung benötigt einen Studio-Neustart nach Ende des laufenden Auftrags.</p>'):"";
-  html+=`<div class="split"><div class="split-main">${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${e.audio?.length?renderListeningReview(e):""}${hasAudio?`<section class="panel recordings" id="recordings"><h2>Alle fertigen Folgen anhören</h2>${renderRecordings(recordingsProject())}</section>`:""}</div><aside class="split-rail">${capacity}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
+  html+=`<div class="split"><div class="split-main">${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${e.audio?.length?renderListeningReview(e):""}${hasAudio?`<section class="panel recordings" id="recordings"><h2>Alle fertigen Folgen anhören</h2>${renderRecordings(recordingsProject())}</section>`:""}</div><aside class="split-rail">${capacity}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
   return html;
 }
 function overviewStatus(p) {
@@ -1026,7 +1113,7 @@ const AUDIO_STEPS={normalize:"Sprechabschnitte werden angeglichen",loudness:"Lau
 function audioPhase(p) {
   if(!p)return "";
   // Before a Gemini recording the text model places the inline audio tags (expression.py).
-  if(p.status==="expression")return '<p><span class="activity-dot" aria-hidden="true"></span>Ausdruck wird gesetzt: Lachen, Atmen und Pausen für diese Folge</p>';
+  if(p.status==="expression")return '<p><span class="activity-dot" aria-hidden="true"></span>Ausdruck wird gesetzt: passende Tags aus zwölf Arten für diese Folge</p>';
   if(p.status==="assembly"){
     const part=Number(p.parts)>1?` · Teil ${Number(p.part)} von ${Number(p.parts)}`:"";
     const counting=p.step==="normalize"&&Number(p.total_segments)>0;
@@ -1072,11 +1159,18 @@ function renderScriptProgress(p, active) {
   // In parallel mode several episodes of one stage are in work; each is named with its own time.
   const running=e=>e.stage_status==="running"||(p.active_episodes||[]).includes(e.episode_id);
   const inWork=active?(p.episodes||[]).filter(running):[], parallel=inWork.length>1;
-  const heading=parallel?`${inWork.length} Folgen in Arbeit · ${escape(stageNames[p.stage]||p.stage)}`:
+  // An episode that finished its step in this pass is done, also where an older server's check disagrees
+  // (2026-09-29: episodes accepted with notes stayed "open" for hours).
+  const done=e=>e.completed||(["teaching","writing","polishing","review"].includes(p.stage)&&e.stage_status==="completed");
+  const finished=Math.max(Number(p.completed_segments)||0,(p.episodes||[]).filter(done).length);
+  // Every episode passed its own review: what runs is the series review or its one correction round.
+  const series=p.stage==="review"&&Number(p.total_segments)>0&&finished===Number(p.total_segments);
+  const activity=series&&!/serie/i.test(p.activity||"")?`Korrektur nach der Serienprüfung · ${p.activity}`:p.activity;
+  const heading=series?"Serienprüfung · alle Folgen im Zusammenhang":parallel?`${inWork.length} Folgen in Arbeit · ${escape(stageNames[p.stage]||p.stage)}`:
     p.current_episode?`Folge ${Number(p.episode_number)} von ${Number(p.total_segments)} · ${escape(p.episode_title)}`:escape(stageNames[p.stage]||"Fortschritt");
-  const marker=e=>e.completed?"✓":active&&(running(e)||(!inWork.length&&e.episode_id===p.current_episode))?"●":e.stage_status==="interrupted"?"!":"○";
+  const marker=e=>done(e)?"✓":active&&(running(e)||(!inWork.length&&e.episode_id===p.current_episode))?"●":e.stage_status==="interrupted"?"!":"○";
   const winding=active&&p.stopping?.episodes?.length?`<p class="note" role="status"><strong>${p.stopping.episodes.map(escape).join(", ")}: angehalten.</strong> Die übrigen laufenden Folgen werden in dieser Stufe noch fertig bearbeitet; danach hält der Auftrag an und diese Seite nennt den Grund.</p>`:"";
-  return `<section class="script-progress"><p class="current-episode"><strong>${heading}</strong></p>${winding}<p>${active?'<span class="activity-dot" aria-hidden="true"></span>':"Zuletzt: "}${parallel?"Zuletzt gestartet: ":""}${escape(p.activity)}${active&&elapsed!==null?` · seit ${elapsed<1?"weniger als einer Minute":`${elapsed} Min.`}`:""}</p><p class="hint">Die Anzeige aktualisiert sich automatisch. Ein Modellaufruf kann mehrere Minuten dauern.</p>${p.total_segments?`<progress value="${Number(p.completed_segments)}" max="${Number(p.total_segments)}" aria-label="Fertige Folgen in dieser Stufe"></progress><p>${Number(p.completed_segments)} von ${Number(p.total_segments)} Folgen: ${escape(stageNames[p.stage]||p.stage)} abgeschlossen</p>`:""}${active&&p.stage==="review"&&p.total_segments&&Number(p.completed_segments)===Number(p.total_segments)?'<p class="hint">Alle Folgen sind einzeln geprüft; jetzt folgen die Prüfung der gesamten Serie und letzte Korrekturen.</p>':""}<ol class="episode-progress">${(p.episodes||[]).map(e=>`<li>${marker(e)} ${escape(e.title)}${parallel&&e.stage_started_at&&running(e)?` <span class="hint">· seit ${elapsedText(e.stage_started_at)}</span>`:""}</li>`).join("")}</ol>${(p.episodes||[]).filter(e=>e.teaching_preview).map(e=>`<details data-progress-episode="${escape(e.episode_id)}"><summary>Lehrkonzept lesen: ${escape(e.title)}</summary><pre class="document" data-progress-preview="${escape(e.episode_id)}">${escape(e.teaching_preview)}</pre></details>`).join("")}</section>`;
+  return `<section class="script-progress"><p class="current-episode"><strong>${heading}</strong></p>${winding}<p>${active?'<span class="activity-dot" aria-hidden="true"></span>':"Zuletzt: "}${parallel&&!series?"Zuletzt gestartet: ":""}${escape(activity)}${active&&elapsed!==null?` · seit ${elapsed<1?"weniger als einer Minute":`${elapsed} Min.`}`:""}</p><p class="hint">Die Anzeige aktualisiert sich automatisch. Ein Modellaufruf kann mehrere Minuten dauern.</p>${p.total_segments?`<progress value="${finished}" max="${Number(p.total_segments)}" aria-label="Fertige Folgen in dieser Stufe"></progress><p>${finished} von ${Number(p.total_segments)} Folgen: ${escape(stageNames[p.stage]||p.stage)} abgeschlossen</p>`:""}${active&&series?'<p class="note" role="status">Alle Folgen haben ihre Einzelprüfung bestanden. Jetzt prüft ein Aufruf die ganze Serie im Zusammenhang: Begriffe, Voraussetzungen und ob das Finale hält, was die Folgen belegen. Findet er folgenübergreifende Probleme, werden die betroffenen Stellen einmal überarbeitet und nachgeprüft, dann wird die Serie erneut geprüft. Danach werden die Skripte bereitgestellt.</p>':""}<ol class="episode-progress">${(p.episodes||[]).map(e=>`<li>${marker(e)} ${escape(e.title)}${parallel&&e.stage_started_at&&running(e)?` <span class="hint">· seit ${elapsedText(e.stage_started_at)}</span>`:""}</li>`).join("")}</ol>${(p.episodes||[]).filter(e=>e.teaching_preview).map(e=>`<details data-progress-episode="${escape(e.episode_id)}"><summary>Lehrkonzept lesen: ${escape(e.title)}</summary><pre class="document" data-progress-preview="${escape(e.episode_id)}">${escape(e.teaching_preview)}</pre></details>`).join("")}</section>`;
 }
 function progressAge(timestamp) {
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(timestamp))/1000));
@@ -1754,13 +1848,17 @@ function scrollKeys(el) {
 }
 // A redraw keeps typed input, every section the reader opened or closed and where each scrolling area stood.
 function replaceKeeping(el, html) {
-  const values=new Map(Array.from(el.querySelectorAll?.("input[id]:not([type=checkbox]),textarea[id]")||[],field=>[field.id,field.value]));
+  // Selects too: the drawer redraws every few seconds while a job runs, and a choice in progress must survive it.
+  const values=new Map(Array.from(el.querySelectorAll?.("input[id]:not([type=checkbox]),textarea[id],select[id]")||[],field=>[field.id,field.value]));
   const states=new Map(detailKeys(el).map(([key,detail])=>[key,detail.open]));
   const scrolls=new Map(scrollKeys(el).filter(([,node])=>node.scrollTop>0).map(([key,node])=>[key,node.scrollTop]));
   el.innerHTML=html;
   for(const [key,detail] of detailKeys(el))if(states.has(key))detail.open=states.get(key);
   for(const [key,node] of scrollKeys(el))if(scrolls.has(key))node.scrollTop=scrolls.get(key);
   for(const [id,value] of values){const field=value?document.getElementById(id):null;if(field)field.value=value;}
+  // The model list belongs to the kept choice, not to the one the markup was drawn with.
+  const choice=document.getElementById("text-switch-choice"), model=document.getElementById("text-switch-model");
+  if(choice&&model)model.hidden=choice.value!=="openrouter";
 }
 // Redraw a container only when its own markup changed. The browser adds open="" to an opened <details>,
 // so comparing with innerHTML would redraw, and close, it on every poll.
@@ -1856,6 +1954,7 @@ function renderJob() {
   if(active)body+=`<p>Gesamte Laufzeit seit Start/Fortsetzung: ${Math.max(0,Math.floor((Date.now()-Date.parse(job.started_at))/60000))} Min. · Fertige Schritte werden gespeichert.</p>`;
   if(r&&!isScript&&!job.progress?.research_questions)body+=`<div class="stage-strip">${Object.entries(r.stages||{}).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`;
   if(job.progress&&!["script","research"].includes(job.progress.phase)){
+    if(job.action==="expression"&&job.progress?.total_segments!==undefined)body+=`<p>${Number(job.progress.completed_segments)} von ${Number(job.progress.total_segments)} Folgen mit Ausdruck versehen</p><progress value="${Number(job.progress.completed_segments)}" max="${Number(job.progress.total_segments)}" aria-label="Folgen mit Ausdruck"></progress>`;
     if(job.action==="audio_samples"&&job.progress.total_segments!==undefined)body+=`<p>${Number(job.progress.completed_segments)} von ${Number(job.progress.total_segments)} Hörproben fertig</p><progress value="${Number(job.progress.completed_segments)}" max="${Number(job.progress.total_segments)}" aria-label="Fortschritt"></progress>`;
     else if(active)body+=audioPhase(job.progress);
   }
@@ -1980,15 +2079,19 @@ async function applySetupProposal() {
 async function start(action, extra={}) {
   if(!project) throw new Error("Lege zuerst dein Projekt an.");
   const parallelAudio=action==="audio"||(action==="resume"&&extra.episode);
-  if(parallelAudio?audioBlockReason(extra.episode):running()) throw new Error(parallelAudio?audioBlockReason(extra.episode):"Ein Auftrag läuft bereits.");
+  const queueable=action==="audio"&&!extra.rerender;
+  if(parallelAudio?audioBlockReason(extra.episode,queueable):running()) throw new Error(parallelAudio?audioBlockReason(extra.episode,queueable):"Ein Auftrag läuft bereits.");
   const id=project.id;
   submitting=true;
-  try { await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project); }
+  let response;
+  try { response=await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project); }
   finally { submitting=false; }
+  if(response?.queued){notice(`Freigegeben und eingereiht: Platz ${Number(response.position)} der Warteschlange. Die Folge startet von selbst, sobald ein Platz frei ist.`,"ok");render();return response;}
   // Checks and voice samples answer inside the drawer, so it opens for them.
   if(["check","audio_sample","audio_samples"].includes(action))drawerOpen=true;
   navigatePage(recommendedPage(),{automatic:true,push:false});
   if(action==="assistant")scrollChatToEnd();
+  return response;
 }
 function jobSignature(job) { return job?`${job.id}:${job.status}`:""; }
 function projectJobSignature(p) { return [jobSignature(p?.job),jobSignature(p?.main_job),...(p?.audio_jobs||[]).map(jobSignature)].join("|"); }
@@ -2097,7 +2200,7 @@ document.addEventListener("click",event=>{
     if(action==="store-key"){
       if(!await storeKey(button.dataset.keyField||"api-key"))throw new Error("Bitte zuerst den OpenRouter-Key eingeben.");
       if(button.dataset.thenResume){await resumeFrom(button);return;}
-      lastJobView="";stopHtml="";refreshAudioPanel();renderJob();notice("Key im Sitzungsspeicher hinterlegt.","ok");return;
+      lastJobView="";stopHtml="";render();notice("Key im Sitzungsspeicher hinterlegt.","ok");return;
     }
     if(action==="resend-chat"){
       const last=[...(project.chat||[])].reverse().find(m=>m.role==="user");
@@ -2122,6 +2225,20 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/jev_probe`,{enabled});
       project=await api(`/api/projects/${project.id}`);render();
       notice(enabled?(boot.key_available?"Jev ist dabei: Neue Skriptläufe suchen Lücken zusätzlich mit Jev.":"Jev ist dabei. Für neue Skriptläufe noch den OpenRouter-Key unter Anbieter und Schlüssel hinterlegen."):"Jev ist aus: Neue Skriptläufe suchen Lücken nur mit der Wortsuche.","ok");return;
+    }
+    if(action==="unqueue"){
+      await api(`/api/projects/${project.id}/audio_queue`,{episode:button.dataset.episode});
+      project=await api(`/api/projects/${project.id}`);render();notice("Aus der Warteschlange genommen.","ok");return;
+    }
+    if(action==="audio-all"){
+      if(!$("audio-approve-all")?.checked)throw new Error("Bitte bestätigen, dass du diese Skripte gelesen hast.");
+      const rows=pendingRecordings();let started=0,queued=0;
+      for(const e of rows){
+        const response=await api(`/api/projects/${project.id}/start`,{action:"audio",...audioRequest(e.script.episode_id),approve_audio:true});
+        if(response?.queued)queued++;else started++;
+      }
+      project=await api(`/api/projects/${project.id}`);lastJobSignature=projectJobSignature(project);render();
+      notice(`${rows.length} Folgen freigegeben: ${started} starten jetzt, ${queued} warten in der Warteschlange und starten von selbst.`,"ok");return;
     }
     if(action==="text-switch"){
       const choice=button.dataset.choice||$("text-switch-choice")?.value||"claude_first";
@@ -2197,6 +2314,7 @@ document.addEventListener("click",event=>{
     if(action==="revise"){extra.message=$("script-feedback").value;extra.episode=project.episodes[episodeIndex].script.episode_id;}
     if(action==="resume"){extra.run_id=button.dataset.runId||project.job?.run?.run_id||project.run?.run_id;if(button.dataset.episode)extra.episode=button.dataset.episode;}
     if(action==="audio")Object.assign(extra,audioRequest(button.dataset.episode));
+    if(action==="expression")extra.episodes=button.dataset.episode?[button.dataset.episode]:[];
     await start(action,extra);
     // A sent request leaves no stale draft behind; unsent drafts survive re-renders elsewhere.
     if(action==="replan"&&$(button.dataset.feedback||"outline-feedback"))$(button.dataset.feedback||"outline-feedback").value="";

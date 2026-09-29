@@ -1,5 +1,6 @@
 import io
 import json
+import time
 import shutil
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from pydantic import ValidationError
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.scripting import run_script
-from podcast_automate.speech import (AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech, PausePolicy,
+from podcast_automate.speech import (RATE_LIMIT_RETRIES, AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech, PausePolicy,
                                     SPEECH_ENDPOINT, SPEECH_VERSION, audio_catalog, audio_generation_record,
                                     same_audio_generation, speech_settings, split_input)
 from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
@@ -76,7 +77,7 @@ class SpeechTests(unittest.TestCase):
         self.assertNotIn("test-key", str(raised.exception))
 
     def test_http_failures_do_not_retry_or_echo_provider_messages(self):
-        for code in (302, 400, 401, 402, 429, 503):
+        for code in (302, 400, 401, 402, 503):
             with self.subTest(code=code), patch("podcast_automate.speech.build_opener") as build:
                 build.return_value.open.side_effect = HTTPError(SPEECH_ENDPOINT, code, "test-key", {}, io.BytesIO(b"test-key"))
                 with self.assertRaises(AppError) as raised:
@@ -84,6 +85,33 @@ class SpeechTests(unittest.TestCase):
                 self.assertEqual(build.return_value.open.call_count, 1)
                 self.assertNotIn("test-key", str(raised.exception))
         self.assertEqual(list(self.cache.glob("*.wav")), [])
+
+    def test_a_rate_limit_throttles_every_recording_and_is_asked_again(self):
+        """The user's choice of 2026-09-29: start every approved episode at once and throttle on 429 instead of stopping.
+        The pause is shared through the cache folder, so a second recording waits as well."""
+        limited = lambda retry_after=None: HTTPError(SPEECH_ENDPOINT, 429, "quota", {"Retry-After": retry_after} if retry_after else {},
+                                                     io.BytesIO(b"test-key"))
+        with patch("podcast_automate.speech.build_opener") as build, patch("podcast_automate.speech.time.sleep") as pause:
+            build.return_value.open.side_effect = [limited("7"), limited(), response()]
+            path = self.engine.synthesize("Hallo", "Aoede", "de-DE", self.cache)
+            self.assertTrue(path.exists())
+            self.assertEqual(build.return_value.open.call_count, 3)
+            waits = [call.args[0] for call in pause.call_args_list]
+            self.assertTrue(any(6 < wait <= 7 for wait in waits), waits)
+            shared = json.loads((self.cache / "throttle.json").read_text(encoding="utf-8"))
+            self.assertEqual(shared["attempt"], 2)
+            # Another recording started now waits for the shared pause before its first request.
+            pause.reset_mock()
+            write_json(self.cache / "throttle.json", {"until": time.time() + 30, "attempt": 1})
+            build.return_value.open.side_effect = [response()]
+            GeminiSpeech("test-key").synthesize("Servus", "Aoede", "de-DE", self.cache)
+            self.assertTrue(pause.call_args_list and 25 < pause.call_args_list[0].args[0] <= 30)
+            # A limit that outlasts every retry stops the recording as before, without echoing the key.
+            build.return_value.open.side_effect = [limited() for _ in range(RATE_LIMIT_RETRIES + 1)]
+            with self.assertRaises(AppError) as stopped:
+                GeminiSpeech("test-key").synthesize("Grüß dich", "Aoede", "de-DE", self.cache)
+        self.assertEqual((stopped.exception.code, stopped.exception.status), ("openrouter_rate_limit", "waiting_for_quota"))
+        self.assertNotIn("test-key", str(stopped.exception))
 
     def test_an_account_limited_to_zero_data_retention_names_the_privacy_setting(self):
         body = (b'{"error":{"message":"0 endpoints out of 1 requested are available matching your guardrail restrictions '
@@ -325,8 +353,10 @@ class GeminiEpisodeTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_quota_pause_reuses_finished_segment_and_rejects_changed_voice_on_resume(self):
-        with patch("podcast_automate.speech.build_opener") as build:
-            build.return_value.open.side_effect = [response(self.pcm), HTTPError(SPEECH_ENDPOINT,429,"quota",{},io.BytesIO())]
+        # A rate limit that outlasts every throttled retry still pauses the run.
+        with patch("podcast_automate.speech.build_opener") as build, patch("podcast_automate.speech.time.sleep"):
+            build.return_value.open.side_effect = [response(self.pcm), *[HTTPError(SPEECH_ENDPOINT,429,"quota",{},io.BytesIO())
+                                                                         for _ in range(RATE_LIMIT_RETRIES + 1)]]
             run = run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=self.choice, api_key="test-key")
             self.assertEqual(run.status, "waiting_for_quota")
             different = {**self.choice, "voices":{"host_a":"Charon","host_b":"Aoede"}}

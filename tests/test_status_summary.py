@@ -102,6 +102,21 @@ class StatusSummaryTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "studio/job.json").read_text())["status"], "running")
         self.assertNotIn("private-provider-details", (self.work / "status_reports/state.json").read_text())
 
+    def test_a_new_start_of_the_run_gets_its_paused_report_back(self):
+        """Three failures paused the report for the rest of the run (2026-09-29: frozen for hours after three
+        timeouts); the next start of the run tries again."""
+        write_json(self.work / "status_reports/state.json", {"job_id": "job_one", "errors": 3, "calls": 10})
+        with patch("podcast_automate.status_summary.CodexAdapter.structured", return_value=(ProgressDigest(
+                summary="Die Prüfung läuft.", evidence_ids=["live_events_available"]), {})) as model:
+            self.update()
+            model.assert_not_called()
+            self.seconds += 180
+            self.job = {**self.job, "id": "job_two"}
+            write_json(self.root / "studio/job.json", self.job)
+            self.update()
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(summary_view(self.work)["status"], "ready")
+
     def test_model_is_not_called_after_status_budget_limit(self):
         write_json(self.work / "status_reports/state.json", {"calls": 100})
         with patch("podcast_automate.status_summary.CodexAdapter.structured") as model:

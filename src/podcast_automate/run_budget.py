@@ -443,22 +443,35 @@ def approve_fresh_attempts(root, run_id):
         from .script_pipeline import MAX_REVIEW_REPAIRS, NOTED_CATEGORIES
         from .teaching_research import stuck_supplements, supersede_corrections
         folders = stuck_supplements(work)
+        # A series correction that failed its evidence check, or a spent round the series review still objects to:
+        # set aside, so the next resume corrects the series in a new round (the user's explicit choice).
+        failed_series = None
+        series = work / "series_repair.json"
+        stage = manifest.stages.get("review")
+        objected = bool(stage and stage.error and stage.error.code == "series_review_failed")
+        if series.exists() and ((json.loads(series.read_text(encoding="utf-8")).get("receipt") or {}).get("failure")
+                                or objected):
+            failed_series = series
         reviews = []
         for path in sorted((work / "reviews").glob("ep_*_checkpoint.json")):
             saved = json.loads(path.read_text(encoding="utf-8"))
             issues = (saved.get("review") or {}).get("issues") or []
             if saved.get("repairs", 0) >= MAX_REVIEW_REPAIRS and any(i["category"] not in NOTED_CATEGORIES for i in issues):
                 reviews.append((path, saved))
-        if not folders and not reviews:
-            raise AppError("Keine Nachrecherche und keine Skriptprüfung dieses Laufs hat ihre Korrekturversuche verbraucht.",
-                           code="invalid_retry_request")
+        if not folders and not reviews and not failed_series:
+            raise AppError("Keine Nachrecherche, keine Skriptprüfung und keine Serienkorrektur dieses Laufs hat ihre "
+                           "Korrekturversuche verbraucht.", code="invalid_retry_request")
+        if failed_series:
+            number = 1 + len(list(work.glob("series_repair_superseded_*.json")))
+            failed_series.replace(work / f"series_repair_superseded_{number:02d}.json")
         for folder in folders:
             supersede_corrections(folder)
         for path, saved in reviews:
             # The draft and its review stay; the next resume repairs against that review again, MAX_REVIEW_REPAIRS times.
             write_json(path, {**saved, "repairs": 0})
         record = {"supplements": [folder.relative_to(work).as_posix() for folder in folders],
-                  "reviews": [path.name.removesuffix("_checkpoint.json") for path, _ in reviews], "approved_at": now()}
+                  "reviews": [path.name.removesuffix("_checkpoint.json") for path, _ in reviews],
+                  "series_repair": bool(failed_series), "approved_at": now()}
         path = work / "fresh_attempts.json"
         write_json(path, [*(json.loads(path.read_text(encoding="utf-8")) if path.exists() else []), record])
         return record

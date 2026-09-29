@@ -11,8 +11,11 @@ from .call_activity import CALL_SUBJECT
 from .models import Contract, now
 from .storage import write_json
 
-# Parallel Gemini audio jobs across the Studio; local Qwen always runs alone.
-MAX_PARALLEL = 3
+# Parallel Gemini audio jobs across the Studio; local Qwen always runs alone. Every approved episode starts at once
+# (the user's choice, 2026-09-29): OpenRouter names no concurrency limit for paid models, each recording sends its
+# segments one after another, and a 429 throttles all of them together (speech.throttle). The bound only keeps a
+# runaway in check; 30 covers both current series together.
+MAX_PARALLEL = 30
 # Parallel text mode: independent research questions, or the episodes of one script stage, at once.
 MAX_PARALLEL_TEXT = 5
 
