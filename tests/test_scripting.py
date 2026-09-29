@@ -31,7 +31,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
     def test_model_and_effort_apply_to_every_text_stage_and_resume_keeps_them(self):
         selections = []
         def selected(adapter, *args, **kwargs):
-            selections.append((adapter.settings.codex_model, adapter.reasoning_effort))
+            selections.append((adapter.settings.codex_model, adapter.reasoning_effort, kwargs["prompt_version"]))
             return self.model(*args, **kwargs)
         with patch("podcast_automate.scripting.CodexAdapter.structured", autospec=True, side_effect=selected):
             first = run_script(self.root, model="gpt-6-astra", reasoning_effort="xhigh")
@@ -41,7 +41,11 @@ class ScriptingTests(fixtures.ScriptProjectCase):
                 run_script(self.root, resume=True, run_id=first.run_id, reasoning_effort="low")
         self.assertEqual(second.status, "completed")
         self.assertEqual(changed.exception.code, "inputs_changed")
-        self.assertEqual(selections, [("gpt-6-astra", "xhigh")] * 11)
+        # The run's level for every call, except the listener, whose stage asks at most at medium (STAGE_EFFORT_CAPS).
+        self.assertEqual(len(selections), 11)
+        self.assertEqual({(model, effort) for model, effort, version in selections if not version.startswith("listener_readback")},
+                         {("gpt-6-astra", "xhigh")})
+        self.assertEqual({effort for _, effort, version in selections if version.startswith("listener_readback")}, {"medium"})
         request = json.loads((self.root / "runs" / first.run_id / "script_request.json").read_text(encoding="utf-8"))
         self.assertEqual(request["text_generation"]["reasoning_effort"], "xhigh")
 

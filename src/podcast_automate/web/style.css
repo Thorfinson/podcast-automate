@@ -301,6 +301,8 @@ dd{margin:0;overflow-wrap:anywhere}
 .podcast-download{margin-top:12px}
 .download-all{display:inline-flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:12px 18px;background:var(--green);color:#fff;border-radius:8px;text-decoration:none;font-weight:600}
 .download-all:hover{filter:brightness(1.1)}
+.download-all.small{padding:6px 12px;gap:4px 10px;font-size:14px}
+.download-all.small span{font-size:12px}
 .download-all span{font-size:13px;font-weight:400}
 .download-all:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 .audio-track{padding:16px 0;border-top:1px solid var(--line)}
@@ -385,3 +387,9 @@ dd{margin:0;overflow-wrap:anywhere}
 .audio-job.stopped .job-top strong{color:#8a2f22}
 .current-step{overflow-wrap:anywhere}
 .expression-tag{background:var(--amber-soft);color:#7a4a0c;border-radius:4px;padding:0 3px;font-size:.88em;white-space:nowrap}
+
+.server-note{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:12px}
+.server-note p{margin:0}
+.production-report table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+.production-report th,.production-report td{text-align:left;padding:3px 6px;border-bottom:1px solid var(--line,#ddd)}
+.production-report h3{font-size:15px;margin:8px 0 4px}

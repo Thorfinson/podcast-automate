@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Literal
 
@@ -539,8 +541,13 @@ def validate_teaching_review(review, design, script, reader=None):
                                code="invalid_teaching_review", status="blocked")
 
 
-def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_knowledge, depth, series_context=None):
-    """Fresh reader has only dialogue and questions. Examiner sees expected reasoning too."""
+def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_knowledge, depth, series_context=None,
+                    parallel=False):
+    """Fresh reader has only dialogue and questions. Examiner sees expected reasoning too.
+
+    The listener and the editorial review read the script independently. With ``parallel`` (a run whose text
+    work is parallel) both ask at once and the teaching review, which reads the listener's answers, follows:
+    one after another they took about fifteen minutes per pass on the runs of 2026-09-29."""
     signature = digest({"version": TEACHING_VERSION, "script": script.model_dump(), "design": design.model_dump(),
                         "audience": audience, "prior_knowledge": prior_knowledge, "depth": depth,
                         "editorial": TERMINOLOGY + TEACHING_SCOPE + EPISODE_FRAMING,
@@ -570,16 +577,27 @@ def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_
     reader_payload = {"audience": audience, "prior_knowledge": prior_knowledge,
                       "script": script.model_dump(),
                       "questions": [{"objective_id": g.objective_id, "question": g.question} for g in design.objectives]}
-    reader = cached("listener", ListenerReadback,
-        TERMINOLOGY + TEACHING_SCOPE +
-        instructions("listener_readback") + "\n" +
-        json.dumps(reader_payload, ensure_ascii=False), "listener_readback.v2",
-        lambda answer: validate_readback(answer, design, script))
-    editorial = cached("editorial", EditorialReview,
-        TERMINOLOGY + TEACHING_SCOPE + EPISODE_FRAMING +
-        instructions("editorial_review") + "\n" + json.dumps({"audience": audience, "prior_knowledge": prior_knowledge,
-            "depth": depth, "series_context": series_context, "script": script.model_dump()}, ensure_ascii=False),
-        EDITORIAL_REVIEW_VERSION, lambda answer: validate_editorial(answer, script))
+    def listen():
+        return cached("listener", ListenerReadback,
+            TERMINOLOGY + TEACHING_SCOPE +
+            instructions("listener_readback") + "\n" +
+            json.dumps(reader_payload, ensure_ascii=False), "listener_readback.v2",
+            lambda answer: validate_readback(answer, design, script))
+
+    def edit():
+        return cached("editorial", EditorialReview,
+            TERMINOLOGY + TEACHING_SCOPE + EPISODE_FRAMING +
+            instructions("editorial_review") + "\n" + json.dumps({"audience": audience, "prior_knowledge": prior_knowledge,
+                "depth": depth, "series_context": series_context, "script": script.model_dump()}, ensure_ascii=False),
+            EDITORIAL_REVIEW_VERSION, lambda answer: validate_editorial(answer, script))
+
+    if parallel:
+        # Each thread carries the caller's context, so every call still names its episode (execution.CALL_SUBJECT).
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="assess") as pool:
+            listening, editing = pool.submit(copy_context().run, listen), pool.submit(copy_context().run, edit)
+            reader, editorial = listening.result(), editing.result()
+    else:
+        reader, editorial = listen(), edit()
     review = cached("review", TeachingReview,
         TERMINOLOGY + TEACHING_SCOPE + EPISODE_FRAMING +
         instructions("teaching_review") + "\n" +

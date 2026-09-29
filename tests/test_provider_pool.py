@@ -90,7 +90,7 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         self.assertEqual(run.status, "completed")
         self.assertEqual(len(self.calls), 11)
         self.assertEqual([c[0] for c in claude_calls], ["call_001", "call_002", "call_003"])
-        self.assertEqual(claude_calls[0][1:], ("claude-opus-5-5", "xhigh"))
+        self.assertEqual(claude_calls[0][1:], ("claude-sonnet-5-5", "high"))
         self.assertEqual(codex_calls[0], ("call_003", "gpt-6-astra", "xhigh"))
         self.assertEqual(len(codex_calls), 9)
         work = self.root / "runs" / run.run_id
@@ -105,7 +105,7 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         self.assertFalse((work / "calls/call_004/provider_switch.json").exists())
         request = json.loads((work / "script_request.json").read_text(encoding="utf-8"))
         self.assertEqual((request["text_generation"]["provider"], request["text_generation"]["prefer"]), ("auto", "claude_code"))
-        self.assertEqual(request["text_generation"]["candidates"]["claude_code"], {"model": "claude-opus-5-5", "reasoning_effort": "xhigh"})
+        self.assertEqual(request["text_generation"]["candidates"]["claude_code"], {"model": "claude-sonnet-5-5", "reasoning_effort": "high"})
         self.assertEqual(request["text_generation"]["adapter_versions"], {"claude_code": "claude_code.v1"})
         self.assertEqual(read_yaml(self.root / "reports/script_quality.yaml")["text_generation"]["provider"], "auto")
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=AssertionError("finished")), \
@@ -198,10 +198,12 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         self.assertEqual(resumed.status, "completed")
         self.assertEqual(resumed.input_hash, run.input_hash, "the inputs keep the selection the run started with")
         self.assertEqual(len(claude_calls), 3, "Astra is asked first now, and Claude is out anyway")
-        self.assertEqual(set(codex_calls), {("gpt-6-astra", "xhigh")})
+        # Listener readbacks ask at their stage level (text_settings.STAGE_EFFORT_CAPS), every other call at xhigh.
+        self.assertEqual(set(codex_calls), {("gpt-6-astra", "xhigh"), ("gpt-6-astra", "medium")})
         self.assertEqual((selection["provider"], selection["prefer"]), ("auto", "codex_cli"))
+        # Claude works with the catalog default after a switch (Sonnet 5.5 at high), not the run's Opus level.
         self.assertEqual(selection["candidates"], {"codex_cli": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"},
-                                                   "claude_code": {"model": "claude-opus-5-5", "reasoning_effort": "medium"}})
+                                                   "claude_code": {"model": "claude-sonnet-5-5", "reasoning_effort": "high"}})
         self.assertEqual({path.name: path.read_bytes() for path in work.glob("drafts/*.json")} | finished,
                          {path.name: path.read_bytes() for path in work.glob("drafts/*.json")})
         request = json.loads((work / "script_request.json").read_text(encoding="utf-8"))
@@ -222,7 +224,7 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
             return AdapterPool(settings, selection, **kwargs)
         with patch("podcast_automate.research.AdapterPool", side_effect=pool):
             self.assertEqual(run_research(self.root, resume=True, run_id=research, api_key="test-key").status, "completed")
-        self.assertEqual((pools[0][0]["provider"], pools[0][0]["reasoning_effort"], pools[0][1]), ("claude_code", "xhigh", None))
+        self.assertEqual((pools[0][0]["provider"], pools[0][0]["reasoning_effort"], pools[0][1]), ("claude_code", "high", None))
         with self.assertRaises(AppError) as unlisted:
             approve_text_switch(self.root, research, "openrouter", model="not/listed")
         self.assertEqual(unlisted.exception.code, "invalid_text_switch")
@@ -252,7 +254,8 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
                 patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
             run = run_script(self.root, backend="claude_code", reasoning_effort="max")
         self.assertEqual(run.status, "completed")
-        self.assertEqual(set(seen), {("claude-opus-5-5", "max")})
+        # The run's level for every call but the listener's, which asks at its stage level.
+        self.assertEqual(set(seen), {("claude-sonnet-5-5", "max"), ("claude-sonnet-5-5", "medium")})
         request = json.loads((self.root / "runs" / run.run_id / "script_request.json").read_text(encoding="utf-8"))
         self.assertEqual(request["text_generation"]["adapter_version"], "claude_code.v1")
         choice = json.loads((self.root / "runs" / run.run_id / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))
@@ -269,24 +272,52 @@ class PoolUnitTests(unittest.TestCase):
         self.assertEqual((mode, prefer, set(candidates)), ("auto", "claude_code", {"codex_cli", "claude_code"}))
         auto = text_generation_settings(config, backend="auto")
         self.assertEqual(auto["candidates"]["codex_cli"], {"model": "gpt-6-astra", "reasoning_effort": "xhigh"})
-        self.assertEqual(auto["candidates"]["claude_code"], {"model": "claude-opus-5-5", "reasoning_effort": "xhigh"})
+        # Sonnet 5.5 at high replaced Opus 5.5 as the Claude default on 2026-09-29 (the user's choice).
+        self.assertEqual(auto["candidates"]["claude_code"], {"model": "claude-sonnet-5-5", "reasoning_effort": "high"})
         self.assertEqual(auto["prefer"], "claude_code")
         self.assertIsNone(auto["model"])
         # One level both subscriptions know applies to both candidates; a level only one knows is refused.
         high = text_generation_settings(config, backend="auto", reasoning_effort="high")
         self.assertEqual(high["candidates"]["codex_cli"], {"model": "gpt-6-astra", "reasoning_effort": "high"})
-        self.assertEqual(high["candidates"]["claude_code"], {"model": "claude-opus-5-5", "reasoning_effort": "high"})
+        self.assertEqual(high["candidates"]["claude_code"], {"model": "claude-sonnet-5-5", "reasoning_effort": "high"})
         for kwargs in ({"model": "x"}, {"reasoning_effort": "max"}, {"max_output_tokens": 10}):
             with self.subTest(kwargs=kwargs), self.assertRaises(AppError):
                 text_generation_settings(config, backend="auto", **kwargs)
         claude = text_generation_settings(config, backend="claude_code")
-        self.assertEqual((claude["model"], claude["reasoning_effort"]), ("claude-opus-5-5", "xhigh"))
+        self.assertEqual((claude["model"], claude["reasoning_effort"]), ("claude-sonnet-5-5", "high"))
         with self.assertRaises(AppError):
             text_generation_settings(config, backend="claude_code", model="anthropic/claude-fable-5.1")
+        # The bare aliases name the newest model of their family; Opus stays selectable next to the Sonnet default.
         self.assertEqual(text_generation_settings(config, backend="claude_code", model="opus")["model"], "claude-opus-5-5")
-        # A named Opus 5 stays Opus 5; only the bare alias follows the catalog default.
+        self.assertEqual(text_generation_settings(config, backend="claude_code", model="sonnet")["model"], "claude-sonnet-5-5")
+        # A named Opus 5 stays Opus 5.
         self.assertEqual(text_generation_settings(config, backend="claude_code", model="anthropic/claude-opus-5")["model"],
                          "claude-opus-5")
+
+
+    def test_a_listener_or_expression_call_asks_at_its_stage_level_and_records_the_runs(self):
+        config = TopicBrief(topic="Thema")
+        seen = []
+
+        def claude(adapter, prompt, output_type, directory, **kwargs):
+            seen.append((kwargs["prompt_version"], adapter.reasoning_effort))
+            return TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz"), {}
+
+        with tempfile.TemporaryDirectory() as temp:
+            for effort in ("xhigh", "low"):
+                pool = AdapterPool(config.runtime, text_generation_settings(config, backend="claude_code",
+                                                                            reasoning_effort=effort))
+                with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
+                    for version in ("listener_readback.v2", "audio_expression.v1", "script_review.v9-gaps-notes"):
+                        directory = Path(temp) / effort / version
+                        pool.structured("Prompt", TextProbeOutput, directory, prompt_version=version)
+                        choice = json.loads((directory / "provider_choice.json").read_text(encoding="utf-8"))
+                        capped = effort == "xhigh" and not version.startswith("script_review")
+                        self.assertEqual(choice.get("run_effort"), "xhigh" if capped else None)
+        # Evidence reviews keep the run's level; a level already below the cap stays as it is.
+        self.assertEqual(seen, [("listener_readback.v2", "medium"), ("audio_expression.v1", "medium"),
+                                ("script_review.v9-gaps-notes", "xhigh"), ("listener_readback.v2", "low"),
+                                ("audio_expression.v1", "low"), ("script_review.v9-gaps-notes", "low")])
 
 
 class ProbeCliAndDoctorTests(unittest.TestCase):
@@ -389,7 +420,7 @@ class StatusAndStudioTests(test_studio.StudioHttpTests):
 
         with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
             perform(self.root, {"action": "assistant", "message": "Hilfe", "text": {"provider": "claude_code"}})
-        self.assertEqual(seen, [("claude-opus-5-5", "xhigh")])
+        self.assertEqual(seen, [("claude-sonnet-5-5", "high")])
         QuotaFakes(self, codex=False)
         with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude), \
                 patch("podcast_automate.studio_worker.CodexAdapter.structured", side_effect=AssertionError("codex is out")):
@@ -423,7 +454,7 @@ class StatusAndStudioTests(test_studio.StudioHttpTests):
         boot = json.loads(self.request("/api/bootstrap")[1])
         self.assertEqual(boot["text_defaults"]["provider"], "auto")
         self.assertTrue(boot["capabilities"]["subscription_auto"])
-        self.assertEqual(boot["text_catalog"]["auto_candidates"]["claude_code"]["model"], "claude-opus-5-5")
+        self.assertEqual(boot["text_catalog"]["auto_candidates"]["claude_code"]["model"], "claude-sonnet-5-5")
         self.assertEqual(boot["text_catalog"]["effort_equivalents"]["xhigh"], "xhigh")
         self.assertEqual(detail["text"]["provider"], "codex_cli")
         self.assertEqual((detail["job"]["text_switchable"], detail["job"]["text_switch_choice"]), (True, "astra_first"))
@@ -446,13 +477,21 @@ class StatusAndStudioTests(test_studio.StudioHttpTests):
         self.assertEqual((after["text_switched"], after["text_switch_choice"]), (True, "claude_first"))
         self.assertEqual(after["text_generation"]["prefer"], "claude_code")
         self.assertEqual(after["text_generation"]["candidates"]["codex_cli"], {"model": "gpt-6-astra", "reasoning_effort": "xhigh"})
-        self.assertEqual(after["text_generation"]["candidates"]["claude_code"]["reasoning_effort"], "medium")
+        # Claude continues with the catalog default, Sonnet 5.5 at high, not the run's Opus 5.5 at medium (2026-09-29).
+        self.assertEqual(after["text_generation"]["candidates"]["claude_code"],
+                         {"model": "claude-sonnet-5-5", "reasoning_effort": "high"})
         self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", "choice": "astra_first"})
         self.assertEqual(json.loads(self.request("/api/projects/example")[1])["job"]["text_generation"]["prefer"], "codex_cli")
         for wrong in ({"choice": "gemini"}, {"choice": "openrouter", "model": "not/listed"}):
             status, _, _ = self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", **wrong})
             self.assertEqual(status, 400, wrong)
-        # Choosing what the run started with removes the receipt.
+        self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", "choice": "claude"})
+        opus = json.loads(self.request("/api/projects/example")[1])["job"]
+        self.assertEqual((opus["text_switched"], opus["text_generation"]["model"], opus["text_generation"]["reasoning_effort"]),
+                         (True, "claude-sonnet-5-5", "high"))
+        # Choosing what the run started with removes the receipt: a run that started on the default.
+        claude = {**claude, "model": "claude-sonnet-5-5", "reasoning_effort": "high"}
+        write_json(work / "script_request.json", {"text_generation": claude})
         self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", "choice": "claude"})
         back = json.loads(self.request("/api/projects/example")[1])["job"]
         self.assertEqual((back["text_switched"], (work / "text_switch.json").exists()), (False, False))

@@ -6,8 +6,8 @@ Which tests to run when, for agents and contributors. Claude Code loads this fil
 
 | Suite | Command | Size | Needs |
 | --- | --- | --- | --- |
-| Python | `python -m unittest discover -s tests` | about 720 tests, about 200 s | `ffmpeg` and `ffprobe` on PATH |
-| Browser logic | `node --test tests/studio_ui.test.cjs` | 117 tests, under 1 s | Node 22 |
+| Python | `python -m unittest discover -s tests` | about 950 tests, about 350 s | `ffmpeg` and `ffprobe` on PATH |
+| Browser logic | `node --test tests/studio_ui.test.cjs` | 150 tests, under 1 s | Node 22 |
 
 Model calls, downloads and speech synthesis are simulated in both suites; FFmpeg assembly is real.
 No account, API key, GPU or network is needed. Never add a test that performs a real model call.
@@ -76,7 +76,7 @@ Derived from imports and patch targets in `tests/`. Regenerate with the snippet 
 - `editorial`, `prompts` → `test_prompts`, `test_teaching`, `test_episode_framing`
 - `jev` → `test_jev`, `test_teaching_research` (a German gap only Jev finds, end to end), `test_studio` (the switch and the key handover); `evals/jev_decisions/run.py` measures it against real runs by hand
 - `expression` → `test_expression`, `test_prompts`; the recording tests there run `episode_audio` with a Gemini choice and a patched `episode_audio.AdapterPool`, `tag_episode` for reading and `studio_worker.express_published` after a script run; `test_studio` covers the approval bound to the tags read
-- `execution`, `parallel_speech` → `test_parallel`, `test_research_parallel`
+- `execution`, `parallel_speech` → `test_parallel`, `test_research_parallel`; the Jev default of a new German project is asserted in `test_studio` and its keyless fallback in `test_teaching_research`
 - `logs` → `test_logs`, `test_cli`
 - `openrouter` → `test_openrouter`, `test_setup_schema`
 - `polishing` → `test_polishing`, `test_scripting`; `compare_dialogue` is also driven by `evals/dialogue_polishing/run.py`
@@ -88,7 +88,7 @@ Derived from imports and patch targets in `tests/`. Regenerate with the snippet 
 - `run_budget`, `script_budget`, `script_checkpoints` → `test_run_budget`, `test_script_budget`, `test_question_research`, `test_research`, `test_research_parallel`, `test_research_plan_gate` (plan approvals and their receipts), `test_research_resilience`, `test_studio`, `test_studio_progress`, `test_teaching_research`, `test_provider_pool`
 - `provider_pool`, `subscriptions`, `claude_code` → `test_provider_pool`, `test_subscriptions`, `test_claude_code`, `test_research_resilience`, `test_studio`
 - `scripting`, `script_pipeline`, `script_checks`, `script_artifacts`, `script_models`, `script_evidence` → `test_scripting`, `test_cli`, `test_teaching`, `test_teaching_research`, `test_polishing`, `test_parallel`, `test_planning`, `test_provider_pool`, `test_run_budget`, `test_series_review`, `test_episode_framing`, `test_openrouter`, `test_speech`, `test_studio`, `test_studio_scripts`, `test_text_selection`, `test_evidence_contracts`, `test_episode_audio`, `test_research_quality`, `test_script_advisories`
-- `series_review` → `test_series_review`, `test_scripting`, `test_cli` for the standalone `pla series-review`
+- `series_review` → `test_series_review`, `test_scripting`, `test_cli` for the standalone `pla series-review`. `test_series_review` also stops a run with a series correction at each of its model calls and resumes it (about 25 s); it guards every checkpoint of `script_pipeline`, `teaching` and `series_review`
 - `sources`, `pdf_text`, `downloads` → `test_downloads`, `test_attachments`, `test_evidence_contracts`, `test_question_research`, `test_research`, `test_research_migration`, `test_research_parallel`, `test_research_resilience`, `test_teaching_research`
 - `spoken_forms` → `test_spoken_forms`, `test_audio`, `test_episode_audio`, `test_speech`; the cache-key rule shared with `qwen_worker` is pinned by `test_worker_cache`
 - `storage` → `test_storage` for the `replace_file` and `read_text` retries; every other test module builds on the rest of it, so the full suite is the gate (see the table above). A run file that one research worker writes while another may read it (`budget.json`, `research_questions.json`) is read through `storage.read_text`; a raw `Path.read_text` there is a Windows race that `test_research_parallel` hits in about one run of three
@@ -96,9 +96,10 @@ Derived from imports and patch targets in `tests/`. Regenerate with the snippet 
 - `speech`, `voice_samples`, `qwen_worker`, `platforms` → `test_expression`, `test_speech`, `test_voice_samples`, `test_parallel`, `test_setup_schema`, `test_studio`, `test_platforms`, `test_worker_cache`, `test_episode_audio`, `test_audio`
 - `status_summary`, `research_status` → `test_status_summary`, `test_research_status`, `test_provider_pool`, `test_research_parallel`
 - `subscriptions` → `test_subscriptions`, `test_provider_pool`
-- `studio`, `studio_worker`, `studio_progress`, `studio_scripts`, `studio_messages` → `test_expression`, `test_studio`, `test_studio_progress`, `test_studio_scripts`, `test_studio_trash`, `test_attachments`, `test_parallel`, `test_platforms`, `test_provider_pool`, `test_research_parallel`, `test_research_plan_gate` (the plan approval route and the gated Studio resume), `test_research_resilience`, `test_setup_schema`, `test_speech`, `test_teaching`, `test_text_selection`, `test_question_research`, `test_run_budget`
+- `studio_allowances`, `production_report`, and the restart when idle in `studio` → `test_studio_automation`; the page side is in the browser suite
+- `studio`, `studio_worker`, `studio_progress`, `studio_scripts`, `studio_messages` → `test_expression`, `test_studio`, `test_studio_automation`, `test_studio_progress`, `test_studio_scripts`, `test_studio_trash`, `test_attachments`, `test_parallel`, `test_platforms`, `test_provider_pool`, `test_research_parallel`, `test_research_plan_gate` (the plan approval route and the gated Studio resume), `test_research_resilience`, `test_setup_schema`, `test_speech`, `test_teaching`, `test_text_selection`, `test_question_research`, `test_run_budget`
 - `teaching`, `teaching_research` → `test_teaching`, `test_teaching_research`, `test_polishing`, `test_scripting`, `test_run_budget`
-- `text_settings` → `test_text_selection`, `test_research_resilience`, and `test_cli` for the doctor catalog line
+- `text_settings` → `test_text_selection`, `test_research_resilience`, `test_provider_pool` (defaults and the stage levels of `stage_effort`), and `test_cli` for the doctor catalog line
 
 Regenerate the mapping:
 
