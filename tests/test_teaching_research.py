@@ -605,6 +605,44 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertTrue(all(stage.attempts == 1 for stage in resumed.stages.values()))
         self.assertEqual((work / "gap_probes.json").read_bytes(), before)
 
+    GERMAN = {"gap_de": "Die Regel, nach der jede Konfiguration ihren Wert erhält, fehlt."}
+
+    def test_a_german_gap_the_words_miss_is_found_by_jev_and_read_like_a_term_hit(self):
+        """Asimov, 2026-09-29: 15 of 23 German gaps stood as no_hits against mostly English sources. With the Jev
+        probe the section holding the answer becomes a hit to read, and the supplement round settles it as a term
+        hit would be settled. The OpenRouter key reaches no file of the run."""
+        self.forget_research_reads()
+        rounds, asked = [], []
+
+        def decide(client, state, questions):
+            asked.append(state)
+            return {name: {"type": "noul", "noul": 0.9 if "energy to each configuration" in state else 0.02}
+                    for name in questions}, 0.0001
+        with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.GERMAN), \
+             patch("podcast_automate.jev.JevClient.decide", autospec=True, side_effect=decide), \
+             patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.script_model(rounds)), \
+             patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
+            run = run_script(self.root, jev_probe=True, probe_key="test-key")
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(len(rounds), 1)
+        work = self.root / "runs" / run.run_id
+        probes = self.probes_of(run)
+        self.assertEqual([(row["status"], row["owner_episodes"]) for row in probes], [("resolved", ["ep_001"])])
+        self.assertEqual({hit["via"] for hit in probes[0]["hits"]}, {"jev"}, "the words alone found nothing")
+        report = json.loads((work / "jev_probe.json").read_text(encoding="utf-8"))
+        self.assertEqual((report["status"], report["requests"], report["gaps"]), ("completed", len(asked), 1))
+        request = json.loads((work / "script_request.json").read_text(encoding="utf-8"))
+        self.assertTrue(request["execution"]["jev_probe"])
+        self.assertFalse([path for path in work.rglob("*") if path.is_file() and b"test-key" in path.read_bytes()])
+        # Without the probe the same gap stands as no_hits and costs no supplement round.
+        rounds.clear()
+        with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.GERMAN), \
+             patch("podcast_automate.jev.JevClient.decide", side_effect=AssertionError("not asked")), \
+             patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.script_model(rounds)):
+            plain = run_script(self.root)
+        self.assertEqual([row["status"] for row in self.probes_of(plain)], ["no_hits"])
+        self.assertEqual(rounds, [])
+
     def test_a_gap_whose_hits_stay_unread_blocks_the_review(self):
         self.forget_research_reads()
         with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.SEEDED), \

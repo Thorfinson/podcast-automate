@@ -17,7 +17,8 @@ class LockedGeminiSpeech(GeminiSpeech):
             return super().synthesize(text, voice, language, cache, spoken)
 
 
-def run_parallel_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None):
+def run_parallel_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None,
+                            expression=None):
     engine = LockedGeminiSpeech(api_key, timeout=config.runtime.tts_timeout_seconds, model=choice.model)
     table = table if table is not None else SpokenForms()
     rows, paths = [], []
@@ -25,7 +26,7 @@ def run_parallel_gemini_tts(config, script, root, work, choice, api_key=None, *,
         write_json(work / "tts_progress.json", {"completed_segments": len(rows),
             "total_segments": len(script.segments), "current_segment": segment.segment_id})
         voice = choice.voices[segment.speaker_id]
-        spoken = spoken_text(segment, table, overrides)
+        spoken = (expression or {}).get(segment.segment_id) or spoken_text(segment, table, overrides)
         path = engine.synthesize(segment.text, voice, config.language, root / "cache/audio/gemini", spoken=spoken)
         paths.append(path)
         rows.append({"segment_id": segment.segment_id, "path": path.relative_to(root / "cache/audio").as_posix(),

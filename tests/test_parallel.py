@@ -28,7 +28,7 @@ from tests.script_fixtures import example_script
 from tests.test_speech import response
 
 
-from podcast_automate.speech import AudioChoice
+from podcast_automate.speech import AudioChoice, selected_audio
 
 REMOTE = AudioChoice(provider="openrouter_gemini_tts",
                      voices={"host_a": "Sadaltager", "host_b": "Aoede"}).model_dump()
@@ -143,7 +143,9 @@ class StudioParallelTests(unittest.TestCase):
         folder = self.root / "episodes" / episode
         return {"action": "audio", "episode": episode, "approve_audio": True,
             "script_hash": file_hash(folder / "script.yaml"), "readable_hash": file_hash(folder / "script.md"),
-            "config_hash": project_hash(self.config), "audio_hash": digest(REMOTE)}
+            "config_hash": project_hash(self.config),
+            # The hash the Studio shows: the saved choice, with the expression layer a Gemini choice records.
+            "audio_hash": digest(selected_audio(self.root, self.config).model_dump())}
 
     def process(self, *args, **kwargs):
         pipe = io.StringIO()

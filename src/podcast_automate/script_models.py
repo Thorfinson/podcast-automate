@@ -72,10 +72,18 @@ class ScriptIssue(Contract):
     reason: NonEmpty
 
 
+# Why a follow-up review lets an issue block: a previous issue still open, a segment the repair changed, or a
+# statement the sources show to be wrong (script_pipeline.follow_up_scope).
+ScriptIssueBasis = Literal["previous", "changed", "factual_error", "source_contradiction"]
+
+
 class ScriptReview(Contract):
     issues: list[ScriptIssue]
     limitations: list[str]
     claim_checks: list[SegmentClaimCheck] = Field(default_factory=list)
+    # Follow-up reviews only: one basis per issue, in order; the points outside their scope are advisories.
+    issue_basis: list[ScriptIssueBasis] = Field(default_factory=list)
+    advisories: list[ScriptIssue] = Field(default_factory=list)
 
 
 SCRIPT_SCHEMAS = {

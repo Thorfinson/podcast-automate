@@ -174,6 +174,9 @@ def script_progress(root, run, since=None):
             activity = f"Inhaltsverzeichnis wird korrigiert · Korrekturrunde {plan_repair['round']} von {MAX_PLAN_REPAIRS}"
     if stage == "publish":
         activity = "Ergebnisse werden bereitgestellt" if run.get("status") == "running" else "Ergebnisse bereit zur Durchsicht"
+    jev = read(work / "jev_probe.json", {}) or {}
+    if jev.get("status") == "running" and run.get("status") == "running":
+        activity = f"Jev sucht die Lücken im Quellenbestand · {jev.get('done', 0)} von {jev.get('total', 0)} Anfragen"
     started = datetime.fromtimestamp(calls[-1].stat().st_mtime, timezone.utc).isoformat() if calls else None
     responses = list((work / "calls").glob("call_*/response.json"))
     last_result = datetime.fromtimestamp(max(path.stat().st_mtime for path in responses), timezone.utc).isoformat() if responses else None

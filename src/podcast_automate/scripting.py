@@ -22,7 +22,7 @@ from .research import refund_call, reserve_call, unanswered, validate_dossier
 from .research_patches import re_asked
 from .research_models import ResearchDossier
 from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
-from .run_budget import effective_limits
+from .run_budget import effective_limits, text_switch
 from .runner import execute_stages, manifest_path, outputs_valid
 from .script_artifacts import script_metrics  # noqa: F401  (re-exported; the Studio imports it from here)
 from .script_checks import (MAX_PLAN_REPAIRS, checked_series_plan, episode_sources, load_plan_checkpoint,  # noqa: F401
@@ -249,7 +249,10 @@ def require_plan_approval(root, work, manifest, plan_only, approved_plan_hash):
 
 def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=None,
                revise: str | None = None, feedback="", backend=None, model=None, api_key=None,
-               max_output_tokens=None, reasoning_effort=None, plan_only=False, outline_feedback="", approved_plan_hash=None):
+               max_output_tokens=None, reasoning_effort=None, plan_only=False, outline_feedback="", approved_plan_hash=None,
+               jev_probe=False, probe_key=None):
+    """``jev_probe`` asks Jev in the gap probe of a new run (jev.py); ``probe_key`` is the OpenRouter key for it,
+    otherwise OPENROUTER_API_KEY. A resumed run keeps the choice it started with."""
     root = root.resolve()
     with project_lock(root):
         config = load_project(root)
@@ -260,15 +263,23 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             raise AppError("--revise mit einer passenden Folge und optional --feedback verwenden.", code="invalid_revision")
         state = resumed_run(root, run_id) if resume else new_run(root, research_id, dossier,
                                                                  episode=episode, revise=revise, feedback=feedback)
+        if jev_probe and resume and not state["execution"].jev_probe:
+            raise AppError("Die Jev-Lückenprobe gilt nur für neue Skriptläufe; ein laufender behält seine Lückenproben.",
+                           code="invalid_request", status="blocked")
+        if jev_probe:
+            state["execution"] = state["execution"].model_copy(update={"jev_probe": True})
         text_generation = text_generation_settings(config, backend=backend, model=model, max_output_tokens=max_output_tokens,
                                                    reasoning_effort=reasoning_effort, saved=state["saved_backend"])
-        adapter = build_adapter(config, text_generation, api_key)
+        check_adapter_versions(text_generation)
         notes = style_notes(root)
         config_hash, inputs, input_hash = run_inputs(config, research_id, dossier, discovery, sources, context,
                                                      state, text_generation, notes)
         work = state["path"].parent
         manifest = bind_manifest(root, work, state, config, config_hash, inputs, input_hash, research_id,
                                  text_generation, plan_only)
+        # The inputs keep the selection the run started with; an approved switch only changes who answers.
+        text_generation = text_switch(work, manifest.input_hash, text_generation)
+        adapter = build_adapter(config, text_generation, api_key)
         previous_outline, outline_feedback = outline_revision(root, work, manifest, outline_feedback)
         require_plan_approval(root, work, manifest, plan_only, approved_plan_hash)
         write_json(root / "runs/latest.json", {"run_id": manifest.run_id})
@@ -277,7 +288,7 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                              sources=sources, context=context, episode=state["episode"], revision=state["revision"],
                              execution=state["execution"], plan_only=plan_only, previous_outline=previous_outline,
                              outline_feedback=outline_feedback, series_review_version=state["series_review_version"],
-                             text_generation=text_generation, resume=resume, style_notes=notes)
+                             text_generation=text_generation, resume=resume, style_notes=notes, probe_key=probe_key)
         if not plan_only and (work / "series_plan.json").exists():
             pipeline.refresh_foundations(pipeline.selected()[1])
         return execute_stages(root, manifest, state["path"], pipeline.stages(),

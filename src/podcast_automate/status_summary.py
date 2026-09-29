@@ -227,8 +227,11 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
         state["status"] = "paused"
         publish(work, state, research)
         return
-    request = read(work / ("research_request.json" if research else "script_request.json"), {})
-    choice = request.get("text_generation") or read(root / "studio/text.json", {})
+    try:
+        from .run_budget import run_text_generation
+        choice = run_text_generation(work) or read(root / "studio/text.json", {})
+    except (OSError, ValueError):
+        choice = read(root / "studio/text.json", {})
     provider = choice.get("provider", "codex_cli")
     model = STATUS_MODELS.get(provider)
     state.update(provider=provider, model=model, status="summarizing", calls=state.get("calls", 0) + 1)

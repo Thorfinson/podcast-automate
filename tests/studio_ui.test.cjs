@@ -814,6 +814,13 @@ test('a supplementary research that spent its corrections offers fresh attempts 
   assert.equal(app.run(`stopButton('fresh_attempts',{run:{run_id:'run_s',kind:'script'}},{code:'teaching_design_failed'},'')`),'');
 });
 
+test('an OpenRouter account limited to zero data retention names its privacy setting and resumes after it',()=>{
+  const app=studio();
+  const info=app.run(`stopInfo({status:'blocked',action:'audio',stop:{code:'openrouter_privacy'},run:{run_id:'run_a',kind:'episode_audio',stages:{}}})`);
+  assert.equal(info.kind,'fix');
+  assert.ok(info.text.includes('openrouter.ai/settings/privacy'));
+});
+
 test('a source in two versions resumes in a script run and stays a dead end in a research run',()=>{
   const app=studio();
   const stop=kind=>app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'invalid_source_snapshot'},run:{run_id:'run_x',kind:'${kind}',stages:{}}})`);
@@ -2292,4 +2299,52 @@ test('a paused text run waits for running episodes instead of offering a resume 
   assert.ok(bar.includes('Fortsetzen, sobald die Vertonung fertig ist'));
   assert.ok(card.includes('data-action="resume" data-run-id="r" disabled'));
   assert.ok(card.includes('Gerade wird eine Folge vertont. Fortsetzen und Neustart gehen, sobald die Vertonung fertig ist'));
+});
+
+test('every text run offers "Weiter mit …", and a stop on a spent fixed subscription offers the other one',()=>{
+  const app=studio();
+  app.run(`boot.text_catalog={openrouter_models:{'openai/gpt-6-astra':'GPT-6 Astra','anthropic/claude-fable-5.1':'Claude Fable 5.1'}};`);
+  const job={id:'j',status:'waiting_for_quota',action:'resume',message:'m',stop:{code:'claude_quota_exhausted'},
+    run:{run_id:'run_s',kind:'script',stages:{}},text_switchable:true,text_switched:false,text_switch_choice:'claude',
+    text_generation:{provider:'claude_code',model:'claude-opus-5-5',reasoning_effort:'medium'}};
+  const card=app.run(`renderStopCard(${JSON.stringify(job)},stopInfo(${JSON.stringify(job)}))`);
+  assert.ok(card.includes('data-action="text-switch" data-run-id="run_s" data-choice="astra_first" data-then-resume="1"'));
+  assert.ok(card.includes('Mit Astra (xhigh) fortsetzen'));
+  const panel=app.run(`renderRunTextChoice(${JSON.stringify(job)})`);
+  for(const choice of ['claude_first','astra_first','claude','astra','openrouter'])assert.ok(panel.includes(`<option value="${choice}"`),choice);
+  assert.ok(panel.includes('<option value="claude" selected>Nur Claude · aktuell</option>'));
+  assert.ok(panel.includes('id="text-switch-model" aria-label="OpenRouter-Modell" hidden'),'the model list waits for OpenRouter');
+  assert.ok(panel.includes('<option value="anthropic/claude-fable-5.1" >Claude Fable 5.1</option>'));
+  // A research run is switchable too; a Codex stop on a run fixed to Astra offers Claude.
+  const research={...job,stop:{code:'quota_exhausted'},run:{run_id:'run_r',kind:'research',stages:{}},text_switch_choice:'astra',
+    text_generation:{provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'}};
+  assert.ok(app.run(`renderStopCard(${JSON.stringify(research)},stopInfo(${JSON.stringify(research)}))`).includes('data-choice="claude_first"'));
+  assert.ok(app.run(`renderRunTextChoice(${JSON.stringify(research)})`).includes('<option value="astra" selected>'));
+  // A pair moves on by itself, so its stop card offers no switch; the panel names the order it uses.
+  const pair={...job,text_switched:true,text_switch_choice:'astra_first',text_generation:{provider:'auto',prefer:'codex_cli',
+    candidates:{codex_cli:{model:'gpt-6-astra',reasoning_effort:'xhigh'},claude_code:{model:'claude-opus-5-5',reasoning_effort:'medium'}}}};
+  assert.ok(!app.run(`renderStopCard(${JSON.stringify(pair)},stopInfo(${JSON.stringify(pair)}))`).includes('text-switch'));
+  const text=app.run(`renderRunTextChoice(${JSON.stringify(pair)})`);
+  assert.ok(text.includes('Automatische Abo-Wahl, zuerst Astra'));
+  assert.ok(text.includes('Umgeschaltet gegenüber dem Start.'));
+  // An OpenRouter run shows its model preselected.
+  const paid={...job,text_switch_choice:'openrouter',text_generation:{provider:'openrouter',model:'anthropic/claude-fable-5.1'}};
+  const paidPanel=app.run(`renderRunTextChoice(${JSON.stringify(paid)})`);
+  assert.ok(paidPanel.includes('<option value="anthropic/claude-fable-5.1" selected>')&&!paidPanel.includes('OpenRouter-Modell" hidden'));
+});
+
+test('the setup summary switches the Jev gap probe and script stops name Jev, not Gemini',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,execution:{text:'sequential',audio:'sequential'},jev_probe:false,chat:[]};`);
+  const off=app.run('setupSummary()');
+  assert.ok(off.includes('data-action="toggle-jev-probe" data-enabled="1">Jev dazunehmen'));
+  assert.ok(off.includes('etwa 0,60 USD OpenRouter-Guthaben je neuem Skriptlauf'));
+  app.run(`project.jev_probe=true;`);
+  assert.ok(app.run('setupSummary()').includes('Wortsuche und Jev · OpenRouter'));
+  assert.ok(app.run('setupSummary()').includes('data-enabled="0">Jev ausschalten'));
+  const job=kind=>({status:'blocked',action:'resume',stop:{code:'openrouter_privacy'},run:{run_id:'r',kind,stages:{}}});
+  assert.equal(app.run(`stopInfo(${JSON.stringify(job('script'))}).title`),'OpenRouter-Datenschutz schließt Jev aus');
+  assert.equal(app.run(`stopInfo(${JSON.stringify(job('episode_audio'))}).title`),'OpenRouter-Datenschutz schließt Gemini aus');
+  const quiet={status:'blocked',action:'resume',stop:{code:'jev_unavailable'},run:{run_id:'r',kind:'script',stages:{}}};
+  assert.ok(app.run(`stopInfo(${JSON.stringify(quiet)}).text`).includes('schon beantwortete Abschnitte werden nicht noch einmal gefragt'));
 });

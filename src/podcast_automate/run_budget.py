@@ -11,6 +11,9 @@ Four receipts live next to a run and are written only by an explicit user action
   before the first task call, optionally with a cap on the number of tasks. It binds to the plan
   hash as well, so a re-planned run needs a new approval.
 
+``text_switch.json`` lets a script run bound to one subscription continue with the automatic pair (Claude, else
+Astra through Codex); the run's inputs and hash keep the selection it started with.
+
 All bind to the run id and its input hash; a copy cannot serve another run or changed inputs.
 """
 from __future__ import annotations
@@ -622,3 +625,97 @@ def approve_research_plan(root, run_id, *, max_tasks=None, source="explicit"):
     value = approval.model_dump(mode="json")
     write_json(work / "plan_approval.json", {"value": value, "sha256": digest(value)})
     return approval
+
+
+def text_switch(work, input_hash, saved):
+    """The provider selection a text run works with: the one it started with, or the one the user switched it to
+    (approve_text_switch). The run's inputs and hash keep the saved selection, so every checkpoint stays valid;
+    drafts, answers and reviews hang on the prompt text, not on the provider that answered it."""
+    path = work / "text_switch.json"
+    if not path.exists():
+        return saved
+    switch = json.loads(path.read_text(encoding="utf-8"))
+    if switch.get("input_hash") != input_hash or switch.get("from") != saved:
+        return saved
+    return switch["text_generation"]
+
+
+def request_file(work):
+    return work / ("script_request.json" if (work / "script_request.json").exists() else "research_request.json")
+
+
+def saved_text_generation(work):
+    """The selection a script or research run started with; ``None`` for a research run from before the field."""
+    path = request_file(work)
+    return json.loads(path.read_text(encoding="utf-8")).get("text_generation") if path.exists() else None
+
+
+def run_text_generation(work):
+    """The selection a script or research run works with now, for everything that follows the run's provider:
+    the adapter pool, the key handover, the status report and the expression layer of a later recording."""
+    saved = saved_text_generation(work)
+    try:
+        manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
+    except AppError:
+        return saved  # no readable run: nothing can have been switched
+    return text_switch(work, manifest.input_hash, saved)
+
+
+# The ways a text run may continue (approve_text_switch), by the id the Studio and the CLI send.
+TEXT_SWITCHES = ("claude_first", "astra_first", "claude", "astra", "openrouter")
+
+
+def switch_choice(selection):
+    """The TEXT_SWITCHES id a selection corresponds to; a run without a saved selection works with Codex."""
+    provider = (selection or {}).get("provider") or "codex_cli"
+    if provider == "auto":
+        return "astra_first" if selection.get("prefer") == "codex_cli" else "claude_first"
+    return {"claude_code": "claude", "codex_cli": "astra"}.get(provider, provider)
+
+
+def approve_text_switch(root, run_id, choice="claude_first", *, model=None):
+    """Let a script or research run continue with another text provider, after the user explicitly chose it
+    (2026-09-29: Claude's seven-day window ran low while both projects were in the script review, and the user
+    asked for the choice for every text run).
+
+    ``claude_first`` and ``astra_first`` ask one subscription first and the other when its quota is spent;
+    ``claude`` and ``astra`` stay on one; ``openrouter`` bills ``model`` per token and needs the key, while web
+    searches keep running on the subscriptions, since OpenRouter has no search tools. Astra works at xhigh; Claude
+    keeps the Claude level the run had, else xhigh. A later choice replaces the earlier one, and choosing what the
+    run started with removes the receipt. It may be written while the worker runs; the next start reads it."""
+    from .provider_pool import text_generation_settings
+    from .text_settings import DEFAULT_CLAUDE_EFFORT, DEFAULT_CODEX_MODEL, OPENROUTER_MODELS, SHARED_EFFORTS, TEXT_PRESETS
+    work, manifest = _text_run(root, run_id)
+    if choice not in TEXT_SWITCHES:
+        raise AppError("Weiter mit Claude, Astra oder OpenRouter wählen.", code="invalid_text_switch")
+    saved = saved_text_generation(work)
+    now_using = saved or {}
+    level = (now_using.get("reasoning_effort") if now_using.get("provider") == "claude_code" else
+             ((now_using.get("candidates") or {}).get("claude_code") or {}).get("reasoning_effort"))
+    level = level if level in SHARED_EFFORTS else DEFAULT_CLAUDE_EFFORT
+    config = load_project(root)
+    if choice in {"claude_first", "astra_first"}:
+        selection = text_generation_settings(config, backend="auto", reasoning_effort=level)
+        selection["prefer"] = "claude_code" if choice == "claude_first" else "codex_cli"
+        selection["candidates"]["codex_cli"] = {"model": DEFAULT_CODEX_MODEL, "reasoning_effort": "xhigh"}
+    elif choice == "claude":
+        selection = text_generation_settings(config, backend="claude_code", reasoning_effort=level)
+    elif choice == "astra":
+        selection = text_generation_settings(config, backend="codex_cli", model=DEFAULT_CODEX_MODEL, reasoning_effort="xhigh")
+    else:
+        if model not in OPENROUTER_MODELS:
+            raise AppError("Ein OpenRouter-Modell aus der Liste wählen.", code="invalid_text_switch")
+        effort = next((p["reasoning_effort"] for p in TEXT_PRESETS if p["provider"] == "openrouter" and p["model"] == model), None)
+        selection = text_generation_settings(config, backend="openrouter", model=model, reasoning_effort=effort)
+    path = work / "text_switch.json"
+    if saved is not None and settled(selection) == settled(saved):
+        path.unlink(missing_ok=True)
+        return saved
+    write_json(path, {"run_id": manifest.run_id, "input_hash": manifest.input_hash, "from": saved,
+                      "text_generation": selection, "approved_at": now()})
+    return selection
+
+
+def settled(selection):
+    """A selection without its unset fields, so a saved form with explicit nulls compares with a new one."""
+    return {key: value for key, value in selection.items() if value is not None}

@@ -12,15 +12,17 @@ from unittest.mock import patch
 from podcast_automate import subscriptions
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
-from podcast_automate.models import RuntimeSettings, TextProbeOutput, TopicBrief
+from podcast_automate.models import RunManifest, RuntimeSettings, StageRecord, TextProbeOutput, TopicBrief
 from podcast_automate.provider_pool import AdapterPool, text_generation_settings
 from podcast_automate.runner import run_probe
+from podcast_automate.research import run_research
+from podcast_automate.run_budget import approve_text_switch, run_text_generation, saved_text_generation
 from podcast_automate.script_budget import calls_per_episode
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.status_summary import ProgressDigest, update_summary
-from podcast_automate.storage import init_project, read_yaml, write_json
+from podcast_automate.storage import init_project, read_yaml, write_json, write_yaml
 from podcast_automate.studio import BriefProposal
-from podcast_automate.studio_worker import perform
+from podcast_automate.studio_worker import perform, text_key
 from tests import script_fixtures as fixtures
 from tests import test_studio
 
@@ -165,6 +167,71 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         choice = json.loads((work / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))
         self.assertEqual(choice["provider"], "codex_cli")
         self.assertFalse((work / "calls/call_001/provider_switch.json").exists())
+
+    def test_a_claude_run_switched_by_the_user_continues_with_astra_and_keeps_its_work(self):
+        """2026-09-29: Claude's seven-day window ran low while both projects were in the script review, and the user
+        asked to let the runs continue with Astra. The switch changes who answers, not the run's inputs or work."""
+        fakes = QuotaFakes(self)
+        claude_calls, codex_calls = [], []
+
+        def claude(adapter, prompt, output_type, directory, **kwargs):
+            claude_calls.append(directory.name)
+            if len(claude_calls) == 3:
+                fakes.claude = False
+                raise AppError("Claude-Abo-Kontingent erreicht", code="claude_quota_exhausted", status="waiting_for_quota")
+            return self.model(prompt, output_type, directory, **kwargs)
+
+        def codex(adapter, prompt, output_type, directory, **kwargs):
+            codex_calls.append((adapter.settings.codex_model, adapter.reasoning_effort))
+            return self.model(prompt, output_type, directory, **kwargs)
+
+        with patch("podcast_automate.scripting.CodexAdapter.structured", autospec=True, side_effect=codex), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
+            run = run_script(self.root, backend="claude_code", reasoning_effort="medium")
+            self.assertEqual((run.status, codex_calls), ("waiting_for_quota", []))
+            work = self.root / "runs" / run.run_id
+            finished = {path.name: path.read_bytes() for path in work.glob("drafts/*.json")}
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(main(["approve", str(self.root), "--run-id", run.run_id, "--text-switch", "astra", "--json"]), 0)
+            selection = json.loads(output.getvalue())["text_switch"]
+            resumed = run_script(self.root, resume=True, run_id=run.run_id)
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(resumed.input_hash, run.input_hash, "the inputs keep the selection the run started with")
+        self.assertEqual(len(claude_calls), 3, "Astra is asked first now, and Claude is out anyway")
+        self.assertEqual(set(codex_calls), {("gpt-6-astra", "xhigh")})
+        self.assertEqual((selection["provider"], selection["prefer"]), ("auto", "codex_cli"))
+        self.assertEqual(selection["candidates"], {"codex_cli": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"},
+                                                   "claude_code": {"model": "claude-opus-5-5", "reasoning_effort": "medium"}})
+        self.assertEqual({path.name: path.read_bytes() for path in work.glob("drafts/*.json")} | finished,
+                         {path.name: path.read_bytes() for path in work.glob("drafts/*.json")})
+        request = json.loads((work / "script_request.json").read_text(encoding="utf-8"))
+        self.assertEqual(request["text_generation"]["provider"], "claude_code")
+        self.assertEqual(read_yaml(self.root / "reports/script_quality.yaml")["text_generation"]["provider"], "auto")
+
+    def test_a_research_run_continues_with_the_chosen_provider_and_the_key_follows_the_choice(self):
+        """Every text run may switch, not only script runs; a research run from the Codex default too."""
+        research = self.research.run_id
+        work = self.root / "runs" / research
+        self.assertIsNone(saved_text_generation(work), "the fixture research ran on the Codex default")
+        approve_text_switch(self.root, research, "claude")
+        self.assertEqual(run_text_generation(work)["provider"], "claude_code")
+        pools = []
+
+        def pool(settings, selection, **kwargs):
+            pools.append((selection, kwargs.get("api_key")))
+            return AdapterPool(settings, selection, **kwargs)
+        with patch("podcast_automate.research.AdapterPool", side_effect=pool):
+            self.assertEqual(run_research(self.root, resume=True, run_id=research, api_key="test-key").status, "completed")
+        self.assertEqual((pools[0][0]["provider"], pools[0][0]["reasoning_effort"], pools[0][1]), ("claude_code", "xhigh", None))
+        with self.assertRaises(AppError) as unlisted:
+            approve_text_switch(self.root, research, "openrouter", model="not/listed")
+        self.assertEqual(unlisted.exception.code, "invalid_text_switch")
+        chosen = approve_text_switch(self.root, research, "openrouter", model="openai/gpt-6-astra")
+        self.assertEqual((chosen["provider"], chosen["model"]), ("openrouter", "openai/gpt-6-astra"))
+        self.assertEqual(text_key(self.root, {"api_key": "test-key"}, research), "test-key")
+        approve_text_switch(self.root, research, "astra")
+        self.assertIsNone(text_key(self.root, {"api_key": "test-key"}, research), "the key goes only to OpenRouter")
+        self.assertEqual(run_text_generation(work)["model"], "gpt-6-astra")
 
     def test_fixed_providers_never_query_quota_and_claude_runs_use_claude_only(self):
         with patch.object(subscriptions, "codex_quota", side_effect=AssertionError("no quota query")), \
@@ -359,6 +426,43 @@ class StatusAndStudioTests(test_studio.StudioHttpTests):
         self.assertEqual(boot["text_catalog"]["auto_candidates"]["claude_code"]["model"], "claude-opus-5-5")
         self.assertEqual(boot["text_catalog"]["effort_equivalents"]["xhigh"], "xhigh")
         self.assertEqual(detail["text"]["provider"], "codex_cli")
+        self.assertEqual((detail["job"]["text_switchable"], detail["job"]["text_switch_choice"]), (True, "astra_first"))
+
+    def test_a_claude_script_run_can_be_switched_to_claude_else_astra_from_the_studio(self):
+        work = self.root / "runs/run_claude"
+        manifest = RunManifest(run_id="run_claude", kind="script", project_hash="p", input_hash="a" * 64,
+                               stages={"review": StageRecord(status="blocked")})
+        write_yaml(work / "run_manifest.yaml", manifest.model_dump(mode="json"))
+        claude = {"provider": "claude_code", "model": "claude-opus-5-5", "reasoning_effort": "medium",
+                  "adapter_version": "claude_code.v1"}
+        write_json(work / "script_request.json", {"text_generation": claude})
+        write_json(self.root / "studio/job.json", {"id": "saved", "status": "interrupted",
+                                                   "run": manifest.model_dump(mode="json")})
+        before = json.loads(self.request("/api/projects/example")[1])["job"]
+        self.assertEqual((before["text_switchable"], before["text_switched"], before["text_switch_choice"]), (True, False, "claude"))
+        status, body, _ = self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude"})
+        self.assertEqual(status, 200, body)
+        after = json.loads(self.request("/api/projects/example")[1])["job"]
+        self.assertEqual((after["text_switched"], after["text_switch_choice"]), (True, "claude_first"))
+        self.assertEqual(after["text_generation"]["prefer"], "claude_code")
+        self.assertEqual(after["text_generation"]["candidates"]["codex_cli"], {"model": "gpt-6-astra", "reasoning_effort": "xhigh"})
+        self.assertEqual(after["text_generation"]["candidates"]["claude_code"]["reasoning_effort"], "medium")
+        self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", "choice": "astra_first"})
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["job"]["text_generation"]["prefer"], "codex_cli")
+        for wrong in ({"choice": "gemini"}, {"choice": "openrouter", "model": "not/listed"}):
+            status, _, _ = self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", **wrong})
+            self.assertEqual(status, 400, wrong)
+        # Choosing what the run started with removes the receipt.
+        self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", "choice": "claude"})
+        back = json.loads(self.request("/api/projects/example")[1])["job"]
+        self.assertEqual((back["text_switched"], (work / "text_switch.json").exists()), (False, False))
+        self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", "choice": "claude_first"})
+        self.assertEqual(json.loads((work / "script_request.json").read_text(encoding="utf-8"))["text_generation"], claude)
+        # A receipt for other inputs does not switch the run.
+        receipt = json.loads((work / "text_switch.json").read_text(encoding="utf-8"))
+        write_json(work / "text_switch.json", {**receipt, "input_hash": "b" * 64})
+        stale = json.loads(self.request("/api/projects/example")[1])["job"]
+        self.assertEqual((stale["text_switched"], stale["text_generation"]), (False, claude))
 
 
 if __name__ == "__main__":

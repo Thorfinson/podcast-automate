@@ -10,7 +10,12 @@ from pathlib import Path
 
 from .audio import applied_pause, assemble, run_tts, worker_path
 from .errors import AppError
-from .models import EpisodeScript, RunManifest, StageRecord, host_labels
+from .expression import EXPRESSION_VERSION, plan_expression
+from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels
+from .provider_pool import AdapterPool
+from .research import refund_call, reserve_call, unanswered
+from .research_patches import MAX_REJECTIONS
+from .run_budget import run_text_generation
 from .qwen_worker import spoken_settings
 from .runner import execute_stages, manifest_path, outputs_valid
 from .script_models import SeriesPlan
@@ -228,6 +233,13 @@ def saved_approval(root, episode, script_hash, audio_generation):
             and same_audio_generation(decision.get("audio_generation"), audio_generation))
 
 
+def script_text_generation(root, config, script_run_id):
+    """The text model the episode's script run used, for the expression layer; the Codex default before runs saved one."""
+    # A script run the user switched to another provider keeps that choice here too.
+    current = run_text_generation(manifest_path(root, script_run_id).parent)
+    return current or {"provider": "codex_cli", "model": config.runtime.codex_model, "reasoning_effort": None}
+
+
 def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval_note="",
                       resume=False, run_id=None, expected_script_hash=None, expected_readable_hash=None,
                       expected_config_hash=None, audio_choice=None, api_key=None, expected_audio_hash=None,
@@ -287,10 +299,18 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             inputs["speech_model"] = choice.model
             inputs["speech_version"] = SPEECH_VERSION
             inputs["worker_sha256"] = file_hash(Path(__file__).with_name("speech.py"))
+            if choice.expression:
+                inputs["expression_version"] = EXPRESSION_VERSION
         audio_config = config.model_copy(update={"voice_profile": choice.voices})
 
+        def expression_tags():
+            """The inline tags this run placed (expression stage), empty for a run without the layer."""
+            saved = work / "expression.json"
+            return json.loads(saved.read_text(encoding="utf-8"))["segments"] if saved.exists() else {}
+
         def validate_audio(batch, report):
-            return (check_gemini_rows(root, batch, report, choice, config.language, table=table, overrides=overrides)
+            return (check_gemini_rows(root, batch, report, choice, config.language, table=table, overrides=overrides,
+                                      expression=expression_tags())
                     if choice.remote
                     else check_rows(root, batch, report, audio_config, table=table, overrides=overrides))
         if resume:
@@ -317,9 +337,12 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             if not approved:
                 raise AppError("Audio benötigt die Freigabe des aktuellen Skripts mit --approve-audio.",
                                code="audio_approval_required", status="blocked")
+            stages = ("synthesis", "assembly", "publish")
+            if choice.remote and choice.expression:
+                stages = ("expression", *stages)
             manifest = RunManifest(run_id=identifier, kind="episode_audio", project_hash=config_hash,
                 input_hash=digest(inputs), audio_approved=True,
-                stages={name: StageRecord() for name in ("synthesis", "assembly", "publish")})
+                stages={name: StageRecord() for name in stages})
         if not manifest.audio_approved:
             raise AppError("Audio-Freigabe fehlt.", code="audio_approval_required", status="blocked")
         work = path.parent
@@ -343,6 +366,30 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 "audio_generation": inputs.get("audio_generation"),
                 "scripts": {episode: script_hash}, "instruction": "Aktuellen Text vertonen; anschließend Hörprüfung."})
         write_json(root / "runs/latest.json", {"run_id": manifest.run_id})
+
+        def expression():
+            """Inline audio tags for this recording, placed once by the script's text model and reused on a resume.
+            Only tags are added; the check in expression.py keeps every word as it would be spoken anyway."""
+            spoken = {s.segment_id: spoken_text(s, table, overrides) for s in script.segments}
+            pool = AdapterPool(config.runtime, script_text_generation(root, config, script_manifest.run_id), api_key=api_key)
+            limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1)
+            write_json(work / "progress.json", {"status": "expression", "total_segments": len(script.segments)})
+
+            def invoke(prompt, schema, version):
+                number = reserve_call(work, limits)
+                try:
+                    return pool.structured(prompt, schema, work / "calls" / f"call_{number:03d}", prompt_version=version)[0]
+                except AppError as exc:
+                    if unanswered(exc):
+                        refund_call(work, number)
+                    raise
+                except BaseException:
+                    refund_call(work, number)
+                    raise
+            tags, rejected = plan_expression(invoke, script, spoken, language=config.language, labels=host_labels(config))
+            write_json(work / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": script_hash,
+                                                  "segments": tags, **({"rejected": rejected} if rejected else {})})
+            return [work / "expression.json"]
 
         def synthesis():
             outputs, rows = [], []
@@ -369,10 +416,10 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                         if parallel_remote:
                             from .parallel_speech import run_parallel_gemini_tts
                             run_parallel_gemini_tts(config, batch, root, folder, choice, api_key,
-                                                    table=table, overrides=overrides)
+                                                    table=table, overrides=overrides, expression=expression_tags())
                         else:
                             run_gemini_tts(config, batch, root, folder, choice, api_key,
-                                           table=table, overrides=overrides)
+                                           table=table, overrides=overrides, expression=expression_tags())
                     else:
                         run_tts(audio_config, batch, root, folder, table=table, overrides=overrides)
                     report = json.loads(report_file.read_text(encoding="utf-8"))
@@ -456,4 +503,5 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                     work / "pronunciation.json",
                     root / "reports" / f"{episode}_audio.json", root / "episodes" / episode / "audio_latest.json"]
 
-        return execute_stages(root, manifest, path, {"synthesis": synthesis, "assembly": assembly, "publish": publish})
+        return execute_stages(root, manifest, path, {"expression": expression, "synthesis": synthesis,
+                                                     "assembly": assembly, "publish": publish})
