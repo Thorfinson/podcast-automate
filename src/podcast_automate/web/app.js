@@ -21,7 +21,7 @@ const productionStages = [
   ["review", "Qualitätsprüfung", "Quellen, Erklärungstiefe und Verständlichkeit prüfen und überarbeiten."],
   ["publish", "Zur Durchsicht bereitstellen", "Geprüfte Skripte zum Lesen bereitstellen."],
 ];
-const stageNames = {discovery:"Quellensuche",retrieval:"Quellen lesen",dossier:"Teilfragen und Dossier",completeness:"Leitfragen vollständig klären",planning:"Inhaltsverzeichnis",teaching:"Lehrkonzept",writing:"Skript",polishing:"Dialog-Polishing",review:"Qualitätsprüfung",publish:"Bereitstellen",synthesis:"Vertonung",assembly:"Audio zusammenfügen"};
+const stageNames = {discovery:"Quellensuche",retrieval:"Quellen lesen",dossier:"Teilfragen und Dossier",completeness:"Leitfragen vollständig klären",planning:"Inhaltsverzeichnis",teaching:"Lehrkonzept",writing:"Skript",polishing:"Dialog-Polishing",review:"Qualitätsprüfung",publish:"Bereitstellen",expression:"Ausdruck",synthesis:"Vertonung",assembly:"Audio zusammenfügen"};
 const actionNames = {
   assistant: "Redaktion denkt nach",
   research: "Recherche läuft",
@@ -292,9 +292,23 @@ function textChoiceSummary(t) {
 function renderRunTextChoice(job) {
   if(!["script","research"].includes(job?.run?.kind))return "";
   const t=job.text_generation;
-  const saved=t?.provider==="auto"?`Automatische Abo-Wahl · ${candidateText(t.candidates)}`:
+  const saved=t?.provider==="auto"?`Automatische Abo-Wahl, zuerst ${t.prefer==="codex_cli"?"Astra":"Claude"} · ${candidateText(t.candidates)}`:
     `${t?.model?escape(t.model):"Modell nicht festgelegt"} · Reasoning: ${t?.reasoning_effort?escape(t.reasoning_effort):"nicht festgelegt"}`;
-  return `<p class="hint">Für diesen Auftrag gespeichert: ${saved}.</p>${renderProviderChoice(job)}`;
+  return `<p class="hint">Für diesen Auftrag ${job.text_switched?"jetzt":"gespeichert"}: ${saved}.</p>${renderTextSwitch(job)}${renderProviderChoice(job)}`;
+}
+const SWITCH_CHOICES={claude_first:"Claude, sonst Astra (xhigh)",astra_first:"Astra (xhigh), sonst Claude",claude:"Nur Claude",
+  astra:"Nur Astra (xhigh)",openrouter:"OpenRouter · bezahlt pro Aufruf"};
+function renderTextSwitch(job) {
+  // Every script or research run may continue with another text provider (approve_text_switch).
+  if(!job.text_switchable)return "";
+  const runId=escape(job.run?.run_id||""), current=job.text_switch_choice, models=boot.text_catalog?.openrouter_models||{};
+  const currentModel=job.text_generation?.provider==="openrouter"?job.text_generation.model:"";
+  const options=Object.entries(SWITCH_CHOICES).map(([id,label])=>`<option value="${id}" ${id===current?"selected":""}>${escape(label)}${id===current?" · aktuell":""}</option>`).join("");
+  const modelOptions=Object.entries(models).map(([id,label])=>`<option value="${escape(id)}" ${id===currentModel?"selected":""}>${escape(label)}</option>`).join("");
+  return `<div class="text-switch"><label for="text-switch-choice">Weiter mit</label> <select id="text-switch-choice">${options}</select>
+    <select id="text-switch-model" aria-label="OpenRouter-Modell" ${current==="openrouter"?"":"hidden"}>${modelOptions}</select>
+    <button class="secondary" data-action="text-switch" data-run-id="${runId}">Übernehmen</button>
+    <p class="hint">${job.text_switched?"Umgeschaltet gegenüber dem Start. ":""}Gilt ab dem nächsten Start des Auftrags; fertige Arbeit bleibt gültig. OpenRouter kostet Guthaben pro Aufruf und braucht den Key; Websuchen laufen weiter über die Abos.</p></div>`;
 }
 function resetText(iso) {
   const time=iso?Date.parse(iso):NaN;
@@ -338,7 +352,9 @@ function setupSummary() {
     <dt>Textmodell</dt><dd>${textChoiceSummary(t)}</dd>
     ${t.provider==="openrouter"?'<dt>Live-Recherche</dt><dd>Über die Abos (Claude, sonst Codex) · Textarbeit wird separat über OpenRouter abgerechnet.</dd>':""}
     <dt>Stimmen</dt><dd>${escape(audioLabel(a))} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
-    <dt>Textausarbeitung</dt><dd>${mode(x.text,"5 gleichzeitig")}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio,"3 Folgen")}</dd></dl>
+    <dt>Textausarbeitung</dt><dd>${mode(x.text,"5 gleichzeitig")}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio,"3 Folgen")}</dd>
+    <dt>Lückenprobe</dt><dd>${project.jev_probe?"Wortsuche und Jev · OpenRouter":"Wortsuche"} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${project.jev_probe?"Jev ausschalten":"Jev dazunehmen"}</button></dd></dl>
+    <p class="hint">Jev findet die Stellen, an denen eine gemeldete Lücke vielleicht doch beantwortet ist, auch wenn Lücke und Quelle verschiedene Sprachen sprechen. Gelesen und bestätigt werden sie weiterhin vom Textmodell. Das kostet etwa 0,60 USD OpenRouter-Guthaben je neuem Skriptlauf und braucht den OpenRouter-Key; laufende Aufträge behalten ihre Lückenproben.</p>
     <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing, Prüfung und unabhängige Recherche-Teilfragen; das Lehrkonzept bleibt in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
     ${proposal&&!project.proposal_applied?`<button data-action="apply-proposal" ${running()||setupSending||pendingAttachments.length||project.proposal_current===false||!boot.capabilities?.conversational_setup?"disabled":""}>Diese Auswahl übernehmen</button><p class="hint">${project.proposal_current===false?"Die Anhänge haben sich geändert. Bitte den Partner im Chat die Zusammenfassung aktualisieren lassen.":"Das speichert den Auftrag. Recherche, Plan- und Audiofreigabe erfolgen weiterhin auf den folgenden Seiten."}</p>`:""}
     </section>`;
@@ -1009,6 +1025,8 @@ const AUDIO_STEPS={normalize:"Sprechabschnitte werden angeglichen",loudness:"Lau
 // What an audio job does right now: loading the voice model, speaking a chapter or assembling the episode.
 function audioPhase(p) {
   if(!p)return "";
+  // Before a Gemini recording the text model places the inline audio tags (expression.py).
+  if(p.status==="expression")return '<p><span class="activity-dot" aria-hidden="true"></span>Ausdruck wird gesetzt: Lachen, Atmen und Pausen für diese Folge</p>';
   if(p.status==="assembly"){
     const part=Number(p.parts)>1?` · Teil ${Number(p.part)} von ${Number(p.parts)}`:"";
     const counting=p.step==="normalize"&&Number(p.total_segments)>0;
@@ -1219,10 +1237,14 @@ const STOP_RULES={
   // The stored verdict is replayed on a resume (polishing.polish_dialogue); only an update can change the outcome.
   dialogue_polish_failed:{kind:"retry",title:"Dialog-Polishing braucht Korrektur",text:"Die Prüfung des Dialog-Polishings meldet nach beiden automatischen Korrekturen weiter Einwände zu Bedeutung, Vollständigkeit, Sprecherrollen oder Intro und Outro; die offenen Punkte stehen auf dieser Seite. „Fortsetzen“ hilft, wenn sich seit dem Anhalten die Regeln geändert haben, etwa nach einem Studio-Update; sonst hält der Lauf ohne neue Aufrufe an derselben Stelle wieder an. Dann hilft ein neues Inhaltsverzeichnis.",actions:["new_outline"]},
   subscriptions_exhausted:{kind:"wait",title:"Beide Abos ausgeschöpft",text:"Codex und Claude haben gerade kein Kontingent. Nach dem Reset geht es mit „Fortsetzen“ weiter."},
-  claude_quota_exhausted:{kind:"wait",title:"Claude-Kontingent erschöpft",text:"Nach dem Reset geht es mit „Fortsetzen“ weiter; bei automatischer Abo-Wahl übernimmt Codex, sobald es Kontingent hat."},
-  quota_exhausted:{kind:"wait",title:"Codex-Kontingent erschöpft",text:"Nach dem Reset geht es mit „Fortsetzen“ weiter."},
+  claude_quota_exhausted:{kind:"wait",title:"Claude-Kontingent erschöpft",text:"Nach dem Reset geht es mit „Fortsetzen“ weiter; bei automatischer Abo-Wahl übernimmt Codex, sobald es Kontingent hat. Ein fest auf Claude gestellter Auftrag kann mit Astra weitermachen; fertige Arbeit bleibt gültig.",actions:["text_switch"]},
+  quota_exhausted:{kind:"wait",title:"Codex-Kontingent erschöpft",text:"Nach dem Reset geht es mit „Fortsetzen“ weiter. Ein fest auf Astra gestellter Auftrag kann mit Claude weitermachen; fertige Arbeit bleibt gültig.",actions:["text_switch"]},
   openrouter_rate_limit:{kind:"wait",title:"OpenRouter-Anfragelimit",text:"Kurz warten, dann „Fortsetzen“."},
   waiting_for_quota:{kind:"wait",title:"Anbieterlimit erreicht",text:"Nach dem Reset geht es mit „Fortsetzen“ weiter."},
+  // A script run meets this only in the Jev gap probe; a recording only with Gemini.
+  openrouter_privacy:({run})=>run?.kind==="script"?{kind:"fix",title:"OpenRouter-Datenschutz schließt Jev aus",text:"Dein OpenRouter-Konto erlaubt nur Anbieter, die seine Datenschutz-Einstellung erfüllen; TypeSafe mit Jev gehört nicht dazu. Unter openrouter.ai/settings/privacy freigeben, dann „Fortsetzen“. Die Lückenprobe setzt dort fort, wo sie stand."}:
+    {kind:"fix",title:"OpenRouter-Datenschutz schließt Gemini aus",text:"Dein OpenRouter-Konto erlaubt nur Anbieter ohne Datenspeicherung (Zero Data Retention); Googles Sprachmodell gehört nicht dazu. Unter openrouter.ai/settings/privacy Anbieter ohne diese Zusage zulassen, dann „Fortsetzen“."},
+  jev_unavailable:{kind:"retry",title:"Jev antwortet nicht",text:"Die Lückenprobe mit Jev hat nach mehreren Versuchen keine Antwort bekommen. „Fortsetzen“ macht dort weiter, wo sie stand; schon beantwortete Abschnitte werden nicht noch einmal gefragt."},
   openrouter_credits:{kind:"fix",title:"OpenRouter-Guthaben erschöpft",text:"Guthaben oder Key-Limit bei OpenRouter erhöhen, dann „Fortsetzen“. Warten allein hilft hier nicht, deshalb setzt das Studio nicht automatisch fort."},
   authentication_required:{kind:"fix",title:"Anmeldung abgelaufen",text:c=>`${loginHint(c)} Danach „Fortsetzen“.`,actions:["check"]},
   subscription_required:{kind:"fix",title:"Kein Abo nutzbar",text:"Weder Codex noch Claude ist angemeldet und nutzbar. Im Terminal „codex login“ oder „claude auth login“ ausführen, dann „Fortsetzen“.",actions:["check"]},
@@ -1385,6 +1407,12 @@ function stopButton(action,job,info,target) {
     case "approve_calls":{const n=suggestedCalls(job);return `<button data-action="approve-calls" data-run-id="${runId}" data-model-calls="${n}" data-then-resume="1" ${running()?"disabled":""}>Aufruflimit auf ${n} erhöhen und fortsetzen</button>`;}
     case "approve_search":{const n=(Number(job.progress?.search_round_limit)||0)+6;return `<button data-action="approve-search" data-run-id="${runId}" data-search-rounds="${n}" data-then-resume="1" ${running()?"disabled":""}>Suchrunden auf ${n} erhöhen und fortsetzen</button>`;}
     case "fresh_attempts":return job.run?.kind==="research"||(job.run?.kind==="script"&&["teaching_research_required","script_review_failed"].includes(info.code))?`<button class="secondary" data-action="fresh-attempts" data-run-id="${runId}" data-then-resume="1" ${running()?"disabled":""}>Mit neuen Anläufen fortsetzen</button>`:"";
+    case "text_switch":{
+      // Offered only where a run fixed on the spent subscription stops; a pair already moves on by itself.
+      const codexOut=info.code==="quota_exhausted";
+      if(!job.text_switchable||job.text_switch_choice!==(codexOut?"astra":"claude"))return "";
+      return `<button data-action="text-switch" data-run-id="${runId}" data-choice="${codexOut?"claude_first":"astra_first"}" data-then-resume="1" ${running()?"disabled":""}>${codexOut?"Mit Claude fortsetzen":"Mit Astra (xhigh) fortsetzen"}</button>`;
+    }
     case "key":return inlineKey("stop-key",!!job.run,target||`data-run-id="${runId}"`);
     case "check":return `<button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button>`;
     case "samples":return `<button class="secondary" data-action="audio_samples" ${disabled()}>Fehlende Hörproben erzeugen · API</button>`;
@@ -2013,6 +2041,7 @@ document.addEventListener("submit",event=>{
 document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="chat-files")await queueAttachments(event.target.files);
   if(event.target.id==="project-select")await selectProject(event.target.value);
+  if(event.target.id==="text-switch-choice"&&$("text-switch-model"))$("text-switch-model").hidden=event.target.value!=="openrouter";
   if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
   if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason();
@@ -2088,6 +2117,21 @@ document.addEventListener("click",event=>{
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Neuer Versuch angefordert. „Fortsetzen“ startet ihn mit dem Spielraum einer neuen Frage.","ok");return;
     }
     if(action==="redesign-teaching"){await redesignTeaching(button);notice("Hinweis gespeichert. Das Lehrkonzept dieser Folge wird neu entworfen.","ok");return;}
+    if(action==="toggle-jev-probe"){
+      const enabled=button.dataset.enabled==="1";
+      await api(`/api/projects/${project.id}/jev_probe`,{enabled});
+      project=await api(`/api/projects/${project.id}`);render();
+      notice(enabled?(boot.key_available?"Jev ist dabei: Neue Skriptläufe suchen Lücken zusätzlich mit Jev.":"Jev ist dabei. Für neue Skriptläufe noch den OpenRouter-Key unter Anbieter und Schlüssel hinterlegen."):"Jev ist aus: Neue Skriptläufe suchen Lücken nur mit der Wortsuche.","ok");return;
+    }
+    if(action==="text-switch"){
+      const choice=button.dataset.choice||$("text-switch-choice")?.value||"claude_first";
+      const model=choice==="openrouter"?$("text-switch-model")?.value||"":"";
+      const order=choice==="openrouter"?`OpenRouter · ${boot.text_catalog?.openrouter_models?.[model]||model}`:SWITCH_CHOICES[choice]||choice;
+      await api(`/api/projects/${project.id}/approve`,{kind:"text_switch",run_id:button.dataset.runId,choice,...(model?{model}:{})});
+      if(button.dataset.thenResume&&!running()){await resumeFrom(button);notice(`Umgeschaltet auf ${order}. Der Auftrag läuft weiter.`,"ok");return;}
+      project=await api(`/api/projects/${project.id}`);lastJobView="";render();
+      notice(running()?`Umgeschaltet auf ${order}. Gilt ab dem nächsten Start dieses Auftrags.`:`Umgeschaltet auf ${order}. „Fortsetzen“ arbeitet damit weiter.`,"ok");return;
+    }
     if(action==="fresh-attempts"){
       await api(`/api/projects/${project.id}/approve`,{kind:"fresh_attempts",run_id:button.dataset.runId});
       await resumeFrom(button);notice("Neue Anläufe freigegeben. Der Schritt wird erneut versucht.","ok");return;

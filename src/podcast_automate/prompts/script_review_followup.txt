@@ -1,0 +1,9 @@
+This is a follow-up review after a repair: previous_issues lists the issues the last review raised, and
+changed_segments names the segments the repair changed or added. Report a previous issue again, with
+issue_basis previous, only when this script still has it. Review the changed segments as fully as a first
+review and give their issues issue_basis changed. Every other segment passed the last review unchanged: put
+an issue about one of them in issues only when the sources or findings show its statement to be wrong, as a
+factual error (factual_error) or a contradiction of a supplied source (source_contradiction). Put every
+other observation about an unchanged segment, such as a missing reference, a claim that the sources lack
+something without a gap probe, a scope, wording or clarity point, in advisories: they are reported and do
+not block. Give issue_basis in the same order as issues. Claim checks still cover every segment.

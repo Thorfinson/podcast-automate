@@ -85,6 +85,22 @@ class SpeechTests(unittest.TestCase):
                 self.assertNotIn("test-key", str(raised.exception))
         self.assertEqual(list(self.cache.glob("*.wav")), [])
 
+    def test_an_account_limited_to_zero_data_retention_names_the_privacy_setting(self):
+        body = (b'{"error":{"message":"0 endpoints out of 1 requested are available matching your guardrail restrictions '
+                b'and data policy. ZDR violation (account settings): 1 endpoint excluded test-key","code":404}}')
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = HTTPError(SPEECH_ENDPOINT, 404, "Not Found", {}, io.BytesIO(body))
+            with self.assertRaises(AppError) as raised:
+                self.engine.synthesize("Hallo", "Aoede", "de-DE", self.cache)
+        self.assertEqual(raised.exception.code, "openrouter_privacy")
+        self.assertIn("openrouter.ai/settings/privacy", str(raised.exception))
+        self.assertNotIn("test-key", str(raised.exception))
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = HTTPError(SPEECH_ENDPOINT, 404, "Not Found", {}, io.BytesIO(b"no such model"))
+            with self.assertRaises(AppError) as raised:
+                self.engine.synthesize("Hallo", "Aoede", "de-DE", self.cache)
+        self.assertEqual(raised.exception.code, "openrouter_speech_request")
+
     def test_long_turn_is_split_only_for_request_size_without_losing_characters(self):
         text = ("Ein Gedanke führt zum nächsten. " * 230) + "Das ist der Schluss."
         chunks = split_input(text)

@@ -13,6 +13,10 @@ after reading, and that confirmation is recorded.
 The probe compares words, so a German gap sentence finds nothing in an English corpus. A
 coverage row therefore carries ``gap_terms``: search words in the sources' language that a
 section answering the gap would contain. They count as key terms beside the sentence's own.
+
+A script run can ask Jev as well (``jev.py``): its proposals join the term hits as further
+sections to read, marked ``"via": "jev"`` with their probability. They never settle a gap by
+themselves; they only make ``no_hits`` rarer where the words of gap and corpus differ.
 """
 from __future__ import annotations
 
@@ -45,7 +49,7 @@ def hit_sources(row) -> set[str]:
     return {hit["reference"].split("#")[0] for hit in row["hits"]}
 
 
-def probe_gap(reader, gap_id: str, text: str, *, gap_terms=(), limit: int = 5) -> dict:
+def probe_gap(reader, gap_id: str, text: str, *, gap_terms=(), limit: int = 5, proposals=()) -> dict:
     """One gap against the corpus; a section counts only with two distinct whole-word key terms.
 
     ``gap_terms`` come first in the key-term list: they are the words in the corpus's language.
@@ -65,20 +69,26 @@ def probe_gap(reader, gap_id: str, text: str, *, gap_terms=(), limit: int = 5) -
             hits.append({"reference": row["reference"], "title": row["title"],
                          "key_term_matches": matched, "preview": row["preview"][:400]})
     hits = hits[:limit]
+    # Jev's proposals, (reference, title, probability, preview) by falling probability, add what the words missed.
+    from .jev import JEV_HITS
+    known = {hit["reference"] for hit in hits}
+    hits += [{"reference": reference, "title": title, "via": "jev", "probability": round(probability, 3),
+              "preview": preview} for reference, title, probability, preview in proposals if reference not in known][:JEV_HITS]
     return {"gap_id": gap_id, "text": text, "key_terms": words, "hits": hits,
             "status": "hits_unread" if hits else "no_hits"}
 
 
-def probe(index, gaps: dict[str, str], *, gap_terms=None, limit: int = 5) -> list[dict]:
+def probe(index, gaps: dict[str, str], *, gap_terms=None, limit: int = 5, proposals=None) -> list[dict]:
     """Probe every gap of a run. ``index`` is a ``SourceIndex``; no model call is made.
 
     ``gap_terms`` maps a gap id to its corpus-language search words; a gap without an entry,
     such as one from a dossier written before the field existed, is probed by its text alone.
+    ``proposals`` maps a gap id to Jev's sections (``jev.scan``); without it the probe is lexical only.
     """
     from .research_reader import SourceReader
     reader = SourceReader(index)
-    supplied = gap_terms or {}
-    return [probe_gap(reader, gid, text, gap_terms=supplied.get(gid, ()), limit=limit)
+    supplied, proposed = gap_terms or {}, proposals or {}
+    return [probe_gap(reader, gid, text, gap_terms=supplied.get(gid, ()), limit=limit, proposals=proposed.get(gid, ()))
             for gid, text in gaps.items()]
 
 

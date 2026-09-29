@@ -53,6 +53,8 @@ class AudioChoice(Contract):
         default_factory=lambda: {"host_a": "Aiden", "host_b": "Vivian"})
     pauses: PausePolicy = Field(default_factory=PausePolicy)
     model: Literal[tuple(GEMINI_MODELS)] = GEMINI_MODEL
+    # Inline audio tags placed by the text model before a Gemini recording (expression.py); Gemini only.
+    expression: bool = False
 
     @model_validator(mode="after")
     def validate_voices(self):
@@ -62,6 +64,7 @@ class AudioChoice(Contract):
             raise ValueError("Zwei unterschiedliche Stimmen des gewählten Audioanbieters auswählen.")
         if self.provider == "qwen3_local":
             self.model = GEMINI_MODEL  # The speech model applies to Gemini only.
+            self.expression = False
         return self
 
     @model_serializer(mode="wrap")
@@ -71,6 +74,8 @@ class AudioChoice(Contract):
         data = handler(self)
         if data.get("model") == GEMINI_MODEL:
             del data["model"]
+        if not data.get("expression"):
+            data.pop("expression", None)  # Choices without the expression layer hash as before it existed.
         return data
 
     @property
@@ -79,9 +84,15 @@ class AudioChoice(Contract):
 
 
 def selected_audio(root, config):
+    """The Studio's audio choice. A Gemini choice records expression unless it says otherwise: the user chose
+    that every Gemini recording gets its expression layer automatically (2026-09-29)."""
     path = root / "studio/audio.json"
-    return (AudioChoice.model_validate_json(path.read_text(encoding="utf-8")) if path.exists()
-            else AudioChoice(voices=config.voice_profile))
+    if not path.exists():
+        return AudioChoice(voices=config.voice_profile)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and data.get("provider") == "openrouter_gemini_tts":
+        data.setdefault("expression", True)
+    return AudioChoice.model_validate(data)
 
 
 def audio_catalog():
@@ -122,7 +133,11 @@ def same_audio_generation(stored, current):
     if stored == current:
         return True
     try:
-        return AudioChoice.model_validate(stored).model_dump() == AudioChoice.model_validate(current).model_dump()
+        # The expression layer adds tags, not another voice or model: a recording made without it stays current.
+        first, second = (AudioChoice.model_validate(value).model_dump() for value in (stored, current))
+        first.pop("expression", None)
+        second.pop("expression", None)
+        return first == second
     except (ValueError, TypeError):
         return False
 
@@ -219,7 +234,19 @@ class GeminiSpeech:
                 generation = response.headers.get("X-Generation-Id", "")
         except HTTPError as exc:
             code = exc.code
+            # Read only to classify, never echoed: a provider's message may carry anything.
+            try:
+                detail = exc.read(8192).decode("utf-8", "replace").lower()
+            except (OSError, ValueError):
+                detail = ""
             exc.close()
+            if code == 404 and ("zdr" in detail or "data policy" in detail):
+                # An account that allows only zero-data-retention endpoints excludes Google's speech endpoint
+                # (2026-09-29: "0 endpoints ... ZDR violation (account settings)").
+                raise AppError("OpenRouter schließt das Gemini-Sprachmodell wegen der Datenschutz-Einstellung deines Kontos aus: "
+                               "Es erlaubt nur Anbieter ohne Datenspeicherung (Zero Data Retention), und Googles Sprachmodell "
+                               "gehört nicht dazu. Unter openrouter.ai/settings/privacy freigeben, dann fortsetzen.",
+                               code="openrouter_privacy", status="blocked") from None
             if code in {400, 404, 413, 422}:
                 raise AppError("Gemini-TTS-Anfrage abgewiesen. Verfügbarkeit des Modells, Stimme und Textlänge prüfen.",
                                code="openrouter_speech_request", status="blocked") from None
@@ -250,7 +277,8 @@ class GeminiSpeech:
         return path
 
 
-def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None):
+def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None, expression=None):
+    """``expression`` maps a segment id to its spoken text with inline tags (expression.plan_expression)."""
     engine = GeminiSpeech(api_key, timeout=config.runtime.tts_timeout_seconds, model=choice.model)
     table = table if table is not None else SpokenForms()
     rows, paths = [], []
@@ -258,7 +286,7 @@ def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=No
         write_json(work / "tts_progress.json", {"completed_segments": len(rows),
             "total_segments": len(script.segments), "current_segment": segment.segment_id})
         voice = choice.voices[segment.speaker_id]
-        spoken = spoken_text(segment, table, overrides)
+        spoken = (expression or {}).get(segment.segment_id) or spoken_text(segment, table, overrides)
         path = engine.synthesize(segment.text, voice, config.language, root / "cache/audio/gemini", spoken=spoken)
         paths.append(path)
         rows.append({"segment_id": segment.segment_id, "path": path.relative_to(root / "cache/audio").as_posix(),
@@ -268,7 +296,7 @@ def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=No
     return paths
 
 
-def check_gemini_rows(root, script, report, choice, language, *, table=None, overrides=None):
+def check_gemini_rows(root, script, report, choice, language, *, table=None, overrides=None, expression=None):
     rows = report.get("segments", [])
     table = table if table is not None else SpokenForms()
     if [row.get("segment_id") for row in rows] != [s.segment_id for s in script.segments]:
@@ -276,8 +304,8 @@ def check_gemini_rows(root, script, report, choice, language, *, table=None, ove
     paths = []
     for row, segment in zip(rows, script.segments, strict=True):
         path = inside(root / "cache/audio", row["path"])
-        expected = speech_settings(segment.text, choice.voices[segment.speaker_id], language,
-                                   spoken_text(segment, table, overrides), choice.model)
+        spoken = (expression or {}).get(segment.segment_id) or spoken_text(segment, table, overrides)
+        expected = speech_settings(segment.text, choice.voices[segment.speaker_id], language, spoken, choice.model)
         if row.get("settings") != expected or file_hash(path) != row.get("sha256"):
             raise AppError("Gemini-Text, Stimme oder Audiodatei geändert.", code="invalid_audio")
         paths.append(path)

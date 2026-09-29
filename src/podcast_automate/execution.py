@@ -1,8 +1,11 @@
 """Project execution preferences; separate from factual/audio input fingerprints."""
+import json
 from pathlib import Path
 from typing import Literal
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextvars import copy_context
+
+from pydantic import model_serializer
 
 from .call_activity import CALL_SUBJECT
 from .models import Contract, now
@@ -17,6 +20,16 @@ MAX_PARALLEL_TEXT = 5
 class ExecutionChoice(Contract):
     text: Literal["sequential", "parallel"] = "sequential"
     audio: Literal["sequential", "parallel"] = "sequential"
+    # New script runs also ask Jev in the gap probe (jev.py): about 0.60 USD of OpenRouter credit per run.
+    jev_probe: bool = False
+
+    @model_serializer(mode="wrap")
+    def omit_default_probe(self, handler):
+        """A choice without the Jev probe dumps as choices did before it existed, so saved hashes stay valid."""
+        data = handler(self)
+        if not data.get("jev_probe"):
+            data.pop("jev_probe", None)
+        return data
 
     @property
     def text_workers(self):
@@ -24,8 +37,28 @@ class ExecutionChoice(Contract):
 
 
 def selected_execution(root: Path):
+    """The saved modes, and whether new script runs also ask Jev in the gap probe. The probe has its own file,
+    ``studio/jev_probe.json``, so switching it never touches the hash of the modes a brief proposal applied."""
     path = root / "studio/execution.json"
-    return ExecutionChoice.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else ExecutionChoice()
+    choice = ExecutionChoice.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else ExecutionChoice()
+    return choice.model_copy(update={"jev_probe": jev_probe_enabled(root)})
+
+
+def settings_execution(root: Path):
+    """The modes as the Studio's settings and proposals see and hash them: without the Jev probe."""
+    return selected_execution(root).model_copy(update={"jev_probe": False})
+
+
+def jev_probe_enabled(root: Path) -> bool:
+    path = root / "studio/jev_probe.json"
+    try:
+        return path.exists() and json.loads(path.read_text(encoding="utf-8")).get("enabled") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_jev_probe(root: Path, enabled: bool):
+    write_json(root / "studio/jev_probe.json", {"enabled": bool(enabled), "changed_at": now()})
 
 
 def run_episode_stage(entries, action, *, workers, work, stage):

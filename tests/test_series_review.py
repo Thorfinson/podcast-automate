@@ -357,7 +357,9 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         self.assertEqual(run.status, "completed")
         # One repair, one extra episode review and one series re-check; nothing else is repeated.
         self.assertEqual(self.versions.count("script_review_repair.v2-delete-absence"), 1)
-        self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION), 3)
+        # The review of the correction is scoped to the series issues and the changed segments (+followup).
+        self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION), 2)
+        self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION + "+followup"), 1)
         self.assertEqual(self.versions.count(SERIES_REVIEW_VERSION), 2)
         work = self.root / "runs" / run.run_id
         published = read_yaml(self.root / "episodes/ep_002/script.yaml")

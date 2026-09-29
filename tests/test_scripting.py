@@ -13,6 +13,7 @@ from podcast_automate.models import Chapter, EpisodeScript
 from podcast_automate.research_models import ResearchDossier
 from podcast_automate.runner import status
 from podcast_automate.script_models import Dependency, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan
+from podcast_automate.script_pipeline import REVIEW_REPAIR_VERSION, changed_segments, follow_up_scope
 from podcast_automate.scripting import run_script, validate_plan, validate_script
 from podcast_automate.storage import read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
@@ -341,6 +342,96 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(self.calls.count(ScriptReview) - before, 3, "one new review after each of three new repairs")
         checkpoint = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_checkpoint.json").read_text(encoding="utf-8"))
         self.assertEqual(checkpoint["repairs"], 3)
+
+    def follow_up_model(self, basis):
+        """The first review raises a grounding point on seg_002, which the repair rewrites. The first review after
+        the repair raises a new point on seg_001, which no repair touched, with ``basis``; later reviews pass."""
+        followups = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            version = kwargs["prompt_version"]
+            if output_type is EpisodeScript and version == REVIEW_REPAIR_VERSION:
+                value.segments[1].text += " A lower score is the better fit."
+            if output_type is ScriptReview and not version.endswith("+followup"):
+                value.issues = [ScriptIssue(category="grounding", segment_ids=["seg_002"], reason="The score direction has no finding.")]
+            elif output_type is ScriptReview:
+                payload = json.loads(prompt.splitlines()[-1])
+                followups.append((payload["previous_issues"], payload["changed_segments"]))
+                if len(followups) == 1:
+                    value.issues = [ScriptIssue(category="grounding", segment_ids=["seg_001"],
+                                                reason="The question implies a comparison no finding names.")]
+                    value.issue_basis = [basis]
+            return value, meta
+        return model, followups
+
+    def test_a_review_after_a_repair_turns_new_points_on_untouched_segments_into_advisories(self):
+        """Ontologies, 2026-09-29: every review after a repair found new grounding points on segments no repair
+        had touched, so ep_005 went through fifteen reviews without converging. The code, not the review's own
+        basis, decides the scope: a point on an untouched segment is reported and does not block."""
+        model, followups = self.follow_up_model("changed")
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 2, "the first review and one after the single repair")
+        self.assertEqual(followups, [([{"category": "grounding", "segment_ids": ["seg_002"],
+                                        "reason": "The score direction has no finding."}], ["seg_002"])])
+        work = self.root / "runs" / run.run_id
+        report = json.loads((work / "reviews/ep_001.json").read_text(encoding="utf-8"))
+        self.assertEqual((report["issues"], [a["segment_ids"] for a in report["advisories"]]), ([], [["seg_001"]]))
+        notes = json.loads((work / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertEqual([n["segment_ids"] for n in notes], [["seg_001"]])
+        self.assertTrue(read_yaml(self.root / "episodes/ep_001/script.yaml")["segments"][1]["text"].endswith("better fit."))
+
+    def test_a_factual_error_on_an_untouched_segment_still_blocks_a_review_after_a_repair(self):
+        model, followups = self.follow_up_model("factual_error")
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 3, "the error on seg_001 took a second repair")
+        self.assertEqual(followups[1], ([{"category": "grounding", "segment_ids": ["seg_001"],
+                                          "reason": "The question implies a comparison no finding names."}], []))
+
+    def test_a_repair_for_notes_that_breaks_the_evidence_keeps_the_draft_that_passed(self):
+        passed_text = example_script().segments[1].text
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            version = kwargs["prompt_version"]
+            if output_type is EpisodeScript and version == REVIEW_REPAIR_VERSION:
+                value.segments[1].text = "It scores possibilities, and the lowest score always wins."
+            if output_type is ScriptReview and version.endswith("+followup"):
+                value.issues = [ScriptIssue(category="grounding", segment_ids=["seg_002"], reason="'Always wins' goes beyond the finding.")]
+                value.issue_basis = ["changed"]
+            elif output_type is ScriptReview:
+                value.issues = [ScriptIssue(category="depth", segment_ids=["seg_002"], reason="The score direction needs an example.")]
+            return value, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 4, "the first review and one after each of three repairs")
+        work = self.root / "runs" / run.run_id
+        kept = json.loads((work / "reviews/ep_001_kept_draft.json").read_text(encoding="utf-8"))
+        self.assertEqual(kept["set_aside"]["review"]["issues"][0]["category"], "grounding")
+        self.assertEqual(read_yaml(self.root / "episodes/ep_001/script.yaml")["segments"][1]["text"], passed_text)
+        notes = json.loads((work / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertEqual([n["reason"] for n in notes], ["The score direction needs an example."])
+
+    def test_the_review_scope_follows_changed_segments_and_previous_issues(self):
+        before = example_script()
+        after = before.model_copy(deep=True)
+        after.segments[1].knowledge_refs = []
+        self.assertEqual(changed_segments(before, after), ["seg_002"])
+        self.assertEqual(changed_segments(before, before), [])
+        point = lambda segment, category="grounding": ScriptIssue(category=category, segment_ids=[segment], reason="r")
+        review = ScriptReview(issues=[point("seg_001"), point("seg_003"), point("seg_004"), point("seg_005")],
+                              limitations=[], issue_basis=["previous", "changed", "source_contradiction", "changed"],
+                              advisories=[point("seg_003", "clarity"), point("seg_002")])
+        previous = ScriptReview(issues=[point("seg_001")], limitations=[])
+        scoped = follow_up_scope(review, previous, ["seg_002", "seg_003"])
+        self.assertEqual([i.segment_ids[0] for i in scoped.issues], ["seg_001", "seg_003", "seg_004", "seg_002"])
+        self.assertEqual([(i.segment_ids[0], i.category) for i in scoped.advisories],
+                         [("seg_005", "grounding"), ("seg_003", "clarity")])
 
     def test_review_policy_fix_rechecks_latest_draft_without_resetting_used_repairs(self):
         def rejected(prompt, output_type, directory, **kwargs):

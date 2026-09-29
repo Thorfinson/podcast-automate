@@ -18,6 +18,7 @@ from .logs import configure_logging, logger, record_failure
 from .models import now
 from .provider_pool import AdapterPool, text_generation_settings
 from .research import reserve_call, run_research
+from .run_budget import run_text_generation
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
@@ -33,17 +34,26 @@ from .text_settings import (CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, EFFORT_
                             OPENROUTER_MODELS, PROVIDER_NOTES, REASONING_EFFORTS)
 
 
+def probe_key(root, request, run_id=None):
+    """The Studio's OpenRouter key reaches a script run only when that run asked for the Jev gap probe."""
+    execution = (read_json(manifest_path(root, run_id).parent / "script_request.json", {}).get("execution") if run_id
+                 else selected_execution(root).model_dump()) or {}
+    return request.get("api_key") if execution.get("jev_probe") else None
+
+
+def text_key(root, request, run_id):
+    """The key goes to a text run only while the run works with OpenRouter, as started or as switched."""
+    current = run_text_generation(manifest_path(root, run_id).parent) or {}
+    return request.get("api_key") if current.get("provider") == "openrouter" else None
+
+
 def perform(root, request, sample_progress=None):
     action = request["action"]
     config = load_project(root)
     choice = TextChoice.model_validate(request["text"])
     kwargs = choice.kwargs()
     kwargs["api_key"] = request.get("api_key") if choice.provider == "openrouter" else None
-    saved_key = None
-    if action in {"script", "replan"}:
-        saved = read_json(manifest_path(root, request["run_id"]).parent / "script_request.json", {})
-        if saved.get("text_generation", {}).get("provider") == "openrouter":
-            saved_key = request.get("api_key")
+    saved_key = text_key(root, request, request["run_id"]) if action in {"script", "replan"} else None
     if action == "check":
         remote = selected_audio(root, config).remote
         checks = inspect(config.runtime, include_tts=not remote)
@@ -114,15 +124,18 @@ def perform(root, request, sample_progress=None):
         # Studio runs always stop for the plan projection; the approval comes from the research page.
         run = run_research(root, **research_choice, plan_review="required")
     elif action == "plan":
-        run = run_script(root, plan_only=True, **kwargs)
+        run = run_script(root, plan_only=True, probe_key=probe_key(root, request), **kwargs)
     elif action == "replan":
         run = run_script(root, plan_only=True, resume=True, run_id=request["run_id"],
-                         outline_feedback=request["message"], api_key=saved_key)
+                         outline_feedback=request["message"], api_key=saved_key,
+                         probe_key=probe_key(root, request, request["run_id"]))
     elif action == "script":
         run = run_script(root, resume=True, run_id=request["run_id"],
-                         approved_plan_hash=request["plan_hash"], api_key=saved_key)
+                         approved_plan_hash=request["plan_hash"], api_key=saved_key,
+                         probe_key=probe_key(root, request, request["run_id"]))
     elif action == "revise":
-        run = run_script(root, revise=request["episode"], feedback=request["message"], **kwargs)
+        run = run_script(root, revise=request["episode"], feedback=request["message"],
+                         probe_key=probe_key(root, request), **kwargs)
     elif action == "audio":
         rerender = request.get("rerender") is True
         run = run_episode_audio(root, episode=request["episode"], approve_audio=not rerender,
@@ -144,10 +157,11 @@ def perform(root, request, sample_progress=None):
                 manifest["stages"]["planning"]["status"] != "completed" or not approval or
                 approval.get("plan_hash") != outline_hash(path.parent))
             run = run_script(root, resume=True, run_id=run_id, plan_only=plan_only,
-                             api_key=request.get("api_key") if saved.get("text_generation", {}).get("provider") == "openrouter" else None)
+                             api_key=text_key(root, request, run_id), probe_key=probe_key(root, request, run_id))
         elif manifest["kind"] == "research":
             # Also for the scheduler's automatic resume after a quota reset: the gate is never bypassed.
-            run = run_research(root, resume=True, run_id=run_id, plan_review="required")
+            run = run_research(root, resume=True, run_id=run_id, plan_review="required",
+                               api_key=text_key(root, request, run_id))
         elif manifest["kind"] == "episode_audio":
             run = run_episode_audio(root, resume=True, run_id=run_id, api_key=request.get("api_key"),
                                     parallel_remote=request.get("parallel_remote", False))

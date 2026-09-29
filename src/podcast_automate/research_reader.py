@@ -9,6 +9,12 @@ from .errors import AppError
 from .research_retrieval import terms
 
 
+def is_reference_list(text):
+    """A bibliography or a list of links: it names where answers are, it does not hold one."""
+    return len(re.findall(r"https?://", text)) >= 3 or bool(
+        re.match(r"\s*(references|bibliography|literaturverzeichnis)\b", text, re.I))
+
+
 def compact(text):
     return "".join(terms(text))
 
@@ -57,9 +63,7 @@ class SourceReader:
             # Whole-document names are selectors, not evidence that a paragraph answers the question.
             title_words = self.title_words[source.id]
             content_hits = len(matched - title_words)
-            links = len(re.findall(r"https?://", section.text))
-            reference_list = links >= 3 or bool(re.match(r"\s*(references|bibliography|literaturverzeichnis)\b", section.text, re.I))
-            ranked.append((not reference_list, phrase_hits, content_hits, score, source, position, section))
+            ranked.append((not is_reference_list(section.text), phrase_hits, content_hits, score, source, position, section))
         ranked.sort(key=lambda row: (-row[0], -row[1], -row[2], -row[3], row[4].id, row[5]))
         # Show alternatives across sources before additional passages from one source.
         # Pagination retains ALL candidates, so a reader can examine rank 27 and beyond.

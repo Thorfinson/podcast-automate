@@ -20,7 +20,7 @@ from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.speech import AudioChoice, audio_generation_record
 from podcast_automate.storage import digest, file_hash, init_project, project_hash, read_yaml, write_json, write_yaml
 from podcast_automate.studio import BriefProposal, Studio, make_server, record_interruption
-from podcast_automate.studio_worker import perform
+from podcast_automate.studio_worker import perform, probe_key
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
 
@@ -609,6 +609,31 @@ class StudioHttpTests(unittest.TestCase):
             self.assertEqual(self.request("/api/projects/example/start", data)[0], 400)
             process.assert_not_called()
 
+    def test_the_jev_probe_switch_keeps_the_settings_hash_and_the_key_goes_only_to_runs_that_asked(self):
+        """The switch has its own file: a brief proposal applied before stays applied, and a later one cannot turn
+        the probe off by accident. The worker hands the OpenRouter key only to a script run that uses the probe."""
+        before = json.loads(self.request("/api/projects/example")[1])
+        self.assertFalse(before["jev_probe"])
+        self.assertIsNone(probe_key(self.root, {"api_key": "test-key"}))
+        status, body, _ = self.request("/api/projects/example/jev_probe", {"enabled": True})
+        self.assertEqual(status, 200, body)
+        after = json.loads(self.request("/api/projects/example")[1])
+        self.assertTrue(after["jev_probe"])
+        self.assertEqual((after["execution"], after["execution_hash"]), (before["execution"], before["execution_hash"]))
+        self.assertEqual(probe_key(self.root, {"api_key": "test-key"}), "test-key")
+        self.assertEqual(self.request("/api/projects/example/jev_probe", {"enabled": "yes"})[0], 400)
+        # Saving the settings, as a proposal does, neither needs nor changes the switch.
+        data = {"config": after["config"], "config_hash": after["config_hash"], "text": after["text"],
+                "execution": {**after["execution"], "jev_probe": False}, "execution_hash": after["execution_hash"]}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        self.assertTrue(json.loads(self.request("/api/projects/example")[1])["jev_probe"])
+        # A run keeps what it started with: the saved request decides, not today's switch.
+        write_json(self.root / "runs/run_old/script_request.json", {"execution": {"text": "sequential", "audio": "sequential"}})
+        self.assertIsNone(probe_key(self.root, {"api_key": "test-key"}, "run_old"))
+        write_json(self.root / "runs/run_jev/script_request.json", {"execution": {"text": "sequential", "jev_probe": True}})
+        self.request("/api/projects/example/jev_probe", {"enabled": False})
+        self.assertEqual(probe_key(self.root, {"api_key": "test-key"}, "run_jev"), "test-key")
+
     def test_gemini_audio_can_be_selected_without_changing_script_inputs(self):
         detail = json.loads(self.request("/api/projects/example")[1])
         before = (self.root / "project.yaml").read_bytes()
@@ -619,7 +644,8 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
         self.assertEqual((self.root / "project.yaml").read_bytes(), before)
         saved = json.loads(self.request("/api/projects/example")[1])
-        self.assertEqual(saved["audio_settings"], audio)
+        # Every Gemini recording gets its expression layer unless the choice says otherwise (the user, 2026-09-29).
+        self.assertEqual(saved["audio_settings"], {**audio, "expression": True})
         self.assertEqual(saved["text"]["provider"], "codex_cli")
         self.assertEqual(self.request("/api/projects/example/save", data)[0], 400)
         catalog = json.loads(self.request("/api/bootstrap")[1])["audio_catalog"]

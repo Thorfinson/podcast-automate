@@ -26,6 +26,10 @@ from .scripting import run_script
 from .storage import init_project, load_project, read_yaml, write_json
 from .platforms import configure_path
 
+# pla approve --text-switch VALUE -> run_budget.TEXT_SWITCHES
+SWITCH_OPTIONS = {"claude": "claude_first", "astra": "astra_first", "claude-only": "claude", "astra-only": "astra",
+                  "openrouter": "openrouter"}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -103,6 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
                              help="OpenRouter-Key nur für diesen Aufruf; ohne Wert verdeckt abfragen, alternativ OPENROUTER_API_KEY")
         command.add_argument("--max-output-tokens", type=int,
                              help="OpenRouter-Ausgabelimit pro Modellaufruf; Standard 32768")
+    script.add_argument("--jev-probe", action="store_true",
+                        help="Lückenprobe zusätzlich mit Jev (OpenRouter, Key aus OPENROUTER_API_KEY): findet Abschnitte "
+                             "auch über Sprachgrenzen, etwa 0,60 USD je Lauf; gilt für neue Skriptläufe")
     approve = commands.add_parser("approve", help="Ausdrückliche Freigabe für einen Lauf: Rechercheplan freigeben, "
                                                    "höheres Aufruf-, Suchrunden- oder Quellenlimit oder eine blockierte "
                                                    "Teilfrage als Lücke akzeptieren")
@@ -126,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--fresh-attempts", action="store_true",
                          help="Schritte, die ihre Korrekturversuche verbraucht haben, beim nächsten Fortsetzen mit neuen "
                               "Anläufen wiederholen (die abgewiesenen Antworten bleiben lesbar)")
+    approve.add_argument("--text-switch", nargs="?", const="claude", choices=tuple(SWITCH_OPTIONS),
+                         help="Skript- oder Rechercheauftrag ab dem nächsten Fortsetzen weiter mit: claude (Claude, sonst "
+                              "Astra; Standard), astra (Astra, sonst Claude), claude-only, astra-only oder openrouter "
+                              "(bezahlt, mit --switch-model und Key). Astra arbeitet auf xhigh, Claude auf der Stufe des "
+                              "Laufs; Zwischenstände bleiben gültig")
+    approve.add_argument("--switch-model", help="OpenRouter-Modell für --text-switch openrouter, z. B. openai/gpt-6-astra")
     approve.add_argument("--finish-with-residuals", action="store_true",
                          help="Nach der nächsten Gesamtprüfung abschließen; verbliebene Einwände stehen im Qualitätsbericht "
                               "(--reason wird als Notiz gespeichert)")
@@ -223,16 +236,18 @@ def run_command(args) -> int:
         elif args.command == "approve":
             from .run_budget import (approve_criterion_gap, approve_fresh_attempts, approve_model_call_limit,
                                      approve_research_gap, approve_research_plan, approve_research_retry,
-                                     approve_residual_finish, decide_review_disagreement, request_teaching_redesign)
+                                     approve_residual_finish, approve_text_switch, decide_review_disagreement,
+                                     request_teaching_redesign)
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
             if (args.model_calls is None and args.search_rounds is None and args.sources is None and not args.accept_gap
                     and not args.retry and not args.access_gap and not args.dispute and not args.finish_with_residuals
-                    and not args.fresh_attempts and args.research_plan is None and not args.redesign_teaching):
+                    and not args.fresh_attempts and args.research_plan is None and not args.redesign_teaching
+                    and not args.text_switch):
                 raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --sources, --accept-gap, "
-                               "--access-gap, --dispute, --finish-with-residuals, --fresh-attempts, --retry oder "
-                               "--redesign-teaching.",
+                               "--access-gap, --dispute, --finish-with-residuals, --fresh-attempts, --retry, "
+                               "--redesign-teaching oder --text-switch.",
                                code="invalid_request", status="blocked")
             if bool(args.access_gap) != bool(args.blocked_source):
                 raise AppError("--access-gap und --blocked-source gehören zusammen.", code="invalid_request", status="blocked")
@@ -254,6 +269,9 @@ def run_command(args) -> int:
                 data["retry_request"] = request.model_dump(mode="json")
             if args.fresh_attempts:
                 data["fresh_attempts"] = approve_fresh_attempts(root, run_id)
+            if args.text_switch:
+                data["text_switch"] = approve_text_switch(root, run_id, SWITCH_OPTIONS[args.text_switch],
+                                                          model=args.switch_model)
             if args.redesign_teaching:
                 redesign = request_teaching_redesign(root, run_id, args.redesign_teaching, args.hint)
                 data["teaching_redesign"] = redesign.model_dump(mode="json")
@@ -330,7 +348,8 @@ def run_command(args) -> int:
                                       revise=getattr(args, "revise", None), feedback=getattr(args, "feedback", ""),
                                       resume=args.command == "resume", run_id=getattr(args, "run_id", None),
                                       backend=args.backend, model=args.model, api_key=api_key,
-                                      max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort)
+                                      max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort,
+                                      jev_probe=getattr(args, "jev_probe", False))
             elif research_run:
                 # The plan gate is the CLI default; only an explicit --approve-plan at the start waives it.
                 manifest = run_research(args.project_dir, resume=args.command == "resume",

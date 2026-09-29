@@ -25,14 +25,15 @@ from pydantic import Field
 
 from .errors import AppError
 from . import attachments
-from .execution import ExecutionChoice, MAX_PARALLEL, selected_execution
+from .execution import (ExecutionChoice, MAX_PARALLEL, jev_probe_enabled, selected_execution, set_jev_probe,
+                        settings_execution)
 from .logs import configure_logging, logger
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, host_labels, now
 from .episode_audio import saved_approval
 from .runner import manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
-                         approve_fresh_attempts, approve_research_retry, approve_residual_finish, decide_review_disagreement,
-                         request_teaching_redesign)
+                         approve_fresh_attempts, approve_research_retry, approve_residual_finish, approve_text_switch,
+                         decide_review_disagreement, request_teaching_redesign, switch_choice, text_switch)
 from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics, style_notes
 from .script_pipeline import failed_teaching
@@ -368,7 +369,12 @@ class Studio:
             run = data["run"]
             work = manifest_path(root, run["run_id"]).parent
             request = "script_request.json" if run["kind"] == "script" else "research_request.json"
-            data["text_generation"] = read_json(work / request, {}).get("text_generation")
+            saved = read_json(work / request, {}).get("text_generation")
+            data["text_generation"] = text_switch(work, run.get("input_hash"), saved)
+            # Every text run may continue with another provider (approve_text_switch); the page names the current one.
+            data["text_switched"] = data["text_generation"] != saved
+            data["text_switchable"] = True
+            data["text_switch_choice"] = switch_choice(data["text_generation"])
             data["provider_choice"] = latest_provider_choice(work)
         if data and data.get("status") == "waiting_for_quota" and data.get("retry_at"):
             # Announced only where the scheduler acts: the project's main job with a run to resume.
@@ -471,6 +477,8 @@ class Studio:
             approval = approve_criterion_gap(root, run_id, data.get("task_id"), data.get("criterion"), data.get("source"),
                                              data.get("reason", ""))
             return {"access_gap": approval.model_dump(mode="json")}
+        if kind == "text_switch":
+            return {"text_switch": approve_text_switch(root, run_id, data.get("choice", "claude_first"), model=data.get("model"))}
         if kind == "teaching_redesign":
             request = request_teaching_redesign(root, run_id, data.get("episode_id"), data.get("note", ""))
             return {"teaching_redesign": request.model_dump(mode="json")}
@@ -630,7 +638,7 @@ class Studio:
         root = self.root(project)
         config = load_project(root)
         audio = selected_audio(root, config)
-        execution = selected_execution(root)
+        execution = settings_execution(root)
         jobs = self.audio_jobs(root)
         main = self.job(root)
         candidates = [job for job in [main, *jobs] if job]
@@ -658,6 +666,7 @@ class Studio:
                 "spoken_forms_hash": digest(table.model_dump()),
                 "voice_samples": sample_inventory(self.projects),
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
+                "jev_probe": jev_probe_enabled(root),
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
                     "available": max(0, min(limit - active_here, MAX_PARALLEL - len(active_audio)))},
                 "chat": read_json(root / "studio/chat.json", []), "job": latest_job, "main_job": main,
@@ -774,11 +783,12 @@ class Studio:
             if "audio_settings" in data and data.get("audio_hash") != digest(current_audio.model_dump()):
                 raise AppError("Audioauswahl inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
             audio = AudioChoice.model_validate(data.get("audio_settings", current_audio.model_dump()))
-            execution = selected_execution(root)
+            execution = settings_execution(root)
             if "execution" in data:
                 if data.get("execution_hash") != digest(execution.model_dump()):
                     raise AppError("Ausführungsmodus inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
-                execution = ExecutionChoice.model_validate(data["execution"])
+                # The Jev probe has its own switch (jev_probe); a proposal or settings save never sets it.
+                execution = ExecutionChoice.model_validate(data["execution"]).model_copy(update={"jev_probe": False})
             if "style_notes" in data:
                 notes = data["style_notes"]
                 if not isinstance(notes, str) or len(notes) > 20000:
@@ -799,6 +809,15 @@ class Studio:
                 # Only a request that carried the table writes it; a notes or voice save leaves it alone.
                 write_json(root / "studio/spoken_forms.json", forms.model_dump())
         return {"saved": True}
+
+    def jev_probe(self, project, data):
+        """Whether new script runs of this project also ask Jev in the gap probe (jev.py). A running job keeps its
+        choice; the switch applies from the next new script run."""
+        enabled = data.get("enabled")
+        if not isinstance(enabled, bool):
+            raise AppError("Jev-Lückenprobe ein- oder ausschalten.", code="invalid_request")
+        set_jev_probe(self.root(project), enabled)
+        return {"jev_probe": enabled}
 
     def spoken_override(self, project, data):
         """A per-segment spoken form. It changes only how a segment is read aloud."""
@@ -866,15 +885,18 @@ class Studio:
         config["target_total_minutes"] = chosen.target_total_minutes
         text_choice = chosen.text or TextChoice.model_validate(read_json(root / "studio/text.json", {}))
         audio = chosen.audio_settings or selected_audio(root, load_project(root))
-        execution = chosen.execution or selected_execution(root)
+        execution = (chosen.execution or settings_execution(root)).model_copy(update={"jev_probe": False})
         if audio.provider == "qwen3_local":
             config["voice_profile"] = audio.voices
         result = self.save(project, {"config": config, "config_hash": data.get("config_hash"),
             "text": text_choice.model_dump(), "audio_settings": audio.model_dump(), "audio_hash": data.get("audio_hash"),
             "execution": execution.model_dump(), "execution_hash": data.get("execution_hash")})
+        # The audio hash of the choice as saved: selected_audio adds the expression layer a Gemini choice records,
+        # and the detail compares against exactly that.
         write_json(root / "studio/applied_proposal.json", {"proposal_hash": digest(proposal),
             "config_hash": project_hash(load_project(root)),
-            "audio_hash": digest(audio.model_dump()), "execution_hash": digest(execution.model_dump()),
+            "audio_hash": digest(selected_audio(root, load_project(root)).model_dump()),
+            "execution_hash": digest(execution.model_dump()),
             "text_hash": digest(read_json(root / "studio/text.json"))})
         return result
 
@@ -1201,7 +1223,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = app.restore(data)
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
-                                             r"|remove_attachment|approve|spoken_override|listening_review)", path)
+                                             r"|remove_attachment|approve|spoken_override|listening_review|jev_probe)", path)
                         if not match:
                             raise AppError("Seite nicht gefunden.", code="not_found")
                         project, action = match.groups()

@@ -20,7 +20,7 @@ from .errors import AppError
 from .execution import ExecutionChoice, selected_execution
 from .question_budget import write_calibration
 from .run_budget import (accepted_gaps, approve_research_plan, criterion_gaps, dispute_decisions, effective_limits,
-                         plan_approval_for, residual_finish, retry_requests)
+                         plan_approval_for, residual_finish, retry_requests, text_switch)
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .models import RunManifest, StageRecord
 from .provider_pool import AdapterPool, check_adapter_versions, subscription_selection
@@ -304,7 +304,7 @@ PLAN_REVIEW_MODES = {None, "required", "auto"}
 
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
                  reuse_sources: str | None = None, model=None, reasoning_effort=None, backend=None,
-                 plan_review: str | None = None) -> RunManifest:
+                 plan_review: str | None = None, api_key=None) -> RunManifest:
     """Run or resume the research lane.
 
     ``plan_review`` decides the plan gate before the first task call: ``"required"`` (the CLI and
@@ -410,8 +410,13 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             previous_outline = json.loads((root / "studio/outline.json").read_text(encoding="utf-8"))
             write_json(root / "studio/previous_outline.json", previous_outline)
             (root / "studio/outline.json").unlink()
+        # The inputs keep the selection the run started with; an approved switch only changes who answers.
+        selection = text_switch(work, manifest.input_hash, selection)
+        if selection:
+            check_adapter_versions(selection)
+        using_openrouter = (selection or {}).get("provider") == "openrouter"
         pool = AdapterPool(config.runtime, selection or {"provider": "codex_cli", "model": config.runtime.codex_model,
-                                                        "reasoning_effort": None})
+                                                        "reasoning_effort": None}, api_key=api_key if using_openrouter else None)
         # The advice on a blocked question asks the deepest setting of the run's subscription (research_advisor).
         advisor_pool = AdapterPool(config.runtime, advisor_selection(pool.text_generation))
 
