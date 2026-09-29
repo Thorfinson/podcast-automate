@@ -7,6 +7,9 @@ from __future__ import annotations
 from .storage import file_hash
 from .storage import read_optional_json as read
 
+# Script review points that no longer stop a run once its repairs are spent (script_pipeline.review_episode).
+NOTED_CATEGORIES = {"clarity", "depth", "dialogue"}
+
 
 def teaching_ready(folder):
     checkpoint = read(folder / "checkpoint.json", {})
@@ -33,5 +36,9 @@ def finished(work, episode, stage):
         report = read(work / "reviews" / f"{episode}.json")
         checked = read(work / "reviewed" / f"{episode}.json")
         checkpoint = read(work / "reviews" / f"{episode}_checkpoint.json", {})
-        return bool(checked and report is not None and not report.get("issues") and checkpoint.get("draft") == checked)
+        # Points that are only noted leave the episode finished: its script stands and they are reported. Counting such
+        # an episode as open froze the Studio's count and inflated the budget projection (2026-09-29: Asimov showed
+        # 5 of 14 with 12 done, Ontologies 2 of 10 with all done and "at least 32 more review calls").
+        blocking = [issue for issue in (report or {}).get("issues", []) if issue.get("category") not in NOTED_CATEGORIES]
+        return bool(checked and report is not None and not blocking and checkpoint.get("draft") == checked)
     return False

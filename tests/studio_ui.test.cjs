@@ -1054,9 +1054,10 @@ test('a re-render posts the rerender flag with the session token and no fresh ap
   // No checkbox on the reading page: the server applies the saved approval by the pipeline's rule.
   assert.deepEqual(JSON.parse(request.options.body),{action:'audio',episode:'ep_001',approve_audio:false,rerender:true,
     script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
-  // The approval-page button still sends the checkbox state and no rerender flag.
+  // The approval-page button still sends the checkbox state and no rerender flag, and the hash of the tags read
+  // with the script (empty when none were placed); only a new approval binds them.
   app.run('episodeIndex=0;$("audio-approval").checked=true;');
-  assert.deepEqual(JSON.parse(JSON.stringify(app.run('audioRequest()'))),{episode:'ep_001',approve_audio:true,script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
+  assert.deepEqual(JSON.parse(JSON.stringify(app.run('audioRequest()'))),{episode:'ep_001',approve_audio:true,expression_hash:'',script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
 });
 
 test('the spoken-form field starts from the table result and an unchanged save creates no override',async()=>{
@@ -2347,4 +2348,113 @@ test('the setup summary switches the Jev gap probe and script stops name Jev, no
   assert.equal(app.run(`stopInfo(${JSON.stringify(job('episode_audio'))}).title`),'OpenRouter-Datenschutz schließt Gemini aus');
   const quiet={status:'blocked',action:'resume',stop:{code:'jev_unavailable'},run:{run_id:'r',kind:'script',stages:{}}};
   assert.ok(app.run(`stopInfo(${JSON.stringify(quiet)}).text`).includes('schon beantwortete Abschnitte werden nicht noch einmal gefragt'));
+});
+
+test('a drawer redraw keeps a choice in progress in a select, and the OpenRouter models follow it',()=>{
+  const app=studio();
+  // The "Weiter mit" control sits in the Maschinenraum drawer, which redraws every few seconds while a job runs.
+  const kept=app.run(`(()=>{
+    const choice=document.getElementById('text-switch-choice'), model=document.getElementById('text-switch-model');
+    choice.id='text-switch-choice'; choice.value='openrouter'; model.hidden=false;
+    const box={querySelectorAll:selector=>selector.includes('select[id]')?[choice]:[],
+      set innerHTML(html){choice.value='claude';model.hidden=true;}};
+    replaceKeeping(box,'<select id="text-switch-choice"></select>');
+    return JSON.stringify([choice.value,model.hidden]);
+  })()`);
+  assert.deepEqual(JSON.parse(kept),['openrouter',false]);
+});
+
+test('an episode that finished its review in this pass counts as done even when an older server says open',()=>{
+  const app=studio();
+  const row=(id,completed,stage_status)=>({episode_id:id,title:`Folge ${id}`,completed,stage_status});
+  const p={phase:'script',stage:'review',total_segments:4,completed_segments:1,active_episodes:['ep_4'],activity:'Fakten und Erklärungen werden geprüft',
+    episodes:[row('ep_1',true,'completed'),row('ep_2',false,'completed'),row('ep_3',false,'completed'),row('ep_4',false,'running')]};
+  const html=app.run(`renderScriptProgress(${JSON.stringify(p)},true)`);
+  assert.ok(html.includes('3 von 4 Folgen: Qualitätsprüfung abgeschlossen'),html);
+  assert.equal((html.match(/✓/g)||[]).length,3);
+  // A step that stopped is not counted.
+  const stopped={...p,episodes:[...p.episodes.slice(0,3),row('ep_4',false,'interrupted')]};
+  assert.ok(app.run(`renderScriptProgress(${JSON.stringify(stopped)},true)`).includes('3 von 4'));
+});
+
+test('once every episode passed its review the page names the series review, not an episode',()=>{
+  const app=studio();
+  const row=id=>({episode_id:id,title:`Folge ${id}`,completed:false,stage_status:'completed'});
+  const p={phase:'script',stage:'review',total_segments:2,completed_segments:0,current_episode:'ep_1',episode_number:1,episode_title:'Folge ep_1',
+    activity:'Fakten und Erklärungen werden geprüft',episodes:[row('ep_1'),row('ep_2')]};
+  const html=app.run(`lastSyncAt=Date.now();renderScriptProgress(${JSON.stringify(p)},true)`);
+  assert.ok(html.includes('Serienprüfung · alle Folgen im Zusammenhang'),html);
+  assert.ok(html.includes('Korrektur nach der Serienprüfung · Fakten und Erklärungen werden geprüft'));
+  assert.ok(html.includes('prüft ein Aufruf die ganze Serie im Zusammenhang'));
+  assert.ok(!html.includes('Folge 1 von 2'));
+  // The series review itself keeps its own wording.
+  const own=app.run(`renderScriptProgress(${JSON.stringify({...p,activity:'Zusammenhang und Vollständigkeit der gesamten Skriptserie werden geprüft'})},true)`);
+  assert.ok(own.includes('Zusammenhang und Vollständigkeit der gesamten Skriptserie werden geprüft')&&!own.includes('Korrektur nach'));
+});
+
+test('the reader sees the tags a Gemini recording will speak, marked in the script, and can place them',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'},expression:true},episodes:[]};`);
+  const segment={segment_id:'s1',text:'Das hätte ich jetzt nicht erwartet.'};
+  const expression={tags:1,segments:[{segment_id:'s1',text:'<chuckle> Das hätte ich jetzt nicht erwartet.'}],hash:'h1'};
+  assert.equal(app.run(`expressiveText(${JSON.stringify(segment)},${JSON.stringify(expression)})`),
+    '<p><mark class="expression-tag">&lt;chuckle&gt;</mark> Das hätte ich jetzt nicht erwartet.</p>');
+  // A segment spoken differently from its written form shows the tags on what is spoken, below the text.
+  const spoken={tags:1,segments:[{segment_id:'s1',text:'<gasp> Das hätte ich jetzt nie erwartet.'}]};
+  assert.ok(app.run(`expressiveText(${JSON.stringify(segment)},${JSON.stringify(spoken)})`).includes('Gesprochen mit Ausdruck: <mark'));
+  const panel=app.run(`renderExpressionPanel({script:{episode_id:'ep_001'},expression:${JSON.stringify(expression)}})`);
+  assert.ok(panel.includes('1 Tags in 1 Abschnitten')&&panel.includes('data-action="expression" data-episode="ep_001"'));
+  assert.ok(panel.includes('im Text markiert: 1× Schmunzeln.'),panel);
+  assert.ok(app.run(`renderExpressionPanel({script:{episode_id:'ep_001'},expression:null})`).includes('Ausdruck setzen'));
+  // Qwen speaks no tags: nothing is shown.
+  app.run(`project.audio_settings={provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}};`);
+  assert.equal(app.run(`renderExpressionPanel({script:{episode_id:'ep_001'},expression:${JSON.stringify(expression)}})`),'');
+});
+
+test('the production steps name when the expression is placed, and a tagging job counts its episodes',()=>{
+  const app=studio();
+  const gemini={provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'},expression:true};
+  const ep=(id,tagged)=>({script:{episode_id:id,title:id},expression:tagged?{tags:2,segments:[]}:null});
+  app.run(`project={id:'p',config:boot.defaults,audio_settings:${JSON.stringify(gemini)},episodes:[],job:null};`);
+  const stage=app.run('renderExpressionStage(false)');
+  assert.ok(stage.includes('Folgt automatisch'));
+  // All twelve kinds are named, used sparingly: not "a few tags".
+  assert.ok(stage.includes('aus zwölf Arten (Lachen, Schmunzeln, Kichern, Atmen, Ausatmen, Seufzen, Aufatmen, Staunen, Schnalzen, Räuspern, kurze Pause, lange Pause)'),stage);
+  app.run(`project.episodes=[${JSON.stringify(ep('ep_001',true))},${JSON.stringify(ep('ep_002',false))}];project.job={status:'running'};project.expression_progress={status:'running',done:1,total:2};`);
+  assert.ok(app.run('renderExpressionStage(true)').includes('In Arbeit · 1 von 2 Folgen'));
+  app.run(`project.job={status:'completed'};project.expression_progress={status:'completed',done:2,total:2};`);
+  assert.ok(app.run('renderExpressionStage(true)').includes('1 von 2 Folgen · auf „Skripte lesen“ setzen'));
+  app.run(`project.episodes=[${JSON.stringify(ep('ep_001',true))},${JSON.stringify(ep('ep_002',true))}];`);
+  assert.ok(app.run('renderExpressionStage(true)').includes('Fertig · 2 von 2 Folgen'));
+  assert.equal(app.run(`project.job={action:'expression'};jobPage()`),app.run('PAGE.scripts'));
+  // Qwen speaks no tags, so the step is not shown.
+  app.run(`project.audio_settings={provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}};`);
+  assert.equal(app.run('renderExpressionStage(true)'),'');
+});
+
+test('all read episodes can be approved at once, and a full studio queues instead of refusing',()=>{
+  const app=studio();
+  const ep=(id,extra={})=>({script:{episode_id:id,title:`Folge ${id}`},hash:'h',readable_hash:'r',audio_current:false,...extra});
+  app.run(`boot.key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'},expression:true},
+    episodes:[${JSON.stringify(ep('ep_001',{audio_current:true}))},${JSON.stringify(ep('ep_002'))},${JSON.stringify(ep('ep_003'))},${JSON.stringify(ep('ep_004'))}],
+    audio_jobs:[{id:'a',status:'running',episode:'ep_002'}],audio_capacity:{available:0},audio_queue:[{episode:'ep_003',position:1}]};`);
+  // Only what has no current recording, is not recording and is not queued yet.
+  assert.equal(app.run('pendingRecordings().map(e=>e.script.episode_id).join(",")'),'ep_004');
+  app.run(`project.audio_queue=[];project.audio_jobs=[];`);
+  const all=app.run('renderApproveAll(true)');
+  assert.ok(all.includes('Alle gelesenen Folgen freigeben · 3')&&all.includes('data-action="audio-all"'));
+  // Without the key (it lives only in the server's memory) the button says why and offers the key field.
+  app.run('boot.key_available=false;');
+  const keyless=app.run('renderApproveAll(true)');
+  assert.ok(keyless.includes('data-action="audio-all" disabled')&&keyless.includes('Zuerst den OpenRouter-Key hinterlegen.')&&keyless.includes('data-key-field="audio-all-key"'));
+  app.run('boot.key_available=true;');
+  // A full studio blocks nothing for a new approval, only the episode already recording.
+  app.run(`project.audio_jobs=[{id:'a',status:'running',episode:'ep_002'}];`);
+  assert.equal(app.run('audioBlockReason("ep_004",true)'),'');
+  assert.equal(app.run('audioBlockReason("ep_002",true)'),'Diese Folge wird bereits vertont.');
+  assert.ok(app.run('audioBlockReason("ep_004")').includes('Alle Plätze sind belegt'));
+  app.run(`project.audio_queue=[{episode:'ep_003',position:1},{episode:'ep_004',position:2,error:'Skript inzwischen geändert.'}];`);
+  const queue=app.run('renderAudioQueue()');
+  assert.ok(queue.includes('Warteschlange der Vertonung · 2')&&queue.includes('startet nicht: Skript inzwischen geändert.'));
+  assert.ok(app.run(`renderQueueState(${JSON.stringify(ep('ep_003'))})`).includes('wartet in der Warteschlange auf Platz 1'));
 });

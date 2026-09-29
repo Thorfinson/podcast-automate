@@ -286,6 +286,39 @@ class EvidenceContractTests(unittest.TestCase):
         with self.assertRaises(AppError):
             validate_claim_checks(review, script, self.findings)
 
+    def test_a_rejected_receipt_names_its_segment_and_the_broken_rule(self):
+        """Ontologies ep_006, 2026-09-29: three answers judged an invented scenario that cites findings as
+        no_research_claim; the bare rejection never said which segment or rule, so no correction could fix it."""
+        script = example_script()
+        review = ScriptReview(issues=[], limitations=[], claim_checks=script_checks(json.dumps({"script": script.model_dump()})))
+        review.claim_checks[0].verdict = "no_research_claim"
+        review.claim_checks[1].quote = "Invented quotation"
+        with self.assertRaises(AppError) as rejected:
+            validate_claim_checks(review, script, self.findings)
+        message = str(rejected.exception)
+        self.assertIn("seg_001: no_research_claim is only for a segment without knowledge_refs; this segment cites "
+                      "['f_energy'], so judge it preserved or drift against those findings.", message)
+        self.assertIn("seg_002: the quote must be a verbatim excerpt of the segment's text.", message)
+        self.assertEqual(rejected.exception.code, "invalid_script_evidence_review")
+
+    def test_a_no_claim_receipt_on_a_segment_citing_findings_is_read_as_preserved_without_asking_again(self):
+        """Asimov ep_010 and ep_014, 2026-09-29: each such slip re-asked the whole review, about eight minutes on Astra."""
+        from podcast_automate.script_evidence import settle_receipts
+        script = example_script()
+        review = ScriptReview(issues=[], limitations=[], claim_checks=script_checks(json.dumps({"script": script.model_dump()})))
+        review.claim_checks[0].verdict, review.claim_checks[0].finding_ids = "no_research_claim", []
+        review.claim_checks[1].finding_ids = ["f_energy", "f_other"]
+        settled = settle_receipts(review, script)
+        self.assertEqual([(c.verdict, c.finding_ids) for c in settled.claim_checks],
+                         [("preserved", ["f_energy"]), ("preserved", ["f_energy"])])
+        self.assertEqual(validate_claim_checks(settled, script, self.findings), [])
+        self.assertIn("seg_001, seg_002", settled.limitations[-1])
+        # A drift stays a drift, and an invented quote is still asked again.
+        review.claim_checks[1].verdict, review.claim_checks[1].changed_fields = "drift", ["scope"]
+        review.claim_checks[0].quote = "Invented quotation"
+        with self.assertRaises(AppError):
+            validate_claim_checks(settle_receipts(review, script), script, self.findings)
+
     def test_script_drift_creates_actionable_issue_but_spoken_numbers_are_allowed(self):
         script = example_script()
         script.segments[1].text = "A quarter of this fixture group, twenty-five percent."

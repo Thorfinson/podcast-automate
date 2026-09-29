@@ -165,6 +165,43 @@ def cached_audio(path, settings):
         return None
 
 
+# Rate-limit answers (429) one request waits out before its recording stops: pauses of about 5, 10, 20, 40, 60 and
+# 60 seconds, or the provider's Retry-After, about three minutes in all.
+RATE_LIMIT_RETRIES = 6
+
+
+def throttle_path(cache):
+    return cache / "throttle.json"
+
+
+def wait_for_throttle(cache):
+    """Wait until the pause a rate limit set has passed. It is shared through the cache folder, so every parallel
+    recording slows down together instead of each pressing on (the user's choice, 2026-09-29: start every approved
+    episode at once and throttle on 429)."""
+    try:
+        until = float(json.loads(throttle_path(cache).read_text(encoding="utf-8")).get("until", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return
+    delay = until - time.time()
+    if delay > 0:
+        time.sleep(min(delay, 120))
+
+
+def throttle(cache, retry_after, attempt):
+    """After a 429: every recording waits the provider's Retry-After, else a pause that doubles with each attempt."""
+    try:
+        seconds = float(retry_after)
+    except (TypeError, ValueError):
+        seconds = min(60.0, 5.0 * 2 ** (attempt - 1))
+    seconds = max(1.0, min(seconds, 120.0))
+    try:
+        current = float(json.loads(throttle_path(cache).read_text(encoding="utf-8")).get("until", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        current = 0.0
+    cache.mkdir(parents=True, exist_ok=True)
+    write_json(throttle_path(cache), {"until": max(current, time.time() + seconds), "attempt": attempt})
+
+
 class GeminiSpeech:
     def __init__(self, api_key=None, *, timeout=600, model=GEMINI_MODEL):
         key = (api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY", "")).strip()
@@ -215,24 +252,41 @@ class GeminiSpeech:
             headers={"Authorization": "Bearer " + secret, "Content-Type": "application/json",
                      "X-OpenRouter-Title": "Podcast Automate"}, method="POST")
         started = time.monotonic()
-        try:
-            with build_opener(NoRedirect()).open(request, timeout=self.timeout) as response:
-                if response.status != 200:
-                    raise api_failure(response.status)
-                content_type = response.headers.get("Content-Type", "").lower()
-                if content_type.split(";")[0].strip() not in {"audio/pcm", "audio/l16"}:
-                    raise AppError("OpenRouter lieferte kein PCM-Audio. Es wurde kein Abschnitt gespeichert.",
-                                   code="invalid_audio", status="blocked")
-                rate = re.search(r"rate\s*=\s*(\d+)", content_type)
-                if rate and rate[1] != "24000":
-                    raise AppError("Unerwartete Abtastrate von OpenRouter.", code="invalid_audio")
-                maximum = 32 * 1024 * 1024
-                pcm = response.read(maximum + 1)
-                declared_length = response.headers.get("Content-Length")
-                if declared_length is not None and (not declared_length.isdigit() or int(declared_length) != len(pcm)):
-                    raise AppError("Gemini-Audio wurde unvollständig übertragen.", code="invalid_audio", status="blocked")
-                generation = response.headers.get("X-Generation-Id", "")
-        except HTTPError as exc:
+        attempt, failure = 0, None
+        while True:
+            # A rate limit one recording met makes every parallel recording wait (throttle).
+            wait_for_throttle(cache)
+            try:
+                with build_opener(NoRedirect()).open(request, timeout=self.timeout) as response:
+                    if response.status != 200:
+                        raise api_failure(response.status)
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    if content_type.split(";")[0].strip() not in {"audio/pcm", "audio/l16"}:
+                        raise AppError("OpenRouter lieferte kein PCM-Audio. Es wurde kein Abschnitt gespeichert.",
+                                       code="invalid_audio", status="blocked")
+                    rate = re.search(r"rate\s*=\s*(\d+)", content_type)
+                    if rate and rate[1] != "24000":
+                        raise AppError("Unerwartete Abtastrate von OpenRouter.", code="invalid_audio")
+                    maximum = 32 * 1024 * 1024
+                    pcm = response.read(maximum + 1)
+                    declared_length = response.headers.get("Content-Length")
+                    if declared_length is not None and (not declared_length.isdigit() or int(declared_length) != len(pcm)):
+                        raise AppError("Gemini-Audio wurde unvollständig übertragen.", code="invalid_audio", status="blocked")
+                    generation = response.headers.get("X-Generation-Id", "")
+                break
+            except HTTPError as exc:
+                if exc.code == 429 and attempt < RATE_LIMIT_RETRIES:
+                    attempt += 1
+                    throttle(cache, exc.headers.get("Retry-After") if exc.headers else None, attempt)
+                    exc.close()
+                    continue
+                failure = exc
+                break
+            except (TimeoutError, URLError, OSError, HTTPException):
+                raise AppError("Gemini-Audioverbindung unterbrochen. Fertige Abschnitte bleiben gespeichert; später fortsetzen.",
+                               code="openrouter_connection", status="blocked") from None
+        if failure is not None:
+            exc = failure
             code = exc.code
             # Read only to classify, never echoed: a provider's message may carry anything.
             try:
@@ -251,9 +305,6 @@ class GeminiSpeech:
                 raise AppError("Gemini-TTS-Anfrage abgewiesen. Verfügbarkeit des Modells, Stimme und Textlänge prüfen.",
                                code="openrouter_speech_request", status="blocked") from None
             raise api_failure(code) from None
-        except (TimeoutError, URLError, OSError, HTTPException):
-            raise AppError("Gemini-Audioverbindung unterbrochen. Fertige Abschnitte bleiben gespeichert; später fortsetzen.",
-                           code="openrouter_connection", status="blocked") from None
         if not pcm or len(pcm) % 2 or len(pcm) > maximum or not any(pcm):
             raise AppError("OpenRouter lieferte leeres oder ungültiges Audio.", code="invalid_audio", status="blocked")
         # Never persist an accidentally echoed credential, including a mislabeled error body.

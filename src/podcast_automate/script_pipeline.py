@@ -24,9 +24,11 @@ from .run_budget import effective_limits, teaching_redesigns
 from .runner import manifest_path, run_observer
 from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
+# NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
+from .script_checkpoints import NOTED_CATEGORIES
 from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_sources,
                             script_review_signature, validate_script)
-from .script_evidence import SCRIPT_EVIDENCE_INSTRUCTIONS, validate_claim_checks
+from .script_evidence import SCRIPT_EVIDENCE_INSTRUCTIONS, settle_receipts, validate_claim_checks
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
 from .storage import atomic_text, digest, file_hash, write_json
@@ -37,11 +39,11 @@ from .teaching_research import apply_foundations, named_question, research_found
 SPOKEN_DIALOGUE = fragment("spoken_dialogue")
 WRITE_EPISODE_VERSION = "write_episode.v7-audit-notes"
 MAX_REVIEW_REPAIRS = 3
-# Script review points that no longer stop the run once its repairs are spent (review_episode).
-NOTED_CATEGORIES = {"clarity", "depth", "dialogue"}
 # v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
 # repair restated such claims and the next review flagged them again).
 REVIEW_REPAIR_VERSION = "script_review_repair.v2-delete-absence"
+# Attempts one episode's correction of a series review gets before its evidence check rejects it (repair_series).
+SERIES_REPAIR_ATTEMPTS = 2
 # A new issue on a segment no repair touched blocks a follow-up review only as one of these.
 CRITICAL_BASIS = {"factual_error", "source_contradiction"}
 
@@ -702,7 +704,8 @@ class ScriptRun:
             payload["previous_issues"] = [issue.model_dump() for issue in follow_up[0].issues]
             payload["changed_segments"] = follow_up[1]
             task, version = task + " " + instructions("script_review_followup"), version + "+followup"
-        reviewed = corrected_call(self.invoke,
+        # Two receipt slips are read as meant (settle_receipts) instead of re-asking the whole review.
+        reviewed = corrected_call(lambda *args, **kwargs: settle_receipts(self.invoke(*args, **kwargs), draft),
             TERMINOLOGY + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
             task + "\n" + json.dumps(payload, ensure_ascii=False),
             ScriptReview, version, well_formed)
@@ -735,16 +738,24 @@ class ScriptRun:
             draft = EpisodeScript.model_validate_json(reviewed_file.read_text(encoding="utf-8"))
             review = ScriptReview(issues=issues, limitations=[
                 "Cross-episode correction from the series review; the episode's own review passed before."])
-            repaired = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
-                "\n" + instructions("script_review_repair") + "\n" +
-                json.dumps({"draft": draft.model_dump(), "review": review.model_dump()}, ensure_ascii=False),
-                EpisodeScript, REVIEW_REPAIR_VERSION,
-                lambda answer: self.script_defects(answer, entry, self.work / f"{episode_id}_series_repair_errors.json",
-                                                   "Die Korrektur der Serienprüfung verletzt die Quellenzuordnung oder Struktur."))
             probes = json.loads(self.probe_path(entry).read_text(encoding="utf-8")) if self.probe_path(entry).exists() else []
-            # Scoped like every review after a repair: the series issues and the segments the correction changed.
-            checked = self.review_script(plan, entry, repaired, draft.model_dump(), probes,
-                                         follow_up=(review, changed_segments(draft, repaired)))
+            # A correction whose evidence check still objects gets one more attempt against those objections, as the
+            # episode review's repairs do (Ontologies ep_008, 2026-09-29: the single attempt restated an absence claim
+            # the check then named with its fix, and the whole series stopped).
+            asked, current = review, draft
+            for _ in range(SERIES_REPAIR_ATTEMPTS):
+                repaired = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
+                    "\n" + instructions("script_review_repair") + "\n" +
+                    json.dumps({"draft": current.model_dump(), "review": asked.model_dump()}, ensure_ascii=False),
+                    EpisodeScript, REVIEW_REPAIR_VERSION,
+                    lambda answer: self.script_defects(answer, entry, self.work / f"{episode_id}_series_repair_errors.json",
+                                                       "Die Korrektur der Serienprüfung verletzt die Quellenzuordnung oder Struktur."))
+                # Scoped like every review after a repair: the issues it answered and the segments it changed.
+                checked = self.review_script(plan, entry, repaired, draft.model_dump(), probes,
+                                             follow_up=(asked, changed_segments(current, repaired)))
+                if not review_blocks(checked):
+                    break
+                asked, current = checked, repaired
             review_file = self.work / "reviews" / f"{episode_id}.json"
             if review_blocks(checked):
                 # The rejected text is not adopted: ``reviewed/`` and ``reviews/`` keep the pair
@@ -752,8 +763,9 @@ class ScriptRun:
                 rejected = self.work / "reviews" / f"{episode_id}_series_repair_rejected.json"
                 write_json(rejected, {"review": checked.model_dump(), "draft": repaired.model_dump()})
                 raise AppError("Die Korrektur der Serienprüfung hat die Belegprüfung nicht bestanden; "
-                               f"der Bericht ist gespeichert: {rejected.relative_to(self.root).as_posix()}",
-                               code="script_review_failed", status="blocked")
+                               f"der Bericht ist gespeichert: {rejected.relative_to(self.root).as_posix()}. "
+                               "„Mit neuen Anläufen fortsetzen“ prüft die Serie mit dem heutigen Stand neu und gibt der "
+                               "Korrektur eine neue Runde.", code="script_review_failed", status="blocked")
             # ``reviews/<ep>.json`` is what publish reports next to the script hash, so it must
             # judge the text that is published. The review of the pre-repair text stays beside it.
             before = self.work / "reviews" / f"{episode_id}_before_series_repair.json"

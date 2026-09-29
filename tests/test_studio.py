@@ -479,6 +479,35 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(report["overrides"], ["seg_002"])
         self.assertFalse(report["human_pronunciation_reviewed"])
 
+    def test_tags_read_with_the_script_are_shown_and_bind_the_gemini_approval(self):
+        """The expression belongs in the script check (2026-09-29): the page shows the placed tags per episode, and
+        an approval carries the hash of the tags read; tags placed anew afterwards are refused until read."""
+        from podcast_automate.expression import EXPRESSION_VERSION
+        self.publish_episode()
+        folder = self.root / "episodes/ep_001"
+        audio = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"})
+        write_json(self.root / "studio/audio.json", audio.model_dump())
+        write_json(folder / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": file_hash(folder / "script.yaml"),
+                                                "segments": {"seg_001": "<breath> What does this model compare?"}})
+        episode = json.loads(self.request("/api/projects/example")[1])["episodes"][0]
+        self.assertEqual((episode["expression"]["tags"], episode["expression"]["hash"]), (1, file_hash(folder / "expression.json")))
+        expressive = AudioChoice(**{**audio.model_dump(), "expression": True})
+        data = {"action": "audio", "episode": "ep_001", "approve_audio": True,
+                "script_hash": file_hash(folder / "script.yaml"), "readable_hash": file_hash(folder / "script.md"),
+                "config_hash": project_hash(self.config), "audio_hash": digest(expressive.model_dump()), "expression_hash": ""}
+        self.app.key = "test-key"
+        with patch("podcast_automate.studio.subprocess.Popen") as process:
+            status, body, _ = self.request("/api/projects/example/start", data)
+            self.assertEqual((status, json.loads(body)["code"]), (400, "script_edited"))
+            process.return_value.stdin = io.StringIO()
+            process.return_value.stdin.close = Mock()
+            process.return_value.poll.return_value = None
+            status, body, _ = self.request("/api/projects/example/start", {**data, "expression_hash": episode["expression"]["hash"]})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(process.return_value.stdin.getvalue())["expression_hash"], episode["expression"]["hash"])
+        # Placing tags is its own job, for named episodes with a published script or for all of them.
+        self.assertEqual(self.request("/api/projects/example/start", {"action": "expression", "episodes": ["ep_404"]})[0], 400)
+
     def test_a_re_render_starts_on_the_saved_approval_and_is_refused_without_one(self):
         self.publish_episode()
         folder = self.root / "episodes/ep_001"

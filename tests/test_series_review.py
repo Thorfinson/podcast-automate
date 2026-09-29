@@ -10,6 +10,7 @@ from podcast_automate.models import EpisodeScript, TopicBrief
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
 from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.series_review import SERIES_REVIEW_VERSION, SeriesReview, assess_series, load_series_review
+from podcast_automate.run_budget import approve_fresh_attempts
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
@@ -231,6 +232,34 @@ class SeriesReviewTests(unittest.TestCase):
         self.assertEqual(other.exception.code, "script_review_failed")
         self.assertEqual((self.calls, len(rounds)), (2, 2))
 
+    def test_a_round_stopped_before_its_re_check_resumes_instead_of_counting_as_spent(self):
+        """Ontologies, 2026-09-29: the user stopped the run while episode 2 was being corrected; the resume only
+        repeated the verdict, because a round counted as spent the moment it began."""
+        def rejected(prompt, schema, version):
+            review = self.invoke(prompt, schema, version)
+            if self.calls == 1:
+                review.checks[2].verdict = "fail"
+                review.checks[2].reason = "Episode 2 contradicts the order episode 1 established."
+            return review
+        rounds = []
+
+        def stopped(grouped):
+            rounds.append(list(grouped))
+            raise KeyboardInterrupt  # the worker stopped mid-round: no failure is recorded
+
+        def repaired(grouped):
+            rounds.append(list(grouped))
+            self.scripts[1].segments[-1].text += " In the order episode 1 established."
+            return self.scripts
+        with self.assertRaises(KeyboardInterrupt):
+            assess_series(self.work, self.config, self.plan, self.scripts, "input", rejected, repair=stopped)
+        receipt = json.loads((self.work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
+        self.assertEqual((receipt["repairs"], receipt["failure"]), (1, None))
+        # The resume corrects against the saved verdict, without buying it again, and then re-checks.
+        assess_series(self.work, self.config, self.plan, self.scripts, "input", rejected, repair=repaired)
+        self.assertEqual((len(rounds), self.calls), (2, 2))
+        self.assertEqual(load_series_review(self.work, self.plan, self.scripts, "input")["status"], "passed")
+
     def test_a_repair_that_changes_nothing_stops_the_round(self):
         def rejected(prompt, schema, version):
             review = self.invoke(prompt, schema, version)
@@ -264,6 +293,9 @@ class SeriesWorkflowTests(unittest.TestCase):
         self.assertEqual(len(self.fixture.calls), calls)
         self.assertEqual(second.stages["publish"].status, "pending")
         self.assertFalse((self.root / "episodes/ep_001/script.yaml").exists())
+        # Only the user's explicit "Mit neuen Anläufen fortsetzen" grants the objected series another round.
+        self.assertTrue(approve_fresh_attempts(self.root, first.run_id)["series_repair"])
+        self.assertFalse((self.root / "runs" / first.run_id / "series_repair.json").exists())
 
     def test_audio_rejects_missing_series_receipt(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
@@ -422,7 +454,8 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             self.assertEqual((work / name).read_bytes(), content)
         self.assertFalse((work / "reviews/ep_002_before_series_repair.json").exists())
         self.assertFalse((self.root / "episodes/ep_002/script.yaml").exists())
-        self.assertEqual((self.versions.count("script_review_repair.v2-delete-absence"), self.versions.count(SERIES_REVIEW_VERSION)), (1, 1))
+        # Two attempts, the second against the check's own objections, before the correction is rejected.
+        self.assertEqual((self.versions.count("script_review_repair.v2-delete-absence"), self.versions.count(SERIES_REVIEW_VERSION)), (2, 1))
         receipt = json.loads((work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
         self.assertEqual((receipt["repairs"], receipt["failure"]["code"]), (1, "script_review_failed"))
         calls = len(self.versions)
@@ -430,3 +463,42 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             resumed = run_script(self.root, resume=True, run_id=run.run_id)
         self.assertEqual((resumed.status, resumed.stages["review"].error.code), ("blocked", "script_review_failed"))
         self.assertEqual(len(self.versions), calls)
+        # Only the user's "Mit neuen Anläufen fortsetzen" sets the failed round aside; the series is judged anew.
+        record = approve_fresh_attempts(self.root, run.run_id)
+        self.assertTrue(record["series_repair"])
+        self.assertTrue((work / "series_repair_superseded_01.json").exists())
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.two_episode_model()):
+            finished = run_script(self.root, resume=True, run_id=run.run_id)
+        self.assertEqual(finished.status, "completed", finished.stages["review"].error)
+        self.assertEqual(self.versions.count(SERIES_REVIEW_VERSION), 2)
+        self.assertTrue((self.root / "episodes/ep_002/script.yaml").exists())
+
+    def test_a_series_correction_the_check_rejects_once_is_adopted_on_its_second_attempt(self):
+        """Ontologies ep_008, 2026-09-29: the only attempt restated an absence claim, the check named the fix, and
+        the whole series stopped; a second attempt against the check's objections now gets there."""
+        attempts = []
+
+        def seed(review, call, work):
+            if call == 1:
+                self.contradiction(review)
+
+        def repair(script, payload):
+            attempts.append(payload["review"]["issues"][0]["reason"])
+            script.segments[-1].text += self.SENTENCE
+
+        def first_attempt_drifts(review, payload):
+            if payload["script"]["segments"][-1]["text"].endswith(self.SENTENCE) and len(attempts) == 1:
+                check = review.claim_checks[-1]
+                check.verdict, check.changed_fields = "drift", ["scope"]
+                check.reason = "The repaired segment claims more than the finding supports."
+
+        model = self.two_episode_model(on_series=seed, on_review=first_attempt_drifts, on_repair=repair)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(attempts[0].startswith("progression:"))
+        self.assertIn("claims more than the finding supports", attempts[1], "the second attempt answers the check")
+        work = self.root / "runs" / run.run_id
+        self.assertFalse((work / "reviews/ep_002_series_repair_rejected.json").exists())
+        self.assertTrue((work / "reviews/ep_002_before_series_repair.json").exists())

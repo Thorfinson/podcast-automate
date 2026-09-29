@@ -131,6 +131,10 @@ class StudioParallelTests(unittest.TestCase):
         self.config = TopicBrief(topic="Example", voice_profile={"host_a": "Aiden", "host_b": "Vivian"})
         init_project(self.root, self.config)
         self.app = Studio(self.workspace)
+        # The place limit of these tests: three, so a fourth approval shows the queue (production allows 30).
+        limit = patch("podcast_automate.studio.MAX_PARALLEL", 3)
+        limit.start()
+        self.addCleanup(limit.stop)
         write_json(self.root / "studio/audio.json", REMOTE)
         write_json(self.root / "studio/execution.json", {"text": "parallel", "audio": "parallel"})
         for number in range(1, 5):
@@ -158,10 +162,11 @@ class StudioParallelTests(unittest.TestCase):
         self.app.key = "secret-for-test"
         with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
             jobs = [self.app.start("example", self.approval(f"ep_{n:03}")) for n in range(1, 4)]
-            for episode, code in [("ep_001", "episode_busy"), ("ep_004", "audio_capacity")]:
-                with self.assertRaises(AppError) as denied:
-                    self.app.start("example", self.approval(episode))
-                self.assertEqual(denied.exception.code, code)
+            with self.assertRaises(AppError) as denied:
+                self.app.start("example", self.approval("ep_001"))
+            self.assertEqual(denied.exception.code, "episode_busy")
+            # A fourth approval waits in the queue instead of being refused.
+            self.assertTrue(self.app.start("example", self.approval("ep_004"))["queued"])
             self.assertEqual(launch.call_count, 3)
             self.assertNotIn(self.app.key, str(launch.call_args))
         detail = self.app.detail("example")
@@ -180,13 +185,41 @@ class StudioParallelTests(unittest.TestCase):
         write_json(self.root / "studio/execution.json", {"text": "parallel", "audio": "sequential"})
         with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process):
             self.app.start("example", self.approval("ep_001"))
-            with self.assertRaises(AppError) as denied:
-                self.app.start("example", self.approval("ep_002"))
-            self.assertEqual(denied.exception.code, "audio_capacity")
+            # One place in sequential mode: the next approval waits its turn.
+            self.assertEqual(self.app.start("example", self.approval("ep_002"))["position"], 1)
             with self.assertRaises(AppError):
                 self.app.start("example", {"action": "research"})
             with self.assertRaises(AppError):
                 self.app.idle(self.root)
+
+    def test_approvals_beyond_the_free_places_wait_in_order_and_start_as_places_free(self):
+        """2026-09-29: with three recordings running no further episode could be approved; now the approval waits
+        in the project's queue and the scheduler starts it once a place is free, after checking it again."""
+        self.app.key = "test-key"
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
+            jobs = [self.app.start("example", self.approval(f"ep_{n:03}")) for n in (1, 2, 3)]
+            queued = self.app.start("example", self.approval("ep_004"))
+            self.assertEqual((queued["queued"], queued["position"], launch.call_count), (True, 1, 3))
+            self.assertEqual(self.app.detail("example")["audio_queue"][0]["episode"], "ep_004")
+            self.assertEqual(self.app.start_queued(), [], "no place is free yet")
+            self.app.audio_processes[jobs[0]["id"]][0].poll.return_value = 0
+            self.assertEqual(self.app.start_queued(), [("example", "ep_004")])
+            self.assertEqual(launch.call_count, 4)
+        self.assertEqual(self.app.detail("example")["audio_queue"], [])
+
+    def test_a_queued_approval_that_no_longer_holds_waits_with_its_reason_and_can_be_removed(self):
+        self.app.key = "test-key"
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
+            jobs = [self.app.start("example", self.approval(f"ep_{n:03}")) for n in (1, 2, 3)]
+            self.app.start("example", self.approval("ep_004"))
+            (self.root / "episodes/ep_004/script.md").write_text("Edited after the approval.")
+            self.app.audio_processes[jobs[0]["id"]][0].poll.return_value = 0
+            self.assertEqual(self.app.start_queued(), [])
+            self.assertEqual(launch.call_count, 3)
+        row = self.app.detail("example")["audio_queue"][0]
+        self.assertIn("Skript inzwischen geändert", row["error"])
+        self.app.audio_queue("example", {"episode": "ep_004"})
+        self.assertEqual(self.app.detail("example")["audio_queue"], [])
 
     def test_stopping_one_remote_job_does_not_stop_its_neighbor(self):
         with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process):
@@ -226,11 +259,11 @@ class StudioParallelTests(unittest.TestCase):
             for name in names[:MAX_PROJECT_JOBS]:
                 self.app.start(name, {"action": "research"})
             self.assertEqual(launch.call_count, MAX_PROJECT_JOBS)
-            # A project still runs one job at a time, and its own audio waits for its text work.
-            for request in ({"action": "research"}, self.approval("ep_001")):
-                with self.assertRaises(AppError) as busy:
-                    self.app.start("example", request)
-                self.assertEqual(busy.exception.code, "project_busy")
+            # A project still runs one job at a time, and its own audio waits for its text work, in the queue.
+            with self.assertRaises(AppError) as busy:
+                self.app.start("example", {"action": "research"})
+            self.assertEqual(busy.exception.code, "project_busy")
+            self.assertTrue(self.app.start("example", self.approval("ep_001"))["queued"])
             with self.assertRaises(AppError) as full:
                 self.app.start(names[-1], {"action": "research"})
             self.assertEqual(full.exception.code, "studio_capacity")
