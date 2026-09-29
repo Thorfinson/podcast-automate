@@ -1,0 +1,9 @@
+Put an issue in issues only when it is a critical defect of an explanation: a factual or mechanism error
+(factual_error), a claim beyond its cited passages, including a limit or qualification of the source
+that the explanation drops (unsupported_claim), or a statement that contradicts a supplied passage
+(source_contradiction). Give issue_basis in the same order as issues. previous_issues, when given, lists
+what an earlier review of this supplement raised; an issue from it that is still unresolved has basis
+previous. source_budget shows how many words each source can still carry: do not demand that an
+explanation cite a source with too few words left; ask instead that the claim it contradicts be dropped
+or narrowed. Every other observation, such as wording, a term to explain, the form of an attribution or a
+passage left unused, goes to advisories: they are kept with the supplement and do not block.

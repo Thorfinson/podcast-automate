@@ -19,6 +19,7 @@ from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
 from tests.teaching_fixtures import teaching_response
 from tests.polishing_fixtures import polish_review
+from tests.series_fixtures import series_response
 from tests.question_fixtures import script_checks
 from podcast_automate.series_review import SeriesReview
 from podcast_automate.polishing import DialoguePolishReview
@@ -152,6 +153,23 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         # attribution requirement on the script.
         self.assertEqual(seen, [(EpisodeScript, [known]), (ScriptReview, [known])])
 
+    def test_a_script_review_that_skips_a_segment_is_asked_again_and_the_run_completes(self):
+        reviews = []
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is ScriptReview:
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    value.claim_checks.pop()
+            return value, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(len(reviews), 2)
+        self.assertIn("Script review must check every segment's claim preservation exactly once.", reviews[1])
+        # A malformed review is not a finding about the script: no repair draft was written for it.
+        self.assertEqual(self.calls.count(EpisodeScript), 2)
+
     def test_a_missing_attribution_is_a_limitation_and_never_blocks(self):
         note = "Keine hörbare Zuschreibung für f_energy; die Folge nennt nicht, wessen Messung es ist."
         def model(prompt, output_type, directory, **kwargs):
@@ -270,7 +288,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(self.calls.count(EpisodeScript), 2)
         self.assertEqual(json.loads(output.getvalue())["run"]["kind"], "script")
 
-    def test_persistent_editorial_issues_block_and_keep_retry_limit_on_resume(self):
+    def persistent_review(self, category, reason):
         def model(prompt, output_type, directory, **kwargs):
             self.calls.append(output_type)
             if output_type is DialoguePolishReview:
@@ -278,10 +296,16 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             if output_type in (TeachingPlan, TeachingPlanReview, ListenerReadback, TeachingReview, EditorialReview):
                 return teaching_response(prompt, output_type), {}
             if output_type is ScriptReview:
-                return ScriptReview(issues=[ScriptIssue(category="depth", segment_ids=["seg_002"],
-                                                       reason="The example is not worked through.")], limitations=[], claim_checks=script_checks(prompt)), {}
+                return ScriptReview(issues=[ScriptIssue(category=category, segment_ids=["seg_002"], reason=reason)],
+                                    limitations=[], claim_checks=script_checks(prompt)), {}
+            if output_type is SeriesReview:
+                return series_response(prompt), {}
             return (example_plan() if output_type is SeriesPlan else example_script()), {}
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+        return model
+
+    def test_persistent_grounding_issues_block_and_keep_retry_limit_on_resume(self):
+        with patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.persistent_review("grounding", "The claim has no supporting finding.")):
             run = run_script(self.root)
             calls = len(self.calls)
             resumed = run_script(self.root, resume=True)
@@ -290,13 +314,41 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(len(self.calls), calls)
         self.assertFalse((self.root / "episodes/ep_001/script.md").exists())
 
+    def test_persistent_editorial_points_are_noted_once_the_repairs_are_spent(self):
+        """Until 2026-09-29 a depth point the three repairs could not settle stopped the run; the user chose that
+        clarity, depth and dialogue points become notes the reader sees before approving audio (Ontologies)."""
+        with patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.persistent_review("depth", "The example is not worked through.")):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 4, "the first review and one after each of three repairs")
+        work = self.root / "runs" / run.run_id
+        notes = json.loads((work / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertEqual([n["reason"] for n in notes], ["The example is not worked through."])
+        self.assertEqual(json.loads((work / "reviews/ep_001.json").read_text(encoding="utf-8"))["issues"][0]["category"], "depth")
+        self.assertTrue((self.root / "episodes/ep_001/script.md").exists())
+
+    def test_a_stuck_grounding_review_gets_three_new_repairs_only_when_asked(self):
+        from podcast_automate.run_budget import approve_fresh_attempts
+        with patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.persistent_review("grounding", "The claim has no supporting finding.")):
+            run = run_script(self.root)
+            before = self.calls.count(ScriptReview)
+            record = approve_fresh_attempts(self.root, run.run_id)
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual((record["reviews"], record["supplements"]), (["ep_001"], []))
+        self.assertEqual(resumed.stages["review"].error.code, "script_review_failed")
+        self.assertEqual(self.calls.count(ScriptReview) - before, 3, "one new review after each of three new repairs")
+        checkpoint = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_checkpoint.json").read_text(encoding="utf-8"))
+        self.assertEqual(checkpoint["repairs"], 3)
+
     def test_review_policy_fix_rechecks_latest_draft_without_resetting_used_repairs(self):
         def rejected(prompt, output_type, directory, **kwargs):
             value, meta = self.model(prompt, output_type, directory, **kwargs)
-            if output_type is EpisodeScript and kwargs['prompt_version'] == 'script_review_repair.v1':
+            if output_type is EpisodeScript and kwargs['prompt_version'] == 'script_review_repair.v2-delete-absence':
                 value.segments[-1].text += ' This saved correction must remain.'
             if output_type is ScriptReview:
-                value.issues = [ScriptIssue(category='depth', segment_ids=['seg_001'], reason='Missing series metadata.')]
+                value.issues = [ScriptIssue(category='grounding', segment_ids=['seg_001'], reason='Missing series metadata.')]
             return value, meta
         with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=rejected):
             first = run_script(self.root)
@@ -324,10 +376,10 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
         def rejected(prompt, output_type, directory, **kwargs):
             value, meta = self.model(prompt, output_type, directory, **kwargs)
-            if output_type is EpisodeScript and kwargs['prompt_version'] == 'script_review_repair.v1':
+            if output_type is EpisodeScript and kwargs['prompt_version'] == 'script_review_repair.v2-delete-absence':
                 value.segments[-1].text += ' This saved correction must remain.'
             if output_type is ScriptReview:
-                value.issues = [ScriptIssue(category='depth', segment_ids=['seg_001'], reason='Missing series metadata.')]
+                value.issues = [ScriptIssue(category='grounding', segment_ids=['seg_001'], reason='Missing series metadata.')]
             return value, meta
         with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=rejected):
             first = run_script(self.root)

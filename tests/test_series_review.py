@@ -95,6 +95,30 @@ class SeriesReviewTests(unittest.TestCase):
                     self.assess(invoke=invalid)
                 self.assertFalse((self.work / "series_review.json").exists())
 
+    def test_a_malformed_review_is_asked_again_with_its_defect_named(self):
+        prompts = []
+        def invoke(prompt, schema, version):
+            prompts.append(prompt)
+            review = self.invoke(prompt, schema, version)
+            if len(prompts) == 1:
+                review.checked_episodes.reverse()
+            return review
+        self.assess(invoke=invoke)
+        self.assertEqual(self.calls, 2)
+        self.assertIn("checked_episodes genau in dieser Reihenfolge: ep_001, ep_002", prompts[1])
+        self.assertEqual(load_series_review(self.work, self.plan, self.scripts, "input")["status"], "passed")
+
+    def test_a_review_that_stays_malformed_stops_after_two_corrections(self):
+        def invalid(prompt, schema, version):
+            review = self.invoke(prompt, schema, version)
+            review.checked_episodes.reverse()
+            return review
+        with self.assertRaises(AppError) as caught:
+            self.assess(invoke=invalid)
+        self.assertEqual((caught.exception.code, caught.exception.status), ("invalid_series_review", "blocked"))
+        self.assertEqual(self.calls, 3)
+        self.assertFalse((self.work / "series_review.json").exists())
+
     def test_rejection_is_saved_and_resume_does_not_spend_more_calls(self):
         def rejected(prompt, schema, version):
             review = self.invoke(prompt, schema, version)
@@ -290,7 +314,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
                 # Writing, polishing and repairs each carry the episode under a different key.
                 episode = payload.get("episode") or payload.get("original_script") or payload.get("draft")
                 value.episode_id = episode["episode_id"]
-                if kwargs["prompt_version"] == "script_review_repair.v1" and on_repair:
+                if kwargs["prompt_version"] == "script_review_repair.v2-delete-absence" and on_repair:
                     on_repair(value, payload)
             elif output_type is ScriptReview and on_review:
                 on_review(value, payload)
@@ -332,7 +356,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             run = run_script(self.root)
         self.assertEqual(run.status, "completed")
         # One repair, one extra episode review and one series re-check; nothing else is repeated.
-        self.assertEqual(self.versions.count("script_review_repair.v1"), 1)
+        self.assertEqual(self.versions.count("script_review_repair.v2-delete-absence"), 1)
         self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION), 3)
         self.assertEqual(self.versions.count(SERIES_REVIEW_VERSION), 2)
         work = self.root / "runs" / run.run_id
@@ -396,7 +420,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             self.assertEqual((work / name).read_bytes(), content)
         self.assertFalse((work / "reviews/ep_002_before_series_repair.json").exists())
         self.assertFalse((self.root / "episodes/ep_002/script.yaml").exists())
-        self.assertEqual((self.versions.count("script_review_repair.v1"), self.versions.count(SERIES_REVIEW_VERSION)), (1, 1))
+        self.assertEqual((self.versions.count("script_review_repair.v2-delete-absence"), self.versions.count(SERIES_REVIEW_VERSION)), (1, 1))
         receipt = json.loads((work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
         self.assertEqual((receipt["repairs"], receipt["failure"]["code"]), (1, "script_review_failed"))
         calls = len(self.versions)

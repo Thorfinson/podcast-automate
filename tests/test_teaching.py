@@ -5,10 +5,11 @@ from unittest.mock import patch
 from podcast_automate.errors import AppError
 from podcast_automate.editorial import TERMINOLOGY, TEACHING_SCOPE, episode_series_context
 from podcast_automate.episode_audio import run_episode_audio
-from podcast_automate.storage import read_yaml, write_json
+from podcast_automate.models import EpisodeScript
+from podcast_automate.storage import digest, read_yaml, write_json
 from podcast_automate.scripting import run_script
 from podcast_automate.teaching import (TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview,
-    ResearchGap, assess_teaching, build_teaching_plan, validate_teaching_plan)
+    ResearchGap, assess_teaching, build_teaching_plan, validate_readback, validate_teaching_plan)
 from tests import script_fixtures as fixtures
 from tests.teaching_fixtures import teaching_response
 
@@ -213,6 +214,101 @@ class TeachingTests(unittest.TestCase):
         self.assertEqual(self.fixture.calls.count(TeachingPlanRepair), 1)
         self.assertEqual(self.fixture.calls.count(TeachingPlanReview), 4)
 
+    def test_a_design_that_keeps_its_defects_is_designed_anew_with_the_editors_note(self):
+        """Ontologies, 2026-09-28: ep_001 kept reading SPARQL keywords aloud after two repairs and the focused
+        correction, and the stop offered only a new outline. With the editor's note the next resume designs that
+        episode anew with fresh correction rounds; the note reaches the design and its review, the stopped design
+        is kept aside, and the approved outline stays."""
+        from podcast_automate.run_budget import request_teaching_redesign
+        from podcast_automate.script_pipeline import failed_teaching
+        note = "Read no query language aloud; spell out every abbreviation the first time."
+        designs, reviews = [], []
+
+        def model(prompt, output_type, directory, **kwargs):
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            payload = json.loads(prompt.splitlines()[-1])
+            if output_type is TeachingPlan and "episode" in payload:
+                designs.append(payload.get("editor_note"))
+            if output_type is TeachingPlanReview:
+                reviews.append(payload.get("editor_note"))
+                if payload.get("editor_note") != note:
+                    result.issues = ["Scene 4 reads raw SPARQL keywords aloud."]
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+            work = self.root / "runs" / run.run_id
+            plan_before = (work / "series_plan.json").read_bytes()
+            self.assertEqual(run.stages["teaching"].error.code, "teaching_design_failed")
+            self.assertEqual(failed_teaching(work), {"episode_id": "ep_001", "title": fixtures.example_plan().episodes[0].title})
+            for episode, text in (("ep_999", note), ("ep_001", "  ")):
+                with self.assertRaises(AppError) as refused:
+                    request_teaching_redesign(self.root, run.run_id, episode, text)
+                self.assertEqual(refused.exception.code, "invalid_redesign_request")
+            request_teaching_redesign(self.root, run.run_id, "ep_001", note)
+            resumed = run_script(self.root, resume=True)
+            calls = len(self.fixture.calls)
+            again = run_script(self.root, resume=True)
+        self.assertEqual((resumed.status, again.status), ("completed", "completed"))
+        self.assertEqual(len(self.fixture.calls), calls, "the adopted request starts no second redesign")
+        self.assertEqual(designs, [None, note], "one fresh design with the note after the stopped one")
+        self.assertEqual(reviews[-1], note)
+        self.assertEqual(reviews.count(note), 1, "the new design passes its first review")
+        folder = work / "teaching/ep_001"
+        self.assertTrue((folder / "redesign_01/checkpoint.json").exists())
+        self.assertTrue((folder / "redesign_01/focused_repair.json").exists())
+        self.assertEqual([(row["note"], row["archive"]) for row in json.loads((folder / "redesign.json").read_text(encoding="utf-8"))],
+                         [(note, "redesign_01")])
+        self.assertEqual((work / "series_plan.json").read_bytes(), plan_before)
+        self.assertIsNone(failed_teaching(work))
+        with self.assertRaises(AppError):
+            request_teaching_redesign(self.root, run.run_id, "ep_001", note)
+
+    def test_a_follow_up_review_blocks_only_on_earlier_points_the_note_or_critical_defects(self):
+        """Ontologies, 2026-09-28: each redesign of ep_001 passed the points raised before and failed on new
+        details, so the review never settled. After the first review, a review may block only on an earlier issue
+        still unresolved, on the editor's note or on a new critical defect, each with its basis; every other new
+        observation is an advisory the writer receives, and the design passes."""
+        from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
+        first = "Scene 1 introduces results before the task."
+        new = "Scene 2 uses 'reasoner' before introducing it."
+        reviews, writing = [], []
+
+        def model(prompt, output_type, directory, **kwargs):
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is TeachingPlanReview:
+                payload = json.loads(prompt.splitlines()[-1])
+                reviews.append((payload.get("previous_issues"), "issue_basis" in prompt.splitlines()[-2]))
+                if len(reviews) == 1:
+                    result.issues = [first]
+                elif len(reviews) == 2:
+                    result.issues = [new]  # a new, non-critical point without a basis: corrected, not accepted
+                else:
+                    result.issues, result.advisories = [], [new]
+            if output_type is EpisodeScript and kwargs.get("prompt_version") == WRITE_EPISODE_VERSION:
+                writing.append(prompt)
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["teaching"].error)
+        self.assertEqual([previous for previous, _ in reviews], [None, [first], [first]])
+        self.assertEqual(self.fixture.calls.count(TeachingPlanReview), 3, "one correction attempt for the missing basis")
+        folder = self.root / "runs" / run.run_id / "teaching/ep_001"
+        self.assertEqual(json.loads((folder / "review_scope.json").read_text(encoding="utf-8")), [first])
+        self.assertEqual(json.loads((folder / "review.json").read_text(encoding="utf-8"))["advisories"], [new])
+        self.assertTrue(writing and all("teaching_design_review.advisories" in prompt for prompt in writing))
+        self.assertIn(new, writing[0].splitlines()[-1])
+
+    def test_the_review_scope_starts_from_the_designs_a_redesign_set_aside(self):
+        from podcast_automate.teaching import review_scope
+        folder = self.root / "scope"
+        self.assertEqual(review_scope(folder), [])
+        write_json(folder / "redesign_01/checkpoint.json", {"review": {"issues": ["Reads SPARQL aloud.", "OMG unexplained."]}})
+        write_json(folder / "redesign_02/checkpoint.json", {"review": {"issues": ["OMG unexplained.", "Scene 1 overloaded."]}})
+        write_json(folder / "redesign_03/checkpoint.json", {"review": None})
+        self.assertEqual(review_scope(folder), ["Reads SPARQL aloud.", "OMG unexplained.", "Scene 1 overloaded."])
+        write_json(folder / "review_scope.json", ["Kept as saved."])
+        self.assertEqual(review_scope(folder), ["Kept as saved."])
+
     def test_focused_correction_continues_approved_job_without_another_click(self):
         from podcast_automate.scripting import outline_hash
         issue = "Explain why lower energy is preferred."
@@ -316,7 +412,50 @@ class TeachingTests(unittest.TestCase):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root)
         self.assertEqual(run.stages["review"].error.code, "invalid_teaching_review")
+        # The answer and two corrections, each told what was missing; then the stop.
+        self.assertEqual(self.fixture.calls.count(TeachingReview), 3)
+        self.assertIn("Fehlend: spoken_clarity.", run.stages["review"].error.message)
         self.assertFalse((self.root / "episodes/ep_001/script.md").exists())
+
+    def test_a_review_that_skips_a_criterion_once_is_asked_again_and_the_run_completes(self):
+        """Until 2026-09-28 one malformed review ended a script run, and a resume replayed it."""
+        prompts = []
+        def model(prompt, output_type, directory, **kwargs):
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is TeachingReview:
+                prompts.append(prompt)
+                if len(prompts) == 1:
+                    result.checks.pop()
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(len(prompts), 2)
+        self.assertNotIn("Lehrprüfung lässt Kriterien", prompts[0])
+        self.assertIn("Lehrprüfung lässt Kriterien oder Lernziele aus. Fehlend: spoken_clarity.", prompts[1])
+        self.assertEqual(prompts[1].splitlines()[-1], prompts[0].splitlines()[-1], "the payload stays the last line")
+
+    def test_a_readback_saved_before_its_check_is_asked_again_instead_of_replayed(self):
+        calls = []
+        def invoke(prompt, output_type, version):
+            calls.append(output_type)
+            return teaching_response(prompt, output_type)
+        script, design = fixtures.example_script(), self.design()
+        args = dict(audience="Adults", prior_knowledge="None", depth="Explain the comparison")
+        folder = self.root / "stored_before_check"
+        assess_teaching(script, design, invoke, folder, **args)
+        # A readback that skips its only objective, stored with a matching stamp as older code wrote it.
+        listener = next(folder.glob("*/listener.json"))
+        stamp = listener.with_name("listener.checkpoint.json")
+        broken = {**json.loads(listener.read_text(encoding="utf-8")), "answers": []}
+        with self.assertRaises(AppError):
+            validate_readback(ListenerReadback.model_validate(broken), design, script)
+        write_json(listener, broken)
+        write_json(stamp, {**json.loads(stamp.read_text(encoding="utf-8")), "digest": digest(broken)})
+        calls.clear()
+        issues, report, _ = assess_teaching(script, design, invoke, folder, **args)
+        self.assertEqual((issues, report["status"]), ([], "passed"))
+        self.assertEqual(calls, [ListenerReadback], "the unchanged later reviews are reused")
 
     def test_invented_supporting_quote_is_rejected(self):
         def model(prompt, output_type, directory, **kwargs):
@@ -329,20 +468,26 @@ class TeachingTests(unittest.TestCase):
         self.assertEqual(run.stages["review"].error.code, "invalid_teaching_evidence")
         self.assertFalse((self.root / "episodes/ep_001/script.yaml").exists())
 
-    def test_learning_gaps_block_despite_other_positive_model_reviews(self):
+    def test_learning_gaps_are_repaired_then_noted_despite_other_positive_model_reviews(self):
+        """A learning gap the listener readback finds drives the script repairs even when every other review passes.
+        Until 2026-09-29 it then stopped the run; the user chose that, with the repairs spent, a depth point becomes
+        a note the reader sees before approving audio. A resume asks nothing again."""
+        gap = "The answer is named but the comparison is never explained."
+
         def model(prompt, output_type, directory, **kwargs):
             result, meta = self.model(prompt, output_type, directory, **kwargs)
             if output_type is ListenerReadback:
-                result.answers[0].missing_explanations = ["The answer is named but the comparison is never explained."]
+                result.answers[0].missing_explanations = [gap]
             return result, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root)
             count = len(self.fixture.calls)
             resumed = run_script(self.root, resume=True)
-        self.assertEqual(run.stages["review"].error.code, "script_review_failed")
+        self.assertEqual((run.status, resumed.status), ("completed", "completed"))
         self.assertEqual(len(self.fixture.calls), count)
-        self.assertEqual(resumed.status, "blocked")
-        self.assertFalse((self.root / "episodes/ep_001/script.md").exists())
+        notes = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertTrue(any(gap in note["reason"] for note in notes))
+        self.assertEqual({note["category"] for note in notes} - {"depth", "clarity", "dialogue"}, set())
 
     def test_reader_never_receives_expected_answers_or_dossier(self):
         captured = []
@@ -366,11 +511,14 @@ class TeachingTests(unittest.TestCase):
             return result, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root)
-        self.assertEqual(run.stages["review"].error.code, "script_review_failed")
+        # The editorial failure overrides the other passes and drives the repairs; with them spent it is a noted
+        # dialogue point since 2026-09-29, not a stop.
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        notes = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertTrue(any("essay paragraphs" in note["reason"] for note in notes))
         self.assertEqual(set(captured[0]), {"audience", "prior_knowledge", "depth", "series_context", "script"})
         plan = fixtures.example_plan()
         self.assertEqual(captured[0]["series_context"], episode_series_context(plan, plan.episodes[0]))
-        self.assertFalse((self.root / "episodes/ep_001/script.md").exists())
 
     def test_reported_gap_cannot_be_silently_dropped_by_examiner(self):
         def model(prompt, output_type, directory, **kwargs):

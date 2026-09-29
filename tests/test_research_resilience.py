@@ -30,13 +30,15 @@ from podcast_automate.research_ledger import load_index, read_value, save_value
 from podcast_automate.research_models import SourceIndex
 from podcast_automate.research_quality import ResearchAssessment
 from podcast_automate.research_tasks import AnswerReview, QuestionPlan, QuestionSearch, ReopenPlan, ResearchDecision
-from podcast_automate.run_budget import (accepted_gaps, approve_criterion_gap, approve_research_gap, approve_research_retry,
-                                        criterion_gaps, effective_limits,
+from podcast_automate.run_budget import (accepted_gaps, approve_criterion_gap, approve_fresh_attempts, approve_research_gap,
+                                        approve_research_retry, stuck_calls,
+                                        residual_finish,
+                                        criterion_gaps, dispute_decisions, effective_limits,
                                          retry_requests)
 from podcast_automate.sources import download, extract, import_failure, public_url
 from podcast_automate.storage import digest, init_project, read_yaml, write_json, write_yaml
 from podcast_automate.studio import make_server, read_json
-from podcast_automate.studio_progress import research_progress
+from podcast_automate.studio_progress import disputed_objection, disputed_objections, research_progress
 from podcast_automate.text_settings import auto_candidates
 from tests import research_fixtures as fixtures
 from tests.question_fixtures import answer_for, complete_fixture_response, decision, task_value
@@ -498,6 +500,36 @@ class RejectedReceiptTests(WorkflowCase):
         self.assertEqual(again.exception.code, "rejected_output")
         self.assertEqual(len(self.fixture.calls), calls)
 
+    def test_fresh_attempts_move_a_stuck_call_on_and_keep_its_rejections_readable(self):
+        # Asimov and Ontologies, 2026-09-27: a routing call spent its three attempts; a resume replayed the
+        # stop at once, and the only way on was a new research run.
+        self.searching([self.bad_search()])
+        with self.assertRaises(AppError):
+            self.run_engine()
+        write_yaml(self.work / "run_manifest.yaml", {**read_yaml(self.work / "run_manifest.yaml"), "status": "blocked"})
+        stuck = stuck_calls(self.work)
+        self.assertEqual(len(stuck), 1)
+        folder, name = stuck[0]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["approve", str(self.root), "--run-id", "run_test", "--fresh-attempts", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(output.getvalue())["fresh_attempts"]["calls"]), 1)
+        self.assertEqual(sorted(p.name for p in folder.glob(f"{name}_superseded_*")),
+                         [f"{name}_superseded_00_0{n}.json" for n in range(3)])
+        self.assertEqual(stuck_calls(self.work), [])
+        with self.assertRaises(AppError):
+            approve_fresh_attempts(self.root, "run_test")  # nothing is stuck any more
+        # The resume asks the model anew, and with a good answer the run goes on.
+        good = QuestionSearch(candidates=fixtures.discovery(count=2).candidates[1:], limitations=[])
+        self.fixture.download.side_effect = lambda url: (fixtures.HTML.replace(
+            b"These sentences", b"Additional independent evidence. These sentences"), "text/html", url)
+        before = len(self.searches)
+        self.searching([good])
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(len(self.searches) - before, 1, "one fresh attempt, answered well")
+
     def test_exhausted_rejections_block_and_resume_makes_no_further_call(self):
         self.searching([self.bad_search()])
         with self.assertRaises(AppError) as caught:
@@ -526,8 +558,8 @@ class RejectedReceiptTests(WorkflowCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["value"]["requirements"][0]["finding_ids"], ["f_energy"])
 
     def test_plan_beyond_the_affordable_task_count_is_re_asked_then_accepted(self):
-        # Nothing spent yet and the default of 8 calls per task (no calibration history in a fresh project):
-        # affordable = (20 - 0 - 4) // 8 = 2 tasks, so a three-task plan still exceeds the allowance.
+        # Nothing spent yet and the default of 16 calls per task (no calibration history in a fresh project):
+        # affordable = (20 - 0 - 4) // 16 = 1 task, so a three-task plan still exceeds the allowance.
         self.fixture.config.research_limits.model_calls = 20
         plans = []
 
@@ -539,7 +571,7 @@ class RejectedReceiptTests(WorkflowCase):
         engine = self.engine()
         engine.initialise(self.fixture.discovery, self.fixture.index, None, [])
         self.assertEqual(len(plans), 3)
-        self.assertEqual((plans[0]["planning_budget"]["max_tasks"], plans[0]["planning_budget"]["expected_calls_per_task"]), (2, 8))
+        self.assertEqual((plans[0]["planning_budget"]["max_tasks"], plans[0]["planning_budget"]["expected_calls_per_task"]), (1, 16))
         self.assertEqual(plans[0]["planning_budget"]["expected_calls_source"], "default")
         self.assertNotIn("Rejections:", plans[0].get("brief", {}).get("topic", ""))
         rejected = json.loads((self.work / "question_research/plan_rejected_01.json").read_text(encoding="utf-8"))
@@ -867,6 +899,66 @@ class StudioApprovalTests(unittest.TestCase):
         connection.close()
         return response.status, body
 
+    def test_every_dispute_of_the_round_can_be_decided_before_the_resume(self):
+        # Ontologies, 2026-09-27: three disputes in one round meant three stops, one per decision.
+        objections = {oid: {"id": oid, "task_id": "task_a", "reason": f"Reason {oid}", "correction": "c",
+                            "closure_condition": "k"} for oid in ("obj_a", "obj_b")}
+        save_value(self.work / "question_research/state.json", {"audit_round": 1, "objections": objections, "tasks": {}})
+        folder = self.work / "question_research/synthesis/audit_01"
+        checks = [{"objection_id": oid, "verdict": "review_disagreement", "references": [], "reason": f"Reviewer {oid}"}
+                  for oid in ("obj_a", "obj_b")]
+        write_json(folder / "grounding_0_merged.json", {"parts": 2, "review": {"issues": [], "objection_checks": checks}})
+        save_value(folder / "review_disagreement.json", {**checks[0], "objection": objections["obj_a"]})
+        questions = {"audit_round": 1, "questions": [{"id": "task_a", "question": "Frage A"}]}
+        shown = disputed_objections(self.work, {"input_hash": "b" * 64}, questions)
+        self.assertEqual([(row["objection_id"], row["objection"]["reason"]) for row in shown],
+                         [("obj_a", "Reason obj_a"), ("obj_b", "Reason obj_b")])
+        for oid in ("obj_b", "obj_a"):  # the second before the first: any order before the resume
+            self.assertEqual(self.request("/api/projects/example/approve",
+                                          {"kind": "dispute", "run_id": "run_x", "objection_id": oid, "decision": "reviewer"})[0], 200)
+        self.assertEqual(sorted(dispute_decisions(self.work, "b" * 64)), ["obj_a", "obj_b"])
+        self.assertEqual([row["decision"]["decision"] for row in disputed_objections(self.work, {"input_hash": "b" * 64}, questions)],
+                         ["reviewer", "reviewer"])
+
+    def test_finishing_with_residual_objections_needs_an_audited_unfinished_run(self):
+        request = {"kind": "residual", "run_id": "run_x", "note": "Reicht für die Folge."}
+        for state in ({"audit_round": 0, "phase": "questions", "tasks": {}},       # nothing audited yet
+                      {"audit_round": 2, "phase": "completed", "tasks": {}}):      # already finished
+            save_value(self.work / "question_research/state.json", state)
+            with self.subTest(state=state):
+                self.assertEqual(self.request("/api/projects/example/approve", request)[0], 400)
+        self.assertIsNone(residual_finish(self.work, "b" * 64))
+        save_value(self.work / "question_research/state.json", {"audit_round": 2, "phase": "questions", "tasks": {}})
+        self.assertEqual(self.request("/api/projects/example/approve", request)[0], 200)
+        self.assertEqual(residual_finish(self.work, "b" * 64)["note"], "Reicht für die Folge.")
+        # Asking again keeps the first request.
+        self.assertEqual(self.request("/api/projects/example/approve", {**request, "note": "anders"})[0], 200)
+        self.assertEqual(residual_finish(self.work, "b" * 64)["note"], "Reicht für die Folge.")
+
+    def test_a_disputed_objection_is_decided_only_while_the_run_stops_on_it(self):
+        objection = {"id": "obj_a", "task_id": "task_a", "reason": "The scope is not in the passage.",
+                     "correction": "Remove the scope.", "closure_condition": "No scope claim remains."}
+        save_value(self.work / "question_research/state.json",
+                   {"audit_round": 1, "objections": {"obj_a": objection}, "tasks": {"task_a": {"status": "verified"}}})
+        request = {"kind": "dispute", "run_id": "run_x", "objection_id": "obj_a", "decision": "reviewer", "note": "Trägt."}
+        self.assertEqual(self.request("/api/projects/example/approve", request)[0], 400, "the run did not stop on it")
+        save_value(self.work / "question_research/synthesis/audit_01/review_disagreement.json",
+                   {"objection_id": "obj_a", "verdict": "review_disagreement", "references": ["src#s1"],
+                    "reason": "The passage now carries the scope.", "objection": objection})
+        for wrong in ({"objection_id": "obj_b"}, {"decision": "maybe"}):
+            with self.subTest(wrong=wrong):
+                self.assertEqual(self.request("/api/projects/example/approve", {**request, **wrong})[0], 400)
+        questions = {"audit_round": 1, "questions": [{"id": "task_a", "question": "Frage A"}]}
+        shown = disputed_objection(self.work, {"input_hash": "b" * 64}, questions)
+        self.assertEqual((shown["question"], shown["objection"]["correction"], shown["review"]["reason"], shown["decision"]),
+                         ("Frage A", "Remove the scope.", "The passage now carries the scope.", None))
+        self.assertEqual(self.request("/api/projects/example/approve", request)[0], 200)
+        self.assertEqual(dispute_decisions(self.work, "b" * 64)["obj_a"]["note"], "Trägt.")
+        # Changing sides before the resume replaces the decision.
+        self.assertEqual(self.request("/api/projects/example/approve", {**request, "decision": "objection"})[0], 200)
+        self.assertEqual({k: v["decision"] for k, v in dispute_decisions(self.work, "b" * 64).items()}, {"obj_a": "objection"})
+        self.assertEqual(disputed_objection(self.work, {"input_hash": "b" * 64}, questions)["decision"]["decision"], "objection")
+
     def test_an_access_gap_names_a_criterion_and_a_source_this_run_could_not_read(self):
         index_hash = "c" * 64
         save_value(self.work / "question_research/state.json",
@@ -902,12 +994,12 @@ class StudioApprovalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/projects/example/approve",
                                       {"kind": "retry", "run_id": "run_x", "task_id": "task_a"})[0], 400)
         status, _ = self.request("/api/projects/example/approve",
-                                 {"kind": "model_calls", "run_id": "run_x", "model_calls": 300, "search_rounds": 30})
+                                 {"kind": "model_calls", "run_id": "run_x", "model_calls": 800, "search_rounds": 60})
         self.assertEqual(status, 200)
         status, _ = self.request("/api/projects/example/approve", {"kind": "model_calls", "run_id": "run_x", "sources": 190})
         self.assertEqual(status, 200)
         limits = effective_limits(self.work, TopicBrief(topic="x").research_limits, "b" * 64)
-        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources), (300, 30, 190))
+        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources), (800, 60, 190))
         self.assertEqual(self.request("/api/projects/example/approve",
                                       {"kind": "model_calls", "run_id": "run_x", "model_calls": 100})[0], 400)
         self.assertEqual(self.request("/api/projects/example/approve",

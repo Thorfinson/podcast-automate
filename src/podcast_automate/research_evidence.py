@@ -83,6 +83,16 @@ def collapse_assessments(rows):
     return list(merged.values())
 
 
+def scope_assessments(review, findings, context):
+    """Drop, in place, source assessments of sources none of the reviewed findings cites. They lie outside
+    the review's scope (another part assesses them, or nothing needs them); every cited source still needs
+    its one assessment (Ontologies, 2026-09-27: two extra sources copied from the outline refused a part)."""
+    source_of = {section["reference"]: source["source_id"] for source in context for section in source["sections"]}
+    cited = {source_of[e.reference] for f in findings for e in f.evidence if e.reference in source_of}
+    review.source_assessments = [a for a in review.source_assessments if a.source_id in cited]
+    return review
+
+
 def support_errors(findings, review, context, *, require_contract=True, limitations=None):
     """Malformed coverage raises; blocking non-passes return actionable feedback.
 
@@ -211,7 +221,12 @@ def validate_objection(objection, tasks, findings, context, *, target_task=None,
     if objection.evidence_refs and objection.finding_ids:
         allowed = {e.reference for fid in objection.finding_ids for e in by_finding[fid].evidence}
         if not set(objection.evidence_refs) & allowed:
-            evidence_error("Review objection evidence must relate to the affected findings.")
+            # The retry is told what fixes it: the commonest cases are a missing passage cited alone and a
+            # wording defect with unrelated passages attached.
+            evidence_error("Review objection evidence must relate to the affected findings. "
+                           f"For the objection on {', '.join(objection.finding_ids)}: put at least one passage those "
+                           "findings cite into evidence_refs (a missing or contradicting passage may stand beside it), or, "
+                           "for a wording defect, leave evidence_refs empty and name the defect in missing_evidence.")
     if target_task:
         owned = any(target_task in owners.get(fid, []) for fid in objection.finding_ids)
         fixed = objection.rule == "criterion" and objection.task_id == target_task

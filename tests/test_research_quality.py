@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from podcast_automate.errors import AppError
 from podcast_automate.research import run_research, source_context
+from podcast_automate.evidence_models import SynthesisRelation
 from podcast_automate.research_models import SourceSection
 from podcast_automate.research_quality import ResearchAssessment, quality_report, requirements_for
 from podcast_automate.runner import outputs_valid
@@ -84,6 +85,22 @@ class ResearchQualityTests(fixtures.ResearchProjectCase):
                 broken.requirements[0].finding_ids = ["invented"]
             with self.assertRaises(AppError):
                 quality_report(self.config, dossier, discovery, index, broken)
+
+    def test_a_synthesis_relation_named_as_a_finding_stands_for_the_findings_it_compares(self):
+        _, dossier, discovery, index, _, assessment = self.completed_data()
+        first = dossier.findings[0]
+        dossier = dossier.model_copy(update={"findings": [first, first.model_copy(update={"id": "f_other"})], "synthesis": [
+            SynthesisRelation(id="syn_first_vs_other", finding_ids=[first.id, "f_other"], dimension="scope", relation="no_material_conflict",
+                              conditions="Same fixture conditions.", evidence_refs=[first.evidence[0].reference], resolution="not_applicable",
+                              explanation="Both findings state the same fixture definition.", basis="editorial_synthesis")]})
+        assessment.requirements[0].finding_ids = ["syn_first_vs_other", first.id]
+        report = quality_report(self.config, dossier, discovery, index, assessment)
+        self.assertEqual(report["requirements"][0]["finding_ids"], [first.id, "f_other"])
+        # An ID that names nothing in the dossier is still refused, and the refusal names it for the retry.
+        assessment.requirements[0].finding_ids = ["invented"]
+        with self.assertRaises(AppError) as refused:
+            quality_report(self.config, dossier, discovery, index, assessment)
+        self.assertIn("invented", str(refused.exception))
 
     def test_limitation_only_and_upload_only_answers_cannot_pass(self):
         _, dossier, discovery, index, _, assessment = self.completed_data()

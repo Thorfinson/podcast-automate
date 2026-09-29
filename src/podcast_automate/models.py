@@ -43,10 +43,12 @@ class Contract(BaseModel):
 
 
 class ResearchLimits(Contract):
-    # Defaults for new projects since 2026-09-26; a saved project keeps the limits in its project.yaml.
-    search_rounds: int = Field(default=24, gt=0)
+    # Defaults for new projects since 2026-09-27; a saved project keeps the limits in its project.yaml.
+    # Measured on the two 18-question runs of 2026-09-26/27 with Opus 5.5: 600 to 750 calls up to the
+    # third audit round, 31 and 46 search rounds, 82 and 114 fetched sources.
+    search_rounds: int = Field(default=48, gt=0)
     sources: int = Field(default=150, gt=0)
-    model_calls: int = Field(default=250, gt=0)
+    model_calls: int = Field(default=750, gt=0)
 
 
 class RuntimeSettings(Contract):

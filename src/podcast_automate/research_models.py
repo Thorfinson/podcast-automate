@@ -71,6 +71,10 @@ class SourceIndex(Contract):
     failures: list[dict[str, str]]
 
 
+# Findings one dossier holds. Part of every dossier call's output schema, so of its saved receipts' signatures.
+MAX_FINDINGS = 120
+
+
 class Evidence(Contract):
     reference: NonEmpty
     excerpt: NonEmpty = Field(max_length=200)
@@ -109,7 +113,7 @@ class ResearchDossier(Contract):
     schema_version: Literal["1.0"] = "1.0"
     topic: NonEmpty
     scope_note: NonEmpty
-    findings: list[Finding] = Field(min_length=1, max_length=120)
+    findings: list[Finding] = Field(min_length=1, max_length=MAX_FINDINGS)
     coverage: list[QuestionCoverage]
     open_questions: list[NonEmpty]
     evidence_version: str = ""

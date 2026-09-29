@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import Field
 
 from .errors import AppError
@@ -61,6 +63,26 @@ class CriterionGaps(Contract):
     run_id: Identifier
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     gaps: list[CriterionGap]
+
+
+class DisputeDecision(Contract):
+    objection_id: Identifier
+    decision: Literal["reviewer", "objection"]
+    note: str = ""
+    decided_at: datetime
+
+
+class DisputeDecisions(Contract):
+    run_id: Identifier
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    decisions: list[DisputeDecision]
+
+
+class ResidualFinish(Contract):
+    run_id: Identifier
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    note: str = ""
+    approved_at: datetime
 
 
 class PlanApproval(Contract):
@@ -276,6 +298,181 @@ def approve_criterion_gap(root, run_id, task_id, criterion, source, reason=""):
     return approval
 
 
+def dispute_decisions(work, input_hash) -> dict[str, dict]:
+    """The editor's decisions on disputed objections of this run, keyed by objection id."""
+    path = work / "dispute_decisions.json"
+    if not path.exists():
+        return {}
+    try:
+        saved = DisputeDecisions.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AppError("Die gespeicherten Streitfall-Entscheidungen sind ungültig.", code="invalid_gap_approval",
+                       status="blocked") from exc
+    if saved.run_id != work.name or saved.input_hash != input_hash:
+        raise AppError("Die Streitfall-Entscheidungen gehören nicht zu diesem Auftrag.", code="invalid_gap_approval",
+                       status="blocked")
+    return {row.objection_id: row.model_dump(mode="json") for row in saved.decisions}
+
+
+def disputed_checks(work, audit_round):
+    """Every objection check the given audit round disputed, from its saved review: a split review's merged
+    receipt or a whole one, the latest correction revision first. The stop file names only the first."""
+    folder = work / "question_research/synthesis" / f"audit_{int(audit_round):02d}"
+    for revision in (2, 1, 0):
+        merged, whole = folder / f"grounding_{revision}_merged.json", folder / f"grounding_{revision}.json"
+        if merged.exists():
+            review = json.loads(merged.read_text(encoding="utf-8")).get("review") or {}
+        elif whole.exists():
+            review = json.loads(whole.read_text(encoding="utf-8")).get("value") or {}
+        else:
+            continue
+        issues = review.get("issues") or []
+        return [check for check in review.get("objection_checks") or []
+                if check.get("verdict") == "review_disagreement" or (check.get("verdict") == "open" and not issues)]
+    return []
+
+
+def decide_review_disagreement(root, run_id, objection_id, decision, note=""):
+    """Settle the objection the whole-dossier audit disputed, after the user explicitly chose a side.
+
+    ``reviewer`` follows the audit: the objection closes and the dispute stays on record in the quality
+    report. ``objection`` upholds it: the next routing sends it back to its question as it stands. Only
+    the objections the current round disputed can be decided, all of them before the resume if the editor
+    likes (``disputed_checks``; ``review_disagreement.json`` names the first); a later decision replaces an earlier one.
+    """
+    from .research_ledger import read_value
+    work, manifest = _text_run(root, run_id)
+    if manifest.kind != "research":
+        raise AppError("Streitfälle gibt es nur in einem Rechercheauftrag.", code="invalid_gap_approval")
+    state_path = work / "question_research/state.json"
+    if not state_path.exists():
+        raise AppError("Für diesen Lauf gibt es noch keine Recherchefragen.", code="invalid_gap_approval")
+    state = read_value(state_path)
+    audit_round = int(state.get("audit_round", 0))
+    stopped = work / "question_research/synthesis" / f"audit_{audit_round:02d}" / "review_disagreement.json"
+    disputed = {check["objection_id"] for check in disputed_checks(work, audit_round)}
+    if stopped.exists():
+        disputed.add(read_value(stopped).get("objection_id"))
+    if objection_id not in state.get("objections", {}) or objection_id not in disputed:
+        raise AppError("Dieser Einwand ist in der laufenden Prüfrunde nicht strittig.", code="invalid_gap_approval")
+    if decision not in ("reviewer", "objection"):
+        raise AppError("Entscheidung: dem Prüfer folgen oder den Einwand aufrechterhalten.", code="invalid_gap_approval")
+    if not isinstance(note, str) or len(note) > 2000:
+        raise AppError("Die Notiz muss ein kurzer Text sein.", code="invalid_gap_approval")
+    existing = {oid: row for oid, row in dispute_decisions(work, manifest.input_hash).items() if oid != objection_id}
+    choice = DisputeDecision(objection_id=objection_id, decision=decision, note=note.strip(), decided_at=now())
+    saved = DisputeDecisions(run_id=manifest.run_id, input_hash=manifest.input_hash,
+                             decisions=[*(DisputeDecision.model_validate(row) for row in existing.values()), choice])
+    write_json(work / "dispute_decisions.json", saved.model_dump(mode="json"))
+    return choice
+
+
+def residual_finish(work, input_hash) -> dict | None:
+    """The editor's request to finish this run with its remaining audit objections on record, or None."""
+    path = work / "residual_finish.json"
+    if not path.exists():
+        return None
+    try:
+        saved = ResidualFinish.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AppError("Die gespeicherte Abschlussfreigabe ist ungültig.", code="invalid_gap_approval", status="blocked") from exc
+    if saved.run_id != work.name or saved.input_hash != input_hash:
+        raise AppError("Die Abschlussfreigabe gehört nicht zu diesem Auftrag.", code="invalid_gap_approval", status="blocked")
+    return saved.model_dump(mode="json")
+
+
+def approve_residual_finish(root, run_id, note=""):
+    """Finish the research after its next whole-dossier audit instead of another rework round.
+
+    The objections that audit leaves open stay on record as residual objections in the quality report
+    and the publication (``model_review: residual_objections_remaining``); questions blocked only because
+    their reworks are spent keep their last verified answer. Only a run that has been audited at least
+    once and is not complete can be finished this way.
+    """
+    from .research_ledger import read_value
+    work, manifest = _text_run(root, run_id)
+    if manifest.kind != "research":
+        raise AppError("Nur ein Rechercheauftrag lässt sich mit Resteinwänden abschließen.", code="invalid_gap_approval")
+    state_path = work / "question_research/state.json"
+    if not state_path.exists():
+        raise AppError("Für diesen Lauf gibt es noch keine Recherchefragen.", code="invalid_gap_approval")
+    state = read_value(state_path)
+    if state.get("phase") == "completed":
+        raise AppError("Die Recherche ist bereits abgeschlossen.", code="invalid_gap_approval")
+    if int(state.get("audit_round", 0)) < 1:
+        raise AppError("Erst nach der ersten Gesamtprüfung gibt es Resteinwände, mit denen sich abschließen lässt.",
+                       code="invalid_gap_approval")
+    if not isinstance(note, str) or len(note) > 2000:
+        raise AppError("Die Notiz muss ein kurzer Text sein.", code="invalid_gap_approval")
+    existing = residual_finish(work, manifest.input_hash)
+    if existing:
+        return ResidualFinish.model_validate(existing)
+    approval = ResidualFinish(run_id=manifest.run_id, input_hash=manifest.input_hash, note=note.strip(), approved_at=now())
+    write_json(work / "residual_finish.json", approval.model_dump(mode="json"))
+    return approval
+
+
+def stuck_calls(work):
+    """Calls of this run that spent their correction attempts without a receipt. A resume replays their
+    stored rejections and stops at once, so only fresh attempts (``approve_fresh_attempts``) move them."""
+    from .research_patches import MAX_REJECTIONS
+    last = f"_rejected_{MAX_REJECTIONS:02d}.json"
+    rows = []
+    for path in sorted((work / "question_research").rglob(f"*{last}")):
+        name = path.name[:-len(last)]
+        if not (path.parent / f"{name}.json").exists():
+            rows.append((path.parent, name))
+    return rows
+
+
+def approve_fresh_attempts(root, run_id):
+    """Give every stuck call of a stopped research run a fresh set of correction attempts, after the user
+    explicitly asked for it. The spent rejections move aside unchanged (``<name>_superseded_NN_MM.json``),
+    so the resume asks the model anew with nothing of the stop carried over; each approval is recorded in
+    ``fresh_attempts.json``. A running run is never touched."""
+    from .research_patches import MAX_REJECTIONS, supersede_rejections
+    work, manifest = _text_run(root, run_id)
+    if manifest.status == "running":
+        raise AppError("Der Lauf arbeitet gerade; neue Anläufe erst, wenn er angehalten hat.", code="invalid_retry_request")
+    if manifest.kind == "script":
+        # A supplementary research of the teaching stage that spent its corrections (teaching_research.stuck_supplements).
+        # Also a script review whose repairs are spent on points that still stop the run (grounding, scope, structure).
+        from .script_pipeline import MAX_REVIEW_REPAIRS, NOTED_CATEGORIES
+        from .teaching_research import stuck_supplements, supersede_corrections
+        folders = stuck_supplements(work)
+        reviews = []
+        for path in sorted((work / "reviews").glob("ep_*_checkpoint.json")):
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            issues = (saved.get("review") or {}).get("issues") or []
+            if saved.get("repairs", 0) >= MAX_REVIEW_REPAIRS and any(i["category"] not in NOTED_CATEGORIES for i in issues):
+                reviews.append((path, saved))
+        if not folders and not reviews:
+            raise AppError("Keine Nachrecherche und keine Skriptprüfung dieses Laufs hat ihre Korrekturversuche verbraucht.",
+                           code="invalid_retry_request")
+        for folder in folders:
+            supersede_corrections(folder)
+        for path, saved in reviews:
+            # The draft and its review stay; the next resume repairs against that review again, MAX_REVIEW_REPAIRS times.
+            write_json(path, {**saved, "repairs": 0})
+        record = {"supplements": [folder.relative_to(work).as_posix() for folder in folders],
+                  "reviews": [path.name.removesuffix("_checkpoint.json") for path, _ in reviews], "approved_at": now()}
+        path = work / "fresh_attempts.json"
+        write_json(path, [*(json.loads(path.read_text(encoding="utf-8")) if path.exists() else []), record])
+        return record
+    if manifest.kind != "research":
+        raise AppError("Neue Anläufe gibt es nur für einen Recherche- oder Skriptauftrag.", code="invalid_retry_request")
+    stuck = stuck_calls(work)
+    if not stuck:
+        raise AppError("Kein Schritt dieses Laufs hat seine Korrekturversuche verbraucht.", code="invalid_retry_request")
+    for folder, name in stuck:
+        supersede_rejections(folder, name, MAX_REJECTIONS + 1)
+    record = {"calls": [(folder / name).relative_to(work).as_posix() for folder, name in stuck], "approved_at": now()}
+    path = work / "fresh_attempts.json"
+    history = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    write_json(path, [*history, record])
+    return record
+
+
 class RetryRequest(Contract):
     task_id: Identifier
     hint: str = ""
@@ -335,6 +532,65 @@ def approve_research_retry(root, run_id, task_id, hint=""):
     requests = RetryRequests(run_id=manifest.run_id, input_hash=manifest.input_hash,
                              retries=[RetryRequest.model_validate(item) for item in existing.values()])
     write_json(work / "retry_requests.json", requests.model_dump(mode="json"))
+    return request
+
+
+class TeachingRedesign(Contract):
+    episode_id: Identifier
+    note: str = Field(min_length=1, max_length=2000)
+    requested_at: datetime
+
+
+class TeachingRedesigns(Contract):
+    run_id: Identifier
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    requests: list[TeachingRedesign]
+
+
+def teaching_redesigns(work, input_hash) -> dict[str, dict]:
+    """Requested new teaching designs of this script run keyed by episode id; empty when none was ever written."""
+    path = work / "teaching_redesigns.json"
+    if not path.exists():
+        return {}
+    try:
+        saved = TeachingRedesigns.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AppError("Die gespeicherten Neuentwürfe des Lehrkonzepts sind ungültig.", code="invalid_redesign_request",
+                       status="blocked") from exc
+    if saved.run_id != work.name or saved.input_hash != input_hash:
+        raise AppError("Die Neuentwürfe des Lehrkonzepts gehören nicht zu diesem Auftrag.", code="invalid_redesign_request",
+                       status="blocked")
+    return {item.episode_id: item.model_dump(mode="json") for item in saved.requests}
+
+
+def request_teaching_redesign(root, run_id, episode_id, note):
+    """Ask for a new teaching design of one episode, with the editor's note, after the user explicitly requested it.
+
+    Only a script run whose teaching stage stopped because the design kept its defects after the focused repair
+    (``teaching_design_failed``) takes it, and only for an episode without an accepted design. The next resume
+    moves the stopped design aside and designs the episode anew with the note and fresh correction rounds
+    (script_pipeline.ScriptRun.adopt_redesign); the approved outline stays. A later request for the same
+    episode replaces the earlier one."""
+    from .script_models import SeriesPlan
+    work, manifest = _text_run(root, run_id)
+    stage = manifest.stages.get("teaching")
+    if manifest.kind != "script" or stage is None or stage.status != "blocked" or (stage.error or None) is None \
+            or stage.error.code != "teaching_design_failed":
+        raise AppError("Ein neues Lehrkonzept mit Hinweis gibt es nur, wenn das Lehrkonzept nach den automatischen "
+                       "Korrekturen offene Punkte behält.", code="invalid_redesign_request")
+    plan = SeriesPlan.model_validate_json((work / "series_plan.json").read_text(encoding="utf-8"))
+    if episode_id not in {entry.episode_id for entry in plan.episodes}:
+        raise AppError("Diese Folge steht nicht im Inhaltsverzeichnis des Laufs.", code="invalid_redesign_request")
+    if (work / "teaching" / episode_id / "plan.json").exists():
+        raise AppError("Das Lehrkonzept dieser Folge ist bereits geprüft.", code="invalid_redesign_request")
+    if not isinstance(note, str) or not note.strip() or len(note) > 2000:
+        raise AppError("Bitte einen kurzen Hinweis für das neue Lehrkonzept angeben.", code="invalid_redesign_request")
+    existing = teaching_redesigns(work, manifest.input_hash)
+    request = TeachingRedesign(episode_id=episode_id, note=note.strip(), requested_at=now())
+    existing[episode_id] = request.model_dump(mode="json")
+    saved = TeachingRedesigns(run_id=manifest.run_id, input_hash=manifest.input_hash,
+                              requests=[TeachingRedesign.model_validate(item) for item in existing.values()])
+    write_json(work / "teaching_redesigns.json", saved.model_dump(mode="json"))
     return request
 
 

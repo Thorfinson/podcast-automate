@@ -92,7 +92,7 @@ def _gaps(dossier, migration):
 
 class QuestionResearch(TaskResearchMixin, SynthesisMixin):
     def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None, retries=None, access_gaps=None,
-                 plan_gate=None, workers=1, advisor=False):
+                 disputes=None, residual=None, plan_gate=None, workers=1, advisor=False):
         self.root, self.work, self.config, self.invoke, self.progress = root, work, config, invoke, progress
         # Whether a blocked question gets the advisor's second opinion before the run stops (research_advisor).
         self.advisor = advisor
@@ -108,6 +108,10 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.retries = retries or (lambda: {})
         # Criteria accepted as access gaps (run_budget.approve_criterion_gap); each reopens its blocked task once.
         self.access_gaps = access_gaps or (lambda: [])
+        # The editor's side in an objection the audit disputed (run_budget.decide_review_disagreement).
+        self.disputes = disputes or (lambda: {})
+        # The editor's request to finish after the next audit with the remaining objections on record.
+        self.residual = residual or (lambda: None)
         # ``plan_gate(projection)`` returns the valid approval of the projected plan or None. Without a
         # gate the caller has taken that decision (the CLI and Studio always pass one).
         self.plan_gate = plan_gate
@@ -318,6 +322,50 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                    extra_web_attempts=row.get("extra_web_attempts", 0) + limits["web_attempts"],
                    activity=activity, feedback=feedback, **fields)
 
+    def release_ready(self):
+        """A question blocked only because a prerequisite had no verified answer yet is taken up again once
+        every prerequisite is verified; a prerequisite accepted as a gap keeps it blocked. Before, only an
+        explicit new attempt took it up (Asimov, 2026-09-27: t15 kept waiting for a t14 that had passed)."""
+        with self.guarded():
+            tasks = {spec["id"]: spec for spec in self.state["plan"]["tasks"]}
+            released = []
+            for task_id, row in self.state["tasks"].items():
+                if row["status"] != "blocked" or row.get("outcome") != "prerequisite_block" or row.get("accepted_gap"):
+                    continue
+                if all(self.state["tasks"][dep]["status"] == "verified" for dep in tasks[task_id].get("depends_on", [])):
+                    row.update(status="pending", outcome=None, reason="", activity="Voraussetzungen geprüft; wird bearbeitet")
+                    released.append(task_id)
+            if released:
+                self.save("Teilfragen, deren Voraussetzungen inzwischen geprüft sind, werden bearbeitet")
+            return released
+
+    def settle_residual(self):
+        """Finishing with residual objections (``self.residual``): a question reopened in the last rework but
+        now blocked only by prerequisites whose reworks are spent gets no further rework either. It returns
+        to the answer and verification it had before that reopening (Asimov, 2026-09-27: t15 waited for t14)."""
+        with self.guarded():
+            tasks = {spec["id"]: spec for spec in self.state["plan"]["tasks"]}
+            spent = {tid for tid, row in self.state["tasks"].items()
+                     if row["status"] == "blocked" and row.get("outcome") == "audit_block"}
+            restored = []
+            for task_id, row in self.state["tasks"].items():
+                if row["status"] != "blocked" or row.get("outcome") != "prerequisite_block" or row.get("accepted_gap"):
+                    continue
+                previous = (row.get("reopenings") or [{}])[-1]
+                unmet = [dep for dep in tasks[task_id].get("depends_on", [])
+                         if self.state["tasks"][dep]["status"] != "verified"]
+                if not previous.get("previous_answer") or not previous.get("previous_verification") or not unmet \
+                        or not set(unmet) <= spent:
+                    continue
+                row.update(status="verified", answer=previous["previous_answer"],
+                           verification=previous["previous_verification"],
+                           outcome=previous["previous_answer"].get("outcome", "supported_answer"), reason="",
+                           activity="Keine weitere Nachbesserung (Abschluss mit Resteinwänden); zuletzt geprüfte Antwort bleibt")
+                restored.append(task_id)
+            if restored:
+                self.save("Abschluss mit Resteinwänden: zuletzt geprüfte Antworten werden übernommen")
+            return restored
+
     def release_dependents(self):
         """Tasks that only waited for a reopened task are decided again once it finishes."""
         for row in self.state["tasks"].values():
@@ -333,15 +381,17 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         """Before the run stops for blocked questions: one advisor call per new block, and one automatic
         new attempt per question where the advisor recommends it. Returns whether a task was reopened.
 
-        A question that only waits for its prerequisite gets no advice of its own. Without room in the
-        call budget the advice is skipped, so the stop and its decisions come as before."""
+        A question that only waits for its prerequisite gets no advice of its own, and neither does one whose
+        reworks are spent (``audit_block``): the audit's objections are its diagnosis, and an automatic attempt
+        would step round the rework limit (Asimov, 2026-09-27: t02 and t04 were reopened a third time). Without
+        room in the call budget the advice is skipped, so the stop and its decisions come as before."""
         if not self.advisor:
             return False
         specs = {task.id: task for task in QuestionPlan.model_validate(self.state["plan"]).tasks}
         with self.guarded():
             blocked = [task_id for task_id, row in self.state["tasks"].items()
                        if row["status"] == "blocked" and not row.get("accepted_gap")
-                       and row.get("outcome") != "prerequisite_block"
+                       and row.get("outcome") not in {"prerequisite_block", "audit_block"}
                        and (row.get("advice") or {}).get("key") != block_key(row)]
         reopened = []
         for task_id in blocked:
@@ -750,7 +800,15 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             self.adopt_access_gaps()
             self.research_tasks()
             self.adopt_accepted_gaps()
+            if self.release_ready():
+                continue
+            if self.residual():
+                self.settle_residual()
             blocked = [r for r in public_ledger(self.state)["questions"] if r["status"] == "blocked" and not r["accepted_gap"]]
+            if self.residual():
+                # Finishing with residual objections: a question blocked only because its reworks are spent
+                # keeps its last verified answer, and its objections stay on record.
+                blocked = [r for r in blocked if r["outcome"] != "audit_block"]
             if blocked and self.advise():
                 continue
             if blocked:
@@ -763,15 +821,24 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             dossier, discovery, context = self.compose()
             dossier, review, report = self.audit(dossier, discovery, context)
             if not report["passed"]:
-                reopened, newly_blocked = self.reopen(dossier, review, report)
-                if reopened or newly_blocked:
-                    continue
-                # Every objection targets an explicitly accepted gap or was routed as an unsupported demand
-                # (a review disagreement): nothing is left to research.
-                report = self.tolerate(dossier, review, report)
+                finish = self.residual()
+                if finish:
+                    report = self.tolerate(dossier, review, report, finish=finish)
+                else:
+                    reopened, newly_blocked = self.reopen(dossier, review, report)
+                    if reopened or newly_blocked:
+                        continue
+                    # Every objection targets an explicitly accepted gap or was routed as an unsupported demand
+                    # (a review disagreement): nothing is left to research.
+                    report = self.tolerate(dossier, review, report)
             self.state.update(phase="completed", active_tasks=[])
-            for objection in self.state.get("objections", {}).values():
-                objection.update(status="closed", closure_audit=self.state["audit_round"],
+            closed_now = {c["objection_id"] for c in report.get("objection_checks", []) if c["verdict"] == "closed"}
+            for identifier, objection in self.state.get("objections", {}).items():
+                # A residual finish leaves the objections this audit did not close on record as residual.
+                residual = (report.get("passed_with_residual_objections") and identifier not in closed_now
+                            and objection.get("status") == "open"
+                            and (self.state.get("disputed_objections", {}).get(identifier) or {}).get("decision") != "reviewer")
+                objection.update(status="residual" if residual else "closed", closure_audit=self.state["audit_round"],
                                  dossier_hash=digest(dossier.model_dump()))
             self.save("Alle Recherchefragen und die Gesamtprüfung sind abgeschlossen")
             destination = self.work / "complete_research"
@@ -791,8 +858,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
 
 
 def run_question_research(root, work, config, discovery, index, invoke, progress, *, dossier=None, context=(),
-                          limits=None, accepted=None, retries=None, access_gaps=None, plan_gate=None, workers=1,
-                          advisor=False):
+                          limits=None, accepted=None, retries=None, access_gaps=None, disputes=None, residual=None,
+                          plan_gate=None, workers=1, advisor=False):
     return QuestionResearch(root, work, config, invoke, progress, limits=limits, accepted=accepted, retries=retries,
-                            access_gaps=access_gaps, plan_gate=plan_gate, workers=workers,
+                            access_gaps=access_gaps, disputes=disputes, residual=residual, plan_gate=plan_gate, workers=workers,
                             advisor=advisor).run(discovery, index, dossier, context)

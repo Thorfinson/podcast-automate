@@ -51,6 +51,16 @@ def quality_brief(config):
             "requirements": requirements_for(config)}
 
 
+def cite_findings(dossier, assessment):
+    """An assessment that names a synthesis relation where a finding belongs relies on the findings the
+    relation compares: those replace it, in place (Asimov, 2026-09-27: thirteen ``syn_…`` IDs refused)."""
+    relations = {relation.id: relation.finding_ids for relation in dossier.synthesis}
+    for row in assessment.requirements:
+        if any(fid in relations for fid in row.finding_ids):
+            row.finding_ids = list(dict.fromkeys(f for fid in row.finding_ids for f in relations.get(fid, [fid])))
+    return assessment
+
+
 def check_assessment(config, dossier, assessment):
     """Deterministic shape of an assessment: every requirement once, only real finding IDs."""
     expected = {r["id"] for r in requirements_for(config)}
@@ -58,8 +68,10 @@ def check_assessment(config, dossier, assessment):
         raise AppError("Die Qualitätsprüfung muss jede ursprüngliche Leitfrage genau einmal bewerten.",
                        code="invalid_research_assessment", status="blocked")
     findings = {f.id for f in dossier.findings}
-    if any(not set(r.finding_ids) <= findings for r in assessment.requirements):
-        raise AppError("Die Qualitätsprüfung verweist auf unbekannte Befunde.",
+    unknown = sorted({fid for r in assessment.requirements for fid in r.finding_ids} - findings)
+    if unknown:
+        raise AppError("Die Qualitätsprüfung verweist auf unbekannte Befunde: " + ", ".join(unknown[:12])
+                       + ". finding_ids nennt nur Befund-IDs aus dossier.findings.",
                        code="invalid_research_assessment", status="blocked")
 
 
@@ -73,7 +85,7 @@ def quality_report(config, dossier, discovery, index, assessment, grounding_issu
 
     ``review_limitations`` are per-question rows of what the independent answer review confirmed
     only with a stated limit. They are recorded, never a gate: the answer passed."""
-    check_assessment(config, dossier, assessment)
+    check_assessment(config, dossier, cite_findings(dossier, assessment))
     accepted = accepted or {}
     requirements = requirements_for(config)
     findings = {f.id: f for f in dossier.findings}
@@ -131,6 +143,10 @@ def render_quality(report):
         lines += ["Die Quellenprüfung hat fehlende Belege gefunden. Zuerst wird gezielt nachrecherchiert; "
                   "die Bewertung aller Leitfragen wird danach erneuert. Die bisherigen Einzelbewertungen "
                   "sind noch kein Urteil über den ergänzten Entwurf.", ""]
+    if report.get("passed_with_residual_objections"):
+        lines += ["Die Recherche wurde auf Wunsch der Redaktion mit dokumentierten Resteinwänden abgeschlossen"
+                  + (f" ({report['residual_note']})" if report.get("residual_note") else "") + ". Die letzte Gesamtprüfung "
+                  "hatte noch Einwände; sie stehen unten und gelten als offene Grenzen des Dossiers.", ""]
     if report.get("passed_with_accepted_gaps"):
         lines += ["Die Recherche wurde mit ausdrücklich akzeptierten Lücken abgeschlossen. Die betroffenen Teilfragen "
                   "und verbliebenen Einwände stehen unten; das Dossier behauptet für sie keine Antwort.", ""]
@@ -173,8 +189,17 @@ def render_quality(report):
             lines += [f"- {gap['question'] or gap['task_id']}" + (f": {gap['reason']}" if gap.get("reason") else "")]
         lines += [f"- {gap}" for gap in report.get("accepted_coverage_gaps", [])]
         lines += [""]
+    if report.get("disputed_objections"):
+        lines += ["## Strittige Prüfeinwände", "",
+                  "Die Gesamtprüfung hat diesen früheren Einwänden widersprochen; die Redaktion hat entschieden.", ""]
+        for row in report["disputed_objections"]:
+            side = "dem Prüfer gefolgt, Einwand geschlossen" if row["decision"] == "reviewer" else "Einwand aufrechterhalten"
+            lines += [f"- Einwand: {(row.get('objection') or {}).get('reason', row['objection_id'])}",
+                      f"  Prüfer: {row['review']['reason']}",
+                      f"  Entscheidung: {side}" + (f" ({row['note']})" if row.get("note") else "")]
+        lines += [""]
     if report.get("residual_objections"):
-        lines += ["## Verbliebene Prüfeinwände zu akzeptierten Lücken", "",
+        lines += ["## Verbliebene Prüfeinwände" + ("" if report.get("passed_with_residual_objections") else " zu akzeptierten Lücken"), "",
                   *[f"- {objection}" for objection in report["residual_objections"]], ""]
     return "\n".join(lines)
 

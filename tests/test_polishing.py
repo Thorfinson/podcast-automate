@@ -70,7 +70,10 @@ class PolishingTests(unittest.TestCase):
         self.assertEqual(self.fixture.calls.count(EpisodeScript), count)
         self.assertEqual(count, 2)
 
-    def test_persistent_fact_drift_blocks_export_and_keeps_repair_limit_on_resume(self):
+    def test_persistent_fact_drift_never_reaches_export_and_the_draft_stays_the_script(self):
+        """Retained protection: a polish that keeps adding facts the draft does not have is never published. Until
+        2026-09-29 the run stopped here; now, after both repairs, the checked draft stays the script (Asimov ep_012),
+        and a resume asks nothing again."""
         def model(prompt, output_type, directory, **kwargs):
             value, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
             if output_type is EpisodeScript and kwargs['prompt_version'].startswith('dialogue_polish'):
@@ -83,13 +86,33 @@ class PolishingTests(unittest.TestCase):
             run = run_script(self.root)
             count = len(self.fixture.calls)
             resumed = run_script(self.root, resume=True)
-        self.assertEqual(run.stages['polishing'].error.code, 'dialogue_polish_failed')
-        self.assertEqual(resumed.status, 'blocked')
+        self.assertEqual((run.status, resumed.status), ('completed', 'completed'))
         self.assertEqual(len(self.fixture.calls), count)
-        self.assertNotIn(ScriptReview, self.fixture.calls)
-        self.assertFalse((self.root / 'episodes/ep_001/script.yaml').exists())
-        checkpoint = json.loads((self.root / 'runs' / run.run_id / 'polishing/ep_001/checkpoint.json').read_text())
-        self.assertEqual(checkpoint['repairs'], 2)
+        work = self.root / 'runs' / run.run_id / 'polishing/ep_001'
+        self.assertEqual(json.loads((work / 'checkpoint.json').read_text())['repairs'], 2)
+        self.assertEqual(json.loads((work / 'result.json').read_text())['status'], 'kept_draft')
+        self.assertTrue((work / 'kept_draft.json').exists())
+        published = (self.root / 'episodes/ep_001/script.yaml').read_text(encoding='utf-8')
+        self.assertNotIn('1000 possibilities', published)
+
+    def test_only_spoken_language_points_after_both_repairs_do_not_stop_the_run(self):
+        """Asimov ep_007, 2026-09-29: each repair left a new wording detail, the last one a sentence repeating the
+        next. With meaning, completeness, roles and framing intact, such points are recorded and the run goes on;
+        the drift test above keeps a meaning failure blocking."""
+        point = "The inserted sentence repeats the next one; merge both."
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if output_type is DialoguePolishReview:
+                check = next(c for c in value.checks if c.criterion == 'spoken_language')
+                check.verdict, check.reason = 'fail', point
+            return value, meta
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, 'completed', run.stages['polishing'].error)
+        self.assertEqual(self.fixture.calls.count(DialoguePolishReview), 3)
+        notes = json.loads((self.root / 'runs' / run.run_id / 'polishing/ep_001/accepted_notes.json').read_text(encoding='utf-8'))
+        self.assertEqual(notes, ['spoken_language: ' + point])
 
     def test_missing_criteria_or_invented_comparison_evidence_cannot_pass(self):
         for corruption in ('criterion', 'before_quote', 'after_quote'):
@@ -108,6 +131,24 @@ class PolishingTests(unittest.TestCase):
             self.assertEqual(run.stages['polishing'].error.code,
                              'invalid_polish_review' if corruption == 'criterion' else 'invalid_polish_evidence')
             self.assertEqual(run.stages['review'].status, 'pending')
+
+    def test_a_comparison_that_skips_a_criterion_once_is_asked_again_and_the_run_completes(self):
+        reviews = []
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if output_type is DialoguePolishReview:
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    value.checks.pop()
+            return value, meta
+        with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, 'completed')
+        self.assertEqual(len(reviews), 2)
+        self.assertIn('Dialogvergleich muss alle fünf Kriterien', reviews[1])
+        # A defect of the comparison is not a defect of the dialogue: no repair pass was spent on it.
+        checkpoint = json.loads((self.root / 'runs' / run.run_id / 'polishing/ep_001/checkpoint.json').read_text())
+        self.assertEqual(checkpoint['repairs'], 0)
 
     def test_changed_original_invalidates_cached_polish_even_when_segment_ids_match(self):
         original = fixtures.example_script()

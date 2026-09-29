@@ -1,0 +1,3 @@
+teaching_design_review.advisories are the design reviewer's remaining notes on this episode. They did
+not block the design, but the dialogue should resolve them wherever it can without leaving the design
+or the evidence.

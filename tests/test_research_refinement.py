@@ -78,6 +78,18 @@ class PatchTests(unittest.TestCase):
         self.dossier.findings.append(self.other)
         self.config = fixtures.TopicBrief(topic="Test topic")
 
+    def test_a_patch_beyond_the_finding_limit_is_a_correctable_rejection_not_a_crash(self):
+        # Asimov, 2026-09-27: reworked answers took the dossier from 116 to 121 findings; the schema error
+        # escaped the rejection path and ended the run as failed instead of asking for a merged patch.
+        first = self.dossier.findings[0]
+        full = self.dossier.model_copy(update={"findings": [first.model_copy(update={"id": f"f_{n:03d}"}) for n in range(120)]})
+        extra = first.model_copy(update={"id": "f_extra"})
+        with self.assertRaises(AppError) as refused:
+            apply_patch(full, empty_patch(additions=[extra]), set())
+        self.assertEqual(refused.exception.code, "invalid_research_patch")
+        self.assertIn("at most 120", str(refused.exception))
+        self.assertEqual(len(apply_patch(full, empty_patch(), set()).findings), 120)
+
     def test_targeted_edit_preserves_every_other_field_and_rejects_scope_changes(self):
         changed = self.dossier.findings[0].model_copy(update={"statement": "Energy scores configurations."})
         result = apply_patch(self.dossier, empty_patch(updates=[changed]), {"f_energy"})
@@ -196,6 +208,35 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.folder.glob("routes_*.json")),
                          ["routes_superseded_00_00.json", "routes_superseded_00_01.json", "routes_superseded_00_02.json"])
         self.assertTrue((self.folder / "routes.json").exists())
+
+    def test_a_rejection_that_todays_rules_accept_becomes_the_receipt_without_a_call(self):
+        # Asimov, 2026-09-27: a routing rule refused every answer; after the fix the resume would still have
+        # stopped on the three stored rejections of the same prompt, and the paid answers were valid by then.
+        calls = []
+
+        def generate(prompt, schema):
+            calls.append(prompt)
+            return empty_patch()
+
+        def strict(value, final):
+            raise AppError("Synthetic rule, fixed since.", code="invalid_question_routing", status="blocked")
+        prompt = "Prompt\n{}"
+        with self.assertRaises(AppError):
+            cached_call(self.folder, "routes", DossierPatch, prompt, generate, validate=strict)
+        self.assertEqual(len(calls), 3)
+        accept = lambda value, final: None
+        self.assertEqual(cached_call(self.folder, "routes", DossierPatch, prompt, generate, validate=accept), empty_patch())
+        self.assertEqual(len(calls), 3, "the stored answer is adopted, not asked again")
+        self.assertEqual(json.loads((self.folder / "routes.json").read_text(encoding="utf-8"))["adopted_rejection"], 2)
+        self.assertEqual(cached_call(self.folder, "routes", DossierPatch, prompt, generate, validate=accept), empty_patch())
+        self.assertEqual(len(calls), 3, "a replay reads the adopted receipt like any other")
+        # A stored answer that only the last attempt's leniency would pass is not adopted.
+        lenient_only = lambda value, final: None if final else strict(value, final)
+        with self.assertRaises(AppError):
+            cached_call(self.folder, "other", DossierPatch, prompt, generate, validate=strict)
+        with self.assertRaises(AppError):
+            cached_call(self.folder, "other", DossierPatch, prompt, generate, validate=lenient_only)
+        self.assertEqual(len(calls), 6)
 
     def test_changed_base_cannot_reuse_a_patch(self):
         generate = lambda p, s: empty_patch()
