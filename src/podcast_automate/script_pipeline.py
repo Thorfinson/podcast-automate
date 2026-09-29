@@ -7,7 +7,10 @@ selected episodes, so a run stops before spending money it cannot complete with.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
+from .call_activity import CALL_SUBJECT
 from .editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, TERMINOLOGY, episode_series_context
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
@@ -25,7 +28,7 @@ from .runner import manifest_path, run_observer
 from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
-from .script_checkpoints import NOTED_CATEGORIES
+from .script_checkpoints import NOTED_CATEGORIES, series_adoption
 from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_sources,
                             script_review_signature, validate_script)
 from .script_evidence import SCRIPT_EVIDENCE_INSTRUCTIONS, settle_receipts, validate_claim_checks
@@ -322,7 +325,15 @@ class ScriptRun:
             return rows
         rows = []
         gaps = self.knowledge_gaps()
-        proposals = self.jev_proposals(gaps) if self.execution.jev_probe and gaps else None
+        proposals = None
+        if self.execution.jev_probe and gaps:
+            try:
+                proposals = self.jev_proposals(gaps)
+            except AppError as exc:
+                # On only by the German project's default: no key means the word search alone, not a stop.
+                if exc.code != "openrouter_key_required" or not self.execution.jev_default:
+                    raise
+                write_json(self.work / "jev_probe.json", {"status": "skipped", "reason": "no_key"})
         for row in probe(self.sources, gaps, gap_terms=coverage_terms(self.dossier), proposals=proposals):
             owners = [eid for eid, sources in owned.items() if hit_sources(row) & sources]
             status = "hits_unowned" if row["hits"] and not owners else row["status"]
@@ -572,7 +583,7 @@ class ScriptRun:
         signature = script_review_signature(self.input_hash, file_hash(draft_file), plan, entry, work)
         # ``previous``: the draft and review before the last repair, which scope the review after it.
         # ``passed``: the latest draft whose review left nothing blocking, kept if a later repair breaks it.
-        result, repairs, previous, passed = None, 0, None, None
+        result, repairs, previous, passed, teaching_pending = None, 0, None, None, False
         if checkpoint.exists():
             saved = json.loads(checkpoint.read_text(encoding="utf-8"))
             if saved.get("input_hash") == signature:
@@ -580,6 +591,7 @@ class ScriptRun:
                 repairs = saved["repairs"]
                 previous, passed = saved.get("previous"), saved.get("passed")
                 result = ScriptReview.model_validate(saved["review"]) if saved["review"] else None
+                teaching_pending = bool(saved.get("teaching_pending"))
                 # Reassess an older verdict after a review-policy fix, keeping the
                 # latest corrected script and consumed repair allowance intact.
                 if saved.get("editorial_review_version") != EDITORIAL_REVIEW_VERSION:
@@ -591,27 +603,38 @@ class ScriptRun:
                 if validate_script(draft, entry):
                     raise AppError("Gespeicherter Review-Entwurf ist ungültig.", code="invalid_script", status="blocked")
 
-        def save():
+        def save(pending=False):
             write_json(checkpoint, {"input_hash": signature, "draft": draft.model_dump(),
                                    "review": result.model_dump() if result else None, "repairs": repairs,
                                    "editorial_review_version": EDITORIAL_REVIEW_VERSION,
                                    "script_review_version": SCRIPT_REVIEW_VERSION,
                                    "evidence_review_version": EVIDENCE_VERSION,
-                                   "previous": previous, "passed": passed})
+                                   "previous": previous, "passed": passed,
+                                   **({"teaching_pending": True} if pending else {})})
 
-        def check():
+        def taught(reviewed):
+            """A review that found nothing is joined by the teaching assessment, whose points are repaired alike."""
             nonlocal passed
-            follow_up = None
-            if previous:
-                follow_up = (ScriptReview.model_validate(previous["review"]),
-                             changed_segments(EpisodeScript.model_validate(previous["draft"]), draft))
-            reviewed = self.review_script(plan, entry, draft, original_draft, probes, follow_up=follow_up)
             if not reviewed.issues:
                 teaching_issues, _, _ = self.assess_episode_teaching(plan, entry, draft)
                 reviewed.issues.extend(teaching_issues)
             if not review_blocks(reviewed):
                 passed = {"draft": draft.model_dump(), "review": reviewed.model_dump()}
             return reviewed
+
+        def check():
+            nonlocal result
+            follow_up = None
+            if previous:
+                follow_up = (ScriptReview.model_validate(previous["review"]),
+                             changed_segments(EpisodeScript.model_validate(previous["draft"]), draft))
+            reviewed = self.review_script(plan, entry, draft, original_draft, probes, follow_up=follow_up)
+            if not reviewed.issues:
+                # Kept before the teaching assessment starts, so a stop during it does not ask this review again
+                # (found by stopping a run at each of its calls, 2026-09-29).
+                result = reviewed
+                save(pending=True)
+            return taught(reviewed.model_copy(deep=True))
 
         if result is not None:
             try:
@@ -623,6 +646,9 @@ class ScriptRun:
                 for issue in drift:
                     if issue not in result.issues and issue not in result.advisories:
                         result.issues.append(issue)
+                if teaching_pending:
+                    result = taught(result)
+                    save()
         if result is None:
             result = check()
             save()
@@ -646,8 +672,10 @@ class ScriptRun:
                        {"set_aside": {"draft": draft.model_dump(), "review": result.model_dump()}, "repairs": repairs})
             draft, result = EpisodeScript.model_validate(passed["draft"]), ScriptReview.model_validate(passed["review"])
             save()
+        # A correction the series review adopted for exactly this draft is what stands (series_adoption).
+        adopted = series_adoption(work, entry.episode_id, draft.model_dump())
         report = work / "reviews" / f"{entry.episode_id}.json"
-        write_json(report, result.model_dump())
+        write_json(report, adopted["review"] if adopted else result.model_dump())
         # Repairs spent and only clarity, depth or dialogue left: the script stands, the points stay in its review
         # report, and the user reads them before approving audio. Grounding, scope and structure keep stopping the
         # run (the user's choice, 2026-09-29: Ontologies episodes 2 and 4 held only listener-clarity points).
@@ -665,7 +693,7 @@ class ScriptRun:
             raise AppError("Lehrprüfung nicht bestanden.", code="teaching_review_failed", status="blocked")
         teaching_report_file = work / "reviews" / f"{entry.episode_id}_teaching.json"
         write_json(teaching_report_file, teaching_report)
-        write_json(reviewed_file, draft.model_dump())
+        write_json(reviewed_file, adopted["draft"] if adopted else draft.model_dump())
         return [reviewed_file, report, teaching_report_file, *teaching_outputs]
 
     def review_script(self, plan, entry, draft, original_draft, probes, follow_up=None):
@@ -725,62 +753,106 @@ class ScriptRun:
         to named segments within unchanged objectives.
 
         An adopted repair replaces both ``reviewed/<ep>.json`` and ``reviews/<ep>.json``; the
-        review of the text before the repair is kept as ``reviews/<ep>_before_series_repair.json``.
+        review of the text before the repair is kept as ``reviews/<ep>_before_series_repair.json``,
+        and ``reviews/<ep>_series_adopted.json`` binds the correction to the episode review's draft.
         A rejected repair changes neither and is saved as ``reviews/<ep>_series_repair_rejected.json``.
         """
         entries = {entry.episode_id: entry for entry in plan.episodes}
-        changed = False
-        for episode_id, issues in grouped.items():
-            entry = entries.get(episode_id)
-            if entry is None:
+        tasks = [(entries[episode_id], issues) for episode_id, issues in grouped.items() if episode_id in entries]
+
+        def correct(entry, issues):
+            """One episode's correction and its scoped review; the caller decides whether it is adopted."""
+            episode_id = entry.episode_id
+            token = CALL_SUBJECT.set(episode_id)
+            try:
+                reviewed_file = self.work / "reviewed" / f"{episode_id}.json"
+                draft = EpisodeScript.model_validate_json(reviewed_file.read_text(encoding="utf-8"))
+                review = ScriptReview(issues=issues, limitations=[
+                    "Cross-episode correction from the series review; the episode's own review passed before."])
+                probes = json.loads(self.probe_path(entry).read_text(encoding="utf-8")) if self.probe_path(entry).exists() else []
+                # A correction whose evidence check still objects gets one more attempt against those objections, as the
+                # episode review's repairs do (Ontologies ep_008, 2026-09-29: the single attempt restated an absence claim
+                # the check then named with its fix, and the whole series stopped).
+                asked, current = review, draft
+                for _ in range(SERIES_REPAIR_ATTEMPTS):
+                    # Kept per round (a fresh-attempts approval sets the round aside and starts a new one), so a stop
+                    # during the check that follows does not ask the correction again.
+                    kept = self.work / "reviews" / "series_corrections" / (
+                        f"{episode_id}_{len(list(self.work.glob('series_repair_superseded_*.json'))):02d}_"
+                        f"{digest({'draft': current.model_dump(), 'review': asked.model_dump()})[:16]}.json")
+                    if kept.exists():
+                        repaired = EpisodeScript.model_validate_json(kept.read_text(encoding="utf-8"))
+                    else:
+                        repaired = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
+                            "\n" + instructions("script_review_repair") + "\n" +
+                            json.dumps({"draft": current.model_dump(), "review": asked.model_dump()}, ensure_ascii=False),
+                            EpisodeScript, REVIEW_REPAIR_VERSION,
+                            lambda answer: self.script_defects(answer, entry, self.work / f"{episode_id}_series_repair_errors.json",
+                                                               "Die Korrektur der Serienprüfung verletzt die Quellenzuordnung oder Struktur."))
+                        write_json(kept, repaired.model_dump())
+                    # Scoped like every review after a repair: the issues it answered and the segments it changed.
+                    checked = self.review_script(plan, entry, repaired, draft.model_dump(), probes,
+                                                 follow_up=(asked, changed_segments(current, repaired)))
+                    if not review_blocks(checked):
+                        break
+                    asked, current = checked, repaired
+                return repaired, checked
+            finally:
+                CALL_SUBJECT.reset(token)
+
+        # The episodes of one round are corrected at once in a parallel run (2026-09-29: one after another, a round
+        # over five episodes took about an hour). Every correction finishes before any outcome is written.
+        outcomes = {}
+        workers = min(self.execution.text_workers, len(tasks)) or 1
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="series") as pool:
+            futures = {entry.episode_id: pool.submit(copy_context().run, correct, entry, issues) for entry, issues in tasks}
+            for episode_id, future in futures.items():
+                try:
+                    outcomes[episode_id] = future.result()
+                except Exception as exc:  # noqa: BLE001 -- kept until the others are adopted, then raised
+                    outcomes[episode_id] = exc
+        changed, rejections = False, []
+        for episode_id, outcome in outcomes.items():
+            if isinstance(outcome, Exception):
                 continue
-            reviewed_file = self.work / "reviewed" / f"{episode_id}.json"
-            draft = EpisodeScript.model_validate_json(reviewed_file.read_text(encoding="utf-8"))
-            review = ScriptReview(issues=issues, limitations=[
-                "Cross-episode correction from the series review; the episode's own review passed before."])
-            probes = json.loads(self.probe_path(entry).read_text(encoding="utf-8")) if self.probe_path(entry).exists() else []
-            # A correction whose evidence check still objects gets one more attempt against those objections, as the
-            # episode review's repairs do (Ontologies ep_008, 2026-09-29: the single attempt restated an absence claim
-            # the check then named with its fix, and the whole series stopped).
-            asked, current = review, draft
-            for _ in range(SERIES_REPAIR_ATTEMPTS):
-                repaired = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
-                    "\n" + instructions("script_review_repair") + "\n" +
-                    json.dumps({"draft": current.model_dump(), "review": asked.model_dump()}, ensure_ascii=False),
-                    EpisodeScript, REVIEW_REPAIR_VERSION,
-                    lambda answer: self.script_defects(answer, entry, self.work / f"{episode_id}_series_repair_errors.json",
-                                                       "Die Korrektur der Serienprüfung verletzt die Quellenzuordnung oder Struktur."))
-                # Scoped like every review after a repair: the issues it answered and the segments it changed.
-                checked = self.review_script(plan, entry, repaired, draft.model_dump(), probes,
-                                             follow_up=(asked, changed_segments(current, repaired)))
-                if not review_blocks(checked):
-                    break
-                asked, current = checked, repaired
-            review_file = self.work / "reviews" / f"{episode_id}.json"
+            repaired, checked = outcome
             if review_blocks(checked):
                 # The rejected text is not adopted: ``reviewed/`` and ``reviews/`` keep the pair
                 # the episode review passed, and the rejection is saved next to them.
                 rejected = self.work / "reviews" / f"{episode_id}_series_repair_rejected.json"
                 write_json(rejected, {"review": checked.model_dump(), "draft": repaired.model_dump()})
-                raise AppError("Die Korrektur der Serienprüfung hat die Belegprüfung nicht bestanden; "
-                               f"der Bericht ist gespeichert: {rejected.relative_to(self.root).as_posix()}. "
-                               "„Mit neuen Anläufen fortsetzen“ prüft die Serie mit dem heutigen Stand neu und gibt der "
-                               "Korrektur eine neue Runde.", code="script_review_failed", status="blocked")
+                rejections.append(rejected.relative_to(self.root).as_posix())
+                continue
             # ``reviews/<ep>.json`` is what publish reports next to the script hash, so it must
             # judge the text that is published. The review of the pre-repair text stays beside it.
+            review_file = self.work / "reviews" / f"{episode_id}.json"
             before = self.work / "reviews" / f"{episode_id}_before_series_repair.json"
             if not before.exists():
                 before.write_bytes(review_file.read_bytes())
+            # Bound to the episode review's own final draft, so a resume of the review stage keeps the correction.
+            base = json.loads((self.work / "reviews" / f"{episode_id}_checkpoint.json").read_text(encoding="utf-8"))["draft"]
+            write_json(self.work / "reviews" / f"{episode_id}_series_adopted.json",
+                       {"base": digest(base), "draft": repaired.model_dump(), "review": checked.model_dump()})
             write_json(review_file, checked.model_dump())
-            write_json(reviewed_file, repaired.model_dump())
+            write_json(self.work / "reviewed" / f"{episode_id}.json", repaired.model_dump())
             changed = True
+        failure = next((outcome for outcome in outcomes.values() if isinstance(outcome, Exception)), None)
+        if failure is not None:
+            raise failure
+        if rejections:
+            raise AppError("Die Korrektur der Serienprüfung hat die Belegprüfung nicht bestanden; "
+                           f"{'der Bericht ist' if len(rejections) == 1 else 'die Berichte sind'} gespeichert: "
+                           f"{', '.join(rejections)}. "
+                           "„Mit neuen Anläufen fortsetzen“ prüft die Serie mit dem heutigen Stand neu und gibt der "
+                           "Korrektur eine neue Runde.", code="script_review_failed", status="blocked")
         return reviewed_scripts(self.work, plan, self.episode) if changed else None
 
     def assess_episode_teaching(self, plan, entry, draft):
         return assess_teaching(draft, self.teaching_for(entry), self.invoke,
                                self.work / "reviews" / "teaching" / entry.episode_id,
                                audience=self.config.audience_level, prior_knowledge=self.config.prior_knowledge,
-                               depth=self.config.depth_request, series_context=episode_series_context(plan, entry))
+                               depth=self.config.depth_request, series_context=episode_series_context(plan, entry),
+                               parallel=self.execution.text_workers > 1)
 
     def review(self):
         plan, entries = self.selected()

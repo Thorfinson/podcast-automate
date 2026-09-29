@@ -22,7 +22,8 @@ from .openrouter import ADAPTER_VERSION, DEFAULT_MAX_OUTPUT_TOKENS, OpenRouterAd
 from .prompts import instructions
 from .storage import write_json
 from .text_settings import (AUTO_PREFERENCE, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, SUBSCRIPTION_PROVIDERS,
-                            TEXT_PROVIDERS, auto_candidates, provider_model, validate_model, validate_reasoning)
+                            TEXT_PROVIDERS, auto_candidates, provider_model, stage_effort, validate_model,
+                            validate_reasoning)
 
 
 def subscription_selection(config, backend, *, model=None, reasoning_effort=None) -> dict:
@@ -151,10 +152,14 @@ class AdapterPool:
         choice = self.choose(mode, prefer, candidates, exclude=tried)
         stalled = False
         while True:
-            self.last_choice = choice
-            write_json(directory / "provider_choice.json", {**choice, "search": search, "prompt_version": prompt_version,
+            # A stage with a lower level (text_settings.STAGE_EFFORT_CAPS) asks at that level and records the run's.
+            effort = stage_effort(prompt_version, choice.get("reasoning_effort"))
+            used = choice if effort == choice.get("reasoning_effort") else {
+                **choice, "reasoning_effort": effort, "run_effort": choice.get("reasoning_effort")}
+            self.last_choice = used
+            write_json(directory / "provider_choice.json", {**used, "search": search, "prompt_version": prompt_version,
                        "prompt_chars": len(prompt)})
-            adapter = self.build(choice)
+            adapter = self.build(used)
             try:
                 output, metadata = adapter.structured(prompt, output_type, directory,
                                                       prompt_version=prompt_version, search=search)

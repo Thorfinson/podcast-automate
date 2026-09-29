@@ -2458,3 +2458,62 @@ test('all read episodes can be approved at once, and a full studio queues instea
   assert.ok(queue.includes('Warteschlange der Vertonung · 2')&&queue.includes('startet nicht: Skript inzwischen geändert.'));
   assert.ok(app.run(`renderQueueState(${JSON.stringify(ep('ep_003'))})`).includes('wartet in der Warteschlange auf Platz 1'));
 });
+
+test('the overview card offers the whole podcast as a download, not only a player',()=>{
+  const app=studio();
+  const card=p=>app.run(`boot.capabilities={podcast_downloads:true,project_overview:true};overviewCard(${JSON.stringify(p)})`);
+  const base={id:'asimov',topic:'Asimov',episode_count:2,job:null,audio_jobs:[]};
+  assert.ok(!card({...base,episodes:[{episode_id:'ep_001',title:'Eins',audio:[]}]}).includes('podcast.zip'),'nothing to download yet');
+  const partial=card({...base,episodes:[{episode_id:'ep_001',title:'Eins',audio:['episodes/ep_001/audio.mp3']},{episode_id:'ep_002',title:'Zwei',audio:[]}]});
+  assert.ok(partial.includes('href="/download/asimov/podcast.zip"'));
+  assert.ok(partial.includes('Fertige Folgen herunterladen <span>ZIP · 1 von 2 Folgen</span>'));
+  assert.ok(partial.includes('class="download-all small"'),'the page click handler fetches it like the audio page ZIP');
+  const complete=card({...base,episodes:[{episode_id:'ep_001',title:'Eins',audio:['a.mp3']},{episode_id:'ep_002',title:'Zwei',audio:['b.mp3']}]});
+  assert.ok(complete.includes('Podcast herunterladen <span>ZIP · 2 Folgen</span>'));
+  assert.ok(complete.includes('Podcast anhören'));
+});
+
+test('allowances are set in the brief and a stop they cover says the studio continues by itself',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,execution:{text:'parallel',audio:'parallel'},jev_probe:true,jev_default:true,chat:[],allowances:{fresh_attempts:2,extra_calls:250,used:{fresh_attempts:1,extra_calls:40}}};`);
+  const html=app.run('setupSummary()');
+  assert.ok(html.includes('<option value="2" selected>bis 2× je Lauf</option>'));
+  assert.ok(html.includes('<option value="250" selected>um bis zu 250 je Lauf</option>'));
+  assert.ok(html.includes('redaktionelle Entscheidungen bleiben bei dir'));
+  assert.ok(html.includes('Standard für deutschsprachige Projekte; ohne Key nur Wortsuche'));
+  assert.ok(app.run('allowanceUse(project.allowances)').includes('1 von 2 neuen Anläufen · 40 von 250 zusätzlichen Aufrufen'));
+  assert.equal(app.run('allowanceUse({fresh_attempts:0,extra_calls:0})'),'');
+  const fresh=app.run(`waitNote({status:'blocked',allowance:{kind:'fresh_attempts',number:2,of:2}})`);
+  assert.ok(fresh.includes('neue Anläufe (2 von 2 in diesem Lauf)'));
+  const calls=app.run(`waitNote({status:'blocked',allowance:{kind:'model_calls',model_calls:165,extra_calls:15}})`);
+  assert.ok(calls.includes('Aufruflimit auf 165 (+15)') && calls.includes('setzt innerhalb einer halben Minute selbst fort'));
+});
+
+test('the production report loads on request and shows stages, versions, stops and approvals',()=>{
+  const app=studio();
+  const job={status:'completed',run:{run_id:'run_s',kind:'script'}};
+  assert.ok(app.run(`renderProductionReport(${JSON.stringify(job)})`).includes('data-action="production-report" data-run-id="run_s">Produktionsbericht laden'));
+  const report={calls:442,failed_calls:2,model_minutes:1239.7,stages:[{stage:'script_review',label:'Belegprüfung <x>',calls:111,failed:14,minutes:434.7,share:0.351,minutes_per_call:3.9}],
+    versions:[{version:'script_review.v9-gaps-notes+followup',calls:38,minutes:300,first:'2026-09-29T12:16:00+00:00'}],
+    providers:{claude_code:{calls:372,minutes:730,billed_usd:0},openrouter:{calls:3,minutes:5,billed_usd:1.25}},
+    stops:{total:13,by_stage:{review:6,teaching:5}},approvals:{fresh_attempts:2,model_calls:443,allowances:[{}],text_switch:null}};
+  app.run(`productionReports.run_s=${JSON.stringify({report})}`);
+  const html=app.run(`renderProductionReport(${JSON.stringify(job)})`);
+  for(const text of ['442 Aufrufe · 20.7 h Modellzeit','Belegprüfung &lt;x&gt;','111 · 14 abgebrochen','7.2 h','35 %','3.9 Min.',
+    'script_review.v9-gaps-notes+followup','Claude · Abo: 372 Aufrufe','1.25 USD abgerechnet','Qualitätsprüfung 6×, Lehrkonzept 5×',
+    '2× neue Anläufe · Aufruflimit 443 · 1× per Vorab-Erlaubnis'])assert.ok(html.includes(text),text);
+  assert.ok(!html.includes('<x>'));
+});
+
+test('the server note offers a restart once the code changed and can take it back',()=>{
+  const app=studio();
+  app.run(`overviewPage=false;project={id:'p',server:{stale:false,restart_requested:false}}`);
+  assert.equal(app.run('serverNote()'),'');
+  app.run(`project.server.stale=true`);
+  assert.ok(app.run('serverNote()').includes('data-action="restart-when-idle">Neu starten, sobald nichts läuft'));
+  app.run(`project.server.restart_requested=true`);
+  const pending=app.run('serverNote()');
+  assert.ok(pending.includes('Neustart vorgemerkt') && pending.includes('data-action="restart-cancel"'));
+  app.run('renderServerNote()');
+  assert.equal(app.elements.get('server-note').hidden,false);
+});

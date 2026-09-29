@@ -25,6 +25,9 @@ class ExecutionChoice(Contract):
     audio: Literal["sequential", "parallel"] = "sequential"
     # New script runs also ask Jev in the gap probe (jev.py): about 0.60 USD of OpenRouter credit per run.
     jev_probe: bool = False
+    # On only by the project's default (jev_probe_state), not by the user's switch: without a key the probe
+    # runs with the word search alone instead of stopping the run.
+    jev_default: bool = False
 
     @model_serializer(mode="wrap")
     def omit_default_probe(self, handler):
@@ -32,6 +35,8 @@ class ExecutionChoice(Contract):
         data = handler(self)
         if not data.get("jev_probe"):
             data.pop("jev_probe", None)
+        if not data.get("jev_default"):
+            data.pop("jev_default", None)
         return data
 
     @property
@@ -44,24 +49,43 @@ def selected_execution(root: Path):
     ``studio/jev_probe.json``, so switching it never touches the hash of the modes a brief proposal applied."""
     path = root / "studio/execution.json"
     choice = ExecutionChoice.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else ExecutionChoice()
-    return choice.model_copy(update={"jev_probe": jev_probe_enabled(root)})
+    enabled, default = jev_probe_state(root)
+    return choice.model_copy(update={"jev_probe": enabled, "jev_default": enabled and default})
 
 
 def settings_execution(root: Path):
     """The modes as the Studio's settings and proposals see and hash them: without the Jev probe."""
-    return selected_execution(root).model_copy(update={"jev_probe": False})
+    return selected_execution(root).model_copy(update={"jev_probe": False, "jev_default": False})
+
+
+def jev_probe_state(root: Path) -> tuple[bool, bool]:
+    """Whether new script runs ask Jev, and whether that is only the project's default (``by_default``), which
+    a new German project gets (default_jev_probe) until the user switches it."""
+    path = root / "studio/jev_probe.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return False, False
+    if not isinstance(data, dict):
+        return False, False
+    enabled = data.get("enabled") is True
+    return enabled, enabled and data.get("by_default") is True
 
 
 def jev_probe_enabled(root: Path) -> bool:
-    path = root / "studio/jev_probe.json"
-    try:
-        return path.exists() and json.loads(path.read_text(encoding="utf-8")).get("enabled") is True
-    except (OSError, ValueError, AttributeError):
-        return False
+    return jev_probe_state(root)[0]
 
 
 def set_jev_probe(root: Path, enabled: bool):
     write_json(root / "studio/jev_probe.json", {"enabled": bool(enabled), "changed_at": now()})
+
+
+def default_jev_probe(root: Path, language: str):
+    """A new German project asks Jev in its gap probe: its gaps are worded in German while most sources are
+    English, which the word search cannot bridge (Asimov, 2026-09-29: 15 of 23 gaps stood as not found for that
+    reason). Other projects keep the word search alone. Saved as a default, so a missing key never stops a run."""
+    if language == "de-DE":
+        write_json(root / "studio/jev_probe.json", {"enabled": True, "by_default": True, "changed_at": now()})
 
 
 def run_episode_stage(entries, action, *, workers, work, stage):

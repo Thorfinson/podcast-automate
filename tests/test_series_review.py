@@ -1,4 +1,5 @@
 import json
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import patch
 from podcast_automate.episode_audio import run_episode_audio, saved_approval
 from podcast_automate.errors import AppError
 from podcast_automate.models import EpisodeScript, TopicBrief
+from podcast_automate.script_checkpoints import finished
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
 from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.series_review import SERIES_REVIEW_VERSION, SeriesReview, assess_series, load_series_review
@@ -422,6 +424,37 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             resumed = run_script(self.root, resume=True, run_id=run.run_id)
         self.assertEqual(resumed.status, "completed")
 
+    def test_a_resume_after_a_stop_in_the_series_round_keeps_the_adopted_correction(self):
+        """2026-09-29: a resume of the review stage rewrote ``reviewed/`` from the episode checkpoints, so the
+        series review saw the uncorrected text again and corrected the same episode a second time."""
+        def seed(review, call, work):
+            if call == 1:
+                self.contradiction(review)
+            elif call == 2:
+                raise KeyboardInterrupt  # stopped while the corrected series was being re-checked
+
+        def repair(script, payload):
+            script.segments[-1].text += self.SENTENCE
+
+        with patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.two_episode_model(on_series=seed, on_repair=repair)):
+            with self.assertRaises(KeyboardInterrupt):
+                run_script(self.root)
+        run_id = next(path.parent.name for path in (self.root / "runs").glob("run_*/series_plan.json"))
+        work = self.root / "runs" / run_id
+        adopted = json.loads((work / "reviewed/ep_002.json").read_text(encoding="utf-8"))
+        self.assertTrue(adopted["segments"][-1]["text"].endswith(self.SENTENCE))
+        self.assertTrue(finished(work, "ep_002", "review"))
+        self.versions.clear()
+        with patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.two_episode_model()):
+            resumed = run_script(self.root, resume=True, run_id=run_id)
+        self.assertEqual(resumed.status, "completed")
+        # Only the new verdict on the corrected series: no episode review, no second correction.
+        self.assertEqual(self.versions, [SERIES_REVIEW_VERSION])
+        self.assertEqual(json.loads((work / "reviewed/ep_002.json").read_text(encoding="utf-8")), adopted)
+        self.assertTrue(read_yaml(self.root / "episodes/ep_002/script.yaml")["segments"][-1]["text"].endswith(self.SENTENCE))
+
     def test_a_series_repair_with_claim_drift_is_rejected_and_a_resume_spends_nothing(self):
         before = {}
 
@@ -472,6 +505,81 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         self.assertEqual(finished.status, "completed", finished.stages["review"].error)
         self.assertEqual(self.versions.count(SERIES_REVIEW_VERSION), 2)
         self.assertTrue((self.root / "episodes/ep_002/script.yaml").exists())
+
+    def test_a_stop_at_any_model_call_resumes_to_the_same_series_without_asking_again(self):
+        """Every stage, stopped at each of its calls: the resume publishes the same two scripts, including the series
+        correction, and asks no call again whose answer was saved (the stop of 2026-09-29 that reverted an adopted
+        correction was one such point)."""
+        def seed(review, call, work):
+            if call == 1:
+                self.contradiction(review)
+
+        def repair(script, payload):
+            script.segments[-1].text += self.SENTENCE
+
+        with patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.two_episode_model(on_series=seed, on_repair=repair)):
+            self.assertEqual(run_script(self.root).status, "completed")
+        expected = {ep: read_yaml(self.root / "episodes" / ep / "script.yaml") for ep in ("ep_001", "ep_002")}
+        self.assertTrue(expected["ep_002"]["segments"][-1]["text"].endswith(self.SENTENCE))
+        baseline = list(self.versions)
+        for stop_at in range(1, len(baseline) + 1):
+            with self.subTest(stop_at=stop_at, version=baseline[stop_at - 1]):
+                self.fixture = fixtures.script_project(self)
+                root, self.versions, calls = self.fixture.root, [], [0]
+                answer = self.two_episode_model(on_series=seed, on_repair=repair)
+
+                def stopping(*args, **kwargs):
+                    calls[0] += 1
+                    if calls[0] == stop_at:
+                        raise KeyboardInterrupt  # the worker stopped while this call was out
+                    return answer(*args, **kwargs)
+                with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=stopping),                         self.assertRaises(KeyboardInterrupt):
+                    run_script(root)
+                run_id = next(path.parent.name for path in (root / "runs").glob("run_*/run_manifest.yaml")
+                              if read_yaml(path)["kind"] == "script")
+                with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=answer):
+                    resumed = run_script(root, resume=True, run_id=run_id)
+                self.assertEqual(resumed.status, "completed")
+                self.assertEqual({ep: read_yaml(root / "episodes" / ep / "script.yaml") for ep in expected}, expected)
+                self.assertEqual(self.versions, baseline, "each saved answer is kept; only the stopped call is asked again")
+
+    def test_a_parallel_run_corrects_a_round_at_once_and_adopts_what_passes(self):
+        write_json(self.root / "studio/execution.json", {"text": "parallel", "audio": "sequential"})
+        # Both first attempts must be in flight together; one after another they never meet at the barrier.
+        meeting, first = threading.Barrier(2, timeout=10), set()
+
+        def seed(review, call, work):
+            if call == 1:
+                review.checks[2].verdict = "fail"
+                review.checks[2].reason = "Both episodes contradict the order the series established."
+                self.assertEqual({e.episode_id for e in review.checks[2].evidence}, {"ep_001", "ep_002"})
+
+        def repair(script, payload):
+            if script.episode_id not in first:
+                first.add(script.episode_id)
+                meeting.wait()
+            script.segments[-1].text += self.SENTENCE
+
+        def drift(review, payload):
+            if payload["script"]["episode_id"] == "ep_002" and payload["script"]["segments"][-1]["text"].endswith(self.SENTENCE):
+                check = review.claim_checks[-1]
+                check.verdict, check.changed_fields = "drift", ["scope"]
+                check.reason = "The repaired segment claims more than the finding supports."
+
+        model = self.two_episode_model(on_series=seed, on_review=drift, on_repair=repair)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual((run.status, run.stages["review"].error.code), ("blocked", "script_review_failed"))
+        work = self.root / "runs" / run.run_id
+        # Episode 1's correction passed and stands; episode 2's was rejected and its report is named.
+        self.assertTrue(json.loads((work / "reviewed/ep_001.json").read_text(encoding="utf-8"))
+                        ["segments"][-1]["text"].endswith(self.SENTENCE))
+        self.assertTrue((work / "reviews/ep_001_series_adopted.json").exists())
+        self.assertFalse(json.loads((work / "reviewed/ep_002.json").read_text(encoding="utf-8"))
+                         ["segments"][-1]["text"].endswith(self.SENTENCE))
+        self.assertIn("reviews/ep_002_series_repair_rejected.json", run.stages["review"].error.message)
+        self.assertEqual(self.versions.count("script_review_repair.v2-delete-absence"), 3)
 
     def test_a_series_correction_the_check_rejects_once_is_adopted_on_its_second_attempt(self):
         """Ontologies ep_008, 2026-09-29: the only attempt restated an absence claim, the check named the fix, and

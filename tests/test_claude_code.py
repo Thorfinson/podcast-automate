@@ -180,6 +180,16 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         activity = (self.root / "call/activity.json").read_text(encoding="utf-8")
         self.assertIn("Strukturierte Antwort empfangen", activity)
 
+    def test_sonnet_5_5_needs_the_cli_that_lists_it(self):
+        # CLI 2.1.283 has no catalog entry for Sonnet 5.5; 2.1.284 has (2026-09-29). Opus keeps working with 2.1.283.
+        sonnet = ClaudeCodeAdapter(RuntimeSettings(text_timeout_seconds=4), model="claude-sonnet-5-5", reasoning_effort="high")
+        with patch.object(sonnet, "command", return_value=fake_cli(self.root)), self.assertRaises(AppError) as error:
+            sonnet.cli_version()
+        self.assertEqual((error.exception.code, error.exception.status), ("claude_version", "blocked"))
+        self.assertIn("2.1.284", str(error.exception))
+        self.assertIn("claude update", str(error.exception))
+        self.assertEqual(self.adapter.cli_version(), "2.1.283")
+
     def test_failures_are_classified_and_receipts_carry_no_provider_text(self):
         expectations = {"quota": ("claude_quota_exhausted", "waiting_for_quota"),
                         "quota_text": ("claude_quota_exhausted", "waiting_for_quota"),

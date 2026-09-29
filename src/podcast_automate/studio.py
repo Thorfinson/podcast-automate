@@ -25,7 +25,8 @@ from pydantic import Field
 
 from .errors import AppError
 from . import attachments
-from .execution import (ExecutionChoice, MAX_PARALLEL, jev_probe_enabled, selected_execution, set_jev_probe,
+from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_probe_enabled, jev_probe_state,
+                        selected_execution, set_jev_probe,
                         settings_execution)
 from .logs import configure_logging, logger
 from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, host_labels, now
@@ -45,6 +46,8 @@ from .storage import (atomic_text, digest, file_hash, init_project, inside, load
 from .voice_samples import ready_sample, sample_inventory
 from .spoken_forms import SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report
 from .studio_messages import clean, paths_only, user_text
+from . import studio_allowances
+from .production_report import production_report
 from .studio_scripts import review_notes, script_previews
 from .downloads import disposition, podcast_download, podcast_zip
 from .studio_trash import has_artifacts, move_contents
@@ -199,6 +202,31 @@ def read_json(path, default=None):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
 
 
+def code_fingerprint():
+    """Names, sizes and times of the package's code and prompts. The page is served fresh per request, but the
+    server and its scheduler keep the code they started with; a changed fingerprint means an update waits for a
+    restart (2026-09-29: five restarts by hand in one day, twice with a running server on old code)."""
+    package = Path(__file__).parent
+    rows = []
+    for path in sorted([*package.glob("*.py"), *package.glob("prompts/*.txt")]):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        rows.append([path.relative_to(package).as_posix(), stat.st_size, stat.st_mtime_ns])
+    return digest(rows)
+
+
+def relaunch(workspace, port, lan):
+    """Start the Studio again in the background, on the same workspace and port, without opening a browser."""
+    command = [sys.executable, "-m", "podcast_automate", "studio", str(Path(workspace).resolve()), "--port", str(port),
+               "--no-browser", *(["--lan"] if lan else [])]
+    options = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+               else {"start_new_session": True})
+    subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     close_fds=True, cwd=str(workspace), **options)
+
+
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", value):
         raise AppError("Ungültige Projektauswahl.", code="invalid_project")
@@ -289,6 +317,12 @@ class Studio:
         self.scheduler = None
         # Reachable from the home network too (``pla studio --lan``); the port is the one actually bound.
         self.lan, self.port = False, None
+        # Restart when idle (restart_when_idle): the code this server started with, the user's request, and the
+        # hook serve() sets to stop the server so it can start again.
+        self.instance = uuid.uuid4().hex
+        self.code_stamp = code_fingerprint()
+        self.restart_requested = self.restarting = False
+        self.restart_hook = None
         configure_path(self.workspace)
 
     def root(self, project):
@@ -348,6 +382,7 @@ class Studio:
                 "audio_catalog": audio_catalog(),
                 "voice_samples": sample_inventory(self.projects),
                 "key_available": bool(self.key or os.environ.get("OPENROUTER_API_KEY")),
+                "server": self.server_state(),
                 "defaults": TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
                                       voice_profile={"host_a": "Aiden", "host_b": "Vivian"}).model_dump(mode="json")}
 
@@ -412,6 +447,9 @@ class Studio:
                     data["auto_resume_at"] = data["retry_at"]
                 else:
                     data["auto_resume_exhausted"] = True
+        if data and audio_job_id is None and data.get("status") == "blocked":
+            # Announced where the scheduler acts on it: an allowance the user set ahead (studio_allowances).
+            data["allowance"] = studio_allowances.pending(root, data, stop_code(data)[0])
         return self.readable(root, data) if data else data
 
     def parked_job(self, root):
@@ -595,17 +633,58 @@ class Studio:
             self.scheduler = threading.Thread(target=self._schedule_loop, daemon=True)
             self.scheduler.start()
 
+    def apply_allowances(self):
+        """Stopped runs an allowance covers: write its approval and resume (studio_allowances)."""
+        started = []
+        for path in sorted(self.projects.glob("*/studio/allowances.json")):
+            root, project = path.parents[1], path.parents[1].name
+            with self.mutex:
+                job = read_json(root / "studio/job.json", {}) or {}
+                if self.restarting or self.worker(root) is not None or job.get("status") != "blocked":
+                    continue
+                if not studio_allowances.apply(root, job, stop_code(job)[0]):
+                    continue
+                try:
+                    self.start(project, {"action": "resume", "run_id": job["run"]["run_id"]})
+                    started.append(project)
+                    logger("studio").info("Vorab-Erlaubnis angewendet und fortgesetzt: %s", project)
+                except AppError as exc:
+                    logger("studio").warning("Fortsetzen nach Vorab-Erlaubnis nicht möglich (%s): %s", exc.code, exc)
+        return started
+
+    def server_state(self):
+        return {"instance": self.instance, "stale": code_fingerprint() != self.code_stamp,
+                "restart_requested": self.restart_requested}
+
+    def request_restart(self, data):
+        """Restart once nothing runs, so the scheduler and every new job use the current code."""
+        if self.restart_hook is None:
+            raise AppError("Dieses Studio kann sich nicht selbst neu starten.", code="restart_unavailable")
+        self.restart_requested = data.get("cancel") is not True
+        return {"server": self.server_state()}
+
+    def restart_when_idle(self):
+        with self.mutex:
+            if (not self.restart_requested or self.restarting or self.restart_hook is None
+                    or self.active_workers() or self.active_audio()):
+                return False
+            # From here on no job starts (start refuses), so the check above stays true until the server stops.
+            self.restarting = True
+        logger("studio").info("Studio startet mit dem aktuellen Code neu; kein Auftrag läuft.")
+        self.restart_hook()
+        return True
+
     def _schedule_loop(self):
         while True:
             time.sleep(SCHEDULER_INTERVAL_SECONDS)
-            try:
-                self.resume_due()
-            except Exception:  # The scheduler must outlive any single project's trouble.
-                logger("studio").warning("Automatische Fortsetzung übersprungen.", exc_info=True)
-            try:
-                self.start_queued()
-            except Exception:
-                logger("studio").warning("Warteschlange der Vertonung übersprungen.", exc_info=True)
+            for step, failure in ((self.resume_due, "Automatische Fortsetzung übersprungen."),
+                                  (self.apply_allowances, "Vorab-Erlaubnisse übersprungen."),
+                                  (self.start_queued, "Warteschlange der Vertonung übersprungen."),
+                                  (self.restart_when_idle, "Neustart übersprungen.")):
+                try:
+                    step()
+                except Exception:  # The scheduler must outlive any single project's trouble.
+                    logger("studio").warning(failure, exc_info=True)
 
     def active_audio(self):
         return {key: value for key, value in self.audio_processes.items() if value[0].poll() is None}
@@ -666,7 +745,7 @@ class Studio:
             item = read_json(receipt, {})
             if (receipt.parent / "project/project.yaml").is_file():
                 trash.append({"id": receipt.parent.name, "topic": item.get("topic", "Projekt"), "deleted_at": item.get("deleted_at")})
-        return {"projects": projects, "trash": trash}
+        return {"projects": projects, "trash": trash, "server": self.server_state()}
 
     def delete(self, project, data):
         root = self.root(project)
@@ -743,7 +822,9 @@ class Studio:
                 "spoken_forms_hash": digest(table.model_dump()),
                 "voice_samples": sample_inventory(self.projects),
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
-                "jev_probe": jev_probe_enabled(root),
+                "jev_probe": jev_probe_enabled(root), "jev_default": jev_probe_state(root)[1],
+                "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
+                "server": self.server_state(),
                 "audio_queue": queue_view(read_queue(root)),
                 # When the tags a Gemini recording speaks are placed for reading (studio_worker.tag_episodes).
                 "expression_progress": read_json(root / "studio/expression/progress.json", None),
@@ -834,6 +915,7 @@ class Studio:
         write_json(root / "studio/text.json", choice.normalized())
         write_json(root / "studio/audio.json", audio.model_dump())
         write_json(root / "studio/execution.json", execution.model_dump())
+        default_jev_probe(root, config.language)
         return {"id": slug}
 
     @staticmethod
@@ -890,6 +972,20 @@ class Studio:
                 # Only a request that carried the table writes it; a notes or voice save leaves it alone.
                 write_json(root / "studio/spoken_forms.json", forms.model_dump())
         return {"saved": True}
+
+    def production(self, project, run_id):
+        """Calls, time, stops and approvals of one research or script run (production_report)."""
+        root = self.root(project)
+        work = manifest_path(root, run_id).parent
+        manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml")) if (work / "run_manifest.yaml").is_file() else None
+        if manifest is None or manifest.kind not in {"research", "script"}:
+            raise AppError("Einen Recherche- oder Skriptlauf wählen.", code="no_run")
+        return {"run_id": run_id, "kind": manifest.kind,
+                "report": production_report(work, allowance_rows=studio_allowances.allowance_log(root))}
+
+    def allowances(self, project, data):
+        """Fresh attempts and extra calls the scheduler may grant this project's runs without asking."""
+        return {"allowances": studio_allowances.set_allowances(self.root(project), data)}
 
     def jev_probe(self, project, data):
         """Whether new script runs of this project also ask Jev in the gap probe (jev.py). A running job keeps its
@@ -998,6 +1094,9 @@ class Studio:
 
     def start(self, project, data):
         root = self.root(project)
+        if self.restarting:
+            raise AppError("Das Studio startet gerade mit neuem Code neu. In einigen Sekunden erneut versuchen.",
+                           code="studio_restarting")
         action = data.get("action")
         if action not in {"assistant", "research", "plan", "replan", "script", "revise", "audio", "audio_sample", "audio_samples",
                           "resume", "check", "expression"}:
@@ -1323,12 +1422,14 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = {"key_available": bool(value or os.environ.get("OPENROUTER_API_KEY"))}
                     elif path == "/api/projects":
                         result = app.create(data)
+                    elif path == "/api/server/restart":
+                        result = app.request_restart(data)
                     elif path == "/api/restore":
                         result = app.restore(data)
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
                                              r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
-                                             r"|audio_queue)", path)
+                                             r"|audio_queue|allowances)", path)
                         if not match:
                             raise AppError("Seite nicht gefunden.", code="not_found")
                         project, action = match.groups()
@@ -1346,6 +1447,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             elif (match := re.fullmatch(r"/api/projects/([^/]+)", path)):
                 with app.mutex:
                     result = app.detail(match[1])
+            elif (match := re.fullmatch(r"/api/projects/([^/]+)/report", path)):
+                result = app.production(match[1], parse_qs(urlsplit(self.path).query).get("run_id", [None])[0])
             elif (match := re.fullmatch(r"/api/projects/([^/]+)/file", path)):
                 relative = parse_qs(urlsplit(self.path).query).get("path", [None])[0]
                 self.send_data(200, app.diagnostic(match[1], relative).encode("utf-8"), "text/plain; charset=utf-8")
@@ -1469,6 +1572,8 @@ def serve(workspace, port=8765, open_browser=True, *, lan=False):
     with project_lock(Path(workspace) / ".studio"):
         configure_logging(Path(workspace) / ".studio/studio.log")
         server = make_server(workspace, port, lan=lan)
+        # Called from the scheduler once nothing runs; shutdown returns serve_forever below.
+        server.studio.restart_hook = server.shutdown
         server.studio.start_scheduler()
         url = f"http://127.0.0.1:{server.server_port}"
         logger("studio").info("Studio gestartet: %s%s", url, " (auch im Heimnetz)" if lan else "")
@@ -1486,3 +1591,8 @@ def serve(workspace, port=8765, open_browser=True, *, lan=False):
                 app = server.studio
                 app.stop_all()
             server.server_close()
+    if server.studio.restarting:
+        # The port and the workspace lock are free again; the new server takes both.
+        relaunch(workspace, server.server_port, lan)
+        print("Podcast Studio startet mit dem neuen Code im Hintergrund neu. Dieses Fenster kann geschlossen werden.",
+              flush=True)

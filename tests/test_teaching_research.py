@@ -13,6 +13,7 @@ from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.scripting import episode_sources, load_research, outline_hash, run_script
 from podcast_automate.storage import digest, file_hash, read_yaml, write_json
 from podcast_automate.teaching import ResearchGap, TeachingPlanReview
+from podcast_automate.text_settings import stage_effort
 from podcast_automate.teaching_research import (FoundationSupplement, FoundationReview,
     apply_foundations, named_question, research_foundations, gaps_in, source_budget, validate_supplement)
 from tests.research_fixtures import HTML, discovery
@@ -643,6 +644,25 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual([row["status"] for row in self.probes_of(plain)], ["no_hits"])
         self.assertEqual(rounds, [])
 
+    def test_jev_by_a_german_projects_default_runs_without_a_key_on_words_alone_but_a_chosen_one_stops(self):
+        self.forget_research_reads()
+        write_json(self.root / "studio/jev_probe.json", {"enabled": True, "by_default": True})
+        rounds = []
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}), \
+             patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.GERMAN), \
+             patch("podcast_automate.jev.build_opener", side_effect=AssertionError("no request without a key")), \
+             patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.script_model(rounds)):
+            run = run_script(self.root)
+            self.assertEqual(run.status, "completed", run.stages["review"].error)
+            work = self.root / "runs" / run.run_id
+            self.assertEqual(json.loads((work / "jev_probe.json").read_text(encoding="utf-8")),
+                             {"status": "skipped", "reason": "no_key"})
+            self.assertEqual([row["status"] for row in self.probes_of(run)], ["no_hits"])
+            # Switched on by the user, a missing key stops the run before any request.
+            write_json(self.root / "studio/jev_probe.json", {"enabled": True})
+            chosen = run_script(self.root)
+        self.assertEqual([stage.error.code for stage in chosen.stages.values() if stage.error], ["openrouter_key_required"])
+
     def test_a_gap_whose_hits_stay_unread_blocks_the_review(self):
         self.forget_research_reads()
         with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.SEEDED), \
@@ -865,7 +885,8 @@ class FoundationResearchTests(unittest.TestCase):
         def model(adapter, prompt, schema, directory, **kwargs):
             nonlocal first_review, paused
             self.assertEqual(adapter.settings.codex_model, "gpt-5.6-sol")
-            self.assertEqual(adapter.reasoning_effort, "high")
+            # The run's level, lowered only where a stage asks at most at medium (STAGE_EFFORT_CAPS).
+            self.assertEqual(adapter.reasoning_effort, stage_effort(kwargs["prompt_version"], "high"))
             if schema in (ResearchDiscovery, FoundationSupplement, FoundationReview):
                 return self.invoke(prompt, schema, kwargs["prompt_version"], research=True, search=kwargs["search"]), {}
             if schema is EpisodeScript and kwargs["prompt_version"] == WRITE_EPISODE_VERSION:

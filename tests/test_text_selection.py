@@ -17,7 +17,8 @@ class TextSelectionTests(unittest.TestCase):
 
     def test_all_requested_presets_survive_proposal_application_without_changing_audio(self):
         boot = json.loads(self.request("/api/bootstrap")[1])
-        self.assertEqual(len(boot["text_catalog"]["presets"]), 8)
+        # Sonnet 5.5 at high joined as its own preset next to Opus 5.5 (2026-09-29).
+        self.assertEqual(len(boot["text_catalog"]["presets"]), 9)
         for preset in TEXT_PRESETS:
             with self.subTest(preset=preset["id"]):
                 requested = text_preset(preset["id"])

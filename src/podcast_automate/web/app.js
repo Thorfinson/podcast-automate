@@ -279,7 +279,7 @@ const providerLabels={codex_cli:"Codex · Abo",claude_code:"Claude · Abo",openr
 const providerNames={codex_cli:"Codex",claude_code:"Claude",openrouter:"OpenRouter"};
 // The automatic choice's two candidates; a shared level (e.g. high) replaces both catalog levels.
 function autoCandidates(effort=null) {
-  const catalog=boot.text_catalog?.auto_candidates||{codex_cli:{model:"gpt-6-astra",reasoning_effort:"xhigh"},claude_code:{model:"claude-opus-5-5",reasoning_effort:"xhigh"}};
+  const catalog=boot.text_catalog?.auto_candidates||{codex_cli:{model:"gpt-6-astra",reasoning_effort:"xhigh"},claude_code:{model:"claude-sonnet-5-5",reasoning_effort:"high"}};
   return effort?{codex_cli:{...catalog.codex_cli,reasoning_effort:effort},claude_code:{...catalog.claude_code,reasoning_effort:effort}}:catalog;
 }
 // A preset matches a choice; the automatic ones differ only in their shared level, so that level must match exactly.
@@ -356,7 +356,9 @@ function setupSummary() {
     ${t.provider==="openrouter"?'<dt>Live-Recherche</dt><dd>Über die Abos (Claude, sonst Codex) · Textarbeit wird separat über OpenRouter abgerechnet.</dd>':""}
     <dt>Stimmen</dt><dd>${escape(audioLabel(a))} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
     <dt>Textausarbeitung</dt><dd>${mode(x.text,"5 gleichzeitig")}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio,"alle freigegebenen Folgen")}</dd>
-    <dt>Lückenprobe</dt><dd>${project.jev_probe?"Wortsuche und Jev · OpenRouter":"Wortsuche"} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${project.jev_probe?"Jev ausschalten":"Jev dazunehmen"}</button></dd></dl>
+    <dt>Lückenprobe</dt><dd>${project.jev_probe?`Wortsuche und Jev · OpenRouter${project.jev_default?" · Standard für deutschsprachige Projekte; ohne Key nur Wortsuche":""}`:"Wortsuche"} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${project.jev_probe?"Jev ausschalten":"Jev dazunehmen"}</button></dd>
+    <dt>Ohne Rückfrage</dt><dd>${allowanceControls(project.allowances)}</dd></dl>
+    <p class="hint">Vorab-Erlaubnisse gelten je Lauf: neue Anläufe, wenn ein Schritt seine automatischen Korrekturen verbraucht hat, und ein höheres Aufruflimit, wenn das genehmigte knapp wird. Das Studio gibt sie frei und setzt selbst fort. Lücken, strittige Einwände und andere redaktionelle Entscheidungen bleiben bei dir.</p>
     <p class="hint">Jev findet die Stellen, an denen eine gemeldete Lücke vielleicht doch beantwortet ist, auch wenn Lücke und Quelle verschiedene Sprachen sprechen. Gelesen und bestätigt werden sie weiterhin vom Textmodell. Das kostet etwa 0,60 USD OpenRouter-Guthaben je neuem Skriptlauf und braucht den OpenRouter-Key; laufende Aufträge behalten ihre Lückenproben.</p>
     <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing, Prüfung und unabhängige Recherche-Teilfragen; das Lehrkonzept bleibt in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
     ${proposal&&!project.proposal_applied?`<button data-action="apply-proposal" ${running()||setupSending||pendingAttachments.length||project.proposal_current===false||!boot.capabilities?.conversational_setup?"disabled":""}>Diese Auswahl übernehmen</button><p class="hint">${project.proposal_current===false?"Die Anhänge haben sich geändert. Bitte den Partner im Chat die Zusammenfassung aktualisieren lassen.":"Das speichert den Auftrag. Recherche, Plan- und Audiofreigabe erfolgen weiterhin auf den folgenden Seiten."}</p>`:""}
@@ -1060,7 +1062,14 @@ const pipeMarkup = states => states.map((s,i)=>`<span class="${s}" title="${step
 function overviewCard(p) {
   const busy=runningOf(p), hasAudio=(p.episodes||[]).some(e=>e.audio?.length);
   return `<article class="pipeline" id="project-card-${escape(p.id)}" data-project-card="${escape(p.id)}"><div class="pipeline-main"><h2>${escape(p.topic)}</h2><div class="pipe" id="pipe-${escape(p.id)}" aria-label="Arbeitsschritte">${pipeMarkup(pipelineStates(p))}</div><p class="hint" id="project-state-${escape(p.id)}">${escape(overviewStatus(p))}</p></div>
-    <div class="actions"><button data-open-project="${escape(p.id)}">Projekt öffnen</button>${hasAudio?`<button class="secondary small" data-open-project="${escape(p.id)}" data-open-step="${PAGE.audio}">Podcast anhören</button>`:""}<button class="quiet small danger-text" data-delete-project="${escape(p.id)}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>Projekt löschen</button></div></article>`;
+    <div class="actions"><button data-open-project="${escape(p.id)}">Projekt öffnen</button>${hasAudio?`<button class="secondary small" data-open-project="${escape(p.id)}" data-open-step="${PAGE.audio}">Podcast anhören</button>`:""}<span id="overview-download-${escape(p.id)}">${overviewDownload(p)}</span><button class="quiet small danger-text" data-delete-project="${escape(p.id)}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>Projekt löschen</button></div></article>`;
+}
+// The whole podcast straight from the overview, as the same ZIP the audio page offers (the user's wish, 2026-09-29).
+function overviewDownload(p) {
+  const finished=(p.episodes||[]).filter(e=>e.audio?.length).length,total=p.episode_count||p.episodes?.length||0;
+  if(!finished||!boot.capabilities?.podcast_downloads)return "";
+  const complete=finished>=total;
+  return `<a class="download-all small" href="/download/${encodeURIComponent(p.id)}/podcast.zip" download>${complete?"Podcast herunterladen":"Fertige Folgen herunterladen"} <span>ZIP · ${complete?finished:`${finished} von ${total}`} Folgen</span></a>`;
 }
 function renderInbox() {
   const waiting=[], active=[];
@@ -1102,6 +1111,8 @@ function refreshOverview() {
     $("project-state-"+p.id).textContent=overviewStatus(p);
     const pipe=$("pipe-"+p.id),pipeContent=pipeMarkup(pipelineStates(p));
     redraw(pipe,pipeContent);
+    const download=$("overview-download-"+p.id),downloadContent=overviewDownload(p);
+    redraw(download,downloadContent);
     const button=card.querySelector?.("[data-delete-project]");
     if(button)button.disabled=p.unavailable||runningOf(p)||!boot.capabilities?.project_overview;
   }
@@ -1526,8 +1537,43 @@ function stopButton(action,job,info,target) {
     default:return "";
   }
 }
+const FRESH_CHOICES=[0,1,2,3], CALL_CHOICES=[0,100,250,500,1000];
+function allowanceControls(a={}) {
+  const fresh=`<label>Neue Anläufe <select data-allowance="fresh_attempts">${FRESH_CHOICES.map(n=>`<option value="${n}" ${Number(a.fresh_attempts||0)===n?"selected":""}>${n?`bis ${n}× je Lauf`:"nie"}</option>`).join("")}</select></label>`;
+  const calls=`<label>Aufruflimit erhöhen <select data-allowance="extra_calls">${CALL_CHOICES.map(n=>`<option value="${n}" ${Number(a.extra_calls||0)===n?"selected":""}>${n?`um bis zu ${n} je Lauf`:"nie"}</option>`).join("")}</select></label>`;
+  return `${fresh} ${calls}`;
+}
+// What the allowances already gave the run on screen, so their use stays visible.
+function allowanceUse(a) {
+  if(!a||!(a.fresh_attempts||a.extra_calls))return "";
+  const used=a.used||{};
+  return `<p class="hint">Vorab-Erlaubnisse in diesem Lauf: ${Number(used.fresh_attempts||0)} von ${Number(a.fresh_attempts||0)} neuen Anläufen · ${Number(used.extra_calls||0)} von ${Number(a.extra_calls||0)} zusätzlichen Aufrufen.</p>`;
+}
+// Where a run spent its calls and time, per stage and prompt version (production_report.py); loaded on request.
+const productionReports={};
+function renderProductionReport(job) {
+  const runId=job.run?.run_id, loaded=productionReports[runId];
+  if(!runId)return "";
+  const load=label=>`<button class="secondary small" data-action="production-report" data-run-id="${escape(runId)}">${label}</button>`;
+  if(!loaded)return `<div class="production-report">${load("Produktionsbericht laden")}<span class="hint"> Aufrufe, Modellzeit, Stopps und Freigaben dieses Laufs je Stufe.</span></div>`;
+  const r=loaded.report, time=m=>Number(m)>=60?`${(Number(m)/60).toFixed(1)} h`:`${Math.round(Number(m))} Min.`;
+  const rows=r.stages.map(s=>`<tr><td>${escape(s.label)}</td><td>${Number(s.calls)}${s.failed?` · ${Number(s.failed)} abgebrochen`:""}</td><td>${time(s.minutes)}</td><td>${Math.round(Number(s.share)*100)} %</td><td>${Number(s.minutes_per_call)} Min.</td></tr>`).join("");
+  const providers=Object.entries(r.providers||{}).map(([name,p])=>`${escape(providerLabels[name]||name)}: ${Number(p.calls)} Aufrufe, ${time(p.minutes)}${Number(p.billed_usd)?`, ${Number(p.billed_usd).toFixed(2)} USD abgerechnet`:""}`).join(" · ");
+  const stops=r.stops.total?Object.entries(r.stops.by_stage).map(([stage,n])=>`${escape(stageNames[stage]||stage)} ${Number(n)}×`).join(", "):"keine";
+  const a=r.approvals||{}, granted=[a.fresh_attempts?`${Number(a.fresh_attempts)}× neue Anläufe`:"",a.model_calls?`Aufruflimit ${Number(a.model_calls)}`:"",a.allowances?.length?`${a.allowances.length}× per Vorab-Erlaubnis`:"",a.text_switch?"Anbieter gewechselt":""].filter(Boolean).join(" · ")||"keine";
+  const versions=r.versions.map(v=>`<tr><td>${escape(v.version)}</td><td>${Number(v.calls)}</td><td>${time(v.minutes)}</td><td>${v.first?escape(new Date(v.first).toLocaleString("de-DE",{dateStyle:"short",timeStyle:"short"})):""}</td></tr>`).join("");
+  return `<section class="production-report"><h3>Produktionsbericht · ${Number(r.calls)} Aufrufe · ${time(r.model_minutes)} Modellzeit</h3>
+    <table><thead><tr><th>Stufe</th><th>Aufrufe</th><th>Zeit</th><th>Anteil</th><th>je Aufruf</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="hint">Anbieter: ${providers||"keine"}</p><p class="hint">Stopps: ${stops} · Freigaben: ${escape(granted)}</p>
+    <details><summary>Nach Prompt-Version</summary><p class="hint">Eine neue Version zeigt, ab wann eine Änderung wirkte.</p><table><thead><tr><th>Version</th><th>Aufrufe</th><th>Zeit</th><th>zuerst</th></tr></thead><tbody>${versions}</tbody></table></details>
+    <div class="actions">${load("Aktualisieren")}<button class="quiet small" data-action="production-report-close" data-run-id="${escape(runId)}">Schließen</button></div></section>`;
+}
 function waitNote(job) {
   const when=iso=>escape(new Date(iso).toLocaleString("de-DE",{dateStyle:"short",timeStyle:"short"}));
+  if(job.allowance){
+    const a=job.allowance;
+    return `<p class="hint">Deine Vorab-Erlaubnis greift: ${a.kind==="fresh_attempts"?`neue Anläufe (${Number(a.number)} von ${Number(a.of)} in diesem Lauf)`:`Aufruflimit auf ${Number(a.model_calls)} (+${Number(a.extra_calls)})`}. Das Studio gibt sie frei und setzt innerhalb einer halben Minute selbst fort.</p>`;
+  }
   if(job.auto_resume_at){
     if(Date.parse(job.auto_resume_at)<=Date.now())return '<p class="hint">Die automatische Fortsetzung ist fällig und startet, sobald kein anderer Auftrag im Studio läuft.</p>';
     return `<p class="hint">Automatische Fortsetzung geplant für ${when(job.auto_resume_at)}, solange das Studio geöffnet bleibt (Versuch ${Number(job.auto_resume_count||0)+1} von 3).</p>`;
@@ -1869,7 +1915,21 @@ function redraw(el, html) {
 }
 // One line in the topbar carries the state and the stop, resume or next-step action. Telemetry goes to the docked drawer.
 // Page panels (stop card, production, research, audio jobs) are filled first because they belong to their step, not to the drawer.
+function serverNote() {
+  const s=(overviewPage?overviewData:project)?.server;
+  if(!s?.stale&&!s?.restart_requested)return "";
+  return s.restart_requested
+    ?`<p>Neustart vorgemerkt: Das Studio startet mit dem neuen Code neu, sobald kein Auftrag läuft, und setzt danach selbst fort. Die Seite verbindet sich wieder.</p><button class="quiet small" data-action="restart-cancel">Vormerkung aufheben</button>`
+    :`<p>Das Studio hat neuen Code, läuft aber noch mit dem alten. Neue Regeln gelten erst nach einem Neustart.</p><button class="small" data-action="restart-when-idle">Neu starten, sobald nichts läuft</button>`;
+}
+function renderServerNote() {
+  const box=$("server-note");
+  if(!box)return;
+  const html=serverNote();
+  box.hidden=!html;redraw(box,html);
+}
 function renderJob() {
+  renderServerNote();
   const j=project?.job, box=$("job-status"), bar=$("job-bar");
   const clear=()=>{box.hidden=true;box.innerHTML="";bar.hidden=true;bar.innerHTML="";lastJobView="";dock(false);};
   if(overviewPage||!project){clear();return;}
@@ -1969,6 +2029,7 @@ function renderJob() {
   }
   body+=renderProgressTiming(job.progress,active);
   body+=renderRunTextChoice(job);
+  if(["script","research"].includes(job.run?.kind))body+=allowanceUse(project.allowances)+renderProductionReport(job);
   if(job.progress?.execution?.text==="parallel"){
     const activeEpisodes=job.progress.active_episodes||[];
     body+=`<p class="hint">Textmodus: Parallel · bis zu 5 Folgen je Skript-, Polishing- oder Prüfstufe.${activeEpisodes.length?` In Bearbeitung: ${activeEpisodes.map(id=>escape(job.progress.episodes?.find(e=>e.episode_id===id)?.title||id)).join(", ")}.`:""}</p>`;
@@ -2148,6 +2209,13 @@ document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
   if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason();
+  if(event.target.dataset?.allowance){
+    const value=name=>Number(document.querySelector?.(`select[data-allowance="${name}"]`)?.value||0);
+    const saved=await api(`/api/projects/${project.id}/allowances`,{fresh_attempts:value("fresh_attempts"),extra_calls:value("extra_calls")});
+    project=await api(`/api/projects/${project.id}`);render();
+    const a=saved.allowances;
+    notice(a.fresh_attempts||a.extra_calls?`Gespeichert: ${a.fresh_attempts?`bis ${a.fresh_attempts}× neue Anläufe`:"keine neuen Anläufe"} und ${a.extra_calls?`bis zu ${a.extra_calls} zusätzliche Aufrufe`:"kein höheres Limit"} je Lauf ohne Rückfrage.`:"Gespeichert: Jeder Stopp wartet wieder auf dich.","ok");
+  }
 }));
 document.addEventListener("click",event=>{
   const zip=event.target.closest?.("a.download-all");
@@ -2220,6 +2288,16 @@ document.addEventListener("click",event=>{
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice("Neuer Versuch angefordert. „Fortsetzen“ startet ihn mit dem Spielraum einer neuen Frage.","ok");return;
     }
     if(action==="redesign-teaching"){await redesignTeaching(button);notice("Hinweis gespeichert. Das Lehrkonzept dieser Folge wird neu entworfen.","ok");return;}
+    if(action==="production-report"){
+      productionReports[button.dataset.runId]=await api(`/api/projects/${project.id}/report?run_id=${encodeURIComponent(button.dataset.runId)}`);
+      lastJobView="";renderJob();return;
+    }
+    if(action==="production-report-close"){delete productionReports[button.dataset.runId];lastJobView="";renderJob();return;}
+    if(action==="restart-when-idle"||action==="restart-cancel"){
+      const state=await api("/api/server/restart",action==="restart-cancel"?{cancel:true}:{});
+      if(project)project.server=state.server;if(overviewData)overviewData.server=state.server;renderServerNote();
+      notice(state.server.restart_requested?"Neustart vorgemerkt. Er folgt, sobald kein Auftrag läuft; die Seite verbindet sich danach selbst wieder.":"Neustart nicht mehr vorgemerkt.","ok");return;
+    }
     if(action==="toggle-jev-probe"){
       const enabled=button.dataset.enabled==="1";
       await api(`/api/projects/${project.id}/jev_probe`,{enabled});

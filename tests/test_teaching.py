@@ -1,4 +1,5 @@
 import json
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -456,6 +457,27 @@ class TeachingTests(unittest.TestCase):
         issues, report, _ = assess_teaching(script, design, invoke, folder, **args)
         self.assertEqual((issues, report["status"]), ([], "passed"))
         self.assertEqual(calls, [ListenerReadback], "the unchanged later reviews are reused")
+
+    def test_listener_and_editorial_ask_at_once_in_a_parallel_run_and_keep_the_episode(self):
+        from podcast_automate.call_activity import CALL_SUBJECT
+        # Both independent reviews must be in flight together: a sequential order never meets at the barrier.
+        meeting, seen = threading.Barrier(2, timeout=10), []
+
+        def invoke(prompt, output_type, version):
+            if output_type in (ListenerReadback, EditorialReview):
+                meeting.wait()
+            seen.append((output_type.__name__, CALL_SUBJECT.get()))
+            return teaching_response(prompt, output_type)
+        args = dict(audience="Adults", prior_knowledge="None", depth="Explain the comparison")
+        token = CALL_SUBJECT.set("ep_001")
+        try:
+            issues, report, _ = assess_teaching(fixtures.example_script(), self.design(), invoke,
+                                                self.root / "parallel", parallel=True, **args)
+        finally:
+            CALL_SUBJECT.reset(token)
+        self.assertEqual((issues, report["status"]), ([], "passed"))
+        self.assertEqual(sorted(seen[:2]), [("EditorialReview", "ep_001"), ("ListenerReadback", "ep_001")])
+        self.assertEqual(seen[2], ("TeachingReview", "ep_001"), "the teaching review reads the listener's answers")
 
     def test_invented_supporting_quote_is_rejected(self):
         def model(prompt, output_type, directory, **kwargs):

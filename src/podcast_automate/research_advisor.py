@@ -19,11 +19,12 @@ from typing import Literal
 from pydantic import Field
 
 from .models import Contract, NonEmpty
-from .text_settings import DEFAULT_CLAUDE_MODEL
 
 ADVICE_VERSION = "block_advice.v1"
 MAX_AUTO_RETRIES = 5
 # The advisor's own setting: Opus 5.5 at its deepest level where the run already uses the Claude subscription.
+# It stays on Opus when the run writes with the default Sonnet 5.5: one call per blocked question, asked for depth.
+ADVISOR_MODEL = "claude-opus-5-5"
 ADVISOR_EFFORT = "xhigh"
 
 
@@ -45,7 +46,7 @@ def advisor_selection(selection):
     """The advisor's text choice. A run on the Claude subscription asks Opus 5.5 at xhigh; the automatic
     choice already prefers it; another provider the user chose is kept."""
     if selection and selection.get("provider") == "claude_code":
-        return {**selection, "model": DEFAULT_CLAUDE_MODEL, "reasoning_effort": ADVISOR_EFFORT}
+        return {**selection, "model": ADVISOR_MODEL, "reasoning_effort": ADVISOR_EFFORT}
     return selection
 
 

@@ -622,6 +622,18 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/projects", data)[0], 400)
         self.assertEqual(len(list((self.workspace / "projects").glob("*/project.yaml"))), 1)
 
+    def test_a_new_german_project_asks_jev_by_default_and_an_english_one_does_not(self):
+        for language, expected in (("de-DE", (True, True)), ("en-US", (False, False))):
+            config = self.config.model_copy(update={"topic": f"Neues Thema {language}", "language": language})
+            status, body, _ = self.request("/api/projects", {"config": config.model_dump(mode="json")})
+            self.assertEqual(status, 200, body)
+            detail = json.loads(self.request("/api/projects/" + json.loads(body)["id"])[1])
+            self.assertEqual((detail["jev_probe"], detail["jev_default"]), expected, language)
+        # The user's switch replaces the default, in both directions.
+        project = json.loads(body)["id"]
+        self.request(f"/api/projects/{project}/jev_probe", {"enabled": True})
+        self.assertEqual(json.loads(self.request("/api/projects/" + project)[1])["jev_default"], False)
+
     def test_audio_requires_checked_box_current_text_and_current_voices(self):
         folder = self.root / "episodes/ep_001"
         write_yaml(folder / "script.yaml", example_script().model_dump())

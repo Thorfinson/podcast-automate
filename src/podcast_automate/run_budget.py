@@ -694,18 +694,16 @@ def approve_text_switch(root, run_id, choice="claude_first", *, model=None):
     ``claude_first`` and ``astra_first`` ask one subscription first and the other when its quota is spent;
     ``claude`` and ``astra`` stay on one; ``openrouter`` bills ``model`` per token and needs the key, while web
     searches keep running on the subscriptions, since OpenRouter has no search tools. Astra works at xhigh; Claude
-    keeps the Claude level the run had, else xhigh. A later choice replaces the earlier one, and choosing what the
-    run started with removes the receipt. It may be written while the worker runs; the next start reads it."""
+    works with the catalog's Claude default (Sonnet 5.5 at high since 2026-09-29, when the user replaced the
+    runs' Opus 5.5 at medium with it). A later choice replaces the earlier one, and choosing what the run started
+    with removes the receipt. It may be written while the worker runs; the next start reads it."""
     from .provider_pool import text_generation_settings
-    from .text_settings import DEFAULT_CLAUDE_EFFORT, DEFAULT_CODEX_MODEL, OPENROUTER_MODELS, SHARED_EFFORTS, TEXT_PRESETS
+    from .text_settings import DEFAULT_CLAUDE_EFFORT, DEFAULT_CODEX_MODEL, OPENROUTER_MODELS, TEXT_PRESETS
     work, manifest = _text_run(root, run_id)
     if choice not in TEXT_SWITCHES:
         raise AppError("Weiter mit Claude, Astra oder OpenRouter wählen.", code="invalid_text_switch")
     saved = saved_text_generation(work)
-    now_using = saved or {}
-    level = (now_using.get("reasoning_effort") if now_using.get("provider") == "claude_code" else
-             ((now_using.get("candidates") or {}).get("claude_code") or {}).get("reasoning_effort"))
-    level = level if level in SHARED_EFFORTS else DEFAULT_CLAUDE_EFFORT
+    level = DEFAULT_CLAUDE_EFFORT
     config = load_project(root)
     if choice in {"claude_first", "astra_first"}:
         selection = text_generation_settings(config, backend="auto", reasoning_effort=level)

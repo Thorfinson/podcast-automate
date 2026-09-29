@@ -3,8 +3,8 @@
 Same contract as :class:`CodexAdapter`: ``structured(prompt, output_type, directory, ...)`` returns a
 validated object and public metadata. The CLI runs non-interactively with ``--output-format
 stream-json``; the last ``result`` line carries ``structured_output``. Verified against Claude Code
-2.1.92 on 2026-09-19 (``docs/claude-backend-plan.md``, Phase 0) and against 2.1.283 with Opus 5.5 on
-2026-09-26.
+2.1.92 on 2026-09-19 (``docs/claude-backend-plan.md``, Phase 0), against 2.1.283 with Opus 5.5 on
+2026-09-26 and against 2.1.284 with Sonnet 5.5 on 2026-09-29.
 """
 from __future__ import annotations
 
@@ -30,6 +30,8 @@ from .text_settings import DEFAULT_CLAUDE_MODEL, validate_model, validate_reason
 ADAPTER_VERSION = "claude_code.v1"
 # Opus 5.5 and the level xhigh are refused by older CLIs (2.1.92 names 2.1.280 as the minimum).
 MINIMUM_CLI_VERSION = (2, 1, 280)
+# Models a newer CLI brings: 2.1.283 has no catalog entry for Sonnet 5.5, 2.1.284 has (2026-09-29).
+MODEL_MINIMUM_CLI = {"claude-sonnet-5-5": (2, 1, 284)}
 # Windows accepts 32 767 characters per command line; the schema travels as one argument.
 MAX_SCHEMA_CHARS = 30_000
 # Per call. The CLI reports an equivalent value; a subscription call is not billed individually.
@@ -45,7 +47,8 @@ PROMPT_LIMIT_CHARS = 300_000
 BASE_WINDOW_TOKENS = 200_000
 # Windows that differ from Opus 5's. CLI 2.1.283 lists Opus 5.5 with a native 1 000 000-token window
 # (no [1m] suffix, no beta flag); on this run's research prompts it measured 2.1 to 2.4 characters per token.
-CONTEXT_WINDOW_TOKENS = {"claude-opus-5-5": 1_000_000}
+# CLI 2.1.284 lists Sonnet 5.5 with the same native window and 128 000 output tokens.
+CONTEXT_WINDOW_TOKENS = {"claude-opus-5-5": 1_000_000, "claude-sonnet-5-5": 1_000_000}
 SEARCH_TOOLS = "WebSearch,WebFetch"
 
 
@@ -257,9 +260,10 @@ class ClaudeCodeAdapter:
             version = parse_version(result.stdout) if result.returncode == 0 else None
             if version is None:
                 raise AppError("Die Claude-Code-Version konnte nicht gelesen werden.", code="claude_failed")
-            if version < MINIMUM_CLI_VERSION:
-                raise AppError(f"Claude Code {version_text(version)} ist älter als die geprüfte Version "
-                               f"{version_text(MINIMUM_CLI_VERSION)}. Bitte aktualisieren.",
+            minimum = max(MINIMUM_CLI_VERSION, MODEL_MINIMUM_CLI.get(self.model, MINIMUM_CLI_VERSION))
+            if version < minimum:
+                raise AppError(f"Claude Code {version_text(version)} ist älter als die für {self.model} geprüfte Version "
+                               f"{version_text(minimum)}. Bitte mit 'claude update' aktualisieren.",
                                code="claude_version", status="blocked")
             self._version = version_text(version)
         return self._version
