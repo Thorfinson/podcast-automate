@@ -1388,6 +1388,20 @@ class QuestionResearchTests(unittest.TestCase):
         answer.criteria[0].index = 1
         self.assertTrue(any("criterion" in e for e in answer_errors(answer, spec, reader, {self.ref})))
 
+    def test_a_shortened_quote_is_rejected_with_the_ellipsis_named(self):
+        # Asimov, 2026-09-30: the reader kept cutting quotes with "..." while the rejection only said "not verbatim".
+        spec = QuestionPlan(tasks=[task_value()]).tasks[0]
+        reader = SourceReader(self.index)
+        words = reader.lookup[self.ref][2].text.split()
+        for excerpt, named in ((" ".join(words[:3]) + " ... " + " ".join(words[5:8]), True),
+                               (" ".join(words[:3]) + " invented", False)):
+            answer = answer_for(self.ref)
+            answer.findings[0].evidence[0].excerpt = excerpt
+            with self.subTest(excerpt=excerpt):
+                errors = answer_errors(answer, spec, reader, {self.ref})
+                self.assertTrue(any("not verbatim" in e for e in errors))
+                self.assertEqual(any("ellipsis" in e for e in errors), named)
+
     def test_plan_must_assign_all_original_requirements_and_known_gaps(self):
         plan = QuestionPlan(tasks=[task_value()])
         validate_plan(plan, self.config, self.discovery, None, {})

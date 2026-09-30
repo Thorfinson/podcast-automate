@@ -13,7 +13,7 @@ from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
 from .question_dependencies import prerequisite_answers, prerequisite_gaps
 from .question_sources import reserve_source, restore_attempts, source_identity
-from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, evidence_profile, collapse_assessments, collapse_support, quotable,
+from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, evidence_profile, collapse_assessments, collapse_support, verbatim,
                                 evidence_summary, support_errors)
 from .research_gap_probe import settle
 from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
@@ -110,8 +110,11 @@ def answer_errors(answer, task, reader, read_refs):
             entry = reader.lookup.get(evidence.reference)
             if evidence.reference not in read_refs or entry is None:
                 errors.append(f"{finding.id}: {reference_defect(evidence.reference, reader, read_refs)}")
-            elif quotable(evidence.excerpt) not in quotable(entry[2].text):
-                errors.append(f"{finding.id}: quote is not verbatim in the cited section.")
+            elif not verbatim(evidence.excerpt, entry[2].text):
+                # Named, because the bare rule did not stop the reader from shortening (Asimov, 2026-09-30).
+                cut = (" It contains an ellipsis: quote one continuous passage, or give each part as its own evidence "
+                       "entry." if "..." in evidence.excerpt or "…" in evidence.excerpt else "")
+                errors.append(f"{finding.id}: quote is not verbatim in the cited section.{cut}")
             if entry and not is_idea(entry[0]):
                 external = True
             resolved = resolved or entry is not None

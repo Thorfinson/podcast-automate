@@ -16,7 +16,7 @@ from podcast_automate.question_dependencies import ordered_tasks, invalidate_dep
 from podcast_automate.question_research import answer_errors
 from podcast_automate.question_scope import QuestionScopeReview, scoped_plan
 from podcast_automate.research_evidence import (support_errors, concentration, validate_synthesis, validate_objection,
-                                                claim_changes, quotable)
+                                                claim_changes, quotable, verbatim)
 from podcast_automate.research_ledger import read_value, save_value
 from podcast_automate.research_models import Finding, ResearchDiscovery, ResearchDossier
 from podcast_automate.research_patches import DossierPatch, apply_patch
@@ -140,6 +140,22 @@ class EvidenceContractTests(unittest.TestCase):
         for quote in ("We find that the recession path", "the financial recession path is 4% lower"):
             with self.subTest(quote=quote):
                 self.assertNotIn(quotable(quote), quotable(section))
+                self.assertFalse(verbatim(quote, section))
+
+    def test_a_quote_across_the_broken_words_of_a_scan_is_verbatim(self):
+        # Asimov, 2026-09-30: the text layer of the Max-Neef scan splits words, and every quote was rejected.
+        section = ("needs not only indicate deprivations but also, and at the same time, individual and collective "
+                   "human p otential. Need s according to existential categorie s. Being anti - author itarian in the "
+                   "sense that the matr ix is merely illustrative and not normative.")
+        for quote in ("individual and collective human potential", "Needs according to existential categories",
+                      "Being antiauthoritarian", "the matrix is merely illustrative and not normative"):
+            with self.subTest(quote=quote):
+                self.assertTrue(verbatim(quote, section))
+        # Other letters, another order and an ellipsis still fail.
+        for quote in ("collective human potentials", "the matrix is illustrative and not normative",
+                      "needs not only indicate ... human potential", "human potential and collective"):
+            with self.subTest(quote=quote):
+                self.assertFalse(verbatim(quote, section))
 
     def test_a_supported_verdict_with_named_clauses_is_partially_supported_by_construction(self):
         # The clause list is the judgement; the verdict summarises it instead of being policed.
