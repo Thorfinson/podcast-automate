@@ -81,11 +81,14 @@ class ResearchDecision(Contract):
         """Why the payload contradicts the chosen action, or None.
 
         The reader call checks this as a correctable rejection rather than a schema rule, so the
-        re-ask names the exact payload mismatch instead of a generic contract defect.
+        re-ask names the exact payload mismatch instead of a generic contract defect. A spare field
+        beside the chosen action's own is ignored, since only the action's field is ever used (Asimov,
+        2026-09-30: 20 of 103 reader calls were asked again for one); a missing field still fails, and
+        ``blocked`` still takes none.
         """
         expected = READER_PAYLOADS.get(self.action)
         supplied = [name for name in READER_PAYLOADS.values() if getattr(self, name)]
-        if supplied == ([expected] if expected else []):
+        if (expected in supplied) if expected else not supplied:
             return None
         wanted = f"only '{expected}'" if expected else "no payload"
         given = ", ".join(f"'{name}'" for name in supplied) or "none"
