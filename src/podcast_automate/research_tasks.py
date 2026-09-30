@@ -5,12 +5,12 @@ from typing import Literal
 
 from pydantic import Field
 
-from .models import Contract, Identifier, NonEmpty
+from .models import Contract, Identifier, LaterFields, NonEmpty
 from .research_models import Finding, SourceCandidate
 from .evidence_models import BRIEF, FindingSupport, ResearchObjection, SourceAssessment
 
 
-class QuestionTask(Contract):
+class QuestionTask(LaterFields):
     id: Identifier = Field(max_length=32, pattern=r"^task_[a-z0-9_]+$")
     requirement_ids: list[Identifier] = Field(min_length=1)
     question_ids: list[Identifier] = Field(min_length=1)
@@ -22,6 +22,13 @@ class QuestionTask(Contract):
     key_terms: list[NonEmpty] = Field(max_length=6)
     finding_ids: list[Identifier]
     gap_ids: list[Identifier]
+    # What the answer is for (2026-09-30): ``explain`` an idea or theory in its own logic from its author's work,
+    # ``evaluate`` what holds under tests and critique, ``build`` how it is done in practice now. An explain task
+    # names the works to read in ``primary_works``.
+    aim: Literal["explain", "evaluate", "build"] = "evaluate"
+    primary_works: list[NonEmpty] = Field(default_factory=list, max_length=4)
+
+    LATER = {"aim": "evaluate", "primary_works": []}
 
 
 class QuestionPlan(Contract):

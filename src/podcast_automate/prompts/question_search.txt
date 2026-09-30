@@ -4,5 +4,9 @@ abstract, contents page or link list is not an explanation. Existing URLs need n
 their downloaded texts can be read locally. Do not expand the scope or invent URLs. Report
 executed_queries actually used, excluded_candidates with exclusion rationales, and counterevidence
 search outcome (or why not applicable). For empirical/boundaries tasks actively seek contrary
-results. Return at most {maximum} primary-source candidates; an empty list with an honest reason is
-valid.
+results. For an explain task find the author's own work named in primary_works in a readable form.
+For a build task find current documentation, standards, maintained repositories or practitioner
+reports. When recency_months is present, prefer sources published within that many months before
+research_date and give each candidate's published_date. Give every candidate its source_type
+(primary_work, study, critique, overview, practice, standard); posts and other pointers are not
+candidates. Return at most {maximum} candidates; an empty list with an honest reason is valid.

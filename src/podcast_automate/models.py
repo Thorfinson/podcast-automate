@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, ClassVar, Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
 NonEmpty = Annotated[str, Field(min_length=1)]
@@ -25,6 +25,23 @@ class HostNames(TypedDict):
     host_b: NonEmpty
 
 
+class SeriesGoal(TypedDict):
+    """What the series is for, each aim weighted 0 (not wanted) to 3 (the main aim).
+
+    ``understand`` explains ideas and theories in their own logic, ``evaluate`` tests what holds, ``apply``
+    shows how to build or do it. The research plan, the series plan and the reviews weigh their work by it
+    (2026-09-30: both series came out as evidence audits, although the user wanted theories explained and,
+    for the knowledge-work series, how to build a knowledge base today)."""
+
+    understand: Annotated[int, Field(ge=0, le=3)]
+    evaluate: Annotated[int, Field(ge=0, le=3)]
+    apply: Annotated[int, Field(ge=0, le=3)]
+
+
+# Fields added to the brief after runs were recorded; while unset they are left out of every dump, so the hash
+# of an unchanged project.yaml, and every binding built from the brief, stays what it was.
+LATER_BRIEF_FIELDS = ("series_goal", "recency_months")
+
 ROLE_LABELS = {"host_a": "Host A", "host_b": "Host B"}
 
 
@@ -40,6 +57,22 @@ def now() -> str:
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
+
+
+class LaterFields(Contract):
+    """A contract whose fields listed in ``LATER`` arrived after files were written: at their default they are
+    left out of every dump, so stored files, the hashes built from them and the prompts that show them stay as
+    they were. A model answer still names them, since strict schemas require every property."""
+
+    LATER: ClassVar[dict] = {}
+
+    @model_serializer(mode="wrap")
+    def omit_later_defaults(self, handler):
+        data = handler(self)
+        for key, default in self.LATER.items():
+            if key in data and data[key] == default:
+                data.pop(key)
+        return data
 
 
 class ResearchLimits(Contract):
@@ -102,6 +135,26 @@ class TopicBrief(Contract):
     style_profile_id: Literal["de_calm_deep"] = "de_calm_deep"
     export_context: Literal["private_learning"] = "private_learning"
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
+    series_goal: SeriesGoal | None = Field(default=None,
+        description="Weights 0-3 for understand, evaluate and apply; unset means the pipeline's evaluating default.")
+    # A fast field (AI changes within three months, 2026-09-30) prefers practice, tool and benchmark sources
+    # published within this many months; standards and foundations may be older and are named with their year.
+    recency_months: int | None = Field(default=None, ge=1, le=120,
+        description="Prefer practice, tool and benchmark sources from the last N months; unset means no rule.")
+
+    @model_serializer(mode="wrap")
+    def omit_unset_later_fields(self, handler):
+        data = handler(self)
+        for key in LATER_BRIEF_FIELDS:
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+    @model_validator(mode="after")
+    def some_goal(self):
+        if self.series_goal is not None and not any(self.series_goal.values()):
+            raise ValueError("series_goal braucht mindestens ein Ziel über 0")
+        return self
 
     @model_validator(mode="after")
     def two_voices(self):

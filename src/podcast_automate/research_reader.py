@@ -6,6 +6,7 @@ import re
 from collections import Counter, defaultdict
 
 from .errors import AppError
+from .research_models import is_idea
 from .research_retrieval import terms
 
 
@@ -22,7 +23,18 @@ def compact(text):
 def source_catalog(index):
     return [{"id": s.id, "title": s.title, "url": s.final_url, "sections": len(s.sections),
              "extraction_coverage": s.extraction_coverage.model_dump() if s.extraction_coverage else None,
-             "role": "retrieved_source" if s.url and s.final_url else "user_material"} for s in index.sources]
+             "role": "user_material" if is_idea(s) else "retrieved_source",
+             **source_facts(s)} for s in index.sources]
+
+
+def source_facts(source):
+    """A source's type, authors and date as the models see them; nothing for a source recorded before types."""
+    facts = {}
+    if source.source_type != "unknown":
+        facts["type"] = source.source_type
+    if source.published_date:
+        facts["published"] = source.published_date + ("" if source.date_basis == "document" else " (search result)")
+    return facts
 
 
 class SourceReader:
@@ -51,7 +63,7 @@ class SourceReader:
         for source, position, section, counts in self.entries:
             if source_id and source.id != source_id:
                 continue
-            if not include_notes and not (source.url and source.final_url):
+            if not include_notes and is_idea(source):
                 continue
             matched = words & counts.keys()
             phrase_hits = sum(term in self.compacted[f"{source.id}#{section.id}"] for term in phrases)
@@ -77,7 +89,7 @@ class SourceReader:
         return {"query": query, "source_id": source_id, "offset": offset, "total": len(ranked),
                 "next_offset": offset + len(selected) if offset + len(selected) < len(ranked) else None,
                 "candidates": [{"reference": f"{s.id}#{sec.id}", "title": s.title, "page": sec.page,
-                                "role": "retrieved_source" if s.url and s.final_url else "user_material",
+                                "role": "user_material" if is_idea(s) else "retrieved_source",
                                 "key_term_matches": phrase_hits, "reference_list": not substantive,
                                 "preview": sec.text[:1000]} for substantive, phrase_hits, _, _, s, _, sec in selected]}
 
@@ -118,7 +130,7 @@ class SourceReader:
         for ref, (source, section) in chosen.items():
             by_source[source.id].append({"reference": ref, "text": section.text, "page": section.page})
         context = [{"source_id": sid, "title": self.sources[sid].title, "url": self.sources[sid].final_url,
-                    "text_hash": self.sources[sid].text_hash,
+                    **source_facts(self.sources[sid]), "text_hash": self.sources[sid].text_hash,
                     "extraction_coverage": self.sources[sid].extraction_coverage.model_dump() if self.sources[sid].extraction_coverage else None,
                     "reliability_note": self.sources[sid].reliability_note, "uncertainties": self.sources[sid].uncertainties,
                     "total_sections": len(self.sources[sid].sections), "sections": sections}

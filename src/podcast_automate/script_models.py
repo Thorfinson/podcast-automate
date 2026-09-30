@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from .models import Contract, Identifier, NonEmpty
+from .models import Contract, Identifier, LaterFields, NonEmpty
 from .research_models import Finding
 from .evidence_models import SegmentClaimCheck, SourceAssessment, SynthesisRelation
 
@@ -28,15 +28,32 @@ class ScenePlan(Contract):
     explanation_steps: list[NonEmpty] = Field(min_length=1)
 
 
-class EpisodePlan(Contract):
+# An episode takes the time its explanation needs, up to an hour (2026-09-30; the 30-minute cap squeezed four
+# grand theories into one episode). Longer recordings are split into parts of at most 30 minutes.
+MAX_EPISODE_MINUTES = 60
+
+
+class EpisodePlan(LaterFields):
     episode_id: Identifier
     title: NonEmpty
     central_question: NonEmpty
-    target_minutes: float = Field(gt=0, le=30)
+    target_minutes: float = Field(gt=0, le=MAX_EPISODE_MINUTES)
     prerequisite_episodes: list[Identifier] = Field(description="Earlier episode IDs; finding dependencies belong in SeriesPlan.dependencies.")
     finding_ids: list[Identifier] = Field(min_length=1)
     scenes: list[ScenePlan] = Field(min_length=1)
     deferred_questions: list[NonEmpty]
+    series_role: str = Field(default="", description=(
+        "What this episode contributes to the answer to the series' central question, in one or two sentences."))
+    recap_finding_ids: list[Identifier] = Field(default_factory=list, description=(
+        "Findings introduced in earlier episodes that this episode recalls, e.g. in the finale's synthesis; "
+        "they may be cited but need not all be covered."))
+
+    LATER = {"series_role": "", "recap_finding_ids": []}
+
+
+def episode_findings(entry):
+    """The findings an episode may cite: its own, then those it recalls from earlier episodes."""
+    return [*entry.finding_ids, *(f for f in entry.recap_finding_ids if f not in entry.finding_ids)]
 
 
 class SeriesPlan(Contract):

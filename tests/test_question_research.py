@@ -112,6 +112,26 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "question_scope_unresolved")
         self.assertEqual([call[0] for call in self.calls], [QuestionPlan, QuestionScopeReview, QuestionScopeReview])
 
+    def test_a_second_scope_pass_that_splits_only_a_few_tasks_is_adopted(self):
+        """Ontologies, 2026-09-30: the second pass split 3 of 56 tasks and stopped the run; a nearly converged review
+        is adopted within the task cap, while one that keeps splitting everything still stops (test above)."""
+        passes = []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is QuestionScopeReview:
+                passes.append(len(payload["tasks"]))
+                # Every task is judged; only the first is split, in each pass.
+                return QuestionScopeReview(decisions=[{"task_id": task["id"], "reason": "Two obligations" if i == 0 else "Focused",
+                    "parts": [{"question": title, "criterion_indices": list(range(len(task["acceptance"]))),
+                               "acceptance": [title], "queries": ["energy"], "key_terms": ["energy"]}
+                              for title in ("Define energy", "Explain configuration")] if i == 0 else []}
+                    for i, task in enumerate(payload["tasks"])])
+        self.hook = hook
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(passes, [1, 2])
+        self.assertEqual(len(engine.state["plan"]["tasks"]), 3, "the second pass's split is kept")
+
     def test_complete_workflow_freezes_verified_answers_and_replay_has_no_calls(self):
         engine = self.engine()
         outputs = engine.run(self.discovery, self.index)
@@ -1108,6 +1128,33 @@ class QuestionResearchTests(unittest.TestCase):
         engine.state["tasks"]["task_definition"].update(status="verified", accepted_gap=None)
         self.assertEqual(engine.release_ready(), ["task_follow"])
         self.assertEqual((follow["status"], follow["outcome"]), ("pending", None))
+
+    def test_a_plan_whose_opening_question_holds_up_most_of_it_is_asked_again(self):
+        # Ontologies, 2026-09-30: one framing question held up all 58 others and blocked, so nothing else could run.
+        chain = [task_value()] + [dict(task_value(f"task_part_{n}", "mechanism"), depends_on=["task_definition"]) for n in range(6)]
+        flat = [task_value()] + [task_value(f"task_part_{n}", "mechanism") for n in range(6)]
+        prompts = []
+
+        def plan(answer):
+            def hook(prompt, schema, payload, kwargs):
+                if schema is QuestionPlan:
+                    prompts.append(prompt)
+                    return QuestionPlan(tasks=answer(len(prompts)))
+            return hook
+        self.hook = plan(lambda number: chain if number == 1 else flat)
+        engine = self.engine()
+        engine.initialise(self.discovery, self.index, None, [])
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("task_definition (6 von 7)", prompts[1])
+        self.assertEqual([t["depends_on"] for t in engine.state["plan"]["tasks"]], [[]] * 7)
+        # A planner that keeps the gate still reaches the plan gate with its last answer instead of stopping the run.
+        prompts.clear()
+        self.work = self.root / "runs/run_stubborn"
+        self.hook = plan(lambda number: chain)
+        engine = self.engine()
+        engine.initialise(self.discovery, self.index, None, [])
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual(engine.state["plan"]["tasks"][1]["depends_on"], ["task_definition"])
 
     def test_a_residual_finish_returns_a_question_waiting_on_spent_prerequisites_to_its_last_answer(self):
         # Asimov, 2026-09-27: t15 was reopened in the last rework but waited for t14, whose reworks were spent.

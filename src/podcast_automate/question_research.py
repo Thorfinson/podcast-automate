@@ -17,7 +17,8 @@ State layout (all JSON-serialisable):
 - ``seed_dossier``/``dirty_tasks``/``finding_owners``: which findings a later batch may edit.
 - ``objections``: audit objections keyed by a stable id, closed only by a passing audit.
 - ``accepted_gap`` on a task row: the user's explicit approval to finish without that task. The
-  dossier then records the gap; objections that only concern accepted gaps no longer block.
+  dossier then records the gap; objections that only concern accepted gaps no longer block. A synthesis
+  that depends on it goes on without it and names it; any other dependent stays blocked.
 
 Concurrency: with ``workers > 1`` the task loop runs independent tasks in a thread pool. One
 re-entrant lock guards the ledger: a worker holds it whenever it is not inside a model call (row
@@ -41,10 +42,12 @@ from .prompts import instructions
 from .question_answering import ACCESS_GAP_READER, TaskResearchMixin, answer_errors, read_context, review_passes
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
                               plan_projection, plan_review_message, run_timings)
-from .question_dependencies import ordered_tasks, prerequisite_answers
+from .question_dependencies import (gap_prerequisites, gatekeepers, ordered_tasks, prerequisite_answers,
+                                    prerequisite_met)
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
 from .question_sources import restore_attempts
 from .question_synthesis import PROMPT_GENERATION, SynthesisMixin
+from .research_dates import research_day
 from .research_evidence import support_errors
 from .research_gap_probe import coverage_terms, gap_id, probe
 from .research_ledger import (CALL_VERSION, VERSION, bootstrap_legacy, check_sources, load_index, public_ledger,
@@ -56,7 +59,8 @@ from .research_quality import quality_brief, requirements_for
 from .research_reader import SourceReader
 from .research_tasks import AnswerReview, QuestionAnswer, QuestionPlan
 from .models import now
-from .storage import atomic_text, digest, inside, read_text, write_json
+from .sources import load_library
+from .storage import atomic_text, digest, inside, read_optional_json, read_text, write_json
 
 __all__ = ["QuestionResearch", "run_question_research", "validate_plan", "answer_errors", "review_passes",
            "read_context", "MAX_STEPS", "MAX_WEB_ATTEMPTS", "MAX_REOPENINGS"]
@@ -80,6 +84,22 @@ def validate_plan(plan, config, discovery, dossier, gaps):
                            code="invalid_question_plan", status="blocked")
     if any(not set(t.finding_ids) <= finding_ids for t in plan.tasks):
         raise AppError("Rechercheplan verweist auf unbekannte Befunde.", code="invalid_question_plan", status="blocked")
+    check_aims(plan, config)
+
+
+def check_aims(plan, config):
+    """An explain task names the works to read; a series meant mainly to explain or to apply gets tasks that do so
+    (2026-09-30: all 18 questions of both series were planned as evidence audits)."""
+    unnamed = [t.id for t in plan.tasks if t.aim == "explain" and not t.primary_works]
+    if unnamed:
+        raise AppError("Erklär-Aufgaben nennen die Werke, aus denen die Theorie erklärt wird (primary_works): "
+                       + ", ".join(unnamed) + ".", code="invalid_question_plan", status="blocked")
+    goal = config.series_goal or {}
+    for aim, weight, name in (("explain", goal.get("understand", 0), "zu erklären"),
+                              ("build", goal.get("apply", 0), "praktisch anzuwenden")):
+        if weight >= 2 and not any(t.aim == aim for t in plan.tasks):
+            raise AppError(f"Die Serie soll vor allem {name}; der Plan braucht dafür Aufgaben mit aim={aim}.",
+                           code="invalid_question_plan", status="blocked")
 
 
 def _gaps(dossier, migration):
@@ -94,6 +114,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
     def __init__(self, root, work, config, invoke, progress, *, limits=None, accepted=None, retries=None, access_gaps=None,
                  disputes=None, residual=None, plan_gate=None, workers=1, advisor=False):
         self.root, self.work, self.config, self.invoke, self.progress = root, work, config, invoke, progress
+        # An earlier run's stored sources, reused instead of downloaded when a search picks them (sources.load_library).
+        self.library = load_library(root, (read_optional_json(work / "research_request.json", {}) or {}).get("seed_corpus"))
         # Whether a blocked question gets the advisor's second opinion before the run stops (research_advisor).
         self.advisor = advisor
         self.folder = work / "question_research"
@@ -324,15 +346,16 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
 
     def release_ready(self):
         """A question blocked only because a prerequisite had no verified answer yet is taken up again once
-        every prerequisite is verified; a prerequisite accepted as a gap keeps it blocked. Before, only an
-        explicit new attempt took it up (Asimov, 2026-09-27: t15 kept waiting for a t14 that had passed)."""
+        every prerequisite is verified; a prerequisite accepted as a gap keeps it blocked, except a synthesis,
+        which goes on without it (gap_prerequisites). Before, only an explicit new attempt took it up (Asimov,
+        2026-09-27: t15 kept waiting for a t14 that had passed)."""
         with self.guarded():
-            tasks = {spec["id"]: spec for spec in self.state["plan"]["tasks"]}
+            tasks = {task.id: task for task in QuestionPlan.model_validate(self.state["plan"]).tasks}
             released = []
             for task_id, row in self.state["tasks"].items():
                 if row["status"] != "blocked" or row.get("outcome") != "prerequisite_block" or row.get("accepted_gap"):
                     continue
-                if all(self.state["tasks"][dep]["status"] == "verified" for dep in tasks[task_id].get("depends_on", [])):
+                if all(prerequisite_met(tasks[task_id], dep, self.state) for dep in tasks[task_id].depends_on):
                     row.update(status="pending", outcome=None, reason="", activity="Voraussetzungen geprüft; wird bearbeitet")
                     released.append(task_id)
             if released:
@@ -511,7 +534,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     if support_errors(answer.findings, verdict, read_context(self.reader, refs)):
                         raise AppError("Stored support review no longer passes.", code="invalid_research_checkpoint", status="blocked")
                     expected = {a["task_id"]: a["answer_hash"] for a in prerequisite_answers(task, self.state)}
-                    if set(expected) != set(task.depends_on) or verification.get("prerequisite_hashes", {}) != expected:
+                    covered = set(expected) | set(gap_prerequisites(task, self.state))
+                    if covered != set(task.depends_on) or verification.get("prerequisite_hashes", {}) != expected:
                         raise AppError("The verified prerequisites changed.", code="invalid_research_checkpoint", status="blocked")
             # No task is running when a resume starts, whatever the interrupted worker had in flight;
             # ledgers of an earlier version named that one task in ``active_task``.
@@ -651,7 +675,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         """One planning call, then the scope review in at most two passes; returns the plan and its split groups."""
         prompt = (TERMINOLOGY + TEACHING_SCOPE +
             instructions("question_plan", language=self.config.language) + "\n" + json.dumps({
-                "brief": quality_brief(self.config), "questions": [q.model_dump() for q in discovery.questions],
+                "brief": quality_brief(self.config), **research_day(self.config, self.work),
+                "questions": [q.model_dump() for q in discovery.questions],
                 "gaps": gaps, "existing_findings": [f.model_dump() for f in dossier.findings] if dossier else []}, ensure_ascii=False))
         if planning_budget is not None:
             head, data = prompt.rsplit("\n", 1)
@@ -667,11 +692,25 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                                "Aufgabe bündeln, ohne Anforderungen wegzulassen.",
                                code="plan_exceeds_allowance", status="blocked")
 
+        def spread(candidate, final):
+            # Only the planner's own answer is judged, and the last permitted answer passes, so a stubborn plan
+            # still reaches the plan gate instead of stopping a paid run; a plan already in the ledger stays as it is.
+            held = gatekeepers(candidate.tasks)
+            if held and not final:
+                raise AppError(
+                    "Diese Teilfragen halten direkt oder über andere zu viele Teilfragen auf: "
+                    + ", ".join(f"{identifier} ({count} von {len(candidate.tasks)})" for identifier, count in held.items())
+                    + ". Blockiert eine davon, bleibt alles dahinter blockiert. Eine Voraussetzung nur setzen, wenn die "
+                    "Teilfrage deren geprüfte Antwort inhaltlich braucht; Lese- oder Lehrreihenfolge und Einstiegs- oder "
+                    "Überblicksfragen sind keine Voraussetzung.", code="invalid_question_plan", status="blocked")
+
         def check_plan(candidate, final):
             validate_plan(candidate, self.config, discovery, dossier, gaps)
             within_cap(candidate, final, max_tasks)
+            spread(candidate, final)
 
-        plan = self.call(self.folder, "plan" + suffix, QuestionPlan, prompt, validate=check_plan)
+        # ".deps": the plan prompt that sets prerequisites only for content (2026-09-30).
+        plan = self.call(self.folder, "plan" + suffix, QuestionPlan, prompt, validate=check_plan, tag=".deps")
         validate_plan(plan, self.config, discovery, dossier, gaps)
         groups = {}
         # Separate model calls, bounded to two passes; no source-reading budget is
@@ -698,6 +737,11 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             groups.update(splits)
             if not splits:
                 break
+            # A second pass that still splits a few tasks has nearly converged: its splits are adopted, within the task
+            # cap its check already enforced (Ontologies, 2026-09-30: 3 of 56 tasks split again stopped the whole run).
+            # A review that keeps splitting a larger share stops as before.
+            if attempt == 1 and len(splits) <= max(1, len(current.tasks) // 10):
+                break
         else:
             raise AppError("Recherchefragen bleiben nach der Umfangsprüfung zu breit; die überarbeitete Aufteilung ist gespeichert.",
                            code="question_scope_unresolved", status="blocked")
@@ -711,7 +755,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         row = self.state["tasks"][task.id]
         if row["status"] in {"verified", "blocked"}:
             return "done"
-        unmet = [dep for dep in task.depends_on if self.state["tasks"][dep]["status"] != "verified"]
+        unmet = [dep for dep in task.depends_on if not prerequisite_met(task, dep, self.state)]
         if not unmet:
             return "ready"
         if wait_for_open and not any(self.state["tasks"][dep]["status"] == "blocked" for dep in unmet):

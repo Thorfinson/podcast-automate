@@ -25,6 +25,8 @@ from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .models import RunManifest, StageRecord
 from .provider_pool import AdapterPool, check_adapter_versions, subscription_selection
 from .research_models import ResearchDiscovery, ResearchDossier, SourceCandidate, SourceDocument, SourceIndex
+from .research_dates import run_date
+from .research_reader import source_facts
 from .runner import execute_stages, manifest_path, outputs_valid, run_observer
 from .research_gap_probe import suffix as probe_suffix
 from .research_quality import load_complete_research, requirements_for
@@ -32,7 +34,7 @@ from .question_research import run_question_research
 from .research_advisor import advisor_selection
 from .research_ledger import read_value
 from .research_evidence import quotable
-from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source
+from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source, library_view, load_library
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash, project_lock, read_text,
                       read_optional_json, read_yaml, write_json, write_yaml)
 from .text_settings import validate_model, validate_reasoning
@@ -202,7 +204,7 @@ def source_context(index: SourceIndex, discovery: ResearchDiscovery, *, retained
                 used += len(section.text)
         chosen.sort(key=lambda item: item[0])
         context.append({"source_id": source.id, "title": source.title, "url": source.final_url,
-                        "text_hash": source.text_hash,
+                        **source_facts(source), "text_hash": source.text_hash,
                         "extraction_coverage": source.extraction_coverage.model_dump() if source.extraction_coverage else None,
                         "reliability_note": source.reliability_note, "uncertainties": source.uncertainties,
                         "total_sections": len(source.sections),
@@ -302,9 +304,45 @@ def render_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, index
 PLAN_REVIEW_MODES = {None, "required", "auto"}
 
 
+DISCOVERY_VERSION = "research_discovery.v5-types"
+
+
+def saved_discovery(work, topic):
+    """A first search this run already paid for and a later check stopped: adopted on resume instead of searching
+    the web again, as long as it answered the same prompt generation and keeps the topic (Asimov, 2026-09-30)."""
+    for folder in sorted((work / "calls").glob("call_*"), reverse=True):
+        metadata = read_optional_json(folder / "metadata.json", {}) or {}
+        if metadata.get("prompt_version") != DISCOVERY_VERSION:
+            continue
+        try:
+            found = ResearchDiscovery.model_validate_json((folder / "response.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if found.topic == topic:
+            return found, {**metadata, "adopted_from": folder.name}
+    return None
+
+
+def latest_research_run(root: Path):
+    """The research run whose stored sources seed a new one: the newest completed, else the newest at all; None
+    without one. A run stopped right after its start holds almost no sources (Transformer, 2026-09-30)."""
+    newest = None
+    for folder in sorted((root / "runs").glob("run_*"), reverse=True):
+        try:
+            manifest = read_yaml(folder / "run_manifest.yaml")
+        except (OSError, ValueError):
+            continue
+        if manifest.get("kind") != "research":
+            continue
+        if manifest.get("status") == "completed":
+            return folder.name
+        newest = newest or folder.name
+    return newest
+
+
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
                  reuse_sources: str | None = None, model=None, reasoning_effort=None, backend=None,
-                 plan_review: str | None = None, api_key=None) -> RunManifest:
+                 plan_review: str | None = None, api_key=None, seed_corpus: str | None = None) -> RunManifest:
     """Run or resume the research lane.
 
     ``plan_review`` decides the plan gate before the first task call: ``"required"`` (the CLI and
@@ -356,6 +394,18 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                   "research": RESEARCH_VERSION, "local_files": local_hashes}
         if selection is not None:
             inputs["text_generation"] = selection
+        if resume:
+            if seed_corpus:
+                raise AppError("Eine Startbibliothek gilt nur für einen neuen Lauf.", code="invalid_run")
+            seed_corpus = (read_optional_json(manifest_path(root, run_id).parent / "research_request.json", {})
+                           or {}).get("seed_corpus")
+        elif seed_corpus:
+            parent = read_yaml(manifest_path(root, seed_corpus))
+            if parent.get("kind") != "research":
+                raise AppError("Die Startbibliothek muss aus einem Recherchelauf stammen.", code="invalid_run")
+        if seed_corpus:
+            # Only when used, so the inputs of every other run hash as before.
+            inputs["seed_corpus"] = seed_corpus
         input_hash = digest(inputs)
         if resume:
             path = manifest_path(root, run_id)
@@ -373,7 +423,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             # The project's execution choice is fixed at the start, as for scripts; a resume keeps it.
             write_json(path.parent / "research_request.json", {"text_generation": selection,
                        "requirements": requirements_for(config), "quality_policy": "research_quality.v1",
-                       "plan_review": plan_review, "execution": selected_execution(root).model_dump()})
+                       "plan_review": plan_review, "execution": selected_execution(root).model_dump(),
+                       **({"seed_corpus": seed_corpus} if seed_corpus else {})})
         work = path.parent
         request = read_optional_json(work / "research_request.json", {}) or {}
         # An automatic plan approval asked for at the start stays with the run; a required review does too.
@@ -381,6 +432,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         review_mode = "auto" if "auto" in (plan_review, saved_review) else plan_review
         # Runs started before the field existed answered one task at a time and keep doing so.
         execution = ExecutionChoice.model_validate(request.get("execution") or {})
+        # The earlier run's stored sources: offered to the discovery, copied instead of downloaded when chosen.
+        library = load_library(root, seed_corpus)
         if reuse_sources:
             if resume:
                 raise AppError("Quellenübernahme nur für einen neuen Lauf verwenden.", code="invalid_run")
@@ -501,17 +554,31 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         def discovery_stage():
             brief = {key: value for key, value in config.model_dump(mode="json").items()
                      if key in {"topic", "central_question", "language", "audience_level", "prior_knowledge",
-                                "depth_request", "focus_questions", "excluded_topics", "seed_people", "seed_urls"}}
-            maximum = min(config.research_limits.sources, max(8, len(config.focus_questions) * 2))
+                                "depth_request", "focus_questions", "excluded_topics", "seed_people", "seed_urls",
+                                "series_goal", "recency_months"}}
+            # The run's own date, the same on every resume: "the last N months" count back from it.
+            brief["research_date"] = run_date(work)
+            if library:
+                brief["library"] = library_view(library)
+            # Three per focus question: explain and evaluate tasks both need sources, and the library offers more.
+            maximum = min(config.research_limits.sources, max(12, len(config.focus_questions) * 3))
             brief["attachments"] = attachments.context(root)
             brief["requirements"] = requirements_for(config)
             prompt = (
                 instructions("research_discovery", maximum=maximum) + " " + TERMINOLOGY +
                 attachments.MATERIAL_RULES +
                 instructions("research_discovery_attachments") + "\n" + json.dumps(brief, ensure_ascii=False))
-            discovery, metadata = invoke(prompt, ResearchDiscovery, "research_discovery.v4-independence", search=True)
-            if discovery.topic != config.topic or len(discovery.candidates) > maximum:
+            saved = saved_discovery(work, config.topic)
+            discovery, metadata = saved or invoke(prompt, ResearchDiscovery, DISCOVERY_VERSION, search=True)
+            if discovery.topic != config.topic:
                 raise AppError("Suchantwort verletzt Thema oder Quellenlimit.", code="invalid_model_output")
+            if len(discovery.candidates) > maximum:
+                # A few candidates over the limit cost the whole paid search before (Asimov, 2026-09-30: 27 of 26).
+                # The first ones stay; the rest are named, and the searches of the single questions can still find them.
+                dropped = discovery.candidates[maximum:]
+                discovery = discovery.model_copy(update={"candidates": discovery.candidates[:maximum], "limitations": [
+                    *discovery.limitations, "Über dem Quellenlimit der ersten Suche, nicht eingelesen: "
+                    + "; ".join(c.title for c in dropped)]})
             write_json(work / "discovery.json", discovery.model_dump(mode="json"))
             write_json(work / "discovery_metadata.json", metadata)
             evidence_files = list((work / "calls").glob("call_*/search_events.json"))
@@ -523,7 +590,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             uploaded = {attachments.attachment_path(root, row): row for row in attachments.inventory(root)}
             candidates = [(SourceCandidate(url=str(p), title=uploaded.get(p, {}).get("name", p.name), authors=[], published_date="",
                                            rationale="User-supplied local material; claims and provenance are unverified.",
-                                           primary_source=False), p) for p in local_files]
+                                           primary_source=False, source_type="idea"), p) for p in local_files]
             candidates += [(SourceCandidate(url=url, title=url, authors=[], published_date="",
                                              rationale="Explicit seed URL in project.yaml", primary_source=False), None) for url in config.seed_urls]
             candidates += [(candidate, None) for candidate in discovery.candidates]
@@ -563,7 +630,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                         except (OSError, ValueError, KeyError, AppError):
                             pass
                     if document is None:
-                        document, processed = import_source(candidate, root, manifest.run_id, local=local, downloaded=downloaded)
+                        document, processed = import_source(candidate, root, manifest.run_id, local=local,
+                                                            downloaded=downloaded,
+                                                            **({"library": library} if library else {}))
                         write_json(checkpoint, {"processed": processed.relative_to(root).as_posix(), "sha256": file_hash(processed)})
                     # Keep independently retrieved provenance even when an upload
                     # contains an identical copy; the local file must also remain

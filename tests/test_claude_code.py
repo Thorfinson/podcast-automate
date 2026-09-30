@@ -85,7 +85,9 @@ structured = {"topic": "incomplete"} if mode == "invalid" else (
     {"topic": payload.get("topic", ""), "focus_questions": ["Wie und warum?"], "note": "Keine Quellenrecherche."}
     if "topic" in payload else {"reason": "Alpha Beta"})
 emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t1", "name": "StructuredOutput", "input": structured}]}})
-if search and mode != "nosearch":
+if search and mode == "fetchonly":
+    emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t4", "name": "WebFetch", "input": {"url": "https://example.org/known", "prompt": "read"}}]}})
+if search and mode not in {"nosearch", "fetchonly"}:
     emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t2", "name": "WebSearch", "input": {"query": "actual query"}}]}})
     emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "results"}]}})
     emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t3", "name": "WebFetch", "input": {"url": "https://example.org/paper", "prompt": "read"}}]}})
@@ -106,7 +108,7 @@ if mode == "incomplete":
 final = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "stop_reason": "end_turn",
          "total_cost_usd": 0.0087, "session_id": "s",
          "usage": {"input_tokens": 4, "output_tokens": 123, "cache_read_input_tokens": 691, "cache_creation_input_tokens": 849,
-                   "server_tool_use": {"web_search_requests": 1 if search and mode != "nosearch" else 0}},
+                   "server_tool_use": {"web_search_requests": 1 if search and mode not in {"nosearch", "fetchonly"} else 0}},
          "modelUsage": {"claude-opus-5": {"costUSD": 0.0087, "contextWindow": 200000, "maxOutputTokens": 32000}},
          "structured_output": structured}
 if mode == "missing":
@@ -255,6 +257,12 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "nosearch"}), self.assertRaises(AppError) as error:
             self.call("nosearch", search=True)
         self.assertEqual(error.exception.code, "search_not_observed")
+        # Opening a known page without a query is browsing as well; it counts, but not as a search request.
+        with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "fetchonly"}):
+            _, fetched = self.call("fetchonly", search=True)
+        self.assertTrue(fetched["research_performed"])
+        self.assertEqual((fetched["web_search_events"], fetched["web_search_requests"]), (1, 0))
+        self.assertEqual(fetched["observed_search_queries"], [])
         _, metadata = self.call("search", search=True)
         self.assertTrue(metadata["research_performed"])
         self.assertEqual(metadata["web_search_events"], 2)

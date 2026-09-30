@@ -306,6 +306,23 @@ test('with the finish requested, spent reworks and questions waiting on passed p
   // A prerequisite accepted as a gap never lets its dependent move on by itself.
   const gap={...ledger,questions:ledger.questions.map(q=>q.id==='t14'?{...q,status:'blocked',accepted_gap:true}:q)};
   assert.equal(app.run(`blockedSettled(${JSON.stringify(gap)}).map(q=>q.id).join(',')`),'t01');
+  // Except a synthesis: it goes on without the gap and names it (Ontologies, 2026-09-30).
+  const synthesis={...gap,questions:gap.questions.map(q=>q.id==='t15'?{...q,kind:'synthesis'}:q)};
+  assert.equal(app.run(`blockedSettled(${JSON.stringify(synthesis)}).map(q=>q.id).join(',')`),'t01,t15');
+});
+
+test('a synthesis behind prerequisites accepted as gaps says that a resume takes it up without them',()=>{
+  const app=studio();
+  const q=(id,question,extra)=>({id,question,activity:'x',steps:1,read_sections:1,acceptance:['k'],reopened:0,...extra});
+  const ledger={closed:0,total:3,accepted:1,phase:'blocked',questions:[
+    q('t1','Merton?',{status:'blocked',outcome:'accepted_gap',accepted_gap:{reason:'x'}}),
+    q('t2','Vergleich?',{status:'blocked',outcome:'prerequisite_block',kind:'synthesis',depends_on:['t1']}),
+    q('t3','Test?',{status:'blocked',outcome:'prerequisite_block',kind:'empirical',depends_on:['t1'],reason:'Eine vorausgesetzte Teilfrage wurde als Lücke akzeptiert.'})]};
+  const html=app.run(`renderResearchQuestions(${JSON.stringify(ledger)},new Set(),false,'run_x',0,12)`);
+  assert.ok(html.includes('Die offenen Voraussetzungen sind als Lücke akzeptiert; „Fortsetzen“ fasst ohne sie zusammen'));
+  assert.ok(html.includes('„Fortsetzen“ nimmt diese Frage wieder auf.'));
+  // Any other question stays blocked by the accepted gap and asks for a decision of its own.
+  assert.ok(html.includes('Eine vorausgesetzte Teilfrage wurde als Lücke akzeptiert.'));
 });
 
 test('a research step that spent its correction attempts offers fresh attempts, a script step does not',()=>{
@@ -2516,4 +2533,19 @@ test('the server note offers a restart once the code changed and can take it bac
   assert.ok(pending.includes('Neustart vorgemerkt') && pending.includes('data-action="restart-cancel"'));
   app.run('renderServerNote()');
   assert.equal(app.elements.get('server-note').hidden,false);
+});
+
+test('the brief summary shows what the series is for and how current its sources must be',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:{...boot.defaults,series_goal:{understand:1,evaluate:2,apply:3},recency_months:6},execution:{text:'parallel',audio:'parallel'},chat:[],allowances:{}};`);
+  const html=app.run('setupSummary()');
+  assert.ok(html.includes('Anwenden ●●● · Bewerten ●●○ · Verstehen ●○○'),'the main aim first');
+  assert.ok(html.includes('der letzten 6 Monate'));
+  assert.ok(app.run('goalSummary(null)').includes('prüft vor allem, was hält'));
+  app.run(`project.config={...boot.defaults};project.proposal_applied=false;project.chat=[{role:'assistant',topic:boot.defaults.topic,central_question:boot.defaults.central_question,prior_knowledge:boot.defaults.prior_knowledge,depth_request:boot.defaults.depth_request,focus_questions:[],excluded_topics:[],target_total_minutes:null,recency_months:6}]`);
+  assert.equal(app.run('proposalChangesBrief()'),true,'a proposed recency rule changes the brief');
+  assert.ok(app.run('setupSummary()').includes('der letzten 6 Monate'),'the proposal shows before it is applied');
+  app.run(`project.chat[0].recency_months=0`);
+  assert.equal(app.run('proposalChangesBrief()'),false,'removing a rule that is not set changes nothing');
+  assert.ok(app.run('setupSummary()').includes('Keine Vorgabe'));
 });

@@ -11,13 +11,14 @@ from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
-from .question_dependencies import prerequisite_answers
+from .question_dependencies import prerequisite_answers, prerequisite_gaps
 from .question_sources import reserve_source, restore_attempts, source_identity
-from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, collapse_assessments, collapse_support, quotable,
+from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, evidence_profile, collapse_assessments, collapse_support, quotable,
                                 evidence_summary, support_errors)
 from .research_gap_probe import settle
 from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
-from .research_models import ResearchDiscovery, SourceDocument, SourceIndex
+from .research_models import ResearchDiscovery, SourceDocument, SourceIndex, admissible, is_idea
+from .research_dates import research_day
 from .research_reader import source_catalog
 from .research_retrieval import references
 from .research_tasks import AnswerReview, QuestionAnswer, QuestionSearch, ReaderWindow, ResearchDecision
@@ -36,6 +37,12 @@ ACCESS_GAP_REVIEW = ("accepted_access_gaps lists acceptance criteria the editor 
                      "source refused retrieval. Judge those criteria on their remaining parts: pass one when those parts are "
                      "met and the answer names the gap in its limits without claiming the refused part. The refused source "
                      "does not count against source_adequacy.")
+PREREQUISITE_GAP_READER = ("prerequisite_gaps lists prerequisites of this synthesis that the editor accepted as gaps: they "
+                           "have no verified answer. Build the synthesis from the verified prerequisite answers and your "
+                           "sources, do not fill a gap with claims of your own, and name each gap in limits.")
+PREREQUISITE_GAP_REVIEW = ("prerequisite_gaps lists prerequisites the editor accepted as gaps. Judge the synthesis on the "
+                           "verified prerequisites and sources: pass a criterion that needs a gap when the answer names "
+                           "that gap in its limits and claims nothing from it.")
 LOCK_FEEDBACK = ("The answer is locked after a failed review: read or search new passages first and answer only "
                  "with new evidence. If a criterion needs a kind of source the corpus lacks, search_web for it; "
                  "if the web search brings nothing, choose blocked and name the criterion.")
@@ -105,7 +112,7 @@ def answer_errors(answer, task, reader, read_refs):
                 errors.append(f"{finding.id}: {reference_defect(evidence.reference, reader, read_refs)}")
             elif quotable(evidence.excerpt) not in quotable(entry[2].text):
                 errors.append(f"{finding.id}: quote is not verbatim in the cited section.")
-            if entry and entry[0].url and entry[0].final_url:
+            if entry and not is_idea(entry[0]):
                 external = True
             resolved = resolved or entry is not None
         # An unresolved reference is reported above; only resolved citations can show notes-only support.
@@ -293,11 +300,16 @@ class TaskResearchMixin:
         refs = [e.reference for f in answer.findings for e in f.evidence]
         passages = read_context(self.reader, refs)
         text = TERMINOLOGY + EVIDENCE_INSTRUCTIONS + instructions("question_verify")
-        payload = {"task": spec.model_dump(), "answer": answer.model_dump(), "evidence_profile": PROFILES[spec.kind],
+        payload = {"task": spec.model_dump(), "answer": answer.model_dump(), "evidence_profile": evidence_profile(spec),
                    "prerequisite_answers": prerequisite_answers(spec, self.state), "sources": passages}
         if row.get("access_gaps"):
             text += " " + ACCESS_GAP_REVIEW
             payload["accepted_access_gaps"] = access_gap_rows(spec, row)
+        gaps = prerequisite_gaps(spec, self.state)
+        if gaps:
+            # Only then, so every other review prompt stays byte for byte as before.
+            text += " " + PREREQUISITE_GAP_REVIEW
+            payload["prerequisite_gaps"] = gaps
         prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
 
         def well_formed(verdict, final):
@@ -429,7 +441,9 @@ class TaskResearchMixin:
         maximum = min(4, remaining)
         prompt = (instructions("question_search", maximum=maximum) + "\n" +
             json.dumps({"task": spec.model_dump(), "queries": queries, "known_sources": source_catalog(self.index),
-                        "read_refs": row["read_refs"], "feedback": row["feedback"], "failures": self.index.failures}, ensure_ascii=False))
+                        "read_refs": row["read_refs"], "feedback": row["feedback"], "failures": self.index.failures,
+                        **({"recency_months": self.config.recency_months, **research_day(self.config, self.work)}
+                           if self.config.recency_months else {})}, ensure_ascii=False))
         if request_path.exists():
             request = read_value(request_path)
             prompt, maximum = request["prompt"], request["maximum"]
@@ -440,8 +454,11 @@ class TaskResearchMixin:
             if not extra.executed_queries or not extra.counterevidence:
                 raise AppError("Search must record executed queries and counterevidence outcome.",
                                code="invalid_search_receipt", status="blocked")
-            if len(extra.candidates) > maximum or any(not c.primary_source for c in extra.candidates):
-                raise AppError("Die Suche überschreitet ihren Quellenauftrag.", code="invalid_model_output", status="blocked")
+            # Every typed source may join (practice docs, standards and critiques as well as primary works); a pointer
+            # such as a social post is an idea source, which names what to find but never counts as found.
+            if len(extra.candidates) > maximum or not all(admissible(c) for c in extra.candidates):
+                raise AppError("Die Suche überschreitet ihren Quellenauftrag: höchstens so viele Kandidaten wie erlaubt, "
+                               "jeder mit Quellentyp, keine Ideenquelle.", code="invalid_model_output", status="blocked")
 
         extra = self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed)
         result = read_value(receipt) if receipt.exists() else {
@@ -461,7 +478,8 @@ class TaskResearchMixin:
             try:
                 address = canonical_url(candidate.url)
                 if address not in known:
-                    doc, _ = import_source(candidate, self.root, self.work.name)
+                    doc, _ = import_source(candidate, self.root, self.work.name,
+                                           **({"library": self.library} if self.library else {}))
                     if doc.text_hash not in {s.text_hash for s in restored.sources} or any(
                             s.text_hash == doc.text_hash and not s.url for s in restored.sources):
                         restored.sources.append(doc)
@@ -541,7 +559,7 @@ class TaskResearchMixin:
                         instructions("question_reader", language=self.config.language))
                 payload = {
                     "task": spec.model_dump(), "task_groups": self.state.get("task_groups", {}),
-                    "evidence_profile": PROFILES[spec.kind],
+                    "evidence_profile": evidence_profile(spec),
                     "prerequisite_answers": prerequisite_answers(spec, self.state),
                     "allowed_actions": self.allowed_actions(row),
                     "answer_lock": row.get("lock") if row.get("answer_locked") else None,
@@ -554,6 +572,10 @@ class TaskResearchMixin:
                 if row.get("access_gaps"):
                     text += " " + ACCESS_GAP_READER
                     payload["accepted_access_gaps"] = access_gap_rows(spec, row)
+                gaps = prerequisite_gaps(spec, self.state)
+                if gaps:
+                    text += " " + PREREQUISITE_GAP_READER
+                    payload["prerequisite_gaps"] = gaps
                 prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
                 decision = self.call(folder, "reader", ResearchDecision, prompt, validate=well_formed_decision)
                 row["pending"] = decision.model_dump()

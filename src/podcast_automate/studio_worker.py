@@ -20,7 +20,7 @@ from .editorial import TERMINOLOGY
 from .logs import configure_logging, logger, record_failure
 from .models import now
 from .provider_pool import AdapterPool, text_generation_settings
-from .research import reserve_call, run_research
+from .research import reserve_call, run_research, latest_research_run
 from .run_budget import run_text_generation
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
@@ -155,7 +155,7 @@ def perform(root, request, sample_progress=None):
                 instructions("studio_assistant_attachments") + "\n" +
                 json.dumps({"brief": {key: getattr(config, key) for key in
                     ("topic", "central_question", "prior_knowledge", "depth_request", "focus_questions", "excluded_topics",
-                     "language", "target_total_minutes", "seed_urls")},
+                     "language", "target_total_minutes", "seed_urls", "series_goal", "recency_months")},
                     "saved_settings": {"text": choice.normalized(), "audio_settings": selected_audio(root, config).model_dump(),
                                        "execution": selected_execution(root).model_dump()},
                     "audio_catalog": audio_catalog(), "attachments": attachments.context(root),
@@ -166,7 +166,7 @@ def perform(root, request, sample_progress=None):
                     "reasoning_efforts": REASONING_EFFORTS, "requested_text": request.get("requested_text"),
                     "conversation": conversation[-16:], "user_message": request["message"]}, ensure_ascii=False))
             proposal, _ = adapter.structured(prompt, BriefProposal, work / f"call_{number:03d}",
-                                              prompt_version="studio_brief.v4-tts-model", search=False)
+                                              prompt_version="studio_brief.v5-goal-recency", search=False)
             if request.get("requested_text"):
                 proposal.text = TextChoice.model_validate(request["requested_text"])
             if proposal.text:
@@ -186,7 +186,9 @@ def perform(root, request, sample_progress=None):
             # OpenRouter has no web tools; research runs on the subscriptions with the automatic rule.
             research_choice = {"backend": "auto"}
         # Studio runs always stop for the plan projection; the approval comes from the research page.
-        run = run_research(root, **research_choice, plan_review="required")
+        # The earlier research's stored sources as a starting library, when the page asked for it.
+        seed = {"seed_corpus": latest_research_run(root)} if request.get("seed_corpus") else {}
+        run = run_research(root, **research_choice, plan_review="required", **seed)
     elif action == "plan":
         run = run_script(root, plan_only=True, probe_key=probe_key(root, request), **kwargs)
     elif action == "replan":

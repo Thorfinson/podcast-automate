@@ -14,7 +14,8 @@ from .models import EpisodeScript
 from .prompts import instructions
 from .research_models import ResearchDossier
 from .script_artifacts import script_metrics
-from .script_models import EpisodePlan, SeriesPlan
+from .research_reader import source_facts
+from .script_models import MAX_EPISODE_MINUTES, EpisodePlan, SeriesPlan, episode_findings
 from .storage import digest, file_hash, write_json
 from .teaching import prerequisite_context
 
@@ -45,6 +46,13 @@ def validate_plan(plan: SeriesPlan, dossier: ResearchDossier) -> list[str]:
             errors.append(f"{episode.episode_id}: prerequisites must be earlier episodes.")
         if not any(s.purpose == "worked_example" for s in episode.scenes):
             errors.append(f"{episode.episode_id}: include a worked example, not just definitions.")
+        if not episode.series_role.strip():
+            errors.append(f"{episode.episode_id}: state in series_role what this episode contributes to the answer "
+                          "to the series' central question.")
+        recalled = set(episode.recap_finding_ids)
+        if not recalled <= covered or recalled & selected:
+            errors.append(f"{episode.episode_id}: recap_finding_ids may only recall findings introduced in earlier "
+                          "episodes, never the episode's own.")
         covered.update(selected)
         earlier.add(episode.episode_id)
     if covered | set(omitted) != known or covered & set(omitted):
@@ -137,7 +145,7 @@ def load_plan_checkpoint(work, signature, *, allow_legacy=False):
 def checked_series_plan(work, prompt, invoke, dossier, central_question, signature, *, allow_legacy=False):
     plan, repairs = load_plan_checkpoint(work, signature, allow_legacy=allow_legacy)
     if plan is None:
-        plan = invoke(prompt, SeriesPlan, "series_plan.v4-audit")
+        plan = invoke(prompt, SeriesPlan, "series_plan.v5-roles")
     while True:
         errors = validate_plan(plan, dossier)
         if plan.central_question != central_question:
@@ -164,7 +172,8 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
     if script.episode_id != episode.episode_id or script.purpose != "deep_dive":
         errors.append("Keep the requested episode ID and deep_dive purpose.")
     scenes = {s.scene_id: s for s in episode.scenes}
-    available_findings, introduced = {}, set()
+    # Findings recalled from earlier episodes may be cited in any scene (episode_findings).
+    available_findings, introduced = {}, set(episode.recap_finding_ids)
     for scene in episode.scenes:
         introduced.update(scene.finding_ids)
         available_findings[scene.scene_id] = set(introduced)
@@ -180,13 +189,14 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
         covered.update(segment.knowledge_refs)
         if re.search(r"https?://|source_id|knowledge_refs|src_[a-f0-9]+|\[[^\]]+\]\(", segment.text):
             errors.append(f"{segment.segment_id}: citations or internal metadata must not be spoken.")
-    if covered != set(episode.finding_ids):
+    if not set(episode.finding_ids) <= covered:
         errors.append("The dialogue must cover every planned finding.")
     if {s.speaker_id for s in script.segments} != {"host_a", "host_b"}:
         errors.append("Use both hosts in the dialogue.")
     metrics = script_metrics(script)
-    if check_duration and metrics["estimated_minutes"] > 30:
-        errors.append("The planned speech estimate exceeds 30 minutes; shorten without losing the explanation.")
+    if check_duration and metrics["estimated_minutes"] > MAX_EPISODE_MINUTES:
+        errors.append(f"The planned speech estimate exceeds {MAX_EPISODE_MINUTES} minutes; shorten without losing "
+                      "the explanation.")
     if check_duration and metrics["estimated_minutes"] < episode.target_minutes * 0.85:
         errors.append("The script delivers less than 85% of the planned duration. Develop the missing reasoning, "
                       "worked steps and consequences; do not fill the gap with repetition or longer pauses.")
@@ -195,11 +205,14 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
 
 def episode_sources(episode, dossier, context, index=None):
     """Keep source context around evidence anchors, including paragraphs omitted by the dossier sampler."""
-    refs = {e.reference for f in dossier.findings if f.id in episode.finding_ids for e in f.evidence}
+    cited = set(episode_findings(episode))
+    refs = {e.reference for f in dossier.findings if f.id in cited for e in f.evidence}
     source_ids = {ref.split("#")[0] for ref in refs}
     documents = [source for source in context if source["source_id"] in source_ids]
     if index is not None:
+        # Type, authors and date let the script attribute an idea to its author and name the year of an old source.
         documents = [{"source_id": source.id, "title": source.title, "url": source.final_url,
+                      **({"authors": source.authors} if source.authors else {}), **source_facts(source),
                       "source_assessment": next((a.model_dump() for a in dossier.source_assessments if a.source_id == source.id), None),
                       "extraction_coverage": source.extraction_coverage.model_dump() if source.extraction_coverage else None,
                       "total_sections": len(source.sections), "sections": [
@@ -231,7 +244,7 @@ def outline_hash(work: Path) -> str:
                    ("series_plan.json", "knowledge_model.json", "inputs.json", "script_request.json")})
 
 
-SCRIPT_REVIEW_VERSION = "script_review.v9-gaps-notes"
+SCRIPT_REVIEW_VERSION = "script_review.v10-sources"
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.

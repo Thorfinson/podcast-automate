@@ -43,6 +43,22 @@ PROFILES = {
     "boundaries": "Evidence of applicability and exceptions, including counterevidence where contested.",
     "synthesis": "Compare verified answers on a common dimension; retain conditional differences and unresolved tensions.",
 }
+# Added to a task's profile by its aim (2026-09-30: every task was answered as an evidence audit).
+AIM_PROFILES = {
+    "explain": ("Explain the account in its own logic from its author's own work (book, chapter, article, lecture): the "
+                "question it answers, its assumptions, its picture of people or society, its mechanism and how the parts "
+                "fit, its key concepts; attribute it to its author. Tests and critiques belong to evaluate tasks and do "
+                "not replace the exposition."),
+    "evaluate": "",
+    "build": ("How it is done in practice now: concrete steps, the options and when to choose which, current tools and "
+              "standards, pitfalls, effort and cost. Documentation, standards, maintained repositories and practitioner "
+              "reports are valid sources for how it is done, not for whether it works; date every practice claim."),
+}
+
+
+def evidence_profile(task):
+    """What a task's answer must contain: its kind's profile and, for explain and build tasks, its aim's."""
+    return " ".join(part for part in (PROFILES[task.kind], AIM_PROFILES[task.aim]) if part)
 
 
 def evidence_error(message):
@@ -144,7 +160,8 @@ def support_errors(findings, review, context, *, require_contract=True, limitati
             source_context = {s["source_id"]: s for s in context}
             documents = [source_context[s.source_id] for s in sources]
             hashes = [s["text_hash"] for s in documents if s.get("text_hash")]
-            if len(set(hashes)) != len(hashes) or any("url" in s and not s["url"] for s in documents):
+            if len(set(hashes)) != len(hashes) or any(("url" in s and not s["url"]) or s.get("type") == "idea"
+                                                       for s in documents):
                 errors.append(f"{finding.id}: duplicate text or user notes cannot establish independent testing.")
             families = {identity(s.evidence_family) for s in sources if s.independence == "independent" and s.evidence_family}
             works = {identity(s.work_id) for s in sources if s.work_id}

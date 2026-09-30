@@ -8,7 +8,7 @@ from pydantic import Field
 
 from .errors import AppError
 from .models import Contract, Identifier, NonEmpty
-from .research_models import ResearchDiscovery, ResearchDossier, SourceIndex
+from .research_models import ResearchDiscovery, ResearchDossier, SourceIndex, is_idea
 from .storage import digest
 
 QUALITY_VERSION = "research_quality.v1"
@@ -45,10 +45,15 @@ def requirements_for(config):
 
 
 def quality_brief(config):
-    return {"topic": config.topic, "central_question": config.central_question,
-            "depth_request": config.depth_request, "prior_knowledge": config.prior_knowledge,
-            "audience_level": config.audience_level, "excluded_topics": config.excluded_topics,
-            "requirements": requirements_for(config)}
+    brief = {"topic": config.topic, "central_question": config.central_question,
+             "depth_request": config.depth_request, "prior_knowledge": config.prior_knowledge,
+             "audience_level": config.audience_level, "excluded_topics": config.excluded_topics,
+             "requirements": requirements_for(config)}
+    # Only when set, so a brief without them binds its research ledger exactly as before (2026-09-30).
+    for key in ("series_goal", "recency_months"):
+        if getattr(config, key) is not None:
+            brief[key] = getattr(config, key)
+    return brief
 
 
 def cite_findings(dossier, assessment):
@@ -89,7 +94,7 @@ def quality_report(config, dossier, discovery, index, assessment, grounding_issu
     accepted = accepted or {}
     requirements = requirements_for(config)
     findings = {f.id: f for f in dossier.findings}
-    external = {s.id for s in index.sources if s.url and s.final_url}
+    external = {s.id for s in index.sources if not is_idea(s)}
     rows = []
     for requirement in requirements:
         result = next(r for r in assessment.requirements if r.requirement_id == requirement["id"])

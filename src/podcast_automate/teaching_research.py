@@ -15,7 +15,7 @@ from .errors import AppError
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .models import Contract, Identifier, NonEmpty
 from .research import source_context
-from .research_models import Evidence, Finding, ResearchDiscovery, SourceIndex
+from .research_models import Evidence, Finding, ResearchDiscovery, SourceIndex, admissible
 from .evidence_models import ClaimContract, FindingSupport, SourceAssessment
 from .research_evidence import EVIDENCE_INSTRUCTIONS, quotable, scope_assessments, support_errors
 from .research_patches import corrected_call
@@ -302,9 +302,11 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
     maximum = min(3, config.research_limits.sources)
 
     def within_assignment(found):
-        if found.topic != config.topic or len(found.candidates) > maximum or not all(c.primary_source for c in found.candidates):
+        if found.topic != config.topic or len(found.candidates) > maximum or not all(
+                admissible(c) for c in found.candidates):
             raise AppError(f"Die Nachrecherche überschreitet ihren Auftrag: Thema „{config.topic}“ unverändert übernehmen, "
-                           f"höchstens {maximum} Kandidaten, nur Primärquellen.", code="invalid_supplement", status="blocked")
+                           f"höchstens {maximum} Kandidaten, jeder mit Quellentyp, keine Ideenquelle.",
+                           code="invalid_supplement", status="blocked")
 
     discovery = cached("discovery", ResearchDiscovery,
         TERMINOLOGY + TEACHING_SCOPE +

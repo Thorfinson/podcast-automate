@@ -66,6 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("project_dir", type=Path)
     research.add_argument("--reuse-sources", metavar="RUN_ID",
                           help="Gespeicherte Quellen für einen neuen Dossiertext wiederverwenden")
+    research.add_argument("--seed-corpus", metavar="RUN_ID",
+                          help="Die gespeicherten Quellen eines früheren Recherchelaufs als Startbibliothek anbieten; "
+                               "gewählte werden kopiert statt neu geladen, gesucht wird trotzdem neu")
     research.add_argument("--backend", choices=("codex_cli", "claude_code", "auto"),
                           help="Abo-Anbieter der Recherche; Standard codex_cli, auto wechselt bei leerem Kontingent")
     research.add_argument("--model", help="Modell-ID des festen Abo-Anbieters")
@@ -355,6 +358,7 @@ def run_command(args) -> int:
                 manifest = run_research(args.project_dir, resume=args.command == "resume",
                                         run_id=getattr(args, "run_id", None),
                                         reuse_sources=getattr(args, "reuse_sources", None),
+                                        seed_corpus=getattr(args, "seed_corpus", None),
                                         backend=getattr(args, "backend", None), model=getattr(args, "model", None),
                                         reasoning_effort=getattr(args, "reasoning_effort", None),
                                         plan_review="auto" if getattr(args, "approve_plan", False) else "required")

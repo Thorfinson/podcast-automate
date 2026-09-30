@@ -26,9 +26,19 @@ introduced in earlier scenes to build on them or connect the conclusion to the o
 introduce later findings prematurely. Cover them all, and never reference an episode as already
 heard unless it is a listed prerequisite. Meet the planned teaching scope and duration with
 substantive reasoning, not padding. Aim for 95-100% of target_minutes at 130 spoken words/minute
-including short pauses, and never exceed 30 planned minutes. Derive the word budget from this
+including short pauses, and never exceed 60 planned minutes. Derive the word budget from this
 episode's actual target. A summary of a few points is not a complete episode. Carry a motivating
 problem through the episode; work out concrete examples and counterexamples, explain why each
 mechanism is needed and why it helps. Build later reasoning explicitly on the foundations already
 established. Let the second host develop consequences and challenge assumptions, not merely restate
-or cue definitions. End by resolving the opening problem at a deeper level.
+or cue definitions. End by resolving the opening problem at a deeper level. Open by saying in your own words what this
+episode adds to the series' answer (its series_role in series_context) and what it builds on; close by
+saying what the listener now knows toward the series' central question and what the next episode takes
+up. Where brief.series_goal weights understand, explain each idea or theory first in its own logic,
+audibly attributed to its author, from the findings drawn from the author's own work, and only then
+its tests and critiques. Where it weights apply, give concrete recommendations the hosts stand behind,
+introduced once as their own recommendation and each built on the practice findings it cites. Keep
+sorting statements by origin where it helps listeners weigh them: the author's view, a test, a
+critique, our reading, our recommendation. When brief.recency_months is set, name the year of a
+practice, tool or benchmark source published before that window. Findings in the episode's
+recap_finding_ids were explained in earlier episodes: recall them briefly, do not teach them again.

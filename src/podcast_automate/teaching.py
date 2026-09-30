@@ -16,7 +16,7 @@ from .editorial import TERMINOLOGY, TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING
 from .models import Contract, Identifier, NonEmpty
 from .research_patches import corrected_call
 from .script_advisories import humanised
-from .script_models import ScriptIssue
+from .script_models import ScriptIssue, episode_findings
 from .storage import atomic_text, digest, write_json
 
 TEACHING_VERSION = "teaching.v3"
@@ -178,7 +178,7 @@ def validate_teaching_plan(design, entry):
     errors = []
     scene_ids = [s.scene_id for s in entry.scenes]
     positions = {key: i for i, key in enumerate(scene_ids)}
-    findings = set(entry.finding_ids)
+    findings = set(episode_findings(entry))
     concepts = [c.concept_id for c in design.concepts]
     goals = [g.objective_id for g in design.objectives]
     if design.episode_id != entry.episode_id or [s.scene_id for s in design.scenes] != scene_ids:
@@ -313,8 +313,8 @@ def design_prompt(config, entry, dossier, sources, continuity=None, *, series_co
             "brief": {"language": config.language, "audience": config.audience_level,
                       "prior_knowledge": config.prior_knowledge, "depth": config.depth_request},
             "episode": entry.model_dump(), "series_context": series_context,
-            "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
-            "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(entry.finding_ids)],
+            "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
+            "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
             "sources": sources, **({"prerequisite_context": continuity} if continuity else {}),
             **({"editor_note": editor_note} if editor_note else {})}, ensure_ascii=False))
 
@@ -395,7 +395,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                 json.dumps({"brief": {"audience": config.audience_level,
                     "prior_knowledge": config.prior_knowledge, "depth": config.depth_request},
                     "episode": entry.model_dump(), "design": design.model_dump(), "series_context": series_context,
-                    "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
+                    "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                     "sources": sources, "prerequisite_context": continuity or [],
                     **({"editor_note": editor_note} if editor_note else {}),
                     **({"previous_issues": review_previous} if review_previous else {})}, ensure_ascii=False),

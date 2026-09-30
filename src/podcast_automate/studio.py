@@ -29,7 +29,8 @@ from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_pr
                         selected_execution, set_jev_probe,
                         settings_execution)
 from .logs import configure_logging, logger
-from .models import Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, TopicBrief, host_labels, now
+from .models import (Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, SeriesGoal, TopicBrief,
+                     host_labels, now)
 from .episode_audio import saved_approval, saved_expression
 from .expression import TAG
 from .runner import manifest_path
@@ -247,6 +248,9 @@ class BriefProposal(Contract):
     text: TextChoice | None = None
     audio_settings: AudioChoice | None = None
     execution: ExecutionChoice | None = None
+    # None keeps the saved value. recency_months=0 removes a saved rule.
+    series_goal: SeriesGoal | None = None
+    recency_months: int | None = Field(default=None, ge=0, le=120)
     suggested_replies: list[str] = Field(default_factory=list, max_length=4)
     setup_complete: bool = False
 
@@ -1056,9 +1060,14 @@ class Studio:
         config = load_project(root).model_dump(mode="json")
         for key in ("topic", "central_question", "prior_knowledge", "depth_request", "focus_questions", "excluded_topics"):
             config[key] = getattr(chosen, key)
-        for key in ("language", "seed_urls"):
+        for key in ("language", "seed_urls", "series_goal"):
             if getattr(chosen, key) is not None:
                 config[key] = getattr(chosen, key)
+        if chosen.recency_months is not None:
+            if chosen.recency_months:
+                config["recency_months"] = chosen.recency_months
+            else:
+                config.pop("recency_months", None)
         config["target_total_minutes"] = chosen.target_total_minutes
         text_choice = chosen.text or TextChoice.model_validate(read_json(root / "studio/text.json", {}))
         audio = chosen.audio_settings or selected_audio(root, load_project(root))
@@ -1102,6 +1111,8 @@ class Studio:
                           "resume", "check", "expression"}:
             raise AppError("Unbekannter Arbeitsschritt.", code="invalid_action")
         payload = {"action": action, "message": str(data.get("message", ""))[:12000]}
+        if action == "research" and data.get("seed_corpus") is True:
+            payload["seed_corpus"] = True
         if action == "assistant" and data.get("text_preset") is not None:
             payload["requested_text"] = text_preset(data["text_preset"])
         if (self.key and self.key in payload["message"]) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}", payload["message"]):
