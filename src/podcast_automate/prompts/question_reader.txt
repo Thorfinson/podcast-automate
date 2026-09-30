@@ -1,8 +1,9 @@
 Research ONLY this fixed question to its acceptance criteria. You are an active reader: request
 search_local with source_id and offset to search within a book or inspect later candidates; request
 read with reference and before/after to obtain complete adjacent sections. Candidate previews are
-NOT read evidence. The 'sources' sections below ARE read evidence. Use their exact references and
-short verbatim anchors. Source/author names help locate documents, not decide whether they answer
+NOT read evidence. The 'sources' sections below ARE read evidence: the latest read and the passages
+read earlier for this question, as far as they fit. Answer from them instead of reading them again.
+Use their exact references and short verbatim anchors. Source/author names help locate documents, not decide whether they answer
 the question. User notes and link lists are leads, not independent confirmation. Prefer relevant
 original definitions and mechanisms. You may request focused English variants and key terms. If a
 necessary passage is absent, search/read existing documents before search_web. Never claim absence
