@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .models import Contract, Identifier, NonEmpty
+from .models import Contract, Identifier, NonEmpty, LaterFields
 
 EVIDENCE_VERSION = "evidence.v1"
 # Free-text justifications are records, not essays: a long one costs minutes per review call.
@@ -132,10 +132,15 @@ class ObjectionClosure(Contract):
     reason: NonEmpty
 
 
-class SegmentClaimCheck(Contract):
+class SegmentClaimCheck(LaterFields):
     segment_id: Identifier
     finding_ids: list[Identifier]
     verdict: Literal["preserved", "drift", "no_research_claim"]
     quote: NonEmpty
     reason: NonEmpty
-    changed_fields: list[Literal["relation", "scope", "qualifications", "quantities", "basis"]]
+    changed_fields: list[Literal["relation", "scope", "qualifications", "quantities", "basis", "source"]]
+    # The source sections the segment was compared with, not only its finding (2026-09-30: a finding said Dalio's
+    # definition names no cycle length; his text says "typically 50 to 75 years", and every review passed it).
+    source_refs: list[NonEmpty] = Field(default_factory=list)
+
+    LATER = {"source_refs": []}

@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .models import Contract, Identifier, NonEmpty
+from .models import Contract, Identifier, NonEmpty, LaterFields
 from .evidence_models import ClaimContract, ExtractionCoverage, SourceAssessment, SynthesisRelation
 
 
@@ -13,13 +13,25 @@ class ResearchQuestion(Contract):
     search_query: NonEmpty
 
 
-class SourceCandidate(Contract):
+# What a source is for (2026-09-30). ``primary_work``: the author's own exposition of an idea or theory (book,
+# chapter, article, lecture), required to explain it. ``study``: an empirical test. ``critique``: a critique,
+# comparison or replication. ``overview``: a review, textbook or encyclopedia entry. ``practice``: documentation,
+# a maintained repository or a practitioner report showing how something is done now (not whether it works).
+# ``standard``: a specification. ``idea``: a pointer (the user's attachments, LLM-written notes, social posts)
+# that names what to research and is never evidence. ``unknown``: recorded before types existed.
+SourceType = Literal["primary_work", "study", "critique", "overview", "practice", "standard", "idea", "unknown"]
+
+
+class SourceCandidate(LaterFields):
     url: NonEmpty
     title: NonEmpty
     authors: list[str]
     published_date: str
     rationale: NonEmpty
     primary_source: bool
+    source_type: SourceType = "unknown"
+
+    LATER = {"source_type": "unknown"}
 
 
 class ResearchDiscovery(Contract):
@@ -41,7 +53,7 @@ class SourceSection(Contract):
     page: int | None = None
 
 
-class SourceDocument(Contract):
+class SourceDocument(LaterFields):
     schema_version: Literal["1.0"] = "1.0"
     extraction_version: str = ""
     id: Identifier
@@ -63,6 +75,11 @@ class SourceDocument(Contract):
     text_hash: str
     sections: list[SourceSection] = Field(min_length=1)
     extraction_coverage: ExtractionCoverage | None = None
+    source_type: SourceType = "unknown"
+    # Where published_date came from: the document's own metadata, a search result, or nowhere.
+    date_basis: Literal["document", "search_result", "unknown"] = "unknown"
+
+    LATER = {"source_type": "unknown", "date_basis": "unknown"}
 
 
 class SourceIndex(Contract):
@@ -138,3 +155,17 @@ RESEARCH_SCHEMAS = {
     "research_dossier": ResearchDossier,
     "dossier_review": DossierReview,
 }
+
+
+def is_idea(source):
+    """An idea source (user material without a URL, or a source typed ``idea``) names what to research and is
+    never evidence (the user's choice, 2026-09-30: the LLM-written SYM notes and the curated posts are maps)."""
+    return not source.url or not source.final_url or source.source_type == "idea"
+
+
+def admissible(candidate):
+    """A search result that may join the corpus: any typed source except an idea source, or, from before source
+    types existed, one marked primary."""
+    if candidate.source_type == "unknown":
+        return candidate.primary_source
+    return candidate.source_type != "idea"

@@ -29,9 +29,14 @@ def support_receipts(findings, sources):
 
 def script_checks(prompt):
     payload = json.loads(prompt.splitlines()[-1])
+    # A preserved segment names the supplied source sections it was compared with: its findings' anchors.
+    sections = {section["reference"] for document in payload.get("sources", []) for section in document["sections"]}
+    anchors = {f["id"]: [e["reference"] for e in f["evidence"] if e["reference"] in sections]
+               for f in payload.get("findings", [])}
     return [dict(segment_id=s["segment_id"], finding_ids=s["knowledge_refs"],
                  verdict="preserved" if s["knowledge_refs"] else "no_research_claim", quote=s["text"],
-                 reason="Synthetic fixture preserves its assigned statement.", changed_fields=[])
+                 reason="Synthetic fixture preserves its assigned statement.", changed_fields=[],
+                 source_refs=list(dict.fromkeys(ref for f in s["knowledge_refs"] for ref in anchors.get(f, []))))
             for s in payload["script"]["segments"]]
 
 

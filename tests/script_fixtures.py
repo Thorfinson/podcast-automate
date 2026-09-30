@@ -27,6 +27,7 @@ def example_plan():
         scope_note="A bounded test plan.", dependencies=[], omitted_findings=[], episodes=[EpisodePlan(
             episode_id="ep_001", title="A model compares possibilities", central_question="How are possibilities compared?",
             target_minutes=0.12, prerequisite_episodes=[], finding_ids=["f_energy"], deferred_questions=["Training remains open."],
+            series_role="Shows how a model compares possibilities, the base of the answer.",
             scenes=[ScenePlan(scene_id="scene_example", title="A concrete comparison", question="What is scored?",
                 purpose="worked_example", finding_ids=["f_energy"], explanation_steps=["Compare two possibilities.", "Explain the limit."])])])
 

@@ -32,7 +32,7 @@ from .script_checkpoints import NOTED_CATEGORIES, series_adoption
 from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_sources,
                             script_review_signature, validate_script)
 from .script_evidence import SCRIPT_EVIDENCE_INSTRUCTIONS, settle_receipts, validate_claim_checks
-from .script_models import KnowledgeModel, ScriptReview, SeriesPlan
+from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
 from .storage import atomic_text, digest, file_hash, write_json
 from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, build_teaching_plan,
@@ -40,15 +40,20 @@ from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, 
 from .teaching_research import apply_foundations, named_question, research_foundations
 
 SPOKEN_DIALOGUE = fragment("spoken_dialogue")
-WRITE_EPISODE_VERSION = "write_episode.v7-audit-notes"
+WRITE_EPISODE_VERSION = "write_episode.v8-roles-goals"
 MAX_REVIEW_REPAIRS = 3
 # v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
 # repair restated such claims and the next review flagged them again).
-REVIEW_REPAIR_VERSION = "script_review_repair.v2-delete-absence"
+REVIEW_REPAIR_VERSION = "script_review_repair.v3-source"
 # Attempts one episode's correction of a series review gets before its evidence check rejects it (repair_series).
 SERIES_REPAIR_ATTEMPTS = 2
 # A new issue on a segment no repair touched blocks a follow-up review only as one of these.
 CRITICAL_BASIS = {"factual_error", "source_contradiction"}
+
+
+def goal_and_recency(config):
+    """The series goal and the recency rule for prompts, only when the brief sets them (2026-09-30)."""
+    return {key: getattr(config, key) for key in ("series_goal", "recency_months") if getattr(config, key) is not None}
 
 
 def review_blocks(review):
@@ -480,6 +485,15 @@ class ScriptRun:
 
     # --- writing --------------------------------------------------------------------------------
 
+    def source_sections(self, entry, sources=None):
+        """The source section references a review of ``entry`` is given, and each finding's anchors among them."""
+        sources = sources if sources is not None else episode_sources(entry, self.dossier, self.context, self.sources)
+        sections = {section["reference"] for document in sources for section in document["sections"]}
+        cited = set(episode_findings(entry))
+        anchors = {f.id: [e.reference for e in f.evidence if e.reference in sections]
+                   for f in self.dossier.findings if f.id in cited}
+        return sections, anchors
+
     def writing_prompt(self, plan, entry):
         config, dossier = self.config, self.dossier
         design_review = json.loads((self.work / "teaching" / entry.episode_id / "review.json").read_text(encoding="utf-8"))
@@ -491,16 +505,17 @@ class ScriptRun:
                   json.dumps({"brief": {"language": config.language, "voices": config.voice_profile,
                                         "host_names": config.host_names,
                                         "audience": config.audience_level, "prior_knowledge": config.prior_knowledge,
-                                        "style": config.depth_request, "style_notes": self.style_notes},
+                                        "style": config.depth_request, "style_notes": self.style_notes,
+                                        **goal_and_recency(config)},
                               "host_roles": HOST_ROLES,
                               "series": plan.model_dump(), "episode": entry.model_dump(),
                               "series_context": episode_series_context(plan, entry),
                               "prerequisite_context": prerequisite_context(plan, entry, self.work),
                               "teaching_design": self.teaching_for(entry).model_dump(),
                               "teaching_design_review": design_review,
-                              "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
+                              "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                               "single_group_findings": self.single_group(entry),
-                              "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(entry.finding_ids)],
+                              "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
                               "sources": episode_sources(entry, dossier, self.context, self.sources)}, ensure_ascii=False))
         if self.revision:
             prompt += ("\n" + instructions("write_episode_revision") + "\n" +
@@ -638,7 +653,8 @@ class ScriptRun:
 
         if result is not None:
             try:
-                drift = validate_claim_checks(result, draft, dossier.findings, required=bool(dossier.evidence_version))
+                drift = validate_claim_checks(result, draft, dossier.findings, required=bool(dossier.evidence_version),
+                                              sections=self.source_sections(entry)[0])
             except AppError:
                 # Saved before its check ran: reviewed again instead of stopping every resume here.
                 result = None
@@ -702,9 +718,11 @@ class ScriptRun:
         config, dossier, work = self.config, self.dossier, self.work
         required = bool(dossier.evidence_version)
         ids = {s.segment_id for s in draft.segments}
+        sources = episode_sources(entry, dossier, self.context, self.sources)
+        sections, anchors = self.source_sections(entry, sources)
 
         def well_formed(answer):
-            validate_claim_checks(answer, draft, dossier.findings, required=required)
+            validate_claim_checks(answer, draft, dossier.findings, required=required, sections=sections)
             unknown = sorted({key for issue in [*answer.issues, *answer.advisories] for key in issue.segment_ids} - ids)
             if unknown:
                 raise AppError("Review verweist auf unbekannte Segmente: " + ", ".join(unknown) + ".",
@@ -717,28 +735,29 @@ class ScriptRun:
                                code="invalid_model_output", status="blocked")
 
         payload = {"brief": {"audience": config.audience_level, "depth": config.depth_request,
-                             "style_notes": self.style_notes},
+                             "style_notes": self.style_notes, **goal_and_recency(config)},
                    "host_roles": HOST_ROLES, "original_draft": original_draft,
                    "metrics": script_metrics(draft), "episode": entry.model_dump(), "script": draft.model_dump(),
                    "series_context": episode_series_context(plan, entry),
                    "prerequisite_context": prerequisite_context(plan, entry, work),
                    "gap_probes": statuses(probes),
                    "single_group_findings": self.single_group(entry),
-                   "findings": [f.model_dump() for f in dossier.findings if f.id in entry.finding_ids],
-                   "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(entry.finding_ids)],
-                   "sources": episode_sources(entry, dossier, self.context, self.sources)}
+                   "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
+                   "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
+                   "sources": sources}
         task, version = instructions("script_review"), SCRIPT_REVIEW_VERSION
         if follow_up:
             payload["previous_issues"] = [issue.model_dump() for issue in follow_up[0].issues]
             payload["changed_segments"] = follow_up[1]
             task, version = task + " " + instructions("script_review_followup"), version + "+followup"
         # Two receipt slips are read as meant (settle_receipts) instead of re-asking the whole review.
-        reviewed = corrected_call(lambda *args, **kwargs: settle_receipts(self.invoke(*args, **kwargs), draft),
+        reviewed = corrected_call(lambda *args, **kwargs: settle_receipts(self.invoke(*args, **kwargs), draft, anchors),
             TERMINOLOGY + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
             task + "\n" + json.dumps(payload, ensure_ascii=False),
             ScriptReview, version, well_formed)
         # The drift receipts become issues; well_formed accepted their shape, so this cannot raise.
-        reviewed.issues.extend(validate_claim_checks(reviewed, draft, dossier.findings, required=required))
+        reviewed.issues.extend(validate_claim_checks(reviewed, draft, dossier.findings, required=required,
+                                                     sections=sections))
         if follow_up:
             return follow_up_scope(reviewed, *follow_up)
         # A first review has no scope: whatever it set aside as an advisory counts as an issue.

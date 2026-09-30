@@ -5,6 +5,8 @@ from unittest.mock import patch
 from podcast_automate.editorial import episode_series_context
 from podcast_automate.models import EpisodeScript
 from podcast_automate.script_models import SeriesPlan
+from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
+from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
 from podcast_automate.scripting import run_script
 from tests import script_fixtures as fixtures
 
@@ -86,9 +88,9 @@ class EpisodeFramingTests(unittest.TestCase):
             self.assertEqual(run.status, 'completed')
             selected = next(entry for entry in plan.episodes if entry.episode_id == episode_id)
             expected = episode_series_context(plan, selected)
-            for version in ('teaching_design.v2-terms', 'teaching_design_review.v5-terms', 'write_episode.v7-audit-notes',
+            for version in ('teaching_design.v2-terms', 'teaching_design_review.v5-terms', WRITE_EPISODE_VERSION,
                             'dialogue_polish.v3-audit-notes', 'dialogue_polish_review.v3-density-notes',
-                            'script_review.v9-gaps-notes', 'teaching_review.v4-audit',
+                            SCRIPT_REVIEW_VERSION, 'teaching_review.v4-audit',
                             'editorial_review.v4-audit'):
                 self.assertEqual(captured[version], expected)
             self.assertFalse((fixture.root / 'audio').exists())

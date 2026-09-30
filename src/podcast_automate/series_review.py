@@ -16,9 +16,19 @@ from .script_models import ScriptIssue
 from .storage import digest, write_json
 
 SERIES_REVIEW_VERSION = "series_review.v1"
+# The call's prompt label. The report keeps SERIES_REVIEW_VERSION, so saved verdicts and the audio approvals bound
+# to them stay valid; new reviews also check the arc and, by the series goal, exposition and guidance (2026-09-30).
+SERIES_REVIEW_PROMPT = "series_review.v2-arc"
 # One bounded cross-episode repair. A second failure is a decision for the operator.
 MAX_SERIES_REPAIRS = 1
-CRITERIA = ("coverage", "prerequisites", "progression", "deferred_questions", "synthesis")
+CRITERIA = ("coverage", "prerequisites", "progression", "deferred_questions", "synthesis", "arc")
+# Checked only when the brief's series_goal weights their aim at 2 or 3.
+GOAL_CRITERIA = {"exposition": "understand", "guidance": "apply"}
+
+
+def series_criteria(config=None):
+    goal = (config.series_goal if config is not None else None) or {}
+    return (*CRITERIA, *(name for name, aim in GOAL_CRITERIA.items() if goal.get(aim, 0) >= 2))
 
 
 class SeriesEvidence(Contract):
@@ -28,7 +38,8 @@ class SeriesEvidence(Contract):
 
 
 class SeriesCheck(Contract):
-    criterion: Literal["coverage", "prerequisites", "progression", "deferred_questions", "synthesis"]
+    criterion: Literal["coverage", "prerequisites", "progression", "deferred_questions", "synthesis", "arc",
+                       "exposition", "guidance"]
     verdict: Literal["pass", "fail"]
     reason: NonEmpty
     evidence: list[SeriesEvidence]
@@ -46,12 +57,12 @@ def reviewed_scripts(work, plan, episode=None):
         for entry in plan.episodes if episode is None or entry.episode_id == episode]
 
 
-def validate_review(review, scripts):
+def validate_review(review, scripts, criteria=CRITERIA):
     expected = [script.episode_id for script in scripts]
-    if review.checked_episodes != expected or Counter(c.criterion for c in review.checks) != Counter(CRITERIA):
+    if review.checked_episodes != expected or Counter(c.criterion for c in review.checks) != Counter(criteria):
         raise AppError("Die Serienprüfung muss alle Folgen und jedes Kriterium genau einmal prüfen. "
                        f"checked_episodes genau in dieser Reihenfolge: {', '.join(expected)}; "
-                       f"Kriterien: {', '.join(CRITERIA)}.", code="invalid_series_review", status="blocked")
+                       f"Kriterien: {', '.join(criteria)}.", code="invalid_series_review", status="blocked")
     passages = {(script.episode_id, segment.segment_id): segment.text
                 for script in scripts for segment in script.segments}
     cited = set()
@@ -135,10 +146,12 @@ def series_report(config, plan, scripts, input_hash, invoke, repairs=0):
             instructions("series_review") + "\n" +
             json.dumps({"brief": {"central_question": config.central_question or config.topic,
                                   "focus_questions": config.focus_questions, "depth": config.depth_request,
-                                  "language": config.language}, "plan": plan.model_dump(),
+                                  "language": config.language,
+                                  **({"series_goal": config.series_goal} if config.series_goal else {})},
+                        "criteria": list(series_criteria(config)), "plan": plan.model_dump(),
                         "scripts": [s.model_dump() for s in scripts]}, ensure_ascii=False))
-        review = corrected_call(invoke, prompt, SeriesReview, SERIES_REVIEW_VERSION,
-                                lambda answer: validate_review(answer, scripts))
+        review = corrected_call(invoke, prompt, SeriesReview, SERIES_REVIEW_PROMPT,
+                                lambda answer: validate_review(answer, scripts, series_criteria(config)))
         report.update(review=review.model_dump(),
                       status="passed" if all(c.verdict == "pass" for c in review.checks) else "blocked")
     return report

@@ -18,6 +18,49 @@ def ordered_tasks(tasks):
     return ordered
 
 
+def gap_prerequisites(task, state):
+    """Prerequisites of a synthesis that the user accepted as gaps. The synthesis goes on without them and names
+    them; any other task still needs every prerequisite verified (Ontologies, 2026-09-30: the series' closing
+    question hung on 48 tasks, and one accepted gap among them would have blocked it)."""
+    if task.kind != "synthesis":
+        return []
+    return [identifier for identifier in task.depends_on if state["tasks"][identifier].get("accepted_gap")]
+
+
+def prerequisite_gaps(task, state):
+    """The accepted gaps a synthesis goes on without, as its prompt names them."""
+    questions = {t["id"]: t["question"] for t in state["plan"]["tasks"]}
+    return [{"task_id": identifier, "question": questions[identifier],
+             "reason": (state["tasks"][identifier].get("accepted_gap") or {}).get("reason", "")}
+            for identifier in gap_prerequisites(task, state)]
+
+
+def prerequisite_met(task, identifier, state):
+    return state["tasks"][identifier]["status"] == "verified" or identifier in gap_prerequisites(task, state)
+
+
+def gatekeepers(tasks):
+    """Tasks other than a synthesis that hold up more than a third of the plan, directly or through others,
+    with the number they hold up. A blocked prerequisite blocks everything after it, so a plan built as a
+    reading order stakes most of the run on its first question (Ontologies, 2026-09-30: one framing question
+    held up all 58 others and blocked). Up to five dependents are always allowed, for small plans."""
+    children = {t.id: [] for t in tasks}
+    for task in tasks:
+        for identifier in task.depends_on:
+            children.setdefault(identifier, []).append(task.id)
+
+    def below(identifier, seen):
+        for child in children.get(identifier, []):
+            if child not in seen:
+                seen.add(child)
+                below(child, seen)
+        return seen
+
+    limit = max(5, len(tasks) // 3)
+    held = {t.id: len(below(t.id, set())) for t in tasks if t.kind != "synthesis"}
+    return {identifier: count for identifier, count in held.items() if count > limit}
+
+
 def prerequisite_answers(task, state):
     return [{"task_id": identifier, "answer_hash": digest(state["tasks"][identifier]["answer"]),
              "answer": state["tasks"][identifier]["answer"]} for identifier in task.depends_on

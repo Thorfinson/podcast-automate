@@ -12,6 +12,7 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.research import run_research, validate_dossier
+from podcast_automate.research_dates import run_date
 from podcast_automate.research_patches import DossierPatch
 from podcast_automate.research_review import SourceReview, SourceReviewIssue
 from podcast_automate.research_models import (Evidence, Finding, QuestionCoverage, ResearchDiscovery, ResearchDossier,
@@ -206,6 +207,74 @@ class SourceTests(unittest.TestCase):
 
 
 class ResearchTests(fixtures.ResearchProjectCase):
+    def test_an_earlier_runs_sources_are_offered_as_a_library_and_reused_without_a_download(self):
+        """2026-09-30: the rebuilt series research anew, with the stored corpus as a starting library."""
+        seen = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is ResearchDiscovery:
+                seen.append(json.loads(prompt.splitlines()[-1]))
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            first = run_research(self.root)
+        self.assertEqual(first.status, "completed")
+        self.assertNotIn("library", seen[0])
+        downloads = self.download.call_count
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            second = run_research(self.root, seed_corpus=first.run_id)
+        self.assertEqual(second.status, "completed")
+        self.assertEqual([row["url"] for row in seen[1]["library"]], ["https://example.org/paper0"])
+        self.assertEqual(self.download.call_count, downloads, "the stored copy is reused, not fetched again")
+        work = self.root / "runs" / second.run_id
+        index = json.loads((work / "source_index.json").read_text(encoding="utf-8"))
+        self.assertTrue(index["sources"][0]["raw_path"].startswith(f"sources/raw/{second.run_id}/"))
+        self.assertEqual(json.loads((work / "research_request.json").read_text(encoding="utf-8"))["seed_corpus"], first.run_id)
+        # A resume keeps its library; naming one again is refused, and a script run is no library.
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            self.assertEqual(run_research(self.root, resume=True, run_id=second.run_id).status, "completed")
+            with self.assertRaises(AppError):
+                run_research(self.root, resume=True, run_id=second.run_id, seed_corpus=first.run_id)
+
+    def test_a_first_search_over_its_limit_is_trimmed_and_a_paid_one_survives_a_stop(self):
+        """Asimov, 2026-09-30: 27 candidates against a limit of 26 threw the whole paid search away."""
+        from podcast_automate import research as research_module
+        calls = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is ResearchDiscovery:
+                calls.append(directory.name)
+                found = fixtures.discovery(count=14)
+                metadata = {"research_performed": True, "web_search_events": 1, "prompt_version": kwargs["prompt_version"]}
+                # What the real adapters keep in every call folder.
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / "response.json").write_text(found.model_dump_json(), encoding="utf-8")
+                (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+                return found, metadata
+            return self.model(prompt, output_type, directory, **kwargs)
+        real_write = research_module.write_json
+        stopped = []
+
+        def stop_once(path, data):
+            if path.name == "discovery.json" and not stopped:
+                stopped.append(path)
+                raise KeyboardInterrupt  # the worker stopped right after the paid search answered
+            return real_write(path, data)
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model), \
+                patch("podcast_automate.research.write_json", side_effect=stop_once), \
+                self.assertRaises(KeyboardInterrupt):
+            run_research(self.root)
+        run_id = next(p.name for p in (self.root / "runs").iterdir() if p.name.startswith("run_"))
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            resumed = run_research(self.root, resume=True, run_id=run_id)
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(len(calls), 1, "the resume adopts the saved answer instead of searching again")
+        saved = json.loads((self.root / "runs" / run_id / "discovery.json").read_text(encoding="utf-8"))
+        # No focus questions: a limit of 12; the two over it are named, not silently lost.
+        self.assertEqual(len(saved["candidates"]), 12)
+        self.assertIn("Über dem Quellenlimit der ersten Suche", saved["limitations"][-1])
+        metadata = json.loads((self.root / "runs" / run_id / "discovery_metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["adopted_from"], calls[0])
+
     def test_every_failed_import_is_recorded_with_its_cause_and_code(self):
         """The retrieval report distinguishes an unreadable file from a duplicate, by code and by wording."""
         from podcast_automate.research_models import ResearchDiscovery
@@ -277,10 +346,17 @@ class ResearchTests(fixtures.ResearchProjectCase):
             return self.model(prompt, output_type, directory, **kwargs)
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
             self.assertEqual(run_research(self.root).status, "completed")
-        self.assertEqual([version for version, _ in seen], ["research_discovery.v4-independence"])
+        # v5 (2026-09-30) types every candidate and treats attachments as maps; independence stays required.
+        self.assertEqual([version for version, _ in seen], ["research_discovery.v5-types"])
         self.assertIn("For every empirical or performance claim family, include at least one source not "
                       "authored by the organisation making the claim, or state in limitations that none "
                       "was found.", seen[0][1])
+        self.assertIn("Give every candidate its source_type", seen[0][1])
+        self.assertIn("Attachments are maps, not evidence", seen[0][1])
+        payload = json.loads(seen[0][1].splitlines()[-1])
+        self.assertEqual(payload["research_date"], run_date(next(p for p in (self.root / "runs").iterdir()
+                                                                  if p.name.startswith("run_"))))
+        self.assertNotIn("recency_months", payload, "no rule unless the brief sets one")
 
     def test_open_questions_carry_what_the_corpus_probe_found(self):
         """An open question reaches ``open_questions.md`` only through an accepted gap: one task
@@ -493,14 +569,19 @@ class ResearchTests(fixtures.ResearchProjectCase):
         self.assertEqual(second.stages["discovery"].attempts, 1)
         self.assertEqual(self.download.call_count, 1)
 
-    def test_source_limit_rejects_excess_search_results(self):
+    def test_source_limit_trims_excess_search_results_and_never_loads_more(self):
+        """Since 2026-09-30 an excess is trimmed to the limit and named instead of discarding the paid search;
+        the limit itself still holds: never more downloads than approved sources."""
         data = self.config.model_dump(mode="json")
         data["research_limits"]["sources"] = 1
         write_yaml(self.root / "project.yaml", data)
-        with patch("podcast_automate.research.CodexAdapter.structured", return_value=(discovery(count=2), {})):
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=lambda prompt, output_type, *a, **k:
+                   (discovery(count=2), {}) if output_type is ResearchDiscovery else self.model(prompt, output_type, *a, **k)):
             run = run_research(self.root)
-        self.assertEqual(run.stages["discovery"].error.code, "invalid_model_output")
-        self.assertEqual(self.download.call_count, 0)
+        saved = json.loads((self.root / "runs" / run.run_id / "discovery.json").read_text(encoding="utf-8"))
+        self.assertEqual([c["url"] for c in saved["candidates"]], ["https://example.org/paper0"])
+        self.assertIn("Paper 1", saved["limitations"][-1])
+        self.assertEqual(self.download.call_count, 1)
 
     def test_failed_rebuild_marks_downstream_stages_pending(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):

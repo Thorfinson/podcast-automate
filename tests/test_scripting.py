@@ -591,8 +591,11 @@ class ScriptValidationTests(unittest.TestCase):
         script = example_script()
         script.segments[0].text = "See https://example.org/source"
         self.assertTrue(any("metadata" in item for item in validate_script(script, example_plan().episodes[0])))
-        script.segments[0].text = "word " * 3900
-        self.assertTrue(any("30 minutes" in item for item in validate_script(script, example_plan().episodes[0])))
+        # Up to an hour since 2026-09-30 (script_models.MAX_EPISODE_MINUTES); 40 minutes pass, 65 do not.
+        script.segments[0].text = "word " * 5200
+        self.assertFalse(any("minutes;" in item for item in validate_script(script, example_plan().episodes[0])))
+        script.segments[0].text = "word " * 8450
+        self.assertTrue(any("60 minutes" in item for item in validate_script(script, example_plan().episodes[0])))
 
     def test_script_duration_matches_plan_without_treating_slow_estimate_as_measured_audio(self):
         entry = example_plan().episodes[0]

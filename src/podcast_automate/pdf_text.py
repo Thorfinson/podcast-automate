@@ -55,6 +55,10 @@ def extract_pdf(raw: bytes) -> dict:
     if reader.metadata:
         metadata = {"title": str(reader.metadata.title or ""),
                     "authors": [str(reader.metadata.author)] if reader.metadata.author else []}
+        # The document's own creation date (D:YYYYMMDD…), so a recency rule can see how old a PDF is.
+        created = str(reader.metadata.get("/CreationDate") or "")
+        if re.match(r"D:\d{8}", created):
+            metadata["published_date"] = f"{created[2:6]}-{created[6:8]}-{created[8:10]}"
     metadata["extraction_coverage"] = coverage
     return {"metadata": metadata, "blocks": blocks}
 

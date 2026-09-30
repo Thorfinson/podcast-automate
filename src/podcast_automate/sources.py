@@ -369,8 +369,64 @@ def import_failure(address, exc):
     return {"source": address, "reason": str(exc), "code": getattr(exc, "code", "import_failed")}
 
 
+def load_library(root: Path, run_id: str | None) -> dict:
+    """The documents an earlier research run stored, by canonical address: a new run's starting library
+    (2026-09-30, the user's choice for the rebuilt series). A document whose raw file changed, or whose text was
+    extracted by an older parser, is left out and fetched again if chosen; user material never joins."""
+    library = {}
+    if not run_id:
+        return library
+    folder = root / "sources/processed" / run_id
+    for path in sorted(folder.glob("src_*.json")):
+        try:
+            document = SourceDocument.model_validate_json(path.read_text(encoding="utf-8"))
+            raw = root / document.raw_path
+            if (not document.url or document.extraction_version != EXTRACTION_VERSION or not raw.is_file()
+                    or file_hash(raw) != document.raw_hash):
+                continue
+        except (OSError, ValueError):
+            continue
+        for url in (document.url, document.final_url):
+            if url:
+                library[canonical_url(url)] = document
+    return library
+
+
+def library_view(library, limit=200):
+    """What the discovery sees of the library: one line per document."""
+    rows, seen = [], set()
+    for document in library.values():
+        if document.id in seen:
+            continue
+        seen.add(document.id)
+        rows.append({"title": document.title, "url": document.final_url or document.url,
+                     **({"type": document.source_type} if document.source_type != "unknown" else {}),
+                     **({"published": document.published_date} if document.published_date else {})})
+    return rows[:limit]
+
+
+def adopt_from_library(document, candidate, root: Path, run_id: str):
+    """Copy a library document into this run instead of downloading it again; a type the new search gave wins."""
+    old_raw = root / document.raw_path
+    raw_path = root / "sources/raw" / run_id / f"{document.id}{old_raw.suffix}"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    if not raw_path.exists():
+        raw_path.write_bytes(old_raw.read_bytes())
+    adopted = document.model_copy(update={
+        "raw_path": raw_path.relative_to(root).as_posix(), "imported_at": now(),
+        "source_type": candidate.source_type if candidate.source_type != "unknown" else document.source_type})
+    processed = root / "sources/processed" / run_id / f"{document.id}.json"
+    write_json(processed, adopted.model_dump(mode="json"))
+    return adopted, processed
+
+
 def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local: Path | None = None,
-                  downloaded: tuple[bytes, str, str] | None = None) -> tuple[SourceDocument, Path]:
+                  downloaded: tuple[bytes, str, str] | None = None, library: dict | None = None
+                  ) -> tuple[SourceDocument, Path]:
+    if library and local is None and downloaded is None:
+        stored = library.get(canonical_url(candidate.url))
+        if stored is not None:
+            return adopt_from_library(stored, candidate, root, run_id)
     address = str(local.resolve()) if local else canonical_url(candidate.url)
     source_id = "src_" + hashlib.sha256(address.encode()).hexdigest()[:16]
     extracted = None
@@ -410,6 +466,8 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
         id=source_id, extraction_version=EXTRACTION_VERSION, type=kind, title=clean(metadata.get("title") or "") or candidate.title,
         authors=metadata.get("authors") or candidate.authors,
         published_date=metadata.get("published_date") or candidate.published_date,
+        date_basis="document" if metadata.get("published_date") else "search_result" if candidate.published_date else "unknown",
+        source_type=candidate.source_type,
         imported_at=now(), url=candidate.url if not local else "", final_url=final_url,
         language=metadata.get("language", "unknown"),
         reliability_note=("User-supplied local material; provenance and factual claims have not been independently verified. "

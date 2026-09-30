@@ -275,6 +275,41 @@ class AcceptedGapTests(WorkflowCase):
         self.assertEqual(self.run_engine().state["phase"], "completed")
         self.assertEqual(len(self.fixture.calls), calls)
 
+    def test_a_synthesis_goes_on_without_a_prerequisite_accepted_as_a_gap(self):
+        # Ontologies, 2026-09-30: the closing question hung on 48 tasks, and one accepted gap among them would block it.
+        gaps = []
+
+        def flow(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical"),
+                                           dict(task_value("task_follow", "mechanism"), depends_on=["task_empirical"]),
+                                           dict(task_value("task_summary", "synthesis"),
+                                                depends_on=["task_definition", "task_empirical"])])
+            if schema is ResearchDecision and payload["task"]["kind"] == "empirical":
+                return decision("blocked")
+            if schema in {ResearchDecision, AnswerReview} and payload["task"]["id"] == "task_summary":
+                gaps.append(payload.get("prerequisite_gaps"))
+        self.fixture.hook = flow
+        with self.assertRaises(AppError) as blocked:
+            self.run_engine()
+        self.assertEqual(blocked.exception.code, "research_questions_blocked")
+        state = read_value(self.work / "question_research/state.json")
+        self.assertEqual([state["tasks"][t]["outcome"] for t in ("task_follow", "task_summary")], ["prerequisite_block"] * 2)
+        self.assertEqual(gaps, [], "nothing is summarised while the prerequisite is only blocked")
+        approve_research_gap(self.root, "run_test", "task_empirical", "Kein Test nötig")
+        with self.assertRaises(AppError) as again:
+            self.run_engine()
+        self.assertEqual(again.exception.code, "research_questions_blocked", "any other dependent still needs its prerequisite")
+        state = read_value(self.work / "question_research/state.json")
+        summary = state["tasks"]["task_summary"]
+        self.assertEqual((summary["status"], list(summary["verification"]["prerequisite_hashes"])), ("verified", ["task_definition"]))
+        self.assertEqual(state["tasks"]["task_follow"]["outcome"], "prerequisite_block")
+        self.assertTrue(gaps and all(g == [{"task_id": "task_empirical", "question": "What is energy?", "reason": "Kein Test nötig"}]
+                                     for g in gaps), "the reader and the review are told which prerequisite is missing")
+        # The resume accepts the verified synthesis beside its gap instead of calling the checkpoint inconsistent.
+        approve_research_gap(self.root, "run_test", "task_follow", "Folgt aus der Lücke")
+        self.assertEqual(self.run_engine().state["phase"], "completed")
+
     def test_an_evidence_block_after_a_failed_review_takes_the_same_gap_approval_path(self):
         def flow(prompt, schema, payload, kwargs):
             if schema is QuestionPlan:

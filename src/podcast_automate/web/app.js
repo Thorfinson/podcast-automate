@@ -341,6 +341,13 @@ function setupSelection() {
     audio:draft?.audio_settings||currentAudio(),
     execution:draft?.execution||project?.execution||{text:"sequential",audio:"sequential"}};
 }
+// What the series is for (TopicBrief.series_goal): each aim weighted 0 to 3; unset means the evaluating default.
+const GOAL_NAMES={understand:"Verstehen",evaluate:"Bewerten",apply:"Anwenden"};
+function goalSummary(goal) {
+  if(!goal)return "Nicht festgelegt · die Recherche prüft vor allem, was hält";
+  const parts=Object.keys(GOAL_NAMES).filter(key=>Number(goal[key])>0).sort((a,b)=>Number(goal[b])-Number(goal[a]));
+  return parts.map(key=>`${GOAL_NAMES[key]} ${"●".repeat(Number(goal[key]))}${"○".repeat(3-Number(goal[key]))}`).join(" · ")||"Nicht festgelegt";
+}
 function setupSummary() {
   const {proposal,config:c,text:t,audio:a,execution:x}=setupSelection();
   if(!project)return "";
@@ -349,6 +356,8 @@ function setupSummary() {
     <dl><dt>Thema</dt><dd>${escape(c.topic)}</dd><dt>Leitfrage</dt><dd>${escape(c.central_question||"Noch zu klären")}</dd>
     <dt>Sprache und Umfang</dt><dd>${c.language==="en-US"?"English":"Deutsch"} · ${c.target_total_minutes?escape(c.target_total_minutes)+" Minuten":"Länge nach Erklärbedarf"}</dd>
     <dt>Vorwissen und Tiefe</dt><dd>${escape(c.prior_knowledge||"Keine besonderen Vorkenntnisse")} · ${escape(c.depth_request)}</dd>
+    <dt>Ziel der Serie</dt><dd>${escape(goalSummary(c.series_goal))}</dd>
+    <dt>Aktualität der Quellen</dt><dd>${c.recency_months?`Praxis-, Werkzeug- und Benchmarkquellen der letzten ${Number(c.recency_months)} Monate; Grundlagen und Standards dürfen älter sein und werden mit Jahr genannt`:"Keine Vorgabe"}</dd>
     ${c.focus_questions?.length?`<dt>Schwerpunkte</dt><dd>${c.focus_questions.map(escape).join(" · ")}</dd>`:""}
     ${c.excluded_topics?.length?`<dt>Ausgenommen</dt><dd>${c.excluded_topics.map(escape).join(" · ")}</dd>`:""}
     ${c.seed_urls?.length?`<dt>Quellenlinks</dt><dd>${c.seed_urls.map(escape).join(" · ")}</dd>`:""}
@@ -582,7 +591,7 @@ function renderResearch() {
   html+='<div id="stop-card"></div>';
   const run=currentRun(), researching=run?.kind==="research"&&run.status!=="completed";
   const attachments=project.attachments?.length?`<section class="panel"><h2>Deine Ausgangsmaterialien</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">Diese Dateien werden als lokale Quellen eingelesen. Aussagen aus deinen Notizen werden anhand weiterer Quellen geprüft. Sehr kurze Notizen dienen vor allem der Projektbeschreibung.</p></section>`:"";
-  const brief=`<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">${researchProviderTag()}</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht auf dieser Seite; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>${researching?"Das startet einen neuen Recherchelauf mit neuem Plan und neuer Hochrechnung. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt.":"Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen."}</p><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
+  const brief=`<section class="panel"><div class="panel-title"><h2>Quellen und Erkenntnisse</h2><span class="tag">${researchProviderTag()}</span></div><p>Der gespeicherte Auftrag: <strong>${escape(project.config.central_question||project.config.topic)}</strong></p><div class="actions">${researching?'<p>Die aktuelle Recherche ist noch nicht abgeschlossen. Der Prüfstand steht auf dieser Seite; das Inhaltsverzeichnis folgt erst nach bestandener Qualitätsprüfung.</p>':project.research?(project.outline?'<button data-step="2">Zum Inhaltsverzeichnis →</button>':`<button data-action="plan" ${disabled()}>Inhaltsverzeichnis entwerfen →</button>`):`<button data-action="research" ${disabled()}>Recherche starten</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>Recherche neu beginnen</summary><p>${researching?"Das startet einen neuen Recherchelauf mit neuem Plan und neuer Hochrechnung. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt.":"Das startet einen neuen Recherchelauf. Den bisherigen Stand kannst du unten lesen."}</p><label class="check"><input type="checkbox" id="seed-corpus" checked> Quellen der bisherigen Recherche als Startbibliothek anbieten: gewählte werden übernommen statt neu geladen, gesucht wird trotzdem neu und aktuell</label><button class="secondary" data-action="research" ${disabled()}>Neu recherchieren</button></details>`:'<p class="hint">Quellen suchen, lesen, nachrecherchieren und prüfen läuft nach dem Start automatisch.</p>'}</section>`;
   if(researching||(!project.research&&project.job?.progress?.phase==="research"))
     return html+`<div class="split"><div class="split-main"><div id="research-progress"></div>${project.research?`<section class="panel"><h2>Bisheriges Dossier · wird neu recherchiert</h2><article class="markdown-document">${renderMarkdown(project.research)}</article></section>`:""}</div><aside class="split-rail"><div id="research-live"></div>${brief}${attachments}</aside></div>`;
   if(project.research){
@@ -863,7 +872,9 @@ function proposalChangesBrief() {
   const c=project?.config||{};
   const differs=key=>JSON.stringify(proposal[key]??null)!==JSON.stringify(c[key]??null);
   if(["topic","central_question","prior_knowledge","depth_request","focus_questions","excluded_topics","target_total_minutes"].some(differs))return true;
-  if(["language","seed_urls"].some(key=>proposal[key]!=null&&differs(key)))return true;
+  if(["language","seed_urls","series_goal"].some(key=>proposal[key]!=null&&differs(key)))return true;
+  // recency_months 0 in a proposal removes a saved rule.
+  if(proposal.recency_months!=null&&(proposal.recency_months||null)!==(c.recency_months??null))return true;
   const a=proposal.audio_settings;
   return !!(a&&a.provider==="qwen3_local"&&JSON.stringify(a.voices)!==JSON.stringify(c.voice_profile));
 }
@@ -1459,7 +1470,8 @@ const adviceCallLimit=ledger=>{
   return Number(b.used)+Math.ceil((Number(b.minimum_remaining_calls)+unadvised(ledger)*(1+perTask)+waiting*perTask)*11/10);
 };
 // Blocked questions a resume moves on without a decision of their own: with the finish requested, those whose
-// reworks are spent; and one that only waits for prerequisites that passed or are themselves moving on.
+// reworks are spent; and one that only waits for prerequisites that passed or are themselves moving on. A
+// synthesis also goes on without a prerequisite accepted as a gap.
 function blockedSettled(ledger) {
   const rows=ledger?.questions||[], byId=new Map(rows.map(q=>[q.id,q])), memo=new Map();
   const settled=(q,seen=new Set())=>{
@@ -1468,7 +1480,8 @@ function blockedSettled(ledger) {
     if(ledger?.residual_finish&&q.outcome==="audit_block")result=true;
     else if(q.outcome==="prerequisite_block"&&!seen.has(q.id)){
       seen.add(q.id);
-      result=(q.depends_on||[]).every(id=>{const d=byId.get(id);return d&&(d.status==="verified"||(d.status==="blocked"&&!d.accepted_gap&&settled(d,seen)));});
+      result=(q.depends_on||[]).every(id=>{const d=byId.get(id);return d&&(d.status==="verified"||(q.kind==="synthesis"&&d.accepted_gap)
+        ||(d.status==="blocked"&&!d.accepted_gap&&settled(d,seen)));});
     }
     memo.set(q.id,result);return result;
   };
@@ -1622,9 +1635,13 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
   const activeIds=activeTasks(ledger), all=ledger.questions||[];
   // A blocked question names its cause and when it is decided: the decision card appears only once the run stops.
   const blockedNote=row=>{
-    const prerequisites=all.filter(q=>(row.depends_on||[]).includes(q.id)&&q.status!=="verified");
-    const waiting=row.outcome==="prerequisite_block"&&prerequisites.length&&!prerequisites.some(q=>q.accepted_gap);
-    const cause=waiting?`Wartet auf: ${prerequisites.map(q=>q.question).join("; ")}`:row.reason;
+    // A synthesis goes on without a prerequisite accepted as a gap; any other question stays blocked by it.
+    const gapTolerant=row.kind==="synthesis";
+    const prerequisites=all.filter(q=>(row.depends_on||[]).includes(q.id)&&q.status!=="verified"&&!(gapTolerant&&q.accepted_gap));
+    const waiting=row.outcome==="prerequisite_block"&&!prerequisites.some(q=>q.accepted_gap)
+      &&(prerequisites.length>0||gapTolerant);
+    const cause=waiting?(prerequisites.length?`Wartet auf: ${prerequisites.map(q=>q.question).join("; ")}`
+      :"Die offenen Voraussetzungen sind als Lücke akzeptiert; „Fortsetzen“ fasst ohne sie zusammen und nennt die Lücken."):row.reason;
     // The counted web searches, next to the model's own wording: with the run's rounds used up it searched only what was read.
     const web=Number(row.web_attempts||0), exhausted=searchLimit>0&&searchRounds>=searchLimit;
     const fetched=Number(ledger.source_attempt_count||0), full=sourceLimit>0&&fetched>=sourceLimit;
@@ -1634,7 +1651,8 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
     const searched=waiting?"":`<p class="hint">Websuchen für diese Frage: ${web}${spent.map(text=>` · ${text}`).join("")}.${spent.length&&!web?` Sie hat deshalb nur in den schon gelesenen Quellen gesucht; auch ein neuer Versuch sucht erst wieder im Web, wenn du ${raise} erhöhst.`:""}</p>`;
     const decision=row.retry_requested?"Ein neuer Versuch ist angefordert; „Fortsetzen“ startet ihn."
       :row.reopenable?"Das Web wurde für diese Teilfrage noch nicht durchsucht; „Fortsetzen“ holt das nach."
-      :waiting?`Ein neuer Versuch der Voraussetzung nimmt diese Frage automatisch wieder auf.${active?" Entscheiden kannst du, wenn der Lauf anhält.":""}`
+      :waiting&&!prerequisites.length?"„Fortsetzen“ nimmt diese Frage wieder auf."
+      :waiting?`Ein neuer Versuch der Voraussetzung nimmt diese Frage automatisch wieder auf.${gapTolerant?" Akzeptierst du eine Voraussetzung als Lücke, fasst diese Synthese ohne sie zusammen.":""}${active?" Entscheiden kannst du, wenn der Lauf anhält.":""}`
       :active?"Entscheiden musst du erst, wenn der Lauf anhält. Dann steht diese Frage oben unter „Wartet auf dich“, mit „Noch einmal versuchen“ und „Als Lücke akzeptieren“. Bis dahin arbeitet der Lauf an den übrigen Fragen weiter."
       :"Entscheide oben unter „Wartet auf dich“: noch einmal versuchen oder als Lücke akzeptieren.";
     return `<div class="note"><p><strong>Blockiert: ${escape(outcomes[row.outcome]||"Beleg fehlt")}</strong>${cause?` · ${escape(cause)}`:""}</p>${searched}${row.advice?`<p><strong>Beratung:</strong> ${escape(row.advice.diagnosis)}</p>`:""}<p>${decision}</p></div>`;
@@ -2387,6 +2405,7 @@ document.addEventListener("click",event=>{
       extra.language=setupSelection().config.language;extra.approve_samples=true;
       await storeKey();
     }
+    if(action==="research"&&$("seed-corpus")?.checked)extra.seed_corpus=true;
     if(action==="replan")extra.message=$(button.dataset.feedback||"outline-feedback")?.value||"";
     if(action==="script")extra.plan_hash=project.outline.hash;
     if(action==="revise"){extra.message=$("script-feedback").value;extra.episode=project.episodes[episodeIndex].script.episode_id;}

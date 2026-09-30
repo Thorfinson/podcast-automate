@@ -19,7 +19,7 @@ from podcast_automate.script_models import SeriesPlan
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.speech import AudioChoice, audio_generation_record
 from podcast_automate.storage import digest, file_hash, init_project, project_hash, read_yaml, write_json, write_yaml
-from podcast_automate.studio import BriefProposal, Studio, make_server, record_interruption
+from podcast_automate.studio import BriefProposal, Studio, make_server, read_json, record_interruption
 from podcast_automate.studio_worker import perform, probe_key
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
@@ -621,6 +621,25 @@ class StudioHttpTests(unittest.TestCase):
         data = {"config":self.config.model_dump(), "text":{"provider":"openrouter", "model":None}}
         self.assertEqual(self.request("/api/projects", data)[0], 400)
         self.assertEqual(len(list((self.workspace / "projects").glob("*/project.yaml"))), 1)
+
+    def test_a_proposal_sets_the_series_goal_and_recency_and_zero_removes_the_rule(self):
+        def apply(**fields):
+            proposal = BriefProposal(message="So?", topic="A test project", central_question="Why?", prior_knowledge="",
+                                     depth_request="Deep", focus_questions=[], excluded_topics=[], **fields)
+            chat = read_json(self.root / "studio/chat.json", []) if (self.root / "studio/chat.json").exists() else []
+            write_json(self.root / "studio/chat.json", [*chat, {"role": "assistant", **proposal.model_dump()}])
+            detail = self.app.detail("example")
+            self.assertFalse(detail["proposal_applied"])
+            self.app.apply_proposal("example", {key: detail[key] for key in
+                                                ("proposal_hash", "config_hash", "audio_hash", "execution_hash")})
+            return read_yaml(self.root / "project.yaml")
+        saved = apply(series_goal={"understand": 1, "evaluate": 1, "apply": 3}, recency_months=6)
+        self.assertEqual((saved["series_goal"], saved["recency_months"]), ({"understand": 1, "evaluate": 1, "apply": 3}, 6))
+        # Unset in a later proposal keeps both; recency 0 removes the rule, the goal stays.
+        self.assertEqual(apply()["recency_months"], 6)
+        saved = apply(recency_months=0)
+        self.assertNotIn("recency_months", saved)
+        self.assertEqual(saved["series_goal"]["apply"], 3)
 
     def test_a_new_german_project_asks_jev_by_default_and_an_english_one_does_not(self):
         for language, expected in (("de-DE", (True, True)), ("en-US", (False, False))):

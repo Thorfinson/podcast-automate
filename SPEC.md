@@ -229,7 +229,7 @@ Bei Gesundheitsthemen gehören aktuelle fachliche Primärquellen und Leitlinien 
 
 Die Serie ist das Standardprodukt. Ihre Länge ergibt sich aus Teilfragen, notwendigen Grundlagen, Erklärabhängigkeiten und gewünschter Tiefe. Zuerst wird der inhaltlich nötige Umfang geplant, daraus folgen die Episoden und ihre geschätzte Gesamtdauer. Es gibt weder eine allgemeine Mindest- oder Höchstdauer der Serie noch eine festgelegte Folgenzahl.
 
-- Keine Folge darf 30 Minuten überschreiten.
+- Keine Folge darf 60 Minuten überschreiten (seit 30.09.2026, vorher 30); die Vertonung teilt sie in Teile von höchstens 30 Minuten.
 - Die geschätzte Gesamtdauer ist die Summe der Folgenlaufzeiten und ein Ergebnis der Planung. Sie muss keinen vorgegebenen Stundenbereich treffen.
 - Benötigt das Thema mehr Raum, wird die Serie um inhaltlich begründete Folgen erweitert. Die Erweiterung ist kein Qualitätsfehler.
 - Eine Serie ist inhaltlich vollständig, wenn ihre priorisierten Fragen in der gewünschten Tiefe beantwortet oder ihre fachlichen Grenzen nachvollziehbar eingeordnet sind.
@@ -281,7 +281,7 @@ Die Abo-Kontingente gelten auch für automatisierte Aufrufe. Fertige Stufenergeb
 | `series_script_check` | Ja für neue vollständige Skriptläufe | Die finalen Texte aller geplanten Folgen werden gemeinsam auf Abdeckung, Voraussetzungen, Fortschritt, vertagte Kernfragen und Synthese geprüft. Teilaufträge und ältere Läufe erhalten keine nachträgliche Gesamtfreigabe. |
 | `continuity_check` | Ja bei Verständnisbruch | Reihenfolge und Übergänge funktionieren; Begriffe werden vor ihrer notwendigen Verwendung erklärt. |
 | `redundancy_check` | Warnung | Unnötige Wiederholungen innerhalb und zwischen Folgen ersetzen keine Vertiefung. |
-| `duration_check` | Ja | Geplante und geschätzte Laufzeit bleiben je Folge bei höchstens 30 Minuten; vor Audio-Export gilt zusätzlich die gemessene Dauer. |
+| `duration_check` | Ja | Geplante und geschätzte Laufzeit bleiben je Folge bei höchstens 60 Minuten; jeder Audioteil dauert höchstens 30 Minuten, gemessen vor dem Export. |
 | `rights_check` | Geplantes Gate | Individuelle Rechtezustände und Exportsperren sind noch nicht implementiert. Aktuell gelten ausschließlich private Nutzung und die deterministischen Dossier-Zitatgrenzen; siehe Abschnitt 11. |
 | `audio_readiness_check` | Ja vor Rendern | Sprecher, gesprochener Text, Pausen und Kapitel sind eindeutig. |
 | `audio_output_check` | Ja vor finalem Audioexport | Alle Segmente sind vorhanden und technisch gültig; Montage, gemessene Dauer und Kapitel stimmen überein. |
@@ -347,7 +347,7 @@ Der MVP ist fertig, wenn:
 
 - ein Thema ohne vorbereiteten Quellenordner zu einer recherchierten Serie führt,
 - alle Pflichtartefakte existieren und ihre strukturierten Daten gegen implementierte Schemas validieren,
-- eine vollständige Pilotserie ihren Themenauftrag in der gewünschten Tiefe abdeckt und jede Audiofolge höchstens 30 Minuten dauert,
+- eine vollständige Pilotserie ihren Themenauftrag in der gewünschten Tiefe abdeckt und jeder Audioteil höchstens 30 Minuten dauert,
 - zusätzliche inhaltlich nötige Folgen ohne feste Gesamtzeit- oder Folgenbegrenzung geplant und erzeugt werden können,
 - geplante und tatsächliche Gesamtdauer sichtbar sind; ein ausdrücklich genannter Zeitwunsch wird separat ausgewiesen,
 - Folgen aufeinander aufbauen und zentrale Fragen ausführlich beantworten,

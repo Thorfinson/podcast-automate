@@ -9,7 +9,7 @@ from .sources import clean
 SCRIPT_EVIDENCE_INSTRUCTIONS = fragment("script_evidence_instructions")
 
 
-def settle_receipts(review, script):
+def settle_receipts(review, script, anchors=None):
     """Read two receipt slips the way they were meant, instead of asking the whole review again.
 
     A segment that cites findings but was judged ``no_research_claim`` holds nothing the review found drifting:
@@ -26,6 +26,9 @@ def settle_receipts(review, script):
         refs = list(segment.knowledge_refs)
         if check.verdict == "no_research_claim":
             check.verdict, check.finding_ids, check.changed_fields = "preserved", refs, []
+            # Read as preserved against the findings' own anchors, which the review had in front of it.
+            if anchors is not None and not check.source_refs:
+                check.source_refs = list(dict.fromkeys(ref for f in refs for ref in anchors.get(f, [])))
             settled.append(check.segment_id)
         elif set(check.finding_ids) != set(refs):
             check.finding_ids = refs
@@ -35,8 +38,9 @@ def settle_receipts(review, script):
     return review
 
 
-def receipt_defects(check, segment, known):
-    """Why one claim check does not fit its segment, one sentence per broken rule."""
+def receipt_defects(check, segment, known, sections=None):
+    """Why one claim check does not fit its segment, one sentence per broken rule. ``sections`` are the source
+    section references the review was given; a preserved segment names those it was compared with."""
     refs, sid = sorted(segment.knowledge_refs), check.segment_id
     defects = []
     if clean(check.quote) not in clean(segment.text):
@@ -55,10 +59,17 @@ def receipt_defects(check, segment, known):
                        "drift when it asserts a research fact.")
     if check.verdict == "drift" and not check.changed_fields:
         defects.append(f"{sid}: drift must name its changed_fields.")
+    if sections and check.verdict == "preserved" and refs:
+        if not check.source_refs:
+            defects.append(f"{sid}: name in source_refs the supplied source sections you compared the segment with, "
+                           "not only its findings.")
+        elif not set(check.source_refs) <= sections:
+            defects.append(f"{sid}: source_refs {sorted(set(check.source_refs) - sections)} are not supplied source "
+                           "sections.")
     return defects
 
 
-def validate_claim_checks(review, script, findings, *, required=True):
+def validate_claim_checks(review, script, findings, *, required=True, sections=None):
     if not required and not review.claim_checks:
         return []
     segments = {s.segment_id: s for s in script.segments}
@@ -68,7 +79,7 @@ def validate_claim_checks(review, script, findings, *, required=True):
     known = {f.id for f in findings}
     issues, defects = [], []
     for check in review.claim_checks:
-        defects += receipt_defects(check, segments[check.segment_id], known)
+        defects += receipt_defects(check, segments[check.segment_id], known, sections)
     if defects:
         # Named per segment and rule, so the correction can be acted on (Ontologies ep_006, 2026-09-29: three
         # answers judged an illustration citing findings no_research_claim, and the bare message never said why).

@@ -338,6 +338,26 @@ class ProjectHashTests(unittest.TestCase):
         self.assertNotEqual(project_hash(named), project_hash(config))
         self.assertEqual(project_hash(named), digest(named.model_dump(mode="json")))
 
+    def test_series_goal_and_recency_leave_every_dump_unchanged_while_unset(self):
+        """Added 2026-09-30; a brief without them hashes and dumps exactly as before, also in the Python-mode dump
+        that teaching supplements bind to."""
+        config = TopicBrief(topic="Hash stability")
+        for mode in ("json", "python"):
+            self.assertFalse({"series_goal", "recency_months"} & set(config.model_dump(mode=mode)), mode)
+        legacy = {k: v for k, v in config.model_dump(mode="json").items() if k != "host_names"}
+        self.assertEqual(project_hash(config), digest(legacy))
+        aimed = config.model_copy(update={"series_goal": {"understand": 3, "evaluate": 1, "apply": 0},
+                                          "recency_months": 6})
+        self.assertEqual((aimed.model_dump(mode="json")["series_goal"]["understand"],
+                          aimed.model_dump(mode="json")["recency_months"]), (3, 6))
+        self.assertNotEqual(project_hash(aimed), project_hash(config))
+        # Stored as written and read back unchanged; a goal needs at least one aim above zero.
+        self.assertEqual(TopicBrief.model_validate(aimed.model_dump(mode="json")), aimed)
+        for wrong in ({"series_goal": {"understand": 0, "evaluate": 0, "apply": 0}},
+                      {"series_goal": {"understand": 4, "evaluate": 0, "apply": 0}}, {"recency_months": 0}):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                TopicBrief.model_validate({**config.model_dump(mode="json"), **wrong})
+
     def test_a_recorded_run_still_matches_its_unchanged_project(self):
         from podcast_automate.models import RunManifest, StageRecord
         from podcast_automate.storage import init_project

@@ -6,7 +6,12 @@ Return checked_episodes in the supplied order and exactly one check for each cri
 prerequisites (required ideas are explained before use, without contradictory definitions),
 progression (each episode advances the explanation), deferred_questions (core obligations deferred
 earlier are eventually answered or honestly delimited within the agreed scope), synthesis (the final
-script connects the series' actual results to its central question). Flag contradictions, lost core
+script assembles what each episode contributed into a reasoned answer to its central question, rather
+than presenting mostly new material), arc (each episode says what it adds to the series' answer and
+closes with what the listener now knows toward the central question), and only when listed in
+criteria: exposition (each major idea or theory is explained in its own logic, attributed to its
+author, before its tests and critiques) and guidance (the series gives concrete, labelled practice
+recommendations built on its findings). Check exactly the criteria listed in criteria. Flag contradictions, lost core
 questions and broken dependencies as failures with a concrete correction. Do not expand the agreed
 scope or demand a separate episode for every finding. Brief useful recaps are allowed; nonblocking
 repetition belongs in warnings. Cite exact short quotes with episode_id AND segment_id for every

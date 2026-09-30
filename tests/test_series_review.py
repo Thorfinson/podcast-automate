@@ -11,7 +11,9 @@ from podcast_automate.models import EpisodeScript, TopicBrief
 from podcast_automate.script_checkpoints import finished
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
 from podcast_automate.script_models import ScriptReview, SeriesPlan
-from podcast_automate.series_review import SERIES_REVIEW_VERSION, SeriesReview, assess_series, load_series_review
+from podcast_automate.script_pipeline import REVIEW_REPAIR_VERSION
+from podcast_automate.series_review import (SERIES_REVIEW_PROMPT, SERIES_REVIEW_VERSION, SeriesReview, assess_series,
+                                            load_series_review)
 from podcast_automate.run_budget import approve_fresh_attempts
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
@@ -348,12 +350,12 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
                 # Writing, polishing and repairs each carry the episode under a different key.
                 episode = payload.get("episode") or payload.get("original_script") or payload.get("draft")
                 value.episode_id = episode["episode_id"]
-                if kwargs["prompt_version"] == "script_review_repair.v2-delete-absence" and on_repair:
+                if kwargs["prompt_version"] == REVIEW_REPAIR_VERSION and on_repair:
                     on_repair(value, payload)
             elif output_type is ScriptReview and on_review:
                 on_review(value, payload)
             elif output_type is SeriesReview and on_series:
-                on_series(value, self.versions.count(SERIES_REVIEW_VERSION), directory.parent.parent)
+                on_series(value, self.versions.count(SERIES_REVIEW_PROMPT), directory.parent.parent)
             return value, meta
         return model
 
@@ -390,11 +392,11 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             run = run_script(self.root)
         self.assertEqual(run.status, "completed")
         # One repair, one extra episode review and one series re-check; nothing else is repeated.
-        self.assertEqual(self.versions.count("script_review_repair.v2-delete-absence"), 1)
+        self.assertEqual(self.versions.count(REVIEW_REPAIR_VERSION), 1)
         # The review of the correction is scoped to the series issues and the changed segments (+followup).
         self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION), 2)
         self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION + "+followup"), 1)
-        self.assertEqual(self.versions.count(SERIES_REVIEW_VERSION), 2)
+        self.assertEqual(self.versions.count(SERIES_REVIEW_PROMPT), 2)
         work = self.root / "runs" / run.run_id
         published = read_yaml(self.root / "episodes/ep_002/script.yaml")
         self.assertTrue(published["segments"][-1]["text"].endswith(self.SENTENCE))
@@ -451,7 +453,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             resumed = run_script(self.root, resume=True, run_id=run_id)
         self.assertEqual(resumed.status, "completed")
         # Only the new verdict on the corrected series: no episode review, no second correction.
-        self.assertEqual(self.versions, [SERIES_REVIEW_VERSION])
+        self.assertEqual(self.versions, [SERIES_REVIEW_PROMPT])
         self.assertEqual(json.loads((work / "reviewed/ep_002.json").read_text(encoding="utf-8")), adopted)
         self.assertTrue(read_yaml(self.root / "episodes/ep_002/script.yaml")["segments"][-1]["text"].endswith(self.SENTENCE))
 
@@ -488,7 +490,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         self.assertFalse((work / "reviews/ep_002_before_series_repair.json").exists())
         self.assertFalse((self.root / "episodes/ep_002/script.yaml").exists())
         # Two attempts, the second against the check's own objections, before the correction is rejected.
-        self.assertEqual((self.versions.count("script_review_repair.v2-delete-absence"), self.versions.count(SERIES_REVIEW_VERSION)), (2, 1))
+        self.assertEqual((self.versions.count(REVIEW_REPAIR_VERSION), self.versions.count(SERIES_REVIEW_PROMPT)), (2, 1))
         receipt = json.loads((work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
         self.assertEqual((receipt["repairs"], receipt["failure"]["code"]), (1, "script_review_failed"))
         calls = len(self.versions)
@@ -503,7 +505,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.two_episode_model()):
             finished = run_script(self.root, resume=True, run_id=run.run_id)
         self.assertEqual(finished.status, "completed", finished.stages["review"].error)
-        self.assertEqual(self.versions.count(SERIES_REVIEW_VERSION), 2)
+        self.assertEqual(self.versions.count(SERIES_REVIEW_PROMPT), 2)
         self.assertTrue((self.root / "episodes/ep_002/script.yaml").exists())
 
     def test_a_stop_at_any_model_call_resumes_to_the_same_series_without_asking_again(self):
@@ -579,7 +581,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         self.assertFalse(json.loads((work / "reviewed/ep_002.json").read_text(encoding="utf-8"))
                          ["segments"][-1]["text"].endswith(self.SENTENCE))
         self.assertIn("reviews/ep_002_series_repair_rejected.json", run.stages["review"].error.message)
-        self.assertEqual(self.versions.count("script_review_repair.v2-delete-absence"), 3)
+        self.assertEqual(self.versions.count(REVIEW_REPAIR_VERSION), 3)
 
     def test_a_series_correction_the_check_rejects_once_is_adopted_on_its_second_attempt(self):
         """Ontologies ep_008, 2026-09-29: the only attempt restated an absence claim, the check named the fix, and

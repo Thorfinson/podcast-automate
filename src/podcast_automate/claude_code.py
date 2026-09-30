@@ -401,7 +401,9 @@ class ClaudeCodeAdapter:
             failure = contract_rejection(exc, payload, provider="Claude Code")
             write_rejected_output(directory, exc, {"code": failure.code, "message": str(failure), **receipt}, payload=payload)
             raise failure from exc
-        research_performed = bool(search_requests) or server_searches > 0
+        # An opened page is observed browsing too: a call that knows its URLs may fetch them without a query
+        # (Ontologies, 2026-09-30: the advisor opened six arXiv pages, searched none, and its answer was dropped).
+        research_performed = bool(search_items) or server_searches > 0
         if search and not research_performed:
             activity.finish("search_not_observed")
             raise AppError("Kein Websuch-Ereignis im Claude-Lauf nachgewiesen. Recherche nicht übernommen.",
