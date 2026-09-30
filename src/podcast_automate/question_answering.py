@@ -531,6 +531,17 @@ class TaskResearchMixin:
                 self.state["active_tasks"] = [task for task in self.state.get("active_tasks", []) if task != spec.id]
             self.save()
 
+    def answer_defects(self, spec, row, answer):
+        """What keeps an answer from going to review: its fixed checks, and a resubmitted failed draft."""
+        errors = answer_errors(answer, spec, self.reader, set(row["read_refs"]))
+        if any(f.claim_contract is None for f in answer.findings):
+            errors.append("Supply a structured claim_contract for every finding.")
+        # ``resubmit``: the draft failed under criteria an accepted access gap has narrowed since.
+        if (row["draft_answer"] and digest(answer.model_dump()) == digest(row["draft_answer"])
+                and row.get("resubmit") != digest(row["draft_answer"])):
+            errors.append("This identical answer already failed independent review. Address the specific feedback before resubmitting.")
+        return errors
+
     def answer_task(self, spec, row):
         if row["status"] == "pending":
             self.seed(spec, row)
@@ -580,7 +591,19 @@ class TaskResearchMixin:
                     text += " " + PREREQUISITE_GAP_READER
                     payload["prerequisite_gaps"] = gaps
                 prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
-                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=well_formed_decision)
+
+                def checked(candidate, final, spec=spec, row=row):
+                    """A deterministic answer defect is corrected at once, without spending a step; the last
+                    permitted answer takes the ordinary path, where its defects become feedback. Before, the
+                    reader often answered only in its last step, and a fixable quote blocked the question
+                    (Asimov, 2026-09-30: piketty_explain)."""
+                    well_formed_decision(candidate, final)
+                    if candidate.action == "answer" and not final and not row.get("answer_locked"):
+                        defects = self.answer_defects(spec, row, normalise_answer(candidate.answer))
+                        if defects:
+                            raise AppError("The answer fails its fixed checks; correct exactly these and answer again: "
+                                           + " ".join(defects), code="invalid_model_output", status="blocked")
+                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked)
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
                 self.save(f"{spec.question} · {decision.reason}")
@@ -606,13 +629,7 @@ class TaskResearchMixin:
                 row["feedback"] = list(dict.fromkeys([LOCK_FEEDBACK, *row["feedback"]]))
             elif action == "answer":
                 answer = normalise_answer(decision.answer)
-                errors = answer_errors(answer, spec, self.reader, set(row["read_refs"]))
-                if any(f.claim_contract is None for f in answer.findings):
-                    errors.append("Supply a structured claim_contract for every finding.")
-                # ``resubmit``: the draft failed under criteria an accepted access gap has narrowed since.
-                if (row["draft_answer"] and digest(answer.model_dump()) == digest(row["draft_answer"])
-                        and row.get("resubmit") != digest(row["draft_answer"])):
-                    errors.append("This identical answer already failed independent review. Address the specific feedback before resubmitting.")
+                errors = self.answer_defects(spec, row, answer)
                 if errors:
                     row["feedback"] = list(dict.fromkeys([*row["feedback"], *errors]))
                 else:

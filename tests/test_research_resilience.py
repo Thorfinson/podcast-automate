@@ -41,7 +41,7 @@ from podcast_automate.studio import make_server, read_json
 from podcast_automate.studio_progress import disputed_objection, disputed_objections, research_progress
 from podcast_automate.text_settings import auto_candidates
 from tests import research_fixtures as fixtures
-from tests.question_fixtures import answer_for, complete_fixture_response, decision, task_value
+from tests.question_fixtures import answer_for, complete_fixture_response, decision, question_response, task_value
 from tests.test_codex_stream import SERVER, Result
 from tests.test_provider_pool import QuotaFakes
 from tests.test_question_research import QuestionResearchTests
@@ -450,21 +450,51 @@ class RejectedReceiptTests(WorkflowCase):
 
     def test_persistent_reader_payload_mismatch_blocks_after_named_retries(self):
         self.fixture.hook = lambda prompt, schema, payload, kwargs: (
-            decision("answer", answer=answer_for(self.fixture.ref), web_queries=["energy"])
-            if schema is ResearchDecision else None)
+            decision("answer", web_queries=["energy"]) if schema is ResearchDecision else None)
         with self.assertRaises(AppError) as caught:
             self.run_engine()
         self.assertEqual((caught.exception.code, caught.exception.status), ("invalid_model_output", "blocked"))
-        self.assertIn("supplied: 'web_queries', 'answer'", str(caught.exception))
+        self.assertIn("Action 'answer' takes only 'answer'; supplied: 'web_queries'", str(caught.exception))
         self.assertIn("wiederholt", str(caught.exception))
         self.assertEqual(self.calls(ResearchDecision), 3)
 
     def test_decision_schema_reports_a_payload_mismatch_instead_of_failing(self):
         window = {"reference": self.fixture.ref, "before": 0, "after": 1}
+        search = {"query": "energy", "source_id": "", "offset": 0, "include_notes": False}
         self.assertIsNone(decision("blocked").payload_error())
         self.assertIsNone(decision("read", windows=[window]).payload_error())
+        # A spare field beside the action's own is ignored (Asimov, 2026-09-30: a fifth of all reader calls
+        # were asked again for one); the action's own field is still required, and blocking still takes none.
+        self.assertIsNone(decision("read", windows=[window], searches=[search]).payload_error())
+        self.assertIn("Action 'read' takes only 'windows'; supplied: 'searches'",
+                      decision("read", searches=[search]).payload_error())
         self.assertIn("Action 'blocked' takes no payload; supplied: 'windows'",
                       decision("blocked", windows=[window]).payload_error())
+
+    def test_a_fixable_answer_is_corrected_at_once_without_spending_a_step(self):
+        # Asimov, 2026-09-30: the reader answered in its last step, a quote was cut, and the question blocked.
+        prompts, cut = [], []
+
+        def cut_quote(prompt, schema, payload, kwargs):
+            if schema is not ResearchDecision:
+                return None
+            prompts.append(prompt)
+            chosen = question_response(prompt, schema)
+            if chosen is None or chosen.action != "answer" or cut:
+                return None
+            cut.append(chosen.model_copy(deep=True))
+            cut[0].answer.findings[0].evidence[0].excerpt = "Models assign ... energy"
+            return cut[0]
+        self.fixture.hook = cut_quote
+        row = self.run_engine().state["tasks"]["task_definition"]
+        self.assertTrue(cut, "the fixture answered and its first answer was cut")
+        self.assertEqual(row["status"], "verified")
+        self.assertEqual([a["action"] for a in row["actions"]].count("answer"), 1, "the cut answer spent no step")
+        self.assertEqual(self.calls(ResearchDecision), row["step"] + 1)
+        self.assertIn("correct exactly these", prompts[-1])
+        self.assertIn("It contains an ellipsis", prompts[-1])
+        rejected = next((self.work / "question_research/tasks").glob("*/attempt_0/step_*/reader_rejected_00.json"))
+        self.assertEqual(json.loads(rejected.read_text(encoding="utf-8"))["code"], "invalid_model_output")
 
     def fixture_review(self, payload):
         """The complete passing review of this fixture, as the parsed answer an adapter would validate."""
