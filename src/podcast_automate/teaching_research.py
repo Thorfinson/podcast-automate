@@ -17,7 +17,7 @@ from .models import Contract, Identifier, NonEmpty
 from .research import source_context
 from .research_models import Evidence, Finding, ResearchDiscovery, SourceIndex, admissible
 from .evidence_models import ClaimContract, FindingSupport, SourceAssessment
-from .research_evidence import EVIDENCE_INSTRUCTIONS, quotable, scope_assessments, support_errors
+from .research_evidence import EVIDENCE_INSTRUCTIONS, scope_assessments, support_errors, verbatim
 from .research_patches import corrected_call
 from .sources import canonical_url, clean, import_failure, import_source
 from .storage import digest, file_hash, inside, write_json
@@ -200,7 +200,7 @@ def validate_supplement(supplement, questions, entry, context, dossier, probes=(
         for evidence in answer.evidence:
             # The dossier's verbatim rule: a line-break hyphen, a ligature or a curly quote of the extraction is no
             # invented quote (Asimov ep_012, 2026-09-29: "institutions and policies" against "pol- icies").
-            if evidence.reference not in sections or quotable(evidence.excerpt) not in quotable(sections[evidence.reference]):
+            if evidence.reference not in sections or not verbatim(evidence.excerpt, sections[evidence.reference]):
                 errors.append("Eine ergänzende Aussage hat keinen gültigen Textbeleg.")
             quotes.setdefault(evidence.reference.split("#")[0], set()).add(clean(evidence.excerpt))
         for source_id in {e.reference.split("#")[0] for e in answer.evidence}:

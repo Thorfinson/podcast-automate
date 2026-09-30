@@ -34,6 +34,19 @@ def quotable(text):
     text = re.sub(r"(\w)-\s*(\w)", r"\1\2", text)
     return " ".join(text.split())
 
+
+def verbatim(excerpt, text):
+    """Whether an excerpt appears in a section as the same run of letters, whatever the spaces between them.
+
+    The text layer of a scan breaks words ("human p otential", "matr ix", "anti - author itarian"), and a quote
+    that restores them is still the source's wording (Asimov, 2026-09-30: every quote from the scan of
+    Max-Neef's Human Scale Development was rejected before review). Other letters, another word order, a
+    paraphrase or an ellipsis still fail.
+    """
+    def squeezed(value):
+        return re.sub(r"(?<=\w)-(?=\w)", "", "".join(quotable(value).split()))
+    return squeezed(excerpt) in squeezed(text)
+
 PROFILES = {
     "definition": "Original definition, conceptual scope and distinctions; no artificial empirical test.",
     "theory": "Original theoretical account, assumptions and predictions; distinguish exposition from validation.",
