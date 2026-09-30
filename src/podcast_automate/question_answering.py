@@ -177,6 +177,30 @@ def read_context(reader, refs):
                        max_chars=2_000_000)["context"]
 
 
+# The read passages a reader prompt carries: the latest read in full (at most the 36 000 characters one read
+# returns), then this question's earlier passages. With only the latest read in view, a reader could not quote
+# what it had read two steps before and read on until its steps ran out (2026-09-30: Transformer attention_qkv
+# read 34 sections in 10 steps and never answered, "not yet available as readable text").
+VIEW_CHARS = 80_000
+
+
+def visible_refs(reader, row, budget=VIEW_CHARS):
+    """The passages a reader sees: the latest read, then earlier ones of this question, newest first, within
+    ``budget`` characters. What no longer fits stays named in ``read_refs`` and can be read again."""
+    refs, used = [], 0
+    latest = set(row["current_refs"])
+    for ref in dict.fromkeys([*row["current_refs"], *reversed(row["read_refs"])]):
+        entry = reader.lookup.get(ref)
+        if entry is None:
+            continue
+        size = len(entry[2].text)
+        if ref not in latest and used + size > budget:
+            continue
+        refs.append(ref)
+        used += size
+    return refs
+
+
 # The search results a reader prompt carries. Every local search adds its hits to the task's catalog; after
 # several attempts that catalog alone outgrew a model window.
 CANDIDATE_CHARS = 40_000
@@ -579,7 +603,7 @@ class TaskResearchMixin:
                     "answer_lock": row.get("lock") if row.get("answer_locked") else None,
                     "source_catalog": source_catalog(self.index),
                     "candidates": open_candidates(row["catalog"], row["read_refs"]),
-                    "sources": read_context(self.reader, row["current_refs"]), "read_refs": row["read_refs"],
+                    "sources": read_context(self.reader, visible_refs(self.reader, row)), "read_refs": row["read_refs"],
                     "deferred": row.get("deferred", []), "feedback": row["feedback"],
                     "previous_answer": row["draft_answer"], "previous_actions": row["actions"][-4:],
                     "reopening": row["reopenings"][-1:]}
@@ -603,7 +627,8 @@ class TaskResearchMixin:
                         if defects:
                             raise AppError("The answer fails its fixed checks; correct exactly these and answer again: "
                                            + " ".join(defects), code="invalid_model_output", status="blocked")
-                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked)
+                # ".view": the reader sees this question's earlier passages too (VIEW_CHARS, 2026-09-30).
+                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked, tag=".view")
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
                 self.save(f"{spec.question} · {decision.reason}")

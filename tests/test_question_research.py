@@ -1481,7 +1481,23 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("one sentence that names the passage and the defect, at most 300 characters", prompts[AnswerReview])
         self.assertIn("at most 300 characters", prompts[ResearchDecision])
         self.assertIn("allowed_actions", prompts[ResearchDecision])
-        self.assertIn((ResearchDecision, "question_research.v3-clauses.reader"), self.calls)
+        self.assertIn((ResearchDecision, "question_research.v3-clauses.view.reader"), self.calls)
+
+    def test_the_reader_sees_what_it_read_earlier_for_this_question(self):
+        # Transformer, 2026-09-30: with only the latest read in view, attention_qkv read 34 sections in 10 steps
+        # and never answered; the passage it needed had left its prompt two steps before.
+        from types import SimpleNamespace
+        from podcast_automate import question_answering
+        sizes = {"src#a": 100, "src#b": 200, "src#c": 300, "src#d": 400}
+        reader = SimpleNamespace(lookup={ref: (None, 0, SimpleNamespace(text="x" * size)) for ref, size in sizes.items()})
+        row = {"current_refs": ["src#d"], "read_refs": ["src#a", "src#b", "src#c", "src#d"]}
+        self.assertEqual(question_answering.visible_refs(reader, row), ["src#d", "src#c", "src#b", "src#a"])
+        # Within the budget the newest earlier passages stay; the latest read always stays whole.
+        self.assertEqual(question_answering.visible_refs(reader, row, budget=750), ["src#d", "src#c"])
+        self.assertEqual(question_answering.visible_refs(reader, row, budget=0), ["src#d"])
+        with patch("podcast_automate.question_answering.visible_refs", wraps=question_answering.visible_refs) as seen:
+            self.engine().run(self.discovery, self.index)
+        self.assertTrue(seen.called, "the reader prompt takes its passages from visible_refs")
         self.assertTrue(any(s is AnswerReview and v.startswith("question_research.v3-clauses.review_") for s, v in self.calls))
 
     def failing_review(self, reason):
