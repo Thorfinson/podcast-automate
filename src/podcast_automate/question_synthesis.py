@@ -1073,7 +1073,7 @@ class SynthesisMixin:
             well_formed(routes, True)
             write_json(folder / "routes_merged.json", {"parts": len(parts), "objections_per_part": [len(p) for p in parts],
                        "routes": routes.model_dump(mode="json")})
-        reasons, disagreements, opened = {}, [], set()
+        reasons, disagreements, opened, spent = {}, [], set(), []
         # Per task, how its objections resolve and which passages they cite: a task whose objections all
         # say "revise" (the read passages suffice) only corrects its answer instead of researching again.
         resolutions, cited = {}, {}
@@ -1122,9 +1122,10 @@ class SynthesisMixin:
             row = self.state["tasks"][task_id]
             if len(row["reopenings"]) >= self.state["limits"]["reopenings"] and dossier.assembled and row.get("answer"):
                 # Its reworks are spent: the verified answer stays, and the objection is a limit (keep_spent_answers).
-                spent = [oid for oid in opened if oid in registry and registry[oid].get("task_id") == task_id]
-                self.note_after_reworks(task_id, texts, spent)
-                opened.difference_update(spent)  # noted, no longer open (Transformer, 2026-10-02: two spent at once)
+                noted = [oid for oid in opened if oid in registry and registry[oid].get("task_id") == task_id]
+                self.note_after_reworks(task_id, texts, noted)
+                opened.difference_update(noted)  # noted, no longer open (Transformer, 2026-10-02: two spent at once)
+                spent.append(task_id)
                 continue
             if len(row["reopenings"]) >= self.state["limits"]["reopenings"]:
                 row.update(status="blocked", outcome="audit_block",
@@ -1144,7 +1145,9 @@ class SynthesisMixin:
                 row["current_refs"] = [ref for ref in dict.fromkeys([*previous_refs, *cited.get(task_id, [])])
                                        if ref in self.reader.lookup]
             reopened.append(task_id)
-        dirty = invalidate_dependents(self.state, [t for t in reasons if t not in accepted])
+        # A question noted after its reworks keeps its answer, so it did not change: its dependents stay, and it is
+        # itself revalidated when a prerequisite of it was reopened (Ontologies, 2026-10-02: t53 beside t52).
+        dirty = invalidate_dependents(self.state, [t for t in reasons if t not in accepted and t not in spent])
         if dossier.assembled:
             # What became of each objection, for the next round's follow-up assessment.
             self.state["objection_outcomes"] = {"audit_round": self.state["audit_round"], "rows": [

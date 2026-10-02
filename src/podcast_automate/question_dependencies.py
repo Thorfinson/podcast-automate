@@ -67,6 +67,15 @@ def prerequisite_answers(task, state):
             if state["tasks"][identifier]["status"] == "verified"]
 
 
+def revalidate(row):
+    """Send a verified answer back to be checked against its changed prerequisites; this is no rework."""
+    row.update(status="researching", draft_answer=row["answer"], answer=None, step=0, pending=None,
+               no_progress=0, fallbacks=0, outcome=None,
+               feedback=["A prerequisite changed. Revalidate this answer against the updated verified prerequisite."],
+               activity="Geänderte Voraussetzung wird gezielt nachgeprüft")
+    row["dependency_revision"] = row.get("dependency_revision", 0) + 1
+
+
 def invalidate_dependents(state, changed):
     affected = set(changed)
     while True:
@@ -78,9 +87,5 @@ def invalidate_dependents(state, changed):
     for identifier in dependents:
         row = state["tasks"][identifier]
         if row["status"] == "verified":
-            row.update(status="researching", draft_answer=row["answer"], answer=None, step=0, pending=None,
-                       no_progress=0, fallbacks=0, outcome=None,
-                       feedback=["A prerequisite changed. Revalidate this answer against the updated verified prerequisite."],
-                       activity="Geänderte Voraussetzung wird gezielt nachgeprüft")
-            row["dependency_revision"] = row.get("dependency_revision", 0) + 1
+            revalidate(row)
     return sorted(affected)

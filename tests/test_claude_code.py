@@ -342,6 +342,8 @@ class ClaudeHelperTests(unittest.TestCase):
         self.assertEqual(limited.details["reason"], "seven_day")
         self.assertEqual(classify_claude_failure("Not logged in").code, "authentication_required")
         self.assertEqual(classify_claude_failure("socket hang up").code, "claude_failed")
+        # The CLI gave up bringing the answer into the schema (Asimov, 2026-10-02): repeated once by the pool.
+        self.assertEqual(classify_claude_failure("", subtype="error_max_structured_output_retries").code, "claude_structured_output")
         cut = classify_claude_failure("API Error: Claude's response exceeded the 32000 output token maximum.", subtype="success")
         self.assertEqual((cut.code, cut.status, cut.details["reason"], cut.details["output_limit_tokens"]),
                          ("claude_output_limit", "blocked", "output_tokens", 32000))

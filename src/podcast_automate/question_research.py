@@ -43,7 +43,7 @@ from .question_answering import ACCESS_GAP_READER, TaskResearchMixin, answer_err
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
                               plan_projection, plan_review_message, run_timings)
 from .question_dependencies import (gap_prerequisites, gatekeepers, ordered_tasks, prerequisite_answers,
-                                    prerequisite_met)
+                                    prerequisite_met, revalidate)
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
 from .question_sources import restore_attempts
 from .question_synthesis import PROMPT_GENERATION, SynthesisMixin
@@ -596,6 +596,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             check_sources(self.root, self.index)
             self.reader = SourceReader(self.index)
             self.attempts = restore_attempts(self.folder, self.index)
+            stale = []
             for task in QuestionPlan.model_validate(self.state["plan"]).tasks:
                 row = self.state["tasks"][task.id]
                 if row["status"] != "verified":
@@ -616,7 +617,12 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     expected = {a["task_id"]: a["answer_hash"] for a in prerequisite_answers(task, self.state)}
                     covered = set(expected) | set(gap_prerequisites(task, self.state))
                     if covered != set(task.depends_on) or verification.get("prerequisite_hashes", {}) != expected:
-                        raise AppError("The verified prerequisites changed.", code="invalid_research_checkpoint", status="blocked")
+                        # A prerequisite was reworked after this answer was verified: the answer is checked against it
+                        # again, as invalidate_dependents does. Before, the resume stopped for good (Ontologies,
+                        # 2026-10-02: t53, noted after its reworks, kept an answer checked against t52's old answer).
+                        stale.append(task.id)
+            for task_id in stale:
+                revalidate(self.state["tasks"][task_id])
             # No task is running when a resume starts, whatever the interrupted worker had in flight;
             # ledgers of an earlier version named that one task in ``active_task``.
             self.state["active_tasks"] = []

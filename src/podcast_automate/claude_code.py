@@ -212,6 +212,11 @@ def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error
     if any(marker in lower for marker in AUTH_MARKERS):
         return AppError("Claude-Anmeldung muss erneuert werden: claude auth login",
                         code="authentication_required", status="blocked")
+    if sub == "error_max_structured_output_retries":
+        # The CLI asked the model again itself and still got no answer in the requested shape: a chance failure the
+        # pool repeats once (provider_pool, format_retry.json). Two of about 3000 calls on 2026-10-02.
+        return AppError("Claude hat nach mehreren eigenen Anläufen keine Antwort im verlangten Format geliefert. "
+                        "„Fortsetzen“ wiederholt den Aufruf.", code="claude_structured_output")
     return AppError("Claude-Code-Aufruf fehlgeschlagen. Verbindung und CLI-Konfiguration prüfen.",
                     code="claude_failed")
 

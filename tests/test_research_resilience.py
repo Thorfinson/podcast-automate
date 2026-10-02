@@ -893,6 +893,27 @@ class StallTests(unittest.TestCase):
                 pool.structured("Synthetic", TextProbeOutput, self.root / "twice", prompt_version="test")
         self.assertEqual(caught.exception.code, "stall")
 
+    def test_pool_repeats_an_answer_claude_could_not_shape_once_then_reports_it(self):
+        pool = AdapterPool(RuntimeSettings(), {"provider": "claude_code", "model": "claude-sonnet-5-5", "reasoning_effort": "high"})
+        outcomes = [AppError("shape", code="claude_structured_output"),
+                    (TextProbeOutput(topic="t", focus_questions=["q"], note="n"), {"provider": "claude_code"})]
+
+        def fake(prompt, output_type, directory, **kwargs):
+            value = outcomes.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        directory = self.root / "pooled"
+        with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=fake),              patch("podcast_automate.provider_pool.subscriptions.record_claude_success"):
+            output, _ = pool.structured("Synthetic", TextProbeOutput, directory, prompt_version="test")
+        self.assertEqual(output.topic, "t")
+        self.assertEqual(json.loads((directory / "format_retry.json").read_text(encoding="utf-8"))["provider"], "claude_code")
+        with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured",
+                   side_effect=AppError("shape", code="claude_structured_output")):
+            with self.assertRaises(AppError) as caught:
+                pool.structured("Synthetic", TextProbeOutput, self.root / "twice", prompt_version="test")
+        self.assertEqual(caught.exception.code, "claude_structured_output")
+
 
 class PromptSizeTests(unittest.TestCase):
     def setUp(self):
