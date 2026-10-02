@@ -1379,6 +1379,7 @@ const STOP_RULES={
   invalid_local_data:{kind:"retry",title:"Lokale Verarbeitung fehlgeschlagen",text:"Beim Verarbeiten gespeicherter Dateien ist ein Fehler aufgetreten. „Fortsetzen“ versucht es erneut; die technischen Details nennen die Ursache."},
   project_busy:{kind:"retry",title:"Projekt belegt",text:"Ein anderer Auftrag, etwa ein Lauf in der Kommandozeile, hält dieses Projekt. Wenn er fertig ist, „Fortsetzen“."},
   timeout:{kind:"retry",title:"Zeitlimit eines Modellaufrufs",text:"Ein einzelner Modellaufruf hat sein Zeitlimit überschritten; er wurde nicht angerechnet. „Fortsetzen“ wiederholt ihn. Hält er erneut an, ist der Schritt zu groß für einen Aufruf."},
+  claude_structured_output:{kind:"retry",title:"Antwort im falschen Format",text:"Claude hat zweimal keine Antwort im verlangten Format geliefert (ein Wiederholversuch ist automatisch erfolgt). „Fortsetzen“ versucht den Aufruf erneut."},
   stall:{kind:"retry",title:"Modellaufruf ohne Ausgabe",text:"Ein Modellaufruf hat lange keine Ausgabe geliefert und wurde beendet; er wurde nicht angerechnet. „Fortsetzen“ wiederholt ihn."},
   claude_failed:{kind:"retry",title:"Claude-Aufruf fehlgeschlagen",text:RETRY_CALL,actions:["check"]},
   codex_failed:{kind:"retry",title:"Codex-Aufruf fehlgeschlagen",text:RETRY_CALL,actions:["check"]},

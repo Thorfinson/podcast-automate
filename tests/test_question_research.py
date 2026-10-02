@@ -2311,5 +2311,42 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(read_value(self.work / "question_research/synthesis/audit_01/assessment_scope.json")["requirements"], ["rq_001"])
 
 
+    def test_a_spent_dependent_beside_its_reopened_prerequisite_is_revalidated_and_a_stale_one_heals_on_resume(self):
+        """Ontologies, 2026-10-02: t53, noted after its reworks, stayed verified while its prerequisite t52 was reopened,
+        so its answer was checked against t52's old answer, and the resume stopped for good on that."""
+        from podcast_automate.question_synthesis import assembled_review
+
+        def plan(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), {**task_value("task_synthesis", "synthesis"), "depends_on": ["task_definition"]}])
+            if schema is ResearchDecision:
+                return decision("answer", answer=answer_for(self.ref))
+        self.hook = plan
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        spent = [{"reason": ["Earlier."], "previous_answer": None, "previous_verification": None}] * 2
+        engine.state["tasks"]["task_synthesis"]["reopenings"] = spent
+        engine.state["phase"] = "audit"
+        dossier, discovery, context = engine.compose()
+        review = assembled_review(dossier, engine.state["tasks"], context)
+        report = {"requirements": [], "blocking_gaps": ["The definition and the synthesis disagree."], "objection_checks": []}
+        self.hook = lambda prompt, schema, payload, kwargs: ReopenPlan(routes=[dict(
+            index=0, task_ids=["task_definition", "task_synthesis"], reason="Disagree.")]) if schema is ReopenPlan else None
+        reopened, blocked = engine.reopen(dossier, review, report)
+        self.assertEqual((reopened, blocked), (["task_definition"], []))
+        synthesis = engine.state["tasks"]["task_synthesis"]
+        # Noted, not reworked, and revalidated against the reopened prerequisite.
+        self.assertEqual((synthesis["status"], synthesis["dependency_revision"], len(synthesis["reopenings"])), ("researching", 1, 2))
+        self.assertEqual([n["task_id"] for n in engine.state["noted_objections"].values()], ["task_synthesis"])
+        # A run saved with the defect: the dependent kept its verified answer beside a reopened prerequisite.
+        path = self.work / "question_research/state.json"
+        state = read_value(path)
+        state["tasks"]["task_synthesis"].update(status="verified", answer=synthesis["draft_answer"])
+        save_value(path, state)
+        resumed = self.engine()
+        resumed.initialise(self.discovery, self.index, None, ())
+        self.assertEqual(resumed.state["tasks"]["task_synthesis"]["status"], "researching")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,8 +6,9 @@ rule for ``auto`` (the preferred subscription while it has quota, else the other
 prefer Claude). The decision is written to
 ``provider_choice.json`` in the call directory; a mid-call switch after a quota error is recorded
 in ``provider_switch.json`` and repeats the same call once with the other subscription. A call whose
-streaming output stalls is repeated once on the same provider (``stall_retry.json``), and a prompt
-too large for Claude's window is routed to Codex under the automatic rule.
+streaming output stalls is repeated once on the same provider (``stall_retry.json``), and so is one whose
+answer Claude could not bring into the requested shape (``format_retry.json``); a prompt too large for
+Claude's window is routed to Codex under the automatic rule.
 """
 from __future__ import annotations
 
@@ -24,6 +25,11 @@ from .storage import write_json
 from .text_settings import (AUTO_PREFERENCE, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, SUBSCRIPTION_PROVIDERS,
                             TEXT_PROVIDERS, auto_candidates, provider_model, stage_effort, validate_model,
                             validate_reasoning)
+
+
+# Failures repeated once on the same provider before they stop the run, with the receipt each leaves in the call
+# folder: a stalled stream, and an answer the Claude CLI could not bring into the requested shape.
+REPEATED_ONCE = {"stall": "stall_retry.json", "claude_structured_output": "format_retry.json"}
 
 
 def subscription_selection(config, backend, *, model=None, reasoning_effort=None) -> dict:
@@ -150,7 +156,7 @@ class AdapterPool:
                        "limit_chars": prompt_limit(candidates["claude_code"]["model"]), "excluded": too_large})
             tried.extend(too_large)
         choice = self.choose(mode, prefer, candidates, exclude=tried)
-        stalled = False
+        repeated = set()
         while True:
             # A stage with a lower level (text_settings.STAGE_EFFORT_CAPS) asks at that level and records the run's.
             effort = stage_effort(prompt_version, choice.get("reasoning_effort"))
@@ -164,9 +170,9 @@ class AdapterPool:
                 output, metadata = adapter.structured(prompt, output_type, directory,
                                                       prompt_version=prompt_version, search=search)
             except AppError as exc:
-                if exc.code == "stall" and not stalled:
-                    stalled = True
-                    write_json(directory / "stall_retry.json", {"provider": choice["provider"], "message": str(exc),
+                if exc.code in REPEATED_ONCE and exc.code not in repeated:
+                    repeated.add(exc.code)
+                    write_json(directory / REPEATED_ONCE[exc.code], {"provider": choice["provider"], "message": str(exc),
                                "retried_at": now()})
                     continue
                 if exc.status != "waiting_for_quota" or choice["provider"] not in SUBSCRIPTION_PROVIDERS:
