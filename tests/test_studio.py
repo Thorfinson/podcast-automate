@@ -177,6 +177,28 @@ class StudioHttpTests(unittest.TestCase):
         connection.close()
         return result
 
+    def test_a_work_arrives_as_raw_bytes_and_only_as_octet_stream(self):
+        # 2026-10-01: a book PDF from the library is far beyond the JSON upload's 4 MB.
+        from urllib.parse import quote
+        book = b"%PDF-1.4 " + b"x" * (6 * 1024 * 1024)
+        path = f"/api/projects/example/work?citation={quote('Morris: Why the West Rules (2010)')}&task=unknown_task"
+
+        def post(body, content_type, token=None):
+            connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
+            connection.request("POST", path, body, headers={"X-Studio-Token": token or self.app.token, "Content-Type": content_type})
+            response = connection.getresponse()
+            result = response.status, json.loads(response.read())
+            connection.close()
+            return result
+        self.assertEqual(post(book, "text/plain")[0], 400, "only a type that needs the browser's preflight is taken")
+        self.assertEqual(post(book, "application/octet-stream", token="wrong")[0], 403)
+        status, result = post(book, "application/octet-stream")
+        self.assertEqual(status, 200)
+        self.assertEqual((result["work"]["citation"], result["work"]["bytes"], result["work"]["tasks"]),
+                         ("Morris: Why the West Rules (2010)", len(book), []), "a question the run does not know is dropped")
+        self.assertEqual((self.root / result["work"]["path"]).read_bytes(), book)
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["works"]["provided"][0]["id"], result["work"]["id"])
+
     def publish_episode(self, episode="ep_001"):
         """The two files a published episode always has; nothing here is approved for audio."""
         script = example_script()
@@ -1137,6 +1159,25 @@ class PublishedReportTests(fixtures.ScriptProjectCase):
         quality = read_yaml(self.root / "reports/script_quality.yaml")
         self.assertEqual(quality["gap_probes_unowned"], [
             {"gap_id": "gap_seeded", "text": gap, "status": "hits_unowned", "references": ["src_unused#sec_001"]}])
+
+
+class OverviewJobTests(unittest.TestCase):
+    def test_a_project_card_gets_short_question_rows_with_what_its_decisions_count(self):
+        # 2026-10-01: the full rows made the project list 2 MB, read again on every poll.
+        from podcast_automate.studio import overview_job
+        row = {"id": "t1", "question": "Q?", "kind": "synthesis", "status": "blocked", "outcome": "prerequisite_block",
+               "depends_on": ["t0"], "accepted_gap": None, "retries": 1, "auto_retries": 2, "retry_requested": True,
+               "findings": [{"id": "f", "statement": "x" * 5000}], "sources": [{"id": "s"}], "support": [{}],
+               "advice": {"key": "1.2", "recommendation": "retry", "diagnosis": "x" * 2000, "sources": [{}]}}
+        job = {"status": "blocked", "progress": {"phase": "research", "research_questions": {"phase": "blocked", "closed": 3,
+                                                                                                "questions": [row]}}}
+        card = overview_job(job)["progress"]["research_questions"]
+        self.assertEqual(card["closed"], 3)
+        self.assertEqual(card["questions"][0], {key: row[key] for key in (
+            "id", "question", "kind", "status", "outcome", "depends_on", "accepted_gap", "retries", "auto_retries",
+            "retry_requested")} | {"advice": {"key": "1.2", "recommendation": "retry"}})
+        self.assertIn("findings", job["progress"]["research_questions"]["questions"][0], "the project page keeps whole rows")
+        self.assertIsNone(overview_job(None))
 
 
 if __name__ == "__main__":

@@ -36,6 +36,9 @@ MAX_SUPPLEMENT_REJECTIONS = 2
 # words spent, "two engineers with at least five years" did not fit); the user chose the allowance.
 QUOTED_WORDS = 25 + 10
 PARAPHRASED_WORDS = 150 + 40
+# Said to the writer of a supplement to an assembled dossier, whose findings do not count against the limits (counted_findings).
+ASSEMBLED_ALLOWANCE = ("The findings already in the dossier do not count against these limits here; source_budget "
+                       "shows the full allowance of each source for this supplement.")
 # The defect a correction the supplement review asked for names; every other rejection failed validate_supplement.
 REVIEW_CORRECTION = "Die Prüfung der Ergänzung beanstandet: "
 QUOTES = "\"'„“”‚‘’«»"
@@ -116,11 +119,17 @@ def named_question(text, questions):
     return None, None
 
 
+def counted_findings(dossier):
+    """The dossier findings a supplement's source-wide limits count. An assembled dossier holds every verified answer
+    without word limits per source (question_synthesis.assemble_dossier), so only the supplement's own words count."""
+    return [] if dossier.assembled else dossier.findings
+
+
 def source_budget(context, dossier):
     """Per source of a supplement's context, the quoted and paraphrased words still free under the
     source-wide limits once the findings already citing it are counted, as validate_supplement counts them."""
     quotes, words = {}, {}
-    for finding in dossier.findings:
+    for finding in counted_findings(dossier):
         for evidence in finding.evidence:
             quotes.setdefault(evidence.reference.split("#")[0], set()).add(clean(evidence.excerpt))
         for source_id in {e.reference.split("#")[0] for e in finding.evidence}:
@@ -206,7 +215,7 @@ def validate_supplement(supplement, questions, entry, context, dossier, probes=(
         for source_id in {e.reference.split("#")[0] for e in answer.evidence}:
             words[source_id] = words.get(source_id, 0) + len(answer.explanation.split())
     # Count earlier excerpts too when a retrieved paper is already in the dossier.
-    for finding in dossier.findings:
+    for finding in counted_findings(dossier):
         for evidence in finding.evidence:
             source_id = evidence.reference.split("#")[0]
             if source_id in quotes:
@@ -352,6 +361,8 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
             "findings": [f.model_dump() for f in known.findings if f.id in entry.finding_ids], "sources": context,
             "source_budget": source_budget(context, known)}
     text = TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + instructions("foundation_supplement")
+    if known.assembled:
+        text += " " + ASSEMBLED_ALLOWANCE
     rejected = sorted(directory.glob("evidence_rejected_*.json"))
     # What earlier reviews of this supplement found critical; its next review blocks only on these or on new critical defects.
     previous = list(dict.fromkeys(issue for path in [*sorted(directory.glob("review_superseded_*.json")),

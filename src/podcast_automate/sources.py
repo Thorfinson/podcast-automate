@@ -15,18 +15,23 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .errors import AppError
 from .models import now
 from .research_models import SourceCandidate, SourceDocument, SourceSection
-from .storage import file_hash, write_json
+from .storage import file_hash, file_lock, read_text, write_json
+from .provided_works import MAX_WORK_BYTES
 
 MAX_BYTES = 20 * 1024 * 1024
 MAX_TEXT = 1_000_000
+MAX_BOOK_TEXT = 6_000_000
 EXTRACTION_VERSION = "sources.v2-fonts"
 # Parsing untrusted PDFs happens in a child process with a wall-clock limit (see pdf_text).
 PDF_TIMEOUT_SECONDS = 120
+# A whole book the editor provided (provided_works) is read with pdf_text's book limits and more time.
+BOOK_TIMEOUT_SECONDS = 900
 # Name resolution has no timeout of its own; a hung resolver must not hang the worker.
 DNS_TIMEOUT_SECONDS = 10
 
@@ -76,13 +81,15 @@ class PublicRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
-def download(url: str) -> tuple[bytes, str, str]:
+def download(url: str, headers: dict | None = None) -> tuple[bytes, str, str]:
+    """``headers`` only for a free service that identifies the caller by a key (CORE)."""
     url = public_url(url)
     # No browser cookies or credentials are used for source retrieval.
     request = urllib.request.Request(url, headers={
         "User-Agent": "PodcastAutomate/0.1 (personal research; public documents)",
         "Accept": "text/html,application/pdf,text/plain;q=0.9,*/*;q=0.1",
         "Accept-Encoding": "identity",
+        **(headers or {}),
     })
     try:
         opener = urllib.request.build_opener(PublicRedirect())
@@ -170,15 +177,16 @@ def sections_from_blocks(blocks: list[tuple[str, int | None]]) -> list[SourceSec
     return result
 
 
-def extract_pdf_isolated(raw: bytes) -> dict:
+def extract_pdf_isolated(raw: bytes, *, book: bool = False) -> dict:
     """Run the PDF parser in its own process; a hung or crashing parse is one unreadable source."""
-    command = [sys.executable, "-m", "podcast_automate.pdf_text"]
+    command = [sys.executable, "-m", "podcast_automate.pdf_text", *(["--book"] if book else [])]
+    timeout = BOOK_TIMEOUT_SECONDS if book else PDF_TIMEOUT_SECONDS
     try:
-        completed = subprocess.run(command, input=raw, capture_output=True, timeout=PDF_TIMEOUT_SECONDS,
+        completed = subprocess.run(command, input=raw, capture_output=True, timeout=timeout,
                                    env=os.environ.copy(),
                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except subprocess.TimeoutExpired as exc:
-        raise AppError(f"PDF konnte nicht innerhalb von {PDF_TIMEOUT_SECONDS} Sekunden als Text eingelesen werden.",
+        raise AppError(f"PDF konnte nicht innerhalb von {timeout} Sekunden als Text eingelesen werden.",
                        code="source_unreadable") from exc
     except OSError as exc:
         raise AppError("Der PDF-Leseprozess konnte nicht gestartet werden.", code="source_unreadable") from exc
@@ -234,10 +242,10 @@ def interstitial(title, text):
                                                  or clean(title or "").lower().rstrip(". ") in CHALLENGE_TITLES))
 
 
-def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, list[SourceSection]]:
+def extract(raw: bytes, content_type: str, name: str, *, book: bool = False) -> tuple[str, str, dict, list[SourceSection]]:
     metadata = {}
     if raw.startswith(b"%PDF-"):
-        result = extract_pdf_isolated(raw)
+        result = extract_pdf_isolated(raw, book=book)
         metadata = result.get("metadata") or {}
         try:
             sections = sections_from_blocks([(text, page) for text, page in result["blocks"]])
@@ -257,7 +265,9 @@ def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, l
         text = raw.decode(encoding, errors="replace")
     except LookupError:
         text = raw.decode("utf-8", errors="replace")
-    if "html" in content_type or "<html" in text[:2000].lower() or "<!doctype html" in text[:2000].lower():
+    # Europe PMC's full text is JATS XML: paragraphs in <p>, read like a page (europe_pmc_copies).
+    jats = "xml" in content_type and "<article" in text[:5000]
+    if jats or "html" in content_type or "<html" in text[:2000].lower() or "<!doctype html" in text[:2000].lower():
         parser = ArticleParser()
         parser.feed(text)
         body = "".join(parser.main_text) if len("".join(parser.main_text)) >= 200 else "".join(parser.text)
@@ -278,7 +288,7 @@ def extract(raw: bytes, content_type: str, name: str) -> tuple[str, str, dict, l
         blocks = [(block, None) for block in re.split(r"\n\s*\n", text)]
     else:
         raise AppError("Quellenformat wird nicht unterstützt.", code="source_unreadable")
-    if sum(len(block) for block, _ in blocks) > MAX_TEXT:
+    if sum(len(block) for block, _ in blocks) > (MAX_BOOK_TEXT if book else MAX_TEXT):
         raise AppError("Extrahierter Text überschreitet die Importgrenze.", code="source_too_large")
     return kind, suffix, metadata, sections_from_blocks(blocks)
 
@@ -321,23 +331,41 @@ def comparable_title(text):
     return re.sub(r"\W+", " ", (text or "").casefold()).strip()
 
 
+def work_doi(candidate):
+    """The DOI in a candidate's address, without a trailing format suffix, or None."""
+    found = DOI.search(urllib.parse.unquote(candidate.url))
+    return re.sub(r"(\.pdf|/full|/abstract|/epdf|/pdf)$", "", found.group(0).rstrip("/."), flags=re.I) if found else None
+
+
+def searchable_title(candidate):
+    return comparable_title(candidate.title) and not candidate.title.startswith(("http://", "https://"))
+
+
+def lookup(url, headers=None):
+    """A free service's JSON answer, or None when the service fails or answers with something else."""
+    try:
+        data = json.loads((download(url, headers) if headers else download(url))[0])
+    except (AppError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def open_access_copies(candidate, limit=3):
     """Free copies of the same work that OpenAlex knows: PDF files first, then full-text repository pages.
 
     The work is found by the DOI in its address, otherwise by an exactly matching title. A failed or
     unreadable lookup means no copies."""
-    found = DOI.search(urllib.parse.unquote(candidate.url))
-    if found:
-        doi = re.sub(r"(\.pdf|/full|/abstract|/epdf|/pdf)$", "", found.group(0).rstrip("/."), flags=re.I)
+    doi = work_doi(candidate)
+    if doi:
         query = f"{OPENALEX}/doi:{urllib.parse.quote(doi, safe='/')}"
-    elif comparable_title(candidate.title) and not candidate.title.startswith(("http://", "https://")):
+    elif searchable_title(candidate):
         query = f"{OPENALEX}?search={urllib.parse.quote(candidate.title)}&per_page=3"
     else:
         return []
     try:
         data = json.loads(download(query)[0])
-        works = [data] if found else [work for work in data.get("results", [])
-                                      if comparable_title(work.get("title")) == comparable_title(candidate.title)][:1]
+        works = [data] if doi else [work for work in data.get("results", [])
+                                    if comparable_title(work.get("title")) == comparable_title(candidate.title)][:1]
     except (AppError, ValueError, TypeError, AttributeError):
         return []
     files, pages = [], []
@@ -352,15 +380,127 @@ def open_access_copies(candidate, limit=3):
     return [url for url in dict.fromkeys(files + pages) if url != candidate.url][:limit]
 
 
+# After OpenAlex, further free services are asked one after another until a copy reads (2026-10-01: for 26 of the
+# 34 addresses Asimov's run could not read, OpenAlex alone had no copy). Unpaywall wants a contact address and CORE
+# a free key; each is asked only when the user has set it (PLA_UNPAYWALL_EMAIL, PLA_CORE_API_KEY).
+UNPAYWALL = "https://api.unpaywall.org/v2/"
+SEMANTIC_SCHOLAR = "https://api.semanticscholar.org/graph/v1/paper/"
+EUROPE_PMC = "https://www.ebi.ac.uk/europepmc/webservices/rest/"
+CORE = "https://api.core.ac.uk/v3/search/works"
+PMCID = re.compile(r"PMC\d{4,10}", re.I)
+
+
+def unpaywall_copies(candidate, doi):
+    email = os.environ.get("PLA_UNPAYWALL_EMAIL", "").strip()
+    if not doi or not email:
+        return []
+    data = lookup(f"{UNPAYWALL}{urllib.parse.quote(doi, safe='/')}?email={urllib.parse.quote(email)}") or {}
+    locations = [data.get("best_oa_location") or {}, *(data.get("oa_locations") or [])]
+    return [location["url_for_pdf"] for location in locations if isinstance(location, dict) and location.get("url_for_pdf")]
+
+
+def semantic_scholar_copies(candidate, doi):
+    if doi:
+        work = lookup(f"{SEMANTIC_SCHOLAR}DOI:{urllib.parse.quote(doi, safe='/')}?fields=openAccessPdf") or {}
+    elif searchable_title(candidate):
+        found = lookup(f"{SEMANTIC_SCHOLAR}search/match?query={urllib.parse.quote(candidate.title)}&fields=title,openAccessPdf") or {}
+        work = next((row for row in found.get("data") or [] if isinstance(row, dict)
+                     and comparable_title(row.get("title")) == comparable_title(candidate.title)), {})
+    else:
+        return []
+    pdf = work.get("openAccessPdf") if isinstance(work.get("openAccessPdf"), dict) else {}
+    return [pdf["url"]] if pdf.get("url") else []
+
+
+def europe_pmc_copies(candidate, doi):
+    """The JATS full text of an open-access article: read without the captcha PubMed Central now shows."""
+    pmcid = PMCID.search(candidate.url)
+    if pmcid:
+        return [f"{EUROPE_PMC}{pmcid.group(0).upper()}/fullTextXML"]
+    if doi:
+        query, exact = f'DOI:"{doi}"', False
+    elif searchable_title(candidate):
+        query, exact = f'TITLE:"{candidate.title}"', True
+    else:
+        return []
+    found = lookup(f"{EUROPE_PMC}search?query={urllib.parse.quote(query)}&resultType=lite&format=json") or {}
+    for row in ((found.get("resultList") or {}).get("result") or []):
+        if (isinstance(row, dict) and row.get("pmcid") and row.get("isOpenAccess") == "Y"
+                and (not exact or comparable_title(row.get("title")) == comparable_title(candidate.title))):
+            return [f"{EUROPE_PMC}{row['pmcid']}/fullTextXML"]
+    return []
+
+
+# CORE's free key allows about 1000 API calls a day (the user's account, 2026-10-01). Every research worker counts
+# its CORE searches in one shared file under a lock, so projects running side by side stay within the day together;
+# with the day's calls used up CORE is skipped until the next UTC day, and the other services still answer.
+CORE_DAILY_LIMIT = 1000
+
+
+def core_usage_path() -> Path:
+    return Path(os.environ.get("PLA_CORE_USAGE_STORE") or Path.home() / ".podcast-automate" / "core_usage.json")
+
+
+def core_usage() -> dict:
+    """Today's CORE API calls (UTC day) and the daily limit (PLA_CORE_DAILY_LIMIT, default 1000)."""
+    path, today = core_usage_path(), datetime.now(timezone.utc).date().isoformat()
+    try:
+        data = json.loads(read_text(path)) if path.exists() else {}
+    except (OSError, ValueError):
+        data = {}
+    try:
+        limit = int(os.environ.get("PLA_CORE_DAILY_LIMIT") or CORE_DAILY_LIMIT)
+    except ValueError:
+        limit = CORE_DAILY_LIMIT
+    return {"date": today, "calls": data.get("calls", 0) if data.get("date") == today else 0, "limit": limit}
+
+
+def reserve_core_call() -> bool:
+    """Count one CORE API call against today's allowance; False when the day's calls are used up."""
+    path = core_usage_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(path.with_name(path.name + ".lock"), timeout=30):
+        usage = core_usage()
+        if usage["calls"] >= usage["limit"]:
+            return False
+        write_json(path, {**usage, "calls": usage["calls"] + 1})
+        return True
+
+
+def core_copies(candidate, doi):
+    key = os.environ.get("PLA_CORE_API_KEY", "").strip()
+    if not key or not (doi or searchable_title(candidate)) or not reserve_core_call():
+        return []
+    query = f'doi:"{doi}"' if doi else f'title:"{candidate.title}"'
+    found = lookup(f"{CORE}?q={urllib.parse.quote(query)}&limit=3", headers={"Authorization": f"Bearer {key}"}) or {}
+    return [row["downloadUrl"] for row in found.get("results") or [] if isinstance(row, dict) and row.get("downloadUrl")
+            and (doi or comparable_title(row.get("title")) == comparable_title(candidate.title))]
+
+
+COPY_SERVICES = (("OpenAlex", lambda candidate, doi: open_access_copies(candidate)), ("Unpaywall", unpaywall_copies),
+                 ("Semantic Scholar", semantic_scholar_copies), ("Europe PMC", europe_pmc_copies), ("CORE", core_copies))
+
+
 def open_access_copy(candidate, blocked):
-    """The first readable free copy of a work whose own address refused the download, else that refusal."""
-    for url in open_access_copies(candidate):
-        try:
-            raw, content_type, final_url = download(url)
-            return (raw, content_type, final_url), extract(raw, content_type, url)
-        except AppError:
-            continue
+    """The first readable free copy of a work whose own address refused the download or held only a scan, with the
+    service that named it; else that failure. Each service is asked only when the ones before had no readable copy."""
+    doi, tried = work_doi(candidate), {candidate.url}
+    for service, copies in COPY_SERVICES:
+        for url in copies(candidate, doi)[:3]:
+            if url in tried:
+                continue
+            tried.add(url)
+            try:
+                raw, content_type, final_url = download(url)
+                return (raw, content_type, final_url), extract(raw, content_type, url), service
+            except AppError:
+                continue
     raise blocked
+
+
+def scanned(exc):
+    """A PDF without a text layer: another copy of the same work may have one."""
+    return getattr(exc, "code", "") == "source_unreadable" and "pages_total" in (getattr(exc, "details", None) or {})
 
 
 def import_failure(address, exc):
@@ -421,8 +561,10 @@ def adopt_from_library(document, candidate, root: Path, run_id: str):
 
 
 def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local: Path | None = None,
-                  downloaded: tuple[bytes, str, str] | None = None, library: dict | None = None
-                  ) -> tuple[SourceDocument, Path]:
+                  downloaded: tuple[bytes, str, str] | None = None, library: dict | None = None,
+                  citation: str = "") -> tuple[SourceDocument, Path]:
+    """``citation``: a local copy of a published work the editor provided (provided_works); it is read with the
+    book limits and counts as that work, not as the editor's notes."""
     if library and local is None and downloaded is None:
         stored = library.get(canonical_url(candidate.url))
         if stored is not None:
@@ -433,8 +575,8 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
     if downloaded is not None:
         raw, content_type, final_url = downloaded
     elif local:
-        if local.stat().st_size > MAX_BYTES:
-            raise AppError("Lokale Quelle überschreitet 20 MiB.", code="source_too_large")
+        if local.stat().st_size > (MAX_WORK_BYTES if citation else MAX_BYTES):
+            raise AppError("Lokale Quelle überschreitet die Größengrenze.", code="source_too_large")
         raw, content_type, final_url = local.read_bytes(), "", ""
     else:
         try:
@@ -443,19 +585,20 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
             if not access_blocked(exc):
                 raise
             # The same work from a free repository; it keeps the address it was found under as its identity.
-            (raw, content_type, final_url), extracted = open_access_copy(candidate, exc)
+            (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc)
     copied = extracted is not None
     if not copied:
         try:
-            extracted = extract(raw, content_type, address)
+            extracted = extract(raw, content_type, address, **({"book": True} if citation else {}))
         except AppError as exc:
-            # A bot check that answered with a page of its own refused the download just the same.
-            if local or not access_blocked(exc):
+            # A bot check that answered with a page of its own refused the download just the same, and a scan
+            # without a text layer may exist elsewhere with one.
+            if local or not (access_blocked(exc) or scanned(exc)):
                 raise
-            (raw, content_type, final_url), extracted = open_access_copy(candidate, exc)
+            (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc)
             copied = True
     kind, suffix, metadata, sections = extracted
-    copy_note = f"Open-access copy of the same work found via OpenAlex: {final_url}. " if copied else ""
+    copy_note = f"Open-access copy of the same work found via {service}: {final_url}. " if copied else ""
     raw_path = root / "sources/raw" / run_id / f"{source_id}{suffix}"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     pending = raw_path.with_suffix(suffix + ".pending")
@@ -463,15 +606,20 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
     pending.replace(raw_path)
     document = SourceDocument(
         # A document's own title can be blank, as in a PDF whose title field holds one space; the candidate always has one.
-        id=source_id, extraction_version=EXTRACTION_VERSION, type=kind, title=clean(metadata.get("title") or "") or candidate.title,
-        authors=metadata.get("authors") or candidate.authors,
-        published_date=metadata.get("published_date") or candidate.published_date,
-        date_basis="document" if metadata.get("published_date") else "search_result" if candidate.published_date else "unknown",
-        source_type=candidate.source_type,
+        # A provided work is named by the editor's citation: a scan's own title and creation date are the scanner's.
+        id=source_id, extraction_version=EXTRACTION_VERSION, type=kind,
+        title=citation or clean(metadata.get("title") or "") or candidate.title,
+        authors=[] if citation else metadata.get("authors") or candidate.authors,
+        published_date=candidate.published_date if citation else metadata.get("published_date") or candidate.published_date,
+        date_basis=("citation" if citation and candidate.published_date else "unknown" if citation
+                    else "document" if metadata.get("published_date") else "search_result" if candidate.published_date else "unknown"),
+        source_type=candidate.source_type, citation=citation,
         imported_at=now(), url=candidate.url if not local else "", final_url=final_url,
         language=metadata.get("language", "unknown"),
-        reliability_note=("User-supplied local material; provenance and factual claims have not been independently verified. "
-                          if local else copy_note + "Search selection (not independently certified): ") + candidate.rationale,
+        reliability_note=(f"Copy of a published work provided by the editor (library or purchase): {citation}. "
+                          if citation else "User-supplied local material; provenance and factual claims have not been "
+                          "independently verified. " if local else copy_note + "Search selection (not independently certified): ")
+                         + candidate.rationale,
         uncertainties=["Publication metadata may come from search results; verify bibliographic details.",
                        "Automatic text extraction can omit images, tables and mathematical notation."],
         raw_path=raw_path.relative_to(root).as_posix(), raw_hash=file_hash(raw_path),

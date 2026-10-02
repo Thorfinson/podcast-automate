@@ -2,6 +2,7 @@
 from typing import Literal
 
 from pydantic import Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from .models import Contract, Identifier, NonEmpty, LaterFields
 from .evidence_models import ClaimContract, ExtractionCoverage, SourceAssessment, SynthesisRelation
@@ -76,10 +77,12 @@ class SourceDocument(LaterFields):
     sections: list[SourceSection] = Field(min_length=1)
     extraction_coverage: ExtractionCoverage | None = None
     source_type: SourceType = "unknown"
-    # Where published_date came from: the document's own metadata, a search result, or nowhere.
-    date_basis: Literal["document", "search_result", "unknown"] = "unknown"
+    # Where published_date came from: the document's own metadata, a search result, the editor's citation, or nowhere.
+    date_basis: Literal["document", "search_result", "citation", "unknown"] = "unknown"
+    # The editor's reference for a copy they provided (provided_works): a published work, not their own notes.
+    citation: str = ""
 
-    LATER = {"source_type": "unknown", "date_basis": "unknown"}
+    LATER = {"source_type": "unknown", "date_basis": "unknown", "citation": ""}
 
 
 class SourceIndex(Contract):
@@ -88,7 +91,7 @@ class SourceIndex(Contract):
     failures: list[dict[str, str]]
 
 
-# Findings one dossier holds. Part of every dossier call's output schema, so of its saved receipts' signatures.
+# Findings a composed dossier holds. Part of every dossier call's output schema, so of its saved receipts' signatures.
 MAX_FINDINGS = 120
 
 
@@ -126,16 +129,43 @@ class QuestionCoverage(Contract):
         "answering this gap would contain; empty when the question is answered."))
 
 
-class ResearchDossier(Contract):
+class AnswerDigest(Contract):
+    """One verified answer as an assembled dossier keeps it: its question, summary, limits and the ids its findings
+    carry in the dossier."""
+    task_id: Identifier
+    question: NonEmpty
+    question_ids: list[Identifier]
+    summary: NonEmpty
+    limits: list[NonEmpty]
+    finding_ids: list[Identifier]
+
+
+class ResearchDossier(LaterFields):
     schema_version: Literal["1.0"] = "1.0"
     topic: NonEmpty
     scope_note: NonEmpty
-    findings: list[Finding] = Field(min_length=1, max_length=MAX_FINDINGS)
+    # MAX_FINDINGS bounds a dossier a model writes; the schema those calls see keeps it (bounded_findings).
+    findings: list[Finding] = Field(min_length=1, json_schema_extra={"maxItems": MAX_FINDINGS})
     coverage: list[QuestionCoverage]
     open_questions: list[NonEmpty]
     evidence_version: str = ""
     source_assessments: list[SourceAssessment] = Field(default_factory=list)
     synthesis: list[SynthesisRelation] = Field(default_factory=list, max_length=40)
+    # Assembled from the verified answers without a model call (question_synthesis.assemble_dossier, prompt generation
+    # 3): every finding of every answer, and the answers' summaries and limits. No model writes these two fields, so
+    # they stay out of the schema the composing calls see and their saved receipts keep their signatures.
+    assembled: SkipJsonSchema[bool] = False
+    answers: SkipJsonSchema[list[AnswerDigest]] = Field(default_factory=list)
+
+    LATER = {"assembled": False, "answers": []}
+
+    @model_validator(mode="after")
+    def bounded_findings(self):
+        # A composed dossier kept at most MAX_FINDINGS and lost the rest of the verified answers (2026-10-01:
+        # 120 of 335 in Ontologies); an assembled one holds all of them.
+        if not self.assembled and len(self.findings) > MAX_FINDINGS:
+            raise ValueError(f"A composed dossier holds at most {MAX_FINDINGS} findings")
+        return self
 
 
 class ReviewIssue(Contract):
@@ -159,7 +189,10 @@ RESEARCH_SCHEMAS = {
 
 def is_idea(source):
     """An idea source (user material without a URL, or a source typed ``idea``) names what to research and is
-    never evidence (the user's choice, 2026-09-30: the LLM-written SYM notes and the curated posts are maps)."""
+    never evidence (the user's choice, 2026-09-30: the LLM-written SYM notes and the curated posts are maps). A copy
+    of a published work the editor provided names it in ``citation`` and counts like a downloaded one (2026-10-01)."""
+    if getattr(source, "citation", ""):
+        return source.source_type == "idea"
     return not source.url or not source.final_url or source.source_type == "idea"
 
 

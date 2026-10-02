@@ -60,6 +60,10 @@ class ContractRuleTests(unittest.TestCase):
             Finding: dict(id="f_x", kind="definition", statement="s", evidence=[dict(reference="src_one#s_one", excerpt="e")],
                           illustration="an example", illustration_limit=""),
             ResearchDiscovery: {**discovery, "questions": discovery["questions"] * 2},
+            # A model writes at most MAX_FINDINGS; only an assembled dossier holds more (question_synthesis).
+            ResearchDossier: dict(topic="t", scope_note="s", coverage=[], open_questions=[], findings=[
+                dict(id=f"f_{n}", kind="claim", statement="s", evidence=[dict(reference="src_one#s_one", excerpt="e")])
+                for n in range(121)]),
             Resolution: dict(resolution="revise", search_queries=["energy"]),
             EpisodeScript: {**script, "segments": [{**script["segments"][0], "chapter_id": "scene_other"}]},
         }

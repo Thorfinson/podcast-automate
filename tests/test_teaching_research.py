@@ -14,7 +14,7 @@ from podcast_automate.scripting import episode_sources, load_research, outline_h
 from podcast_automate.storage import digest, file_hash, read_yaml, write_json
 from podcast_automate.teaching import ResearchGap, TeachingPlanReview
 from podcast_automate.text_settings import stage_effort
-from podcast_automate.teaching_research import (FoundationSupplement, FoundationReview,
+from podcast_automate.teaching_research import (ASSEMBLED_ALLOWANCE, FoundationSupplement, FoundationReview,
     apply_foundations, named_question, research_foundations, gaps_in, source_budget, validate_supplement)
 from tests.research_fixtures import HTML, discovery
 from tests import script_fixtures as fixtures
@@ -526,6 +526,36 @@ class FoundationResearchTests(unittest.TestCase):
         fits = long.model_copy(deep=True)
         fits.explanations[0].explanation = " ".join(["word"] * (190 - used))
         self.assertEqual(validate_supplement(fits, ["How are scores compared?"], self.entry, context, self.dossier), [])
+
+    def test_a_supplement_to_an_assembled_dossier_counts_only_its_own_words(self):
+        """An assembled dossier holds every verified answer without word limits per source (2026-10-01): the limits
+        of a supplement then count only what it adds, and its writer is told so."""
+        assembled = self.dossier.model_copy(update={"assembled": True})
+        cited = self.dossier.findings[0].evidence[0].reference
+        source_id = cited.split("#")[0]
+        text = next(s["text"] for src in self.context for s in src["sections"] if s["reference"] == cited)
+        context = [{"source_id": source_id, "sections": [{"reference": cited, "text": text}]}]
+        self.assertEqual(source_budget(context, assembled)[source_id], {"quoted_words_left": 35, "paraphrased_words_left": 190})
+
+        def supplement(words):
+            return FoundationSupplement(explanations=[{
+                "questions": ["How are scores compared?"], "finding_ids": ["f_energy"],
+                "explanation": " ".join(["word"] * words), "claim_contract": claim_contract(),
+                "evidence": [{"reference": cited, "excerpt": self.dossier.findings[0].evidence[0].excerpt}]}], remaining_gaps=[])
+        self.assertEqual(validate_supplement(supplement(190), ["How are scores compared?"], self.entry, context, assembled), [])
+        # Against a composed dossier the findings already citing the source count, as before.
+        self.assertTrue(validate_supplement(supplement(190), ["How are scores compared?"], self.entry, context, self.dossier))
+        (error,) = validate_supplement(supplement(191), ["How are scores compared?"], self.entry, context, assembled)
+        self.assertIn("191 von 190 umschriebenen Wörtern", error)
+        prompts = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            if schema is FoundationSupplement:
+                prompts.append(prompt)
+            return self.invoke(prompt, schema, version, **kwargs)
+        self.dossier = assembled
+        self.research(invoke)
+        self.assertTrue(prompts and all(ASSEMBLED_ALLOWANCE in prompt for prompt in prompts))
 
     def test_pinned_sections_join_a_supplement_context_without_duplicating_it(self):
         from podcast_automate.teaching_research import merge_pinned

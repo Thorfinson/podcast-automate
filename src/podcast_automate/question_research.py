@@ -58,8 +58,9 @@ from .research_patches import cached_call
 from .research_quality import quality_brief, requirements_for
 from .research_reader import SourceReader
 from .research_tasks import AnswerReview, QuestionAnswer, QuestionPlan
+from . import provided_works
 from .models import now
-from .sources import load_library
+from .sources import import_source, load_library
 from .storage import atomic_text, digest, inside, read_optional_json, read_text, write_json
 
 __all__ = ["QuestionResearch", "run_question_research", "validate_plan", "answer_errors", "review_passes",
@@ -237,6 +238,42 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.state["index_hash"] = signature
         self.reader = SourceReader(index)
 
+    def adopt_provided_works(self):
+        """Works the editor provided since the last pass (provided_works): read into this run's index as the
+        published works they are, and each blocked question they were provided for takes them up in a new attempt.
+        A work that cannot be read is recorded with its reason and not tried again. Returns the reopened tasks."""
+        rows = provided_works.inventory(self.root)
+        with self.guarded():
+            adopted = self.state.get("provided_works", {})
+            new = [row for row in rows if row["id"] not in adopted]
+            if not new:
+                return []
+            sources, reopened = list(self.index.sources), []
+            for row in new:
+                try:
+                    document, _ = import_source(provided_works.candidate(row), self.root, self.work.name,
+                                                local=provided_works.work_path(self.root, row), citation=row["citation"])
+                except AppError as exc:
+                    adopted[row["id"]] = {"error": str(exc), "at": now()}
+                    continue
+                if all(source.id != document.id for source in sources):
+                    sources.append(document)
+                adopted[row["id"]] = {"source_id": document.id, "at": now()}
+                for task_id in row.get("tasks", []):
+                    task = self.state["tasks"].get(task_id)
+                    if (task and task["status"] == "blocked" and not task.get("accepted_gap")
+                            and task.get("outcome") != "prerequisite_block"):
+                        self.reopen_task(task, activity="Bereitgestelltes Werk wird gelesen", provided_work=row["id"],
+                                         feedback=[f"The editor provided a copy of {row['citation']} as source {document.id}. "
+                                                   "Read it first: it is the published work itself, not a note."])
+                        reopened.append(task_id)
+            self.state["provided_works"] = adopted
+            self.set_index(self.index.model_copy(update={"sources": sources}))
+            if reopened:
+                self.release_dependents()
+            self.save("Bereitgestellte Werke werden eingelesen")
+            return reopened
+
     def accepted_tasks(self):
         return {tid: row["accepted_gap"] for tid, row in self.state["tasks"].items() if row.get("accepted_gap")}
 
@@ -395,10 +432,12 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             if row["status"] == "blocked" and row.get("outcome") == "prerequisite_block" and not row.get("accepted_gap"):
                 row.update(status="pending", outcome=None, reason="", activity="Noch nicht bearbeitet")
 
-    def advice_affordable(self):
-        """Room for one advisor call and one new attempt on top of what the verified questions still need."""
+    def advice_affordable(self, pending=0):
+        """Room for one advisor call and one new attempt on top of what the verified questions still need,
+        and on top of ``pending`` advice already under way, each of which may reopen its question too."""
         projection = budget_projection(self.work, self.state, self.limits(), root=self.root)
-        return projection["remaining"] - projection["minimum_remaining_calls"] >= 1 + projection["expected_calls_per_task"]
+        return (projection["remaining"] - projection["minimum_remaining_calls"]
+                >= (1 + pending) * (1 + projection["expected_calls_per_task"]))
 
     def advise(self):
         """Before the run stops for blocked questions: one advisor call per new block, and one automatic
@@ -407,7 +446,11 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         A question that only waits for its prerequisite gets no advice of its own, and neither does one whose
         reworks are spent (``audit_block``): the audit's objections are its diagnosis, and an automatic attempt
         would step round the rework limit (Asimov, 2026-09-27: t02 and t04 were reopened a third time). Without
-        room in the call budget the advice is skipped, so the stop and its decisions come as before."""
+        room in the call budget the advice is skipped, so the stop and its decisions come as before.
+
+        With several workers, up to that many questions are advised at once, as their answers are researched
+        (2026-09-30: 18 blocked Asimov questions would have waited about an hour for one advisor call after
+        another)."""
         if not self.advisor:
             return False
         specs = {task.id: task for task in QuestionPlan.model_validate(self.state["plan"]).tasks}
@@ -416,18 +459,59 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                        if row["status"] == "blocked" and not row.get("accepted_gap")
                        and row.get("outcome") not in {"prerequisite_block", "audit_block"}
                        and (row.get("advice") or {}).get("key") != block_key(row)]
+            if blocked and self.attempts is None:
+                self.attempts = restore_attempts(self.folder, self.index)
         reopened = []
-        for task_id in blocked:
-            if not self.advice_affordable():
-                break
-            row, spec = self.state["tasks"][task_id], specs[task_id]
+        if self.workers == 1:
+            for task_id in blocked:
+                if not self.advice_affordable():
+                    break
+                if self.advise_task(specs[task_id]):
+                    reopened.append(task_id)
+        else:
+            reopened = self.advise_concurrently([specs[task_id] for task_id in blocked])
+        if reopened:
+            with self.guarded():
+                self.release_dependents()
+                self.save("Blockierte Teilfragen werden nach der Beratung automatisch erneut versucht")
+        return bool(reopened)
+
+    def advise_concurrently(self, specs):
+        """Advise up to ``workers`` questions at once, each only while the budget has room for it beside the
+        advice under way; a failure lets the others finish their call, saves and is raised. Returns the
+        reopened task ids."""
+        queue, running, reopened = list(specs), {}, []
+        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="advice") as pool:
+            try:
+                while True:
+                    with self.guarded():
+                        while queue and len(running) < self.workers and self.advice_affordable(len(running)):
+                            spec = queue.pop(0)
+                            running[pool.submit(copy_context().run, self.advise_task, spec)] = spec.id
+                        if not running:
+                            # Nothing under way and no room for the next one: the rest stops for decisions.
+                            break
+                    done, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        task_id = running.pop(future)
+                        if future.result():
+                            reopened.append(task_id)
+            except BaseException:
+                wait(running)
+                self.save()
+                raise
+        return reopened
+
+    def advise_task(self, spec):
+        """One advisor call for one blocked question and, where it recommends it, the automatic new attempt.
+        Returns whether the question was reopened; only its own row changes."""
+        with self.guarded():
+            row = self.state["tasks"][spec.id]
             key = block_key(row)
             self.progress(f"Blockierte Frage wird beraten: {spec.question}")
             budget_path = self.work / "budget.json"
             rounds = json.loads(read_text(budget_path)).get("search_rounds", 0) if budget_path.exists() else 0
             search = rounds < self.limits().search_rounds
-            if self.attempts is None:
-                self.attempts = restore_attempts(self.folder, self.index)
             limits = {"sources": {"used": len(self.attempts), "limit": self.limits().sources},
                       "search_rounds": {"used": rounds, "limit": self.limits().search_rounds},
                       "model_calls": {"used": budget_projection(self.work, self.state, self.limits(), root=self.root)["used"],
@@ -437,25 +521,21 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             prompt = (TERMINOLOGY + instructions("block_advice") + "\n" +
                       json.dumps(advice_request(spec, row, self.index.sources, failures, limits), ensure_ascii=False, default=str))
             folder = self.task_folder(spec, row) / "advice"
-            advice = cached_call(folder, f"advice_{key}", BlockAdvice, prompt,
-                lambda p, s: self.generate(folder, f"advice_{key}", p, s, f"{self.call_version}.{ADVICE_VERSION}",
-                                           search=search, advisor=True), on_retry=self.retry_note)
-            with self.guarded():
-                row["advice"] = {**advice.model_dump(), "key": key, "at": now()}
-                allowed, stopped = automatic_retry(row)
-                if advice.recommendation == "retry" and allowed:
-                    self.reopen_task(row, activity="Neuer Versuch nach Beratung", feedback=retry_feedback(advice),
-                                     auto_retries=row.get("auto_retries", 0) + 1,
-                                     auto_retry_read=len(row.get("read_refs", [])))
-                    reopened.append(task_id)
-                elif advice.recommendation == "retry":
-                    row["auto_stop"] = stopped
-                self.save(f"Beratung zur blockierten Frage gespeichert: {spec.question}")
-        if reopened:
-            with self.guarded():
-                self.release_dependents()
-                self.save("Blockierte Teilfragen werden nach der Beratung automatisch erneut versucht")
-        return bool(reopened)
+        advice = cached_call(folder, f"advice_{key}", BlockAdvice, prompt,
+            lambda p, s: self.generate(folder, f"advice_{key}", p, s, f"{self.call_version}.{ADVICE_VERSION}",
+                                       search=search, advisor=True), on_retry=self.retry_note)
+        with self.guarded():
+            row["advice"] = {**advice.model_dump(), "key": key, "at": now()}
+            allowed, stopped = automatic_retry(row)
+            reopened = advice.recommendation == "retry" and allowed
+            if reopened:
+                self.reopen_task(row, activity="Neuer Versuch nach Beratung", feedback=retry_feedback(advice),
+                                 auto_retries=row.get("auto_retries", 0) + 1,
+                                 auto_retry_read=len(row.get("read_refs", [])))
+            elif advice.recommendation == "retry":
+                row["auto_stop"] = stopped
+            self.save(f"Beratung zur blockierten Frage gespeichert: {spec.question}")
+        return reopened
 
     def save(self, activity=None, *, budget_request=None):
         # Whole-ledger writes: state, probes, the public ledger and its markdown, then the progress line.
@@ -560,6 +640,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 self.state.update(evidence_version=EVIDENCE_VERSION, phase="questions",
                                   audit_round=self.state["audit_round"] + 1,
                                   dirty_tasks=[t["id"] for t in self.state["plan"]["tasks"]])
+            self.adopt_dossier_rebuild()
             self.timings = self.state.setdefault("call_timings", [])
             self.save("Gespeicherte Antworten und offene Recherchefragen werden übernommen")
             return
@@ -841,7 +922,9 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.adopt_retries()
         while True:
             self.adopt_accepted_gaps()
+            self.keep_spent_answers()
             self.adopt_access_gaps()
+            self.adopt_provided_works()
             self.research_tasks()
             self.adopt_accepted_gaps()
             if self.release_ready():
@@ -875,6 +958,12 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     # Every objection targets an explicitly accepted gap or was routed as an unsupported demand
                     # (a review disagreement): nothing is left to research.
                     report = self.tolerate(dossier, review, report)
+            if self.noted_limits() or self.noted_after_reworks():
+                # Objections noted as limits instead of reopening their questions: completeness objections to a treated
+                # criterion (criterion_covered) and objections to questions whose reworks are spent (keep_spent_answers).
+                report = {**report, **({"noted_limits": self.noted_limits()} if self.noted_limits() else {}),
+                          **({"noted_after_reworks": self.noted_after_reworks()} if self.noted_after_reworks() else {})}
+                self.write_gate(report)
             self.state.update(phase="completed", active_tasks=[])
             closed_now = {c["objection_id"] for c in report.get("objection_checks", []) if c["verdict"] == "closed"}
             for identifier, objection in self.state.get("objections", {}).items():
@@ -894,6 +983,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                      "accepted_gaps.json": {"gaps": report.get("accepted_gaps", []),
                                             "residual_objections": report.get("residual_objections", []),
                                             "objections": self.state.get("accepted_gap_objections", {})}}
+            if self.state.get("noted_objections"):
+                files["noted_objections.json"] = self.state["noted_objections"]
             for name, value in files.items():
                 write_json(destination / name, value)
             return [*(destination / name for name in files), self.work / "research_quality_gate.json", self.work / "research_quality.md",

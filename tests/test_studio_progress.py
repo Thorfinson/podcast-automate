@@ -163,6 +163,21 @@ class StudioProgressTests(unittest.TestCase):
         self.assertEqual((review["approved"], review["approval"]), (False, None))
         self.assertFalse(script_progress(self.root, {**run, "input_hash": "e" * 64})["plan_review"]["approved"])
 
+    def test_a_blocked_ledger_saved_before_the_field_says_from_its_state_whether_spent_answers_are_kept(self):
+        """The runs stopped on 2026-10-01 saved their ledger before keeps_spent_answers existed: the Studio reads the
+        prompt generation from the state, so it offers the resume that keeps their verified answers."""
+        from podcast_automate.research_ledger import save_value
+        write_json(self.work / "research_activity.json", {"activity": "Einzelne Recherchefragen bleiben konkret unbelegt"})
+        write_json(self.work / "research_questions.json", {"closed": 1, "total": 2, "phase": "blocked", "questions": []})
+        run = {**self.run, "kind": "research", "status": "blocked", "input_hash": "b" * 64}
+        for generation, kept in ((2, False), (3, True)):
+            save_value(self.work / "question_research/state.json", {"prompt_generation": generation, "tasks": {}})
+            self.assertIs(script_progress(self.root, run)["research_questions"]["keeps_spent_answers"], kept)
+        # A ledger that carries the field is not overruled.
+        write_json(self.work / "research_questions.json", {"closed": 1, "total": 2, "phase": "blocked", "questions": [],
+                                                           "keeps_spent_answers": False})
+        self.assertIs(script_progress(self.root, run)["research_questions"]["keeps_spent_answers"], False)
+
     def test_research_progress_uses_question_ledger_instead_of_stale_global_score(self):
         write_json(self.work / "research_activity.json", {"activity": "Eine Frage wird geprüft"})
         write_json(self.work / "research_quality_gate.json", {"closed": 0, "total": 2})

@@ -312,6 +312,11 @@ def research_progress(root, run, since=None):
                          and not r.get("retry_requested") and not r.get("access_gap_requested")]
             if questions.get("phase") == "blocked" and not undecided:
                 questions["phase"] = "questions"
+        if "keeps_spent_answers" not in questions and questions.get("phase") == "blocked":
+            # A ledger saved before the field existed (the runs stopped on 2026-10-01): decided from the run's state,
+            # once, since the next save of a resumed run writes it.
+            state = (read(work / "question_research/state.json", {}) or {}).get("value") or {}
+            questions["keeps_spent_answers"] = int(state.get("prompt_generation", 1)) >= 3
         if "reopenable" not in questions:
             # A ledger written before the field existed: decide it from the saved rows, as a resume would,
             # so the Studio offers the resume that gives these blocks their web search.

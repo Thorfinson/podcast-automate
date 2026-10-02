@@ -232,10 +232,12 @@ def validate_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, con
             elif not verbatim(evidence.excerpt, text):
                 errors.append(f"{finding.id}: excerpt is not verbatim in {evidence.reference}.")
             quotes.setdefault(evidence.reference.split("#")[0], set()).add(clean(evidence.excerpt))
-    for source_id, excerpts in quotes.items():
+    # A dossier assembled from the verified answers holds all of them; the 25-word quote rule applies to the broadcast
+    # script instead (script_checks.quotation_errors; the user's choice, 2026-10-01).
+    for source_id, excerpts in ({} if dossier.assembled else quotes).items():
         if sum(len(quote.split()) for quote in excerpts) > 25:
             errors.append(f"{source_id}: all distinct quoted excerpts together must be at most 25 words.")
-    for source_id, count in paraphrased_words.items():
+    for source_id, count in ({} if dossier.assembled else paraphrased_words).items():
         if count > 150:
             errors.append(f"{source_id}: paraphrased findings together must stay within 150 words.")
     expected = {question.id for question in discovery.questions}
@@ -304,7 +306,7 @@ def render_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, index
 PLAN_REVIEW_MODES = {None, "required", "auto"}
 
 
-DISCOVERY_VERSION = "research_discovery.v5-types"
+DISCOVERY_VERSION = "research_discovery.v6-archives"
 
 
 def saved_discovery(work, topic):
@@ -565,7 +567,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             brief["attachments"] = attachments.context(root)
             brief["requirements"] = requirements_for(config)
             prompt = (
-                instructions("research_discovery", maximum=maximum) + " " + TERMINOLOGY +
+                instructions("research_discovery", maximum=maximum) + " " + TERMINOLOGY + fragment("open_archives") +
                 attachments.MATERIAL_RULES +
                 instructions("research_discovery_attachments") + "\n" + json.dumps(brief, ensure_ascii=False))
             saved = saved_discovery(work, config.topic)

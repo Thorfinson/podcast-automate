@@ -149,11 +149,24 @@ class PatchTests(unittest.TestCase):
         def generate(prompt, schema):
             calls.append(json.loads(prompt.splitlines()[-1]))
             return empty_patch()
-        # A batch that owns only f_energy cannot honour the limit alone: strictly, that stops the run.
+        # Strictly, a batch that owns only f_energy repairs the limit in f_energy alone (Ontologies, 2026-10-01: an
+        # audit correction pushed 12 sources over the limit and stopped without trying); it stops only when that
+        # does not bring the dossier within the limit.
         with self.assertRaises(AppError) as raised:
             repair_references(self.folder, "strict", draft, discovery, self.context, self.config, generate,
                               allowed_ids={"f_energy"})
         self.assertEqual(raised.exception.code, "invalid_evidence")
+        self.assertTrue(calls and all([f["id"] for f in call["editable_findings"]] == ["f_energy"] for call in calls))
+
+        def shorten_own(prompt, schema):
+            fixed = draft.findings[0].model_copy(deep=True)
+            fixed.statement = " ".join(["Wort"] * 60)
+            return empty_patch(updates=[fixed])
+        shortened = repair_references(self.folder, "strict_shortened", draft, discovery, self.context, self.config, shorten_own,
+                                      allowed_ids={"f_energy"})
+        self.assertEqual(validate_dossier(shortened, discovery, self.context), [])
+        self.assertEqual(shortened.findings[1], draft.findings[1], "the finding of the unchanged question stays as it was")
+        calls.clear()
         # Deferred, the limit waits for the dossier-wide pass and no model call is made.
         deferred = repair_references(self.folder, "block", draft, discovery, self.context, self.config, generate,
                                      allowed_ids={"f_energy"}, defer_shared=True)

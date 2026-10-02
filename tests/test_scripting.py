@@ -14,10 +14,12 @@ from podcast_automate.research_models import ResearchDossier
 from podcast_automate.runner import status
 from podcast_automate.script_models import Dependency, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan
 from podcast_automate.script_pipeline import REVIEW_REPAIR_VERSION, changed_segments, follow_up_scope
+from podcast_automate.script_checks import planning_dossier, quotation_errors
 from podcast_automate.scripting import run_script, validate_plan, validate_script
 from podcast_automate.storage import read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
+from tests.research_fixtures import TEXT
 from tests.teaching_fixtures import teaching_response
 from tests.polishing_fixtures import polish_review
 from tests.series_fixtures import series_response
@@ -619,6 +621,97 @@ class ScriptValidationTests(unittest.TestCase):
         self.assertEqual(validate_script(script, entry), [])
         script.segments[0].knowledge_refs.append("f_consequence")
         self.assertTrue(any("previously introduced" in item for item in validate_script(script, entry)))
+
+
+class AssembledDossierScriptTests(fixtures.ScriptProjectCase):
+    """A project researched as runs started since 2026-10-01 are: the dossier is assembled from every verified
+    answer (question_synthesis.assemble_dossier), and the 25-word quote rule applies to the script instead."""
+    assembled = True
+    FINDING = "task_definition__f_energy"
+
+    def model(self, prompt, output_type, directory, **kwargs):
+        value, metadata = super().model(prompt, output_type, directory, **kwargs)
+        if output_type in (SeriesPlan, EpisodeScript):
+            value = output_type.model_validate_json(value.model_dump_json().replace('"f_energy"', f'"{self.FINDING}"'))
+        return value, metadata
+
+    def test_the_plan_reads_the_assembled_dossier_without_excerpts_and_a_long_quote_is_rewritten(self):
+        plans, repairs, drafts = [], [], []
+
+        def model(prompt, output_type, directory, **kwargs):
+            payload = json.loads(prompt.splitlines()[-1])
+            if output_type is SeriesPlan:
+                plans.append(payload)
+            if output_type is EpisodeScript and kwargs["prompt_version"].startswith("write_episode_repair"):
+                repairs.append(payload)
+            value, metadata = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is EpisodeScript and not drafts:
+                # The first draft reads the fixture source out word for word.
+                drafts.append(value)
+                value = value.model_copy(deep=True)
+                value.segments[1].text += " Quote: " + TEXT
+            return value, metadata
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.model_dump())
+        dossier = plans[0]["dossier"]
+        self.assertTrue(dossier["assembled"])
+        self.assertEqual([f["id"] for f in dossier["findings"]], [self.FINDING])
+        self.assertFalse({"evidence", "claim_contract"} & set(dossier["findings"][0]))
+        self.assertEqual(dossier["answers"][0]["finding_ids"], [self.FINDING])
+        self.assertEqual(len(repairs), 1)
+        self.assertTrue(any("words of this source verbatim" in error for error in repairs[0]["errors"]), repairs[0]["errors"])
+        published = json.loads((self.root / "runs" / run.run_id / "drafts/ep_001.json").read_text(encoding="utf-8"))
+        self.assertNotIn(TEXT, json.dumps(published, ensure_ascii=False))
+
+
+class QuotationTests(unittest.TestCase):
+    WORDS = ("models assign an energy to each configuration and lower energy marks a better fit between "
+             "observed variables while learning and inference remain distinct operations of the same "
+             "synthetic system described here").split()
+
+    def sources(self):
+        return [{"source_id": "src_a", "sections": [{"reference": "src_a#s1", "text": " ".join(self.WORDS).capitalize() + "."}]}]
+
+    def test_an_episode_quotes_a_source_for_at_most_25_words(self):
+        """2026-10-01, the user's choice: the dossier keeps every verified answer with its excerpts; the episode
+        quotes one source for at most 25 words, counted in runs of at least six words the passage shares."""
+        script = example_script()
+        script.segments[0].text = "As the paper says, " + " ".join(self.WORDS[:20]).upper() + "!"
+        self.assertEqual(quotation_errors(script, self.sources()), [])
+        script.segments[1].text = "And then: " + ", ".join(self.WORDS[20:]) + "."
+        (error,) = quotation_errors(script, self.sources())
+        self.assertTrue(error.startswith("src_a: the dialogue repeats 31 words of this source verbatim"), error)
+        # Runs shorter than six words are common phrases, not quotes.
+        script.segments[1].text = " Then ".join(" ".join(self.WORDS[start:start + 5]) for start in range(20, 30, 5))
+        self.assertEqual(quotation_errors(script, self.sources()), [])
+
+    def test_the_pipeline_applies_the_quote_rule_only_to_an_assembled_dossier(self):
+        from types import SimpleNamespace
+        from podcast_automate.research_models import Evidence, Finding
+        from podcast_automate.script_pipeline import ScriptRun
+        finding = Finding(id="f_energy", kind="definition", statement="Configurations are assigned energies.",
+                          evidence=[Evidence(reference="src_a#s1", excerpt="Models assign an energy")])
+        script = example_script()
+        script.segments[1].text += " " + " ".join(self.WORDS[:30])
+        entry = example_plan().episodes[0]
+        for assembled, expected in ((True, 1), (False, 0)):
+            dossier = ResearchDossier(topic="Test topic", scope_note="s", findings=[finding], coverage=[],
+                                      open_questions=[], assembled=assembled)
+            pipeline = SimpleNamespace(dossier=dossier, context=self.sources(), sources=None)
+            errors = ScriptRun.script_errors(pipeline, script, entry)
+            self.assertEqual(sum("verbatim" in e for e in errors), expected, errors)
+
+    def test_the_plan_reads_an_assembled_dossier_without_excerpts_and_a_composed_one_whole(self):
+        from podcast_automate.research_models import Evidence, Finding
+        finding = Finding(id="f_energy", kind="definition", statement="Configurations are assigned energies.",
+                          evidence=[Evidence(reference="src_a#s1", excerpt="Models assign an energy")])
+        composed = ResearchDossier(topic="Test topic", scope_note="s", findings=[finding], coverage=[], open_questions=[])
+        self.assertEqual(planning_dossier(composed), composed.model_dump())
+        view = planning_dossier(composed.model_copy(update={"assembled": True}))
+        self.assertEqual(view["findings"], [{k: v for k, v in finding.model_dump().items()
+                                             if k not in {"evidence", "claim_contract", "supporting_contracts"}}])
+        self.assertNotIn("source_assessments", view)
 
 
 if __name__ == "__main__":

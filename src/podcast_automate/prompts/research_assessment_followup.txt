@@ -1,0 +1,10 @@
+This is a follow-up assessment of the same research: the questions in follow_up.changed_tasks were reworked or
+checked again since the last round. follow_up.previous_requirements holds that round's verdicts, and
+follow_up.previous_issues its objections with what became of each where known (reworked, noted as a limit,
+disputed, accepted as a gap). Assess exactly the requirements in follow_up.requirements_in_scope, each once, on
+the current answers; every other requirement keeps its verdict and is not listed. For each, set remedy: research
+when new reading or a corrected answer can close what is missing, limit when what is missing is a property of
+the available sources, none when nothing is missing. In issues name only two kinds: an earlier objection that
+the rework of a changed question did not resolve, and a new defect in the answer of a changed question. Give each
+the task_ids it concerns and remedy research or limit by the same rule. A point already in follow_up.script_notes,
+or one about questions that did not change, is settled: do not raise it again.

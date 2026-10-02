@@ -26,9 +26,18 @@ from podcast_automate.studio_progress import research_progress
 from podcast_automate.studio_worker import perform
 from tests import research_fixtures as fixtures
 from tests.question_fixtures import task_value
+from tests.research_fixtures import composed_generation
 
 MODEL = "podcast_automate.research.CodexAdapter.structured"
 PLANNING = [ResearchDiscovery, QuestionPlan, QuestionScopeReview]
+
+
+def setUpModule():
+    # These tests follow a dossier a model composes and audits (prompt generation 2), as runs started before
+    # 2026-10-01 still do; the assembled dossier of a run started now has its own tests in test_question_research.
+    composed = composed_generation()
+    composed.start()
+    unittest.addModuleCleanup(composed.stop)
 
 
 class PlanGateTests(fixtures.ResearchProjectCase):

@@ -1,4 +1,5 @@
 """Synthetic scripts and a researched project shared by pipeline tests."""
+import contextlib
 import json
 import tempfile
 import unittest
@@ -19,7 +20,7 @@ from tests.polishing_fixtures import polish_review
 from tests.question_fixtures import question_response, script_checks
 from tests.series_fixtures import series_response
 from tests.teaching_fixtures import teaching_response
-from tests.research_fixtures import HTML, discovery, dossier_from_prompt, assessment_from_prompt
+from tests.research_fixtures import HTML, discovery, dossier_from_prompt, assessment_from_prompt, composed_generation
 
 
 def example_plan():
@@ -43,6 +44,10 @@ def example_script():
 
 class ScriptProjectCase(unittest.TestCase):
     """Shared project and model setup; deliberately contains no test methods."""
+    # The script tests are written against a composed dossier (findings f_energy and so on); a case that sets this
+    # researches as a run started now does and plans with the assembled dossier's ids.
+    assembled = False
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -64,7 +69,8 @@ class ScriptProjectCase(unittest.TestCase):
             return DossierReview(issues=[], limitations=[]), {}
 
         with patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")), \
-             patch("podcast_automate.research.CodexAdapter.structured", side_effect=research_model):
+             patch("podcast_automate.research.CodexAdapter.structured", side_effect=research_model), \
+             (contextlib.nullcontext() if self.assembled else composed_generation()):
             self.research = run_research(self.root)
         self.assertEqual(self.research.status, "completed")
         self.calls = []
