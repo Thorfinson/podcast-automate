@@ -316,6 +316,33 @@ class PolishingTests(unittest.TestCase):
         self.assertEqual(json.loads((folder / 'accepted_notes.json').read_text(encoding='utf-8')),
                          ['speaker_roles: ' + roles])
 
+    def test_a_meaning_loss_on_unchanged_text_still_blocks_after_a_repair(self):
+        """2026-10-02 review: from the second comparison on, a meaning or completeness failure on segments the last
+        repair had not changed became a note unless that criterion had been repaired, and a polish that lost a step was
+        published as passed instead of falling back to the checked draft."""
+        original, entry, payloads = self.long_script(), fixtures.example_plan().episodes[0], []
+
+        def invoke(prompt, output_type, version):
+            if output_type is EpisodeScript:
+                candidate = original.model_copy(deep=True)
+                if version == 'dialogue_polish_repair.v1':
+                    candidate.segments[2].text = 'Satz Nummer 3, nun genau wie im Entwurf.'
+                return candidate
+            payloads.append(json.loads(prompt.splitlines()[-1]))
+            review = fixtures.polish_review(prompt)
+            if len(payloads) <= 2:
+                criterion, number = ('speaker_roles', 3) if len(payloads) == 1 else ('meaning', 5)
+                check = next(c for c in review.checks if c.criterion == criterion)
+                check.verdict, check.reason = 'fail', f'Segment {number} loses a step of the explanation.'
+                check.after = [Passage(segment_id=f'seg_00{number}', quote=f'Satz Nummer {number}.')]
+            return review
+        folder = self.root / 'fidelity'
+        polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, lambda *_: [])
+        result = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
+        self.assertEqual((len(payloads), result['repairs']), (3, 2), "the loss went back to repair")
+        self.assertEqual([row['criterion'] for row in payloads[2]['previous_checks']], ['meaning'])
+        self.assertFalse((folder / 'accepted_notes.json').exists())
+
     def test_a_repaired_point_still_open_blocks_and_a_resume_asks_the_same_comparison(self):
         original, entry, prompts = self.long_script(), fixtures.example_plan().episodes[0], []
         repairs = []

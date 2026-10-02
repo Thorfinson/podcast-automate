@@ -332,10 +332,16 @@ class SeriesReviewTests(unittest.TestCase):
     def test_a_round_that_fails_without_a_verdict_is_not_recorded_and_the_resume_goes_on_with_it(self):
         """Finding of 2026-10-02: any failure inside the correction round was replayed on every resume, so a timeout, a
         quota pause or a provider failure became a permanent block."""
+        # 2026-10-02 review: a spent call limit, a missing key, a busy project and a malformed answer were recorded
+        # too, and a resume raised them again without a call, after the limit was raised as well.
         for error in (AppError("Zeitlimit erreicht.", code="timeout"),
                       AppError("Kontingent erschöpft.", code="quota_exhausted", status="waiting_for_quota"),
                       AppError("Codex ist abgebrochen.", code="codex_failed"),
-                      AppError("Modellaufruf angehalten.", code="interrupted", status="interrupted")):
+                      AppError("Modellaufruf angehalten.", code="interrupted", status="interrupted"),
+                      AppError("Limit von 60 Modellaufrufen erreicht.", code="research_budget_exhausted", status="blocked"),
+                      AppError("OpenRouter-Key fehlt.", code="openrouter_key_required", status="blocked"),
+                      AppError("Projekt belegt.", code="project_busy", status="blocked"),
+                      AppError("Antwort unbrauchbar.", code="invalid_model_output", status="blocked")):
             with self.subTest(code=error.code):
                 work, self.calls, rounds = self.work / error.code, 0, []
                 scripts = [s.model_copy(deep=True) for s in self.scripts]
@@ -851,6 +857,33 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
                          ["segments"][-1]["text"].endswith(self.SENTENCE))
         self.assertIn("reviews/ep_002_series_repair_rejected.json", run.stages["review"].error.message)
         self.assertEqual(self.versions.count(REVIEW_REPAIR_VERSION), 3)
+
+    def test_a_rejected_correction_is_the_rounds_decision_even_beside_a_timeout(self):
+        """2026-10-02 review: repair_series raised another episode's timeout before its rejections, so the rejection was
+        not recorded; the resume checked the kept correction again and could adopt it without a decision."""
+        def seed(review, call, work):
+            if call == 1:
+                review.checks[2].verdict = "fail"
+                review.checks[2].reason = "Both episodes contradict the order the series established."
+
+        def repair(script, payload):
+            if script.episode_id == "ep_001":
+                raise AppError("Zeitlimit erreicht.", code="timeout")
+            script.segments[-1].text += self.SENTENCE
+
+        def drift(review, payload):
+            if payload["script"]["episode_id"] == "ep_002" and payload["script"]["segments"][-1]["text"].endswith(self.SENTENCE):
+                check = review.claim_checks[-1]
+                check.verdict, check.changed_fields = "drift", ["scope"]
+                check.reason = "The repaired segment claims more than the finding supports."
+
+        model = self.two_episode_model(on_series=seed, on_review=drift, on_repair=repair)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual((run.status, run.stages["review"].error.code), ("blocked", "script_review_failed"))
+        work = self.root / "runs" / run.run_id
+        receipt = json.loads((work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
+        self.assertEqual(receipt["failure"]["code"], "script_review_failed")
 
     def test_a_series_correction_the_check_rejects_once_is_adopted_on_its_second_attempt(self):
         """Ontologies ep_008, 2026-09-29: the only attempt restated an absence claim, the check named the fix, and

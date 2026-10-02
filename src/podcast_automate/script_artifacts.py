@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 
+from .errors import AppError
 from .models import EpisodeScript, host_labels
 from .polishing import HOST_ROLES, POLISH_VERSION
 from .research_gap_probe import statuses
 from .script_advisories import advisories, established_terms
 from .script_models import KnowledgeModel
-from .storage import atomic_text, file_hash, read_yaml, write_json, write_yaml
+from .storage import atomic_text, file_hash, outlast_sharing_violation, read_yaml, write_json, write_yaml
 from .teaching import TEACHING_VERSION
 
 
@@ -83,8 +85,45 @@ def render_script(script, labels):
     return "\n".join(lines)
 
 
+def archive_other_series(root, plan, run_id):
+    """Move the episode folders of another outline to ``episodes/archive/<time>_<run>/``; nothing is deleted. A
+    folder belongs to this outline when its ``episode_plan.yaml`` is the plan's entry of the same id, as for every
+    run of one outline (a resume, a revision, one episode at a time). The recordings stay under ``exports/<ep>/<audio
+    run>/``, where the archived ``audio_latest.json`` still finds them. Before (the user's choice, 2026-10-02), a new
+    outline's scripts were published beside the old series, and old episodes the new plan lacks stayed in the Studio."""
+    planned = {entry.episode_id: entry for entry in plan.episodes}
+    stale = []
+    for folder in sorted((root / "episodes").glob("ep_*")):
+        if not folder.is_dir():
+            continue
+        entry, path = planned.get(folder.name), folder / "episode_plan.yaml"
+        try:
+            same = entry is not None and path.is_file() and type(entry).model_validate(read_yaml(path)) == entry
+        except (OSError, ValueError):
+            same = False
+        if not same:
+            stale.append(folder)
+    if not stale:
+        return None
+    stamp = datetime.now(timezone.utc)
+    destination = root / "episodes" / "archive" / f"{stamp.strftime('%Y%m%d_%H%M%S')}_{run_id}"
+    destination.mkdir(parents=True, exist_ok=True)
+    write_json(destination / "receipt.json", {"run_id": run_id, "archived_at": stamp.isoformat(),
+                                              "episodes": [folder.name for folder in stale],
+                                              "reason": "Folgen eines anderen Inhaltsverzeichnisses"})
+    for folder in stale:
+        try:
+            outlast_sharing_violation(lambda folder=folder: folder.replace(destination / folder.name))
+        except OSError as exc:
+            raise AppError(f"Die frühere Folge {folder.name} lässt sich nicht ins Archiv verschieben, vermutlich ist eine "
+                           "Datei darin geöffnet (etwa eine laufende Vertonung). Diese abschließen und fortsetzen.",
+                           code="episodes_locked", status="blocked") from exc
+    return destination
+
+
 def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teaching_for,
                     research_id, manifest, input_hash, text_generation, series_report):
+    archive_other_series(root, plan, manifest.run_id)
     knowledge = KnowledgeModel.model_validate_json((work / "knowledge_model.json").read_text(encoding="utf-8"))
     knowledge.claims = dossier.findings
     outputs, episode_reports = [], {}

@@ -32,6 +32,8 @@ HOST_ROLES = {
               "or deduction rather than ask for the next definition. Do not act unintelligent or merely praise the expert.",
 }
 POLISH_CRITERIA = ("meaning", "completeness", "speaker_roles", "spoken_language", "episode_framing")
+# What the polish must keep of the checked draft; a loss blocks in every round (scoped_points).
+FIDELITY_CRITERIA = frozenset({"meaning", "completeness"})
 
 
 class PolishCheck(Contract):
@@ -168,10 +170,14 @@ def scoped_points(points, scope):
     criterion the previous round sent to repair, quotes a segment changed since that round, or quotes nothing it could
     be placed by; a new point on text the previous round passed is a note. Each round's fresh review raised new role
     or framing points on unchanged text and stopped the run (finding of 2026-10-02). A note from earlier stays one while
-    its segments are unchanged."""
+    its segments are unchanged.
+
+    Meaning and completeness block in every round, wherever they point: they compare the candidate with the checked
+    draft, which stays the script when the repairs fail. A step the first polish lost, found in the second round on
+    text the repair had not touched, became a note, and the lossy polish was published as passed (2026-10-02 review)."""
     if not scope:
         return list(points), []
-    repaired = {row["criterion"] for row in scope["previous"] if row["blocking"]}
+    repaired = {row["criterion"] for row in scope["previous"] if row["blocking"]} | FIDELITY_CRITERIA
     changed = set(scope["changed"])
     blocking, notes = [], []
     for point in points:

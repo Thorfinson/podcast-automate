@@ -214,22 +214,40 @@ def review_scope(memory, answer):
         return None
     hashes = memory.get("finding_hashes", {})
     changed = [f.id for f in answer.findings if hashes.get(f.id) != digest(f.model_dump())]
+    removed = set(hashes) - {f.id for f in answer.findings}
     earlier = [row["finding_id"] for row in memory.get("blocking_findings", [])]
     failed = [row["index"] for row in memory.get("failed_criteria", [])]
-    resting = [c.index for c in answer.criteria if set(c.finding_ids) & set(changed)]
+    grouped = memory.get("criterion_findings")
+
+    def regrouped(criterion):
+        # A criterion resting on a changed finding, or on another set of findings than before (one the rework removed
+        # or moved), is judged afresh: its earlier pass was about other material. A memory written before the
+        # criterion sets were kept (2026-10-02) cannot tell which criterion lost a removed finding, so all may fail.
+        if set(criterion.finding_ids) & set(changed):
+            return True
+        if grouped is None:
+            return bool(removed)
+        return set(grouped.get(str(criterion.index), ())) != set(criterion.finding_ids)
+    resting = [c.index for c in answer.criteria if regrouped(c)]
     return {"step": memory.get("step"), "changed_finding_ids": changed,
             "unchanged_finding_ids": [f.id for f in answer.findings if f.id not in changed],
             "may_fail": {"finding_ids": sorted(set(changed) | set(earlier)), "criteria": sorted(set(failed) | set(resting)),
-                         "source_adequacy": bool(changed) or not memory.get("source_adequacy", True)}}
+                         "source_adequacy": bool(changed or removed) or not memory.get("source_adequacy", True)}}
 
 
-def carry_earlier(verdict, memory, scope):
+def carry_earlier(verdict, memory, scope, passages):
     """Keep, in place, the earlier passing receipt of every point outside ``scope`` that this review now fails, and
     return the new objections as advisories. Before, every review of a reworked answer was a fresh one, and a point
     it had passed could fail the next round (the design rule: only unresolved earlier objections or new defects in
-    changed material may block)."""
+    changed material may block).
+
+    A kept receipt names only passages supplied to this review. It may have assessed others then (another finding's,
+    which the rework replaced), and support_errors refused such a receipt after the review was stored, on every
+    resume (2026-10-02)."""
     earlier = AnswerReview.model_validate(memory["review"])
-    receipts = {row.finding_id: row for row in earlier.finding_support}
+    supplied = {section["reference"] for source in passages for section in source["sections"]}
+    receipts = {row.finding_id: row.model_copy(update={"references": [r for r in row.references if r in supplied]})
+                for row in earlier.finding_support}
     verdicts = {c.index: c for c in earlier.criteria}
     allowed, advisories = scope["may_fail"], []
 
@@ -266,6 +284,8 @@ def review_memory(step, answer, verdict, points):
     support = {row.finding_id: row for row in verdict.finding_support}
     blocking = list(dict.fromkeys(key for kind, key, _ in points if kind == "finding"))
     return {"step": step, "finding_hashes": {f.id: digest(f.model_dump()) for f in answer.findings},
+            # Which findings each criterion rested on, so a criterion that loses one is judged afresh (review_scope).
+            "criterion_findings": {str(c.index): list(c.finding_ids) for c in answer.criteria},
             "review": verdict.model_dump(), "source_adequacy": verdict.source_adequacy,
             "failed_criteria": [{"index": c.index, "reason": c.reason} for c in verdict.criteria if not c.passed],
             "blocking_findings": [{"finding_id": key, "verdict": support[key].verdict, "reason": support[key].reason,
@@ -546,7 +566,7 @@ class TaskResearchMixin:
         unreviewed_criteria = sorted(set(range(len(spec.acceptance))) - {c.index for c in raw.criteria})
         verdict = scope_assessments(normalise_review(raw, spec, final=True), answer.findings, passages)
         notes, unreviewed = settle_receipts(verdict, answer.findings, passages)
-        advisories = carry_earlier(verdict, memory, scope) if scope else []
+        advisories = carry_earlier(verdict, memory, scope, passages) if scope else []
         points, limitations = review_points(verdict, spec, answer.findings, passages)
         blocking = [message for _, _, message in points]
         limitations += notes + advisories
@@ -737,8 +757,19 @@ class TaskResearchMixin:
 
         # ".archives": the search names open archives to prefer (open_archives, 2026-10-01); a resumed step keeps
         # the prompt it saved in search_request.json.
-        extra = settled_search(self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed,
-                                         tag=".archives"), maximum)
+        try:
+            extra = settled_search(self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed,
+                                             tag=".archives"), maximum)
+        except AppError as exc:
+            # A question beside this one took the last search round between the check above and this call's
+            # reservation (research.reserve_call), or a repeated attempt of this call needed one more. That is this
+            # question's budget block, as the check would have found, not a stop of the whole run (as in advise_task).
+            if exc.code != "research_budget_exhausted" or not self.calls_left():
+                raise
+            row["reason"] = ("Das Web-Suchbudget ist ausgeschöpft; diese konkrete Frage bleibt unbelegt. Ein höheres "
+                             "Suchrundenlimit kann ausdrücklich genehmigt werden.")
+            row["outcome"] = "budget_block"
+            return False
         result = read_value(receipt) if receipt.exists() else {
             "processed": [], "attempted": [], "base": self.state["index_hash"], "added": [], "failures": []}
         result.setdefault("attempted", [source_identity(url) for url in result["processed"]])

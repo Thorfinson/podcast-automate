@@ -288,10 +288,23 @@ def unavailable_state(provider, *, clock=time.time) -> dict | None:
     return note if until is not None and until.timestamp() > clock() else None
 
 
+# The reasons of an unavailability note that a login check verifies itself (installed, logged in with the
+# subscription); a CLI too old for one model (claude_version) is not among them, the login check knows no model.
+LOGIN_REASONS = frozenset({"authentication_required", "subscription_required", "claude_missing", "codex_missing",
+                           "missing_executable"})
+
+
 def with_unavailable(provider, snapshot, *, clock=time.time) -> dict:
-    """The snapshot as the rule sees it: unusable while a call's note says so, naming that call's reason."""
+    """The snapshot as the rule sees it: unusable while a call's note says so, naming that call's reason. A login
+    check made after the note that finds the provider usable ends a note of a login reason: after ``claude auth
+    login``, the check, the doctor and the next resume reported the provider unusable for up to ten minutes
+    (2026-10-02 review)."""
     note = unavailable_state(provider, clock=clock)
     if note is None or not isinstance(snapshot, dict):
+        return snapshot
+    checked, detected = parse_iso(snapshot.get("checked_at")), parse_iso(note.get("detected_at"))
+    if (snapshot.get("usable") and note.get("reason") in LOGIN_REASONS and checked is not None and detected is not None
+            and checked > detected):
         return snapshot
     return {**snapshot, "available": False, "usable": False, "reason": note.get("reason") or "unavailable",
             "unavailable_until": note.get("until")}
@@ -346,8 +359,11 @@ def choose_subscription(settings, candidates: dict, *, prefer="codex_cli", exclu
     for provider in order:
         if provider not in candidates:
             continue
-        snapshot = codex_quota(settings, refresh=refresh, clock=clock) if provider == "codex_cli" else \
-            claude_quota(refresh=refresh, clock=clock)
+        # A provider noted unusable for a login reason is checked afresh: a login since then ends the note at once.
+        note = unavailable_state(provider, clock=clock)
+        fresh = refresh or (note is not None and note.get("reason") in LOGIN_REASONS)
+        snapshot = codex_quota(settings, refresh=fresh, clock=clock) if provider == "codex_cli" else \
+            claude_quota(refresh=fresh, clock=clock)
         snapshot = with_unavailable(provider, snapshot, clock=clock)
         snapshots[provider] = snapshot
         if provider in exclude or not snapshot.get("available"):

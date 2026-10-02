@@ -213,7 +213,9 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         def process(args, **kwargs):
             caps.append(kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"])
             raise AppError("Stopped by the test before any CLI starts.", code="claude_failed")
+        # command() too: CI installs no Claude CLI, and its lookup would fail before run_process.
         with patch.object(sonnet, "check_login"), patch.object(sonnet, "cli_version", return_value="2.1.286"), \
+                patch.object(sonnet, "command", return_value=fake_cli(self.root)), \
                 patch("podcast_automate.claude_code.run_process", side_effect=process), self.assertRaises(AppError):
             sonnet.structured("Synthetic test only", Result, self.root / "sonnet", prompt_version="test")
         self.assertEqual(caps, ["128000"])

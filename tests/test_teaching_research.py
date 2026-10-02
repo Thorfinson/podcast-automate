@@ -440,6 +440,35 @@ class FoundationResearchTests(unittest.TestCase):
             self.research(invoke)
         self.assertFalse((self.work / "teaching/ep_001/supplement/receipt.json").exists())
 
+    def test_a_raised_limit_keeps_the_supplement_and_one_saved_before_the_change_still_counts(self):
+        """2026-10-02 review: the supplement binding digested the whole brief, runtime and limits included, which a
+        resumed run's hash leaves out (storage.bound_brief). A limit raised while the run waited stopped every resume
+        with invalid_supplement, and an unfinished supplement was bought again as a new one."""
+        self.research()
+        limits = self.config.research_limits
+        raised = self.config.model_copy(update={"research_limits": limits.model_copy(update={"model_calls": limits.model_calls + 50})})
+        self.assertIn("better match", apply_foundations(self.root, self.work, raised, [self.entry], self.dossier,
+                                                        self.context, self.sources)[0].findings[0].statement)
+        # A supplement saved under the earlier binding over the whole brief keeps its files as they are.
+        folder = self.work / "teaching/ep_001/supplement"
+        earlier = digest({"version": "teaching_research.v1", "config": self.config.model_dump(),
+                          "episode": self.entry.model_dump(), "dossier": self.dossier.model_dump()})
+        request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
+        write_json(folder / "request.json", {**request, "binding": earlier})
+        receipt = json.loads((folder / "receipt.json").read_text(encoding="utf-8"))
+        receipt["outputs"][(folder / "request.json").relative_to(self.root).as_posix()] = file_hash(folder / "request.json")
+        write_json(folder / "receipt.json", {**receipt, "binding": earlier})
+        self.apply()
+        calls = len(self.calls)
+        self.research()
+        self.assertEqual((len(self.calls), len(list(self.work.glob("teaching/ep_001/supplement*")))), (calls, 1),
+                         "the saved supplement is found, not bought again")
+        # A content edit still binds: the supplement no longer belongs to the brief.
+        edited = self.config.model_copy(update={"depth_request": self.config.depth_request + " More."})
+        with self.assertRaises(AppError) as changed:
+            apply_foundations(self.root, self.work, edited, [self.entry], self.dossier, self.context, self.sources)
+        self.assertEqual(changed.exception.code, "invalid_supplement")
+
     def test_changed_evidence_or_incomplete_receipt_cannot_be_used(self):
         self.research()
         receipt = self.work / "teaching/ep_001/supplement/receipt.json"

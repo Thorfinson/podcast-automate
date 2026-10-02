@@ -14,7 +14,7 @@ from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION, FindingSupport, SourceAssessment
 from .prompts import instructions
 from .question_answering import read_context
-from .question_dependencies import invalidate_dependents
+from .question_dependencies import invalidate_dependents, prerequisites_current, revalidate
 from .question_ownership import editable_findings, finding_owners, preserve_unrelated
 from .research_gap_probe import coverage_terms, gap_id, probe, settle
 from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_EVIDENCE_RULE, SYNTHESIS_INSTRUCTIONS,
@@ -1164,10 +1164,13 @@ class SynthesisMixin:
 
         ``passed_with_accepted_gaps`` says whether a gap was accepted; ``passed_with_noted_limits`` whether the research
         passed on recorded limits (unmet requirements, script notes, noted objections). Before (2026-10-02), every such
-        finish said accepted gaps: both completed runs had none and still published ``accepted_gaps_remaining``."""
+        finish said accepted gaps: both completed runs had none and still published ``accepted_gaps_remaining``.
+        A remaining objection is a recorded limit too, a disputed one included: a finish whose objections were all
+        review disagreements published ``no_remaining_issues`` beside them (2026-10-02 review)."""
+        residual = self.objections(review, report)
         report = {**report, "passed": True, "passed_with_accepted_gaps": bool(self.accepted_summary()),
-                  "passed_with_noted_limits": self.noted_limits_remain(report),
-                  "residual_objections": self.objections(review, report)}
+                  "passed_with_noted_limits": self.noted_limits_remain(report) or bool(residual),
+                  "residual_objections": residual}
         if finish:
             report.update(passed_with_residual_objections=True, residual_note=finish.get("note", ""))
         self.write_gate(report)
@@ -1441,7 +1444,9 @@ class SynthesisMixin:
         verified answer (evidence, search or access block, or that block accepted as a gap). None otherwise; a question
         waiting for a prerequisite is decided when the prerequisite is (release_ready)."""
         if (row["status"] != "blocked" or row.get("answer") or row.get("outcome") == "prerequisite_block"
-                or not row.get("reopenings")):
+                or not row.get("reopenings") or row["reopenings"][-1].get("settled")):
+            # ``settled``: that rework ended verified, and this block came from a later check of its answer
+            # (question_dependencies.revalidate); the answer from before the reopening was rejected by an audit.
             return None
         last = row["reopenings"][-1]
         answer, verification = last.get("previous_answer"), last.get("previous_verification") or {}
@@ -1465,6 +1470,7 @@ class SynthesisMixin:
         kept, reworked = [], False
         with self.guarded():
             closed = set(self.state.get("closed_objections", []))
+            tasks = {task.id: task for task in QuestionPlan.model_validate(self.state["plan"]).tasks}
             for task_id, row in self.state["tasks"].items():
                 answer, verification = row.get("answer"), row.get("verification") or {}
                 spent = row.get("outcome") == "audit_block" or row.get("accepted_gap")
@@ -1485,6 +1491,7 @@ class SynthesisMixin:
                                answer_locked=False, lock=None, pending=None,
                                activity="Die Nachbesserung fand keine neuen Belege; die zuletzt geprüfte Antwort bleibt, "
                                         "der Einwand steht als Grenze im Bericht")
+                    self.recheck_kept(tasks[task_id], row)
                     kept.append(task_id)
                     reworked = True
                     continue
@@ -1495,12 +1502,20 @@ class SynthesisMixin:
                 row.pop("accepted_gap", None)
                 row.update(status="verified", outcome=answer.get("outcome", "supported_answer"), reason="",
                            activity="Nach zwei Nachbesserungen bleibt die zuletzt geprüfte Antwort; der Einwand steht als Grenze im Bericht")
+                self.recheck_kept(tasks[task_id], row)
                 kept.append(task_id)
             if kept:
                 self.save("Teilfragen ohne weitere Nachbesserung behalten ihre zuletzt geprüfte Antwort; ihre Einwände stehen "
                           "als Grenzen im Bericht" if reworked else
                           "Zweimal nachgebesserte Teilfragen behalten ihre geprüfte Antwort; ihre Einwände stehen als Grenzen im Bericht")
         return kept
+
+    def recheck_kept(self, task, row):
+        """A kept answer whose verification bound other prerequisite answers than today's is checked against them
+        again, as the resume does (prerequisites_current). A prerequisite reworked in the same round as this question
+        passed its new answer, and the dependent came back verified against the old one (2026-10-02 review)."""
+        if not prerequisites_current(task, self.state, row.get("verification")):
+            revalidate(row, activity="Behaltene Antwort wird gegen die geänderte Voraussetzung nachgeprüft")
 
     def noted_after_reworks(self):
         """The objections noted against questions whose reworks are spent, as the quality report lists them, and those

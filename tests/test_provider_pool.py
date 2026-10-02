@@ -204,6 +204,19 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
             fixed = run_script(self.root, backend="claude_code")
         self.assertEqual((fixed.status, fixed.stages["planning"].error.code), ("blocked", "authentication_required"))
 
+    def test_an_expired_login_beside_an_exhausted_subscription_asks_for_the_login(self):
+        """2026-10-02 review: Claude's login had expired and Codex was out until its weekly reset; the run paused as
+        'both subscriptions exhausted' until that reset instead of asking for 'claude auth login'."""
+        QuotaFakes(self, codex=False)
+
+        def claude(adapter, prompt, output_type, directory, **kwargs):
+            raise AppError("Claude-Anmeldung muss erneuert werden: claude auth login", code="authentication_required",
+                           status="blocked")
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=AssertionError("Codex is out")), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
+            run = run_script(self.root, backend="auto")
+        self.assertEqual((run.status, run.stages["planning"].error.code), ("blocked", "authentication_required"))
+
     def test_a_claude_run_switched_by_the_user_continues_with_astra_and_keeps_its_work(self):
         """2026-09-29: Claude's seven-day window ran low while both projects were in the script review, and the user
         asked to let the runs continue with Astra. The switch changes who answers, not the run's inputs or work."""
