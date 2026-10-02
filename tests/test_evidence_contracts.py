@@ -46,6 +46,8 @@ class ContractRuleTests(unittest.TestCase):
     contract that defines such a rule needs a violating example here; the enumeration fails otherwise."""
 
     SETTINGS = {"TopicBrief", "AudioChoice"}  # operator settings, never model output
+    # Rules that normalise instead of refusing; each has its own test below (Finding: a lone illustration half).
+    NORMALISED = {"Finding"}
 
     def violations(self):
         receipt = support_receipts([f.model_dump() for f in answer_for("src_one#s_one").findings],
@@ -57,8 +59,6 @@ class ContractRuleTests(unittest.TestCase):
             ResearchObjection: dict(id="obj_x", rule="support", task_id="", criterion_index=None, finding_ids=["f_energy"],
                                     evidence_refs=[], missing_evidence="", reason="r", correction="c",
                                     closure_condition="c", resolution="revise"),
-            Finding: dict(id="f_x", kind="definition", statement="s", evidence=[dict(reference="src_one#s_one", excerpt="e")],
-                          illustration="an example", illustration_limit=""),
             ResearchDiscovery: {**discovery, "questions": discovery["questions"] * 2},
             # A model writes at most MAX_FINDINGS; only an assembled dossier holds more (question_synthesis).
             ResearchDossier: dict(topic="t", scope_note="s", coverage=[], open_questions=[], findings=[
@@ -73,7 +73,7 @@ class ContractRuleTests(unittest.TestCase):
         found, pending = set(), [Contract]
         while pending:
             for contract in pending.pop().__subclasses__():
-                if own_model_validators(contract) and contract.__name__ not in self.SETTINGS:
+                if own_model_validators(contract) and contract.__name__ not in self.SETTINGS | self.NORMALISED:
                     found.add(contract)
                 pending.append(contract)
         self.assertEqual({c.__name__ for c in found}, {c.__name__ for c in violations},
@@ -89,6 +89,19 @@ class ContractRuleTests(unittest.TestCase):
                 first = failure.details["defects"][0]["msg"].removeprefix("Value error, ").rstrip(".")
                 self.assertIn(first, str(failure))
                 self.assertIn("corrected", str(failure))
+
+    def test_a_lone_illustration_half_is_dropped_instead_of_refused(self):
+        # Transformer, 2026-10-02: four reader calls were refused for a rule no prompt states; an illustration
+        # without its limits must still never reach the script, and a pair stays as written.
+        base = dict(id="f_x", kind="definition", statement="s", evidence=[dict(reference="src_one#s_one", excerpt="e")])
+        for illustration, limit in (("an example", ""), ("", "only in theory"), ("an example", "  ")):
+            with self.subTest(illustration=illustration, limit=limit):
+                finding = Finding.model_validate({**base, "illustration": illustration, "illustration_limit": limit})
+                self.assertEqual((finding.illustration, finding.illustration_limit), ("", ""))
+        paired = Finding.model_validate({**base, "illustration": "an example", "illustration_limit": "only in theory"})
+        self.assertEqual((paired.illustration, paired.illustration_limit), ("an example", "only in theory"))
+        self.assertEqual(Finding.model_validate(base).model_dump(), paired.model_copy(
+            update={"illustration": "", "illustration_limit": ""}).model_dump())
 
 
 class EvidenceContractTests(unittest.TestCase):
@@ -145,6 +158,83 @@ class EvidenceContractTests(unittest.TestCase):
             with self.subTest(quote=quote):
                 self.assertNotIn(quotable(quote), quotable(section))
                 self.assertFalse(verbatim(quote, section))
+
+    def test_a_quote_differing_only_in_guillemets_is_verbatim(self):
+        # 2026-10-02: German books quote »so« and ›so‹; the model's "so" was refused and asked again.
+        section = "Er nennt das »die Grenze des Wachstums« und spricht von ›Sachzwängen‹ – nicht von Gesetzen."
+        for quote in ('Er nennt das "die Grenze des Wachstums"', "von 'Sachzwängen' - nicht", "«die Grenze des Wachstums»"):
+            with self.subTest(quote=quote):
+                self.assertTrue(verbatim(quote, section))
+        self.assertFalse(verbatim('Er nennt das "die Grenzen des Wachstums"', section))
+
+    def test_a_shape_defect_names_the_findings_and_sources_it_concerns(self):
+        # Ontologies, 2026-10-01: t02's review was refused seven times for "every cited source" without being told which.
+        self.findings[0].evidence.append(self.findings[0].evidence[0].model_copy(update={"reference": "src_two#s_two"}))
+        self.context.append({"source_id": "src_two", "sections": [{"reference": "src_two#s_two", "text": "Second source."}]})
+        self.receipts = support_receipts([f.model_dump() for f in self.findings], self.context)
+        cases = (
+            (dict(source_assessments=self.receipts["source_assessments"][:1]), "every cited source exactly once. Missing: src_two."),
+            (dict(source_assessments=[*self.receipts["source_assessments"],
+                                      {**self.receipts["source_assessments"][0], "source_id": "src_three"}]),
+             "Not cited by any finding: src_three."),
+            (dict(finding_support=[]), "every finding exactly once. Missing: f_energy."),
+            (dict(source_assessments=[{**self.receipts["source_assessments"][0], "evidence_refs": ["src_two#s_two"]},
+                                      self.receipts["source_assessments"][1]]), "src_one names: src_two#s_two."),
+        )
+        for changes, named in cases:
+            with self.subTest(named=named), self.assertRaises(AppError) as caught:
+                support_errors(self.findings, self.review(**changes), self.context)
+            self.assertIn(named, str(caught.exception))
+
+    def test_a_final_review_attempt_is_settled_conservatively_and_a_good_one_stays_as_it_is(self):
+        from podcast_automate.research_evidence import settle_receipts
+        self.findings[0].evidence.append(self.findings[0].evidence[0].model_copy(update={"reference": "src_two#s_two"}))
+        self.context.append({"source_id": "src_two", "sections": [{"reference": "src_two#s_two", "text": "Second source."}]})
+        self.receipts = support_receipts([f.model_dump() for f in self.findings], self.context)
+        good = self.review()
+        before = good.model_dump()
+        self.assertEqual(settle_receipts(good, self.findings, self.context), ([], []))
+        self.assertEqual(good.model_dump(), before)
+        # An unassessed source, an assessment of an uncited one, an ungrounded reference and an unfounded independence.
+        first = {**self.receipts["source_assessments"][0], "evidence_refs": ["src_one#s_one", "src_two#s_two"],
+                 "independence": "independent"}
+        review = self.review(source_assessments=[first, {**first, "source_id": "src_three"}])
+        notes, unreviewed = settle_receipts(review, self.findings, self.context)
+        self.assertEqual(unreviewed, [])
+        self.assertEqual(support_errors(self.findings, review, self.context), [])
+        assessments = {a.source_id: a for a in review.source_assessments}
+        self.assertEqual(sorted(assessments), ["src_one", "src_two"])
+        self.assertEqual((assessments["src_one"].evidence_refs, assessments["src_one"].independence), (["src_one#s_one"], "unknown"))
+        self.assertEqual((assessments["src_two"].independence, assessments["src_two"].roles), ("unknown", ["unknown"]))
+        self.assertTrue(notes and all(note["kind"] == "review_normalised" for note in notes))
+        self.assertTrue(any("src_two" in note["text"] for note in notes))
+        # A finding the review never judged is not supported: it blocks instead of passing unchecked.
+        review = self.review(finding_support=[{**self.receipts["finding_support"][0], "finding_id": "f_other"}])
+        notes, unreviewed = settle_receipts(review, self.findings, self.context)
+        self.assertEqual(unreviewed, ["f_energy"])
+        self.assertEqual(review.finding_support[0].verdict, "insufficient_context")
+        self.assertTrue(support_errors(self.findings, review, self.context))
+
+    def test_a_provided_copy_of_a_published_work_can_be_an_independent_test(self):
+        # 2026-10-02: a provided work has no address, and the check took it for the editor's notes.
+        self.findings[0].evidence.append(self.findings[0].evidence[0].model_copy(update={"reference": "src_two#s_two"}))
+        self.context = [{"source_id": "src_one", "url": "https://example.org/one", "text_hash": "one",
+                         "sections": self.context[0]["sections"]},
+                        {"source_id": "src_two", "url": "", "citation": "Author: Book (2001)", "text_hash": "two",
+                         "sections": [{"reference": "src_two#s_two", "text": "A replication."}]}]
+        self.receipts = support_receipts([f.model_dump() for f in self.findings], self.context)
+        review = self.review()
+        for n, source in enumerate(review.source_assessments):
+            source.roles = ["empirical_test"]
+            source.work_id, source.evidence_family, source.independence = f"doi:{n}", f"dataset_{n}", "independent"
+        receipt = review.finding_support[0]
+        receipt.empirical_status = "independently_tested"
+        receipt.independent_evidence_refs = list(receipt.references)
+        self.assertEqual(support_errors(self.findings, review, self.context), [])
+        self.context[1].pop("citation")
+        self.assertTrue(support_errors(self.findings, review, self.context), "notes without a citation stay notes")
+        self.context[1]["citation"], self.context[1]["type"] = "Author: Book (2001)", "idea"
+        self.assertTrue(support_errors(self.findings, review, self.context), "an idea source stays an idea source")
 
     def test_a_quote_across_the_broken_words_of_a_scan_is_verbatim(self):
         # Asimov, 2026-09-30: the text layer of the Max-Neef scan splits words, and every quote was rejected.

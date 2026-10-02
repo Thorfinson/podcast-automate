@@ -171,6 +171,53 @@ class CliTests(unittest.TestCase):
             code, data = self.invoke("approve", root, "--sources", "200", "--json")
             self.assertEqual((code, data["budget_approval"]["sources"]), (0, 200))
 
+    def test_the_openrouter_key_is_asked_for_hidden_and_never_taken_from_the_command_line(self):
+        # A command line is visible in the process list and the shell history (2026-10-02).
+        with tempfile.TemporaryDirectory() as root, \
+                patch("podcast_automate.cli.run_script", side_effect=AssertionError("no run")), \
+                patch("podcast_automate.cli.getpass.getpass", side_effect=AssertionError("no prompt")):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main(["script", root, "--backend", "openrouter", "--api-key", "test-only-secret", "--json"])
+            self.assertEqual((code, json.loads(output.getvalue())["code"]), (1, "invalid_request"))
+            self.assertNotIn("test-only-secret", output.getvalue())
+        with tempfile.TemporaryDirectory() as root:
+            self.invoke("init", root, "--topic", "Thema", "--json")
+            with patch("podcast_automate.cli.getpass.getpass", return_value="typed-key") as prompt, \
+                    patch("podcast_automate.cli.run_script") as run:
+                run.return_value.status = "completed"
+                run.return_value.model_dump.return_value = {"run_id": "run_x", "kind": "script", "status": "completed",
+                                                            "stages": {}}
+                code, _ = self.invoke("script", root, "--backend", "openrouter", "--model", "vendor/model", "--api-key", "--json")
+            self.assertEqual((code, prompt.call_count, run.call_args.kwargs["api_key"]), (0, 1, "typed-key"))
+
+    def test_init_pins_the_qwen_revision_this_computer_uses(self):
+        """2026-10-02: ``main`` never matched the commit the Qwen worker records, so every chapter failed after the
+        GPU work. A new project takes the workspace's pinned commit, else the one the local model cache holds."""
+        model = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+        pinned, cached = "a" * 40, "b" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, hub = Path(temporary) / "workspace", Path(temporary) / "hub"
+            (workspace / "projects").mkdir(parents=True)
+            with patch.dict("os.environ", {"HF_HUB_CACHE": str(hub)}), \
+                    patch("podcast_automate.cli.Path.cwd", return_value=workspace):
+                code, data = self.invoke("init", str(workspace / "projects/first"), "--topic", "Thema", "--json")
+                self.assertEqual((code, data["project"]["runtime"]["tts_revision"]), (0, "main"))
+                self.assertIn("runtime.tts_revision", data["message"])
+                (hub / f"models--{model.replace('/', '--')}/snapshots" / cached).mkdir(parents=True)
+                _, data = self.invoke("init", str(workspace / "projects/second"), "--topic", "Thema", "--json")
+                self.assertEqual(data["project"]["runtime"]["tts_revision"], cached)
+                self.assertNotIn("runtime.tts_revision", data["message"])
+                (workspace / ".studio").mkdir()
+                (workspace / ".studio/tts-runtime.json").write_text(json.dumps({"tts_revision": pinned}), encoding="utf-8")
+                _, data = self.invoke("init", str(workspace / "projects/third"), "--topic", "Thema", "--json")
+                self.assertEqual(data["project"]["runtime"]["tts_revision"], pinned)
+                (workspace / ".studio/tts-runtime.json").unlink()
+                # Without the Studio's file, the first sibling project with the same model names its commit.
+                (hub / f"models--{model.replace('/', '--')}/snapshots" / cached).rmdir()
+                _, data = self.invoke("init", str(workspace / "projects/fourth"), "--topic", "Thema", "--json")
+                self.assertEqual(data["project"]["runtime"]["tts_revision"], cached)
+
     def test_invalid_user_configuration_has_no_traceback(self):
         with tempfile.TemporaryDirectory() as root:
             code, data = self.invoke("init", root, "--topic", "   ", "--json")

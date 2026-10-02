@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 import webbrowser
-from contextlib import nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timezone
 from typing import Literal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,16 +37,19 @@ from .expression import TAG
 from .runner import manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
                          approve_fresh_attempts, approve_research_retry, approve_residual_finish, approve_text_switch,
-                         decide_review_disagreement, request_teaching_redesign, switch_choice, text_switch)
+                         decide_review_disagreement, fresh_attempts_available, request_teaching_redesign, switch_choice,
+                         text_switch)
 from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics, style_notes
 from .script_pipeline import failed_teaching
 from .speech import (AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
                      same_audio_generation)
-from .storage import (atomic_text, digest, file_hash, init_project, inside, load_project, project_hash, project_lock,
-                      read_text, read_yaml, write_json, write_yaml)
-from .voice_samples import ready_sample, sample_inventory
-from .spoken_forms import SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report
+from .storage import (atomic_text, digest, file_hash, file_lock, init_project, inside, load_project, project_hash,
+                      project_lock, read_text, read_yaml, write_json, write_yaml)
+from .voice_samples import SAMPLE_TEXTS, ready_sample, sample_inventory, sample_path
+from .spoken_forms import (SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report,
+                           spoken_text)
+from .studio_progress import memo
 from .studio_messages import clean, paths_only, user_text
 from . import provided_works, studio_allowances
 from .sources import core_usage
@@ -70,8 +73,17 @@ SCHEDULER_INTERVAL_SECONDS = 30
 MAX_PROJECT_JOBS = 3
 # A paused text job in one of these states stays the project's job even when a later audio job exists.
 ATTENTION = {"blocked", "failed", "interrupted", "waiting_for_quota", "pending", "review_ready"}
-# Empty credit does not come back by waiting, so the scheduler never resumes it.
-NO_AUTO_RESUME = {"openrouter_credits"}
+# Empty credit and an expired login do not come back by waiting, so the scheduler never resumes them.
+NO_AUTO_RESUME = {"openrouter_credits", "authentication_required"}
+# Technical stops of a research or script run that a later attempt usually passes: a call that ran out of time or
+# went silent, a failed provider turn, a connection that dropped. The scheduler resumes them by itself, MAX_AUTO_RESUMES
+# times after these pauses (2026-10-02: about 186 resumes by hand against 8 automatic ones, which covered quota waits
+# only). Editorial decisions, limits, credit and logins are never among them.
+TRANSIENT_STOPS = {"timeout", "stall", "claude_failed", "codex_failed", "claude_structured_output",
+                   "openrouter_connection", "openrouter_unavailable"}
+TRANSIENT_BACKOFF_MINUTES = (10, 30, 90)
+# Each lane keeps its own parked job (park); paused_job.json is the single slot of Studios before 2026-10-02.
+LANES = ("research", "script", "audio")
 # Jobs that never write exports: while one of them holds the project lock, downloads read without it.
 TEXT_ACTIONS = {"assistant", "research", "plan", "replan", "script", "revise", "check", "audio_sample", "audio_samples"}
 # Names start with a word character, so no segment can be "..".
@@ -120,21 +132,29 @@ def lane(job):
     return None
 
 
+def parked_paths(root):
+    """The project's parked job files: one per lane, then the single slot older Studios wrote."""
+    return [root / "studio" / f"paused_{name}.json" for name in LANES] + [root / "studio/paused_job.json"]
+
+
 def park(root, new_job):
-    """Keep a paused text or audio job visible while a job of another lane uses studio/job.json."""
+    """Keep a paused text or audio job visible while a job of another lane uses studio/job.json. Each lane parks in
+    its own file, so a chat, a check, a voice sample or a run of another lane never displaces a parked run (2026-10-02:
+    a chat parked over a stopped research run, whose stop card and scheduled resume then disappeared)."""
     current = read_json(root / "studio/job.json", {}) or {}
-    parked = root / "studio/paused_job.json"
-    if parked.exists():
+    resumed_run = (new_job.get("run") or {}).get("run_id") if new_job.get("action") == "resume" else None
+    for parked in parked_paths(root):
+        if not parked.exists():
+            continue
         # A resume of the parked run continues it; a new job of the same lane supersedes it.
         old = read_json(parked, {}) or {}
-        resumed = (new_job.get("action") == "resume"
-                   and (new_job.get("run") or {}).get("run_id") == (old.get("run") or {}).get("run_id"))
+        resumed = resumed_run is not None and resumed_run == (old.get("run") or {}).get("run_id")
         if resumed or (new_job.get("action") != "resume" and lane(new_job) is not None and lane(old) == lane(new_job)):
             parked.unlink()
     if (current.get("run") and current.get("status") in ATTENTION and lane(current)
-            and lane(current) != lane(new_job) and not (new_job.get("action") == "resume"
-                and (new_job.get("run") or {}).get("run_id") == current["run"].get("run_id"))):
-        write_json(parked, current)
+            and lane(current) != lane(new_job) and not (resumed_run is not None
+                and resumed_run == current["run"].get("run_id"))):
+        write_json(root / "studio" / f"paused_{lane(current)}.json", current)
 
 
 def chat_limits(root, limits):
@@ -159,6 +179,101 @@ def worker_stderr(root, job):
     except OSError:
         return None
     return "\n".join(lines[-12:])[-1500:] or None
+
+
+def worker_record(root, job_id):
+    return root / "studio/workers" / (job_id + ".json")
+
+
+def record_worker(root, job_id, process):
+    """Note a started worker's pid and creation time beside the job: a later Studio, after a restart, still knows
+    whether that worker runs and may stop it. The worker never writes this file, so no write of its job file races."""
+    if type(getattr(process, "pid", None)) is not int:
+        return
+    try:
+        import psutil
+        started = psutil.Process(process.pid).create_time()
+        write_json(worker_record(root, job_id), {"pid": process.pid, "process_started_at": started})
+    except Exception:  # Optional: without the record a busy lock still tells a live worker (Studio.vanished).
+        logger("studio").warning("Arbeitsprozess %s nicht vermerkt.", job_id, exc_info=True)
+
+
+def worker_identity(root, job):
+    """The pid and start time of a job's worker: the record the Studio writes when it starts one, or the fields the
+    worker writes into its job file at start, ``pid`` and ``started_process_at`` (psutil creation time, seconds since
+    the epoch). None when neither is there."""
+    job_id = (job or {}).get("id")
+    record = read_json(worker_record(root, job_id), {}) if isinstance(job_id, str) and re.fullmatch(r"[a-f0-9]{32}", job_id) else {}
+    for source in (record or {}, job or {}):
+        pid = source.get("pid")
+        started = source.get("started_process_at", source.get("process_started_at"))
+        if type(pid) is int and pid > 0 and isinstance(started, (int, float)):
+            return {"pid": pid, "started": float(started)}
+    return None
+
+
+def process_alive(identity):
+    """True while the recorded worker runs, False once it ended or its pid belongs to a later process, None when
+    there is no record to tell. The start time may be the creation time or one the worker took itself, a little
+    later; a reused pid starts after the recorded worker ended."""
+    if identity is None:
+        return None
+    import psutil
+    try:
+        process = psutil.Process(identity["pid"])
+        created = process.create_time()
+        if not (created <= identity["started"] + 2 and identity["started"] - created <= 120):
+            return False
+        return process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, OSError):
+        return None
+
+
+class ExternalWorker:
+    """A worker an earlier Studio started, verified by pid and start time: enough of Popen for stop_process_tree."""
+
+    def __init__(self, pid):
+        import psutil
+        self.pid, self._process = pid, psutil.Process(pid)
+
+    def poll(self):
+        import psutil
+        try:
+            return None if self._process.is_running() and self._process.status() != psutil.STATUS_ZOMBIE else 0
+        except psutil.Error:
+            return 0
+
+    def wait(self, timeout=None):
+        import psutil
+        try:
+            self._process.wait(timeout)
+        except psutil.NoSuchProcess:
+            pass
+
+
+def auto_resume(job):
+    """When the scheduler resumes this stopped main job by itself: ``(kind, ISO time)``, ``(kind, None)`` once its
+    automatic resumes are used up, or None when it never does. ``quota`` waits for the named reset; ``transient``
+    waits TRANSIENT_BACKOFF_MINUTES after the stop."""
+    run = (job or {}).get("run") or {}
+    if not run.get("run_id") or stop_code(job)[0] in NO_AUTO_RESUME:
+        return None
+    count = job.get("auto_resume_count", 0)
+    count = count if type(count) is int and count >= 0 else 0
+    if job.get("status") == "waiting_for_quota" and job.get("retry_at"):
+        return "quota", job["retry_at"] if count < MAX_AUTO_RESUMES else None
+    if (job.get("status") in {"failed", "blocked"} and stop_code(job)[0] in TRANSIENT_STOPS
+            and run.get("kind") in {"research", "script"}):
+        stopped = parse_iso(job.get("finished_at"))
+        if stopped is None:
+            return None
+        if count >= MAX_AUTO_RESUMES:
+            return "transient", None
+        return "transient", datetime.fromtimestamp(stopped.timestamp() + 60 * TRANSIENT_BACKOFF_MINUTES[count],
+                                                   timezone.utc).isoformat()
+    return None
 
 
 def latest_provider_choice(work):
@@ -253,8 +368,15 @@ def relaunch(workspace, port, lan):
                "--no-browser", *(["--lan"] if lan else [])]
     options = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
                else {"start_new_session": True})
-    subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     close_fds=True, cwd=str(workspace), **options)
+    # A new server that fails before its own log starts leaves its reason here (2026-10-02: a failed relaunch left
+    # no trace at all).
+    log = Path(workspace) / ".studio/relaunch.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("ab" if not log.is_file() or log.stat().st_size < 1_000_000 else "wb") as errors:
+        errors.write(f"--- {now()} Neustart: {' '.join(command[1:])}\n".encode("utf-8"))
+        errors.flush()
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+                         close_fds=True, cwd=str(workspace), **options)
 
 
 def identifier(value):
@@ -321,9 +443,32 @@ def write_queue(root, rows):
     write_json(root / "studio/audio_queue.json", rows)
 
 
-def queue_view(rows):
+def queue_view(rows, key_available=True):
+    """The queue as the audio page shows it. A recording waits for a place, or for the OpenRouter key, which lives
+    only in the server's memory and is gone after a restart (2026-10-02: the queue still said it waited for a place)."""
     return [{"episode": row.get("episode"), "position": number, "queued_at": row.get("queued_at"),
-             **({"error": row["error"]} if row.get("error") else {})} for number, row in enumerate(rows, 1)]
+             **({"error": row["error"]} if row.get("error") else {"waiting": "place" if key_available else "key"})}
+            for number, row in enumerate(rows, 1)]
+
+
+def kept_local_sources(root, saved, requested):
+    """The project's local sources after a save from the browser. Paths outside the project come only from disk, as
+    the runtime does; the browser may name files inside the project's inputs/, the Studio's own uploads. A device in
+    the home network can otherwise point a research run at any file on this computer (2026-10-02). An unchanged list
+    stays exactly as saved, so no brief hash moves."""
+    inputs = (root / "inputs").resolve()
+
+    def own(value):
+        if not isinstance(value, str) or not value.strip() or Path(value).is_absolute() or Path(value).drive:
+            return False
+        try:
+            return (root / value).resolve().is_relative_to(inputs)
+        except (OSError, ValueError):
+            return False
+    if list(requested) == list(saved):
+        return list(saved)
+    kept = [value for value in requested if value in saved or own(value)]
+    return list(dict.fromkeys(kept + [value for value in saved if value not in kept and not own(value)]))
 
 
 def reading_expression(root, episode, script_hash):
@@ -336,6 +481,50 @@ def reading_expression(root, episode, script_hash):
     return {"tags": sum(len(TAG.findall(row["text"])) for row in rows), "segments": rows,
             "rejected": saved.get("rejected", ""), "placed_at": saved.get("placed_at"),
             "hash": file_hash(root / "episodes" / episode / "expression.json")}
+
+
+def project_job(main, jobs, parked):
+    """The job a project shows. A running or paused main job stays the project's job: a later audio job must not hide
+    its decision, and a parked run waits behind a finished chat, check or job of another lane."""
+    candidates = [job for job in [main, *jobs] if job]
+    latest = max(candidates, key=lambda job: (job["status"] == "running", job.get("started_at", "")), default=None)
+    if main and (main["status"] == "running" or (main["status"] in ATTENTION and main.get("run"))):
+        return main
+    if parked:
+        return parked
+    if main and main["status"] in ATTENTION:
+        return main
+    return latest
+
+
+def episode_view(folder, table, table_key, language):
+    """What a published episode's page shows from its script and its audio decision, kept while script.yaml,
+    script.md and audio_review.yaml are unchanged: parsing and hashing every script on each poll was much of a page's
+    cost (2026-10-02). Read-only for callers."""
+    script_file, decision_file = folder / "script.yaml", folder / "audio_review.yaml"
+
+    def compute():
+        script = EpisodeScript.model_validate(read_yaml(script_file))
+        # The audio decision, not the last run report, holds what the operator set by hand.
+        decision = read_yaml(decision_file) if decision_file.is_file() else {}
+        overrides = {k: v for k, v in (decision.get("spoken_overrides") or {}).items()
+                     if isinstance(k, str) and isinstance(v, str) and v.strip()}
+        metrics = script_metrics(script)
+        return {"script": script.model_dump(), "hash": file_hash(script_file),
+                "readable_hash": file_hash(folder / "script.md"), "metrics": metrics,
+                "spoken_overrides": overrides,
+                # Computed from the published text, the table and the overrides, with no model
+                # call, so a reader sees the difficult tokens before the first audio run.
+                "pronunciation": pronunciation_report(script, table, language=language, overrides=overrides),
+                # What a recording of this text sends to speech: the characters the voices hear (table and overrides
+                # applied, without tags) and the estimated length, shown before a paid recording. No price: it
+                # cannot be checked offline.
+                "speech": {"characters": sum(len(spoken_text(segment, table, overrides)) for segment in script.segments),
+                           "minutes": metrics["estimated_minutes"]},
+                "listening_note": decision.get("listening_note", ""),
+                "human_listening_reviewed": bool(decision.get("human_listening_reviewed"))}
+    return memo(("episode", str(folder), table_key, language),
+                [script_file, folder / "script.md", decision_file], compute)
 
 
 class Studio:
@@ -385,7 +574,7 @@ class Studio:
                 continue
         return settings
 
-    def bootstrap(self):
+    def project_list(self):
         projects = []
         for path in sorted(self.projects.glob("*/project.yaml")):
             try:
@@ -394,6 +583,23 @@ class Studio:
                 projects.append({"id": path.parent.name, "topic": config.topic})
             except (AppError, ValueError):
                 continue
+        return projects
+
+    def voice_samples(self):
+        """The shared Gemini sample library (sample_inventory), hashed again only after a sample file changed: the
+        inventory hashes every recording, and every project page asked for it on each poll."""
+        files = []
+        for language in SAMPLE_TEXTS:
+            for voice in GEMINI_VOICES:
+                try:
+                    path = sample_path(self.projects, voice, language)
+                except AppError:
+                    continue
+                files += [path, path.with_suffix(".json")]
+        return memo(("samples", str(self.projects)), files, lambda: sample_inventory(self.projects))
+
+    def bootstrap(self):
+        projects = self.project_list()
         return {"app": "podcast-studio", "workspace": str(self.workspace),
                 "capabilities": {"text_reasoning_selection": True, "parallel_audio": True,
                                  "project_execution": True, "conversational_setup": True, "project_overview": True,
@@ -413,13 +619,18 @@ class Studio:
                 "lan": {"enabled": self.lan,
                         "urls": [f"http://{address}:{self.port}" for address in lan_addresses()] if self.lan else []},
                 "audio_catalog": audio_catalog(),
-                "voice_samples": sample_inventory(self.projects),
-                "key_available": bool(self.key or os.environ.get("OPENROUTER_API_KEY")),
+                "voice_samples": self.voice_samples(),
+                "key_available": self.key_available(),
                 "server": self.server_state(),
                 "defaults": TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
                                       voice_profile={"host_a": "Aiden", "host_b": "Vivian"}).model_dump(mode="json")}
 
-    def job(self, root, *, audio_job_id=None, path=None):
+    def key_available(self):
+        return bool(self.key or os.environ.get("OPENROUTER_API_KEY"))
+
+    def job(self, root, *, audio_job_id=None, path=None, light=False):
+        """A job as the pages show it. ``light`` is the project card's view (overview): no live output, assignment,
+        previews or provider details."""
         path = path or (audio_job_path(root, audio_job_id) if audio_job_id else root / "studio/job.json")
         data = read_json(path)
         if data and data["status"] == "running":
@@ -427,18 +638,21 @@ class Studio:
             owned = (owner is not None and owner[1] == root and owner[0].poll() is None) if audio_job_id else (
                 self.worker(root) is not None)
             if not owned:
-                # The worker may have written its final result before poll() observed exit.
+                # The worker may have written its final result just before poll() observed exit.
                 data = read_json(path)
                 if data["status"] == "running":
                     data = self.vanished(root, path, data, audio_job_id)
             run = data.get("run")
             if run:
                 work = manifest_path(root, run["run_id"]).parent
-                progress = read_json(work / "progress.json")
+                text_run = run.get("kind") in {"script", "research"}
+                # A research or script view is built from the run folder below; its progress.json, megabytes for a
+                # research run, is read only when that view is unavailable.
+                progress = None if text_run else read_json(work / "progress.json")
                 nested_path = inside(root, progress["chapter_progress"]) if (progress or {}).get("chapter_progress") else None
-                if owned:
-                    # Research and script workers rewrite progress.json every few seconds; audio writes it per
-                    # chapter and the chapter's own file per segment. The newest of them is the heartbeat.
+                if (owned or data.get("external")) and data["status"] == "running":
+                    # Research and script workers rewrite progress.json when it changes and at least once a minute;
+                    # audio writes it per chapter and the chapter's own file per segment. The newest is the heartbeat.
                     stamps = [started.timestamp()] if (started := parse_iso(data.get("started_at"))) else []
                     for candidate in filter(None, (work / "progress.json", nested_path)):
                         try:
@@ -458,10 +672,16 @@ class Studio:
         if data and (data.get("run") or {}).get("kind") in {"script", "research"}:
             from .studio_progress import safe_script_progress
             # Calls an earlier, stopped worker left open are not the running job's calls.
-            progress = safe_script_progress(root, data["run"], data.get("started_at") if data.get("status") == "running" else None)
+            progress = safe_script_progress(root, data["run"], data.get("started_at") if data.get("status") == "running" else None,
+                                            light=light)
             if progress:
                 data["progress"] = progress
-        if data and (data.get("run") or {}).get("kind") in {"script", "research"}:
+            elif data.get("status") == "running":
+                # The last snapshot the worker published, while the run folder is momentarily unreadable.
+                saved = read_json(manifest_path(root, data["run"]["run_id"]).parent / "progress.json")
+                if isinstance(saved, dict) and "total_segments" in saved:
+                    data["progress"] = saved
+        if data and (data.get("run") or {}).get("kind") in {"script", "research"} and not light:
             run = data["run"]
             work = manifest_path(root, run["run_id"]).parent
             request = "script_request.json" if run["kind"] == "script" else "research_request.json"
@@ -472,12 +692,19 @@ class Studio:
             data["text_switchable"] = True
             data["text_switch_choice"] = switch_choice(data["text_generation"])
             data["provider_choice"] = latest_provider_choice(work)
-        if data and data.get("status") == "waiting_for_quota" and data.get("retry_at"):
+            if data.get("status") in {"blocked", "failed"}:
+                # Whether "Mit neuen Anläufen fortsetzen" would be accepted now: a step spent its corrections and no
+                # approval reset them yet. Kept while the run and its records of fresh attempts are unchanged.
+                data["fresh_attempts"] = memo(("fresh_attempts", str(work)),
+                    [work / name for name in ("run_manifest.yaml", "fresh_attempts.json", "series_repair.json")],
+                    lambda: fresh_attempts_available(root, run["run_id"]))
+        if data and audio_job_id is None:
             # Announced only where the scheduler acts: the project's main job with a run to resume.
-            if (audio_job_id is None and (data.get("run") or {}).get("run_id")
-                    and stop_code(data)[0] not in NO_AUTO_RESUME):
-                if data.get("auto_resume_count", 0) < MAX_AUTO_RESUMES:
-                    data["auto_resume_at"] = data["retry_at"]
+            plan = auto_resume(data)
+            if plan:
+                data["auto_resume_kind"] = plan[0]
+                if plan[1]:
+                    data["auto_resume_at"] = plan[1]
                 else:
                     data["auto_resume_exhausted"] = True
         if data and audio_job_id is None and data.get("status") == "blocked":
@@ -485,33 +712,66 @@ class Studio:
             data["allowance"] = studio_allowances.pending(root, data, stop_code(data)[0])
         return self.readable(root, data) if data else data
 
-    def parked_job(self, root):
-        """A paused job moved aside by a job of another lane, while its run is still open."""
-        path = root / "studio/paused_job.json"
-        data = read_json(path)
-        run_id = ((data or {}).get("run") or {}).get("run_id")
-        if not run_id or not manifest_path(root, run_id).is_file():
-            return None
-        if read_yaml(manifest_path(root, run_id)).get("status") == "completed":
-            return None
-        return self.job(root, path=path)
+    def parked_jobs(self, root, light=False):
+        """Paused jobs moved aside by jobs of other lanes while their runs are still open, newest stop first."""
+        rows, seen = [], set()
+        for path in parked_paths(root):
+            data = read_json(path)
+            run_id = ((data or {}).get("run") or {}).get("run_id")
+            if not run_id or run_id in seen or not manifest_path(root, run_id).is_file():
+                continue
+            if read_yaml(manifest_path(root, run_id)).get("status") == "completed":
+                continue
+            seen.add(run_id)
+            rows.append(self.job(root, path=path, light=light))
+        return sorted(rows, key=lambda job: job.get("finished_at") or "", reverse=True)
+
+    def parked_job(self, root, light=False):
+        """The newest parked job (parked_jobs), or None."""
+        return next(iter(self.parked_jobs(root, light)), None)
 
     def vanished(self, root, path, data, audio_job_id):
-        """A job still marked running whose worker this server does not own: it ended without a result."""
+        """A job still marked running whose worker this server does not own. A worker an earlier Studio started may
+        still run: it holds the project lock, or its recorded pid still runs. Then the job is shown as running
+        elsewhere and nothing is rewritten (2026-10-02: it was written as interrupted on every poll, "Fortsetzen" met
+        the busy project and "Anhalten" found no job). Otherwise it ended without a result and its run is reset."""
+        identity = worker_identity(root, data)
+        alive = process_alive(identity)
+        if alive:
+            return self.external(data, stoppable=True)
         detail = worker_stderr(root, data)
         message = ("Der Arbeitsprozess wurde unerwartet beendet." if detail else
                    "Der Arbeitsprozess läuft nicht mehr, etwa nach einem Neustart des Studios.") + \
             " Fertige Arbeit bleibt gespeichert."
         try:
-            # The exclusive lock proves that no worker of this project is left; only then is the run reset.
+            # The exclusive lock proves that no worker of this project is left; a dead recorded worker needs only the
+            # shared one beside the project's other recordings, as a stop does. Only then is the run reset.
             return record_interruption(root, expected_job_id=data.get("id"), audio_job_id=audio_job_id,
-                                       message=message, shared=False, crash_detail=detail)
-        except (AppError, OSError, ValueError):
+                                       message=message, shared=bool(audio_job_id) and alive is False,
+                                       crash_detail=detail)
+        except AppError as exc:
+            if exc.code == "job_changed":
+                return read_json(path)
+            if exc.code == "project_busy" and alive is None:
+                # Without a record of its worker, a held lock is the sign that it still runs.
+                return self.external(data, stoppable=False)
+            # The recorded worker has ended, but another process holds the project: shown as interrupted, written
+            # once the lock is free.
+            view = {**data, "status": "interrupted", "message": message}
+            if detail:
+                view["crash_detail"] = detail
+            return view
+        except (OSError, ValueError):
             data.update(status="interrupted", message=message)
             if detail:
                 data["crash_detail"] = detail
             write_json(path, data)
             return data
+
+    @staticmethod
+    def external(data, *, stoppable):
+        """A running job whose worker this Studio did not start: shown as running elsewhere, never rewritten."""
+        return {**data, "external": True, "external_stoppable": stoppable}
 
     @staticmethod
     def readable(root, data):
@@ -633,20 +893,24 @@ class Studio:
         return started
 
     def due_resumes(self, now_seconds=None):
-        """Paused jobs whose named reset has passed and whose automatic resumes are not used up."""
+        """Paused main jobs whose automatic resume is due (auto_resume): a quota wait past its named reset, a
+        transient technical stop past its pause, either with automatic resumes left."""
         current = time.time() if now_seconds is None else now_seconds
-        due = []
-        for path in sorted([*self.projects.glob("*/studio/job.json"), *self.projects.glob("*/studio/paused_job.json")]):
+        due, seen = [], set()
+        for path in sorted([*self.projects.glob("*/studio/job.json"), *self.projects.glob("*/studio/paused_*.json")]):
             job = read_json(path)
-            if not isinstance(job, dict) or job.get("status") != "waiting_for_quota":
+            if not isinstance(job, dict):
                 continue
-            retry = parse_iso(job.get("retry_at"))
-            run_id = (job.get("run") or {}).get("run_id")
+            plan = auto_resume(job)
+            at = parse_iso(plan[1]) if plan and plan[1] else None
+            if at is None or at.timestamp() > current:
+                continue
+            run_id, project = job["run"]["run_id"], path.parents[1].name
+            if (project, run_id) in seen:
+                continue
+            seen.add((project, run_id))
             count = job.get("auto_resume_count", 0)
-            if (retry is None or retry.timestamp() > current or not run_id or count >= MAX_AUTO_RESUMES
-                    or stop_code(job)[0] in NO_AUTO_RESUME):
-                continue
-            due.append((path.parents[1].name, run_id, count))
+            due.append((project, run_id, count if type(count) is int and count >= 0 else 0))
         return due
 
     def resume_due(self, now_seconds=None):
@@ -654,12 +918,37 @@ class Studio:
         for project, run_id, count in self.due_resumes(now_seconds):
             with self.mutex:
                 try:
+                    if not self.ready_to_start(self.root(project)):
+                        continue  # Due again on the next pass, once the project and a place are free.
                     self.start(project, {"action": "resume", "run_id": run_id, "auto_resume_count": count + 1})
                     started.append(project)
-                    logger("studio").info("Auftrag nach Kontingent-Reset automatisch fortgesetzt: %s", project)
+                    logger("studio").info("Auftrag automatisch fortgesetzt (Versuch %s): %s", count + 1, project)
                 except AppError as exc:
                     logger("studio").warning("Automatische Fortsetzung nicht möglich (%s): %s", exc.code, exc)
         return started
+
+    def ready_to_start(self, root, gpu=False):
+        """Whether a main job of this project could start now by start's own rules (no restart pending, the project
+        idle and unlocked, a place free), checked before the scheduler commits to anything."""
+        if self.restarting:
+            return False
+        try:
+            self.idle(root)
+        except AppError:
+            return False
+        workers = self.active_workers()
+        return len(workers) < MAX_PROJECT_JOBS and not (gpu and any(uses_gpu for _, uses_gpu in workers.values()))
+
+    def stopped_jobs(self, root):
+        """The project's stopped main job and its parked jobs, as saved (job.json first)."""
+        rows, seen = [], set()
+        for path in [root / "studio/job.json", *parked_paths(root)]:
+            job = read_json(path, {}) or {}
+            run_id = (job.get("run") or {}).get("run_id")
+            if job.get("status") == "blocked" and run_id and run_id not in seen:
+                seen.add(run_id)
+                rows.append(job)
+        return rows
 
     def start_scheduler(self):
         if self.scheduler is None:
@@ -667,22 +956,32 @@ class Studio:
             self.scheduler.start()
 
     def apply_allowances(self):
-        """Stopped runs an allowance covers: write its approval and resume (studio_allowances)."""
+        """Stopped runs an allowance covers, in job.json or parked: write its approval and resume (studio_allowances).
+        The project must be ready to start first, so an approval is never spent on a resume that cannot start; one
+        granted whose resume still failed is resumed on a later pass without granting again (2026-10-02: a Gemini
+        recording held the project, the allowance was used up and the run never resumed)."""
         started = []
         for path in sorted(self.projects.glob("*/studio/allowances.json")):
             root, project = path.parents[1], path.parents[1].name
             with self.mutex:
-                job = read_json(root / "studio/job.json", {}) or {}
-                if self.restarting or self.worker(root) is not None or job.get("status") != "blocked":
-                    continue
-                if not studio_allowances.apply(root, job, stop_code(job)[0]):
-                    continue
-                try:
-                    self.start(project, {"action": "resume", "run_id": job["run"]["run_id"]})
+                for job in self.stopped_jobs(root):
+                    code = stop_code(job)[0]
+                    granted = studio_allowances.awaiting_resume(root, job)
+                    if not granted and studio_allowances.pending(root, job, code) is None:
+                        continue
+                    if not self.ready_to_start(root):
+                        break
+                    if not granted and not studio_allowances.apply(root, job, code):
+                        continue
+                    try:
+                        self.start(project, {"action": "resume", "run_id": job["run"]["run_id"]})
+                    except AppError as exc:
+                        logger("studio").warning("Fortsetzen nach Vorab-Erlaubnis nicht möglich (%s): %s", exc.code, exc)
+                        break
+                    studio_allowances.mark_resumed(root, job.get("id"))
                     started.append(project)
                     logger("studio").info("Vorab-Erlaubnis angewendet und fortgesetzt: %s", project)
-                except AppError as exc:
-                    logger("studio").warning("Fortsetzen nach Vorab-Erlaubnis nicht möglich (%s): %s", exc.code, exc)
+                    break
         return started
 
     def server_state(self):
@@ -761,18 +1060,11 @@ class Studio:
         return sorted(latest.values(), key=lambda job: job["episode"])
 
     def overview(self):
+        """Every project as a card. A card is built from cheap reads (card), not from the project page's detail."""
         projects = []
-        for item in self.bootstrap()["projects"]:
+        for item in self.project_list():
             try:
-                data = self.detail(item["id"])
-                projects.append({"id": data["id"], "topic": data["config"]["topic"],
-                    "config_hash": data["config_hash"], "job": overview_job(data["job"]), "audio_jobs": data["audio_jobs"],
-                    "has_research": bool(data["research"]), "has_outline": bool(data["outline"]),
-                    "episode_count": len({e["script"]["episode_id"] for e in data["episodes"]} |
-                        {e["episode_id"] for e in (data["outline"] or {}).get("plan", {}).get("episodes", [])}),
-                    "script_count": len(data["episodes"]), "episodes": [
-                        {"episode_id": e["script"]["episode_id"], "title": e["script"]["title"],
-                         "audio": e["audio"], "audio_current": e["audio_current"]} for e in data["episodes"]]})
+                projects.append(self.card(item["id"]))
             except (AppError, ValueError, OSError, KeyError):
                 projects.append({**item, "unavailable": True, "episodes": []})
         trash = []
@@ -781,6 +1073,105 @@ class Studio:
             if (receipt.parent / "project/project.yaml").is_file():
                 trash.append({"id": receipt.parent.name, "topic": item.get("topic", "Projekt"), "deleted_at": item.get("deleted_at")})
         return {"projects": projects, "trash": trash, "server": self.server_state()}
+
+    def card(self, project):
+        """What the overview shows of a project: its job in the light view, its recordings and the step it reached.
+        2026-10-02: each poll built every project's full page instead, about 65 MB read and 0.6 s with the mutex held."""
+        root = self.root(project)
+        config = load_project(root)
+        audio = selected_audio(root, config)
+        jobs = self.audio_jobs(root)
+        main = self.job(root, light=True)
+        job = project_job(main, jobs, self.parked_job(root, light=True))
+        episodes = self.episode_rows(root, config, audio, full=False)
+        planned = self.outline_episodes(root)
+        return {"id": project, "topic": config.topic, "config_hash": project_hash(config), "job": overview_job(job),
+                "audio_jobs": jobs, "has_research": self.has_research(root), "has_outline": planned is not None,
+                "episode_count": len({e["script"]["episode_id"] for e in episodes} | set(planned or ())),
+                "script_count": len(episodes),
+                "episodes": [{"episode_id": e["script"]["episode_id"], "title": e["script"]["title"],
+                              "audio": e["audio"], "audio_current": e["audio_current"]} for e in episodes]}
+
+    @staticmethod
+    def has_research(root):
+        for name in ("research/research_briefing.md", "research/dossier.yaml"):
+            try:
+                if (root / name).stat().st_size:
+                    return True
+            except OSError:
+                continue
+        return False
+
+    @staticmethod
+    def research_text(root):
+        briefing, dossier = root / "research/research_briefing.md", root / "research/dossier.yaml"
+
+        def compute():
+            if briefing.is_file():
+                return briefing.read_text(encoding="utf-8")
+            if dossier.exists():
+                return dossier.read_text(encoding="utf-8")
+            return None
+        return memo(("research_text", str(root)), [briefing, dossier], compute)
+
+    @staticmethod
+    def outline_work(root):
+        """The run folder of the current outline, or None without one. The pointer's run holds an outline only while its
+        planning stage is completed: a revision or a new draft keeps the replaced plan in series_plan.json until it
+        finishes. 2026-10-02: a revision stopped at the output limit kept that plan on the page as if it were current."""
+        pointer = read_json(root / "studio/outline.json")
+        if not pointer:
+            return None
+        path = manifest_path(root, pointer["run_id"])
+        if not path.is_file() or not (path.parent / "series_plan.json").exists():
+            return None
+        planning = memo(("outline_planning", str(path)), [path],
+                        lambda: ((read_yaml(path) or {}).get("stages") or {}).get("planning") or {})
+        return path.parent if planning.get("status") == "completed" else None
+
+    @staticmethod
+    def outline_episodes(root):
+        """The episode ids of the current outline, or None without one."""
+        work = Studio.outline_work(root)
+        if work is None:
+            return None
+        plan = work / "series_plan.json"
+        return memo(("outline_episodes", str(plan)), [plan],
+                    lambda: [e["episode_id"] for e in (read_json(plan, {}) or {}).get("episodes", [])])
+
+    @staticmethod
+    def outline_hash(work):
+        """outline_hash, computed again only after one of the files it hashes changed (inputs.json alone is 12-16 MB)."""
+        return memo(("outline_hash", str(work)), [work / name for name in
+                    ("series_plan.json", "knowledge_model.json", "inputs.json", "script_request.json")],
+                    lambda: outline_hash(work))
+
+    def episode_rows(self, root, config, audio, *, full=True):
+        """The published episodes; the parts read from the script and its decision are kept while those files are
+        unchanged (episode_view). ``full=False`` is the card's view."""
+        table = load_forms(root)
+        table_key = digest(table.model_dump())
+        quality_path = root / "reports/script_quality.yaml"
+        reported = None
+        if full:
+            quality = memo(("quality", str(quality_path)), [quality_path],
+                           lambda: read_yaml(quality_path) if quality_path.is_file() else {})
+            reported = quality.get("episodes") if isinstance(quality, dict) else None
+        rows = []
+        for folder in sorted((root / "episodes").glob("ep_*")):
+            if not (folder / "script.yaml").exists():
+                continue
+            row = dict(episode_view(folder, table, table_key, config.language))
+            report = read_json(folder / "audio_latest.json", {})
+            row["audio"] = [part["audio"] for part in report.get("parts", []) if inside(root, part["audio"]).is_file()]
+            row["audio_current"] = (report.get("script_sha256") == row["hash"] and report.get("voices") == audio.voices
+                and same_audio_generation(report.get("audio_generation",
+                    {"provider": "qwen3_local", "voices": report.get("voices")}), audio.model_dump()))
+            if full:
+                row["review_notes"] = review_notes((reported or {}).get(folder.name))
+                row["expression"] = reading_expression(root, folder.name, row["hash"])
+            rows.append(row)
+        return rows
 
     def delete(self, project, data):
         root = self.root(project)
@@ -832,17 +1223,8 @@ class Studio:
         execution = settings_execution(root)
         jobs = self.audio_jobs(root)
         main = self.job(root)
-        candidates = [job for job in [main, *jobs] if job]
-        latest_job = max(candidates, key=lambda job: (job["status"] == "running", job.get("started_at", "")), default=None)
-        # A running or paused job stays the project's job: a later audio job must not hide its decision,
-        # and a parked run waits behind a finished chat, check or job of another lane.
-        parked = self.parked_job(root)
-        if main and (main["status"] == "running" or (main["status"] in ATTENTION and main.get("run"))):
-            latest_job = main
-        elif parked:
-            latest_job = parked
-        elif main and main["status"] in ATTENTION:
-            latest_job = main
+        parked = self.parked_jobs(root)
+        latest_job = project_job(main, jobs, parked[0] if parked else None)
         chat_budget = read_json(root / "studio/assistant/budget.json", {}) or {}
         active_audio = self.active_audio()
         active_here = sum(value[1] == root for value in active_audio.values())
@@ -855,22 +1237,24 @@ class Studio:
                 "style_notes": style_notes(root), "style_notes_hash": digest(style_notes(root)),
                 "spoken_forms": table.model_dump(),
                 "spoken_forms_hash": digest(table.model_dump()),
-                "voice_samples": sample_inventory(self.projects),
+                "voice_samples": self.voice_samples(),
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
                 "jev_probe": jev_probe_enabled(root), "jev_default": jev_probe_state(root)[1],
                 "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
                 "server": self.server_state(),
-                "audio_queue": queue_view(read_queue(root)),
+                "audio_queue": queue_view(read_queue(root), self.key_available()),
                 # When the tags a Gemini recording speaks are placed for reading (studio_worker.tag_episodes).
                 "expression_progress": read_json(root / "studio/expression/progress.json", None),
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
                     "available": max(0, min(limit - active_here, MAX_PARALLEL - len(active_audio)))},
                 "chat": read_json(root / "studio/chat.json", []), "job": latest_job, "main_job": main,
+                # Every paused run of another lane, so each lane's page keeps its own stop card.
+                "parked_jobs": parked,
                 "chat_budget": {"used": chat_budget.get("model_calls", 0),
                                 "limit": chat_limits(root, config.research_limits).model_calls},
                 "attachments": attachments.inventory(root),
                 # The books and articles blocked questions lack, and the copies the editor provided.
-                "works": provided_works.overview(root, provided_works.latest_ledger(root)),
+                "works": self.works(root),
                 "outline": None, "episodes": [], "research": None, "run": None}
         proposal = next((item for item in reversed(data["chat"]) if item.get("role") == "assistant"), None)
         data["proposal_hash"] = digest(proposal) if proposal else None
@@ -878,48 +1262,26 @@ class Studio:
         applied = read_json(root / "studio/applied_proposal.json", {})
         data["proposal_applied"] = bool(proposal and data["proposal_current"] and all(applied.get(key) == data[key] for key in
             ("proposal_hash", "config_hash", "audio_hash", "execution_hash")) and applied.get("text_hash") == digest(data["text"]))
-        pointer = read_json(root / "studio/outline.json")
-        if pointer:
-            work = manifest_path(root, pointer["run_id"]).parent
-            if (work / "series_plan.json").exists():
-                data["outline"] = {"run_id": pointer["run_id"], "plan": read_json(work / "series_plan.json"),
-                                   "hash": outline_hash(work), "approval": read_json(work / "plan_approval.json")}
-        if (root / "research/research_briefing.md").is_file():
-            data["research"] = (root / "research/research_briefing.md").read_text(encoding="utf-8")
-        elif (root / "research/dossier.yaml").exists():
-            data["research"] = (root / "research/dossier.yaml").read_text(encoding="utf-8")
+        work = self.outline_work(root)
+        if work is not None:
+            data["outline"] = {"run_id": work.name, "plan": read_json(work / "series_plan.json"),
+                               "hash": self.outline_hash(work), "approval": read_json(work / "plan_approval.json")}
+        data["research"] = self.research_text(root)
         if (root / "runs/latest.json").exists():
             data["run"] = read_yaml(manifest_path(root))
-        quality = read_yaml(root / "reports/script_quality.yaml") if (root / "reports/script_quality.yaml").is_file() else {}
-        reported = quality.get("episodes") if isinstance(quality, dict) else None
-        for folder in sorted((root / "episodes").glob("ep_*")):
-            if not (folder / "script.yaml").exists():
-                continue
-            script = EpisodeScript.model_validate(read_yaml(folder / "script.yaml"))
-            report = read_json(folder / "audio_latest.json", {})
-            # The audio decision, not the last run report, holds what the operator set by hand.
-            decision = read_yaml(folder / "audio_review.yaml") if (folder / "audio_review.yaml").is_file() else {}
-            overrides = {k: v for k, v in (decision.get("spoken_overrides") or {}).items()
-                         if isinstance(k, str) and isinstance(v, str) and v.strip()}
-            audio_paths = [part["audio"] for part in report.get("parts", [])
-                           if inside(root, part["audio"]).is_file()]
-            data["episodes"].append({"script": script.model_dump(), "hash": file_hash(folder / "script.yaml"),
-                "readable_hash": file_hash(folder / "script.md"), "metrics": script_metrics(script),
-                "audio": audio_paths, "audio_current": report.get("script_sha256") == file_hash(folder / "script.yaml")
-                and report.get("voices") == audio.voices
-                and same_audio_generation(report.get("audio_generation",
-                    {"provider": "qwen3_local", "voices": report.get("voices")}), audio.model_dump()),
-                "review_notes": review_notes((reported or {}).get(folder.name)),
-                "expression": reading_expression(root, folder.name, file_hash(folder / "script.yaml")),
-                "spoken_overrides": overrides,
-                # Computed from the published text, the table and the overrides, with no model
-                # call, so a reader sees the difficult tokens before the first audio run.
-                "pronunciation": pronunciation_report(script, table, language=config.language, overrides=overrides),
-                "listening_note": decision.get("listening_note", ""),
-                "human_listening_reviewed": bool(decision.get("human_listening_reviewed"))})
+        data["episodes"] = self.episode_rows(root, config, audio)
         run = (main or {}).get("run") or data.get("run")
         data["script_previews"] = script_previews(root, run)
         return data
+
+    @staticmethod
+    def works(root):
+        """provided_works.overview, read again only after a ledger, the newest run's state or the works changed."""
+        ledgers = sorted(root.glob("runs/run_*/research_questions.json"))
+        files = [*ledgers, *(path.parent / "question_research/state.json" for path in ledgers[-1:]),
+                 root / provided_works.MANIFEST]
+        return memo(("works", str(root), tuple(map(str, ledgers))), files,
+                    lambda: provided_works.overview(root, provided_works.latest_ledger(root)))
 
     def idle(self, root=None):
         """No job of this project runs, and nobody holds its lock; without a project, no job runs at all."""
@@ -943,8 +1305,10 @@ class Studio:
         slug = re.sub(r"[^a-z0-9]+", "-", config.topic.lower()).strip("-")[:40] or "podcast"
         slug += "-" + uuid.uuid4().hex[:6]
         root = inside(self.projects, slug)
-        # Runtime/executable paths come only from the local server, never a web form or LLM.
+        # Runtime/executable paths come only from the local server, never a web form or LLM; so do local sources
+        # outside the project (kept_local_sources). A new project has none on disk yet.
         config.runtime = self.runtime()
+        config.local_sources = kept_local_sources(root, [], config.local_sources)
         self.validate_voices(config)
         audio = AudioChoice.model_validate(data.get("audio_settings", {"voices": config.voice_profile}))
         execution = ExecutionChoice.model_validate(data.get("execution", {}))
@@ -978,6 +1342,7 @@ class Studio:
                 raise AppError("Projekt wurde inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
             config = TopicBrief.model_validate(data["config"])
             config.runtime = old.runtime
+            config.local_sources = kept_local_sources(root, old.local_sources, config.local_sources)
             self.validate_voices(config)
             current_audio = selected_audio(root, old)
             if "audio_settings" in data and data.get("audio_hash") != digest(current_audio.model_dump()):
@@ -1050,7 +1415,7 @@ class Studio:
         segment = next((s for s in script.segments if s.segment_id == segment_id), None)
         if segment is None:
             raise AppError("Dieser Abschnitt kommt in der Folge nicht vor.", code="invalid_request")
-        with project_lock(root):
+        with self.decision_lock(root, folder):
             decision = read_yaml(folder / "audio_review.yaml") if (folder / "audio_review.yaml").is_file() else {}
             overrides = dict(decision.get("spoken_overrides") or {})
             # The text the table already produces is not an override; storing it would freeze the
@@ -1061,6 +1426,23 @@ class Studio:
                 overrides.pop(segment_id, None)
             write_yaml(folder / "audio_review.yaml", {**decision, "spoken_overrides": overrides})
         return {"episode": episode, "spoken_overrides": overrides}
+
+    @staticmethod
+    @contextmanager
+    def decision_lock(root, folder):
+        """The locks an episode's audio decision is written under: the project's shared lock, beside the recordings of
+        other episodes, and the episode's own recording lock, which a recording of this episode holds throughout
+        (episode_audio). 2026-10-02: the exclusive project lock refused every listening review and spoken form while
+        any episode was being recorded."""
+        with project_lock(root, shared=True), ExitStack() as locks:
+            try:
+                locks.enter_context(file_lock(folder / ".audio.lock"))
+            except AppError as exc:
+                if exc.code != "project_busy":
+                    raise
+                raise AppError("Diese Folge wird gerade vertont. Die Eingabe geht, sobald ihre Vertonung fertig ist "
+                               "oder angehalten wurde.", code="episode_busy") from None
+            yield
 
     def listening_review(self, project, data):
         """Record that a human listened, with their note. Nothing sets this automatically."""
@@ -1073,7 +1455,7 @@ class Studio:
         folder = inside(root / "episodes", episode)
         if not (folder / "audio_review.yaml").is_file():
             raise AppError("Für diese Folge gibt es noch keine Audioentscheidung.", code="unknown_episode")
-        with project_lock(root):
+        with self.decision_lock(root, folder):
             decision = read_yaml(folder / "audio_review.yaml")
             write_yaml(folder / "audio_review.yaml", {**decision, "human_listening_reviewed": data["reviewed"],
                                                      "listening_note": note.strip()})
@@ -1184,12 +1566,13 @@ class Studio:
         if action in {"assistant", "replan", "revise"} and not payload["message"].strip():
             raise AppError("Bitte deinen Änderungswunsch eingeben.", code="missing_feedback")
         if action in {"replan", "script"}:
-            pointer = read_json(root / "studio/outline.json")
-            if not pointer:
+            # A stopped draft has no outline to revise or approve; the worker would only stop again (scripting.outline_revision).
+            work = self.outline_work(root)
+            if work is None:
                 raise AppError("Zuerst das Inhaltsverzeichnis erstellen.", code="plan_required")
-            payload["run_id"] = pointer["run_id"]
+            payload["run_id"] = work.name
             payload["plan_hash"] = data.get("plan_hash")
-            if action == "script" and payload["plan_hash"] != outline_hash(manifest_path(root, pointer["run_id"]).parent):
+            if action == "script" and payload["plan_hash"] != outline_hash(work):
                 raise AppError("Bitte das aktuelle Inhaltsverzeichnis lesen und freigeben.", code="plan_changed")
         if action in {"audio", "revise"}:
             episode = data.get("episode")
@@ -1219,8 +1602,10 @@ class Studio:
                     payload["rerender"] = True
                 payload["audio_settings"] = audio.model_dump()
                 payload["audio_hash"] = data["audio_hash"]
-                if audio.remote and audio.expression and not rerender:
-                    # The approval covers the tags the reader saw with the script (tag_episode), or none.
+                if audio.remote and audio.expression:
+                    # The approval covers the tags the reader saw with the script (tag_episode), or none. A re-render
+                    # speaks them too, so it is bound to the tags on the reader's page as well (2026-10-02: after
+                    # "Ausdruck neu setzen" a re-render spoke tags nobody had read).
                     tags_file = root / "episodes" / episode / "expression.json"
                     if data.get("expression_hash", "") != (file_hash(tags_file) if tags_file.is_file() else ""):
                         raise AppError("Der Ausdruck wurde seit dem Lesen neu gesetzt. Bitte das Skript mit den aktuellen "
@@ -1300,6 +1685,7 @@ class Studio:
                 self.audio_processes[job["id"]] = (process, root, remote_episode)
             else:
                 self.workers[root] = (process, gpu)
+            record_worker(root, job["id"], process)
             process.stdin.write(json.dumps(payload, ensure_ascii=False))
             process.stdin.close()
         except OSError as exc:
@@ -1312,28 +1698,50 @@ class Studio:
         return job
 
     def stderr_file(self, root, job_id):
-        """The worker's error output file; logs of finished jobs older than an hour are removed."""
+        """The worker's error output file. Files of finished jobs older than an hour are removed with it: their logs,
+        the worker records (record_worker) and the status monitors' locks a killed monitor left behind."""
         folder = root / "studio/stderr"
         folder.mkdir(parents=True, exist_ok=True)
         keep = {job_id, (read_json(root / "studio/job.json", {}) or {}).get("id"), *self.audio_processes}
         cutoff = time.time() - 3600
-        for old in folder.glob("*.log"):
+        studio = root / "studio"
+        leftovers = [(old, old.stem) for old in folder.glob("*.log")]
+        leftovers += [(old, old.stem) for old in (studio / "workers").glob("*.json")]
+        leftovers += [(old, old.name[len(".status-"):-len(".lock")]) for old in studio.glob(".status-*.lock")]
+        for old, owner in leftovers:
             try:
-                if old.stem not in keep and old.stat().st_mtime < cutoff:
-                    old.unlink()
+                if owner in keep or old.stat().st_mtime >= cutoff:
+                    continue
+                if old.parent.name == "workers" and re.fullmatch(r"[a-f0-9]{32}", owner) and (
+                        read_json(audio_job_path(root, owner), {}) or {}).get("status") == "running":
+                    continue  # A recording an earlier Studio started may still run; its record identifies it.
+                old.unlink()
             except OSError:
-                pass  # A log another worker still holds open goes next time.
+                pass  # A file another worker still holds open goes next time.
         return folder / (job_id + ".log")
+
+    def external_worker(self, root, path):
+        """The running worker of a job an earlier Studio started, verified by pid and start time, or None."""
+        data = read_json(path) or {}
+        identity = worker_identity(root, data) if data.get("status") == "running" else None
+        if not process_alive(identity):
+            return None
+        try:
+            return ExternalWorker(identity["pid"])
+        except Exception:  # psutil: the process ended in between, or may not be inspected.
+            return None
 
     def stop(self, project, job_id=None):
         root = self.root(project)
         if job_id:
             owner = self.audio_processes.get(job_id)
-            if owner is None:
+            process = (owner[0] if owner[1] == root else None) if owner else \
+                self.external_worker(root, audio_job_path(root, job_id))
+            if owner is None and process is None:
                 raise AppError("Audioauftrag nicht gefunden.", code="no_active_job")
-            process = owner[0] if owner[1] == root else None
         else:
-            process = self.worker(root)
+            # A worker that outlived the Studio that started it is stopped as well, once its identity is verified.
+            process = self.worker(root) or self.external_worker(root, root / "studio/job.json")
         if process is None or process.poll() is not None:
             raise AppError("Kein aktiver Studio-Auftrag für dieses Projekt.", code="no_active_job")
         stop_process_tree(process)

@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
+import shutil
+import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .prompts import instructions
@@ -16,7 +21,7 @@ from .episode_audio import run_episode_audio, saved_expression, tag_episode
 from .expression import TAG
 from .errors import AppError
 from .execution import selected_execution
-from .editorial import TERMINOLOGY
+from .editorial import terminology
 from .logs import configure_logging, logger, record_failure
 from .models import now
 from .provider_pool import AdapterPool, text_generation_settings
@@ -94,7 +99,8 @@ def express_published(root, run, api_key=None):
     try:
         return tag_episodes(root, missing, api_key, run_id=run.run_id) if missing else None
     except AppError as exc:
-        logger.warning("Ausdruck nach dem Skriptlauf nicht gesetzt (%s); auf der Leseseite erneut anstoßen.", exc.code)
+        logger("worker").warning("Ausdruck nach dem Skriptlauf nicht gesetzt (%s); auf der Leseseite erneut anstoßen.",
+                                 exc.code)
         return None
 
 
@@ -148,8 +154,9 @@ def perform(root, request, sample_progress=None):
             adapter.require_key()
             work = root / "studio/assistant"
             number = reserve_call(work, chat_limits(root, config.research_limits))
+            # The machine-learning names only for a machine-learning brief; no receipt binds this prompt's text.
             prompt = (
-                TERMINOLOGY +
+                terminology(config.language, config.topic, config.central_question) +
                 instructions("studio_assistant") + " " +
                 attachments.MATERIAL_RULES +
                 instructions("studio_assistant_attachments") + "\n" +
@@ -244,6 +251,49 @@ def perform(root, request, sample_progress=None):
     return {"run": run.model_dump(mode="json")}
 
 
+# SetThreadExecutionState flags: keep the system running while this thread asks, until it asks no more.
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+
+def keep_awake():
+    """Keep the computer from going to sleep while this worker runs; returns the call that allows sleep again.
+
+    2026-10-02: the PC slept from 23:14 to 09:30 during runs, and a quota reset at 01:20 went unused. On Windows
+    the worker's main thread asks for the system to stay on (the display may still turn off); on macOS
+    ``caffeinate`` holds it for this process's lifetime. Elsewhere, under ``CI`` and with ``PLA_KEEP_AWAKE=0``
+    (tests that start real workers) nothing happens."""
+    if os.environ.get("PLA_KEEP_AWAKE") == "0" or os.environ.get("CI"):
+        return lambda: None
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel = ctypes.WinDLL("kernel32")
+            kernel.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+            kernel.SetThreadExecutionState.restype = ctypes.c_uint32
+            if kernel.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED):
+                return lambda: kernel.SetThreadExecutionState(ES_CONTINUOUS)
+        except (OSError, AttributeError):
+            pass
+        return lambda: None
+    if platform.system() == "Darwin" and shutil.which("caffeinate"):
+        try:
+            holder = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return holder.terminate
+        except OSError:
+            pass
+    return lambda: None
+
+
+def process_started_at() -> str:
+    """When this worker process was created, so a restarted Studio can tell its worker from a reused process id."""
+    try:
+        import psutil
+        return datetime.fromtimestamp(psutil.Process(os.getpid()).create_time(), timezone.utc).isoformat()
+    except Exception:  # noqa: BLE001  (an optional fact; the job starts without it)
+        return now()
+
+
 def main():
     root = Path(sys.argv[1]).resolve()
     request = json.loads(sys.stdin.read())
@@ -251,6 +301,10 @@ def main():
     job_path = audio_job_path(root, request["audio_job_id"]) if request.get("audio_job_id") else root / "studio/job.json"
     job = read_json(job_path)
     logger("worker").info("Auftrag %s gestartet (%s)", job.get("id"), request.get("action"))
+    # The worker names itself in its job file, so a restarted Studio finds it again (pid plus creation time).
+    job.update(pid=os.getpid(), started_process_at=process_started_at())
+    write_json(job_path, job)
+    allow_sleep = keep_awake()
     progress_stop = threading.Event()
     progress_thread = None
     summary_process = None
@@ -284,10 +338,12 @@ def main():
         run = result.get("run")
         job["status"] = run["status"] if run else "completed"
         if run and run["status"] == "waiting_for_quota":
-            # The Studio scheduler resumes a paused job once the named reset has passed.
-            quota_error = next((r["error"] for r in run["stages"].values() if r.get("error")), None)
-            job["retry_at"] = quota_retry_at(AppError(quota_error["message"] if quota_error else "",
-                                                      code=(quota_error or {}).get("code", "quota")))
+            # The Studio scheduler resumes a paused job once the named reset has passed: the reset of the provider
+            # that failed, as the stage kept it (runner.failure_details), else a wait that grows with each resume.
+            quota_error = next((r["error"] for r in run["stages"].values() if r.get("error")), None) or {}
+            job["retry_at"] = quota_retry_at(AppError(quota_error.get("message", ""), code=quota_error.get("code", "quota"),
+                                                      details=quota_error.get("details") or {}),
+                                             attempt=job.get("auto_resume_count", 0))
         if run and run["kind"] == "script" and run["status"] == "pending" and run["stages"]["planning"]["status"] == "completed":
             job["status"] = "review_ready"
         if run:
@@ -304,7 +360,7 @@ def main():
         if isinstance(exc, AppError):
             logger("worker").warning("Auftrag %s angehalten (%s): %s", job.get("id"), exc.code, exc)
             if exc.status == "waiting_for_quota":
-                job["retry_at"] = quota_retry_at(exc)
+                job["retry_at"] = quota_retry_at(exc, attempt=job.get("auto_resume_count", 0))
         elif not isinstance(exc, KeyboardInterrupt):
             receipt = record_failure(root / "studio", "worker", exc, secrets=(request.get("api_key") or "",))
             logger("worker").error("Auftrag %s fehlgeschlagen: %s", job.get("id"), type(exc).__name__, exc_info=exc)
@@ -327,6 +383,7 @@ def main():
             job["progress"] = progress
         job["finished_at"] = now()
         write_json(job_path, job)
+        allow_sleep()
 
 
 if __name__ == "__main__":

@@ -11,14 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from .call_activity import CALL_SUBJECT
-from .editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, TERMINOLOGY, episode_series_context
+from .editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, episode_series_context, terminology
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .execution import run_episode_stage
 from .models import EpisodeScript, host_labels
 from .polishing import HOST_ROLES, polish_dialogue
 from .prompts import fragment, instructions
-from .research import PLAIN_LANGUAGE, refund_call, reserve_call, unanswered
+from .research import refund_call, reserve_call, unanswered
 from .research_evidence import single_group_findings
 from .research_gap_probe import coverage_terms, gap_id, hit_sources, probe, settle, statuses, unread
 from .research_ledger import read_value
@@ -29,8 +29,9 @@ from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
 from .script_checkpoints import NOTED_CATEGORIES, series_adoption
-from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_sources, planning_dossier,
-                            quotation_errors, script_review_signature, validate_script)
+from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_limits, episode_sources,
+                            planning_dossier, quotation_errors, research_limits, script_review_signature,
+                            validate_script)
 from .script_evidence import SCRIPT_EVIDENCE_INSTRUCTIONS, settle_receipts, validate_claim_checks
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
@@ -40,15 +41,27 @@ from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, 
 from .teaching_research import apply_foundations, named_question, research_foundations
 
 SPOKEN_DIALOGUE = fragment("spoken_dialogue")
-WRITE_EPISODE_VERSION = "write_episode.v8-roles-goals"
+# research.PLAIN_LANGUAGE without its terminology rule, which the script lane takes from the project (plain_language).
+PLAIN_WORDING = fragment("plain_language")
+# v9: core and supporting findings, research limits stated where the affected statement is used, the framing duties
+# left to episode_framing (the final episode as a whole is the synthesis), no whole series plan in the payload, and
+# the project's own terminology rule. The series plan, the script review and both repairs changed with it.
+WRITE_EPISODE_VERSION = "write_episode.v9-core-limits"
+# The correction of a draft that breaks its plan repeats the writing prompt.
+WRITE_REPAIR_VERSION = "write_episode_repair.v2-core-limits"
 MAX_REVIEW_REPAIRS = 3
 # v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
-# repair restated such claims and the next review flagged them again).
-REVIEW_REPAIR_VERSION = "script_review_repair.v3-source"
+# repair restated such claims and the next review flagged them again). v4: a limit research_limits names is kept.
+REVIEW_REPAIR_VERSION = "script_review_repair.v4-limits"
 # Attempts one episode's correction of a series review gets before its evidence check rejects it (repair_series).
 SERIES_REPAIR_ATTEMPTS = 2
 # A new issue on a segment no repair touched blocks a follow-up review only as one of these.
 CRITICAL_BASIS = {"factual_error", "source_contradiction"}
+# The planner reads the editorial brief, not the whole project config. Its max_episode_minutes (30) is the longest
+# audio part of a recording; the model took it for an episode cap and cut one long explanation into several
+# 30-minute episodes (Transformer and Ontologies plans, 2026-10-02).
+PLANNING_BRIEF = {"topic", "language", "audience_level", "prior_knowledge", "depth_request", "focus_questions",
+                  "excluded_topics", "seed_people", "target_total_minutes", "series_goal"}
 
 
 def goal_and_recency(config):
@@ -72,17 +85,23 @@ def follow_up_scope(review, previous, changed):
     passed the last review unchanged and becomes an advisory, so the review converges instead of finding new
     details in the same text each round (Ontologies, 2026-09-29: ep_005 reached fifteen reviews, each raising
     grounding points on other untouched segments). The code decides the scope; the review's basis only marks
-    what is critical, and a missing basis counts as not critical."""
+    what is critical, and a missing basis counts as not critical.
+
+    A whole-episode point (no segment) is in scope only as a repeat: the previous review raised a whole-episode
+    point of its category. Until 2026-10-02 every such point was in scope, so a new whole-episode structure point
+    in a later review blocked although no earlier review had raised it."""
     watched = set(changed) | {key for issue in previous.issues for key in issue.segment_ids}
+    episode_wide = {issue.category for issue in previous.issues if not issue.segment_ids}
+
+    def in_scope(issue):
+        return bool(set(issue.segment_ids) & watched) if issue.segment_ids else issue.category in episode_wide
     issues, advisories = [], []
     for index, issue in enumerate(review.issues):
         basis = review.issue_basis[index] if index < len(review.issue_basis) else None
-        in_scope = not issue.segment_ids or bool(set(issue.segment_ids) & watched)
-        (issues if in_scope or basis in CRITICAL_BASIS else advisories).append(issue)
+        (issues if in_scope(issue) or basis in CRITICAL_BASIS else advisories).append(issue)
     for issue in review.advisories:
         # Only a noted point may stay an advisory on a segment the repair touched or a previous issue named.
-        in_scope = not issue.segment_ids or bool(set(issue.segment_ids) & watched)
-        (issues if in_scope and issue.category not in NOTED_CATEGORIES else advisories).append(issue)
+        (issues if in_scope(issue) and issue.category not in NOTED_CATEGORIES else advisories).append(issue)
     return review.model_copy(update={"issues": issues, "advisories": advisories})
 
 
@@ -128,11 +147,29 @@ class ScriptRun:
         self.style_notes = style_notes
         # The OpenRouter key for the Jev gap probe; only in memory, and only a run that asked for the probe uses it.
         self.probe_key = probe_key
+        self._research_limits = None
 
     # --- shared helpers -------------------------------------------------------------------------
 
     def limits(self):
         return effective_limits(self.work, self.config.research_limits, self.input_hash)
+
+    def terms(self):
+        """The project's terminology rule (editorial.terminology): the machine-learning names only for such a topic.
+        Until 2026-10-02 every script prompt named Query, Key and Value, also for the Asimov series."""
+        return terminology(self.config.language, self.config.topic, self.central_question)
+
+    def plain_language(self):
+        """research.PLAIN_LANGUAGE with the project's terminology rule in place of the machine-learning one."""
+        return self.terms() + TEACHING_SCOPE + PLAIN_WORDING
+
+    def research_limits(self):
+        """The limits the research run noted for the script (script_checks.research_limits), read once per run."""
+        if self._research_limits is None:
+            gate = manifest_path(self.root, self.research_id).parent / "research_quality_gate.json"
+            saved = json.loads(gate.read_text(encoding="utf-8")) if gate.is_file() else {}
+            self._research_limits = research_limits(saved if isinstance(saved, dict) else {}, self.base_dossier)
+        return self._research_limits
 
     def invoke(self, prompt, output_type, version, *, search=False, research=False):
         """One validated answer; a parsed answer the contract rejects is re-asked with the defects named."""
@@ -171,7 +208,7 @@ class ScriptRun:
     def check_budget(self, entries):
         return ensure_script_budget(self.work, self.manifest, self.limits(), entries,
                                     series_review=bool(self.series_review_version) and self.episode is None
-                                    and not self.plan_only)
+                                    and not self.plan_only, root=self.root)
 
     def stages(self):
         return {"planning": self.planning, "teaching": self.teaching, "writing": self.writing,
@@ -182,18 +219,22 @@ class ScriptRun:
     def planning(self):
         self.check_budget([])
         config, dossier = self.config, self.dossier
-        prompt = (instructions("series_plan", language=config.language) + " " + PLAIN_LANGUAGE +
+        brief = {key: value for key, value in config.model_dump(mode="json").items() if key in PLANNING_BRIEF}
+        limits = self.research_limits()
+        prompt = (instructions("series_plan", language=config.language) + " " + self.plain_language() +
                   instructions("series_plan_tail") + "\n" +
-                  json.dumps({"brief": {**config.model_dump(mode="json"), "central_question": self.central_question},
+                  json.dumps({"brief": {**brief, "central_question": self.central_question},
                               "dossier": planning_dossier(dossier),
-                              "research_questions": [q.model_dump() for q in self.discovery.questions]}, ensure_ascii=False))
+                              "research_questions": [q.model_dump() for q in self.discovery.questions],
+                              **({"research_limits": limits} if limits else {})}, ensure_ascii=False))
         if self.previous_outline is not None:
             prompt += "\n" + instructions("series_plan_revision") + "\n" + json.dumps(
                 {"previous_outline": self.previous_outline, "feedback": self.outline_feedback}, ensure_ascii=False)
         signature = digest({"input": self.input_hash, "previous_outline": self.previous_outline,
                             "feedback": self.outline_feedback})
         plan = checked_series_plan(self.work, prompt, self.invoke, dossier, self.central_question, signature,
-                                   allow_legacy=self.resume and self.previous_outline is None)
+                                   allow_legacy=self.resume and self.previous_outline is None,
+                                   limit_ids=[limit["limit_id"] for limit in limits])
         if self.episode and self.episode not in {e.episode_id for e in plan.episodes}:
             raise AppError("Gewünschte Folge kommt im Serienplan nicht vor.", code="unknown_episode", status="blocked")
         knowledge = KnowledgeModel(research_run_id=self.research_id, topic=dossier.topic,
@@ -499,8 +540,10 @@ class ScriptRun:
         design_review = json.loads((self.work / "teaching" / entry.episode_id / "review.json").read_text(encoding="utf-8"))
         # The design review's non-blocking notes (teaching.review_scope); a design without them keeps its prompt.
         advisories = " " + instructions("write_episode_advisories") if design_review.get("advisories") else ""
+        cited = set(episode_findings(entry))
+        limits = episode_limits(plan, entry, self.research_limits())
         prompt = (instructions("write_episode_opening", language=config.language) + " "
-                  + PLAIN_LANGUAGE + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
+                  + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
                   instructions("write_episode") + advisories + "\n" +
                   json.dumps({"brief": {"language": config.language, "voices": config.voice_profile,
                                         "host_names": config.host_names,
@@ -508,7 +551,14 @@ class ScriptRun:
                                         "style": config.depth_request, "style_notes": self.style_notes,
                                         **goal_and_recency(config)},
                               "host_roles": HOST_ROLES,
-                              "series": plan.model_dump(), "episode": entry.model_dump(),
+                              # Not the whole plan (2026-10-02: the Asimov finale's writing prompt reached about 780 000
+                              # characters): series_context carries the order, roles and questions the prompt uses, the
+                              # episode entry its own scenes. What remains is the series' scope and the order its
+                              # findings need.
+                              "series": {"scope_note": plan.scope_note,
+                                         "dependencies": [d.model_dump() for d in plan.dependencies
+                                                          if d.before in cited and d.after in cited]},
+                              "episode": entry.model_dump(),
                               "series_context": episode_series_context(plan, entry),
                               "prerequisite_context": prerequisite_context(plan, entry, self.work),
                               "teaching_design": self.teaching_for(entry).model_dump(),
@@ -516,6 +566,7 @@ class ScriptRun:
                               "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                               "single_group_findings": self.single_group(entry),
                               "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
+                              **({"research_limits": limits} if limits else {}),
                               "sources": episode_sources(entry, dossier, self.context, self.sources)}, ensure_ascii=False))
         if self.revision:
             prompt += ("\n" + instructions("write_episode_revision") + "\n" +
@@ -551,7 +602,7 @@ class ScriptRun:
         if errors:
             draft = corrected_call(self.invoke, prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
                 {"errors": errors, "draft": draft.model_dump()}, ensure_ascii=False),
-                EpisodeScript, "write_episode_repair.v1",
+                EpisodeScript, WRITE_REPAIR_VERSION,
                 lambda answer: self.script_defects(answer, entry, self.work / f"{entry.episode_id}_script_errors.json",
                                                    "Skript verletzt Struktur- oder Quellenzuordnung."))
         write_json(destination, draft.model_dump())
@@ -753,6 +804,10 @@ class ScriptRun:
                    "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                    "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
                    "sources": sources}
+        limits = episode_limits(plan, entry, self.research_limits())
+        if limits:
+            # The limits the writer was asked to state back such a statement, as a gap probe backs an absence claim.
+            payload["research_limits"] = limits
         task, version = instructions("script_review"), SCRIPT_REVIEW_VERSION
         if follow_up:
             payload["previous_issues"] = [issue.model_dump() for issue in follow_up[0].issues]
@@ -760,7 +815,7 @@ class ScriptRun:
             task, version = task + " " + instructions("script_review_followup"), version + "+followup"
         # Two receipt slips are read as meant (settle_receipts) instead of re-asking the whole review.
         reviewed = corrected_call(lambda *args, **kwargs: settle_receipts(self.invoke(*args, **kwargs), draft, anchors),
-            TERMINOLOGY + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
+            self.terms() + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
             task + "\n" + json.dumps(payload, ensure_ascii=False),
             ScriptReview, version, well_formed)
         # The drift receipts become issues; well_formed accepted their shape, so this cannot raise.
@@ -822,7 +877,10 @@ class ScriptRun:
                                                  follow_up=(asked, changed_segments(current, repaired)))
                     if not review_blocks(checked):
                         break
-                    asked, current = checked, repaired
+                    # The next attempt answers the check's objections and keeps the series issue it was made for;
+                    # until 2026-10-02 it saw only the objections, and a correction that satisfied them lost the point.
+                    asked, current = checked.model_copy(update={"issues": [
+                        *checked.issues, *(issue for issue in review.issues if issue not in checked.issues)]}), repaired
                 return repaired, checked
             finally:
                 CALL_SUBJECT.reset(token)
@@ -879,7 +937,8 @@ class ScriptRun:
                                self.work / "reviews" / "teaching" / entry.episode_id,
                                audience=self.config.audience_level, prior_knowledge=self.config.prior_knowledge,
                                depth=self.config.depth_request, series_context=episode_series_context(plan, entry),
-                               parallel=self.execution.text_workers > 1)
+                               parallel=self.execution.text_workers > 1, series_goal=self.config.series_goal,
+                               language=self.config.language)
 
     def review(self):
         plan, entries = self.selected()

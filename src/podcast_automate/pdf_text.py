@@ -13,7 +13,8 @@ import sys
 
 MAX_PAGES = 300
 MAX_TEXT = 1_000_000
-# A whole book the editor provided (provided_works): ``--book`` on the command line.
+# A whole book: one the editor provided (provided_works), a primary work or an open-access book found on the web
+# (sources.book_candidate); ``--book`` on the command line.
 BOOK_PAGES = 2000
 BOOK_TEXT = 6_000_000
 

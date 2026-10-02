@@ -462,7 +462,8 @@ class RejectedReceiptTests(WorkflowCase):
             decision("answer", web_queries=["energy"]) if schema is ResearchDecision else None)
         with self.assertRaises(AppError) as caught:
             self.run_engine()
-        self.assertEqual((caught.exception.code, caught.exception.status), ("invalid_model_output", "blocked"))
+        # Spent corrections stop as a correction loop, not as an unreadable answer (research_patches.exhausted_code).
+        self.assertEqual((caught.exception.code, caught.exception.status), ("rejected_output", "blocked"))
         self.assertIn("Action 'answer' takes only 'answer'; supplied: 'web_queries'", str(caught.exception))
         self.assertIn("wiederholt", str(caught.exception))
         self.assertEqual(self.calls(ResearchDecision), 3)
@@ -574,10 +575,21 @@ class RejectedReceiptTests(WorkflowCase):
         self.assertEqual(again.exception.code, "rejected_output")
         self.assertEqual(len(self.fixture.calls), calls)
 
+    def stuck_reader(self):
+        """A reader payload that contradicts its action on every attempt: a defect no normalisation can settle
+        (a search over its order is settled on its final attempt since 2026-10-02, so it no longer sticks)."""
+        self.readers = []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                self.readers.append(prompt)
+                return decision("read")
+        self.fixture.hook = hook
+
     def test_fresh_attempts_move_a_stuck_call_on_and_keep_its_rejections_readable(self):
         # Asimov and Ontologies, 2026-09-27: a routing call spent its three attempts; a resume replayed the
         # stop at once, and the only way on was a new research run.
-        self.searching([self.bad_search()])
+        self.stuck_reader()
         with self.assertRaises(AppError):
             self.run_engine()
         write_yaml(self.work / "run_manifest.yaml", {**read_yaml(self.work / "run_manifest.yaml"), "status": "blocked"})
@@ -595,27 +607,68 @@ class RejectedReceiptTests(WorkflowCase):
         with self.assertRaises(AppError):
             approve_fresh_attempts(self.root, "run_test")  # nothing is stuck any more
         # The resume asks the model anew, and with a good answer the run goes on.
-        good = QuestionSearch(candidates=fixtures.discovery(count=2).candidates[1:], limitations=[])
-        self.fixture.download.side_effect = lambda url: (fixtures.HTML.replace(
-            b"These sentences", b"Additional independent evidence. These sentences"), "text/html", url)
-        before = len(self.searches)
-        self.searching([good])
+        before = len(self.readers)
+        self.fixture.hook = lambda prompt, schema, payload, kwargs: self.readers.append(prompt) if schema is ResearchDecision else None
         engine = self.run_engine()
         self.assertEqual(engine.state["phase"], "completed")
-        self.assertEqual(len(self.searches) - before, 1, "one fresh attempt, answered well")
+        self.assertEqual(len(self.readers) - before, 1, "one fresh attempt, answered well")
 
     def test_exhausted_rejections_block_and_resume_makes_no_further_call(self):
-        self.searching([self.bad_search()])
+        self.stuck_reader()
         with self.assertRaises(AppError) as caught:
             self.run_engine()
-        self.assertEqual(caught.exception.code, "invalid_model_output")
+        self.assertEqual(caught.exception.code, "rejected_output")
         self.assertIn("wiederholt", str(caught.exception))
-        self.assertEqual(len(self.searches), 3)
+        self.assertEqual(len(self.readers), 3)
         calls = len(self.fixture.calls)
         with self.assertRaises(AppError) as again:
             self.run_engine()
-        self.assertEqual(again.exception.code, "invalid_model_output")
+        self.assertEqual(again.exception.code, "rejected_output")
         self.assertEqual(len(self.fixture.calls), calls)
+
+    def test_a_search_over_its_order_keeps_its_first_candidates_on_the_final_attempt(self):
+        # 2026-10-02: a search over its source order was refused three times, and every resume re-raised the
+        # stop without a call. The final attempt keeps the first candidates, as the discovery does, and names the rest.
+        self.fixture.config.research_limits.sources = 2  # one source read: this search may add one
+        over = QuestionSearch(candidates=fixtures.discovery(count=3).candidates[1:], limitations=[])
+        self.searching([over])
+        self.fixture.download.side_effect = lambda url: (fixtures.HTML.replace(
+            b"These sentences", b"Additional independent evidence. These sentences"), "text/html", url)
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(len(self.searches), 3)
+        self.assertIn("Quellenauftrag", self.searches[2])
+        receipt = next(r for r in engine.state["tasks"]["task_definition"]["search_receipts"] if r["lane"] == "web")
+        kept, dropped = over.candidates
+        self.assertEqual([c["url"] for c in receipt["candidates"]], [kept.url])
+        self.assertTrue(any(dropped.title in text and "Quellenauftrag" in text for text in receipt["limitations"]))
+        saved = next((self.work / "question_research/tasks").glob("*/attempt_0/step_*/search.json"))
+        self.assertEqual(len(json.loads(saved.read_text(encoding="utf-8"))["value"]["candidates"]), 2,
+                         "the receipt keeps the model's answer; only its use is settled")
+        self.assertEqual(len(engine.index.sources), 2)
+
+    def test_a_review_that_never_assesses_a_cited_source_is_settled_on_its_final_attempt(self):
+        # Ontologies, 2026-10-01: t02's review was refused seven times for an unassessed source and the run
+        # stopped twice. The refusal now names the source; the final attempt fills a conservative assessment.
+        reviews = []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is AnswerReview:
+                reviews.append(prompt)
+                review = AnswerReview.model_validate(self.fixture_review(payload))
+                return review.model_copy(update={"source_assessments": []})
+        self.fixture.hook = hook
+        engine = self.run_engine()
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(len(reviews), 3)
+        source = self.fixture.ref.split("#")[0]
+        self.assertIn(f"Assess the suitability and identity of every cited source exactly once. Missing: {source}.",
+                      reviews[1])
+        row = engine.state["tasks"]["task_definition"]
+        assessment = row["verification"]["review"]["source_assessments"][0]
+        self.assertEqual((assessment["source_id"], assessment["independence"], assessment["roles"]),
+                         (source, "unknown", ["unknown"]))
+        self.assertIn("review_normalised", [item["kind"] for item in row["verification"]["limitations"]])
 
     @composed_generation()
     def test_saved_receipt_that_fails_todays_check_is_retired_and_re_asked(self):

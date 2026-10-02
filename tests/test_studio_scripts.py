@@ -69,6 +69,31 @@ class StudioScriptPreviewTests(unittest.TestCase):
         self.assertEqual(script_previews(self.root, self.run)[0]["state"], "polished")
         self.assertEqual(script_previews(self.root, {**self.run, "status": "completed"}), [])
 
+    def test_a_polish_that_kept_the_checked_draft_counts_as_polished_and_then_reviewed(self):
+        """2026-10-02: polishing may end by keeping the draft (result "kept_draft", no checkpoint); read only as
+        "passed", such an episode never showed as polished or reviewed."""
+        folder = self.work / "polishing/ep_001"
+        draft = {**self.script, "episode_id": "ep_001"}
+        write_json(folder / "script.json", draft)
+        write_json(folder / "result.json", {"status": "kept_draft", "original_digest": digest(draft),
+                                           "polished_digest": digest(draft)})
+        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "polished")
+        self.polish = draft
+        report = {"issues": []}
+        write_json(self.work / "reviewed/ep_001.json", draft)
+        write_json(self.work / "reviews/ep_001.json", report)
+        signature = script_review_signature(self.run["input_hash"], file_hash(folder / "script.json"),
+                                            self.plan, self.plan.episodes[0], self.work)
+        write_json(self.work / "reviews/ep_001_checkpoint.json", {"draft": draft, "review": report, "input_hash": signature})
+        write_json(self.work / "reviews/ep_001_teaching.json", {"status": "passed", "script_digest": digest(draft)})
+        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "reviewed")
+        # A kept draft is only the draft it names: another text under that result is not a finished polish.
+        other = {**draft, "title": "Something else"}
+        write_json(folder / "script.json", other)
+        write_json(folder / "result.json", {"status": "kept_draft", "original_digest": digest(other),
+                                           "polished_digest": digest(other)})
+        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "draft")
+
     def test_old_review_cannot_be_presented_as_current_after_polish_changes(self):
         self.reviewed()
         updated = {**self.polish, "title": "A new polish"}

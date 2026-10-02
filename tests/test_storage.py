@@ -74,5 +74,41 @@ class ReadTextTests(unittest.TestCase):
                 storage.read_text(Path(__file__).parent / "does-not-exist.json")
 
 
+class BoundBriefTests(unittest.TestCase):
+    """``storage.bound_brief``: a resumed run hashes its operational fields as its snapshot recorded them."""
+
+    def test_operational_edits_keep_the_hash_and_content_edits_change_it(self):
+        from podcast_automate.models import TopicBrief
+        started = TopicBrief(topic="Thema", focus_questions=["Warum?"])
+        snapshot = started.model_dump(mode="json")
+        recorded = storage.project_hash(started)
+        operational = started.model_copy(update={
+            "runtime": started.runtime.model_copy(update={"text_timeout_seconds": 3600, "codex_model": "gpt-6-astra"}),
+            "research_limits": started.research_limits.model_copy(update={"model_calls": 2000})})
+        voices = started.model_copy(update={"voice_profile": {"host_a": "Aiden", "host_b": "Vivian"},
+                                            "host_names": {"host_a": "Anna", "host_b": "Ben"}})
+        content = operational.model_copy(update={"focus_questions": ["Warum?", "Wie?"]})
+        for lane in ("research", "script"):
+            with self.subTest(lane=lane):
+                self.assertEqual(storage.project_hash(storage.bound_brief(started, snapshot, lane)), recorded)
+                self.assertEqual(storage.project_hash(storage.bound_brief(operational, snapshot, lane)), recorded)
+                self.assertNotEqual(storage.project_hash(storage.bound_brief(content, snapshot, lane)), recorded)
+        # Voices and host names are operational only for research, which never reads them; a script speaks them.
+        self.assertEqual(storage.project_hash(storage.bound_brief(voices, snapshot, "research")), recorded)
+        self.assertNotEqual(storage.project_hash(storage.bound_brief(voices, snapshot, "script")), recorded)
+        # The run itself works with today's settings; only the hash is bound.
+        self.assertEqual(storage.bound_brief(operational, snapshot, "research").focus_questions, ["Warum?"])
+        self.assertEqual(operational.runtime.text_timeout_seconds, 3600)
+
+    def test_snapshots_from_before_host_names_and_missing_snapshots(self):
+        from podcast_automate.models import TopicBrief
+        started = TopicBrief(topic="Thema")
+        old_snapshot = {key: value for key, value in started.model_dump(mode="json").items() if key != "host_names"}
+        named = started.model_copy(update={"host_names": {"host_a": "Anna", "host_b": "Ben"}})
+        self.assertEqual(storage.project_hash(storage.bound_brief(named, old_snapshot, "research")),
+                         storage.project_hash(started))
+        self.assertIs(storage.bound_brief(named, None, "research"), named)
+
+
 if __name__ == "__main__":
     unittest.main()

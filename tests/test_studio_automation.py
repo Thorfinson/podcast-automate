@@ -81,6 +81,52 @@ class AllowanceTests(unittest.TestCase):
         self.assertEqual(json.loads(self.request("/api/projects/example")[1])["allowances"]["used"],
                          {"fresh_attempts": 0, "extra_calls": 100})
 
+    def test_a_calibrated_script_projection_raises_the_limit_by_its_expectation(self):
+        """The script projection carries an expectation from the project's last completed script run (2026-10-02);
+        the suggestion follows it, the minimum stays the floor, and without a calibration the old rule holds."""
+        from podcast_automate.studio_allowances import suggested_calls
+        base = {"used": 140, "minimum_remaining_calls": 20}
+        job = lambda projection: {"progress": {"budget_projection": projection, "model_calls": 140, "model_call_limit": 150}}
+        self.assertEqual(suggested_calls(job({**base, "expected_remaining_calls": 60, "calibration": {"run_id": "r"}})), 200)
+        self.assertEqual(suggested_calls(job({**base, "expected_remaining_calls": 10, "calibration": {"run_id": "r"}})), 160)
+        self.assertEqual(suggested_calls(job({**base, "expected_remaining_calls": 20, "calibration": None})), 165)
+        self.assertEqual(suggested_calls(job(base)), 165)
+
+    def test_an_allowance_waits_for_a_free_project_and_is_never_spent_on_a_resume_that_cannot_start(self):
+        """2026-10-02: the approval and its log row were written, then the resume met a Gemini recording holding the
+        project; the run never resumed by itself and its allowance was spent."""
+        from podcast_automate.errors import AppError
+        from podcast_automate.storage import project_lock
+        self.allow(fresh=1)
+        self.stopped("script_review_failed")
+        with patch("podcast_automate.run_budget.approve_fresh_attempts", return_value={"reviews": ["ep_002"]}) as grant, \
+                patch.object(self.app, "start") as start:
+            with project_lock(self.root, shared=True):
+                self.assertEqual(self.app.apply_allowances(), [])
+            grant.assert_not_called()
+            start.assert_not_called()
+            self.assertFalse((self.root / "studio/allowance_log.json").exists())
+            # A resume refused after the grant is tried again on a later pass, without granting twice.
+            start.side_effect = AppError("Belegt.", code="project_busy")
+            self.assertEqual(self.app.apply_allowances(), [])
+            start.side_effect = None
+            self.assertEqual(self.app.apply_allowances(), ["example"])
+            self.assertEqual((grant.call_count, start.call_count), (1, 2))
+            self.assertEqual(self.app.apply_allowances(), [])
+        log = json.loads((self.root / "studio/allowance_log.json").read_text(encoding="utf-8"))
+        self.assertEqual([(row["kind"], row["resumed"]) for row in log], [("fresh_attempts", True)])
+
+    def test_an_allowance_covers_a_run_parked_behind_a_job_of_another_lane(self):
+        self.allow(fresh=1)
+        self.stopped("script_review_failed")
+        write_json(self.root / "studio/paused_script.json",
+                   json.loads((self.root / "studio/job.json").read_text(encoding="utf-8")))
+        write_json(self.root / "studio/job.json", {"id": "chat", "action": "assistant", "status": "completed", "run": None})
+        with patch("podcast_automate.run_budget.approve_fresh_attempts", return_value={"reviews": ["ep_002"]}), \
+                patch.object(self.app, "start") as start:
+            self.assertEqual(self.app.apply_allowances(), ["example"])
+        start.assert_called_once_with("example", {"action": "resume", "run_id": "run_s"})
+
     def test_editorial_stops_and_spent_search_rounds_stay_with_the_user(self):
         self.allow(fresh=3, extra=1000)
         for code, progress in (("research_gap_unread", {}), ("teaching_review_failed", {}),
@@ -183,6 +229,9 @@ class RestartTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertEqual(command[1:], ["-m", "podcast_automate", "studio", str(self.workspace.resolve()),
                                        "--port", "8765", "--no-browser", "--lan"])
+        # A new server that fails before its own log starts leaves its reason here (2026-10-02: no trace at all).
+        self.assertTrue(popen.call_args.kwargs["stderr"].name.endswith("relaunch.log"))
+        self.assertIn("Neustart", (self.workspace / ".studio/relaunch.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

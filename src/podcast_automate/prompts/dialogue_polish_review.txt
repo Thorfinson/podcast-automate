@@ -40,6 +40,13 @@ changes where the original already works. brief.style_notes holds the operator's
 corrections; follow them unless they conflict with the evidence rules, which always win. Provide
 exact short quotes with segment IDs separately in before and after; a pass for meaning/completeness
 requires both. Every pass needs after evidence. Missing material may have no after quote. Explain
-each failure and its concrete correction. The original is a preservation baseline, not verified
+each failure and its concrete correction. Quote in after the candidate segments each failure
+concerns wherever they exist. When previous_checks and changed_segments are supplied, this comparison
+follows a repair: previous_checks are the failing points of the last comparison with what became of
+each (repaired: sent to the repair; noted: recorded without one), and changed_segments the candidate
+segments changed since. Judge all five criteria again on the whole candidate. Fail a repaired point
+again only when the candidate still has it, and judge the changed segments as fully as a first
+comparison. A new point on a segment outside changed_segments is recorded as a note without another
+repair, so quote its segment all the same. The original is a preservation baseline, not verified
 truth; full factual support is checked separately against sources. Report in the dialogue's
 language.

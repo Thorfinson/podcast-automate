@@ -28,6 +28,34 @@ def clean_status(value, limit=600):
     return " ".join(text.split())[:limit]
 
 
+def mentions(text, *terms) -> bool:
+    """Whether ``text`` names one of ``terms`` as a word of its own, ignoring case.
+
+    A letter or digit next to a term makes it part of another word; spaces, underscores and punctuation separate.
+    A term ending in ``*`` also matches longer words that begin with it (``reconnect*`` for "reconnecting"), and a
+    number never follows a colon, which is how a process id is written. The adapters classify provider failure
+    text this way, after their structured fields (2026-10-02: a substring test read "(node:14290) Warning" and
+    "quotation" as a used-up quota and "catalog in" as a login request)."""
+    lower = str(text or "").lower()
+    for term in terms:
+        prefix = term.endswith("*")
+        word = term.rstrip("*").lower()
+        before = r"(?<![a-z0-9:])" if word.isdigit() else r"(?<![a-z0-9])"
+        if re.search(before + re.escape(word) + ("" if prefix else r"(?![a-z0-9])"), lower):
+            return True
+    return False
+
+
+# Claude Code reports each rate-limit window as ``allowed``, ``allowed_warning`` (the window runs low, the request
+# went through) or ``rejected``. Only a refused request is a used-up quota (2026-10-02: an ``allowed_warning`` of
+# the weekly window was read as a block and every failing Claude call as exhausted quota until the reset).
+REFUSED_RATE_LIMIT = frozenset({"rejected"})
+
+
+def rate_limit_refused(info) -> bool:
+    return isinstance(info, dict) and str(info.get("status") or "").lower() in REFUSED_RATE_LIMIT
+
+
 class CallActivity:
     def __init__(self, directory, schema, model, *, secrets=()):
         self.path = directory / "activity.json"
@@ -60,18 +88,18 @@ class CallActivity:
             category = None
             text = str(message).lower()
             for code, terms in (
-                ("quota", ("usage_limit", "quota", "insufficient_quota")),
-                ("rate_limit", ("rate limit", "rate_limit", "429")),
+                ("quota", ("usage_limit*", "usage limit*", "quota", "quotas", "insufficient_quota")),
+                ("rate_limit", ("rate limit*", "rate_limit*", "ratelimit*", "429")),
                 ("authentication", ("unauthorized", "authentication", "401")),
                 ("output_schema", ("invalid_json_schema", "invalid schema")),
-                ("output_limit", ("max_output_tokens", "output token")),
-                ("context_limit", ("context_length", "context window")),
-                ("connection", ("connection", "stream disconnected", "tls", "dns", "socket", "transport")),
-                ("retry", ("retry", "reconnect")),
-                ("timeout", ("timeout", "timed out")),
+                ("output_limit", ("max_output_tokens", "output token*")),
+                ("context_limit", ("context_length*", "context window")),
+                ("connection", ("connection*", "stream disconnected", "tls", "dns", "socket*", "transport*")),
+                ("retry", ("retry*", "retries", "reconnect*")),
+                ("timeout", ("timeout*", "timed out")),
                 ("server_error", ("server_error", "500", "502", "503", "504")),
             ):
-                if any(term in text for term in terms):
+                if mentions(text, *terms):
                     category = code
                     break
             event = {"at": now(), "kind": kind, **fields}
@@ -256,7 +284,7 @@ class CallActivity:
             status = str(info.get("status") or "")
             self.diagnostic("quota_window", status=status, window=info.get("rateLimitType"),
                             resets_at=info.get("resetsAt"))
-            if status and status.lower() != "allowed":
+            if rate_limit_refused(info):
                 self.diagnostic("quota", "usage limit " + status)
         elif kind == "result":
             subtype = str(event.get("subtype") or "")

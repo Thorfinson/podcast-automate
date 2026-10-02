@@ -5,7 +5,7 @@ import unicodedata
 
 from .prompts import fragment
 from .errors import AppError
-from .evidence_models import EVIDENCE_VERSION
+from .evidence_models import EVIDENCE_VERSION, FindingSupport, SourceAssessment
 from .storage import digest
 
 EVIDENCE_INSTRUCTIONS = fragment("evidence_instructions")
@@ -18,8 +18,10 @@ SYNTHESIS_EVIDENCE_RULE = (" A synthesis relation cites in evidence_refs only re
                            "themselves cite, at least one for each compared finding; a comparison without a read "
                            "passage on every side is not a relation.")
 
-# Typography that differs between an extracted PDF and a quote typed by a model, never wording.
+# Typography that differs between an extracted PDF and a quote typed by a model, never wording. Guillemets
+# (2026-10-02): German books quote »so« and ›so‹, a model types "so", and the quote was refused and asked again.
 TYPOGRAPHY = str.maketrans({"“": '"', "”": '"', "„": '"', "‘": "'", "’": "'", "‚": "'",
+                            "»": '"', "«": '"', "›": "'", "‹": "'",
                             "–": "-", "—": "-", "−": "-", "­": ""})
 
 
@@ -122,7 +124,24 @@ def scope_assessments(review, findings, context):
     return review
 
 
-def support_errors(findings, review, context, *, require_contract=True, limitations=None):
+def named(ids):
+    return ", ".join(sorted(ids))
+
+
+def coverage_defects(expected, given, extra_label):
+    """What a list of ids lacks and what it names beyond ``expected``, for a correction that names them."""
+    missing, extra = set(expected) - set(given), set(given) - set(expected)
+    return " ".join(part for part in (f"Missing: {named(missing)}." if missing else "",
+                                      f"{extra_label}: {named(extra)}." if extra else "") if part)
+
+
+def user_notes(document):
+    """A read source that is the editor's notes: typed ``idea``, or user material without an address. A copy of a
+    published work the editor provided names it in ``citation`` and is that work (research_models.is_idea)."""
+    return document.get("type") == "idea" or ("url" in document and not document["url"] and not document.get("citation"))
+
+
+def support_errors(findings, review, context, *, require_contract=True, limitations=None, per_finding=None):
     """Malformed coverage raises; blocking non-passes return actionable feedback.
 
     Blocking is a contradicted or insufficient_context verdict, an unsuitable source, a broken claim
@@ -131,27 +150,41 @@ def support_errors(findings, review, context, *, require_contract=True, limitati
     are limitations of a passing answer: they are appended to ``limitations`` when the caller
     supplies a list and count as passes otherwise (the stored-verification check on resume).
     Repeated finding or source entries collapse to their most conservative receipt; a missing or
-    unknown one is still a shape defect.
+    unknown one is still a shape defect, and its message names the finding or source ids, so the
+    repeated call can correct exactly them (Ontologies, 2026-10-01: t02's review was refused seven times
+    for "every cited source" without learning which). ``per_finding``, when a dict, collects each
+    blocking message under the id of its finding.
     """
     support = collapse_support(review.finding_support)
     assessments = collapse_assessments(review.source_assessments)
     if Counter(r.finding_id for r in support) != Counter(f.id for f in findings):
-        evidence_error("Evidence review must assess every finding exactly once.")
+        evidence_error("Evidence review must assess every finding exactly once. " + coverage_defects(
+            [f.id for f in findings], [r.finding_id for r in support], "Unknown findings"))
     passages = {p["reference"]: s for s in context for p in s["sections"]}
     cited = {e.reference for f in findings for e in f.evidence}
     source_ids = {passages[r]["source_id"] for r in cited if r in passages}
     if not cited <= passages.keys():
-        evidence_error("Evidence review contains unread or unknown passages.")
+        evidence_error("Evidence review contains unread or unknown passages: " + named(cited - passages.keys()) + ".")
     if Counter(a.source_id for a in assessments) != Counter(source_ids):
-        evidence_error("Assess the suitability and identity of every cited source exactly once.")
+        evidence_error("Assess the suitability and identity of every cited source exactly once. "
+                       + coverage_defects(source_ids, [a.source_id for a in assessments], "Not cited by any finding"))
     assessments = {a.source_id: a for a in assessments}
     for assessment in assessments.values():
         if any(r not in passages or passages[r]["source_id"] != assessment.source_id for r in assessment.evidence_refs):
-            evidence_error("Source assessment must be grounded in that source's supplied passages.")
+            evidence_error("Source assessment must be grounded in that source's supplied passages. "
+                           f"{assessment.source_id} names: " + named(r for r in assessment.evidence_refs if r not in passages
+                                                                    or passages[r]["source_id"] != assessment.source_id) + ".")
         if assessment.independence != "unknown" and not assessment.evidence_family:
-            evidence_error("Known independence requires a source-grounded study or dataset identity.")
+            evidence_error("Known independence requires a source-grounded study or dataset identity. "
+                           f"Source: {assessment.source_id}.")
     by_id = {f.id: f for f in findings}
     errors = []
+
+    def blocking(finding, message):
+        errors.append(message)
+        if per_finding is not None:
+            per_finding.setdefault(finding.id, []).append(message)
+
     for row in support:
         finding = by_id[row.finding_id]
         refs = {e.reference for e in finding.evidence}
@@ -159,23 +192,26 @@ def support_errors(findings, review, context, *, require_contract=True, limitati
         # A receipt over some of the cited passages is a partial check, not a wasted call: extra
         # references to other read passages are ignored, omitted ones become a stated limitation.
         if not assessed & refs:
-            evidence_error("A support receipt must cover at least one of the finding's cited passages.")
+            evidence_error("A support receipt must cover at least one of the finding's cited passages. "
+                           f"Finding {finding.id} cites: {named(refs)}.")
         if not assessed <= passages.keys():
-            evidence_error("A support receipt names passages that were not supplied to this review.")
+            evidence_error("A support receipt names passages that were not supplied to this review. "
+                           f"Finding {finding.id}: {named(assessed - passages.keys())}.")
         omitted = sorted(refs - assessed)
         if omitted and limitations is not None:
             limitations.append({"finding_id": finding.id, "kind": "unassessed_references",
                                 "text": f"{finding.id}: Belegstellen nicht einzeln geprüft: {', '.join(omitted)}."})
         if not set(row.independent_evidence_refs) <= refs:
-            evidence_error("Independent evidence must be cited by the finding and actually supplied.")
+            evidence_error("Independent evidence must be cited by the finding and actually supplied. "
+                           f"Finding {finding.id}: {named(set(row.independent_evidence_refs) - refs)}.")
         if row.empirical_status == "independently_tested":
             sources = [assessments[s] for s in {passages[r]["source_id"] for r in row.independent_evidence_refs}]
             source_context = {s["source_id"]: s for s in context}
             documents = [source_context[s.source_id] for s in sources]
             hashes = [s["text_hash"] for s in documents if s.get("text_hash")]
-            if len(set(hashes)) != len(hashes) or any(("url" in s and not s["url"]) or s.get("type") == "idea"
-                                                       for s in documents):
-                errors.append(f"{finding.id}: duplicate text or user notes cannot establish independent testing.")
+            # A provided copy of a published work has no address but a citation: it is that work, not notes (2026-10-02).
+            if len(set(hashes)) != len(hashes) or any(user_notes(s) for s in documents):
+                blocking(finding, f"{finding.id}: duplicate text or user notes cannot establish independent testing.")
             families = {identity(s.evidence_family) for s in sources if s.independence == "independent" and s.evidence_family}
             works = {identity(s.work_id) for s in sources if s.work_id}
             independent_tests = [s for s in sources if s.independence == "independent" and s.evidence_family
@@ -184,17 +220,103 @@ def support_errors(findings, review, context, *, require_contract=True, limitati
             theory_test = any(test.work_id and identity(test.work_id) != identity(theory.work_id)
                               for test in independent_tests for theory in theoretical)
             if not theory_test and (len(families) < 2 or len(works) < 2 or not independent_tests):
-                errors.append(f"{finding.id}: independent testing is not established by distinct evidence families and works.")
+                blocking(finding, f"{finding.id}: independent testing is not established by distinct evidence families and works.")
         if require_contract and finding.claim_contract is None:
-            errors.append(f"{finding.id}: missing claim contract (basis, relation, scope and qualifications).")
+            blocking(finding, f"{finding.id}: missing claim contract (basis, relation, scope and qualifications).")
         if blocks(row):
-            errors.append(f"{finding.id}: {row.verdict}; {row.reason}; {row.suitability_reason}; "
-                          + "; ".join(row.unsupported_clauses))
+            blocking(finding, f"{finding.id}: {row.verdict}; {row.reason}; {row.suitability_reason}; "
+                     + "; ".join(row.unsupported_clauses))
         elif row.verdict == "partially_supported" and limitations is not None:
             limitations.append({"finding_id": finding.id, "kind": "partial_support",
                                 "text": f"{finding.id}: nicht vollständig gestützt: {'; '.join(row.unsupported_clauses)} "
                                         f"({row.reason})"})
     return errors
+
+
+# What a final review attempt left out, filled so that it can never pass on its own: an unassessed finding is not
+# supported, an unassessed source has unknown suitability and independence.
+UNREVIEWED_FINDING = "The review returned no support receipt for this finding."
+UNREVIEWED_SOURCE = "The review returned no assessment of this source; its suitability and independence are unknown."
+
+
+def settle_receipts(review, findings, context):
+    """Normalise, in place, the receipt shape defects of a review's final attempt that have a conservative reading,
+    and return ``(limitations, unreviewed finding ids)``. Before, such a defect stopped the run after three refused
+    calls (Ontologies, 2026-10-01: t02 review_037; all four fresh-attempt stops of the allowance logs).
+
+    A receipt or assessment of something no finding cites is dropped, as ``scope_assessments`` drops extra sources;
+    references outside the supplied passages or outside the finding are dropped, and independence claimed without a
+    study or dataset identity becomes unknown. A finding without a receipt (or with one that covers none of its
+    passages) gets an ``insufficient_context`` receipt, so it blocks the answer instead of passing unchecked; a cited
+    source without an assessment gets one with unknown roles and independence, recorded as a limitation. A finding
+    citing a passage that was never supplied is not normalised: that is ledger corruption, and ``support_errors``
+    still raises for it. A well-formed review comes back unchanged.
+    """
+    passages = {p["reference"]: s["source_id"] for s in context for p in s["sections"]}
+    by_id = {f.id: f for f in findings}
+    notes, unreviewed, support = [], [], []
+
+    def note(finding_id, text):
+        notes.append({"finding_id": finding_id, "kind": "review_normalised", "text": text})
+
+    for row in collapse_support(review.finding_support):
+        finding = by_id.get(row.finding_id)
+        if finding is None:
+            note("", f"Prüfbeleg zu einem unbekannten Befund ({row.finding_id}) verworfen.")
+            continue
+        refs = [e.reference for e in finding.evidence]
+        references = [r for r in row.references if r in passages]
+        if not set(references) & set(refs):
+            continue  # covers none of the finding's passages: treated as missing below
+        update = {}
+        if references != row.references:
+            update["references"] = references
+            note(finding.id, f"{finding.id}: Prüfbeleg nannte nicht vorgelegte Stellen; sie wurden verworfen.")
+        independent = [r for r in row.independent_evidence_refs if r in refs]
+        if independent != row.independent_evidence_refs:
+            update["independent_evidence_refs"] = independent
+            if row.empirical_status == "independently_tested" and not independent:
+                update["empirical_status"] = "unknown"
+            note(finding.id, f"{finding.id}: Belege einer unabhängigen Prüfung, die der Befund nicht zitiert, wurden verworfen.")
+        support.append(row.model_copy(update=update) if update else row)
+    present = {row.finding_id for row in support}
+    for finding in findings:
+        if finding.id in present:
+            continue
+        unreviewed.append(finding.id)
+        refs = list(dict.fromkeys(e.reference for e in finding.evidence))
+        support.append(FindingSupport(finding_id=finding.id, verdict="insufficient_context", references=refs,
+                                      reason=UNREVIEWED_FINDING, unsupported_clauses=[], suitability="unknown",
+                                      suitability_reason="Not assessed by the review.", contract_preserved=False,
+                                      empirical_status="unknown", independent_evidence_refs=[]))
+    review.finding_support = support
+    cited = {}
+    for finding in findings:
+        for evidence in finding.evidence:
+            if evidence.reference in passages:
+                cited.setdefault(passages[evidence.reference], []).append(evidence.reference)
+    assessments = []
+    for assessment in collapse_assessments(review.source_assessments):
+        if assessment.source_id not in cited:
+            continue
+        update = {}
+        grounded = [r for r in assessment.evidence_refs if passages.get(r) == assessment.source_id]
+        if grounded != assessment.evidence_refs:
+            update["evidence_refs"] = grounded or list(dict.fromkeys(cited[assessment.source_id]))
+            note("", f"Quellenbewertung {assessment.source_id}: Stellen außerhalb dieser Quelle wurden verworfen.")
+        if assessment.independence != "unknown" and not assessment.evidence_family:
+            update["independence"] = "unknown"
+            note("", f"Quellenbewertung {assessment.source_id}: Unabhängigkeit ohne Studien- oder Datenbasis gilt als unbekannt.")
+        assessments.append(assessment.model_copy(update=update) if update else assessment)
+    for source_id in sorted(cited.keys() - {a.source_id for a in assessments}):
+        assessments.append(SourceAssessment(source_id=source_id, roles=["unknown"],
+                                            evidence_refs=list(dict.fromkeys(cited[source_id])), rationale=UNREVIEWED_SOURCE,
+                                            work_id="", version="", evidence_family="", independence="unknown", method="",
+                                            research_group="", population="", geography="", period="",
+                                            limitations=[UNREVIEWED_SOURCE]))
+        note("", f"Quelle {source_id} wurde von der Prüfung nicht bewertet; Eignung und Unabhängigkeit bleiben unbekannt.")
+    review.source_assessments = assessments
+    return notes, unreviewed
 
 
 def validate_synthesis(dossier, context):

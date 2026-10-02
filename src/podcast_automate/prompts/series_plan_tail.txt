@@ -1,1 +1,1 @@
-Here illustration and limits are planning instructions, not separate schema fields.
+Here illustration and the limits of an explanation are planning instructions, not separate schema fields; research_limit_ids only places the supplied research_limits.

@@ -16,6 +16,8 @@ State layout (all JSON-serialisable):
   text execution is ``parallel`` and independent tasks run side by side.
 - ``seed_dossier``/``dirty_tasks``/``finding_owners``: which findings a later batch may edit.
 - ``objections``: audit objections keyed by a stable id, closed only by a passing audit.
+- ``scope_unresolved`` (optional): the second scope pass still split a larger share of the plan; its note goes
+  with the plan to the plan gate (plan_tasks).
 - ``accepted_gap`` on a task row: the user's explicit approval to finish without that task. The
   dossier then records the gap; objections that only concern accepted gaps no longer block. A synthesis
   that depends on it goes on without it and names it; any other dependent stays blocked.
@@ -42,8 +44,8 @@ from .prompts import instructions
 from .question_answering import ACCESS_GAP_READER, TaskResearchMixin, answer_errors, read_context, review_passes
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
                               plan_projection, plan_review_message, run_timings)
-from .question_dependencies import (gap_prerequisites, gatekeepers, ordered_tasks, prerequisite_answers,
-                                    prerequisite_met, revalidate)
+from .question_dependencies import (gap_prerequisites, gatekeepers, invalidate_dependents, ordered_tasks,
+                                    prerequisite_answers, prerequisite_met, revalidate)
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
 from .question_sources import restore_attempts
 from .question_synthesis import PROMPT_GENERATION, SynthesisMixin
@@ -52,7 +54,8 @@ from .research_evidence import support_errors
 from .research_gap_probe import coverage_terms, gap_id, probe
 from .research_ledger import (CALL_VERSION, VERSION, bootstrap_legacy, check_sources, load_index, public_ledger,
                               read_value, reopenable, save_index, save_value)
-from .research_advisor import ADVICE_VERSION, BlockAdvice, advice_request, automatic_retry, block_key, retry_feedback
+from .research_advisor import (ADVICE_VERSION, BlockAdvice, advice_history, advice_request, automatic_retry, block_key,
+                               retry_feedback)
 from .research_models import ResearchDiscovery, ResearchDossier
 from .research_patches import cached_call
 from .research_quality import quality_brief, requirements_for
@@ -101,6 +104,20 @@ def check_aims(plan, config):
         if weight >= 2 and not any(t.aim == aim for t in plan.tasks):
             raise AppError(f"Die Serie soll vor allem {name}; der Plan braucht dafür Aufgaben mit aim={aim}.",
                            code="invalid_question_plan", status="blocked")
+
+
+def scope_note(splits, reviewed, candidate, adopted, limit):
+    """The record of a second scope pass that still split a larger share of the plan, as the ledger keeps it
+    (``scope_unresolved``) and the plan gate shows it."""
+    names = ", ".join(sorted(splits))
+    text = (f"Die Umfangsprüfung hat im zweiten Durchgang noch {len(splits)} von {len(reviewed.tasks)} Teilfragen "
+            f"weiter aufgeteilt ({names}). " +
+            ("Diese Aufteilung ist übernommen; die neuen Teilfragen wurden nicht noch einmal geprüft." if adopted else
+             f"Sie hätte die Obergrenze von {limit} Teilfragen überschritten und ist nicht übernommen; der Plan steht "
+             "wie nach dem ersten Durchgang.") +
+            " Vor der Freigabe den Zuschnitt prüfen und bei Bedarf eine Obergrenze setzen.")
+    return {"split_tasks": sorted(splits), "reviewed_tasks": len(reviewed.tasks), "adopted": adopted,
+            "tasks": len(candidate.tasks) if adopted else len(reviewed.tasks), "note": text}
 
 
 def _gaps(dossier, migration):
@@ -432,9 +449,37 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             if row["status"] == "blocked" and row.get("outcome") == "prerequisite_block" and not row.get("accepted_gap"):
                 row.update(status="pending", outcome=None, reason="", activity="Noch nicht bearbeitet")
 
+    def open_tasks(self):
+        """Tasks in plan order that hold neither a verified answer nor a block: they still need research."""
+        return self.plan_order([task_id for task_id, row in self.state["tasks"].items()
+                                if row["status"] not in {"verified", "blocked"}])
+
+    def require_answers(self):
+        """No dossier and no completion while a question is still open. Every row is verified, blocked (and then
+        stopped for or settled by the editor's decision) or an accepted gap; a run never completes silently with
+        unanswered questions (Transformer, 2026-10-02: published as completed with two rows still researching)."""
+        unanswered = self.open_tasks()
+        if not unanswered:
+            return
+        self.state["phase"] = "questions"
+        self.save("Teilfragen ohne geprüfte Antwort; die Recherche wird nicht abgeschlossen")
+        raise AppError("Teilfragen ohne geprüfte Antwort: " + ", ".join(unanswered) + ". Die Recherche wird nicht "
+                       "abgeschlossen; Antworten und Stand bleiben gespeichert, ein Fortsetzen bearbeitet sie weiter.",
+                       code="research_questions_open", status="blocked")
+
+    def budget_counts(self):
+        """The run's reserved model calls and search rounds (``budget.json``). Another worker's reservation may be
+        rewriting the file at this instant, so it is read through storage.read_text (AGENTS.md)."""
+        path = self.work / "budget.json"
+        return json.loads(read_text(path)) if path.exists() else {}
+
+    def calls_left(self):
+        return self.budget_counts().get("model_calls", 0) < self.limits().model_calls
+
     def advice_affordable(self, pending=0):
         """Room for one advisor call and one new attempt on top of what the verified questions still need,
-        and on top of ``pending`` advice already under way, each of which may reopen its question too."""
+        and on top of ``pending`` advice already under way, each of which may reopen its question too.
+        Search rounds are not part of it: an advice without a round left goes on without a search of its own."""
         projection = budget_projection(self.work, self.state, self.limits(), root=self.root)
         return (projection["remaining"] - projection["minimum_remaining_calls"]
                 >= (1 + pending) * (1 + projection["expected_calls_per_task"]))
@@ -502,30 +547,64 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 raise
         return reopened
 
+    def advice_prompt(self, spec, row, folder, key, *, search=None, replace=False):
+        """The advisor's prompt for one block and whether it may search, saved before the call
+        (``advice_<key>_request.json``): a resume that finds the call's receipt asks the same question and replays it,
+        although the counts in the prompt have moved on since. Without a receipt the prompt is made afresh. The
+        caller holds the ledger lock."""
+        path = folder / f"advice_{key}_request.json"
+        if path.exists() and not replace and (folder / f"advice_{key}.json").exists():
+            return read_value(path)
+        counts = self.budget_counts()
+        rounds = counts.get("search_rounds", 0)
+        search = rounds < self.limits().search_rounds if search is None else search
+        limits = {"sources": {"used": len(self.attempts), "limit": self.limits().sources},
+                  "search_rounds": {"used": rounds, "limit": self.limits().search_rounds},
+                  "model_calls": {"used": counts.get("model_calls", 0), "limit": self.limits().model_calls}}
+        failures = [*self.index.failures, *(f for receipt in row.get("search_receipts", [])
+                                            for f in receipt.get("retrieval_failures", []))]
+        prompt = (TERMINOLOGY + instructions("block_advice") + "\n" +
+                  json.dumps(advice_request(spec, row, self.index.sources, failures, limits, web_search=search),
+                             ensure_ascii=False, default=str))
+        request = {"prompt": prompt, "search": search, **({"search_fallback": True} if replace else {})}
+        save_value(path, request)
+        return request
+
+    def consult(self, folder, key, request):
+        return cached_call(folder, f"advice_{key}", BlockAdvice, request["prompt"],
+            lambda p, s: self.generate(folder, f"advice_{key}", p, s, f"{self.call_version}.{ADVICE_VERSION}",
+                                       search=request["search"], advisor=True), on_retry=self.retry_note)
+
     def advise_task(self, spec):
         """One advisor call for one blocked question and, where it recommends it, the automatic new attempt.
-        Returns whether the question was reopened; only its own row changes."""
+        Returns whether the question was reopened; only its own row changes.
+
+        The advisor reads every earlier advice on the question with what became of it (advice_history); the
+        history is kept on the row beside the latest advice."""
         with self.guarded():
             row = self.state["tasks"][spec.id]
             key = block_key(row)
             self.progress(f"Blockierte Frage wird beraten: {spec.question}")
-            budget_path = self.work / "budget.json"
-            rounds = json.loads(read_text(budget_path)).get("search_rounds", 0) if budget_path.exists() else 0
-            search = rounds < self.limits().search_rounds
-            limits = {"sources": {"used": len(self.attempts), "limit": self.limits().sources},
-                      "search_rounds": {"used": rounds, "limit": self.limits().search_rounds},
-                      "model_calls": {"used": budget_projection(self.work, self.state, self.limits(), root=self.root)["used"],
-                                      "limit": self.limits().model_calls}}
-            failures = [*self.index.failures, *(f for receipt in row.get("search_receipts", [])
-                                                for f in receipt.get("retrieval_failures", []))]
-            prompt = (TERMINOLOGY + instructions("block_advice") + "\n" +
-                      json.dumps(advice_request(spec, row, self.index.sources, failures, limits), ensure_ascii=False, default=str))
             folder = self.task_folder(spec, row) / "advice"
-        advice = cached_call(folder, f"advice_{key}", BlockAdvice, prompt,
-            lambda p, s: self.generate(folder, f"advice_{key}", p, s, f"{self.call_version}.{ADVICE_VERSION}",
-                                       search=search, advisor=True), on_retry=self.retry_note)
+            history = advice_history(row)
+            request = self.advice_prompt(spec, row, folder, key)
+        try:
+            advice = self.consult(folder, key, request)
+        except AppError as exc:
+            # Advice beside this one took the last search round between this call's decision and its reservation
+            # (research.reserve_call). It goes on without a search of its own instead of stopping the whole run for
+            # an approval (Asimov, 2026-10-01: the last run ended at 91 of 94 rounds that way).
+            if not request["search"] or exc.code != "research_budget_exhausted" or not self.calls_left():
+                raise
+            with self.guarded():
+                request = self.advice_prompt(spec, row, folder, key, search=False, replace=True)
+            advice = self.consult(folder, key, request)
         with self.guarded():
-            row["advice"] = {**advice.model_dump(), "key": key, "at": now()}
+            if history:
+                row["advice_history"] = history
+            row["advice"] = {**advice.model_dump(), "key": key, "at": now(), "web_search": request["search"],
+                             "sections_read": len(row.get("read_refs", [])),
+                             **({"search_fallback": True} if request.get("search_fallback") else {})}
             allowed, stopped = automatic_retry(row)
             reopened = advice.recommendation == "retry" and allowed
             if reopened:
@@ -534,7 +613,9 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                                  auto_retry_read=len(row.get("read_refs", [])))
             elif advice.recommendation == "retry":
                 row["auto_stop"] = stopped
-            self.save(f"Beratung zur blockierten Frage gespeichert: {spec.question}")
+            self.save(f"Beratung zur blockierten Frage gespeichert: {spec.question}"
+                      + (" (ohne eigene Websuche: die letzte Suchrunde ging an eine gleichzeitig beratene Frage)"
+                         if request.get("search_fallback") else ""))
         return reopened
 
     def save(self, activity=None, *, budget_request=None):
@@ -582,6 +663,47 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         if activity:
             self.progress(activity)
 
+    def stored_answer_errors(self, task, row):
+        """Why a stored verified answer, intact as saved, no longer passes today's checks: its fixed answer checks,
+        its stored review's verdict and, under the current evidence version, the support receipts. Empty while it
+        passes."""
+        try:
+            answer = QuestionAnswer.model_validate(row["answer"])
+            review = AnswerReview.model_validate(row["verification"]["review"])
+            errors = answer_errors(answer, task, self.reader, set(row["read_refs"]))
+            if not review_passes(review, task):
+                errors.append("The stored review of this answer no longer passes the review rules.")
+            if self.state.get("evidence_version") == EVIDENCE_VERSION:
+                refs = [e.reference for f in answer.findings for e in f.evidence]
+                errors.extend(support_errors(answer.findings, review, read_context(self.reader, refs)))
+        except (AppError, ValueError) as exc:
+            # A receipt shape a tightened contract refuses is a recheck as well, not a stop.
+            errors = [str(exc)]
+        return errors
+
+    def revalidate_on_resume(self, stale, rechecks):
+        """Send back verified answers whose prerequisites changed (``stale``) or that today's checks no longer pass
+        (``rechecks``: task id to its errors), and with them every verified answer that builds on one of them,
+        however indirectly (invalidate_dependents). Before (2026-10-02), a dependent of a revalidated answer stayed
+        verified against the old answer of its prerequisite, and nothing checked it again once that re-verified."""
+        rows = self.state["tasks"]
+        for task_id in stale:
+            revalidate(rows[task_id])
+        for task_id, errors in rechecks.items():
+            revalidate(rows[task_id], activity="Geprüfte Antwort wird nach geänderten Prüfregeln erneut geprüft",
+                       feedback=["This answer was verified under earlier checks and is reviewed again under today's. Keep "
+                                 "what still holds; correct exactly these points where they concern the answer: "
+                                 + " ".join(dict.fromkeys(errors))])
+        changed = self.plan_order([*stale, *rechecks])
+        if not changed:
+            return
+        affected = invalidate_dependents(self.state, changed)
+        self.state["dirty_tasks"] = self.plan_order([*self.state.get("dirty_tasks", []), *affected])
+        if self.state["phase"] in {"synthesis", "audit", "completed"}:
+            # This audit round's receipts answered the old answers: the dossier is made again in a round of its own,
+            # as after an audit's reopening.
+            self.state.update(phase="questions", audit_round=self.state["audit_round"] + 1)
+
     def initialise(self, discovery, index, dossier, context):
         binding = digest({"brief": quality_brief(self.config), "questions": [q.model_dump() for q in discovery.questions],
                           "initial_sources": [(s.id, s.raw_hash, s.text_hash) for s in index.sources]})
@@ -596,24 +718,25 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             check_sources(self.root, self.index)
             self.reader = SourceReader(self.index)
             self.attempts = restore_attempts(self.folder, self.index)
-            stale = []
+            unstarted = all(row["status"] not in {"verified", "blocked"} for row in self.state["tasks"].values())
+            stale, rechecks = [], {}
             for task in QuestionPlan.model_validate(self.state["plan"]).tasks:
                 row = self.state["tasks"][task.id]
                 if row["status"] != "verified":
                     continue
-                answer = QuestionAnswer.model_validate(row["answer"])
                 verification = row.get("verification", {})
                 if (verification.get("answer_hash") != digest(row["answer"]) or
-                    answer_errors(answer, task, self.reader, set(row["read_refs"])) or
-                    not review_passes(AnswerReview.model_validate(verification["review"]), task) or
                     any(self.reader.sources[sid].text_hash != value for sid, value in verification["source_hashes"].items())):
                     raise AppError("Gespeicherte Antwortprüfung ist nicht konsistent.",
                                    code="invalid_research_checkpoint", status="blocked")
+                errors = self.stored_answer_errors(task, row)
+                if errors:
+                    # The answer and its review are intact, but today's rules no longer pass them: a rule tightened
+                    # since. The answer is checked again under them, as a changed prerequisite sends it back below.
+                    # Before (2026-10-02), every later tightening stopped each run on its next resume for good.
+                    rechecks[task.id] = errors
+                    continue
                 if self.state.get("evidence_version") == EVIDENCE_VERSION:
-                    verdict = AnswerReview.model_validate(verification["review"])
-                    refs = [e.reference for f in answer.findings for e in f.evidence]
-                    if support_errors(answer.findings, verdict, read_context(self.reader, refs)):
-                        raise AppError("Stored support review no longer passes.", code="invalid_research_checkpoint", status="blocked")
                     expected = {a["task_id"]: a["answer_hash"] for a in prerequisite_answers(task, self.state)}
                     covered = set(expected) | set(gap_prerequisites(task, self.state))
                     if covered != set(task.depends_on) or verification.get("prerequisite_hashes", {}) != expected:
@@ -621,15 +744,17 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                         # again, as invalidate_dependents does. Before, the resume stopped for good (Ontologies,
                         # 2026-10-02: t53, noted after its reworks, kept an answer checked against t52's old answer).
                         stale.append(task.id)
-            for task_id in stale:
-                revalidate(self.state["tasks"][task_id])
+            self.revalidate_on_resume(stale, rechecks)
+            if self.state["phase"] == "completed" and self.open_tasks():
+                # Completed with questions still open (Transformer, 2026-10-02: two rows still researching): they are
+                # answered first, and the dossier is made again in an audit round of its own.
+                self.state.update(phase="questions", audit_round=self.state["audit_round"] + 1)
             # No task is running when a resume starts, whatever the interrupted worker had in flight;
             # ledgers of an earlier version named that one task in ``active_task``.
             self.state["active_tasks"] = []
             self.state.pop("active_task", None)
             if (self.plan_gate is not None and self.state["phase"] == "questions"
-                    and not self.state.get("plan_approval")
-                    and all(row["status"] not in {"verified", "blocked"} for row in self.state["tasks"].values())):
+                    and not self.state.get("plan_approval") and unstarted):
                 # A plan made before the gate existed, with no task finished yet: nothing is lost by
                 # projecting it now and letting the operator approve it or cap it before the first call.
                 self.state["phase"] = "awaiting_plan_approval"
@@ -665,9 +790,10 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             # A pre-ledger planning receipt has no binding for the new schema. Retain it and
             # make a separately budgeted plan; do not overwrite or mislabel the old receipt.
             suffix = "_evidence_v1"
-        plan, groups = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
+        plan, groups, note = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
         tasks = {t.id: pending_task() for t in plan.tasks}
         self.state = {"version": VERSION, "input_hash": binding, "plan": plan.model_dump(), "tasks": tasks,
+                      **({"scope_unresolved": note} if note else {}),
                       "evidence_version": EVIDENCE_VERSION, "prompt_generation": PROMPT_GENERATION,
                       "discovery": discovery.model_dump(), "seed_dossier": dossier.model_dump() if dossier else None,
                       "migration": migration, "gaps": gaps, "phase": "questions", "audit_round": 0,
@@ -693,8 +819,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         """The allowance the planner sees, saved once so replays judge a plan by the same rule."""
         if path.exists():
             return read_value(path)
-        budget_path = self.work / "budget.json"
-        used = json.loads(budget_path.read_text(encoding="utf-8")).get("model_calls", 0) if budget_path.exists() else 0
+        used = self.budget_counts().get("model_calls", 0)
         limit = self.limits().model_calls
         per_task, source = expected_calls_per_task(self.work, self.root, self.state)
         affordable = affordable_tasks(used, limit, per_task)
@@ -748,7 +873,10 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.progress(f"Der Rechercheplan wird auf höchstens {cap} Teilfragen neu zugeschnitten")
         suffix = f"_cap{cap}"
         planning_budget = self.planning_allowance(self.folder / f"planning_budget{suffix}.json", cap=cap)
-        plan, groups = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
+        plan, groups, note = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
+        self.state.pop("scope_unresolved", None)
+        if note:
+            self.state["scope_unresolved"] = note
         self.state.update(plan=plan.model_dump(), tasks={t.id: pending_task() for t in plan.tasks}, task_groups=groups,
                           dirty_tasks=[t.id for t in plan.tasks], active_tasks=[],
                           plan_caps=[*self.state.get("plan_caps", []), cap],
@@ -759,7 +887,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.save(f"Rechercheplan mit {len(plan.tasks)} Teilfragen gespeichert – wartet auf Freigabe")
 
     def plan_tasks(self, discovery, dossier, gaps, planning_budget, suffix=""):
-        """One planning call, then the scope review in at most two passes; returns the plan and its split groups."""
+        """One planning call, then the scope review in at most two passes; returns the plan, its split groups and the
+        note of a second pass that still split a larger share (None when the review converged)."""
         prompt = (TERMINOLOGY + TEACHING_SCOPE +
             instructions("question_plan", language=self.config.language) + "\n" + json.dumps({
                 "brief": quality_brief(self.config), **research_day(self.config, self.work),
@@ -799,7 +928,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         # ".deps": the plan prompt that sets prerequisites only for content (2026-09-30).
         plan = self.call(self.folder, "plan" + suffix, QuestionPlan, prompt, validate=check_plan, tag=".deps")
         validate_plan(plan, self.config, discovery, dossier, gaps)
-        groups = {}
+        groups, note = {}, None
         # Separate model calls, bounded to two passes; no source-reading budget is
         # spent on a plan whose obligations are still bundled into broad chapters.
         for attempt in range(2):
@@ -819,20 +948,26 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
 
             review = self.call(self.folder, f"scope_{attempt}" + suffix, QuestionScopeReview,
                 scope_prompt + "\n" + json.dumps(payload, ensure_ascii=False), validate=check_scope)
-            plan, splits = scoped_plan(plan, review)
-            validate_plan(plan, self.config, discovery, dossier, gaps)
+            candidate, splits = scoped_plan(plan, review)
+            validate_plan(candidate, self.config, discovery, dossier, gaps)
+            # A second pass that still splits a few tasks has nearly converged: its splits are adopted, within the task
+            # cap its check already enforced (Ontologies, 2026-09-30: 3 of 56 tasks split again stopped the whole run).
+            if attempt == 1 and len(splits) > max(1, len(current.tasks) // 10):
+                # One that keeps splitting a larger share converges too (2026-10-02): until then it stopped with
+                # question_scope_unresolved, which no fresh attempt moved (no call had spent its corrections) and every
+                # resume replayed to the same stop; the Ontologies run run_20260930_195553 was abandoned on it. Its
+                # splits are adopted where the plan stays within the task cap, else the plan stands as the first pass
+                # left it. The note goes with the plan to the plan gate, where the editor approves it or sets a cap.
+                limit = max(max_tasks, len(current.tasks)) if max_tasks else None
+                adopted = limit is None or len(candidate.tasks) <= limit
+                note = scope_note(splits, current, candidate, adopted, limit)
+                if not adopted:
+                    break
+            plan = candidate
             groups.update(splits)
             if not splits:
                 break
-            # A second pass that still splits a few tasks has nearly converged: its splits are adopted, within the task
-            # cap its check already enforced (Ontologies, 2026-09-30: 3 of 56 tasks split again stopped the whole run).
-            # A review that keeps splitting a larger share stops as before.
-            if attempt == 1 and len(splits) <= max(1, len(current.tasks) // 10):
-                break
-        else:
-            raise AppError("Recherchefragen bleiben nach der Umfangsprüfung zu breit; die überarbeitete Aufteilung ist gespeichert.",
-                           code="question_scope_unresolved", status="blocked")
-        return plan, groups
+        return plan, groups, note
 
     def task_readiness(self, task, *, wait_for_open=False):
         """Whether a task can start: ``done`` (verified or blocked), ``ready`` (every prerequisite
@@ -933,6 +1068,9 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             self.adopt_provided_works()
             self.research_tasks()
             self.adopt_accepted_gaps()
+            # A rework that ended blocked gets its verified answer back at once, with the objection noted as a limit,
+            # instead of stopping the run once and restoring it on resume (keep_spent_answers, 2026-10-02).
+            self.keep_spent_answers()
             if self.release_ready():
                 continue
             if self.residual():
@@ -951,6 +1089,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                                "gespeichert. Jede blockierte Teilfrage kann ausdrücklich als Lücke akzeptiert werden, damit das "
                                "Dossier ohne sie abgeschlossen wird.",
                                code="research_questions_blocked", status="blocked")
+            self.require_answers()
             dossier, discovery, context = self.compose()
             dossier, review, report = self.audit(dossier, discovery, context)
             if not report["passed"]:
@@ -959,11 +1098,14 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     report = self.tolerate(dossier, review, report, finish=finish)
                 else:
                     reopened, newly_blocked = self.reopen(dossier, review, report)
-                    if reopened or newly_blocked:
+                    # A routing that reopened nothing may still have sent dependents back for revalidation
+                    # (invalidate_dependents): they are answered again before anything is finished.
+                    if reopened or newly_blocked or self.open_tasks():
                         continue
                     # Every objection targets an explicitly accepted gap or was routed as an unsupported demand
                     # (a review disagreement): nothing is left to research.
                     report = self.tolerate(dossier, review, report)
+            self.require_answers()
             if self.noted_limits() or self.noted_after_reworks():
                 # Objections noted as limits instead of reopening their questions: completeness objections to a treated
                 # criterion (criterion_covered) and objections to questions whose reworks are spent (keep_spent_answers).
@@ -972,6 +1114,11 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 self.write_gate(report)
             self.state.update(phase="completed", active_tasks=[])
             closed_now = {c["objection_id"] for c in report.get("objection_checks", []) if c["verdict"] == "closed"}
+            if dossier.assembled:
+                # An assembled audit checks no closure (prompt generation 3): what the earlier rounds closed is on
+                # record in ``closed_objections`` (question_synthesis.reopen). Before (2026-10-02), a residual finish
+                # marked long-closed objections residual, because objection_checks is empty there.
+                closed_now |= set(self.state.get("closed_objections", []))
             for identifier, objection in self.state.get("objections", {}).items():
                 # A residual finish leaves the objections this audit did not close on record as residual.
                 residual = (report.get("passed_with_residual_objections") and identifier not in closed_now

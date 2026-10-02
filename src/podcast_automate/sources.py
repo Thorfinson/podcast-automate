@@ -78,6 +78,13 @@ def public_url(url: str) -> str:
 class PublicRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         public_url(newurl)
+        # urllib copies every header onto the redirected request, a service key included (CORE's Authorization):
+        # a request that carries one follows a redirect only on its own host and never from https to http (2026-10-02).
+        if request.get_header("Authorization") or request.get_header("Proxy-authorization"):
+            old, new = urllib.parse.urlsplit(request.full_url), urllib.parse.urlsplit(newurl)
+            if (new.hostname or "").lower() != (old.hostname or "").lower() or (old.scheme == "https" and new.scheme != "https"):
+                raise AppError("Weiterleitung eines Abrufs mit Zugangsschlüssel zu einem anderen Server abgelehnt.",
+                               code="source_download_failed", details={"redirect_refused": True})
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
@@ -191,7 +198,7 @@ def extract_pdf_isolated(raw: bytes, *, book: bool = False) -> dict:
     except OSError as exc:
         raise AppError("Der PDF-Leseprozess konnte nicht gestartet werden.", code="source_unreadable") from exc
     if completed.returncode != 0:
-        raise pdf_failure(completed.stdout)
+        raise pdf_failure(completed.stdout, **({"book": True} if book else {}))
     try:
         result = json.loads(completed.stdout.decode("utf-8"))
         if not isinstance(result, dict) or "blocks" not in result:
@@ -206,9 +213,13 @@ PDF_LIMITS = {
     "too_many_pages": ("PDF hat mehr als 300 Seiten und wird nicht eingelesen.", "source_too_large"),
     "text_too_large": ("PDF-Text überschreitet die Importgrenze von 1 MiB.", "source_too_large"),
 }
+# The same limits of pdf_text's book mode (a provided work, a primary work, an open-access book).
+BOOK_PDF_LIMITS = {**PDF_LIMITS,
+                   "too_many_pages": ("PDF hat mehr als 2000 Seiten und wird nicht eingelesen.", "source_too_large"),
+                   "text_too_large": ("PDF-Text überschreitet die Importgrenze von 6 Millionen Zeichen.", "source_too_large")}
 
 
-def pdf_failure(stdout: bytes) -> AppError:
+def pdf_failure(stdout: bytes, *, book: bool = False) -> AppError:
     """The child's verdict as one actionable error: a reader limit by name, otherwise the parser's error class."""
     try:
         verdict = json.loads(stdout.decode("utf-8"))
@@ -216,7 +227,7 @@ def pdf_failure(stdout: bytes) -> AppError:
         verdict = {}
     if not isinstance(verdict, dict):
         verdict = {}
-    if (message := PDF_LIMITS.get(verdict.get("reason"))):
+    if (message := (BOOK_PDF_LIMITS if book else PDF_LIMITS).get(verdict.get("reason"))):
         return AppError(message[0], code=message[1], details={"pdf_reason": verdict["reason"]})
     error = verdict.get("error")
     if isinstance(error, str) and re.fullmatch(r"\w{1,64}", error):
@@ -481,7 +492,7 @@ COPY_SERVICES = (("OpenAlex", lambda candidate, doi: open_access_copies(candidat
                  ("Semantic Scholar", semantic_scholar_copies), ("Europe PMC", europe_pmc_copies), ("CORE", core_copies))
 
 
-def open_access_copy(candidate, blocked):
+def open_access_copy(candidate, blocked, *, book=False):
     """The first readable free copy of a work whose own address refused the download or held only a scan, with the
     service that named it; else that failure. Each service is asked only when the ones before had no readable copy."""
     doi, tried = work_doi(candidate), {candidate.url}
@@ -492,10 +503,29 @@ def open_access_copy(candidate, blocked):
             tried.add(url)
             try:
                 raw, content_type, final_url = download(url)
-                return (raw, content_type, final_url), extract(raw, content_type, url), service
+                return (raw, content_type, final_url), extract(raw, content_type, url, **({"book": True} if book else {})), service
             except AppError:
                 continue
     raise blocked
+
+
+# Open-access book archives (prompts/open_archives.txt sends explain tasks to OAPEN and DOAB) and book paths.
+BOOK_HOSTS = ("oapen.org", "doabooks.org", "gutenberg.org", "archive.org", "openedition.org", "openbookpublishers.com")
+BOOK_PATH = re.compile(r"/(?:books?|monographs?)/", re.I)
+
+
+def book_candidate(candidate) -> bool:
+    """A candidate read with the book limits (pdf_text ``--book``): a task's primary work, which is often a whole
+    book, or an address in a book archive. A 300-page article limit refused the very OAPEN and DOAB books the search
+    was sent to, while the same file uploaded as a provided work passed (2026-10-02)."""
+    if candidate.source_type == "primary_work":
+        return True
+    try:
+        parts = urllib.parse.urlsplit(candidate.url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    return any(host == name or host.endswith("." + name) for name in BOOK_HOSTS) or bool(BOOK_PATH.search(parts.path))
 
 
 def scanned(exc):
@@ -564,13 +594,15 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
                   downloaded: tuple[bytes, str, str] | None = None, library: dict | None = None,
                   citation: str = "") -> tuple[SourceDocument, Path]:
     """``citation``: a local copy of a published work the editor provided (provided_works); it is read with the
-    book limits and counts as that work, not as the editor's notes."""
+    book limits and counts as that work, not as the editor's notes. A primary work or a book from an open archive
+    found on the web is read with the book limits too (book_candidate)."""
     if library and local is None and downloaded is None:
         stored = library.get(canonical_url(candidate.url))
         if stored is not None:
             return adopt_from_library(stored, candidate, root, run_id)
     address = str(local.resolve()) if local else canonical_url(candidate.url)
     source_id = "src_" + hashlib.sha256(address.encode()).hexdigest()[:16]
+    book = bool(citation) or (not local and book_candidate(candidate))
     extracted = None
     if downloaded is not None:
         raw, content_type, final_url = downloaded
@@ -585,17 +617,17 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
             if not access_blocked(exc):
                 raise
             # The same work from a free repository; it keeps the address it was found under as its identity.
-            (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc)
+            (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc, book=book)
     copied = extracted is not None
     if not copied:
         try:
-            extracted = extract(raw, content_type, address, **({"book": True} if citation else {}))
+            extracted = extract(raw, content_type, address, **({"book": True} if book else {}))
         except AppError as exc:
             # A bot check that answered with a page of its own refused the download just the same, and a scan
             # without a text layer may exist elsewhere with one.
             if local or not (access_blocked(exc) or scanned(exc)):
                 raise
-            (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc)
+            (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc, book=book)
             copied = True
     kind, suffix, metadata, sections = extracted
     copy_note = f"Open-access copy of the same work found via {service}: {final_url}. " if copied else ""

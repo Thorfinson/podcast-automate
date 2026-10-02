@@ -11,12 +11,48 @@ from pathlib import Path
 import yaml
 
 from .errors import AppError
-from .models import TopicBrief
+from .models import ResearchLimits, RuntimeSettings, TopicBrief
+
+# Brief fields that steer how a run works, not what it says: deadlines, CLI paths and limits. A resumed run hashes
+# them as its saved snapshot recorded them (bound_brief).
+OPERATIONAL_FIELDS = ("runtime", "research_limits")
+# Fields the research lane never reads (checked with grep on 2026-10-02): voices, audio and text defaults, host names.
+RESEARCH_OPERATIONAL_FIELDS = ("voice_profile", "tts_backend", "text_backend", "host_names")
 
 
 def digest(data: object) -> str:
     raw = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def bound_brief(config: TopicBrief, snapshot: dict | None, lane: str = "script") -> TopicBrief:
+    """The brief as a resumed run's hash binds it: its operational fields as the run's ``project_snapshot.yaml``
+    recorded them at the start, every content field as it is now.
+
+    ``project_hash`` of the result equals the run's recorded hash whenever only operational fields changed, while
+    any content edit still changes it. The Studio saves the brief while a run waits for quota, and a longer
+    deadline, a raised research limit or, for research, a voice or host-name edit left such a run unresumable
+    (2026-10-02). ``runtime`` and ``research_limits`` are operational in every lane; ``lane="research"`` adds
+    ``RESEARCH_OPERATIONAL_FIELDS``. A missing snapshot binds the brief as it is.
+    """
+    if not isinstance(snapshot, dict):
+        return config
+    update = {}
+    for key in OPERATIONAL_FIELDS + (RESEARCH_OPERATIONAL_FIELDS if lane == "research" else ()):
+        if key == "host_names":
+            # Unset names are left out of the hash, so a snapshot from before the field binds them as unset.
+            value = snapshot.get(key)
+            update[key] = dict(value) if isinstance(value, dict) else None
+        elif key not in snapshot:
+            continue
+        elif key in {"runtime", "research_limits"}:
+            try:
+                update[key] = (RuntimeSettings if key == "runtime" else ResearchLimits).model_validate(snapshot[key])
+            except ValueError:
+                continue
+        else:
+            update[key] = snapshot[key]
+    return config.model_copy(update=update)
 
 
 def project_hash(config: TopicBrief) -> str:

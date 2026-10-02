@@ -8,7 +8,9 @@ prerequisite_context.established_terms were defined in an earlier episode; use t
 vocabulary instead of defining them again. At most one short recall clause per term per episode is
 allowed, and only where the reasoning genuinely needs it. Never claim that invented illustrative
 values or outputs were measured. If only a prerequisite outline is supplied, do not invent a
-quotation or claim an earlier episode already used a particular text. Introduce the current
-illustration honestly within the approved scope. Preserve concrete inherited details and explicitly
-explain any necessary change of representation or task. Keep scientific claims grounded in the
-assigned findings and source passages.
+quotation or claim an earlier episode already used a particular text. A row whose context is summary
+gives only that episode's question, series_role, findings, destination and terms: use it to connect
+to that episode, never to quote or reconstruct its examples. Introduce the current illustration
+honestly within the approved scope. Preserve concrete inherited details and explicitly explain any
+necessary change of representation or task. Keep scientific claims grounded in the assigned findings
+and source passages.

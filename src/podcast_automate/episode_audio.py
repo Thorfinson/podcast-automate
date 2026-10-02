@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .audio import applied_pause, assemble, run_tts, worker_path
+from .audio import PAUSE_TAGS, applied_pause, assemble, run_tts, worker_path
 from .errors import AppError
 from .expression import EXPRESSION_VERSION, plan_expression, untagged
 from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels
@@ -179,13 +179,16 @@ def render_export_notes(script, chapters, choice, overrides, labels=None):
 
 
 def render_listening_sheet(script, chapters):
-    """A sheet to fill in while listening; nothing here is filled in automatically."""
+    """A sheet to fill in while listening; nothing here is filled in automatically. Each part's times start at 0:00,
+    so an episode in several parts names the part of every row, as the show notes do."""
+    rows = chapters or [{"timestamp": "0:00", "title": chapter.title} for chapter in script.chapters]
+    parted = any(row.get("part", 1) > 1 for row in rows)
     lines = [f"# Hörprüfung: {script.title}", "",
              "Beim Hören ausfüllen. Diese Spalten kann keine Prüfung im Programm ersetzen.", "",
-             "| Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |",
-             "| --- | --- | --- | --- | --- |"]
-    rows = chapters or [{"timestamp": "0:00", "title": chapter.title} for chapter in script.chapters]
-    lines.extend(f"| {row['timestamp']} | {row['title']} | | | |" for row in rows)
+             "| " + ("Teil | " if parted else "") + "Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |",
+             "| " + ("--- | " if parted else "") + "--- | --- | --- | --- | --- |"]
+    lines.extend("| " + (f"{row.get('part', 1)} | " if parted else "") + f"{row['timestamp']} | {row['title']} | | | |"
+                 for row in rows)
     lines.extend(["", "Nach dem Hören im Studio ankreuzen, dass die Hörprüfung durchgeführt wurde.", ""])
     return "\n".join(lines)
 
@@ -504,6 +507,8 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             groups = partition_audio(script, segment_durations(script, paths, choice.pauses),
                                      config.max_episode_minutes * 60)
             destination = root / "exports" / episode / manifest.run_id
+            # Segments whose recording carries a pause tag: assembly shortens their dead air (audio.assemble).
+            paused = {key for key, text in expression_tags().items() if any(tag in text for tag in PAUSE_TAGS)}
             outputs, parts = [], []
             for number, indices in enumerate(groups, 1):
                 part = select_script(script, [script.segments[i] for i in indices],
@@ -516,7 +521,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                         "parts": len(groups), "completed_segments": done, "total_segments": total})
                 outputs.extend(assemble(part, [paths[i] for i in indices], folder,
                     max_seconds=config.max_episode_minutes * 60, language=config.language,
-                    labels=host_labels(config), pauses=choice.pauses, progress=assembly_progress))
+                    labels=host_labels(config), pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused))
                 audio_report = json.loads((folder / "audio_report.json").read_text(encoding="utf-8"))
                 parts.append({"part": number, "audio": (folder / "audio.mp3").relative_to(root).as_posix(),
                               "duration_seconds": audio_report["duration_seconds"],

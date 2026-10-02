@@ -5,8 +5,9 @@ opposite: they count what the prompts ask the model to avoid, are stored with th
 report and shown to the reader, and never stop a run. Nothing consumes them automatically;
 they exist so a pattern that survives the prompts stays visible instead of unmeasured.
 
-The heuristics are language-keyed. German carries the patterns; any other language gets an
-empty list so nothing fires silently on a project the phrasing was never written for.
+The heuristics are language-keyed. German and English carry patterns; any other language gets
+an empty list so nothing fires silently on a project the phrasing was never written for. The
+cold-open and duration checks count words and minutes and hold for every language.
 """
 from __future__ import annotations
 
@@ -29,6 +30,16 @@ DEFINITION_PATTERNS = {
         r"\bheiß(?:t|en)\b[^.;:!?]{{0,40}}?\b{term}\b",
         r"\bunter\s+(?:dem|der|einem|einer)?\s*{term}\b[^.;:!?]{{0,40}}?\bversteht man\b",
     ),
+    # English (2026-10-02: the Ontologies series is en-US and got no measurement at all). "<term> is" alone
+    # is ordinary English use of a known term, so the copula needs what opens a definition after it.
+    "en": (
+        r"\b{term}\b\s*(?:,[^,.;:!?]{{0,40}},)?\s+(?:is|are|was|were)\s+"
+        r"(?:simply\s+|basically\s+|essentially\s+|just\s+|again\s+)?(?:a|an|the|what|how|where|when|called|defined)\b",
+        r"\b{term}\b\s*,\s*(?:that is|i\.e\.|meaning|in other words)\b",
+        r"\b{term}\b\s+(?:means|refers to|denotes|stands for|describes)\b",
+        r"\b(?:we call|is called|are called|known as)\b[^.;:!?]{{0,40}}?\b{term}\b",
+        r"\bby\s+(?:an?\s+|the\s+)?{term}\b[^.;:!?]{{0,40}}?\bwe mean\b",
+    ),
 }
 
 # A back-reference names the example the prompts told the writer to name ("in unserem
@@ -39,6 +50,9 @@ _BACK_REFERENCE = ("unser", "unsere", "unserem", "unseren", "unserer", "unseres"
 _NOT_AFTER_DETERMINER = "".join(rf"(?<!\b{word} )" for word in _BACK_REFERENCE)
 _EXAMPLE_NOUN = r"(?:Beispiel|Zahlen|Satz|Werte)\w*"
 _MEASUREMENT_NOUN = r"(?:Modelllauf|Messung|Daten|Ergebnis|Wert|Lauf|Experiment)\w*"
+_EN_NOT_AFTER_DETERMINER = "".join(rf"(?<!\b{word} )" for word in ("our", "this", "that", "the"))
+_EN_EXAMPLE_NOUN = r"(?:example|number|figure|value|sentence|scenario)s?"
+_EN_MEASUREMENT_NOUN = r"(?:measurement|data|result|value|run|experiment|observation)s?"
 
 # Reminders that an invented example is not measured. One per example is the rule the
 # prompts ask for; the advisory counts how often the reminder is repeated instead. The
@@ -58,11 +72,23 @@ HEDGING_PATTERNS = {
         r"\bkeine?\s+konkrete\w*\s+(?:\w+\s+){0,3}?eines\s+(?:\w+\s+){0,2}?Modells\b",
         r"\bnicht\s+(?:\w+\s+){0,2}?(?:gemessen|beobachtet|ausgelesen)\w*",
     ),
+    # The German list in English (2026-10-02), with the same exclusions: "in our thought experiment"
+    # names the example, and "invented in 2017" is the ordinary verb.
+    "en": (
+        _EN_NOT_AFTER_DETERMINER + r"\bthought experiments?\b",
+        r"\b(?:made[- ]up|invented|imaginary|fictional|fictitious)\s+(?:\w+\s+){0,2}?" + _EN_EXAMPLE_NOUN + r"\b",
+        r"\b" + _EN_EXAMPLE_NOUN + r"\s+(?:\w+\s+){0,2}?(?:made[- ]up|invented|imaginary)\b",
+        r"\bhypothetical\w*",
+        r"\bschematic\w*",
+        r"\billustrative\s+(?:numbers|figures|values)\b",
+        r"\bnot\s+(?:\w+\s+){0,2}?(?:measured|observed|read out)\b",
+        r"\b(?:no|not\s+an?)\s+(?:\w+\s+){0,2}?(?:real|actual)\s+(?:\w+\s+)?" + _EN_MEASUREMENT_NOUN + r"\b",
+    ),
 }
 
 
 def language_key(language: str) -> str:
-    """``de-DE`` and ``de`` both select the German patterns; anything else selects none."""
+    """``de-DE`` and ``de`` both select the German patterns, ``en-US`` the English ones; anything else selects none."""
     return (language or "").split("-")[0].lower()
 
 

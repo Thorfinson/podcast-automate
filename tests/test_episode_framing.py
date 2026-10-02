@@ -4,10 +4,14 @@ from unittest.mock import patch
 
 from podcast_automate.editorial import episode_series_context
 from podcast_automate.models import EpisodeScript
+from podcast_automate.polishing import POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION
+from podcast_automate.prompts import fragment
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
 from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
 from podcast_automate.scripting import run_script
+from podcast_automate.teaching import (DESIGN_PROMPT_VERSION, DESIGN_REVIEW_VERSION, EDITORIAL_REVIEW_VERSION,
+                                       TEACHING_REVIEW_VERSION)
 from tests import script_fixtures as fixtures
 
 
@@ -41,6 +45,27 @@ class EpisodeFramingTests(unittest.TestCase):
         self.assertTrue(context['is_first'] and context['is_last'])
         self.assertEqual(context['episode_count'], 1)
         self.assertIsNone(context['next_episode'])
+
+    def test_the_prompts_agree_on_the_finale_and_keep_the_framing_duties_in_one_place(self):
+        """Finding of 2026-10-02: the planner asked for at least half a synthesis, the framing for one at the end,
+        and the writer for an outlook on the next episode even in the finale; each restated the framing duties."""
+        framing, plan, writer, review = (fragment(name) for name in
+                                         ("episode_framing", "series_plan", "write_episode", "script_review"))
+        self.assertIn("The final episode of a series is as a whole the series' synthesis", framing)
+        self.assertIn("The final episode as a whole is the series' synthesis", plan)
+        self.assertIn("A final or standalone episode closes the subject without promising another episode", framing)
+        self.assertNotIn("at least half", plan)
+        self.assertNotIn("At the end of the final episode", framing)
+        # The writer and the review defer to episode_framing, which both prompts compose, instead of restating it.
+        for duties in (writer, review):
+            self.assertNotIn("what the next episode takes up", duties)
+            self.assertNotIn("series_role", duties)
+            self.assertNotIn("in the final episode require", duties)
+        self.assertIn("framing rules above", writer)
+        self.assertIn("framing rules above", review)
+        # A recall of earlier content is cited through recap findings; naming an earlier question is framing.
+        self.assertIn("recap_finding_ids, cited in knowledge_refs", framing)
+        self.assertIn("name the earlier episode's question", framing)
 
     def test_configured_host_names_reach_generation_and_every_readable_view(self):
         fixture = fixtures.script_project(self)
@@ -88,10 +113,10 @@ class EpisodeFramingTests(unittest.TestCase):
             self.assertEqual(run.status, 'completed')
             selected = next(entry for entry in plan.episodes if entry.episode_id == episode_id)
             expected = episode_series_context(plan, selected)
-            for version in ('teaching_design.v2-terms', 'teaching_design_review.v5-terms', WRITE_EPISODE_VERSION,
-                            'dialogue_polish.v3-audit-notes', 'dialogue_polish_review.v3-density-notes',
-                            SCRIPT_REVIEW_VERSION, 'teaching_review.v4-audit',
-                            'editorial_review.v4-audit'):
+            # The stages' own tags, so a prompt bump in one of them does not hide a lost series_context here.
+            for version in (DESIGN_PROMPT_VERSION, DESIGN_REVIEW_VERSION, WRITE_EPISODE_VERSION,
+                            POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION, SCRIPT_REVIEW_VERSION,
+                            TEACHING_REVIEW_VERSION, EDITORIAL_REVIEW_VERSION):
                 self.assertEqual(captured[version], expected)
             self.assertFalse((fixture.root / 'audio').exists())
 

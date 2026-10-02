@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
+from podcast_automate.editorial import MACHINE_LEARNING_TERMS, TERMINOLOGY, TOPIC_TERMINOLOGY
 from podcast_automate.errors import AppError
 from podcast_automate.models import EpisodeScript
 from podcast_automate.research_ledger import read_value, save_value
@@ -105,6 +106,25 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertIn("better match", dossier.findings[0].statement)
         self.assertEqual(self.dossier.model_dump(), original)
         self.assertTrue(any(p.name == "receipt.json" for p in outputs))
+
+    def test_supplement_prompts_carry_the_topics_terminology_and_a_saved_supplement_survives_a_new_rule(self):
+        """2026-10-02: every supplement call named Query, Key and Value, also for the Asimov series. A topic that is
+        not machine learning gets the topic-neutral rule; a supplement saved under the earlier rule is replayed."""
+        prompts = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            prompts.append(prompt)
+            return self.invoke(prompt, schema, version, **kwargs)
+        self.research(invoke)
+        self.assertEqual(len(prompts), 3)
+        self.assertTrue(all(prompt.startswith(TOPIC_TERMINOLOGY) for prompt in prompts))
+        self.assertTrue(all(MACHINE_LEARNING_TERMS not in prompt and TERMINOLOGY not in prompt for prompt in prompts))
+        # Without its receipt the supplement passes through every stored answer again, now under another rule.
+        (self.work / "teaching/ep_001/supplement/receipt.json").unlink()
+        with patch("podcast_automate.teaching_research.terminology", return_value=TERMINOLOGY):
+            self.research(invoke)
+        self.assertEqual(len(prompts), 3)
+        self.assertIn("better match", self.apply()[0].findings[0].statement)
 
     def test_episode_context_recovers_mechanism_omitted_by_both_previous_filters(self):
         index = self.sources.model_copy(deep=True)

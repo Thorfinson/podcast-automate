@@ -650,13 +650,15 @@ function renderOutline() {
   if(project)html+='<div id="stop-card"></div>';
   const drafting=project?.job?.status==="running"&&jobPage()===PAGE.outline;
   const activity=drafting&&project.job.progress?.activity?`<p><span class="activity-dot" aria-hidden="true"></span>${escape(project.job.progress.activity)} · seit ${elapsedText(project.job.started_at)}</p>`:"";
-  if(!outline) {
-    if(drafting)return html+`<section class="panel tinted"><h2>Das Inhaltsverzeichnis wird ausgearbeitet.</h2>${activity}<p>Folgen und Kapitel erscheinen hier, sobald der Entwurf bereit für deine Durchsicht ist. Ein Widerspruch im Entwurf wird automatisch bis zu dreimal korrigiert.</p></section>`;
+  // A new draft or a revision replaces the outline, so the page shows no earlier plan meanwhile; a stopped draft
+  // arrives without one (Studio.outline_work). 2026-10-02: the replaced plan stayed on the page as if current.
+  if(!outline||drafting) {
+    if(drafting)return html+(project.job.action==="replan"
+      ?`<section class="panel tinted" role="status"><h2>Das Inhaltsverzeichnis wird überarbeitet.</h2>${activity}<p>Der überarbeitete Entwurf erscheint hier, sobald er bereit für deine Durchsicht ist. Der bisherige ist ersetzt und lässt sich nicht mehr freigeben.</p></section>`
+      :`<section class="panel tinted"><h2>Das Inhaltsverzeichnis wird ausgearbeitet.</h2>${activity}<p>Folgen und Kapitel erscheinen hier, sobald der Entwurf bereit für deine Durchsicht ist. Ein Widerspruch im Entwurf wird automatisch bis zu dreimal korrigiert.</p></section>`);
     return html+empty("Das Inhaltsverzeichnis entsteht aus der Recherche.","Nach dem geprüften Dossier entwirft die Redaktion Folgen und Kapitel. Hier kannst du sie anschließend verändern und freigeben.","Zur Recherche",PAGE.research,pageIntros.outline);
   }
   const p=outline.plan, approved=outline.approval?.plan_hash===outline.hash;
-  // During a revision the page still shows the previous draft; it cannot be approved until the new one is ready.
-  if(drafting)html+=`<section class="panel note-card" role="status"><h2>Das Inhaltsverzeichnis wird überarbeitet.</h2>${activity}<p>Unten steht noch der bisherige Entwurf. Freigeben lässt sich erst der neue Stand.</p></section>`;
   html+=`<section class="panel tinted"><h2 class="outline-question">${escape(p.central_question)}</h2><p>${escape(p.explanation_path)}</p><div class="outline-summary"><span><strong>${p.episodes.length}</strong> Folgen</span><span><strong>${Math.round(p.episodes.reduce((s,e)=>s+e.target_minutes,0))}</strong> Minuten geplant</span><span>${approved?"Dieser Stand wurde freigegeben":"Wartet auf deine Durchsicht"}</span></div><p class="hint">${escape(p.scope_note)}</p></section>`;
   html+=p.episodes.map((e,i)=>`<section class="panel"><div class="episode-head"><span class="episode-num">${String(i+1).padStart(2,"0")}</span><div><h2>${escape(e.title)}</h2><p>${escape(e.central_question)}</p></div><span class="tag">ca. ${Math.round(e.target_minutes)} Min.</span></div><ol class="chapters">${e.scenes.map((s,n)=>`<li><span>${String(n+1).padStart(2,"0")}</span><div><strong>${escape(s.title)}</strong><p>${escape(s.question)}</p><details><summary>Was hier erklärt wird</summary>${s.explanation_steps.map(x=>`<p>${escape(x)}</p>`).join("")}</details></div></li>`).join("")}</ol>${e.deferred_questions.length?`<details><summary>Offene oder spätere Fragen</summary>${e.deferred_questions.map(q=>`<p>${escape(q)}</p>`).join("")}</details>`:""}</section>`).join("");
   const canReplan = !Object.entries(project.job?.run?.stages || {}).some(([n,r])=>n!=="planning"&&r.attempts>0);
@@ -802,8 +804,9 @@ function audioRequest(episodeId, rerender=false) {
   // checks the saved approval by the pipeline's own rule before it starts anything.
   const e=episodeId?project.episodes.find(row=>row.script.episode_id===episodeId):project.episodes[episodeIndex];
   return {episode:e.script.episode_id,approve_audio:!rerender&&!!$("audio-approval")?.checked,
-    // A new approval also covers the tags the reader saw; a re-render keeps the saved approval.
-    ...(rerender?{rerender:true}:{expression_hash:e.expression?.hash||""}),script_hash:e.hash,readable_hash:e.readable_hash,
+    // An approval covers the tags the reader saw; a re-render keeps the saved approval and is bound to the tags on
+    // the reader's page as well, since it speaks them (2026-10-02).
+    ...(rerender?{rerender:true}:{}),expression_hash:e.expression?.hash||"",script_hash:e.hash,readable_hash:e.readable_hash,
     config_hash:project.config_hash,audio_hash:project.audio_hash};
 }
 async function rerenderEpisode(episodeId) {
@@ -958,17 +961,31 @@ function audioWouldQueue() {
   return project.audio_capacity?.available===0||(project.job?.status==="running"&&!active.some(j=>j.id===project.job.id));
 }
 function queuedEntry(episode) { return (project.audio_queue||[]).find(row=>row.episode===episode); }
+// A queued recording waits for a place, or for the key, which lives only in the server's memory (2026-10-02: after a
+// restart the queue still said it waited for a place while the scheduler stopped at the missing key).
+const queueWaitsForKey=row=>!row.error&&(row.waiting==="key"||(row.waiting===undefined&&boot.key_available===false));
 function renderQueueState(e) {
   const row=queuedEntry(e.script.episode_id);
   if(!row)return "";
   return row.error?`<p class="note">Freigabe wartete in der Warteschlange, startet aber nicht: ${escape(row.error)} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`:
+    queueWaitsForKey(row)?`<p class="note">Freigegeben · wartet auf den OpenRouter-Key (Platz ${Number(row.position)}). Nach einem Neustart des Studios muss der Key erneut eingegeben werden; dann startet die Folge von selbst. <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`:
     `<p class="hint">Freigegeben · wartet in der Warteschlange auf Platz ${Number(row.position)}. <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`;
 }
+// What a recording sends to speech, from the server's estimate per episode: no price, it cannot be checked offline.
+function speechSize(rows) {
+  const sized=rows.filter(e=>e?.speech&&Number.isFinite(Number(e.speech.characters)));
+  if(!sized.length)return "";
+  const minutes=sized.reduce((sum,e)=>sum+Number(e.speech.minutes||0),0), chars=sized.reduce((sum,e)=>sum+Number(e.speech.characters),0);
+  return `ca. ${Math.max(1,Math.round(minutes)).toLocaleString("de-DE")} Min. Audio · ${chars.toLocaleString("de-DE")} Zeichen Sprechtext`;
+}
+const SPEECH_SIZE_NOTE="Geschätzt aus dem Text (130 Wörter je Minute); bereits erzeugte Abschnitte kommen aus dem Zwischenspeicher und werden nicht erneut angefragt.";
 function renderAudioQueue() {
   const rows=project?.audio_queue||[];
   if(!rows.length)return "";
   const title=id=>project.episodes.find(e=>e.script.episode_id===id)?.script.title||id;
-  return `<section class="panel"><h2>Warteschlange der Vertonung · ${rows.length}</h2><ol>${rows.map(row=>`<li><strong>${escape(title(row.episode))}</strong> · ${row.error?`startet nicht: ${escape(row.error)}`:"wartet auf einen freien Platz"} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Entfernen</button></li>`).join("")}</ol><p class="hint">Freigegebene Folgen starten in dieser Reihenfolge von selbst, sobald ein Platz frei ist; das Studio muss dafür geöffnet bleiben. Vor jedem Start wird geprüft, ob Skript, Stimmen und Ausdruck noch dem freigegebenen Stand entsprechen.</p></section>`;
+  const keyMissing=rows.some(queueWaitsForKey);
+  const size=speechSize(rows.filter(row=>!row.error).map(row=>project.episodes.find(e=>e.script.episode_id===row.episode)));
+  return `<section class="panel"><h2>Warteschlange der Vertonung · ${rows.length}</h2><ol>${rows.map(row=>`<li><strong>${escape(title(row.episode))}</strong> · ${row.error?`startet nicht: ${escape(row.error)}`:queueWaitsForKey(row)?"wartet auf den OpenRouter-Key":"wartet auf einen freien Platz"} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Entfernen</button></li>`).join("")}</ol>${keyMissing?`<p class="note">Key fehlt: Der OpenRouter-Key lag nur im Speicher des Studios und ist nach einem Neustart weg. Sobald er hinterlegt ist, starten die Folgen von selbst.</p>${inlineKey("queue-key")}`:""}${size?`<p class="hint">Umfang der wartenden Folgen: ${escape(size)}. ${SPEECH_SIZE_NOTE}</p>`:""}<p class="hint">Freigegebene Folgen starten in dieser Reihenfolge von selbst, sobald ein Platz frei ist; das Studio muss dafür geöffnet bleiben. Vor jedem Start wird geprüft, ob Skript, Stimmen und Ausdruck noch dem freigegebenen Stand entsprechen.</p></section>`;
 }
 // Every published episode without a current recording, not recording and not queued: what "approve all" covers.
 function pendingRecordings() {
@@ -980,7 +997,9 @@ function renderApproveAll(remote) {
   if(!remote||rows.length<2)return "";
   // Why the button waits, and the key field when that is the reason (the key lives only in the server's memory).
   const blocked=audioBlockReason(undefined,true);
-  return `<section class="panel"><h2>Alle gelesenen Folgen freigeben · ${rows.length}</h2><ul>${rows.map(e=>`<li>${escape(e.script.title)}${e.expression?` · ${Number(e.expression.tags)} Tags`:""}</li>`).join("")}</ul>
+  const size=speechSize(rows);
+  return `<section class="panel"><h2>Alle gelesenen Folgen freigeben · ${rows.length}</h2><ul>${rows.map(e=>`<li>${escape(e.script.title)}${e.expression?` · ${Number(e.expression.tags)} Tags`:""}${speechSize([e])?` · ${escape(speechSize([e]))}`:""}</li>`).join("")}</ul>
+    ${size?`<p><strong>Umfang zusammen:</strong> ${escape(size)}. <span class="hint">${SPEECH_SIZE_NOTE}</span></p>`:""}
     <label class="approval"><input id="audio-approve-all" type="checkbox"><span>Ich habe diese ${rows.length} Skripte gelesen, samt ihrem Ausdruck, und gebe sie mit dem angezeigten Audioanbieter und den Stimmen für Audio frei. Ich möchte die API-Vertonung starten.</span></label>
     <div class="actions"><button data-action="audio-all" ${blocked?"disabled":""}>Alle ${rows.length} freigeben</button></div>
     ${blocked?`<p class="hint">${escape(blocked)}</p>${boot.key_available===false?inlineKey("audio-all-key"):""}`:""}
@@ -995,6 +1014,7 @@ function renderApprovalCard(e,a,remote) {
     <dt>Text</dt><dd>${e.audio?.length?(e.audio_current?"Aufnahme vorhanden · dieser Stand ist bereits vertont":"Aufnahme eines früheren Skript- oder Stimmenstands vorhanden"):"Fertig zur Durchsicht · noch nicht vertont"} <button class="quiet small" data-step="4">Skript lesen</button></dd>
     <dt>Stimmen</dt><dd>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"} <button class="quiet small" data-step="0">Audioanbieter oder Stimmen ändern</button></dd>
     <dt>Anbieter</dt><dd class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</dd>
+    ${remote&&speechSize([e])?`<dt>Umfang</dt><dd>${escape(speechSize([e]))} <span class="hint">${SPEECH_SIZE_NOTE}</span></dd>`:""}
     ${remote&&boot.key_available===false?`<dt>Zugang</dt><dd>${inlineKey("audio-key")}</dd>`:""}
     <dt>Aussprache</dt><dd>${pronunciation||'<span class="hint">Keine auffälligen Wörter im veröffentlichten Text.</span>'}</dd>
     ${remote&&a.expression!==false?`<dt>Ausdruck</dt><dd>${e.expression?`${Number(e.expression.tags)} Tags · beim Lesen im Text markiert; die Freigabe gilt für genau diese.`:"Noch nicht gesetzt: die Vertonung setzt ihn selbst, ohne dass du ihn gelesen hast."} <button class="quiet small" data-step="${PAGE.scripts}">Im Skript ansehen</button></dd>`:""}
@@ -1192,8 +1212,13 @@ function audioPhase(p) {
 }
 // The worker's heartbeat: silence is flagged, with the long steps that legitimately look like it.
 function heartbeatNote(j) {
+  // 2026-10-02: a worker that outlived a Studio restart was shown as interrupted, and "Fortsetzen" met the busy project.
+  const elsewhere=j?.status==="running"&&j.external?`<p class="note" role="status">Dieser Auftrag läuft außerhalb dieses Studios weiter, gestartet vor einem Neustart des Studios. ${j.external_stoppable?"„Anhalten“ beendet ihn; fertige Schritte bleiben gespeichert.":"Das Studio kennt seinen Prozess nicht und kann ihn nicht anhalten; er endet von selbst, danach geht es hier weiter."}</p>`:"";
   const age=Number(j?.heartbeat_age_seconds);
-  if(j?.status!=="running"||!Number.isSafeInteger(age))return "";
+  if(j?.status!=="running"||!Number.isSafeInteger(age))return elsewhere;
+  return elsewhere+silenceNote(j,age);
+}
+function silenceNote(j,age) {
   const loading=j.progress?.tts_status==="loading_model";
   if(age<=(loading?900:300))return "";
   return `<p class="note" role="status">Seit ${Math.floor(age/60)} Min. keine neue Meldung vom Arbeitsprozess. ${loading?"Das Laden des Sprachmodells dauert ungewöhnlich lange.":"Lange Einzelschritte können so aussehen."} Bleibt es dabei: „Anhalten“ und danach fortsetzen; fertige Schritte bleiben gespeichert.</p>`;
@@ -1206,7 +1231,7 @@ function renderAudioJob(j,{main=false}={}) {
   // Gemini episodes resume beside each other within the free slots; the local job waits for any other job.
   const blocked=main?(running()?"Ein anderer Auftrag läuft gerade.":""):audioBlockReason(j.episode);
   return `<section class="audio-job${info?" stopped":""}"><div class="job-top"><strong>${escape(e?.script.title||j.episode||"Vertonung")} · ${escape(state)}</strong>
-    ${active?`<button class="danger small" data-action="stop"${main?"":` data-job-id="${escape(j.id)}"`}>Diese Folge anhalten</button>`:""}</div>
+    ${active&&!(j.external&&!j.external_stoppable)?`<button class="danger small" data-action="stop"${main?"":` data-job-id="${escape(j.id)}"`}>Diese Folge anhalten</button>`:""}</div>
     ${active?audioPhase(j.progress)+heartbeatNote(j):info?stopBody(j,info,{target,blocked}):""}
     ${j.status==="completed"&&step!==PAGE.audio?`<button class="secondary small" data-step="${PAGE.audio}">Podcast anhören</button>`:""}</section>`;
 }
@@ -1393,10 +1418,36 @@ const STOP_RULES={
   tts_worker_failed:{kind:"retry",title:"Lokale Sprachausgabe fehlgeschlagen",text:"Qwen konnte nicht sprechen. Bei knappem Grafikspeicher andere Programme schließen, dann „Fortsetzen“; fertige Abschnitte bleiben gespeichert."},
   tts_environment:{kind:"fix",title:"Lokale Sprachausgabe nicht eingerichtet",text:"Die Qwen-Umgebung ist nicht einsatzbereit. Die Einrichtung laut docs/qwen-windows.md prüfen oder unter „Auftrag & Stimmen“ Gemini wählen; danach „Fortsetzen“.",actions:["check"]},
   search_not_observed:{kind:"retry",title:"Websuche nicht nachweisbar",text:"Ein Rechercheaufruf hat keine beobachtbare Websuche ausgeführt und wurde abgewiesen. „Fortsetzen“ wiederholt ihn."},
-  invalid_model_output:{kind:"retry",title:"Unlesbare Modellantwort",text:"Die Antwort des Modells war unvollständig oder nicht lesbar. „Fortsetzen“ fragt erneut an."},
+  // A missing or unreadable answer is asked again. Before 2026-10-02 a step whose corrections were spent also stopped
+  // with this code; such a stop replays its saved rejections, and only fresh attempts move it (offered when possible).
+  invalid_model_output:{kind:"retry",title:"Unlesbare Modellantwort",text:"Die Antwort des Modells war unvollständig oder nicht lesbar. „Fortsetzen“ fragt erneut an. Hatte der Schritt seine Korrekturversuche schon verbraucht, hält er dabei sofort wieder an; dann gibt „Mit neuen Anläufen fortsetzen“ ihm frische Versuche.",actions:["fresh_attempts"]},
+  // A run would compose or finish while a question is neither verified nor accepted (question_research.require_answers).
+  research_questions_open:{kind:"retry",title:"Teilfragen noch offen",text:"Einige Teilfragen sind noch offen; „Fortsetzen“ recherchiert sie weiter. Fertige Antworten bleiben gespeichert."},
+  // No longer raised: the scope review settles on its last pass and notes it at the plan gate. Kept for older stops.
+  question_scope_unresolved:{kind:"retry",title:"Zuschnitt der Teilfragen ungeklärt",text:"Diese Stelle hielt in einer älteren Studio-Version an. Die Prüfung des Zuschnitts entscheidet inzwischen in ihrem letzten Durchgang selbst und vermerkt ihre Einwände bei der Planfreigabe; „Fortsetzen“ kommt jetzt daran vorbei.",actions:["fresh_attempts"]},
+  // Gemini's segment health gate: a take came back twice too short, too long or with long silence (speech.py).
+  invalid_speech:{kind:"retry",title:"Unplausible Gemini-Aufnahme",text:"Ein Abschnitt kam zweimal zu kurz, zu lang oder mit langer Stille zurück; die Meldung nennt ihn. „Fortsetzen“ nimmt ihn neu auf; fertige Abschnitte bleiben gespeichert."},
+  invalid_expression:{kind:"retry",title:"Ausdruck nicht gesetzt",text:"Das Setzen der Ausdrucksmarken hat seine automatischen Korrekturen verbraucht. „Fortsetzen“ kann an derselben Stelle wieder anhalten. Auf der Seite „Skripte lesen“ lässt sich der Ausdruck dieser Folge neu setzen; danach lesen und erneut freigeben.",actions:["open_scripts"]},
+  // Connections and launchers: something on this computer needs fixing, then "Fortsetzen".
+  missing_executable:{kind:"fix",title:"Programm nicht startbar",text:"Ein benötigtes Programm (Codex, Claude Code oder ein Hilfsprogramm) ließ sich nicht starten. Installation prüfen, „Verbindungen prüfen“ zeigt den Stand; danach „Fortsetzen“.",actions:["check"]},
+  unsupported_codex_launcher:{kind:"fix",title:"Codex-Start nicht unterstützt",text:"Das gefundene Codex-Programm lässt sich vom Studio nicht direkt starten. Codex CLI oder die VS-Code-Erweiterung neu installieren oder den Pfad unter runtime.codex_executable eintragen, „Verbindungen prüfen“, dann „Fortsetzen“.",actions:["check"]},
+  unsupported_claude_launcher:{kind:"fix",title:"Claude-Start nicht unterstützt",text:"Das gefundene Claude-Code-Programm lässt sich vom Studio nicht direkt starten. Claude Code neu installieren, „Verbindungen prüfen“, dann „Fortsetzen“.",actions:["check"]},
+  openrouter_forbidden:{kind:"fix",title:"OpenRouter verweigert den Zugriff",text:"OpenRouter hat die Anfrage abgewiesen (HTTP 403). Die Berechtigungen des Keys und die Anbieterregeln im OpenRouter-Konto prüfen; bei Bedarf einen anderen Key hinterlegen, dann „Fortsetzen“.",actions:["key"]},
+  openrouter_search_unsupported:{kind:"fix",title:"OpenRouter kann hier nicht suchen",text:"Mit dem gewählten OpenRouter-Textmodell ist die belegte Websuche nicht möglich. Im Maschinenraum unter „Weiter mit …“ ein Abo für diesen Lauf wählen und „Fortsetzen“, oder unter „Auftrag & Stimmen“ die Auswahl für neue Läufe ändern.",actions:["open_brief"]},
+  invalid_backend:{kind:"fix",title:"Textmodell-Auswahl ungültig",text:"Anbieter, Modell oder Ausgabelimit der gespeicherten Textauswahl werden nicht unterstützt. Im Maschinenraum unter „Weiter mit …“ einen anderen Anbieter für diesen Lauf wählen und „Fortsetzen“, oder unter „Auftrag & Stimmen“ eine gültige Auswahl treffen und den Schritt neu starten.",actions:["open_brief","restart"]},
+  audio_approval_required:{kind:"decision",title:"Audio-Freigabe fehlt",text:"Für diesen Skriptstand liegt keine passende Audio-Freigabe vor. Auf der Seite Vertonung das gelesene Skript freigeben; dann startet die Vertonung.",actions:["audio_again"]},
+  // Dead ends the Studio cannot resolve; the card says so plainly.
+  credential_in_prompt:{kind:"dead",title:"Zugangsdaten im Text",text:"Ein Text für das Modell enthielt einen API-Key und wurde deshalb nicht gesendet. Den Key aus Chat, Notizen oder Anhängen entfernen und nur über den geschützten Key-Eingang hinterlegen; danach den Schritt neu starten.",actions:["open_brief","restart"]},
+  credential_in_response:{kind:"dead",title:"Zugangsdaten in der Antwort",text:"Die Modellantwort enthielt Zugangsdaten und wurde verworfen, nichts davon wurde gespeichert. Den Schritt neu starten; tritt es wieder auf, bitte melden.",actions:["restart"]},
+  invalid_output_schema:{kind:"dead",title:"Antwortformat der Anbindung ungültig",text:"Das Studio hat dem Modell ein Antwortformat übergeben, das die Anbindung nicht annimmt. Das ist ein Fehler im Studio, keine Frage der Anmeldung; „Fortsetzen“ würde ihn wiederholen. Bitte melden; fertige Ergebnisse bleiben lesbar."},
+  unsupported_run:{kind:"dead",title:"Älterer Lauf",text:"Diesen älteren Lauftyp setzt das Studio nicht fort. Fertige Ergebnisse bleiben lesbar; weiter geht es mit einem neuen Lauf.",actions:["restart"]},
+  missing_outputs:{kind:"dead",title:"Schritt ohne Ergebnis",text:"Ein Schritt hat keine Ergebnisdateien geliefert. Das ist ein Fehler im Studio; „Fortsetzen“ kann ihn wiederholen. Bitte melden, wenn er an derselben Stelle bleibt.",actions:["restart"]},
+  worker_stop:{kind:"dead",title:"Arbeitsprozess nicht anhaltbar",text:"Der Arbeitsprozess ließ sich nicht anhalten, die Zugriffsrechte reichten nicht. Ihn über den Task-Manager beenden oder den Rechner neu starten; danach „Fortsetzen“ an der gespeicherten Stelle."},
+  research_context_incomplete:{kind:"dead",title:"Zitierte Quellenstellen nicht lesbar",text:"Eine Synthese zitiert Quellenstellen, die nicht mehr lesbar sind; „Fortsetzen“ würde es unverändert wiederholen. Bitte melden. Die geprüften Teilantworten bleiben lesbar.",actions:["restart"]},
   // The stored review is replayed on a resume; clarity, depth and dialogue points no longer stop it (review_episode).
   script_review_failed:{kind:"retry",title:"Qualitätsprüfung hat Einwände",text:"Die Qualitätsprüfung meldet nach den automatischen Korrekturen weiter Belegfehler, Einwände zum Umfang oder zur Struktur; die offenen Punkte stehen auf dieser Seite. Punkte zu Verständlichkeit, Tiefe und Dialog halten nicht mehr an, sie stehen als Notiz beim Skript. „Mit neuen Anläufen fortsetzen“ gibt der Prüfung drei neue Korrekturen. „Fortsetzen“ allein hilft nur nach einem Studio-Update; sonst hält der Lauf ohne neue Aufrufe wieder an.",actions:["fresh_attempts","new_outline"]},
-  series_review_failed:{kind:"retry",title:"Serienprüfung hat Einwände",text:reviewAgain("Die Prüfung der gesamten Serie"),actions:["new_outline"]},
+  // A spent series correction round can be set aside for a new one (run_budget.approve_fresh_attempts).
+  series_review_failed:{kind:"retry",title:"Serienprüfung hat Einwände",text:c=>reviewAgain("Die Prüfung der gesamten Serie")+(freshOffered(c.job,c.code)?" „Mit neuen Anläufen fortsetzen“ gibt der Serienkorrektur eine neue Runde.":""),actions:["fresh_attempts","new_outline"]},
   teaching_review_failed:{kind:"retry",title:"Lehrprüfung nicht bestanden",text:reviewAgain("Die Lehrprüfung"),actions:["new_outline"]},
   // The stored verdict is replayed on a resume (polishing.polish_dialogue); only an update can change the outcome.
   dialogue_polish_failed:{kind:"retry",title:"Dialog-Polishing braucht Korrektur",text:"Die Prüfung des Dialog-Polishings meldet nach beiden automatischen Korrekturen weiter Einwände zu Bedeutung, Vollständigkeit, Sprecherrollen oder Intro und Outro; die offenen Punkte stehen auf dieser Seite. „Fortsetzen“ hilft, wenn sich seit dem Anhalten die Regeln geändert haben, etwa nach einem Studio-Update; sonst hält der Lauf ohne neue Aufrufe an derselben Stelle wieder an. Dann hilft ein neues Inhaltsverzeichnis.",actions:["new_outline"]},
@@ -1440,7 +1491,7 @@ const STOP_RULES={
     :{kind:"dead",title:"Gespeicherter Zwischenstand passt nicht mehr",text:STORED_STATE,actions:["restart"]},
   inputs_changed:{kind:"dead",title:"Eingaben seit dem Anhalten geändert",text:"Seit dem Anhalten haben sich Angaben geändert, an die dieser Lauf gebunden ist, etwa Auftrag, Stimmen, Hostnamen, Notizen, Sprechformen oder eine Studio-Aktualisierung. Er lässt sich nicht fortsetzen; fertige Ergebnisse bleiben lesbar.",actions:["restart"]},
   script_edited:{kind:"dead",title:"Skript seit der Freigabe geändert",text:"Das Skript wurde seit deiner Freigabe geändert. Die aktuelle Fassung lesen und erneut für Audio freigeben.",actions:["restart"]},
-  invalid_plan:{kind:"dead",title:"Inhaltsverzeichnis bleibt widersprüchlich",text:"Die automatische Korrektur hat den Widerspruch nach drei Runden nicht aufgelöst; „Fortsetzen“ würde dieselbe Prüfung wiederholen. Mit einem Änderungswunsch entsteht ein neuer Entwurf mit neuen Korrekturrunden.",actions:["replan_feedback","new_outline"]},
+  invalid_plan:{kind:"dead",title:"Inhaltsverzeichnis bleibt widersprüchlich",text:"Die automatische Korrektur hat den Widerspruch nach drei Runden nicht aufgelöst; „Fortsetzen“ würde dieselbe Prüfung wiederholen. Ein neues Inhaltsverzeichnis aus der vorhandenen Recherche bekommt neue Korrekturrunden.",actions:["new_outline"]},
   research_required:{kind:"dead",title:"Recherche fehlt oder passt nicht",text:"Für das Inhaltsverzeichnis fehlt ein geprüftes, aktuelles Dossier. Zuerst die Recherche abschließen oder neu beginnen.",actions:["open_research","new_research"]},
   teaching_design_failed:{kind:"dead",title:"Lehrkonzept bleibt unvollständig",text:"Die automatische Überarbeitung hat nicht alle Kritikpunkte gelöst; „Fortsetzen“ würde dieselben Punkte wieder vorlegen. Die offenen Punkte stehen unter „Meldung“. Mit deinem Hinweis entwirft der Lauf das Lehrkonzept dieser Folge neu, mit neuen Korrekturrunden; das freigegebene Inhaltsverzeichnis und die übrigen Folgen bleiben. Oder ein neues Inhaltsverzeichnis: die Recherche bleibt, Lehrkonzepte und Skripte dieses Laufs entstehen neu.",actions:["redesign_teaching","new_outline"]},
   // Resumable like a research check: an update may have changed the rule that stopped it (Ontologies, 2026-09-27);
@@ -1460,10 +1511,16 @@ for(const code of ["invalid_source_snapshot","invalid_plan_approval","invalid_bu
 STOP_RULES.invalid_source_snapshot=c=>c.kind==="script"?{kind:"retry",title:"Quelle in zwei Fassungen",text:"Eine Nachrecherche hat eine Quelle erneut geladen, die sich seit der Recherche geändert hat. „Fortsetzen“ hilft, wenn eine Studio-Aktualisierung die Regel geändert hat; sonst hält der Lauf ohne neue Aufrufe an derselben Stelle wieder an. Dann geht es mit einem neuen Inhaltsverzeichnis weiter.",actions:["new_outline"]}:STOP_RULES.invalid_research_checkpoint(c);
 for(const code of ["research_coverage_incomplete","invalid_research"])STOP_RULES[code]=STOP_RULES.research_required;
 // Correction loops: a research check replays its saved rejections on a resume, a script stage starts them anew.
+// 2026-10-02: the evidence and repair checks of polishing, the series, teaching and the gap research, a split verified
+// question and a dossier rebuild are correction loops as well; they fell through to the generic card.
 for(const code of ["rejected_output","invalid_evidence_review","invalid_question_routing","invalid_research_patch","invalid_research_assessment",
-  "invalid_search_receipt","invalid_question_review","invalid_evidence","invalid_question_plan","invalid_question_scope","question_scope_unresolved",
-  "invalid_supplement","invalid_teaching_review","invalid_script_evidence_review","invalid_polish_review","invalid_series_review","invalid_script","invalid_revision"])
-  STOP_RULES[code]=c=>c.kind==="script"?{kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat die automatischen Korrekturversuche dieses Schritts verbraucht. „Fortsetzen“ startet sie neu; hält der Schritt erneut an, hilft ein neues Inhaltsverzeichnis.",actions:["new_outline"]}:
+  "invalid_search_receipt","invalid_question_review","invalid_evidence","invalid_question_plan","invalid_question_scope",
+  "invalid_supplement","invalid_teaching_review","invalid_script_evidence_review","invalid_polish_review","invalid_series_review","invalid_script","invalid_revision",
+  "invalid_polish_evidence","invalid_series_evidence","invalid_teaching_evidence","invalid_teaching_repair","invalid_research_gap",
+  "verified_question_split","invalid_dossier_rebuild"])
+  // A step that saved its rejected answers replays them on a resume and stops again without a call; fresh attempts are
+  // offered where the backend would set them aside (job.fresh_attempts).
+  STOP_RULES[code]=c=>c.kind==="script"?{kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat die automatischen Korrekturversuche dieses Schritts verbraucht. „Fortsetzen“ versucht den Schritt erneut; hat er seine abgewiesenen Antworten gespeichert, hält er an derselben Stelle ohne neuen Aufruf wieder an. Dann gibt „Mit neuen Anläufen fortsetzen“ ihm frische Versuche, wo es angeboten wird, sonst hilft ein neues Inhaltsverzeichnis.",actions:["fresh_attempts","new_outline"]}:
     // A research run keeps hours of checked answers: resuming retries the step first (an update may have fixed it).
     {kind:"retry",title:"Korrekturversuche aufgebraucht",text:"Das Modell hat für diesen Prüfschritt die automatischen Korrekturversuche verbraucht, oder eine Prüfregel hat eine Änderung abgelehnt; die Details liegen im Laufordner. „Fortsetzen“ versucht den Schritt erneut, die geprüften Teilantworten bleiben erhalten; ein inzwischen behobener Fehler lässt ihn dann durchgehen. Hält er an derselben Stelle wieder an, gibt „Mit neuen Anläufen fortsetzen“ dem Schritt drei frische Versuche; die abgewiesenen Antworten bleiben lesbar.",actions:["fresh_attempts","restart"]};
 // A chat, a check or a voice sample has no run to continue: the same button starts it again.
@@ -1559,7 +1616,8 @@ function restartAction(job) {
   const kind=job.run?.kind||job.stop?.run_kind;
   if(kind==="research")return "new_research";
   if(kind==="episode_audio")return "audio_again";
-  if(kind==="script")return runPage(job.run)===PAGE.outline?"replan_feedback":"new_outline";
+  // Only a completed outline takes a revision hint (scripting.outline_revision); a stopped draft has none and starts anew.
+  if(kind==="script")return runPage(job.run)===PAGE.outline&&job.run?.stages?.planning?.status==="completed"?"replan_feedback":"new_outline";
   return null;
 }
 function suggestedCalls(job) {
@@ -1567,10 +1625,21 @@ function suggestedCalls(job) {
   const limit=Number(p.model_call_limit)||0, used=Number(p.model_calls)||0;
   if(ledger&&Number.isFinite(Number(ledger.used)))
     return Math.max(limit+1,Number(ledger.used)+Math.max(Number(ledger.expected_remaining_calls||0),Number(ledger.minimum_remaining_calls||0)));
-  // The script projection names minimums without repairs; a quarter more leaves room for corrections.
-  if(script&&Number.isFinite(Number(script.minimum_remaining_calls)))
-    return Math.max(limit+1,Number(script.used??used)+Math.ceil(Number(script.minimum_remaining_calls)*5/4));
+  // The script projection names minimums without repairs: a quarter more leaves room for corrections. Calibrated on
+  // the project's last completed script run, its expectation is the need, the minimum still the floor (studio_allowances).
+  if(script&&Number.isFinite(Number(script.minimum_remaining_calls))){
+    const minimum=Number(script.minimum_remaining_calls), expected=Number(script.expected_remaining_calls);
+    const need=script.calibration&&Number.isFinite(expected)?Math.max(expected,minimum):Math.ceil(minimum*5/4);
+    return Math.max(limit+1,Number(script.used??used)+need);
+  }
   return Math.max(limit,used)+50;
+}
+// Fresh attempts only where the backend would set something aside (job.fresh_attempts, run_budget.fresh_attempts_available):
+// 2026-10-02 the button stood on research stops without a stuck call and again after an allowance had reset the
+// repairs, and the backend refused both. A server without the field keeps the earlier rule.
+function freshOffered(job,code) {
+  if(typeof job?.fresh_attempts==="boolean")return job.fresh_attempts;
+  return job?.run?.kind==="research"||(job?.run?.kind==="script"&&["teaching_research_required","script_review_failed"].includes(code));
 }
 function stopButton(action,job,info,target) {
   const runId=escape(job.run?.run_id||"");
@@ -1578,7 +1647,7 @@ function stopButton(action,job,info,target) {
   switch(action){
     case "approve_calls":{const n=suggestedCalls(job);return `<button data-action="approve-calls" data-run-id="${runId}" data-model-calls="${n}" data-then-resume="1" ${running()?"disabled":""}>Aufruflimit auf ${n} erhöhen und fortsetzen</button>`;}
     case "approve_search":{const n=(Number(job.progress?.search_round_limit)||0)+6;return `<button data-action="approve-search" data-run-id="${runId}" data-search-rounds="${n}" data-then-resume="1" ${running()?"disabled":""}>Suchrunden auf ${n} erhöhen und fortsetzen</button>`;}
-    case "fresh_attempts":return job.run?.kind==="research"||(job.run?.kind==="script"&&["teaching_research_required","script_review_failed"].includes(info.code))?`<button class="secondary" data-action="fresh-attempts" data-run-id="${runId}" data-then-resume="1" ${running()?"disabled":""}>Mit neuen Anläufen fortsetzen</button>`:"";
+    case "fresh_attempts":return freshOffered(job,info.code)?`<button class="secondary" data-action="fresh-attempts" data-run-id="${runId}" data-then-resume="1" ${running()?"disabled":""}>Mit neuen Anläufen fortsetzen</button>`:"";
     case "text_switch":{
       // Offered only where a run fixed on the spent subscription stops; a pair already moves on by itself.
       const codexOut=info.code==="quota_exhausted";
@@ -1641,11 +1710,14 @@ function waitNote(job) {
     const a=job.allowance;
     return `<p class="hint">Deine Vorab-Erlaubnis greift: ${a.kind==="fresh_attempts"?`neue Anläufe (${Number(a.number)} von ${Number(a.of)} in diesem Lauf)`:`Aufruflimit auf ${Number(a.model_calls)} (+${Number(a.extra_calls)})`}. Das Studio gibt sie frei und setzt innerhalb einer halben Minute selbst fort.</p>`;
   }
+  // A technical stop (time limit, silent or failed call, dropped connection) is resumed after a pause, like a quota wait.
+  const transient=job.auto_resume_kind==="transient";
   if(job.auto_resume_at){
     if(Date.parse(job.auto_resume_at)<=Date.now())return '<p class="hint">Die automatische Fortsetzung ist fällig und startet, sobald kein anderer Auftrag im Studio läuft.</p>';
-    return `<p class="hint">Automatische Fortsetzung geplant für ${when(job.auto_resume_at)}, solange das Studio geöffnet bleibt (Versuch ${Number(job.auto_resume_count||0)+1} von 3).</p>`;
+    return `<p class="hint">${transient?"Ein vorübergehender technischer Fehler: ":""}Automatische Fortsetzung geplant für ${when(job.auto_resume_at)}, solange das Studio geöffnet bleibt (Versuch ${Number(job.auto_resume_count||0)+1} von 3).${transient?" „Fortsetzen“ geht auch sofort.":""}</p>`;
   }
-  if(job.auto_resume_exhausted)return '<p class="hint">Die automatischen Fortsetzungen sind aufgebraucht. Nach dem Reset bitte selbst „Fortsetzen“.</p>';
+  if(job.auto_resume_exhausted)return transient?'<p class="hint">Die drei automatischen Fortsetzungen sind aufgebraucht; der Fehler kam jedes Mal wieder. Bitte selbst „Fortsetzen“ oder unter „Auftrag & Stimmen“ die Verbindungen prüfen.</p>'
+    :'<p class="hint">Die automatischen Fortsetzungen sind aufgebraucht. Nach dem Reset bitte selbst „Fortsetzen“.</p>';
   if(job.retry_at&&job.status==="waiting_for_quota")return `<p class="hint">Voraussichtlich wieder frei: ${when(job.retry_at)}.</p>`;
   return "";
 }
@@ -1736,7 +1808,7 @@ function renderResearchQuestions(ledger, opened=new Set(), active=false, runId="
       <summary>${row.status==="verified"?"✓":row.accepted_gap?"–":blocked?(row.retry_requested||row.access_gap_requested?"↻":"⛔"):active&&activeIds.includes(row.id)?"●":"○"}${audit?`<span class="audit-mark" title="${escape(audit.text)}">${audit.mark}</span>`:""} ${escape(row.question)} · ${escape(row.accepted_gap?"Als Lücke akzeptiert":blocked&&row.access_gap_requested?"Zugangslücke akzeptiert":blocked&&row.retry_requested?"Neuer Versuch angefordert":!active&&["researching","reviewing"].includes(row.status)?"Begonnen · geht beim Fortsetzen weiter":(states[row.status]||row.status))}${audit?` · ${escape(audit.text)}`:""}</summary>
       ${blocked?blockedNote(row):""}${["open","reworked"].includes(audit?.kind)?`<div class="note"><p><strong>Einwände der Gesamtprüfung${audit.kind==="reworked"?` (nachgebessert, Prüfrunde ${round+1} prüft nach)`:""}:</strong></p><ul>${row.objections.map(o=>`<li>${escape(o.reason)}</li>`).join("")}</ul></div>`:""}
       <p>${escape(row.activity)}</p>
-      <p class="hint">${Number(row.read_sections)} Abschnitte gelesen · ${Number(row.steps)} Bearbeitungsschritte${row.reopened?` · ${Number(row.reopened)} Mal mit Einwand wieder geöffnet`:""}</p>
+      <p class="hint">${Number(row.read_sections)} Abschnitte gelesen · ${Number(row.steps)} Bearbeitungsschritte${row.reopened?` · ${Number(row.reopened)} Mal mit Einwand wieder geöffnet`:""}${Number(row.revalidations)>0?` · ${Number(row.revalidations)} Mal erneut geprüft`:""}</p>
       ${row.support?`<p class="hint">Textbelege vorhanden · Inhalt automatisch je Befund geprüft · ${row.support.findings.filter(f=>f.empirical_status==="independently_tested").length} Befunde mit dokumentierter unabhängiger empirischer Prüfung</p>`:""}
       ${row.outcome&&!blocked?`<p class="hint">Ergebnis: ${escape(outcomes[row.outcome]||row.outcome)}</p>`:""}
       <p>Abschlusskriterien:</p><ul>${(row.acceptance||[]).map(c=>`<li>${escape(c)}</li>`).join("")}</ul>
@@ -1887,7 +1959,7 @@ function renderResearchPanel(j,r,active,questionOpen,researchOpen,researchBlocke
   html+=`<p class="hint">Rechercherunden: ${Number(p.search_rounds||0)} von ${Number(p.search_round_limit||0)}. Fehlende Belege werden automatisch nachrecherchiert.</p>`;
   if(quality){
     const pending=quality.assessment_status==="pending_after_source_review"||(ledger&&ledger.phase!=="completed");
-    html+=`<details class="research-quality"${researchOpen?" open":""}><summary>${pending?(ledger?"Gesamtbewertung folgt nach den Einzelantworten":"Quellenlücken werden gezielt geschlossen · Gesamtbewertung folgt"):`${Number(quality.closed)} von ${Number(quality.total)} Leitfragen erfüllen alle Qualitätsmerkmale`}</summary>${pending?(ledger?"<p>Der aktuelle Stand steht bei den einzelnen Recherchefragen. Die bisherigen Leitfragenbewertungen unten werden vor der Freigabe erneuert.</p>":"<p>Zuerst werden die fehlenden Belege gesucht und gelesen. Die bisherigen Leitfragenbewertungen unten werden danach erneuert.</p>"):""}<p>Geprüft werden vollständige Antworten, nachvollziehbare Erklärungen, gelesene Belege, unabhängige Gegenprüfung und Grenzen.</p>${(quality.requirements||[]).map(row=>`<p><strong>${pending?"·":row.passed?"✓":"○"} ${escape(row.question)}</strong></p><p>${escape(row.reason)}</p>${(row.missing||[]).length?`<ul>${row.missing.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}`).join("")}${quality.blocking_gaps?.length?`<p>Weitere offene Punkte:</p><ul>${quality.blocking_gaps.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}</details>`;
+    html+=`<details class="research-quality"${researchOpen?" open":""}><summary>${pending?(ledger?"Gesamtbewertung folgt nach den Einzelantworten":"Quellenlücken werden gezielt geschlossen · Gesamtbewertung folgt"):`${Number(quality.closed)} von ${Number(quality.total)} Leitfragen erfüllen alle Qualitätsmerkmale${quality.passed_with_noted_limits?" · bestanden mit vermerkten Grenzen":""}`}</summary>${pending?(ledger?"<p>Der aktuelle Stand steht bei den einzelnen Recherchefragen. Die bisherigen Leitfragenbewertungen unten werden vor der Freigabe erneuert.</p>":"<p>Zuerst werden die fehlenden Belege gesucht und gelesen. Die bisherigen Leitfragenbewertungen unten werden danach erneuert.</p>"):""}<p>Geprüft werden vollständige Antworten, nachvollziehbare Erklärungen, gelesene Belege, unabhängige Gegenprüfung und Grenzen.</p>${quality.passed_with_noted_limits&&!pending?"<p class=\"hint\">Bestanden mit vermerkten Grenzen: Punkte, die die Quellen nicht hergeben, stehen als Grenzen im Qualitätsbericht; das ist keine akzeptierte Lücke.</p>":""}${(quality.requirements||[]).map(row=>`<p><strong>${pending?"·":row.passed?"✓":row.recorded_limit||row.source_limit?"◇":"○"} ${escape(row.question)}</strong>${!pending&&!row.passed&&(row.recorded_limit||row.source_limit)?" · als Grenze vermerkt":""}</p><p>${escape(row.reason)}</p>${(row.missing||[]).length?`<ul>${row.missing.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}`).join("")}${quality.blocking_gaps?.length?`<p>Weitere offene Punkte:</p><ul>${quality.blocking_gaps.map(gap=>`<li>${escape(gap)}</li>`).join("")}</ul>`:""}</details>`;
   }
   return `<section class="panel research-panel">${html}</section>`;
 }
@@ -2023,7 +2095,11 @@ function renderJob() {
   if(stopBox){
     // The stop card stands on the page that owns the job; audio cards and the chat carry their own.
     const own=owner===step&&job?.run?.kind!=="episode_audio"&&!["audio","assistant"].includes(job?.action);
-    const html=!own?"":info&&!info.card?renderStopCard(job,info):job?.status==="running"?heartbeatNote(job):"";
+    let html=!own?"":info&&!info.card?renderStopCard(job,info):job?.status==="running"?heartbeatNote(job):"";
+    // A paused run of another lane keeps its stop card on its own page while the project shows a newer job
+    // (2026-10-02: a later stop of another lane hid it).
+    const parked=html?null:(project.parked_jobs||[]).find(p=>p?.id!==job?.id&&p.run?.kind!=="episode_audio"&&runPage(p.run)===step&&stopInfo(p));
+    if(parked)html=renderStopCard(parked,stopInfo(parked));
     if(html!==stopHtml||(html&&stopBox.innerHTML===""))replaceKeeping(stopBox,html);
     stopHtml=html;
   }
@@ -2074,8 +2150,11 @@ function renderJob() {
   const meta=active&&job.started_at?` · seit ${elapsedText(job.started_at)}${calls}`:"";
   const lastLine=active?(job.progress?.model_trace?.lines||[]).at(-1):null;
   const audioNote=audioRunning.length?(step!==PAGE.audio?`<button class="quiet small status-link" data-step="${PAGE.audio}">${audioJobSummary()} →</button>`:`<span class="hint">${audioJobSummary()}</span>`):"";
-  bar.innerHTML=offlineMark()+`<span class="job-dot ${tone}${connectionLost?" offline":""}" aria-hidden="true"></span><span class="job-text"><strong>${escape(title)}</strong>${meta}</span>`+
-    (active?'<button class="danger small" data-action="stop" data-confirm="Den laufenden Auftrag anhalten? Fertige Schritte bleiben gespeichert; der gerade laufende Modellaufruf wird beim Fortsetzen wiederholt.">Auftrag anhalten</button>':
+  // A worker an earlier Studio started still runs: shown as running elsewhere; stopped only when its identity is on record.
+  const elsewhere=active&&job.external?` · läuft außerhalb dieses Studios`:"";
+  bar.innerHTML=offlineMark()+`<span class="job-dot ${tone}${connectionLost?" offline":""}" aria-hidden="true"></span><span class="job-text"><strong>${escape(title)}</strong>${meta}${elsewhere}</span>`+
+    (active&&job.external&&!job.external_stoppable?'<span class="hint">Endet von selbst; danach geht es hier weiter.</span>':
+    active?'<button class="danger small" data-action="stop" data-confirm="Den laufenden Auftrag anhalten? Fertige Schritte bleiben gespeichert; der gerade laufende Modellaufruf wird beim Fortsetzen wiederholt.">Auftrag anhalten</button>':
       resumable&&running()?`<span class="hint">Fortsetzen, sobald ${audioRunning.length?"die Vertonung":"der laufende Auftrag"} fertig ist</span>`:
       resumable?`<button class="secondary small" data-action="resume" data-run-id="${escape(r?.run_id||"")}">Fortsetzen</button>`:"")+
     (destination!==null&&destination!==undefined&&destination!==step?`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`:"")+audioNote+drawerToggle();
@@ -2098,7 +2177,9 @@ function renderJob() {
   if(Number.isSafeInteger(job.progress?.model_call_limit)&&job.progress.model_call_limit>0){
     const projection=job.progress.budget_projection;
     const outlook=Number.isSafeInteger(projection?.minimum_remaining_calls)?` · mindestens ${projection.minimum_remaining_calls} weitere nötig${projection.feasible===false?" – Limit reicht nicht":""}`:"";
-    body+=`<p class="hint">Modellaufrufe: ${Number(job.progress.model_calls||0)} von ${job.progress.model_call_limit}${escape(outlook)}</p>`;
+    // The expectation from the project's last completed script run stands beside the minimum; it stops nothing.
+    const expected=projection?.calibration&&Number.isSafeInteger(projection?.expected_remaining_calls)?` · erwartet etwa ${projection.expected_remaining_calls}${projection.expected_shortfall>0?", mehr als verfügbar":""}`:"";
+    body+=`<p class="hint">Modellaufrufe: ${Number(job.progress.model_calls||0)} von ${job.progress.model_call_limit}${escape(outlook)}${escape(expected)}</p>${expected&&projection.expected_label?`<p class="hint">${escape(projection.expected_label)}</p>`:""}`;
   }
   body+=renderProgressTiming(job.progress,active);
   body+=renderRunTextChoice(job);
@@ -2114,7 +2195,7 @@ function renderJob() {
   if(traceList)traceList.scrollTop=traceAtEnd?traceList.scrollHeight:traceScroll;
 }
 // Unfinished input survives a re-render of the same project; a project switch starts clean.
-const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","pause-same","pause-change","pause-chapter","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback"];
+const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","pause-same","pause-change","pause-chapter","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback","queue-key"];
 function formSnapshot() {
   const values={};
   for(const id of FORM_IDS){const el=$(id);if(el&&typeof el.value==="string"&&el.value!=="")values[id]=el.value;}
@@ -2474,13 +2555,39 @@ document.addEventListener("click",event=>{
     if(action==="revise"&&$("script-feedback"))$("script-feedback").value="";
   });
 });
+// Polls run one at a time, the overview's every ten seconds, and a hidden tab's once a minute, enough for its title;
+// showing the tab again polls at once (2026-10-02: hidden tabs polled every 2.5 s and slow answers overlapped, each
+// poll holding the server's lock). Each answer names the server instance: a new one means a restart, so the session
+// and the key state are read again.
+const POLL_MS={overview:10000,hidden:60000};
+let pollRunning=false, lastPollAt={overview:0,hidden:0};
 async function poll() {
+  if(pollRunning)return;
+  const now=Date.now(), hidden=!!document.hidden;
+  if(hidden&&now-lastPollAt.hidden<POLL_MS.hidden)return;
+  if(!hidden&&overviewPage&&now-lastPollAt.overview<POLL_MS.overview)return;
+  if(hidden)lastPollAt.hidden=now;
+  if(overviewPage)lastPollAt.overview=now;
+  pollRunning=true;
+  try{await pollOnce();}finally{pollRunning=false;}
+}
+async function checkInstance(server) {
+  const known=boot?.server?.instance;
+  if(!server?.instance||!known||server.instance===known)return;
+  const fresh=await fetch("/api/bootstrap").then(r=>r.ok?r.json():null).catch(()=>null);
+  if(!fresh?.token)return;
+  const keyLost=boot.key_available&&!fresh.key_available;
+  boot={...boot,...fresh};
+  if(keyLost){notice("Das Studio wurde neu gestartet. Der OpenRouter-Key lag nur im Speicher des alten Servers und muss erneut eingegeben werden; eingereihte Vertonungen warten bis dahin.");lastJobView="";if(!overviewPage&&project)render();}
+}
+async function pollOnce() {
   try {
-    if(overviewPage){const next=await loadOverview();markSynced();if(overviewPage){overviewData=next;refreshOverview();renderNavigation();}return;}
+    if(overviewPage){const next=await loadOverview();markSynced();await checkInstance(next.server);if(overviewPage){overviewData=next;refreshOverview();renderNavigation();}return;}
     if(!project||submitting||setupSending||readingAttachments)return;
     const id=project.id,next=await api(`/api/projects/${id}`);
     if(project?.id!==id)return;
     markSynced();
+    await checkInstance(next.server);
     const changed=projectJobSignature(next)!==lastJobSignature;
     // A chat, a check or a voice sample answers where it was started; its end does not move the page.
     const auxiliary=["assistant","check","audio_sample","audio_samples"].includes((next.main_job??next.job)?.action);
@@ -2531,6 +2638,7 @@ attempt(async()=>{
   else await showOverview();
 });
 setInterval(poll,2500);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden){lastPollAt.overview=0;poll();}});
 for(const event of ["play","pause","ended"])$("sample-player").addEventListener(event,syncPlayButtons);
 window.addEventListener("popstate",()=>attempt(async()=>{
   const params=new URLSearchParams(window.location.search), id=params.get("project");

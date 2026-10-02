@@ -5,13 +5,14 @@ import os
 import platform
 import re
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from .prompts import instructions
 from .errors import AppError
-from .call_activity import CallActivity, contract_rejection, parsed_json, write_rejected_output
+from .call_activity import CallActivity, contract_rejection, mentions, parsed_json, write_rejected_output
 from .codex_stream import run_app_server
 from .models import RuntimeSettings, TextProbeOutput
 from .process import STALL_TIMEOUT_SECONDS, run_process
@@ -66,17 +67,88 @@ def subscription_environment() -> dict[str, str]:
     return environment
 
 
-def classify_failure(message: str) -> AppError:
-    lower = message.lower()
+# Words of a failed turn's text, matched as whole words (call_activity.mentions) where the app-server names no
+# category of its own.
+QUOTA_MARKERS = ("usage limit*", "usage_limit*", "usagelimit*", "rate limit*", "rate_limit*", "ratelimit*",
+                 "quota", "quotas", "insufficient_quota", "too many requests", "429")
+AUTH_MARKERS = ("unauthorized", "not logged in", "authentication", "401")
+# The app-server's ``codexErrorInfo`` of a failed turn, lower-cased: a category name, or an object keyed by it.
+QUOTA_ERROR_INFO = frozenset({"usagelimitexceeded"})
+AUTH_ERROR_INFO = frozenset({"unauthorized"})
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+UNITS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+
+
+def error_info(error) -> tuple[str | None, int | None]:
+    """The category and HTTP status a failed turn carries, if any."""
+    info = error.get("codexErrorInfo") if isinstance(error, dict) else None
+    if isinstance(info, str):
+        return info.lower(), None
+    if isinstance(info, dict) and len(info) == 1:
+        name, value = next(iter(info.items()))
+        status = value.get("httpStatusCode") if isinstance(value, dict) else None
+        return str(name).lower(), status if isinstance(status, int) and not isinstance(status, bool) else None
+    return None, None
+
+
+def codex_reset(text, *, now=None) -> datetime | None:
+    """The time a Codex usage-limit message names: "try again in 2 days 3 hours", or "try again at 3:04 PM" and
+    "at Oct 4th, 2026 3:04 PM" in local time. None when it names none."""
+    now = now or datetime.now(timezone.utc)
+    lower = str(text or "").lower()
+    relative = re.search(r"try again in ((?:\d+\s*(?:days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\b[\s,]*(?:and\s+)?)+)",
+                         lower)
+    if relative:
+        seconds = sum(int(count) * UNITS[unit[0]] for count, unit in
+                      re.findall(r"(\d+)\s*(days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)", relative.group(1)))
+        return now + timedelta(seconds=seconds) if seconds else None
+    absolute = re.search(r"try again at (?:([a-z]{3})[a-z]*\.? (\d{1,2})(?:st|nd|rd|th)?,? (\d{4}),? )?"
+                         r"(\d{1,2}):(\d{2})\s*([ap]m)?", lower)
+    if not absolute:
+        return None
+    month, day, year, hour, minute, meridian = absolute.groups()
+    hour, minute = int(hour), int(minute)
+    if meridian == "pm" and hour < 12:
+        hour += 12
+    if meridian == "am" and hour == 12:
+        hour = 0
+    local = now.astimezone()
+    try:
+        if month:
+            if month not in MONTHS:
+                return None
+            moment = local.replace(year=int(year), month=MONTHS.index(month) + 1, day=int(day), hour=hour,
+                                   minute=minute, second=0, microsecond=0)
+        else:
+            moment = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if moment <= local:
+                moment += timedelta(days=1)
+    except ValueError:
+        return None
+    return moment.astimezone(timezone.utc)
+
+
+def classify_failure(message: str, *, error=None, now=None) -> AppError:
+    """Map a failed Codex turn to an actionable error. ``error`` is the turn's own failure object: its category
+    (``codexErrorInfo``) decides before its text, which is read word by word (2026-10-02: substrings and earlier
+    retry notices of the same turn turned unrelated failures into a quota pause)."""
+    lower = str(message or "").lower()
     if "invalid_json_schema" in lower or "invalid schema for response_format" in lower:
         return AppError("Das Studio hat ein nicht unterstütztes Antwortformat an Codex gesendet. "
                         "Das ist ein Fehler der Studio-Anbindung; eine neue Anmeldung behebt ihn nicht.",
                         code="invalid_output_schema")
-    if any(marker in lower for marker in (
-            "usage limit", "usage_limit", "usagelimit", "rate limit", "rate_limit", "ratelimit", "quota", "429")):
-        return AppError("Abo-Kontingent oder Anfragelimit erreicht. Später mit 'pla resume' fortsetzen.",
-                        code="quota_exhausted", status="waiting_for_quota")
-    if any(marker in lower for marker in ("unauthorized", "not logged in", "authentication", "401")):
+    category, http_status = error_info(error)
+    if category is not None and category != "other":
+        quota, login = category in QUOTA_ERROR_INFO or http_status == 429, category in AUTH_ERROR_INFO or http_status == 401
+    else:
+        quota, login = mentions(lower, *QUOTA_MARKERS), mentions(lower, *AUTH_MARKERS)
+    if quota:
+        until = codex_reset(message, now=now)
+        when = f" Voraussichtlich wieder verfügbar ab {until.astimezone().strftime('%d.%m.%Y %H:%M')}." if until else ""
+        return AppError("Abo-Kontingent oder Anfragelimit erreicht." + when + " Später mit 'pla resume' fortsetzen.",
+                        code="quota_exhausted", status="waiting_for_quota",
+                        details={"provider": "codex_cli", **({"blocked_until": until.isoformat()} if until else {})})
+    if login:
         return AppError("Codex-Anmeldung muss erneuert werden: codex login",
                         code="authentication_required", status="blocked")
     return AppError("Codex-Aufruf fehlgeschlagen. Verbindung und CLI-Konfiguration prüfen.",
@@ -193,7 +265,8 @@ class CodexAdapter:
             if isinstance(event, dict):
                 events.append(event)
         terminal = [e for e in events if e.get("type") in {"turn.completed", "turn.failed"}]
-        failures = [e for e in events if e.get("type") in {"turn.failed", "error"}]
+        # Only the turn's own failure names its cause; earlier ``error`` events are retry notices it may have outlived.
+        failed = next((e for e in reversed(events) if e.get("type") == "turn.failed"), None)
         search_items = [e["item"] for e in events
                         if e.get("type") == "item.completed"
                         and isinstance(e.get("item"), dict)
@@ -206,7 +279,8 @@ class CodexAdapter:
         if result.returncode or not terminal or terminal[-1]["type"] != "turn.completed":
             activity.finish("failed")
             response_file.unlink(missing_ok=True)
-            failure = classify_failure(json.dumps(failures) + result.stderr)
+            failure = (classify_failure(json.dumps(failed.get("error")), error=failed.get("error")) if failed
+                       else classify_failure(result.stderr))
             # Keep a useful failure receipt without persisting raw provider output or prompts.
             write_json(directory / "failure.json", {"code": failure.code, "message": str(failure),
                        "exit_code": result.returncode, "model": self.settings.codex_model,

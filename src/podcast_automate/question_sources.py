@@ -6,6 +6,22 @@ from .research_ledger import read_value, save_value
 from .sources import canonical_url
 
 
+def attempt_folder(folder, task_id, row):
+    """Where a task's current attempt keeps its receipts: ``tasks/<id>/attempt_<n>`` after ``n`` reopenings, and
+    below it ``dependency_<k>`` once the answer was sent back for revalidation ``k`` times. The one derivation of
+    that layout for every reader of it (2026-10-02: the budget projection and the attempt restore had drifted)."""
+    path = folder / "tasks" / task_id / f"attempt_{len(row['reopenings'])}"
+    return path / f"dependency_{row['dependency_revision']}" if row.get("dependency_revision") else path
+
+
+def download_receipts(folder):
+    """Every download receipt of the run's task searches, wherever its step keeps it: ``attempt_*/step_*``, below
+    ``dependency_*`` after a revalidation, and in ``search_<hash>`` for a second search of one step
+    (question_answering.search_folder). The glob of one layout missed the other two."""
+    tasks = folder / "tasks"
+    return sorted(tasks.rglob("downloads.json")) if tasks.is_dir() else []
+
+
 def source_identity(value):
     try:
         return canonical_url(value)
@@ -22,7 +38,7 @@ def restore_attempts(folder, index):
                     if f["reason"] != "Quellenlimit erreicht; nicht abgerufen.")
     # Older versions discarded duplicate text but retained these download
     # receipts. Recover those attempts without altering the old source snapshots.
-    for receipt in folder.glob("tasks/*/attempt_*/step_*/downloads.json"):
+    for receipt in download_receipts(folder):
         saved = read_value(receipt)
         attempts.update(source_identity(url) for url in saved.get("attempted", saved["processed"]))
     save_value(path, sorted(attempts))

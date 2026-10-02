@@ -4,7 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from podcast_automate.errors import AppError
-from podcast_automate.editorial import TERMINOLOGY, TEACHING_SCOPE, episode_series_context
+from podcast_automate.editorial import (MACHINE_LEARNING_TERMS, TERMINOLOGY, TEACHING_SCOPE, TOPIC_TERMINOLOGY,
+                                        episode_series_context, terminology)
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.models import EpisodeScript
 from podcast_automate.storage import digest, read_yaml, write_json
@@ -33,9 +34,36 @@ class TeachingTests(unittest.TestCase):
             return self.model(prompt, output_type, directory, **kwargs)
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             self.assertEqual(run_script(self.root).status, "completed")
-        self.assertTrue(all(TERMINOLOGY in prompt for _, prompt in prompts))
+        # Since 2026-10-02 the teaching layer composes the project's own rule (editorial.terminology); the stages
+        # that still compose the earlier rule keep it until they switch.
+        self.assertTrue(all(TERMINOLOGY in prompt or TOPIC_TERMINOLOGY in prompt for _, prompt in prompts))
+        teaching = (TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview)
+        self.assertTrue(all(TOPIC_TERMINOLOGY in prompt for schema, prompt in prompts if schema in teaching))
         self.assertTrue(all(TEACHING_SCOPE in prompt for schema, prompt in prompts
                             if schema in (TeachingPlan, TeachingPlanReview, TeachingReview, EditorialReview)))
+
+    def test_the_terminology_rule_names_machine_learning_terms_only_for_such_a_topic(self):
+        """2026-10-02: every teaching prompt named Query, Key and Value, also for the Asimov series (history,
+        sociology) and the English Ontologies series. A German machine-learning topic keeps the names; the rule
+        research receipts bind stays byte for byte."""
+        from podcast_automate.scripting import load_research
+        from podcast_automate.teaching import design_prompt
+        self.assertEqual(terminology("de-DE", "Die Entwicklung der Transformer Architektur"),
+                         TOPIC_TERMINOLOGY + MACHINE_LEARNING_TERMS)
+        for language, topic, question in (
+                ("de-DE", "Auf den Spuren von Asimovs Psychohistorie", "Wie entstehen gesellschaftliche Muster?"),
+                ("en-US", "Ontologies and Knowledge Work", "How do you build a knowledge base for LLMs and agents?")):
+            with self.subTest(topic=topic):
+                self.assertEqual(terminology(language, topic, question), TOPIC_TERMINOLOGY)
+        self.assertNotIn("Query", TOPIC_TERMINOLOGY)
+        self.assertIn("For machine learning use Query, Key, Value", TERMINOLOGY)
+        _, dossier, _, _, sources = load_research(self.root, self.fixture.config)
+        entry = fixtures.example_plan().episodes[0]
+        for topic, expected in (("Test topic", False), ("Wie ein Transformer Attention berechnet", True)):
+            config = self.fixture.config.model_copy(update={"topic": topic})
+            prompt = design_prompt(config, entry, dossier, sources)
+            self.assertTrue(prompt.startswith(TOPIC_TERMINOLOGY))
+            self.assertEqual(MACHINE_LEARNING_TERMS in prompt, expected)
 
     def test_design_rejects_forward_prerequisites_and_fake_synthesis(self):
         entry = fixtures.example_plan().episodes[0]
@@ -60,7 +88,7 @@ class TeachingTests(unittest.TestCase):
             return result
         folder = self.root / "design"
         build_teaching_plan(config, entry, dossier, context, invoke, folder)
-        with patch("podcast_automate.teaching.TERMINOLOGY", TERMINOLOGY + " New guidance."):
+        with patch("podcast_automate.teaching.TEACHING_SCOPE", TEACHING_SCOPE + "New guidance. "):
             with self.assertRaises(AppError):
                 build_teaching_plan(config, entry, dossier, context, invoke, folder)
         self.assertEqual(calls.count(TeachingPlan), 1)
@@ -164,6 +192,45 @@ class TeachingTests(unittest.TestCase):
         self.assertNotIn("teaching_design", rows[1])
         self.assertEqual(rows[0]["established_terms"], ["candidate", "energy"])
         self.assertNotIn("established_terms", rows[1])
+
+    def test_only_the_nearest_prerequisite_comes_in_full_and_a_recorded_full_context_stays(self):
+        """Asimov, 2026-10-02: the finale built on every earlier episode and got 474,000 characters of prerequisite
+        context, repeated in its design, polish, review and every repair. Only the nearest prerequisite comes in full
+        now; every other one brings its question, series_role, findings, destination and spoken terms. A run whose
+        teaching stage recorded the full form keeps it, because its saved script reviews are bound to it."""
+        from podcast_automate.teaching import prerequisite_context
+        plan = fixtures.example_plan()
+        for index in (2, 3, 4):
+            entry = plan.episodes[0].model_copy(deep=True)
+            entry.episode_id, entry.series_role = f"ep_{index:03d}", f"Episode {index} adds its part."
+            entry.prerequisite_episodes = [f"ep_{n:03d}" for n in range(1, index)]
+            plan.episodes.append(entry)
+        work = self.root / "finale-context"
+        review = {"issues": [], "research_gaps": [], "gap_assessments": []}
+        for entry in plan.episodes[:3]:
+            design = teaching_response(json.dumps({"episode": entry.model_dump()}), TeachingPlan)
+            folder = work / "teaching" / entry.episode_id
+            write_json(folder / "plan.json", design.model_dump())
+            write_json(folder / "review.json", review)
+            write_json(folder / "checkpoint.json", {"design": design.model_dump(), "review": review})
+        first, finale = plan.episodes[0], plan.episodes[3]
+        rows = prerequisite_context(plan, finale, work)
+        self.assertEqual([r["episode_id"] for r in rows], ["ep_001", "ep_002", "ep_003"])
+        self.assertEqual(["outline" in r and "teaching_design" in r for r in rows], [False, False, True])
+        self.assertEqual(rows[0], {"episode_id": "ep_001", "title": first.title, "status": "reviewed_teaching_plan",
+                                   "context": "summary", "central_question": first.central_question,
+                                   "series_role": first.series_role, "finding_ids": first.finding_ids,
+                                   "destination": "Explain which candidate is preferred and why.",
+                                   "established_terms": ["candidate", "energy"]})
+        self.assertEqual(rows[1]["series_role"], "Episode 2 adds its part.")
+        self.assertEqual(prerequisite_context(plan, finale, work), rows, "the same folder gives the same rows")
+        # The earlier form, as a teaching stage before this change recorded it, stays for that run.
+        write_json(work / "teaching/ep_004/continuity.json", [{"episode_id": "ep_001", "outline": {}},
+                                                               {"episode_id": "ep_002", "outline": {}}])
+        recorded = prerequisite_context(plan, finale, work)
+        self.assertTrue(all("outline" in r and "teaching_design" in r and "context" not in r for r in recorded))
+        self.assertEqual(recorded[2], rows[2])
+        self.assertLess(len(json.dumps(rows)), len(json.dumps(recorded)))
 
     def test_established_terms_use_the_spoken_names_and_never_reach_the_first_episode(self):
         from podcast_automate.teaching import prerequisite_context, spoken_terms
@@ -298,6 +365,101 @@ class TeachingTests(unittest.TestCase):
         self.assertEqual(json.loads((folder / "review.json").read_text(encoding="utf-8"))["advisories"], [new])
         self.assertTrue(writing and all("teaching_design_review.advisories" in prompt for prompt in writing))
         self.assertIn(new, writing[0].splitlines()[-1])
+
+    def test_code_sets_what_a_follow_up_design_review_may_block_on(self):
+        """2026-10-02: a follow-up review blocked on every issue whatever basis it gave. The code checks the basis
+        now: an issue marked previous must hold an earlier issue's text, editor_note needs an editor's note, a
+        critical defect still blocks. Everything else is an advisory for the writer and never joins the scope."""
+        from podcast_automate.teaching import scoped_review
+        earlier = "Scene 1 introduces results before the task."
+        still = earlier + " The task is still named only in scene 2."
+        relabelled = "Scene 2 leaves 'reasoner' unexplained."
+        noted, wrong = "Scene 3 reads SPARQL aloud.", "Scene 3 misstates the cited mechanism."
+        review = TeachingPlanReview(research_gaps=[], gap_assessments=[], advisories=["Pacing is brisk."],
+                                    issues=[earlier, still, relabelled, noted, wrong],
+                                    issue_basis=["previous", "previous", "previous", "editor_note", "factual_error"])
+        scoped = scoped_review(review, [earlier])
+        self.assertEqual(scoped.issues, [earlier, still, wrong])
+        self.assertEqual(scoped.issue_basis, ["previous", "previous", "factual_error"])
+        self.assertEqual(scoped.advisories, ["Pacing is brisk.", relabelled, noted])
+        self.assertEqual(scoped_review(scoped, [earlier]), scoped, "applied twice it changes nothing")
+        self.assertEqual(scoped_review(review, [earlier], "Read no query language aloud.").issues,
+                         [earlier, still, noted, wrong])
+        self.assertIs(scoped_review(review, []), review, "a first review sets the scope")
+        # A repetition word for word needs no basis, and it is recorded as previous.
+        bare = TeachingPlanReview(research_gaps=[], gap_assessments=[], issues=["scene 1 introduces results before the task"])
+        self.assertEqual(scoped_review(bare, [earlier]).issue_basis, ["previous"])
+
+    def test_a_relabelled_new_point_in_a_follow_up_review_becomes_an_advisory_and_the_design_passes(self):
+        """A follow-up review that calls a new, non-critical point previous no longer blocks the design."""
+        first = "Scene 1 introduces results before the task."
+        new = "Scene 2 uses 'reasoner' before introducing it."
+        reviews = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is TeachingPlanReview:
+                reviews.append(json.loads(prompt.splitlines()[-1]).get("previous_issues"))
+                result.issues, result.issue_basis = ([first], []) if len(reviews) == 1 else ([new], ["previous"])
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["teaching"].error)
+        self.assertEqual(reviews, [None, [first]])
+        folder = self.root / "runs" / run.run_id / "teaching/ep_001"
+        saved = json.loads((folder / "review.json").read_text(encoding="utf-8"))
+        self.assertEqual((saved["issues"], saved["advisories"]), ([], [new]))
+        self.assertEqual(json.loads((folder / "review_scope.json").read_text(encoding="utf-8")), [first])
+
+    def test_series_goal_reaches_the_design_its_review_and_the_script_reviews_but_not_the_listener(self):
+        """2026-10-02: the teaching layer never saw the brief's series_goal and kept designing the Asimov episodes
+        around studies and their results. The design, its review, the editorial and the teaching review read it now;
+        the listener answers from the dialogue alone. Without a goal every payload stays as it was."""
+        from podcast_automate.scripting import load_research
+        aim = {"understand": 3, "evaluate": 2, "apply": 0}
+        _, dossier, _, _, sources = load_research(self.root, self.fixture.config)
+        entry = fixtures.example_plan().episodes[0]
+        payloads = {}
+
+        def invoke(prompt, schema, version):
+            payloads.setdefault(schema, json.loads(prompt.splitlines()[-1]))
+            return teaching_response(prompt, schema)
+        config = self.fixture.config.model_copy(update={"series_goal": aim})
+        design, _ = build_teaching_plan(config, entry, dossier, sources, invoke, self.root / "goal")
+        self.assertEqual(payloads[TeachingPlan]["brief"]["series_goal"], aim)
+        self.assertEqual(payloads[TeachingPlanReview]["brief"]["series_goal"], aim)
+        args = dict(audience="Adults", prior_knowledge="None", depth="Explain the comparison")
+        assess_teaching(fixtures.example_script(), design, invoke, self.root / "goal-review", series_goal=aim, **args)
+        self.assertEqual(payloads[EditorialReview]["series_goal"], aim)
+        self.assertEqual(payloads[TeachingReview]["series_goal"], aim)
+        self.assertNotIn("series_goal", payloads[ListenerReadback])
+        payloads.clear()
+        build_teaching_plan(self.fixture.config, entry, dossier, sources, invoke, self.root / "no-goal")
+        self.assertNotIn("series_goal", payloads[TeachingPlan]["brief"])
+        self.assertNotIn("series_goal", payloads[TeachingPlanReview]["brief"])
+
+    def test_a_worked_example_needs_no_misconception_or_limit_and_saved_plans_read_as_before(self):
+        """2026-10-02: the contract demanded a misconception, its correction and a limit for every worked example,
+        which pushed each theory episode toward a study with a measured result. They are optional now; a saved plan
+        that has them validates, dumps and renders exactly as before."""
+        from podcast_automate.teaching import render_teaching_plan
+        entry = fixtures.example_plan().episodes[0]
+        saved = self.design().model_dump()
+        old = TeachingPlan.model_validate(saved)
+        self.assertEqual(old.model_dump(), saved)
+        self.assertIn("\n\nMögliche Fehlvorstellung: Lower is always worse.\n\nThis score uses the lower-is-better "
+                      "convention.\n\nGrenze: Scores alone do not provide probabilities.\n\n## Synthese und Übertragung",
+                      render_teaching_plan(old))
+        example = {key: value for key, value in saved["worked_example"].items()
+                   if key not in ("misconception", "correction", "limits")}
+        qualitative = TeachingPlan.model_validate({**saved, "worked_example": example})
+        self.assertEqual(validate_teaching_plan(qualitative, entry), [])
+        rendered = render_teaching_plan(qualitative)
+        self.assertNotIn("Fehlvorstellung", rendered)
+        self.assertNotIn("Grenze", rendered)
+        self.assertIn("lower one because it indicates fit.\n\n## Synthese und Übertragung", rendered)
+        half = TeachingPlan.model_validate({**saved, "worked_example": {**example, "misconception": "Lower is worse."}})
+        self.assertTrue(any("misconception together with its correction" in e for e in validate_teaching_plan(half, entry)))
 
     def test_the_review_scope_starts_from_the_designs_a_redesign_set_aside(self):
         from podcast_automate.teaching import review_scope

@@ -293,6 +293,24 @@ class EpisodeAudioTests(unittest.TestCase):
         self.assertEqual(result.stages["synthesis"].error.code, "invalid_audio")
 
 
+class ListeningSheetTests(unittest.TestCase):
+    def test_an_episode_in_parts_names_the_part_of_every_row(self):
+        """2026-10-02: each part's times start at 0:00, so a two-part sheet listed "0:00" twice without saying where."""
+        from podcast_automate.episode_audio import render_listening_sheet
+        script = fixtures.example_script()
+        chapters = [{"part": 1, "timestamp": "0:00", "title": "Erstes"}, {"part": 1, "timestamp": "12:30", "title": "Zweites"},
+                    {"part": 2, "timestamp": "0:00", "title": "Drittes"}]
+        sheet = render_listening_sheet(script, chapters)
+        self.assertIn("| Teil | Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |", sheet)
+        self.assertIn("| 1 | 0:00 | Erstes | | | |", sheet)
+        self.assertIn("| 2 | 0:00 | Drittes | | | |", sheet)
+        # A single part keeps the sheet as it was.
+        single = render_listening_sheet(script, chapters[:2])
+        self.assertIn("| Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |", single)
+        self.assertIn("| 12:30 | Zweites | | | |", single)
+        self.assertNotIn("Teil", single)
+
+
 class PartitionTests(unittest.TestCase):
     def test_balanced_chapter_parts_preserve_all_segments_in_order(self):
         original = fixtures.example_script()

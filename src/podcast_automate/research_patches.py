@@ -26,6 +26,16 @@ from .research_evidence import EVIDENCE_INSTRUCTIONS, SYNTHESIS_INSTRUCTIONS, cl
 PATCH_VERSION = "research_patch.v1"
 # Initial attempt plus this many corrections with the rejection named; then an explicit block.
 MAX_REJECTIONS = 2
+# The code a call stops with once its corrections are spent on rejections a check gave as ``invalid_model_output``.
+# That code means "no readable answer": nothing is saved and a resume asks again. Spent rejections are saved, a
+# resume replays them without a call, and only fresh attempts (run_budget.approve_fresh_attempts) clear them, so
+# such a stop is a correction loop like every other (2026-10-02: the Studio promised "Fortsetzen fragt erneut an").
+EXHAUSTED_CODE = "rejected_output"
+
+
+def exhausted_code(code):
+    """The stop code of a call whose corrections are spent: a correction-loop code, never ``invalid_model_output``."""
+    return EXHAUSTED_CODE if code == "invalid_model_output" else code
 
 
 class DossierPatch(Contract):
@@ -149,21 +159,23 @@ def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=T
                 continue
         if validate is not None and heal:
             # A rejected answer that today's rules accept (a rule was fixed since) is paid model work:
-            # the latest such one becomes the receipt instead of a new call or a stop. It is checked as a
-            # first attempt, so advisory checks that stand down only on the last attempt still apply.
-            for row in reversed(rejections):
+            # the latest such one becomes the receipt instead of a new call or a stop. It is checked as the
+            # attempt it answered: an earlier one as a first attempt, so advisory checks that stand down only on
+            # the last attempt still apply; the last one as the last attempt, so a call stopped after its spent
+            # rejections is settled on resume the way that attempt is settled today (2026-10-02).
+            for number, row in reversed(list(enumerate(rejections))):
                 try:
                     value = schema.model_validate(row["value"])
-                    validate(value, False)
+                    validate(value, number >= MAX_REJECTIONS)
                 except (AppError, ValueError):
                     continue
                 write_json(path, {"input_hash": signature, "sha256": digest(value.model_dump()), "value": value.model_dump(),
-                                  "adopted_rejection": rejections.index(row)})
+                                  "adopted_rejection": number})
                 return value
         if len(rejections) > MAX_REJECTIONS:
             last = rejections[-1]
             raise AppError(f"{last['message']} Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; "
-                           "die abgewiesenen Antworten sind gespeichert.", code=last["code"], status="blocked")
+                           "die abgewiesenen Antworten sind gespeichert.", code=exhausted_code(last["code"]), status="blocked")
         try:
             if rejections and on_retry:
                 on_retry(len(rejections) + 1)
@@ -183,6 +195,35 @@ def cached_call(folder, name, schema, prompt, generate, *, validate=None, heal=T
                 continue
         write_json(path, {"input_hash": signature, "sha256": digest(value.model_dump()), "value": value.model_dump()})
         return value
+
+
+def retire_stale_receipt(folder, name, schema, prompt):
+    """Set aside a receipt of ``name`` that answered an earlier prompt, so ``cached_call`` asks this one afresh.
+
+    For a call whose answer nothing else is bound to yet, such as the objection routing: a run stopped after one
+    routing part (a quota pause, the budget, spent rejections) and resumed after an update that changed the routing
+    prompt or its material raised ``invalid_research_checkpoint``, and the Studio offered only a new run
+    (2026-10-02). The receipt stays readable as ``<name>_superseded_receipt_NN.json``. A receipt whose checksum
+    fails is left for ``cached_call`` to refuse. Returns whether a receipt was set aside."""
+    path = folder / f"{name}.json"
+    if not path.exists():
+        return False
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    if saved.get("sha256") != digest(saved.get("value")):
+        return False
+    base = digest({"prompt": prompt, "schema": schema.model_json_schema(), "version": PATCH_VERSION})
+    rejections = rejected_receipts(folder, name)
+    if rejections and rejections[0].get("input_hash") != base:
+        rejections = []  # rejections of an earlier prompt, which cached_call sets aside before its check
+    signature = digest({"prompt": rejected_prompt(prompt, rejections), "schema": schema.model_json_schema(),
+                        "version": PATCH_VERSION})
+    if saved.get("input_hash") == signature:
+        return False
+    number = 0
+    while (folder / f"{name}_superseded_receipt_{number:02d}.json").exists():
+        number += 1
+    path.rename(folder / f"{name}_superseded_receipt_{number:02d}.json")
+    return True
 
 
 def supersede_rejections(folder, name, count):

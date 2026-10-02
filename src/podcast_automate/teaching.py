@@ -12,7 +12,7 @@ from pydantic import Field
 
 from .prompts import instructions
 from .errors import AppError
-from .editorial import TERMINOLOGY, TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING
+from .editorial import TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING, terminology
 from .models import Contract, Identifier, NonEmpty
 from .research_patches import corrected_call
 from .script_advisories import humanised
@@ -21,13 +21,19 @@ from .storage import atomic_text, digest, write_json
 
 TEACHING_VERSION = "teaching.v3"
 DESIGN_VERSION = "teaching_design.v2"
-DESIGN_PROMPT_VERSION = "teaching_design.v2-terms"
-DESIGN_REVIEW_VERSION = "teaching_design_review.v5-terms"
+# v3-goal (2026-10-02): the brief's series_goal, theory first, an optional misconception and limit, the finale as
+# the series' synthesis, and the topic's own terminology instead of the machine-learning names.
+DESIGN_PROMPT_VERSION = "teaching_design.v3-goal"
+DESIGN_REVIEW_VERSION = "teaching_design_review.v6-goal"
 # Stored in every script-review checkpoint: bumping it makes a resumed in-flight run re-run the
 # editorial review of its saved draft (draft and repair count are kept). That is intended whenever
 # a composed fragment such as episode_framing.txt changes meaning.
-EDITORIAL_REVIEW_VERSION = "editorial_review.v4-audit"
+EDITORIAL_REVIEW_VERSION = "editorial_review.v5-goal"
+TEACHING_REVIEW_VERSION = "teaching_review.v5-goal"
+LISTENER_VERSION = "listener_readback.v3-terms"
 CRITERIA = ("orientation", "progression", "worked_example", "synthesis", "dialogue", "depth", "spoken_clarity")
+# The bases a follow-up design review may give for a new issue that the code cannot check against earlier issues.
+CRITICAL_BASIS = {"factual_error", "unsupported_claim", "source_contradiction", "objective_unreachable"}
 
 
 class LearningObjective(Contract):
@@ -60,9 +66,12 @@ class WorkedExample(Contract):
     scene_ids: list[Identifier] = Field(min_length=1)
     setup: NonEmpty
     reasoning_steps: list[NonEmpty] = Field(min_length=2)
-    misconception: NonEmpty
-    correction: NonEmpty
-    limits: NonEmpty
+    # Empty where the episode needs none (2026-10-02). Required, they pushed every example toward a study with a
+    # measured result and a limit, also where a theory is explained through a qualitative case (the Asimov series).
+    # A saved plan keeps its texts and its dump; no checkpoint binds this schema.
+    misconception: str = Field(default="", description="A misconception listeners plausibly hold; empty when none.")
+    correction: str = Field(default="", description="Its correction; empty exactly when misconception is empty.")
+    limits: str = Field(default="", description="A limit of the example worth saying; empty when there is none.")
 
 
 class Synthesis(Contract):
@@ -202,6 +211,8 @@ def validate_teaching_plan(design, entry):
         errors.append("Learning objectives need known supporting findings.")
     if not set(design.worked_example.scene_ids) <= set(scene_ids):
         errors.append("Worked example refers to an unknown scene.")
+    if bool(design.worked_example.misconception) != bool(design.worked_example.correction):
+        errors.append("Worked example: give a misconception together with its correction, or neither.")
     premises = design.synthesis.premise_concept_ids
     if len(set(premises)) < 2 or not set(premises) <= set(concepts):
         errors.append("Synthesis must connect at least two distinct taught concepts.")
@@ -220,6 +231,39 @@ def validate_design_review(review, design, previous=()):
     if previous and fresh and len(review.issue_basis) != len(review.issues):
         raise AppError("Give issue_basis for every issue, in the same order: previous, editor_note or a critical defect. "
                        "Move every other new observation to advisories.", code="invalid_teaching_review", status="blocked")
+
+
+def _plain(text):
+    return " ".join(text.casefold().split()).rstrip(" .;:!?")
+
+
+def repeats_earlier(issue, previous):
+    """Whether ``issue`` holds one of the ``previous`` issues: word for word, or quoted with what is still missing."""
+    plain = _plain(issue)
+    return any(earlier and earlier in plain for earlier in map(_plain, previous))
+
+
+def scoped_review(review, previous, editor_note=None):
+    """The issues a follow-up review blocks on, decided in code (2026-10-02; until then every issue blocked whatever
+    basis the review gave it). An issue blocks when it holds an earlier issue, when its basis is the editor's note and
+    there is one, or when its basis is a critical defect. Every other issue, such as a basis previous that quotes no
+    earlier issue, becomes an advisory the writer receives and never enters the next round's scope. A first review,
+    without earlier issues, sets the scope: all its issues block. Applying it twice changes nothing."""
+    if not previous:
+        return review
+    # Without one basis per issue validate_design_review admits only repeated earlier issues.
+    bases = review.issue_basis if len(review.issue_basis) == len(review.issues) else ["previous"] * len(review.issues)
+    kept, kept_bases, demoted = [], [], []
+    for issue, basis in zip(review.issues, bases):
+        if repeats_earlier(issue, previous):
+            basis = "previous"
+        elif not ((basis == "editor_note" and editor_note) or basis in CRITICAL_BASIS):
+            demoted.append(issue)
+            continue
+        kept.append(issue)
+        kept_bases.append(basis)
+    return review.model_copy(update={"issues": kept, "issue_basis": kept_bases,
+                                     "advisories": list(dict.fromkeys([*review.advisories, *demoted]))})
 
 
 def review_scope(work):
@@ -262,8 +306,41 @@ def spoken_terms(concepts):
     return list(dict.fromkeys(term for term in (t.strip() for t in found) if term))
 
 
+def reviewed_design(folder, earlier):
+    """The reviewed teaching plan an earlier episode saved in ``folder``, or None when it has none that passed."""
+    try:
+        design = TeachingPlan.model_validate_json((folder / "plan.json").read_text(encoding="utf-8"))
+        review = TeachingPlanReview.model_validate_json((folder / "review.json").read_text(encoding="utf-8"))
+        saved = json.loads((folder / "checkpoint.json").read_text(encoding="utf-8"))
+        if (TeachingPlan.model_validate(saved["design"]) == design and
+            TeachingPlanReview.model_validate(saved["review"]) == review and
+            not validate_teaching_plan(design, earlier) and not review.issues and not review.research_gaps and
+            not any(g.required_for_objective for g in review.gap_assessments)):
+            return design
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def recorded_in_full(work, entry):
+    """Whether the teaching stage recorded this episode's context with every prerequisite in full, as before
+    2026-10-02. Such a run keeps that form: its script-review checkpoints bind the context
+    (script_checks.script_review_signature), and a changed context would restart their reviews."""
+    try:
+        rows = json.loads((work / "teaching" / entry.episode_id / "continuity.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(rows, list) and len(rows) > 1 and all(isinstance(r, dict) and "outline" in r for r in rows)
+
+
 def prerequisite_context(plan, entry, work):
-    """Use reviewed plans from this run; never substitute a future or unreviewed episode."""
+    """Use reviewed plans from this run; never substitute a future or unreviewed episode.
+
+    Only the nearest prerequisite, the latest earlier episode this one names as its own, comes in full: its outline
+    and reviewed design carry the example and the meanings this episode continues. Every other prerequisite comes
+    as a summary: its question, series_role, findings and, once reviewed, its destination and spoken terms
+    (2026-10-02: Asimov's finale builds on every earlier episode and got 474,000 characters of context, repeated in
+    its design, polish, review and every repair). The rows depend only on the plan and the saved designs."""
     previous = {}
     for candidate in plan.episodes:
         if candidate.episode_id == entry.episode_id:
@@ -278,40 +355,54 @@ def prerequisite_context(plan, entry, work):
                 if prerequisite not in required:
                     required.add(prerequisite)
                     pending.append(prerequisite)
+    direct = [identifier for identifier in previous if identifier in entry.prerequisite_episodes]
+    full = set(previous) if recorded_in_full(work, entry) else set(direct[-1:])
     rows = []
     for identifier, earlier in previous.items():
         if identifier not in required:
             continue
-        row = {"episode_id": identifier, "title": earlier.title, "status": "outline_only",
-               "outline": earlier.model_dump()}
-        folder = work / "teaching" / identifier
-        try:
-            design = TeachingPlan.model_validate_json((folder / "plan.json").read_text(encoding="utf-8"))
-            review = TeachingPlanReview.model_validate_json((folder / "review.json").read_text(encoding="utf-8"))
-            saved = json.loads((folder / "checkpoint.json").read_text(encoding="utf-8"))
-            if (TeachingPlan.model_validate(saved["design"]) == design and
-                TeachingPlanReview.model_validate(saved["review"]) == review and
-                not validate_teaching_plan(design, earlier) and not review.issues and not review.research_gaps and
-                not any(g.required_for_objective for g in review.gap_assessments)):
-                row.update(status="reviewed_teaching_plan", teaching_design={
+        design = reviewed_design(work / "teaching" / identifier, earlier)
+        status = "reviewed_teaching_plan" if design is not None else "outline_only"
+        if identifier in full:
+            row = {"episode_id": identifier, "title": earlier.title, "status": status, "outline": earlier.model_dump()}
+            if design is not None:
+                row.update(teaching_design={
                     "destination": design.destination, "objectives": [g.model_dump() for g in design.objectives],
                     "concepts": [c.model_dump() for c in design.concepts],
                     "worked_example": design.worked_example.model_dump()},
                     established_terms=spoken_terms(design.concepts))
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
+        else:
+            row = {"episode_id": identifier, "title": earlier.title, "status": status, "context": "summary",
+                   "central_question": earlier.central_question,
+                   **({"series_role": earlier.series_role} if earlier.series_role else {}),
+                   "finding_ids": list(earlier.finding_ids)}
+            if design is not None:
+                row.update(destination=design.destination, established_terms=spoken_terms(design.concepts))
         rows.append(row)
     return rows
+
+
+def project_terminology(config):
+    """The terminology rule for this project's topic and language (editorial.terminology)."""
+    return terminology(config.language, config.topic, getattr(config, "central_question", ""))
+
+
+def series_goal_field(config):
+    """The brief's series_goal for a payload, only when the project sets one (2026-10-02: the teaching layer was the
+    one stage that never saw it, and kept designing every episode around studies and their results)."""
+    value = getattr(config, "series_goal", None)
+    return {"series_goal": value} if value else {}
 
 
 def design_prompt(config, entry, dossier, sources, continuity=None, *, series_context=None, editor_note=None):
     """``editor_note`` is the editor's instruction for a new design after the corrections failed
     (run_budget.request_teaching_redesign); without it the prompt is exactly what it was before."""
     return (
-        TERMINOLOGY + TEACHING_SCOPE + (CONTINUITY if continuity else "") + EPISODE_FRAMING +
+        project_terminology(config) + TEACHING_SCOPE + (CONTINUITY if continuity else "") + EPISODE_FRAMING +
         instructions("teaching_design") + (" " + instructions("teaching_editor_note") if editor_note else "") + "\n" + json.dumps({
             "brief": {"language": config.language, "audience": config.audience_level,
-                      "prior_knowledge": config.prior_knowledge, "depth": config.depth_request},
+                      "prior_knowledge": config.prior_knowledge, "depth": config.depth_request,
+                      **series_goal_field(config)},
             "episode": entry.model_dump(), "series_context": series_context,
             "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
             "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
@@ -329,11 +420,14 @@ def render_teaching_plan(design):
     for scene in design.scenes:
         lines.extend([f"### {scene.scene_id}: {scene.entry_question}", "",
                       *[f"- {step}" for step in scene.reasoning_steps], "", scene.listener_can_now, ""])
-    lines.extend(["## Durchgearbeitetes Beispiel", "", design.worked_example.setup, "",
-                  *[f"- {step}" for step in design.worked_example.reasoning_steps], "",
-                  "Mögliche Fehlvorstellung: " + design.worked_example.misconception, "",
-                  design.worked_example.correction, "", "Grenze: " + design.worked_example.limits,
-                  "", "## Synthese und Übertragung", "",
+    example = design.worked_example
+    # A misconception and a limit are optional since 2026-10-02; a plan that has them reads as before.
+    lines.extend(["## Durchgearbeitetes Beispiel", "", example.setup, "",
+                  *[f"- {step}" for step in example.reasoning_steps], "",
+                  *(["Mögliche Fehlvorstellung: " + example.misconception, "", example.correction, ""]
+                    if example.misconception else []),
+                  *(["Grenze: " + example.limits, ""] if example.limits else []),
+                  "## Synthese und Übertragung", "",
                   *[f"- {step}" for step in design.synthesis.reasoning_steps], "",
                   design.synthesis.conclusion, "", design.synthesis.transfer_question, ""])
     return "\n".join(lines)
@@ -381,6 +475,8 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
         if review is not None:
             try:
                 validate_design_review(review, design, review_previous)
+                # A review saved before its scope was set in code is held to that scope too.
+                review = scoped_review(review, review_previous, editor_note)
             except AppError:
                 # Saved before its check ran: reviewed again instead of stopping every resume here.
                 review = None
@@ -388,12 +484,13 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
             review_previous = list(scope)
             followup = "+followup" if review_previous else ""
             review = corrected_call(invoke,
-                TERMINOLOGY + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING +
+                project_terminology(config) + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING +
                 instructions("teaching_design_review") +
                 (" " + instructions("teaching_editor_note_review") if editor_note else "") +
                 (" " + instructions("teaching_design_review_followup") if review_previous else "") + "\n" +
                 json.dumps({"brief": {"audience": config.audience_level,
-                    "prior_knowledge": config.prior_knowledge, "depth": config.depth_request},
+                    "prior_knowledge": config.prior_knowledge, "depth": config.depth_request,
+                    **series_goal_field(config)},
                     "episode": entry.model_dump(), "design": design.model_dump(), "series_context": series_context,
                     "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                     "sources": sources, "prerequisite_context": continuity or [],
@@ -401,6 +498,8 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                     **({"previous_issues": review_previous} if review_previous else {})}, ensure_ascii=False),
                 TeachingPlanReview, DESIGN_REVIEW_VERSION + noted + followup,
                 lambda answer, previous=review_previous: validate_design_review(answer, design, previous))
+            # Code, not the review, decides which of its issues still block (design rule, 2026-09-30).
+            review = scoped_review(review, review_previous, editor_note)
             scope = list(dict.fromkeys([*scope, *review.issues]))
             write_json(work / "review_scope.json", scope)
             save()
@@ -427,7 +526,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                                " ".join(issues), code="teaching_design_failed", status="blocked")
             repaired = corrected_call(invoke, prompt + "\n" + instructions("teaching_design_focused_repair") + "\n" +
                 json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False),
-                TeachingPlanRepair, "teaching_design_focused_repair.v1" + noted,
+                TeachingPlanRepair, "teaching_design_focused_repair.v2-goal" + noted,
                 lambda answer: validate_focused_repair(answer, issues))
             focused_repair = True
             save()
@@ -437,7 +536,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
             continue
         design = invoke(prompt + "\n" + instructions("teaching_design_repair") + "\n" +
                         json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False),
-                        TeachingPlan, "teaching_design_repair.v1" + noted)
+                        TeachingPlan, "teaching_design_repair.v2-goal" + noted)
         repairs += 1
         review = None
         save()
@@ -542,16 +641,23 @@ def validate_teaching_review(review, design, script, reader=None):
 
 
 def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_knowledge, depth, series_context=None,
-                    parallel=False):
+                    parallel=False, series_goal=None, language=None):
     """Fresh reader has only dialogue and questions. Examiner sees expected reasoning too.
 
     The listener and the editorial review read the script independently. With ``parallel`` (a run whose text
     work is parallel) both ask at once and the teaching review, which reads the listener's answers, follows:
-    one after another they took about fifteen minutes per pass on the runs of 2026-09-29."""
+    one after another they took about fifteen minutes per pass on the runs of 2026-09-29.
+
+    ``series_goal`` (the brief's) reaches the editorial and the teaching review, which judge by it; the listener
+    answers from the dialogue alone and never sees it. The terminology rule follows the series' topic and the
+    project's ``language``; without a language a machine-learning topic keeps its English names."""
+    context = series_context or {}
+    terms = terminology(language, context.get("topic", ""), context.get("central_question", ""))
+    aim = {"series_goal": series_goal} if series_goal else {}
     signature = digest({"version": TEACHING_VERSION, "script": script.model_dump(), "design": design.model_dump(),
                         "audience": audience, "prior_knowledge": prior_knowledge, "depth": depth,
-                        "editorial": TERMINOLOGY + TEACHING_SCOPE + EPISODE_FRAMING,
-                        "series_context": series_context})
+                        "editorial": terms + TEACHING_SCOPE + EPISODE_FRAMING,
+                        "series_context": series_context, **aim})
     work = directory / signature
 
     def cached(name, output_type, prompt, version, check):
@@ -579,16 +685,16 @@ def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_
                       "questions": [{"objective_id": g.objective_id, "question": g.question} for g in design.objectives]}
     def listen():
         return cached("listener", ListenerReadback,
-            TERMINOLOGY + TEACHING_SCOPE +
+            terms + TEACHING_SCOPE +
             instructions("listener_readback") + "\n" +
-            json.dumps(reader_payload, ensure_ascii=False), "listener_readback.v2",
+            json.dumps(reader_payload, ensure_ascii=False), LISTENER_VERSION,
             lambda answer: validate_readback(answer, design, script))
 
     def edit():
         return cached("editorial", EditorialReview,
-            TERMINOLOGY + TEACHING_SCOPE + EPISODE_FRAMING +
+            terms + TEACHING_SCOPE + EPISODE_FRAMING +
             instructions("editorial_review") + "\n" + json.dumps({"audience": audience, "prior_knowledge": prior_knowledge,
-                "depth": depth, "series_context": series_context, "script": script.model_dump()}, ensure_ascii=False),
+                "depth": depth, **aim, "series_context": series_context, "script": script.model_dump()}, ensure_ascii=False),
             EDITORIAL_REVIEW_VERSION, lambda answer: validate_editorial(answer, script))
 
     if parallel:
@@ -599,11 +705,11 @@ def assess_teaching(script, design, invoke, directory: Path, *, audience, prior_
     else:
         reader, editorial = listen(), edit()
     review = cached("review", TeachingReview,
-        TERMINOLOGY + TEACHING_SCOPE + EPISODE_FRAMING +
+        terms + TEACHING_SCOPE + EPISODE_FRAMING +
         instructions("teaching_review") + "\n" +
-        json.dumps({"audience": audience, "prior_knowledge": prior_knowledge, "depth": depth,
+        json.dumps({"audience": audience, "prior_knowledge": prior_knowledge, "depth": depth, **aim,
                     "design": design.model_dump(), "script": script.model_dump(), "series_context": series_context,
-                    "listener": reader.model_dump()}, ensure_ascii=False), "teaching_review.v4-audit",
+                    "listener": reader.model_dump()}, ensure_ascii=False), TEACHING_REVIEW_VERSION,
         lambda answer: validate_teaching_review(answer, design, script, reader))
     issues = []
     for item in [*editorial.checks, *review.checks, *review.objectives]:

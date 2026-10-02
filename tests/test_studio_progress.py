@@ -253,6 +253,77 @@ class StudioProgressTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, 4)
         self.assertEqual(json.loads((self.work / "progress.json").read_text())["model_calls"], 4)
 
+    def test_publisher_writes_only_a_changed_progress_and_once_a_minute_as_the_heartbeat(self):
+        """2026-10-02: 2-2.6 MB of progress.json and research_activity.json were rewritten with fsync every 2 s,
+        unchanged or not, and research_activity.json read and rewritten outside its writer's lock."""
+        job_path = self.root / "studio/job.json"
+        write_json(job_path, {"id": "job_one", "status": "running", "run": self.run})
+        write_json(self.work / "research_activity.json", {"activity": "Gehört dem Rechercheprozess"})
+        activity = (self.work / "research_activity.json").read_bytes()
+        clock, ticks, written = [1000.0], [], []
+
+        def tick(_):
+            ticks.append(1)
+            clock[0] += 2
+            if len(ticks) == 3:
+                write_json(self.work / "budget.json", {"model_calls": 5})  # a real change
+            if len(ticks) == 4:
+                clock[0] += 60  # a minute without change: the heartbeat write
+            if len(ticks) == 6:
+                write_json(job_path, {"id": "job_one", "status": "completed"})
+
+        def write(path, data):
+            written.append(path.name)
+            write_json(path, data)
+        with patch("podcast_automate.studio_progress.write_json", side_effect=write), \
+                patch("podcast_automate.studio_progress.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("time.sleep", side_effect=tick):
+            watch(self.root, "job_one")
+        self.assertEqual(written, ["progress.json"] * 3, "first state, the change, the heartbeat")
+        self.assertEqual(json.loads((self.work / "progress.json").read_text())["model_calls"], 5)
+        self.assertEqual((self.work / "research_activity.json").read_bytes(), activity)
+
+    def test_the_assignment_and_the_ledger_are_derived_again_only_after_their_files_changed(self):
+        """2026-10-02: each poll parsed the 16 MB question state for the assignment view and the ledger again."""
+        from podcast_automate import research_status
+        write_json(self.work / "research_activity.json", {"activity": "Eine Frage wird geprüft"})
+        write_json(self.work / "research_questions.json", {"closed": 0, "total": 1, "phase": "questions", "questions": [
+            {"id": "q1", "question": "Warum?", "status": "researching", "reason": "Noch offen."}]})
+        write_json(self.work / "question_research/state.json", {"value": {"tasks": {}}, "sha256": "x"})
+        run = {**self.run, "kind": "research"}
+        with patch("podcast_automate.research_status.work_insight", wraps=research_status.work_insight) as insight, \
+                patch("podcast_automate.studio_progress.read", wraps=read) as reads:
+            first = script_progress(self.root, run)
+            second = script_progress(self.root, run)
+            self.assertEqual(insight.call_count, 1)
+            self.assertEqual(sum(call.args[0].name == "research_questions.json" for call in reads.call_args_list), 1)
+            self.assertEqual(first["research_questions"], second["research_questions"])
+            self.assertEqual(first["work_insight"], second["work_insight"])
+            write_json(self.work / "question_research/state.json", {"value": {"tasks": {}, "phase": "audit"}, "sha256": "x"})
+            third = script_progress(self.root, run)
+            self.assertEqual(insight.call_count, 2)
+            self.assertNotEqual(third["work_insight"]["assignment"], first["work_insight"]["assignment"])
+            write_json(self.work / "research_questions.json", {"closed": 1, "total": 1, "phase": "questions", "questions": []})
+            self.assertEqual(script_progress(self.root, run)["research_questions"]["closed"], 1)
+            # The project card's view leaves the assignment out.
+            self.assertIsNone(script_progress(self.root, run, light=True)["work_insight"])
+            self.assertEqual(insight.call_count, 2)
+
+    def test_the_limits_shown_are_the_projects_current_ones_with_the_runs_raises(self):
+        """Limits are no longer part of a run's hash; the run's snapshot showed the limits it was started with."""
+        from podcast_automate.models import TopicBrief
+        from podcast_automate.storage import write_yaml
+        write_yaml(self.work / "project_snapshot.yaml", {"research_limits": {"model_calls": 100}})
+        write_yaml(self.root / "project.yaml", TopicBrief(topic="Projekt", research_limits={"model_calls": 900,
+                                                                                             "search_rounds": 30}).model_dump(mode="json"))
+        write_json(self.work / "research_activity.json", {"activity": "Eine Frage wird geprüft"})
+        research = script_progress(self.root, {**self.run, "kind": "research"})
+        self.assertEqual((research["model_call_limit"], research["search_round_limit"]), (900, 30))
+        self.assertEqual(script_progress(self.root, self.run)["model_call_limit"], 900)
+        # Without a readable project file the snapshot still answers.
+        (self.root / "project.yaml").unlink()
+        self.assertEqual(script_progress(self.root, self.run)["model_call_limit"], 100)
+
     def test_publisher_exits_if_job_stays_unreadable(self):
         with patch("time.sleep") as sleep:
             watch(self.root, "job_one")

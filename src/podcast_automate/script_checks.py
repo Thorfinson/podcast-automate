@@ -20,9 +20,15 @@ from .storage import digest, file_hash, write_json
 from .teaching import prerequisite_context
 
 MAX_PLAN_REPAIRS = 3
+# v7: core and supporting findings, research limits placed in episodes, the final episode as a whole the synthesis.
+SERIES_PLAN_VERSION = "series_plan.v7-core-limits"
+# The repair call repeats the planning prompt, so its meaning changed with it.
+SERIES_PLAN_REPAIR_VERSION = "series_plan_repair.v3-core-limits"
 
 
-def validate_plan(plan: SeriesPlan, dossier: ResearchDossier) -> list[str]:
+def validate_plan(plan: SeriesPlan, dossier: ResearchDossier, *, limit_ids=None) -> list[str]:
+    """``limit_ids`` are the ids of the research limits the planner was given; without them a plan's
+    research_limit_ids are not checked (an inherited plan, a plan made before research limits reached it)."""
     errors = []
     known = {f.id for f in dossier.findings}
     episode_ids = [e.episode_id for e in plan.episodes]
@@ -31,7 +37,7 @@ def validate_plan(plan: SeriesPlan, dossier: ResearchDossier) -> list[str]:
     omitted = [item.finding_id for item in plan.omitted_findings]
     if len(omitted) != len(set(omitted)) or not set(omitted) <= known:
         errors.append("Omissions must refer to distinct known finding IDs.")
-    covered, earlier = set(), set()
+    covered, supporting, earlier = set(), set(), set()
     for episode in plan.episodes:
         scene_ids = [s.scene_id for s in episode.scenes]
         if len(scene_ids) != len(set(scene_ids)):
@@ -41,11 +47,23 @@ def validate_plan(plan: SeriesPlan, dossier: ResearchDossier) -> list[str]:
             errors.append(f"{episode.episode_id}: unknown finding IDs.")
         scene_findings = {f for scene in episode.scenes for f in scene.finding_ids}
         if scene_findings != selected:
-            errors.append(f"{episode.episode_id}: scenes must cover exactly the episode's findings.")
+            errors.append(f"{episode.episode_id}: scenes must cover exactly the episode's core finding_ids.")
+        backing = set(episode.supporting_finding_ids)
+        if not backing <= known or backing & selected:
+            errors.append(f"{episode.episode_id}: supporting_finding_ids must be known finding IDs and never one of "
+                          "the episode's own core finding_ids.")
+        supporting.update(backing)
+        if limit_ids is not None and not set(episode.research_limit_ids) <= set(limit_ids):
+            errors.append(f"{episode.episode_id}: research_limit_ids may only name limit_id values from research_limits.")
         if not set(episode.prerequisite_episodes) <= earlier:
             errors.append(f"{episode.episode_id}: prerequisites must be earlier episodes.")
-        if not any(s.purpose == "worked_example" for s in episode.scenes):
-            errors.append(f"{episode.episode_id}: include a worked example, not just definitions.")
+        # The final episode of a series is as a whole its synthesis (2026-10-02): a synthesis scene that traces a case
+        # through the assembled answer may stand in for its worked example. A qualitative case counts everywhere.
+        finale = len(plan.episodes) > 1 and episode is plan.episodes[-1]
+        if not any(s.purpose == "worked_example" or (finale and s.purpose == "synthesis") for s in episode.scenes):
+            errors.append(f"{episode.episode_id}: include a worked_example scene, not just definitions: one concrete "
+                          "case traced step by step through the idea; a qualitative case without numbers counts." +
+                          (" In the final episode a synthesis scene that traces such a case also counts." if finale else ""))
         if not episode.series_role.strip():
             errors.append(f"{episode.episode_id}: state in series_role what this episode contributes to the answer "
                           "to the series' central question.")
@@ -55,8 +73,12 @@ def validate_plan(plan: SeriesPlan, dossier: ResearchDossier) -> list[str]:
                           "episodes, never the episode's own.")
         covered.update(selected)
         earlier.add(episode.episode_id)
-    if covered | set(omitted) != known or covered & set(omitted):
-        errors.append("Assign every finding to episodes or explain its omission, never both.")
+    placed = covered | supporting
+    if placed | set(omitted) != known or placed & set(omitted):
+        unplaced = sorted(known - placed - set(omitted))
+        named = ", ".join(unplaced[:20]) + (f" and {len(unplaced) - 20} more" if len(unplaced) > 20 else "")
+        errors.append("Place every finding as core (finding_ids) or supporting (supporting_finding_ids) in an episode, "
+                      "or explain its omission, never both." + (f" Not placed: {named}." if unplaced else ""))
     edges = {item: set() for item in known}
     for dependency in plan.dependencies:
         if dependency.before not in known or dependency.after not in known:
@@ -142,12 +164,13 @@ def load_plan_checkpoint(work, signature, *, allow_legacy=False):
     return plan, repairs
 
 
-def checked_series_plan(work, prompt, invoke, dossier, central_question, signature, *, allow_legacy=False):
+def checked_series_plan(work, prompt, invoke, dossier, central_question, signature, *, allow_legacy=False,
+                        limit_ids=None):
     plan, repairs = load_plan_checkpoint(work, signature, allow_legacy=allow_legacy)
     if plan is None:
-        plan = invoke(prompt, SeriesPlan, "series_plan.v5-roles")
+        plan = invoke(prompt, SeriesPlan, SERIES_PLAN_VERSION)
     while True:
-        errors = validate_plan(plan, dossier)
+        errors = validate_plan(plan, dossier, limit_ids=limit_ids)
         if plan.central_question != central_question:
             errors.append("Keep the project's central_question unchanged.")
         conflicts = plan_dependency_conflicts(plan, dossier)
@@ -163,7 +186,7 @@ def checked_series_plan(work, prompt, invoke, dossier, central_question, signatu
             raise AppError(plan_failure_message(conflicts), code="invalid_plan", status="blocked")
         repair = ("\n" + instructions("series_plan_repair") + "\n")
         plan = invoke(prompt + repair + json.dumps({"errors": errors, "dependency_conflicts": conflicts,
-                      "draft": plan.model_dump()}, ensure_ascii=False), SeriesPlan, "series_plan_repair.v2")
+                      "draft": plan.model_dump()}, ensure_ascii=False), SeriesPlan, SERIES_PLAN_REPAIR_VERSION)
         repairs += 1
 
 
@@ -172,8 +195,8 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
     if script.episode_id != episode.episode_id or script.purpose != "deep_dive":
         errors.append("Keep the requested episode ID and deep_dive purpose.")
     scenes = {s.scene_id: s for s in episode.scenes}
-    # Findings recalled from earlier episodes may be cited in any scene (episode_findings).
-    available_findings, introduced = {}, set(episode.recap_finding_ids)
+    # Findings recalled from earlier episodes and supporting ones may be cited in any scene (episode_findings).
+    available_findings, introduced = {}, {*episode.recap_finding_ids, *episode.supporting_finding_ids}
     for scene in episode.scenes:
         introduced.update(scene.finding_ids)
         available_findings[scene.scene_id] = set(introduced)
@@ -189,8 +212,12 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
         covered.update(segment.knowledge_refs)
         if re.search(r"https?://|source_id|knowledge_refs|src_[a-f0-9]+|\[[^\]]+\]\(", segment.text):
             errors.append(f"{segment.segment_id}: citations or internal metadata must not be spoken.")
-    if not set(episode.finding_ids) <= covered:
+    # Only the core: supporting and recalled findings may be cited and need not be (two tiers, 2026-10-02).
+    missing = [f for f in dict.fromkeys(episode.finding_ids) if f not in covered]
+    if missing:
         errors.append("The dialogue must cover every planned finding.")
+        errors.append("Core findings (finding_ids) not yet cited: " + ", ".join(missing) +
+                      ". Supporting and recalled findings need not be cited.")
     if {s.speaker_id for s in script.segments} != {"host_a", "host_b"}:
         errors.append("Use both hosts in the dialogue.")
     metrics = script_metrics(script)
@@ -253,6 +280,64 @@ def planning_dossier(dossier: ResearchDossier) -> dict:
     return data
 
 
+def research_limits(gate: dict, dossier: ResearchDossier) -> list[dict]:
+    """The limits the research run noted for the script, each with the findings it concerns where the gate names them.
+
+    research_quality.render_quality tells the user the script states them ("das Skript benennt sie"), but until
+    2026-10-02 the script lane read only ``passed`` and the hashes of research_quality_gate.json. Read here: each
+    requirement's source limits and noted limits, the completeness objections noted as limits, the objections kept
+    after two reworks (their task's findings) and the follow-up assessment's script notes. The gate is a hashed
+    output of the completed research run, so the run inputs' ``research_run`` already binds it; a gate written
+    before these keys existed yields no limits."""
+    known = {f.id for f in dossier.findings}
+    rows = {}
+
+    def add(text, finding_ids=(), question=None):
+        if not isinstance(text, str) or not text.strip():
+            return
+        row = rows.setdefault(text.strip(), {"text": text.strip(), "finding_ids": []})
+        row["finding_ids"] = list(dict.fromkeys([*row["finding_ids"], *(f for f in finding_ids if f in known)]))
+        if question and "question" not in row:
+            row["question"] = question
+    for requirement in gate.get("requirements") or []:
+        # A requirement kept as a recorded limit (nothing it rests on changed since its last verdict) is a limit like a
+        # source limit; one with nothing listed as missing is named by its reason.
+        limited = requirement.get("source_limit") or requirement.get("recorded_limit")
+        missing = (requirement.get("missing") or [requirement.get("reason")]) if limited else []
+        items = [*missing, *(requirement.get("noted") or [])]
+        for item in items:
+            add(item, requirement.get("finding_ids") or [], requirement.get("question"))
+    for item in gate.get("noted_limits") or []:
+        add(item)
+    for row in gate.get("noted_after_reworks") or []:
+        prefix = f"{row.get('task_id')}__"
+        add(row.get("objection"), [f.id for f in dossier.findings if f.id.startswith(prefix)])
+    for item in gate.get("script_notes") or []:
+        add(item)
+    return [{"limit_id": f"limit_{number:03d}", **row} for number, row in enumerate(rows.values(), 1)]
+
+
+def episode_limits(plan: SeriesPlan, entry: EpisodePlan, limits: list[dict]) -> list[dict]:
+    """The research limits this episode states, each once in the series: those the plan placed here, and one the plan
+    placed nowhere at the first episode whose core or supporting findings it concerns, else at the final episode,
+    whose synthesis names the limits that remain. ``finding_ids`` keeps the affected findings this episode cites."""
+    placed = {key for episode in plan.episodes for key in episode.research_limit_ids}
+    cited = set(episode_findings(entry))
+    rows = []
+    for limit in limits:
+        if limit["limit_id"] in placed:
+            here = limit["limit_id"] in entry.research_limit_ids
+        else:
+            owner = next((episode for episode in plan.episodes
+                          if set(limit["finding_ids"]) & {*episode.finding_ids, *episode.supporting_finding_ids}),
+                         plan.episodes[-1])
+            here = owner.episode_id == entry.episode_id
+        if here:
+            rows.append({"text": limit["text"], **({"question": limit["question"]} if limit.get("question") else {}),
+                         "finding_ids": [f for f in limit["finding_ids"] if f in cited]})
+    return rows
+
+
 def episode_sources(episode, dossier, context, index=None):
     """Keep source context around evidence anchors, including paragraphs omitted by the dossier sampler."""
     cited = set(episode_findings(episode))
@@ -294,7 +379,8 @@ def outline_hash(work: Path) -> str:
                    ("series_plan.json", "knowledge_model.json", "inputs.json", "script_request.json")})
 
 
-SCRIPT_REVIEW_VERSION = "script_review.v10-sources"
+# v11: core and supporting findings, research limits back a stated limit, framing checked by episode_framing alone.
+SCRIPT_REVIEW_VERSION = "script_review.v11-core-limits"
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.

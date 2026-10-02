@@ -1,8 +1,12 @@
 """Read-only progress derived from saved results, without exposing prompts or credentials."""
 from __future__ import annotations
 
+import copy
 import logging
+import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,10 +18,15 @@ from .errors import AppError
 from .models import ResearchLimits
 from .research_ledger import reopenable
 from .script_checks import MAX_PLAN_REPAIRS
-from .storage import read_yaml, write_json
+from .storage import digest, load_project, read_yaml, write_json
 from .storage import read_optional_json as read
 from .studio_messages import clean
 from .studio_scripts import script_previews
+
+# The publisher rewrites progress.json only when its content changed, and at least this often while the worker
+# lives: the file's age is the Studio's heartbeat (studio.Studio.job, app.js heartbeatNote warns after 300 s).
+# 2026-10-02: it rewrote 2-2.6 MB with fsync every 2 s, and research_activity.json beside it.
+HEARTBEAT_SECONDS = 60
 
 
 def text_at(path):
@@ -25,6 +34,58 @@ def text_at(path):
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+# Values derived from large run files, kept while the files they read are unchanged. 2026-10-02: one overview poll
+# parsed the 16 MB question state, hashed a 12-16 MB inputs.json and every script, about 65 MB and 0.6 s, with the
+# Studio's mutex held. A key names what was derived and from where; a file counts as unchanged while its path, file
+# id, modification time (ns) and size are. The file id changes with every atomic replace (storage.write_json), also
+# within one tick of the clock. Callers treat a cached value as read-only.
+_MEMO = {}
+_MEMO_LIMIT = 256
+_MEMO_LOCK = threading.Lock()
+
+
+def stamp(path):
+    """A file's identity for the caches; None while it is missing."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info.st_ino, info.st_mtime_ns, info.st_size
+
+
+def memo(key, paths, compute):
+    """``compute()``, again only after one of ``paths`` changed. The stamps are taken first, so a file replaced
+    while it is read leaves a stale stamp and the next call computes anew."""
+    signature = tuple(stamp(path) for path in paths)
+    with _MEMO_LOCK:
+        hit = _MEMO.get(key)
+    if hit is not None and hit[0] == signature:
+        return hit[1]
+    value = compute()
+    with _MEMO_LOCK:
+        _MEMO.pop(key, None)
+        while len(_MEMO) >= _MEMO_LIMIT:
+            _MEMO.pop(next(iter(_MEMO)))
+        _MEMO[key] = (signature, value)
+    return value
+
+
+def state_facts(work):
+    """What the progress view needs of a research run's question state, without keeping the 16 MB state itself:
+    its prompt generation, each task's reopenability and web attempts, and the recorded objections."""
+    path = work / "question_research/state.json"
+
+    def compute():
+        state = (read(path, {}) or {}).get("value") or {}
+        tasks = state.get("tasks") or {}
+        return {"prompt_generation": int(state.get("prompt_generation", 1) or 1),
+                "tasks": {task_id: {"reopenable": bool(task) and reopenable(task, state.get("limits")),
+                                    "web_attempts": task.get("web_attempts", 0)}
+                          for task_id, task in tasks.items() if isinstance(task, dict)},
+                "objections": state.get("objections") or {}}
+    return memo(("state_facts", str(path)), [path], compute)
 
 
 ACTIVITIES = {
@@ -47,6 +108,19 @@ ACTIVITIES = {
 CALL_NAME = re.compile(r"call_\d+")
 
 
+def run_limits(root, work, input_hash, snapshot=None):
+    """The limits a run works under: the project's current ones with the run's approved raises, as the worker and
+    run_budget compute them. Limits are no longer part of a run's hash (storage.bound_brief), so the run's snapshot
+    showed outdated ones (2026-10-02); it serves only while project.yaml cannot be read."""
+    try:
+        limits = load_project(root).research_limits
+    except (AppError, ValueError, OSError):
+        if snapshot is None:
+            snapshot = read_yaml(work / "project_snapshot.yaml")
+        limits = ResearchLimits.model_validate((snapshot or {}).get("research_limits", {}))
+    return effective_limits(work, limits, input_hash)
+
+
 def disputed_objections(work, run, questions):
     """Every objection the current audit round disputed, the one the run stopped on first, each with the
     editor's decision once there is one; empty unless the round's stop file exists."""
@@ -63,8 +137,7 @@ def disputed_objections(work, run, questions):
     known = {oid: check["objection"] for oid, check in checks.items() if check.get("objection")}
     if len(known) < len(checks):
         # Only the stop file carries its objection; the ledger has the others.
-        state = (read(work / "question_research/state.json", {}) or {}).get("value") or {}
-        known.update({oid: row for oid, row in (state.get("objections") or {}).items() if oid in checks and oid not in known})
+        known.update({oid: row for oid, row in state_facts(work)["objections"].items() if oid in checks and oid not in known})
     try:
         decisions = dispute_decisions(work, run.get("input_hash"))
     except AppError:
@@ -121,9 +194,10 @@ def call_labels(work, calls, titles):
     return labels
 
 
-def script_progress(root, run, since=None):
+def script_progress(root, run, since=None, light=False):
+    """``light`` is the project card's view: no previews, assignment or live output, only what a card decides on."""
     if run and run.get("kind") == "research":
-        return research_progress(root, run, since)
+        return research_progress(root, run, since, light=light)
     if not run or run.get("kind") != "script":
         return None
     work = manifest_path(root, run["run_id"]).parent
@@ -208,9 +282,7 @@ def script_progress(root, run, since=None):
         issues = review.get("issues", [])
     model_call_limit = None
     try:
-        snapshot = read_yaml(work / "project_snapshot.yaml")
-        limits = ResearchLimits.model_validate(snapshot.get("research_limits", {}))
-        model_call_limit = effective_limits(work, limits, run.get("input_hash")).model_calls
+        model_call_limit = run_limits(root, work, run.get("input_hash")).model_calls
     except (AppError, ValueError, OSError):
         pass
     # Keep the existing progress envelope readable by Studio instances already running during an update.
@@ -231,7 +303,7 @@ def script_progress(root, run, since=None):
             "budget_projection": read(work / "budget_projection.json"),
             "execution": request.get("execution", {"text": "sequential", "audio": "sequential"}),
             "active_episodes": active_episodes,
-            "script_previews": script_previews(root, run),
+            "script_previews": [] if light else script_previews(root, run),
             "review_issues": issues}
 
 
@@ -250,27 +322,23 @@ def plan_review_state(work, input_hash, awaiting):
             "approval": approval.model_dump(mode="json") if approval else None}
 
 
-def research_progress(root, run, since=None):
-    work = manifest_path(root, run["run_id"]).parent
-    data = read(work / "research_activity.json", {})
-    if not data:
-        return None
-    report = read(work / "research_quality_gate.json", data.get("research_quality"))
+def ledger_view(root, work, input_hash):
+    """The question ledger as the Studio shows it, with the approvals written since the worker last saved it. Kept
+    while the ledger, the approval files and the state are unchanged; read-only for its callers."""
+    files = ["research_questions.json", "gap_approvals.json", "retry_requests.json", "criterion_gaps.json",
+             "residual_finish.json", "question_research/state.json"]
+    return memo(("ledger", str(work), input_hash, str(root)), [work / name for name in files],
+                lambda: _ledger_view(root, work, input_hash))
+
+
+def _ledger_view(root, work, input_hash):
     questions = read(work / "research_questions.json")
-    responses = list((work / "calls").glob("call_*/response.json"))
-    pending = open_calls(work, run, since)
-    # A failed task of a parallel run: the other tasks finish their current call before the run stops.
-    marker = read(work / "question_research/stopping.json", {}) or {}
-    stopping = ({"question": marker.get("question"), "code": marker.get("code")}
-                if run.get("status") == "running" and marker and (not since or (marker.get("at") or "") >= since) else None)
-    budget = read(work / "budget.json", {})
-    snapshot = read_yaml(work / "project_snapshot.yaml") if (work / "project_snapshot.yaml").exists() else {}
-    limits = ResearchLimits.model_validate(snapshot.get("research_limits", {}))
-    effective = effective_limits(work, limits, run.get("input_hash"))
-    if questions and isinstance(questions.get("questions"), list):
+    if not isinstance(questions, dict):
+        return questions
+    if isinstance(questions.get("questions"), list):
         # An approval written while no worker runs is shown at once; the ledger adopts it on resume.
         try:
-            approved = accepted_gaps(work, run.get("input_hash"))
+            approved = accepted_gaps(work, input_hash)
         except AppError:
             approved = {}
         if approved:
@@ -283,7 +351,7 @@ def research_progress(root, run, since=None):
                 questions["phase"] = "questions"
         # A requested new attempt is shown at once as well; the row stays blocked until the resume adopts it.
         try:
-            retries = retry_requests(work, run.get("input_hash"))
+            retries = retry_requests(work, input_hash)
         except AppError:
             retries = {}
         if retries:
@@ -299,7 +367,7 @@ def research_progress(root, run, since=None):
                 questions["phase"] = "questions"
         # So is an accepted access gap; the resume reopens the question with the criterion narrowed.
         try:
-            access = criterion_gaps(work, run.get("input_hash"))
+            access = criterion_gaps(work, input_hash)
         except AppError:
             access = []
         if access:
@@ -315,38 +383,69 @@ def research_progress(root, run, since=None):
         if "keeps_spent_answers" not in questions and questions.get("phase") == "blocked":
             # A ledger saved before the field existed (the runs stopped on 2026-10-01): decided from the run's state,
             # once, since the next save of a resumed run writes it.
-            state = (read(work / "question_research/state.json", {}) or {}).get("value") or {}
-            questions["keeps_spent_answers"] = int(state.get("prompt_generation", 1)) >= 3
+            questions["keeps_spent_answers"] = state_facts(work)["prompt_generation"] >= 3
         if "reopenable" not in questions:
             # A ledger written before the field existed: decide it from the saved rows, as a resume would,
             # so the Studio offers the resume that gives these blocks their web search.
-            state = (read(work / "question_research/state.json", {}) or {}).get("value") or {}
-            tasks = state.get("tasks") or {}
+            tasks = state_facts(work)["tasks"]
             for row in questions["questions"]:
                 task = tasks.get(row.get("id")) or {}
-                row["reopenable"] = bool(task) and reopenable(task, state.get("limits"))
+                row["reopenable"] = bool(task.get("reopenable"))
                 row.setdefault("web_attempts", task.get("web_attempts", 0))
             questions["reopenable"] = sum(bool(r.get("reopenable")) for r in questions["questions"])
-    disputes = disputed_objections(work, run, questions)
-    if isinstance(questions, dict):
-        try:
-            questions["residual_finish"] = residual_finish(work, run.get("input_hash"))
-        except AppError:
-            questions["residual_finish"] = None
-    counts = questions or report or {}
+    try:
+        questions["residual_finish"] = residual_finish(work, input_hash)
+    except AppError:
+        questions["residual_finish"] = None
+    for row in questions.get("questions") or []:
+        if isinstance(row, dict):
+            row.update({key: clean(row[key], root) for key in ("reason", "activity") if isinstance(row.get(key), str)})
+    return questions
+
+
+def insight_view(work, run, responses):
+    """The current assignment (research_status.work_insight), kept while the files it reads are unchanged: the
+    newest call's records, the trace, the question state and the answers so far."""
     from .research_status import work_insight
+    calls = sorted((work / "calls").glob("call_*/output_schema.json"))
+    if not calls:
+        return None
+    last = calls[-1].parent
+    files = [calls[-1], *(last / name for name in ("activity.json", "diagnostics.json", "response.json", "failure.json",
+                                                    "work_context.json")),
+             work / "question_research/state.json", work / "model_trace.json"]
+    newest = max((stamp(path) or (0, 0, 0))[1] for path in responses) if responses else 0
+    key = ("insight", str(work), run.get("status"), len(calls), len(responses), newest)
+    # A copy: the caller cleans the feedback lines in place.
+    return copy.deepcopy(memo(key, files, lambda: work_insight(work, run)))
+
+
+def research_progress(root, run, since=None, light=False):
+    work = manifest_path(root, run["run_id"]).parent
+    data = read(work / "research_activity.json", {})
+    if not data:
+        return None
+    report = read(work / "research_quality_gate.json", data.get("research_quality"))
+    questions = ledger_view(root, work, run.get("input_hash"))
+    responses = list((work / "calls").glob("call_*/response.json"))
+    pending = open_calls(work, run, since)
+    # A failed task of a parallel run: the other tasks finish their current call before the run stops.
+    marker = read(work / "question_research/stopping.json", {}) or {}
+    stopping = ({"question": marker.get("question"), "code": marker.get("code")}
+                if run.get("status") == "running" and marker and (not since or (marker.get("at") or "") >= since) else None)
+    budget = read(work / "budget.json", {})
+    snapshot = read_yaml(work / "project_snapshot.yaml") if (work / "project_snapshot.yaml").exists() else {}
+    effective = run_limits(root, work, run.get("input_hash"), snapshot)
+    disputes = disputed_objections(work, run, questions)
+    counts = questions or report or {}
     awaiting = isinstance(questions, dict) and questions.get("phase") == "awaiting_plan_approval"
     request = read(work / "research_request.json", {})
-    retrieval = retrieval_view(work, run, snapshot, limits)
+    retrieval = retrieval_view(work, run, snapshot, effective)
     activity = data.get("activity")
     if retrieval and retrieval["running"]:
         activity = (f"Originaltexte werden eingelesen: {retrieval['attempted']} von bis zu {retrieval['total']} Quellen "
                     f"abgerufen, {retrieval['imported']} lesbar")
-    if isinstance(questions, dict):
-        for row in questions.get("questions") or []:
-            if isinstance(row, dict):
-                row.update({key: clean(row[key], root) for key in ("reason", "activity") if isinstance(row.get(key), str)})
-    insight = work_insight(work, run)
+    insight = None if light else insight_view(work, run, responses)
     if isinstance(insight, dict) and isinstance(insight.get("feedback"), list):
         insight["feedback"] = [clean(text, root) for text in insight["feedback"]]
     return {**data, "phase": "research", "unit": "questions", "research_quality": report, "activity": activity,
@@ -385,10 +484,13 @@ def retrieval_view(work, run, snapshot, limits):
 
 
 def watch(root, job_id, stop=None):
-    """Compatibility publisher for an existing server; exits with its one original job."""
-    import time
+    """Compatibility publisher for an existing server; exits with its one original job. It writes progress.json when
+    the progress changed and otherwise once a minute, so the file's age stays the worker's heartbeat. It leaves
+    research_activity.json to its writer (research.progress): reading and rewriting it from here raced that writer,
+    and every Studio since safe_script_progress builds the live output itself."""
     root = root.resolve()
     unreadable = 0
+    written, written_at = None, 0.0
     while stop is None or not stop.is_set():
         job = read(root / "studio/job.json")
         if not isinstance(job, dict) or not job.get("id") or not job.get("status"):
@@ -404,33 +506,32 @@ def watch(root, job_id, stop=None):
             run = job.get("run")
             progress = safe_script_progress(root, run)
             if progress:
-                try:
-                    write_json(manifest_path(root, run["run_id"]).parent / "progress.json", progress)
-                    # Older running Studio servers carry research envelope fields
-                    # through unchanged. Keep the live tail visible without restart.
-                    if progress.get("phase") == "research":
-                        activity_path = manifest_path(root, run["run_id"]).parent / "research_activity.json"
-                        activity = read(activity_path, {})
-                        if activity:
-                            write_json(activity_path, {**activity, "model_trace": progress.get("model_trace"),
-                                                      "work_insight": progress.get("work_insight")})
-                except OSError:
-                    logging.getLogger(__name__).warning("Progress file temporarily unavailable; retrying.")
+                # The read time alone is no change.
+                signature = digest({key: value for key, value in progress.items() if key != "updated_at"})
+                if signature != written or time.monotonic() - written_at >= HEARTBEAT_SECONDS:
+                    try:
+                        write_json(manifest_path(root, run["run_id"]).parent / "progress.json", progress)
+                        written, written_at = signature, time.monotonic()
+                    except OSError:
+                        logging.getLogger(__name__).warning("Progress file temporarily unavailable; retrying.")
         if stop is None:
             time.sleep(2)
         elif stop.wait(2):
             return
 
 
-def safe_script_progress(root, run, since=None):
-    """Progress is optional: concurrent file access must not break a job or its API."""
+def safe_script_progress(root, run, since=None, light=False):
+    """Progress is optional: concurrent file access must not break a job or its API. ``light`` leaves out the live
+    output, the call labels and everything else only the opened project shows (script_progress)."""
     try:
-        progress = script_progress(root, run, since)
+        progress = script_progress(root, run, since, light)
         if progress and run:
             from .status_summary import summary_view
             summary = summary_view(manifest_path(root, run["run_id"]).parent)
             if summary:
                 progress["status_summary"] = summary
+            if light:
+                return progress
             from .model_trace import trace_view
             work = manifest_path(root, run["run_id"]).parent
             progress["model_trace"] = trace_view(work)

@@ -110,18 +110,48 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "verified" for row in engine.state["tasks"].values()))
         self.assertEqual(engine.state["task_groups"]["task_definition"], ["task_definition_a", "task_definition_b"])
 
-    def test_unresolved_scope_never_starts_reading_or_loops_without_limit(self):
-        def hook(prompt, schema, payload, kwargs):
-            if schema is QuestionScopeReview:
-                return QuestionScopeReview(decisions=[{"task_id": task["id"], "reason": "Still bundled", "parts": [
-                    {"question": title, "criterion_indices": list(range(len(task["acceptance"]))),
-                     "acceptance": [title], "queries": ["energy"], "key_terms": ["energy"]}
-                    for title in ("Focus A", "Focus B")]} for task in payload["tasks"]])
-        self.hook = hook
-        with self.assertRaises(AppError) as caught:
-            self.engine().run(self.discovery, self.index)
-        self.assertEqual(caught.exception.code, "question_scope_unresolved")
-        self.assertEqual([call[0] for call in self.calls], [QuestionPlan, QuestionScopeReview, QuestionScopeReview])
+    def keep_splitting(self, prompt, schema, payload, kwargs):
+        """A scope review that splits every task it sees, in every pass."""
+        if schema is QuestionScopeReview:
+            return QuestionScopeReview(decisions=[{"task_id": task["id"], "reason": "Still bundled", "parts": [
+                {"question": title, "criterion_indices": list(range(len(task["acceptance"]))),
+                 "acceptance": [title], "queries": ["energy"], "key_terms": ["energy"]}
+                for title in ("Focus A", "Focus B")]} for task in payload["tasks"]])
+
+    def test_a_scope_review_that_keeps_splitting_converges_on_its_last_pass_with_a_note(self):
+        """2026-10-02: a second pass that still split a larger share stopped with question_scope_unresolved, which no
+        fresh attempt moved and every resume replayed (the Ontologies run run_20260930_195553 was abandoned on it). Its
+        splits are adopted within the task cap, and the note goes with the plan to the plan gate. Still two passes."""
+        from podcast_automate.question_budget import plan_review_message
+        self.hook = self.keep_splitting
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual([call[0] for call in self.calls[:3]], [QuestionPlan, QuestionScopeReview, QuestionScopeReview])
+        self.assertEqual(sum(call[0] is QuestionScopeReview for call in self.calls), 2, "no third pass")
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(len(engine.state["plan"]["tasks"]), 4, "the second pass's splits are adopted")
+        note = engine.state["scope_unresolved"]
+        self.assertEqual((note["adopted"], note["reviewed_tasks"], note["split_tasks"]),
+                         (True, 2, ["task_definition_a", "task_definition_b"]))
+        projection = json.loads((self.work / "question_research/plan_projection.json").read_text(encoding="utf-8"))
+        self.assertEqual(projection["scope_note"], note["note"])
+        self.assertIn("im zweiten Durchgang noch 2 von 2 Teilfragen", plan_review_message(projection))
+        # A resume replays both passes to the same plan instead of stopping again.
+        count = len(self.calls)
+        self.engine().run(self.discovery, self.index)
+        self.assertEqual(len(self.calls), count)
+
+    def test_a_last_scope_pass_beyond_the_task_cap_leaves_the_plan_as_the_first_pass_left_it(self):
+        # A cap of three tasks: (750 - 690 - 4) // 16. The second pass would make four of two.
+        write_json(self.work / "budget.json", {"model_calls": 690, "search_rounds": 0})
+        self.hook = self.keep_splitting
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual([t["id"] for t in engine.state["plan"]["tasks"]], ["task_definition_a", "task_definition_b"])
+        note = engine.state["scope_unresolved"]
+        self.assertEqual((note["adopted"], note["tasks"]), (False, 2))
+        self.assertIn("Obergrenze von 3 Teilfragen", note["note"])
 
     def test_a_second_scope_pass_that_splits_only_a_few_tasks_is_adopted(self):
         """Ontologies, 2026-09-30: the second pass split 3 of 56 tasks and stopped the run; a nearly converged review
@@ -874,6 +904,218 @@ class QuestionResearchTests(unittest.TestCase):
             self.advised().run(self.discovery, self.index)
         self.assertEqual(raised.exception.code, "research_questions_blocked")
         self.assertFalse(any(call[0] is BlockAdvice for call in self.calls))
+
+    def test_advice_that_loses_the_last_search_round_to_a_parallel_one_goes_on_without_search(self):
+        """Asimov, 2026-10-01: three advice calls decided to search with one round left; the two that lost the
+        reservation stopped the whole run for an approval at 91 of 94 rounds. They go on without a search now."""
+        import threading
+        from podcast_automate.research import reserve_call
+        limits = self.config.research_limits
+        write_json(self.work / "budget.json", {"model_calls": 0, "search_rounds": limits.search_rounds - 1})
+        together, reserved = threading.Barrier(3), []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(f"task_{name}", "empirical") for name in "abc"])
+            if schema is ResearchDecision:
+                return decision("blocked")
+            if schema is BlockAdvice:
+                if kwargs.get("search"):
+                    together.wait(timeout=5)  # all three decided to search before any reserved its round
+                # The production reservation (research.invoke): it refuses a search round the others took.
+                reserve_call(self.work, limits, search=kwargs.get("search", False))
+                reserved.append((payload["web_search"], kwargs.get("search", False)))
+                return BlockAdvice(diagnosis="Kein Zugang.", recommendation="accept_gap", limit="none", hint="", sources=[])
+        self.hook = hook
+        engine = QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None, advisor=True, workers=3)
+        with self.assertRaises(AppError) as raised:
+            engine.run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        self.assertEqual(sorted(reserved), [(False, False), (False, False), (True, True)])
+        rows = read_value(self.work / "question_research/state.json")["tasks"]
+        self.assertEqual(sorted((row["advice"]["web_search"], row["advice"].get("search_fallback", False))
+                                for row in rows.values()), [(False, True), (False, True), (True, False)])
+        budget = json.loads((self.work / "budget.json").read_text(encoding="utf-8"))
+        self.assertEqual((budget["search_rounds"], budget["model_calls"]), (limits.search_rounds, 3))
+        # The request each advice was asked with is saved before its call, the fallback's in place of the first.
+        requests = sorted(read_value(path)["search"] for path in
+                          (self.work / "question_research/tasks").rglob("advice_*_request.json"))
+        self.assertEqual(requests, [False, False, True])
+        # Stopped after a fallback's receipt but before its row was saved: the resume replays that receipt.
+        path = self.work / "question_research/state.json"
+        state = read_value(path)
+        fallback = next(tid for tid, row in state["tasks"].items() if row["advice"].get("search_fallback"))
+        del state["tasks"][fallback]["advice"]
+        save_value(path, state)
+        count = sum(schema is BlockAdvice for schema, _ in self.calls)
+        engine = QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None, advisor=True, workers=3)
+        with self.assertRaises(AppError):
+            engine.run(self.discovery, self.index)
+        self.assertEqual(sum(schema is BlockAdvice for schema, _ in self.calls), count)
+        self.assertTrue(engine.state["tasks"][fallback]["advice"]["search_fallback"])
+
+    def test_the_advisor_reads_every_earlier_advice_with_what_became_of_it(self):
+        """The design rule for repeated reviews: a question can be advised up to six times, and the advisor saw only
+        the latest advice. It reads each earlier one now, with the attempt that followed and how that ended."""
+        self.rejecting(BlockAdvice(diagnosis="Neue Quelle nötig.", recommendation="retry", limit="none",
+                                   hint="Andere Suchbegriffe.", sources=[]))
+        requests = []
+        rejecting = self.hook
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is BlockAdvice:
+                requests.append(payload)
+            return rejecting(prompt, schema, payload, kwargs)
+        self.hook = hook
+        with self.assertRaises(AppError):
+            self.advised().run(self.discovery, self.index)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0]["earlier_advice"], [])
+        (earlier,) = requests[1]["earlier_advice"]
+        self.assertEqual((earlier["recommendation"], earlier["hint"], earlier["key"]), ("retry", "Andere Suchbegriffe.", "0.0"))
+        self.assertEqual(earlier["result"]["new_attempt"], "automatic")
+        self.assertEqual(earlier["result"]["new_sections_read"], 0)
+        self.assertTrue(earlier["result"]["ended_as"].endswith("_block"))
+        self.assertTrue(all(version.endswith(".block_advice.v2") for schema, version in self.calls if schema is BlockAdvice))
+        row = read_value(self.work / "question_research/state.json")["tasks"]["task_definition"]
+        self.assertEqual([entry["key"] for entry in row["advice_history"]], ["0.0"])
+        self.assertEqual(row["advice"]["key"], "0.1")
+
+    def test_a_revalidated_answer_sends_its_whole_chain_back_and_may_return_unchanged(self):
+        """2026-10-02: a resume revalidated a stale task B but left C, which builds on B, verified against B's old
+        answer; and the revalidated B was told its unchanged correct answer had "already failed independent review"."""
+        def chain(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value("task_a"), dict(task_value("task_b", "mechanism"), depends_on=["task_a"]),
+                                           dict(task_value("task_c", "example"), depends_on=["task_b"])])
+        self.hook = chain
+        self.engine().run(self.discovery, self.index)
+        path = self.work / "question_research/state.json"
+        state = read_value(path)
+        answer_b = state["tasks"]["task_b"]["answer"]
+        # B was verified against an earlier answer of A; C against B's current one.
+        state["tasks"]["task_b"]["verification"]["prerequisite_hashes"] = {"task_a": "0" * 64}
+        state["tasks"]["task_b"].update(answer_locked=True, revise_only=True, lock={"step": 1})
+        save_value(path, state)
+        resumed = self.engine()
+        resumed.initialise(self.discovery, self.index, None, ())
+        rows = resumed.state["tasks"]
+        self.assertEqual({tid: (row["status"], row.get("dependency_revision", 0)) for tid, row in rows.items()},
+                         {"task_a": ("verified", 0), "task_b": ("researching", 1), "task_c": ("researching", 1)})
+        self.assertEqual((rows["task_b"]["resubmit"], rows["task_b"]["answer_locked"], rows["task_b"]["revise_only"],
+                          rows["task_b"]["lock"]), (digest(answer_b), False, False, None))
+        # The completed round's receipts answered the old answers: a new audit round of its own.
+        self.assertEqual((resumed.state["phase"], resumed.state["audit_round"]), ("questions", 1))
+        count = len(self.calls)
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual([row["status"] for row in engine.state["tasks"].values()], ["verified"] * 3)
+        # Each is answered once more, unchanged, and passes its review.
+        new = [schema for schema, _ in self.calls[count:] if schema in (ResearchDecision, AnswerReview)]
+        self.assertEqual(new, [ResearchDecision, AnswerReview] * 2)
+        self.assertEqual(engine.state["tasks"]["task_b"]["answer"], answer_b)
+        self.assertEqual(engine.state["tasks"]["task_c"]["verification"]["prerequisite_hashes"],
+                         {"task_b": digest(engine.state["tasks"]["task_b"]["answer"])})
+
+    def test_a_tightened_rule_sends_a_stored_verified_answer_back_instead_of_stopping_the_resume(self):
+        # 2026-10-02: a stored verified answer that a later, stricter check failed stopped every resume for good.
+        self.engine().run(self.discovery, self.index)
+        with patch("podcast_automate.question_research.review_passes", return_value=False):
+            resumed = self.engine()
+            resumed.initialise(self.discovery, self.index, None, ())
+        row = resumed.state["tasks"]["task_definition"]
+        self.assertEqual((row["status"], row["dependency_revision"]), ("researching", 1))
+        self.assertIn("no longer passes the review rules", row["feedback"][0])
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual((engine.state["phase"], engine.state["tasks"]["task_definition"]["status"]), ("completed", "verified"))
+
+    def test_a_run_never_completes_with_a_question_still_open(self):
+        """Transformer, 2026-10-02: a routing that reopened nothing had sent two dependents back, and the run was
+        published as completed with both still researching. They are answered first now; and a question still open
+        before the dossier stops the run instead of completing it."""
+        from podcast_automate.question_dependencies import revalidate
+        engine = self.engine()
+        audits, real_audit = [], engine.audit
+
+        def audit(dossier, discovery, context):
+            dossier, review, report = real_audit(dossier, discovery, context)
+            audits.append(engine.state["audit_round"])
+            return dossier, review, {**report, "passed": len(audits) > 1}
+
+        def reopen(dossier, review, report):
+            # As invalidate_dependents did beside a question noted after its reworks: a revalidation, nothing reopened.
+            revalidate(engine.state["tasks"]["task_definition"])
+            engine.state.update(audit_round=engine.state["audit_round"] + 1, phase="questions")
+            return [], []
+        with patch.object(engine, "audit", side_effect=audit), patch.object(engine, "reopen", side_effect=reopen):
+            engine.run(self.discovery, self.index)
+        self.assertEqual((engine.state["phase"], audits), ("completed", [0, 1]))
+        self.assertEqual(engine.state["tasks"]["task_definition"]["status"], "verified")
+        self.assertEqual(sum(schema is ResearchDecision for schema, _ in self.calls), 2)
+        # A question left open by whatever means: no dossier, no completion.
+        self.work = self.root / "runs/run_open"
+        engine = self.engine()
+        real_tasks = engine.research_tasks
+
+        def leave_open():
+            real_tasks()
+            engine.state["tasks"]["task_definition"]["status"] = "researching"
+        with patch.object(engine, "research_tasks", side_effect=leave_open):
+            with self.assertRaises(AppError) as raised:
+                engine.run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_open")
+        self.assertNotEqual(read_value(self.work / "question_research/state.json")["phase"], "completed")
+        self.assertFalse((self.work / "complete_research").exists())
+
+    def test_a_residual_finish_keeps_objections_an_earlier_assembled_round_closed_closed(self):
+        # 2026-10-02: an assembled audit records no objection checks, so every objection still marked open became
+        # residual, those an earlier round had closed included.
+        self.engine().run(self.discovery, self.index)
+        path = self.work / "question_research/state.json"
+        state = read_value(path)
+        objection = {"task_id": "task_definition", "rule": "support", "reason": "Beleg fehlt.", "status": "open"}
+        state.update(objections={"obj_closed": {**objection, "id": "obj_closed"}, "obj_open": {**objection, "id": "obj_open"}},
+                     closed_objections=["obj_closed"])
+        save_value(path, state)
+        finish = {"note": "Mit dieser Grenze.", "approved_at": "2026-10-02T10:00:00Z"}
+        engine = QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None, residual=lambda: finish)
+        real_audit = engine.audit
+
+        def audit(dossier, discovery, context):
+            dossier, review, report = real_audit(dossier, discovery, context)
+            self.assertTrue(dossier.assembled)
+            return dossier, review, {**report, "passed": False}
+        with patch.object(engine, "audit", side_effect=audit):
+            engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual({oid: row["status"] for oid, row in engine.state["objections"].items()},
+                         {"obj_closed": "closed", "obj_open": "residual"})
+
+    def test_run_folder_paths_of_attempts_and_searches_come_from_one_helper(self):
+        """2026-10-02: the attempt restore missed downloads below dependency_* and search_<hash>, and the call
+        projection looked for a second search of one step in the step folder instead of its own."""
+        from podcast_automate.question_budget import remaining_calls
+        from podcast_automate.question_scope import pending_task
+        from podcast_automate.question_sources import attempt_folder, restore_attempts, source_identity
+        folder = self.work / "question_research"
+        urls = {"tasks/t/attempt_0/step_001/downloads.json": "https://a.example/one",
+                "tasks/t/attempt_1/dependency_2/step_000/downloads.json": "https://b.example/two",
+                "tasks/t/attempt_0/step_003/search_abcdef12/downloads.json": "https://c.example/three"}
+        for relative, url in urls.items():
+            save_value(folder / relative, {"processed": [url], "attempted": [url]})
+        self.assertTrue({source_identity(url) for url in urls.values()} <= restore_attempts(folder, self.index))
+        row = {**pending_task(), "status": "researching", "step": 3, "dependency_revision": 2,
+               "pending": decision("search_web", web_queries=["second query"]).model_dump()}
+        self.assertEqual(attempt_folder(folder, "t", row), folder / "tasks/t/attempt_0/dependency_2")
+        step = folder / "tasks/t/attempt_0/dependency_2/step_003"
+        save_value(step / "search_request.json", {"prompt": "x\n" + json.dumps({"queries": ["first query"]}), "maximum": 4})
+        state = {"phase": "questions", "tasks": {"t": row}, "audit_round": 0, "prompt_generation": 3,
+                 "dirty_tasks": [], "seed_dossier": None}
+        questions, _ = remaining_calls(state, folder)
+        self.assertIn(step / f"search_{digest(['second query'])[:8]}" / "search.json", questions)
+        self.assertNotIn(step / "search.json", questions)
 
     def test_exhausted_local_passages_trigger_one_focused_web_recovery(self):
         decisions = []

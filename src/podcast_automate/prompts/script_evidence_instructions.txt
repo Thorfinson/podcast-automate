@@ -5,5 +5,7 @@ and unit conversions are allowed. Review claim_checks exactly once per segment, 
 segments. Each check must quote the actual segment, identify all its knowledge_refs, assess
 preservation against the research contract and original draft, and name changed semantic fields for
 drift. A factual assertion without references is drift, not no_research_claim. No-research-claim is
-only for genuinely nonfactual framing. When a qualified finding spans segments, check its scope in
-the surrounding dialogue.
+only for genuinely nonfactual framing. knowledge_refs may name the episode's core, supporting and
+recalled findings; a supporting finding need not be cited at all. A limit from research_limits,
+stated with the statement it concerns, keeps that statement preserved, not drift. When a qualified
+finding spans segments, check its scope in the surrounding dialogue.

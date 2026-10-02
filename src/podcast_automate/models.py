@@ -119,6 +119,7 @@ class TopicBrief(Contract):
     seed_urls: list[str] = Field(default_factory=list)
     local_sources: list[str] = Field(default_factory=list)
     target_total_minutes: float | None = Field(default=None, gt=0)
+    # The longest audio part a recording is split into, not a cap on an episode (that is MAX_EPISODE_MINUTES).
     max_episode_minutes: Literal[30] = 30
     research_limits: ResearchLimits = Field(default_factory=ResearchLimits)
     # project.yaml records the CLI defaults. The Studio stores a project's actual provider
@@ -209,9 +210,14 @@ class TextProbeOutput(Contract):
     note: NonEmpty
 
 
-class Failure(Contract):
+class Failure(LaterFields):
     code: str
     message: str
+    # Since 2026-10-02 the facts a paused stage is resumed by (provider, reset time; runner.failure_details). Unset
+    # it is left out of every dump, so manifests written before stay byte-identical.
+    details: dict[str, str | int | float | bool | None] | None = None
+
+    LATER: ClassVar[dict] = {"details": None}
 
 
 class StageRecord(Contract):

@@ -20,6 +20,71 @@ def worker_path() -> Path:
     return Path(__file__).with_name("qwen_worker.py")
 
 
+# Silence as the speech health gate (speech.take_defect) and the pause trim below measure it: 20 ms windows whose
+# peak stays under -45 dBFS. A read-only scan of 1,620 Gemini takes of the 29 Sep exports (2026-10-02) found with
+# this measure no silence over 1.3 s in an untagged take and 3.5 to 7.3 s after a <long pause>.
+SILENCE_WINDOW_SECONDS = 0.02
+SILENCE_LEVEL = 184
+# A segment with a pause tag keeps at most this much of a longer silence (dead air after a <long pause>).
+TRIM_ABOVE_SECONDS = 1.5
+TRIM_TO_SECONDS = 1.2
+PAUSE_TAGS = ("<short pause>", "<long pause>")
+# The second loudness pass: the measured linear gain to -16 LUFS, then a limiter for the peaks. loudnorm's own
+# linear mode fell back to dynamic compression without saying so in 29 of 30 exports of 29 Sep, because the gain
+# would have lifted their true peak above -1.5 dBTP. The limiter works at four times the sample rate, so it also
+# catches the peaks between samples, with its ceiling 0.5 dB under the target for the MP3 encoder. A 40-minute mix
+# of Gemini takes came out at -16.0 LUFS and -1.9 dBTP, -2.1 dBTP after MP3 encoding, in 17 s (2026-10-02).
+LIMITER_CEILING_DB = -2.0
+
+
+def silent_runs(samples, rate, channels=1):
+    """The silent stretches of interleaved 16-bit ``samples`` as ``(start_frame, frames)``, edges included."""
+    window = max(1, round(rate * SILENCE_WINDOW_SECONDS))
+    step = window * channels
+    total = len(samples) // channels
+    runs, start = [], None
+    for index in range(0, (total + window - 1) // window):
+        chunk = samples[index * step:(index + 1) * step]
+        quiet = max(chunk) < SILENCE_LEVEL and -min(chunk) < SILENCE_LEVEL
+        if quiet and start is None:
+            start = index
+        elif not quiet and start is not None:
+            runs.append((start * window, (index - start) * window))
+            start = None
+    if start is not None:
+        runs.append((start * window, total - start * window))
+    return runs
+
+
+def shortened_silences(samples, rate, channels=1):
+    """``samples`` with every silence longer than TRIM_ABOVE_SECONDS cut to TRIM_TO_SECONDS, keeping both of its
+    ends so speech never starts or stops abruptly; returns the samples and the frames removed."""
+    keep = round(TRIM_TO_SECONDS * rate)
+    result, cursor, removed = array("h"), 0, 0
+    for start, length in silent_runs(samples, rate, channels):
+        if length <= TRIM_ABOVE_SECONDS * rate:
+            continue
+        cut_from, cut_to = start + keep // 2, start + length - (keep - keep // 2)
+        result.extend(samples[cursor * channels:cut_from * channels])
+        removed += cut_to - cut_from
+        cursor = cut_to
+    if not removed:
+        return samples, 0
+    result.extend(samples[cursor * channels:])
+    return result, removed
+
+
+def output_loudness(stderr):
+    """Integrated loudness and true peak of the encoded signal, from the ebur128 summary of the encoding pass."""
+    summary = stderr[stderr.rfind("Summary:"):] if "Summary:" in stderr else ""
+    integrated = re.search(r"\bI:\s*(-?[\d.]+|-inf) LUFS", summary)
+    peak = re.search(r"\bPeak:\s*(-?[\d.]+|-inf) dBFS", summary)
+    try:
+        return {"integrated_lufs": float(integrated[1]), "true_peak_dbtp": float(peak[1])} if integrated and peak else None
+    except ValueError:
+        return None
+
+
 def run_tts(config: TopicBrief, script: EpisodeScript, root: Path, work: Path,
             *, table=None, overrides=None) -> list[Path]:
     request, response = work / "tts_request.json", work / "tts_report.json"
@@ -145,8 +210,12 @@ def embedded_chapters(path: Path) -> list[dict]:
 
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
              *, max_seconds: float = 1800, language: str = "de-DE", labels: dict | None = None,
-             pauses=None, progress=None) -> list[Path]:
-    """Mix, measure and encode one episode part; ``progress(step, done, total)`` reports each step."""
+             pauses=None, progress=None, trim_pauses=()) -> list[Path]:
+    """Mix, measure and encode one episode part; ``progress(step, done, total)`` reports each step.
+
+    ``trim_pauses`` names the segments whose spoken text carries a pause tag: their silences over 1.5 s are cut
+    to 1.2 s, since a <long pause> left up to 7.3 s of dead air in the 29 Sep exports. Other segments stay as
+    recorded."""
     report = progress or (lambda step, done=0, total=0: None)
     if len(paths) != len(script.segments):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
@@ -168,7 +237,12 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                 with wave.open(str(normalized), "rb") as stream:
                     frames = stream.getnframes()
                     start = position
-                    peak = 0
+                    peak = trimmed = 0
+                    if segment.segment_id in trim_pauses:
+                        samples, trimmed = shortened_silences(array("h", stream.readframes(frames)), 44100, channels=2)
+                        frames -= trimmed
+                        peak = max(max(samples, default=0), -min(samples, default=0))
+                        target.writeframesraw(samples.tobytes())
                     while chunk := stream.readframes(44100):
                         samples = array("h", chunk)
                         peak = max(peak, max(map(abs, samples), default=0))
@@ -189,6 +263,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                     "speech_end_seconds": (start + frames) / 44100,
                     "end_seconds": position / 44100,
                     "pause_ms": pause_ms, "pause_reason": reason,
+                    **({"trimmed_silence_ms": round(trimmed * 1000 / 44100)} if trimmed else {}),
                 })
         report("loudness", len(paths), len(paths))
         measurement = ffmpeg([
@@ -203,11 +278,10 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
             if not math.isfinite(float(levels[key])):
                 raise AppError("Audio ist zu kurz oder ungeeignet für die Lautheitsmessung.",
                                code="loudness_failed")
-        loudnorm = (
-            f"loudnorm=I=-16:TP=-1.5:LRA=11:measured_I={levels['input_i']}"
-            f":measured_TP={levels['input_tp']}:measured_LRA={levels['input_lra']}"
-            f":measured_thresh={levels['input_thresh']}:offset={levels['target_offset']}:linear=true"
-        )
+        gain = round(-16 - float(levels["input_i"]), 2)
+        loudness = (f"volume={gain}dB,aresample=176400,"
+                    f"alimiter=limit={10 ** (LIMITER_CEILING_DB / 20):.4f}:level=false:latency=true,"
+                    "aresample=44100,ebur128=peak=true:framelog=quiet")
         chapters = []
         for chapter in script.chapters:
             entries = [row for row in timeline if row["chapter_id"] == chapter.chapter_id]
@@ -220,9 +294,9 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         atomic_text(metadata, chapter_metadata(script.title, chapters))
         encoded = work / "audio.mp3"
         report("encode", len(paths), len(paths))
-        ffmpeg(["-i", str(mixed), "-i", str(metadata), "-map", "0:a", "-map_metadata", "1",
+        encoding = ffmpeg(["-i", str(mixed), "-i", str(metadata), "-map", "0:a", "-map_metadata", "1",
                 "-id3v2_version", "3", "-write_id3v1", "1",
-                "-af", loudnorm, "-ar", "44100", "-ac", "2",
+                "-af", loudness, "-ar", "44100", "-ac", "2",
                 "-c:a", "libmp3lame", "-b:a", "192k", "-metadata", f"title={script.title}",
                 str(encoded)])
         info = audio_info(encoded)
@@ -242,8 +316,12 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         "purpose": script.purpose, "duration_seconds": duration,
         "sample_rate": 44100, "channels": 2, "target_lufs": -16,
         "input_loudness": levels, "speech_quality_verified": False,
+        # What the second pass did; "linear_gain_limiter" replaced loudnorm's silent fallback on 2026-10-02.
+        "loudness_mode": "linear_gain_limiter", "gain_db": gain, "limiter_ceiling_dbfs": LIMITER_CEILING_DB,
+        "output_loudness": output_loudness(encoding),
         "pause_policy": pauses.model_dump() if pauses is not None else None,
         "applied_pause_seconds": round(sum(row["pause_ms"] for row in timeline) / 1000, 3),
+        "trimmed_silence_seconds": round(sum(row.get("trimmed_silence_ms", 0) for row in timeline) / 1000, 3),
         "chapters_embedded": bool(chapters) and [c["title"] for c in written_chapters] == [c["title"] for c in chapters],
     })
     if script.purpose == "technical_probe":

@@ -216,7 +216,9 @@ def public_ledger(state, index=None):
                                   "url": sections[ref][0].final_url, "page": sections[ref][1].page}
                                  for ref in dict.fromkeys(e["reference"] for f in answer["findings"] for e in f["evidence"])
                                  if ref in sections] if answer else [],
-                     "reopened": len(task["reopenings"])})
+                     "reopened": len(task["reopenings"]),
+                     # Checks of a verified answer against a reworked prerequisite; they count as no rework.
+                     "revalidations": task.get("revalidations", 0)})
     blocked = [r for r in rows if r["status"] == "blocked" and not r["accepted_gap"]]
     phase = state["phase"]
     if phase == "blocked" and not blocked:

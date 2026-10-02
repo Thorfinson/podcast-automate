@@ -24,7 +24,7 @@ from podcast_automate.run_budget import approve_research_gap
 from podcast_automate.runner import status
 from podcast_automate.sources import (blocked_sources, canonical_url, extract, import_source, public_url,
                                       PublicRedirect)
-from podcast_automate.storage import write_yaml
+from podcast_automate.storage import write_json, write_yaml
 from tests import research_fixtures as fixtures
 from tests.research_fixtures import TEXT, HTML, discovery, dossier_from_prompt
 from tests.research_fixtures import composed_generation
@@ -570,11 +570,12 @@ class ResearchTests(fixtures.ResearchProjectCase):
         self.assertEqual(raised.exception.code, "inputs_changed")
 
     def test_illustration_requires_explained_limits(self):
-        from pydantic import ValidationError
-        with self.assertRaises(ValidationError):
-            Finding(id="f_picture", kind="example", statement="A supported idea.",
-                    illustration="Picture a landscape.",
-                    evidence=[Evidence(reference="source#section", excerpt="anchor")])
+        # Since 2026-10-02 a lone half is dropped instead of refused (research_models.Finding; the rule's own test is
+        # test_evidence_contracts): an illustration still never reaches a script without its limits.
+        lone = Finding.model_validate({"id": "f_picture", "kind": "example", "statement": "A supported idea.",
+                                       "illustration": "Picture a landscape.",
+                                       "evidence": [{"reference": "source#section", "excerpt": "anchor"}]})
+        self.assertEqual((lone.illustration, lone.illustration_limit), ("", ""))
 
     def test_quota_after_retrieval_preserves_sources_and_resumes_through_cli(self):
         from contextlib import redirect_stdout
@@ -650,6 +651,107 @@ class ResearchTests(fixtures.ResearchProjectCase):
         budget = json.loads((work / "budget.json").read_text())
         self.assertEqual((budget["model_calls"], budget["sequence"], budget["refunded"]), (8, 9, [6]))
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
+
+    def test_operational_edits_while_paused_keep_the_run_resumable(self):
+        """2026-10-02: the Studio saves the brief while a run waits for quota; a voice, host-name, deadline or limit
+        edit gave inputs_changed and the run could never resume. Content edits still invalidate it."""
+        blocked = False
+
+        def model(prompt, output_type, directory, **kwargs):
+            nonlocal blocked
+            if output_type is ResearchDossier and not blocked:
+                blocked = True
+                raise AppError("Quota", code="quota_exhausted", status="waiting_for_quota")
+            return self.model(prompt, output_type, directory, **kwargs)
+
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            first = run_research(self.root)
+            self.assertEqual(first.status, "waiting_for_quota")
+            edited = self.config.model_dump(mode="json")
+            edited["runtime"]["text_timeout_seconds"] = 3600
+            edited["research_limits"]["model_calls"] = 900
+            edited["voice_profile"] = {"host_a": "Aiden", "host_b": "Vivian"}
+            edited["host_names"] = {"host_a": "Anna", "host_b": "Ben"}
+            content = {**edited, "central_question": "A different question"}
+            write_yaml(self.root / "project.yaml", content)
+            with self.assertRaises(AppError) as changed:
+                run_research(self.root, resume=True, run_id=first.run_id)
+            self.assertEqual(changed.exception.code, "inputs_changed")
+            write_yaml(self.root / "project.yaml", edited)
+            self.assertFalse(status(self.root, first.run_id)["project_changed"])
+            resumed = run_research(self.root, resume=True, run_id=first.run_id)
+        self.assertEqual((resumed.status, resumed.run_id, resumed.input_hash), ("completed", first.run_id, first.input_hash))
+        activity = json.loads((self.root / "runs" / first.run_id / "research_activity.json").read_text(encoding="utf-8"))
+        self.assertEqual(activity["model_call_limit"], 900, "the raised limit applies to the resumed run")
+
+    def test_local_sources_outside_the_project_are_refused_before_anything_starts(self):
+        with tempfile.TemporaryDirectory() as elsewhere:
+            outside = Path(elsewhere) / "private.txt"
+            outside.write_text(TEXT, encoding="utf-8")
+            for value in (str(outside), "../" + outside.name):
+                with self.subTest(value=value):
+                    data = self.config.model_dump(mode="json")
+                    data["local_sources"] = [value]
+                    write_yaml(self.root / "project.yaml", data)
+                    with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model), \
+                            self.assertRaises(AppError) as refused:
+                        run_research(self.root)
+                    self.assertEqual((refused.exception.code, refused.exception.status), ("local_source_outside", "blocked"))
+                    self.assertIn(value, str(refused.exception))
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.root / "runs/latest.json").exists())
+
+    def test_an_unchanged_progress_report_is_not_written_again(self):
+        """Both envelopes carry the whole question ledger (2 to 2.6 MB in the September runs); a report that says
+        nothing new is skipped, and the activity file keeps the time of its last real change."""
+        from podcast_automate import research
+        writes, seen = [], []
+        original = research.write_json
+
+        def counting(path, data):
+            if path.name == "research_activity.json":
+                writes.append(data.get("activity"))
+            return original(path, data)
+
+        def questions(root, work, config, discovery, index, invoke, progress, **kwargs):
+            before = len(writes)
+            progress("Gleich")
+            stamp = json.loads((work / "research_activity.json").read_text(encoding="utf-8"))["updated_at"]
+            progress("Gleich")
+            seen.append((len(writes) - before, json.loads((work / "research_activity.json").read_text(encoding="utf-8"))["updated_at"] == stamp))
+            progress("Anders")
+            seen.append(len(writes) - before)
+            raise AppError("Halt für den Test", code="test_stop", status="blocked")
+
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model), \
+                patch.object(research, "write_json", side_effect=counting), \
+                patch.object(research, "run_question_research", side_effect=questions):
+            run = run_research(self.root)
+        self.assertEqual(run.stages["dossier"].error.code, "test_stop")
+        self.assertEqual(seen, [(1, True), 2])
+
+    def test_a_run_with_an_open_question_is_never_published(self):
+        """Transformer, 2026-10-02: published as completed with two rows still researching."""
+        from podcast_automate.research import unanswered_questions
+        from podcast_automate.research_ledger import save_value
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model), \
+                patch("podcast_automate.research.unanswered_questions", return_value=["task_open"]):
+            run = run_research(self.root)
+        self.assertEqual((run.status, run.stages["publish"].error.code), ("blocked", "research_questions_open"))
+        self.assertIn("task_open", run.stages["publish"].error.message)
+        self.assertFalse((self.root / "research/latest.json").exists())
+        work = self.root / "runs" / run.run_id
+        self.assertEqual(unanswered_questions(work), [], "the fixture run answered every question")
+        state = {"plan": {"tasks": [{"id": "t2"}, {"id": "t1"}, {"id": "t3"}]},
+                 "tasks": {"t1": {"status": "verified"}, "t2": {"status": "researching"}, "t3": {"status": "blocked"}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            self.assertEqual(unanswered_questions(folder), [])
+            write_json(folder / "research_questions.json", {"questions": [{"id": "t1", "status": "verified"},
+                                                                          {"id": "t2", "status": "pending"}]})
+            self.assertEqual(unanswered_questions(folder), ["t2"])
+            save_value(folder / "question_research/state.json", state)
+            self.assertEqual(unanswered_questions(folder), ["t2"])
 
     def test_parser_upgrade_reuses_download_and_rebuilds_dossier(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):

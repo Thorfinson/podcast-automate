@@ -20,7 +20,9 @@ from pydantic import Field
 
 from .models import Contract, NonEmpty
 
-ADVICE_VERSION = "block_advice.v1"
+# v2 (2026-10-02): the advisor reads every earlier advice on the question with what became of it, and whether it
+# may search the web itself.
+ADVICE_VERSION = "block_advice.v2"
 MAX_AUTO_RETRIES = 5
 # The advisor's own setting: Opus 5.5 at its deepest level where the run already uses the Claude subscription.
 # It stays on Opus when the run writes with the default Sonnet 5.5: one call per blocked question, asked for depth.
@@ -66,14 +68,40 @@ def block_key(row):
     return f"{row.get('retries', 0)}.{row.get('auto_retries', 0)}"
 
 
-def advice_request(spec, row, sources, failures, limits):
-    """What the advisor reads, as plain data. ``sources`` and ``failures`` are the run's; ``limits`` its state."""
+def advice_result(advice, row):
+    """What became of one earlier advice, read off the block the question is in now: the new attempt that followed
+    it (automatic, the editor's, or none), how that attempt ended and how many passages it read beyond the ones
+    read when the advice was given."""
+    retries, automatic = (int(part) for part in advice.get("key", "0.0").split("."))
+    attempt = ("automatic" if row.get("auto_retries", 0) > automatic else
+               "editor" if row.get("retries", 0) > retries else None)
+    basis = advice.get("sections_read", row.get("auto_retry_read"))
+    return {"new_attempt": attempt, "ended_as": row.get("outcome"), "reason": row.get("reason", ""),
+            "new_sections_read": len(row.get("read_refs", [])) - basis if basis is not None else None}
+
+
+def advice_history(row):
+    """Every earlier advice on this question with what became of it, oldest first (the user's rule for repeated
+    reviews: a review remembers its earlier verdicts). Before 2026-10-02 the advisor saw only the latest advice,
+    although one question can be advised up to six times. The latest advice is settled against the block now on
+    record once a new attempt has made it a new block."""
+    history = list(row.get("advice_history", []))
+    latest = row.get("advice")
+    if latest and latest.get("key") != block_key(row) and not any(
+            entry.get("key") == latest.get("key") and entry.get("at") == latest.get("at") for entry in history):
+        history.append({**latest, "result": advice_result(latest, row)})
+    return history
+
+
+def advice_request(spec, row, sources, failures, limits, *, web_search=True):
+    """What the advisor reads, as plain data. ``sources`` and ``failures`` are the run's; ``limits`` its state;
+    ``web_search`` whether this call may search the web itself."""
     return {"question": spec.question, "kind": spec.kind, "acceptance": spec.acceptance, "queries": spec.queries,
             "block": {"outcome": row.get("outcome"), "reason": row.get("reason", ""), "feedback": row.get("feedback", []),
                       "web_searches": row.get("web_attempts", 0), "local_searches": len(row.get("search_receipts", [])),
                       "sections_read": len(row.get("read_refs", [])), "explicit_retries": row.get("retries", 0),
                       "automatic_retries_used": row.get("auto_retries", 0), "automatic_retries_allowed": MAX_AUTO_RETRIES},
-            "previous_advice": row.get("advice"),
+            "earlier_advice": advice_history(row), "web_search": web_search,
             "sources_read": [{"title": s.title, "url": s.final_url or s.url} for s in sources],
             "failed_downloads": failures, "limits": limits}
 

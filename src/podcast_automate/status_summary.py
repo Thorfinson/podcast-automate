@@ -191,17 +191,10 @@ def summary_view(work, job_id=None):
 
 
 def publish(work, state, research=False):
+    """The report goes to its own file only. Copying it into research_activity.json from this separate process
+    read and rewrote the research worker's envelope outside its lock, and could put back an older activity line
+    (2026-10-02); every Studio since studio_progress.safe_script_progress reads the report from here."""
     write_json(work / "status_reports/state.json", state)
-    if research:
-        # Existing Studio/worker versions already carry arbitrary research progress
-        # fields through this envelope. No server restart or key transfer required.
-        path = work / "research_activity.json"
-        activity = read(path, {})
-        if activity:
-            questions = read(work / "research_questions.json")
-            if questions:
-                activity["research_questions"] = questions
-            write_json(path, {**activity, "status_summary": summary_view(work)})
 
 
 def update_summary(root, job, *, api_key=None, clock=time.time):
@@ -277,10 +270,15 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
         publish(work, state, research)
 
 
+def status_lock(root, job_id):
+    return root / "studio" / (".status-" + job_id + ".lock")
+
+
 def watch_summaries(root, job_id, api_key=None):
     root = root.resolve()
+    lock = status_lock(root, job_id)
     try:
-        with file_lock(root / "studio" / (".status-" + job_id + ".lock")):
+        with file_lock(lock):
             while (job := active_job(root, job_id)):
                 try:
                     update_summary(root, job, api_key=api_key)
@@ -289,6 +287,12 @@ def watch_summaries(root, job_id, api_key=None):
                 time.sleep(5)
     except AppError:
         return  # Another monitor owns this job; never duplicate its calls.
+    # Job ids are unique, so nobody asks for this lock again once its job ended (2026-10-02: 27, 111 and 77 empty
+    # lock files in three projects). The Studio sweeps what a killed monitor left (Studio.stderr_file).
+    try:
+        lock.unlink()
+    except OSError:
+        pass
 
 
 def start_monitor(root, job_id, api_key=None):

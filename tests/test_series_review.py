@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from podcast_automate.episode_audio import run_episode_audio, saved_approval
+from podcast_automate.episode_audio import reviewed_episode, run_episode_audio, saved_approval
 from podcast_automate.errors import AppError
 from podcast_automate.models import EpisodeScript, TopicBrief
 from podcast_automate.script_checkpoints import finished
@@ -13,10 +13,10 @@ from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
 from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.script_pipeline import REVIEW_REPAIR_VERSION
 from podcast_automate.series_review import (SERIES_REVIEW_PROMPT, SERIES_REVIEW_VERSION, SeriesReview, assess_series,
-                                            load_series_review)
+                                            load_series_review, require_passing_series, series_criteria)
 from podcast_automate.run_budget import approve_fresh_attempts
 from podcast_automate.scripting import outline_hash, run_script
-from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
+from podcast_automate.storage import digest, file_hash, load_project, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
 from tests.series_fixtures import series_response
 
@@ -275,6 +275,244 @@ class SeriesReviewTests(unittest.TestCase):
                           repair=lambda grouped: None)
         self.assertEqual(self.calls, 1)
 
+    def by_criteria(self, prompt, schema, version):
+        """The fixture verdict with one passing check for every criterion the call was asked for."""
+        review = self.invoke(prompt, schema, version)
+        template = review.checks[0]
+        review.checks = [template.model_copy(update={"criterion": name}, deep=True)
+                         for name in json.loads(prompt.splitlines()[-1])["criteria"]]
+        return review
+
+    def saved_report(self, work=None):
+        return json.loads(((work or self.work) / "series_review.json").read_text(encoding="utf-8"))["report"]
+
+    def test_a_verdict_with_the_goal_criteria_loads_by_the_criteria_it_was_asked(self):
+        """Finding of 2026-10-02: a verdict whose series goal added exposition or guidance passed at generation and was
+        refused as invalid_series_review at publish, on every resume and at the audio gate (all three live projects)."""
+        for goal, count in (({"understand": 3, "evaluate": 1, "apply": 0}, 7),
+                            ({"understand": 2, "evaluate": 1, "apply": 3}, 8)):
+            with self.subTest(criteria=count):
+                config = TopicBrief(topic="Test topic", series_goal=goal)
+                work, self.calls = self.work / str(count), 0
+                for _ in range(2):
+                    assess_series(work, config, self.plan, self.scripts, "input", self.by_criteria)
+                self.assertEqual(self.calls, 1, "the resume reuses the saved verdict")
+                report = load_series_review(work, self.plan, self.scripts, "input")
+                self.assertEqual((report["status"], report["criteria"]), ("passed", list(series_criteria(config))))
+                self.assertEqual(len(report["criteria"]), count)
+                require_passing_series(report)
+                # A report of 30 September to 2 October has the same checks but does not name its criteria.
+                legacy = {key: value for key, value in report.items() if key not in {"criteria", "advisories"}}
+                write_json(work / "series_review.json", {"report": legacy, "sha256": digest(legacy)})
+                self.assertEqual(load_series_review(work, self.plan, self.scripts, "input")["status"], "passed")
+                assess_series(work, config, self.plan, self.scripts, "input", self.by_criteria)
+                self.assertEqual(self.calls, 1)
+
+    def test_a_saved_verdict_must_keep_the_five_base_criteria(self):
+        self.assess()
+        report = self.saved_report()
+        for key in ("criteria", None):
+            with self.subTest(recorded=key is not None):
+                changed = {**report, "review": {**report["review"], "checks": [
+                    c for c in report["review"]["checks"] if c["criterion"] != "synthesis"]}}
+                if key:
+                    changed[key] = [c for c in report["criteria"] if c != "synthesis"]
+                else:
+                    changed.pop("criteria")
+                write_json(self.work / "series_review.json", {"report": changed, "sha256": digest(changed)})
+                with self.assertRaises(AppError) as caught:
+                    load_series_review(self.work, self.plan, self.scripts, "input")
+                self.assertEqual(caught.exception.code, "invalid_series_review")
+
+    def contradiction(self, review, episodes=("ep_002",)):
+        review.checks[2].verdict = "fail"
+        review.checks[2].reason = "Episode 2 contradicts the order episode 1 established."
+        review.checks[2].evidence = [e for e in review.checks[2].evidence if e.episode_id in episodes]
+
+    def test_a_round_that_fails_without_a_verdict_is_not_recorded_and_the_resume_goes_on_with_it(self):
+        """Finding of 2026-10-02: any failure inside the correction round was replayed on every resume, so a timeout, a
+        quota pause or a provider failure became a permanent block."""
+        for error in (AppError("Zeitlimit erreicht.", code="timeout"),
+                      AppError("Kontingent erschöpft.", code="quota_exhausted", status="waiting_for_quota"),
+                      AppError("Codex ist abgebrochen.", code="codex_failed"),
+                      AppError("Modellaufruf angehalten.", code="interrupted", status="interrupted")):
+            with self.subTest(code=error.code):
+                work, self.calls, rounds = self.work / error.code, 0, []
+                scripts = [s.model_copy(deep=True) for s in self.scripts]
+
+                def rejected(prompt, schema, version):
+                    review = self.invoke(prompt, schema, version)
+                    if self.calls == 1:
+                        self.contradiction(review, ("ep_001", "ep_002"))
+                    return review
+
+                def failing(grouped):
+                    rounds.append(list(grouped))
+                    raise error
+
+                def repaired(grouped):
+                    rounds.append(list(grouped))
+                    scripts[1].segments[-1].text += " In the order episode 1 established."
+                    return scripts
+                with self.assertRaises(AppError) as caught:
+                    assess_series(work, self.config, self.plan, scripts, "input", rejected, repair=failing)
+                self.assertIs(caught.exception, error)
+                receipt = json.loads((work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
+                self.assertEqual((receipt["repairs"], receipt["failure"], receipt["finished"]), (1, None, False))
+                # The resume corrects against the saved verdict without buying it again, then re-checks.
+                assess_series(work, self.config, self.plan, scripts, "input", rejected, repair=repaired)
+                self.assertEqual((rounds, self.calls), ([["ep_001", "ep_002"], ["ep_001", "ep_002"]], 2))
+                self.assertEqual(load_series_review(work, self.plan, scripts, "input")["status"], "passed")
+
+    def test_a_round_partly_adopted_before_a_timeout_goes_on_for_the_uncorrected_episodes_only(self):
+        """A parallel round adopts the corrections that passed and then raises the timeout of another episode; the
+        resume must neither correct the adopted episode again nor buy a verdict on the half-corrected series."""
+        prompts, rounds = [], []
+
+        def answer(prompt, schema, version):
+            prompts.append(json.loads(prompt.splitlines()[-1]))
+            review = self.invoke(prompt, schema, version)
+            if self.calls == 1:
+                self.contradiction(review, ("ep_001", "ep_002"))
+            return review
+
+        def partly(grouped):
+            rounds.append(list(grouped))
+            self.scripts[0].segments[-1].text += " Corrected in episode 1."
+            raise AppError("Zeitlimit erreicht.", code="timeout")
+
+        def rest(grouped):
+            rounds.append(list(grouped))
+            self.scripts[1].segments[-1].text += " Corrected in episode 2."
+            return self.scripts
+        with self.assertRaises(AppError):
+            assess_series(self.work, self.config, self.plan, self.scripts, "input", answer, repair=partly)
+        assess_series(self.work, self.config, self.plan, self.scripts, "input", answer, repair=rest)
+        self.assertEqual(rounds, [["ep_001", "ep_002"], ["ep_002"]])
+        self.assertEqual(self.calls, 2)
+        self.assertEqual(prompts[1]["changed_episodes"], ["ep_001", "ep_002"])
+        progression = next(row for row in prompts[1]["previous_checks"] if row["criterion"] == "progression")
+        self.assertEqual((progression["verdict"], progression["outcome"]), ("fail", "corrected"))
+        self.assertEqual(load_series_review(self.work, self.plan, self.scripts, "input")["status"], "passed")
+
+    def test_a_failing_check_must_name_its_episodes_and_is_routed_to_them(self):
+        """Finding of 2026-10-02: a failing check without quotes gave the correction nothing to work on, and the run
+        stopped at once. Such an answer is now asked again until it names the episodes in episode_ids."""
+        prompts, repaired = [], []
+
+        def answer(prompt, schema, version):
+            prompts.append(prompt)
+            review = self.invoke(prompt, schema, version)
+            if len(prompts) <= 2:
+                check = review.checks[0]
+                check.verdict, check.reason, check.evidence = "fail", "The central question is never answered.", []
+                if len(prompts) == 2:
+                    check.episode_ids = ["ep_002"]
+            return review
+
+        def repair(grouped):
+            repaired.append({key: [issue.model_dump() for issue in value] for key, value in grouped.items()})
+            return self.scripts
+        assess_series(self.work, self.config, self.plan, self.scripts, "input", answer, repair=repair)
+        self.assertIn("Jede nicht bestandene Serienprüfung muss in episode_ids die Folgen nennen, deren Skript sich "
+                      "ändern muss: coverage.", prompts[1])
+        self.assertEqual(repaired, [{"ep_002": [{"category": "structure", "segment_ids": [],
+                                                 "reason": "coverage: The central question is never answered."}]}])
+        self.assertEqual(self.calls, 3, "the rejected answer, the corrected one and the re-check")
+
+    def test_a_source_limit_is_reported_and_never_blocks(self):
+        def answer(prompt, schema, version):
+            review = self.invoke(prompt, schema, version)
+            check = review.checks[1]
+            check.verdict, check.evidence, check.episode_ids = "fail", [], ["ep_002"]
+            check.reason, check.source_limit = "The sources never define the prior they use.", True
+            return review
+        assess_series(self.work, self.config, self.plan, self.scripts, "input", answer,
+                      repair=lambda grouped: self.fail("a source limit is no correction for the scripts"))
+        report = load_series_review(self.work, self.plan, self.scripts, "input")
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["advisories"], [{"criterion": "prerequisites", "reason": "The sources never define the "
+                                                 "prior they use.", "episode_ids": ["ep_002"], "basis": "source_limit"}])
+        self.assertEqual(self.calls, 1)
+
+    def test_the_re_check_knows_the_last_checks_and_blocks_only_on_open_or_changed_points(self):
+        """The user's rule for repeated reviews: from the second review on, the scope is set by code and saved before
+        the call, and only an earlier objection still open or a new defect in a changed episode blocks."""
+        # The first verdict objects to both episodes; the round changes only episode 2.
+        cases = (("a new point on an untouched episode", "coverage", "ep_001", "passed"),
+                 ("the earlier objection still open on an untouched episode", "progression", "ep_001", "blocked"),
+                 ("a new point in the changed episode", "coverage", "ep_002", "blocked"))
+        for name, criterion, episode, status in cases:
+            with self.subTest(name):
+                work, self.calls, payloads = self.work / criterion / episode, 0, []
+                scripts = [s.model_copy(deep=True) for s in self.scripts]
+
+                def answer(prompt, schema, version):
+                    payloads.append(json.loads(prompt.splitlines()[-1]))
+                    review = self.invoke(prompt, schema, version)
+                    if self.calls == 1:
+                        self.contradiction(review, ("ep_001", "ep_002"))
+                    else:
+                        check = next(c for c in review.checks if c.criterion == criterion)
+                        check.verdict, check.reason = "fail", f"Still unclear in {episode}."
+                        check.evidence = [e for e in check.evidence if e.episode_id == episode]
+                    return review
+
+                def repair(grouped):
+                    self.assertEqual(list(grouped), ["ep_001", "ep_002"])
+                    scripts[1].segments[-1].text += " In the order episode 1 established."
+                    return scripts
+                if status == "passed":
+                    assess_series(work, self.config, self.plan, scripts, "input", answer, repair=repair)
+                else:
+                    with self.assertRaises(AppError) as caught:
+                        assess_series(work, self.config, self.plan, scripts, "input", answer, repair=repair)
+                    self.assertEqual(caught.exception.code, "series_review_failed")
+                    self.assertIn(f"Still unclear in {episode}.", str(caught.exception))
+                self.assertNotIn("previous_checks", payloads[0])
+                self.assertEqual(payloads[1]["changed_episodes"], ["ep_002"])
+                self.assertEqual([(row["criterion"], row.get("outcome")) for row in payloads[1]["previous_checks"]
+                                  if row["verdict"] == "fail"], [("progression", "corrected")])
+                report = load_series_review(work, self.plan, scripts, "input")
+                self.assertEqual(report["status"], status)
+                receipt = json.loads((work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
+                self.assertEqual(report["scope"], receipt["scope"])
+                if status == "passed":
+                    self.assertEqual([(row["criterion"], row["episode_ids"], row["basis"]) for row in report["advisories"]],
+                                     [(criterion, [episode], "unchanged")])
+                # A resume replays the saved verdict without a call.
+                calls = self.calls
+                try:
+                    assess_series(work, self.config, self.plan, scripts, "input", answer, repair=repair)
+                except AppError as error:
+                    self.assertEqual(error.code, "series_review_failed")
+                self.assertEqual(self.calls, calls)
+
+    def test_a_stop_during_the_re_check_asks_it_again_with_the_saved_scope(self):
+        prompts = []
+
+        def answer(prompt, schema, version):
+            prompts.append(prompt)
+            if len(prompts) == 2:
+                raise KeyboardInterrupt  # the worker stopped while the re-check was out
+            review = self.invoke(prompt, schema, version)
+            if len(prompts) == 1:
+                self.contradiction(review)
+            return review
+
+        def repair(grouped):
+            self.scripts[1].segments[-1].text += " In the order episode 1 established."
+            return self.scripts
+        with self.assertRaises(KeyboardInterrupt):
+            assess_series(self.work, self.config, self.plan, self.scripts, "input", answer, repair=repair)
+        self.assertIn("scope", json.loads((self.work / "series_repair.json").read_text(encoding="utf-8"))["receipt"])
+        assess_series(self.work, self.config, self.plan, self.scripts, "input", answer,
+                      repair=lambda grouped: self.fail("the finished round is not repeated"))
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual(prompts[2], prompts[1], "the resume asks the re-check the same question")
+        self.assertIn("previous_checks", json.loads(prompts[2].splitlines()[-1]))
+        self.assertEqual(load_series_review(self.work, self.plan, self.scripts, "input")["status"], "passed")
+
 
 class SeriesWorkflowTests(unittest.TestCase):
     def setUp(self):
@@ -307,6 +545,37 @@ class SeriesWorkflowTests(unittest.TestCase):
         (self.root / "runs" / run.run_id / "series_review.json").unlink()
         with patch("podcast_automate.episode_audio.run_tts", side_effect=AssertionError("No synthesis")), self.assertRaises(AppError):
             run_episode_audio(self.root, episode="ep_001", approve_audio=True)
+
+    def test_a_published_verdict_from_before_the_arc_still_opens_the_audio_gate(self):
+        """The Asimov and Ontologies series published on 2026-09-29 carry a v1 verdict with the five earlier criteria and
+        no criteria key; validating it against today's six refused their recording (finding of 2026-10-02)."""
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
+            run = run_script(self.root)
+        path = self.root / "runs" / run.run_id / "series_review.json"
+        report = json.loads(path.read_text(encoding="utf-8"))["report"]
+        legacy = {key: value for key, value in report.items() if key not in {"criteria", "advisories"}}
+        legacy["review"] = {**report["review"], "checks": [c for c in report["review"]["checks"] if c["criterion"] != "arc"]}
+
+        def save(saved):
+            # Written as that run wrote it: the stage record names the file's hash.
+            write_json(path, {"report": saved, "sha256": digest(saved)})
+            manifest_file = self.root / "runs" / run.run_id / "run_manifest.yaml"
+            manifest = read_yaml(manifest_file)
+            relative = path.relative_to(self.root).as_posix()
+            for stage in manifest["stages"].values():
+                if relative in (stage.get("outputs") or {}):
+                    stage["outputs"][relative] = file_hash(path)
+            write_yaml(manifest_file, manifest)
+        save(legacy)
+        config = load_project(self.root)
+        _, script, _ = reviewed_episode(self.root, config, "ep_001")
+        self.assertEqual(script.episode_id, "ep_001")
+        # A verdict without one of the five base criteria is refused.
+        broken = {**legacy, "review": {**legacy["review"], "checks": legacy["review"]["checks"][1:]}}
+        save(broken)
+        with self.assertRaises(AppError) as caught:
+            reviewed_episode(self.root, config, "ep_001")
+        self.assertEqual(caught.exception.code, "invalid_series_review")
 
     def test_legacy_approved_run_keeps_its_original_policy_and_reports_no_series_review(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
+import re
 import warnings
 from pathlib import Path
 
@@ -106,8 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--model", help="Modell-ID des Textanbieters; für OpenRouter erforderlich")
         command.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"),
                              help="Denkaufwand für Textmodellaufrufe; bei resume bleibt die gespeicherte Stufe erhalten")
-        command.add_argument("--api-key", nargs="?", const="", default=None, metavar="KEY",
-                             help="OpenRouter-Key nur für diesen Aufruf; ohne Wert verdeckt abfragen, alternativ OPENROUTER_API_KEY")
+        # The key is asked for hidden, never taken as a value: a command line is visible in the process list
+        # and the shell history (2026-10-02). A value given anyway is refused unread (run_command).
+        command.add_argument("--api-key", nargs="?", const="", default=None, metavar="",
+                             help="OpenRouter-Key nur für diesen Aufruf verdeckt abfragen; alternativ OPENROUTER_API_KEY")
         command.add_argument("--max-output-tokens", type=int,
                              help="OpenRouter-Ausgabelimit pro Modellaufruf; Standard 32768")
     script.add_argument("--jev-probe", action="store_true",
@@ -165,6 +169,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def pinned_revision(model: str, project_dir: Path) -> str | None:
+    """The commit of the Qwen model this computer already uses, so a new project records it instead of ``main``.
+
+    The Qwen worker records the commit it loaded, and the audio check compares it with ``runtime.tts_revision``;
+    with ``main`` every chapter failed as invalid_audio after the GPU work (2026-10-02). Looked up as the Studio does
+    (``Studio.runtime``): the workspace's ``.studio/tts-runtime.json``, then a sibling project with the same model,
+    then the commit the local Hugging Face cache names for ``main`` or the one snapshot it holds. None when none is
+    known."""
+    commit = re.compile(r"[a-f0-9]{40}")
+    workspaces = dict.fromkeys([Path.cwd(), project_dir.parent.parent])
+    for workspace in workspaces:
+        try:
+            local = json.loads((workspace / ".studio/tts-runtime.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(local, dict) and local.get("tts_model", model) == model
+                and commit.fullmatch(str(local.get("tts_revision") or ""))):
+            return local["tts_revision"]
+    for path in sorted(project_dir.parent.glob("*/project.yaml")):
+        try:
+            runtime = load_project(path.parent).runtime
+        except (AppError, ValueError):
+            continue
+        if runtime.tts_model == model and commit.fullmatch(runtime.tts_revision):
+            return runtime.tts_revision
+    hub = (Path(os.environ["HF_HUB_CACHE"]) if os.environ.get("HF_HUB_CACHE") else
+           Path(os.environ["HF_HOME"]) / "hub" if os.environ.get("HF_HOME") else Path.home() / ".cache/huggingface/hub")
+    cache = hub / ("models--" + model.replace("/", "--"))
+    try:
+        main_ref = (cache / "refs/main").read_text(encoding="utf-8").strip()
+        if commit.fullmatch(main_ref):
+            return main_ref
+    except OSError:
+        pass
+    try:
+        # Downloaded by its commit, the cache has no ref for main; a single snapshot is still unambiguous.
+        snapshots = [entry.name for entry in (cache / "snapshots").iterdir() if commit.fullmatch(entry.name)]
+    except OSError:
+        return None
+    return snapshots[0] if len(snapshots) == 1 else None
+
+
 def emit(data: dict, as_json: bool):
     if as_json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -212,6 +258,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_command(args) -> int:
     try:
+        if getattr(args, "api_key", None):
+            raise AppError("--api-key nimmt keinen Wert an: Ein Key in der Befehlszeile steht in der Prozessliste und im "
+                           "Shell-Verlauf. --api-key ohne Wert fragt ihn verdeckt ab; alternativ OPENROUTER_API_KEY setzen.",
+                           code="invalid_request", status="blocked")
         if args.command == "studio":
             from .studio import serve
             serve(args.workspace, port=args.port, open_browser=not args.no_browser, lan=args.lan)
@@ -220,11 +270,17 @@ def run_command(args) -> int:
             runtime = RuntimeSettings()
             if args.tts_python:
                 runtime.tts_python = str(Path(args.tts_python).resolve())
+            revision = pinned_revision(runtime.tts_model, args.project_dir.resolve())
+            if revision:
+                runtime.tts_revision = revision
             config = TopicBrief(topic=args.topic, central_question=args.topic,
                                 target_total_minutes=args.total_minutes, runtime=runtime)
             init_project(args.project_dir.resolve(), config)
-            data = {"status": "created", "message": f"Projekt angelegt: {args.project_dir.resolve()}",
-                    "project": config.model_dump(mode="json")}
+            message = f"Projekt angelegt: {args.project_dir.resolve()}"
+            if not revision:
+                message += (". Die Qwen-Modellrevision ist noch nicht festgelegt (runtime.tts_revision: main); vor der "
+                            "ersten Qwen-Vertonung den Commit des geladenen Modells in project.yaml eintragen.")
+            data = {"status": "created", "message": message, "project": config.model_dump(mode="json")}
             code = 0
         elif args.command == "doctor":
             runtime = load_project(args.project_dir).runtime if args.project_dir else RuntimeSettings()

@@ -167,10 +167,13 @@ class StatusSummaryTests(unittest.TestCase):
         self.assertIn("Read the original experiment", text)
         self.assertNotIn("STALE GAP", text)
         self.assertNotIn("0 von 10", text)
+        before = (self.work / "research_activity.json").read_bytes()
         with patch("podcast_automate.status_summary.CodexAdapter.structured", autospec=True, side_effect=self.result):
             self.update()
-        envelope = json.loads((self.work / "research_activity.json").read_text())
-        self.assertEqual(envelope["research_questions"], ledger)
+        # The research worker's envelope stays its own: the monitor, a separate process, no longer rewrites it
+        # (2026-10-02, a read-modify-write outside the worker's lock); the Studio reads the report from its file.
+        self.assertEqual((self.work / "research_activity.json").read_bytes(), before)
+        self.assertEqual(summary_view(self.work)["status"], "ready")
 
     def test_several_active_tasks_are_one_fact_each_plus_a_count(self):
         ledger = {"closed": 0, "total": 4, "phase": "questions", "active_task": "task_a",
@@ -233,6 +236,17 @@ class StatusSummaryTests(unittest.TestCase):
                 patch("podcast_automate.status_summary.time.sleep", side_effect=replace):
             watch_summaries(self.root, "job_one")
         self.assertEqual(update.call_count, 1)
+        # Its lock goes with it: job ids are unique, and an empty file per job piled up in studio/.
+        self.assertEqual(list((self.root / "studio").glob(".status-*.lock")), [])
+
+    def test_a_second_monitor_of_the_same_job_leaves_the_owners_lock_alone(self):
+        from podcast_automate.status_summary import status_lock
+        from podcast_automate.storage import file_lock
+        with file_lock(status_lock(self.root, "job_one")), \
+                patch("podcast_automate.status_summary.update_summary") as update:
+            watch_summaries(self.root, "job_one")
+            update.assert_not_called()
+            self.assertTrue(status_lock(self.root, "job_one").exists())
 
 
 class ProcessStreamingTests(unittest.TestCase):

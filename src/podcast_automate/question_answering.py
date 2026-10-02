@@ -6,22 +6,23 @@ keys are defined by ``question_scope.pending_task``.
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
 from .question_dependencies import prerequisite_answers, prerequisite_gaps
-from .question_sources import reserve_source, restore_attempts, source_identity
+from .question_sources import attempt_folder, reserve_source, restore_attempts, source_identity
 from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, evidence_profile, collapse_assessments, collapse_support, verbatim,
-                                evidence_summary, scope_assessments, support_errors)
+                                evidence_summary, scope_assessments, settle_receipts, support_errors)
 from .research_gap_probe import settle
 from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
 from .research_models import ResearchDiscovery, SourceDocument, SourceIndex, admissible, is_idea
 from .research_dates import research_day
 from .research_reader import source_catalog
 from .research_retrieval import references
-from .research_tasks import AnswerReview, QuestionAnswer, QuestionSearch, ReaderWindow, ResearchDecision
+from .research_tasks import AnswerReview, CriterionVerdict, QuestionAnswer, QuestionSearch, ReaderWindow, ResearchDecision
 from .sources import canonical_url, clean, import_failure, import_source
 from .storage import digest, read_text
 
@@ -53,6 +54,21 @@ PREREQUISITE_GAP_REVIEW = ("prerequisite_gaps lists prerequisites the editor acc
 LOCK_FEEDBACK = ("The answer is locked after a failed review: read or search new passages first and answer only "
                  "with new evidence. If a criterion needs a kind of source the corpus lacks, search_web for it; "
                  "if the web search brings nothing, choose blocked and name the criterion.")
+# Added only to the prompt of a task with verified prerequisites, which now carry digests instead of whole answers.
+PREREQUISITE_DIGEST_READER = ("prerequisite_answers gives each verified prerequisite answer as its question, summary, "
+                              "outcome, limits and findings (id, statement, relation, references). Read a finding's "
+                              "references before you cite its passages, and do not widen its relation or drop its limits.")
+PREREQUISITE_DIGEST_REVIEW = ("prerequisite_answers gives each verified prerequisite answer as its question, summary, "
+                              "outcome, limits and findings (id, statement, relation, references). A finding that builds "
+                              "on one keeps its relation and limits; judge its support on the supplied passages.")
+# Only for the review of a reworked answer after a failed one (the design rule for repeated reviews, 2026-10-02).
+REVIEW_MEMORY = ("previous_review is your earlier verdict on this question's previous answer, which failed: its failed "
+                 "criteria, its blocking findings and whether the sources were adequate. changed_finding_ids are the "
+                 "findings that are new or changed since; may_fail is the scope the code set for this review. Say in "
+                 "each criterion and finding receipt whether an earlier point is resolved. Only an earlier point that is "
+                 "still unresolved, or a new defect in a changed finding or in a criterion resting on one, fails the "
+                 "answer now; anything else you notice belongs in issues or limitations.")
+UNREVIEWED_CRITERION = "The review returned no verdict on this criterion."
 
 
 def normalise_criteria(rows, *, worse=None):
@@ -131,16 +147,25 @@ def answer_errors(answer, task, reader, read_refs):
     return errors
 
 
-def normalise_review(review, task):
+def normalise_review(review, task, *, final=False):
     """The review with repeated criterion, finding and source entries collapsed conservatively.
 
-    A repeated criterion keeps its failing verdict. A missing or unknown criterion index is still a
-    shape defect that costs a repeated call.
+    A repeated criterion keeps its failing verdict. A missing or unknown criterion index is a shape
+    defect that costs a repeated call, named so the call can correct it; on the ``final`` attempt an
+    unknown index is dropped and a missing one fails with that reason instead of stopping the run.
     """
     criteria = normalise_criteria(review.criteria, worse=lambda new, kept: not new.passed and kept.passed)
-    if [c.index for c in criteria] != list(range(len(task.acceptance))):
-        raise AppError("Antwortprüfung muss jedes Abschlusskriterium genau einmal bewerten.",
-                       code="invalid_question_review", status="blocked")
+    expected = list(range(len(task.acceptance)))
+    if [c.index for c in criteria] != expected:
+        if not final:
+            given = {c.index for c in criteria}
+            missing, unknown = sorted(set(expected) - given), sorted(given - set(expected))
+            raise AppError("Antwortprüfung muss jedes Abschlusskriterium genau einmal bewerten."
+                           + (f" Fehlend: {', '.join(map(str, missing))}." if missing else "")
+                           + (f" Unbekannt: {', '.join(map(str, unknown))}." if unknown else ""),
+                           code="invalid_question_review", status="blocked")
+        kept = {c.index: c for c in criteria if c.index in expected}
+        criteria = [kept.get(i) or CriterionVerdict(index=i, passed=False, reason=UNREVIEWED_CRITERION) for i in expected]
     return review.model_copy(update={"criteria": criteria, "finding_support": collapse_support(review.finding_support),
                                      "source_assessments": collapse_assessments(review.source_assessments)})
 
@@ -152,6 +177,24 @@ def review_passes(review, task):
     return review.source_adequacy and all(c.passed for c in review.criteria)
 
 
+def review_points(review, task, findings, passages):
+    """(blocking points, limitations) of a well-formed review under the tiered rule. A point is
+    ``(kind, key, text)``: ``("finding", finding id, ...)``, ``("criterion", index, ...)`` or ``("sources", None, ...)``."""
+    review = normalise_review(review, task)
+    limitations, per_finding = [], {}
+    support_errors(findings, review, passages, limitations=limitations, per_finding=per_finding)
+    points = [("finding", finding_id, text) for finding_id, texts in per_finding.items() for text in texts]
+    points += [("criterion", c.index, f"Criterion {c.index} not met: {c.reason}") for c in review.criteria if not c.passed]
+    if not review.source_adequacy:
+        points.append(("sources", None, "The sources are not adequate for this type of claim."))
+    limitations += [{"finding_id": "", "kind": "issue", "text": issue} for issue in review.issues]
+    limitations += [{"finding_id": "", "kind": "review_limitation", "text": text} for text in review.limitations]
+    if not review.supported:
+        limitations.append({"finding_id": "", "kind": "not_fully_supported",
+                            "text": "Die Prüfung stuft die Antwort insgesamt als nicht vollständig gestützt ein."})
+    return points, limitations
+
+
 def review_outcome(review, task, findings, passages):
     """(blocking feedback, limitations) of a well-formed review under the tiered rule.
 
@@ -159,18 +202,95 @@ def review_outcome(review, task, findings, passages):
     finding, an unsuitable source, a broken claim contract or unestablished independence. Every
     other observation passes the answer and is stored beside it as a limitation.
     """
-    review = normalise_review(review, task)
-    limitations = []
-    blocking = support_errors(findings, review, passages, limitations=limitations)
-    blocking += [f"Criterion {c.index} not met: {c.reason}" for c in review.criteria if not c.passed]
-    if not review.source_adequacy:
-        blocking.append("The sources are not adequate for this type of claim.")
-    limitations += [{"finding_id": "", "kind": "issue", "text": issue} for issue in review.issues]
-    limitations += [{"finding_id": "", "kind": "review_limitation", "text": text} for text in review.limitations]
-    if not review.supported:
-        limitations.append({"finding_id": "", "kind": "not_fully_supported",
-                            "text": "Die Prüfung stuft die Antwort insgesamt als nicht vollständig gestützt ein."})
-    return blocking, limitations
+    points, limitations = review_points(review, task, findings, passages)
+    return [text for _, _, text in points], limitations
+
+
+def review_scope(memory, answer):
+    """From the second review of a reworked answer on, what may fail it, set by code (the design rule for repeated
+    reviews): the points the earlier review failed, and the findings that are new or changed since together with
+    the criteria resting on them. None for a first review, or after a pass."""
+    if not memory:
+        return None
+    hashes = memory.get("finding_hashes", {})
+    changed = [f.id for f in answer.findings if hashes.get(f.id) != digest(f.model_dump())]
+    earlier = [row["finding_id"] for row in memory.get("blocking_findings", [])]
+    failed = [row["index"] for row in memory.get("failed_criteria", [])]
+    resting = [c.index for c in answer.criteria if set(c.finding_ids) & set(changed)]
+    return {"step": memory.get("step"), "changed_finding_ids": changed,
+            "unchanged_finding_ids": [f.id for f in answer.findings if f.id not in changed],
+            "may_fail": {"finding_ids": sorted(set(changed) | set(earlier)), "criteria": sorted(set(failed) | set(resting)),
+                         "source_adequacy": bool(changed) or not memory.get("source_adequacy", True)}}
+
+
+def carry_earlier(verdict, memory, scope):
+    """Keep, in place, the earlier passing receipt of every point outside ``scope`` that this review now fails, and
+    return the new objections as advisories. Before, every review of a reworked answer was a fresh one, and a point
+    it had passed could fail the next round (the design rule: only unresolved earlier objections or new defects in
+    changed material may block)."""
+    earlier = AnswerReview.model_validate(memory["review"])
+    receipts = {row.finding_id: row for row in earlier.finding_support}
+    verdicts = {c.index: c for c in earlier.criteria}
+    allowed, advisories = scope["may_fail"], []
+
+    def advisory(text):
+        advisories.append({"finding_id": "", "kind": "advisory",
+                           "text": "Neuer Hinweis der erneuten Prüfung zu unverändertem, zuvor bestandenem Material: " + text})
+
+    support = []
+    for row in verdict.finding_support:
+        kept = receipts.get(row.finding_id)
+        if blocks(row) and row.finding_id not in allowed["finding_ids"] and kept is not None and not blocks(kept):
+            advisory(f"{row.finding_id}: {row.verdict}; {row.reason}")
+            support.append(kept)
+        else:
+            support.append(row)
+    verdict.finding_support = support
+    criteria = []
+    for criterion in verdict.criteria:
+        kept = verdicts.get(criterion.index)
+        if not criterion.passed and criterion.index not in allowed["criteria"] and kept is not None and kept.passed:
+            advisory(f"Kriterium {criterion.index}: {criterion.reason}")
+            criteria.append(kept)
+        else:
+            criteria.append(criterion)
+    verdict.criteria = criteria
+    if not verdict.source_adequacy and not allowed["source_adequacy"] and earlier.source_adequacy:
+        advisory("Die Quellen gelten als nicht angemessen.")
+        verdict.source_adequacy = True
+    return advisories
+
+
+def review_memory(step, answer, verdict, points):
+    """What a failed review leaves for the review of the reworked answer: its verdict and the findings it saw."""
+    support = {row.finding_id: row for row in verdict.finding_support}
+    blocking = list(dict.fromkeys(key for kind, key, _ in points if kind == "finding"))
+    return {"step": step, "finding_hashes": {f.id: digest(f.model_dump()) for f in answer.findings},
+            "review": verdict.model_dump(), "source_adequacy": verdict.source_adequacy,
+            "failed_criteria": [{"index": c.index, "reason": c.reason} for c in verdict.criteria if not c.passed],
+            "blocking_findings": [{"finding_id": key, "verdict": support[key].verdict, "reason": support[key].reason,
+                                   "unsupported_clauses": support[key].unsupported_clauses}
+                                  for key in blocking if key in support]}
+
+
+def prerequisite_digests(spec, state):
+    """The verified prerequisite answers as the reader and reviewer of a dependent task see them: question, summary,
+    outcome, limits and each finding's id, statement, relation and cited references. The whole answers, with their
+    quotes, contracts and criterion explanations, took 238,614 characters for one synthesis of 18 prerequisites, on
+    every step (Ontologies, 2026-10-02); a finding's passages can still be read by its references. The verification
+    binds the whole answers as before (``prerequisite_hashes`` from question_dependencies.prerequisite_answers)."""
+    questions = {task["id"]: task["question"] for task in state["plan"]["tasks"]}
+    rows = []
+    for row in prerequisite_answers(spec, state):
+        answer = row["answer"]
+        rows.append({"task_id": row["task_id"], "question": questions.get(row["task_id"], ""),
+                     "summary": answer["summary"], "outcome": answer.get("outcome", "supported_answer"),
+                     "limits": answer.get("limits", []),
+                     "findings": [{"id": f["id"], "statement": f["statement"],
+                                   **({"relation": f["claim_contract"]["relation"]} if f.get("claim_contract") else {}),
+                                   "references": list(dict.fromkeys(e["reference"] for e in f["evidence"]))}
+                                  for f in answer["findings"]]})
+    return rows
 
 
 def access_gap_rows(spec, row):
@@ -193,10 +313,32 @@ def search_folder(folder, queries):
     return folder if saved == list(queries) else folder / f"search_{digest(list(queries))[:8]}"
 
 
+def settled_search(extra, maximum):
+    """A search result within its order, as discovery truncates its own (research.discovery_stage): candidates without
+    an admissible type are dropped, the first ``maximum`` of the rest stay, and what was dropped or left unrecorded is
+    named in ``limitations``. A result that passed its check comes back unchanged."""
+    admitted = [c for c in extra.candidates if admissible(c)]
+    untyped = [c for c in extra.candidates if not admissible(c)]
+    over = admitted[maximum:]
+    limitations = list(extra.limitations)
+    if untyped:
+        limitations.append("Ohne zulässigen Quellentyp, nicht eingelesen: " + "; ".join(c.title for c in untyped))
+    if over:
+        limitations.append("Über dem Quellenauftrag dieser Suche, nicht eingelesen: " + "; ".join(c.title for c in over))
+    if not extra.executed_queries:
+        limitations.append("Die Suche hat ihre ausgeführten Suchanfragen nicht festgehalten.")
+    if not (untyped or over or not extra.executed_queries or not extra.counterevidence):
+        return extra
+    return extra.model_copy(update={"candidates": admitted[:maximum], "limitations": limitations,
+                                    "counterevidence": extra.counterevidence or "Nicht festgehalten."})
+
+
 def read_context(reader, refs):
-    """Exact passages for the given references, in stable order and without neighbours."""
+    """Exact passages for the given references, in stable order and without neighbours. All of them: a cap of
+    2,000,000 characters dropped the rest without a word (2026-10-02); a prompt too large for its model is refused
+    by the adapter's own prompt limit, and a check over a whole assembled dossier needs every passage."""
     return reader.read([ReaderWindow(reference=ref, before=0, after=0) for ref in dict.fromkeys(refs)],
-                       max_chars=2_000_000)["context"]
+                       max_chars=None)["context"]
 
 
 # The read passages a reader prompt carries: the latest read in full (at most the 36 000 characters one read
@@ -271,8 +413,12 @@ class TaskResearchMixin:
         return results
 
     def read(self, row, windows):
+        # New is what the reader could not see: a passage pushed out of view (VIEW_CHARS) and read again counts,
+        # as its prompt promised. Measured against all read_refs, that re-read was no progress, and a locked task
+        # blocked on it (2026-10-02).
+        seen = set(visible_refs(self.reader, row))
         result = self.reader.read(windows)
-        new = references(result["context"]) - set(row["read_refs"])
+        new = references(result["context"]) - seen
         row["current_refs"] = list(dict.fromkeys(s["reference"] for source in result["context"] for s in source["sections"]))
         row["read_refs"] = list(dict.fromkeys([*row["read_refs"], *row["current_refs"]]))
         row["deferred"] = result["deferred"]
@@ -348,9 +494,12 @@ class TaskResearchMixin:
         answer = QuestionAnswer.model_validate(row["answer"])
         refs = [e.reference for f in answer.findings for e in f.evidence]
         passages = read_context(self.reader, refs)
+        prerequisites = prerequisite_digests(spec, self.state)
         text = TERMINOLOGY + EVIDENCE_INSTRUCTIONS + instructions("question_verify")
         payload = {"task": spec.model_dump(), "answer": answer.model_dump(), "evidence_profile": evidence_profile(spec),
-                   "prerequisite_answers": prerequisite_answers(spec, self.state), "sources": passages}
+                   "prerequisite_answers": prerequisites, "sources": passages}
+        if prerequisites:
+            text += " " + PREREQUISITE_DIGEST_REVIEW
         if row.get("access_gaps"):
             text += " " + ACCESS_GAP_REVIEW
             payload["accepted_access_gaps"] = access_gap_rows(spec, row)
@@ -362,27 +511,68 @@ class TaskResearchMixin:
         searched = row.get("web_attempts", 0) >= 1
         if searched:
             text += " " + EVIDENCE_ABSENCE_REVIEW
+        memory = row.get("review_memory")
+        scope = review_scope(memory, answer)
+        if scope:
+            # The review of a reworked answer remembers the verdict that failed it, and its scope is set by code and
+            # saved before the call (the design rule for repeated reviews, 2026-10-02).
+            text += " " + REVIEW_MEMORY
+            payload["previous_review"] = {"failed_criteria": memory["failed_criteria"],
+                                          "blocking_findings": memory["blocking_findings"],
+                                          "sources_adequate": memory["source_adequacy"],
+                                          **{key: scope[key] for key in ("changed_finding_ids", "unchanged_finding_ids", "may_fail")}}
+            if row.get("review_scope") != {"review_step": row["step"], **scope}:
+                row["review_scope"] = {"review_step": row["step"], **scope}
+                self.save(f"Erneute Antwortprüfung mit festgelegtem Umfang: {spec.question}")
         prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
 
         def well_formed(verdict, final):
             # Shape defects are corrected by a repeated call; substantive non-passes are feedback.
             # An assessment of a source no finding cites is dropped, not refused (2026-10-01: Asimov's asimov_evaluate
             # and Ontologies' t18 each assessed one extra source, and the refusals spent both automatic fresh attempts).
-            support_errors(answer.findings, scope_assessments(normalise_review(verdict, spec), answer.findings, passages), passages)
+            # The final attempt is normalised instead of refused (settle_receipts): a shape defect never stops the run.
+            review = scope_assessments(normalise_review(verdict, spec, final=final), answer.findings, passages)
+            if final:
+                settle_receipts(review, answer.findings, passages)
+            support_errors(answer.findings, review, passages)
 
-        verdict = scope_assessments(normalise_review(self.call(self.task_folder(spec, row), f"review_{row['step']:03d}", AnswerReview, prompt,
-                                             validate=well_formed, tag=".absence" if searched else ""), spec),
-                                    answer.findings, passages)
-        blocking, limitations = review_outcome(verdict, spec, answer.findings, passages)
+        # ".absence": a demanded kind of evidence the web search did not find is a result (2026-10-01); ".digest":
+        # prerequisites as digests; ".memory": the earlier failed verdict and the code-set scope (both 2026-10-02).
+        tag = "".join(part for part, used in ((".absence", searched), (".digest", bool(prerequisites)),
+                                              (".memory", bool(scope))) if used)
+        raw = self.call(self.task_folder(spec, row), f"review_{row['step']:03d}", AnswerReview, prompt,
+                        validate=well_formed, tag=tag)
+        # A review that passed its checks comes through the normalisation unchanged; only a final attempt is settled.
+        unreviewed_criteria = sorted(set(range(len(spec.acceptance))) - {c.index for c in raw.criteria})
+        verdict = scope_assessments(normalise_review(raw, spec, final=True), answer.findings, passages)
+        notes, unreviewed = settle_receipts(verdict, answer.findings, passages)
+        advisories = carry_earlier(verdict, memory, scope) if scope else []
+        points, limitations = review_points(verdict, spec, answer.findings, passages)
+        blocking = [message for _, _, message in points]
+        limitations += notes + advisories
         # The accepted gap travels with the verified answer whatever the answer's own limits say.
         limitations += [{"finding_id": "", "kind": "accepted_access_gap",
                          "text": f"Kriterium {gap['criterion']} ({gap['criterion_text']}): akzeptierte Zugangslücke, "
                                  f"{gap['source']} war nicht abrufbar ({gap['evidence']})."
                                  + (f" {gap['editor_note']}" if gap["editor_note"] else "")}
                         for gap in access_gap_rows(spec, row)]
+        answer_hash = digest(answer.model_dump())
+        omitted_only = blocking and all((kind == "finding" and key in unreviewed) or
+                                        (kind == "criterion" and key in unreviewed_criteria) for kind, key, _ in points)
+        if omitted_only and row.get("review_repeat") != answer_hash and row["step"] + 1 < self.step_limit(row):
+            # The review left parts of the answer unjudged even on its last attempt: that says nothing about the
+            # answer, so the same answer is reviewed once more at the next step instead of being locked.
+            row.update(step=row["step"] + 1, review_repeat=answer_hash,
+                       activity="Die Prüfung hat Teile der Antwort nicht bewertet; die Antwort wird erneut geprüft")
+            self.save(f"Antwort wird erneut geprüft: {spec.question}")
+            return
         if not blocking:
             row.update(status="verified", activity="Antwort und Belege geprüft", reason="", feedback=[], no_progress=0,
                        answer_locked=False, lock=None)
+            # A pass ends the rework: a later reopening starts a fresh review, and an unchanged resubmission of
+            # this answer is no longer let through (``resubmit``, set by an access gap or a revalidation).
+            for key in ("resubmit", "review_memory", "review_scope", "review_repeat"):
+                row.pop(key, None)
             row["outcome"] = answer.outcome
             row["verification"] = {"answer_hash": digest(answer.model_dump()), "review": verdict.model_dump(),
                                    "evidence_version": EVIDENCE_VERSION, "limitations": limitations,
@@ -403,6 +593,8 @@ class TaskResearchMixin:
                              "reasons": blocking},
                        feedback=[*blocking, *(item["text"] for item in limitations)],
                        no_progress=row["no_progress"] + 1, activity="Antwortprüfung verlangt neue Belege")
+            # What the review of the reworked answer remembers (review_scope, carry_earlier).
+            row["review_memory"] = review_memory(row["lock"]["step"], answer, verdict, points)
             self.save(f"Belege zu dieser Frage werden ergänzt: {spec.question}")
 
     def lock_block(self, spec, row):
@@ -418,11 +610,26 @@ class TaskResearchMixin:
                    reason=reason + (" " + row["reason"] if row["reason"] else ""),
                    outcome="budget_block" if row.get("outcome") == "budget_block" else "evidence_block")
 
+    def web_open(self, row):
+        """Whether a web search could still load sources for this question: its own web attempts, the run's search
+        rounds and the run's source limit. ``web_search`` refuses each of them; a reader still offered search_web
+        after they ran out spent one to three calls learning that (2026-10-02)."""
+        if row.get("web_attempts", 0) >= self.web_attempt_limit(row):
+            return False
+        budget_path = self.work / "budget.json"
+        budget = json.loads(read_text(budget_path)) if budget_path.exists() else {}
+        if budget.get("search_rounds", 0) >= self.limits().search_rounds:
+            return False
+        if self.attempts is None:
+            self.attempts = restore_attempts(self.folder, self.index)
+        return len(self.attempts) < self.limits().sources
+
     def allowed_actions(self, row):
         if row.get("revise_only"):
             # Reopened to correct wording against passages it already cites: the answer is the only step.
             return ["answer"]
-        return [a for a in READER_ACTIONS if a != "answer" or not row.get("answer_locked")]
+        web = self.web_open(row)
+        return [a for a in READER_ACTIONS if (a != "answer" or not row.get("answer_locked")) and (a != "search_web" or web)]
 
     def review_limitations(self):
         """Per verified task, what the independent review confirmed only with a stated limit."""
@@ -433,25 +640,32 @@ class TaskResearchMixin:
                 and (self.state["tasks"][spec["id"]].get("verification") or {}).get("limitations")]
 
     def task_folder(self, spec, row):
-        path = self.folder / "tasks" / spec.id / f"attempt_{len(row['reopenings'])}"
-        return path / f"dependency_{row['dependency_revision']}" if row.get("dependency_revision") else path
+        # The one derivation of the receipt layout, shared with the budget projection and the attempt restore.
+        return attempt_folder(self.folder, spec.id, row)
 
     def receipt_index(self, result):
-        """The index a download receipt describes: a whole copy (older receipts) or the current index
-        plus the documents this search added. The receipt must build on the index the ledger holds."""
+        """The index a download receipt describes: a whole copy (older receipts) or the index the ledger holds now
+        plus the documents and failures this search added.
+
+        ``base`` names the index the receipt was last written against. It differs from the ledger's when another
+        task's search changed the index while this one downloaded outside the ledger lock (2026-10-02), and an
+        interruption can fall in between. The receipt carries every document and failure of its own, so they join
+        the current index: nothing of the other search is dropped and nothing foreign is taken. Before, a differing
+        base stopped the resume."""
         if "index" in result:
             return SourceIndex.model_validate(result["index"])
-        if result.get("base") != self.state["index_hash"]:
-            raise AppError("Der gespeicherte Abrufbeleg passt nicht zum aktuellen Quellenindex.",
-                           code="invalid_research_checkpoint", status="blocked")
+        return self.merged_index([SourceDocument.model_validate(row) for row in result.get("added", [])],
+                                 result.get("failures", []))
+
+    def merged_index(self, added, failures):
+        """The ledger's current index plus ``added`` documents and ``failures`` it does not hold yet."""
         restored = SourceIndex.model_validate(self.index.model_dump())
         known = {s.id for s in restored.sources}
-        for row in result.get("added", []):
-            document = SourceDocument.model_validate(row)
+        for document in added:
             if document.id not in known:
                 restored.sources.append(document)
                 known.add(document.id)
-        restored.failures.extend(f for f in result.get("failures", []) if f not in restored.failures)
+        restored.failures.extend(f for f in failures if f not in restored.failures)
         return restored
 
     def receipt_value(self, result, restored):
@@ -508,6 +722,10 @@ class TaskResearchMixin:
             save_value(request_path, {"prompt": prompt, "maximum": maximum})
 
         def well_formed(extra, final):
+            # The final attempt is settled below instead of refused: the frozen search prompt failed the same way on
+            # every resume, and the run stood still behind a card that promised a new call (2026-10-02).
+            if final:
+                return
             if not extra.executed_queries or not extra.counterevidence:
                 raise AppError("Search must record executed queries and counterevidence outcome.",
                                code="invalid_search_receipt", status="blocked")
@@ -519,39 +737,66 @@ class TaskResearchMixin:
 
         # ".archives": the search names open archives to prefer (open_archives, 2026-10-01); a resumed step keeps
         # the prompt it saved in search_request.json.
-        extra = self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed, tag=".archives")
+        extra = settled_search(self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed,
+                                         tag=".archives"), maximum)
         result = read_value(receipt) if receipt.exists() else {
             "processed": [], "attempted": [], "base": self.state["index_hash"], "added": [], "failures": []}
         result.setdefault("attempted", [source_identity(url) for url in result["processed"]])
         restored = self.receipt_index(result)
         check_sources(self.root, restored)
         before = {s.text_hash for s in self.index.sources}
-        known = {canonical_url(url) for s in restored.sources for url in (s.url, s.final_url) if url}
+        # A receipt of the older form holds a whole index copy; its search keeps the ledger lock throughout. Every
+        # other search keeps what it added in ``added`` and ``failed`` and downloads outside the lock (2026-10-02:
+        # the other workers stood still for up to four downloads and parses of one search).
+        whole = "index" in result
+        added = [] if whole else [SourceDocument.model_validate(r) for r in result.get("added", [])]
+        failed = [] if whole else list(result.get("failures", []))
+        merged = self.state["index_hash"]
+
+        def known_addresses(index):
+            return {canonical_url(url) for s in index.sources for url in (s.url, s.final_url) if url}
+        known = known_addresses(restored)
         for candidate in extra.candidates:
             if source_identity(candidate.url) in {source_identity(url) for url in result["processed"]}:
                 continue
             address = source_identity(candidate.url)
+            # The reservation stays under the lock: two tasks never fetch one address.
             if address not in known and not reserve_source(self.folder, receipt, result, self.attempts, address,
                                                            source_limit):
                 continue
             try:
                 address = canonical_url(candidate.url)
                 if address not in known:
-                    doc, _ = import_source(candidate, self.root, self.work.name,
-                                           **({"library": self.library} if self.library else {}))
+                    with nullcontext() if whole else self.unguarded():
+                        doc, _ = import_source(candidate, self.root, self.work.name,
+                                               **({"library": self.library} if self.library else {}))
+                    if not whole and self.state["index_hash"] != merged:
+                        # Another task's search set a new index meanwhile: build on it, so none of its sources is lost.
+                        restored, merged = self.merged_index(added, failed), self.state["index_hash"]
+                        known |= known_addresses(restored)
                     if doc.text_hash not in {s.text_hash for s in restored.sources} or any(
                             s.text_hash == doc.text_hash and not s.url for s in restored.sources):
                         restored.sources.append(doc)
+                        added.append(doc)
                     else:
-                        restored.failures.append({"source": candidate.url, "reason": "Identischer Quellentext bereits eingelesen.",
-                                                  "code": "duplicate_source"})
+                        failure = {"source": candidate.url, "reason": "Identischer Quellentext bereits eingelesen.",
+                                   "code": "duplicate_source"}
+                        restored.failures.append(failure)
+                        failed.append(failure)
                     known.add(address)
                     if doc.final_url:
                         known.add(canonical_url(doc.final_url))
             except (AppError, OSError, ValueError) as exc:
-                restored.failures.append(import_failure(candidate.url, exc))
-            result = self.receipt_value({**result, "processed": [*result["processed"], candidate.url]}, restored)
+                failure = import_failure(candidate.url, exc)
+                restored.failures.append(failure)
+                failed.append(failure)
+            processed = [*result["processed"], candidate.url]
+            result = (self.receipt_value({**result, "processed": processed}, restored) if whole else
+                      {**result, "processed": processed, "base": self.state["index_hash"],
+                       "added": [d.model_dump(mode="json") for d in added], "failures": failed})
             save_value(receipt, result)
+        if not whole and self.state["index_hash"] != merged:
+            restored = self.merged_index(added, failed)
         self.set_index(restored)
         row.setdefault("search_receipts", []).append({"lane": "web", "task_id": spec.id,
             "requested_queries": queries, **extra.model_dump(exclude={"executed_queries"}),
@@ -571,7 +816,9 @@ class TaskResearchMixin:
                          if c["reference"] not in row["read_refs"]))[:8]
         novel = self.read(row, [ReaderWindow(reference=r, before=1, after=1) for r in candidates]) if candidates else 0
         row["feedback"] = extra.limitations
-        return bool(novel or ({s.text_hash for s in restored.sources} - before))
+        # Only this search's own documents are its progress, not those another task's search added meanwhile.
+        own = restored.sources if whole else added
+        return bool(novel or ({s.text_hash for s in own} - before))
 
     def plan_order(self, task_ids):
         wanted = set(task_ids)
@@ -592,7 +839,9 @@ class TaskResearchMixin:
         errors = answer_errors(answer, spec, self.reader, set(row["read_refs"]))
         if any(f.claim_contract is None for f in answer.findings):
             errors.append("Supply a structured claim_contract for every finding.")
-        # ``resubmit``: the draft failed under criteria an accepted access gap has narrowed since.
+        # ``resubmit`` names a draft that may come back unchanged: it failed under criteria an accepted access gap has
+        # narrowed since, or it passed and only a prerequisite changed (question_dependencies.revalidate). verify clears
+        # it with the next pass or failure, so it never lets a later rejected draft through.
         if (row["draft_answer"] and digest(answer.model_dump()) == digest(row["draft_answer"])
                 and row.get("resubmit") != digest(row["draft_answer"])):
             errors.append("This identical answer already failed independent review. Address the specific feedback before resubmitting.")
@@ -627,10 +876,13 @@ class TaskResearchMixin:
             else:
                 text = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
                         instructions("question_reader", language=self.config.language))
+                prerequisites = prerequisite_digests(spec, self.state)
+                if prerequisites:
+                    text += " " + PREREQUISITE_DIGEST_READER
                 payload = {
                     "task": spec.model_dump(), "task_groups": self.state.get("task_groups", {}),
                     "evidence_profile": evidence_profile(spec),
-                    "prerequisite_answers": prerequisite_answers(spec, self.state),
+                    "prerequisite_answers": prerequisites,
                     "allowed_actions": self.allowed_actions(row),
                     "answer_lock": row.get("lock") if row.get("answer_locked") else None,
                     "source_catalog": source_catalog(self.index),
@@ -660,8 +912,10 @@ class TaskResearchMixin:
                             raise AppError("The answer fails its fixed checks; correct exactly these and answer again: "
                                            + " ".join(defects), code="invalid_model_output", status="blocked")
                 # ".view": the reader sees this question's earlier passages too (VIEW_CHARS, 2026-09-30);
-                # ".absence": a demanded kind of evidence the web search did not find is answered as a result (2026-10-01).
-                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked, tag=".view.absence")
+                # ".absence": a demanded kind of evidence the web search did not find is answered as a result (2026-10-01);
+                # ".digest": verified prerequisites as digests, not whole answers (prerequisite_digests, 2026-10-02).
+                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked,
+                                     tag=".view.absence" + (".digest" if prerequisites else ""))
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
                 self.save(f"{spec.question} · {decision.reason}")

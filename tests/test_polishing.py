@@ -9,9 +9,11 @@ from podcast_automate.polishing import (DEMANDING_PASSAGES, DemandingPassage, Di
                                        HOST_ROLES, Referent,
                                        POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION, compare_dialogue,
                                        polish_dialogue, validate_polish_review)
+from podcast_automate.script_checkpoints import finished
 from podcast_automate.script_models import ScriptReview
 from podcast_automate.scripting import run_script, validate_script
 from podcast_automate.storage import digest, read_yaml, write_json, write_yaml
+from podcast_automate.teaching import Passage
 from tests import script_fixtures as fixtures
 
 
@@ -210,9 +212,14 @@ class PolishingTests(unittest.TestCase):
         self.assertEqual(report['repairs'], 1)
         self.assertFalse(report['human_reviewed'])
 
-    def test_persistent_missing_framing_blocks_publication(self):
+    def test_persistent_missing_framing_keeps_the_checked_draft(self):
+        """Behaviour change of 2026-10-02: a polish whose framing stays faulted after both repairs no longer stops the
+        run; the checked draft stays the script, as for a meaning failure, and the review stage judges its framing.
+        Retained protection: the faulted polish is never published, and a resume asks nothing again."""
         def model(prompt, output_type, directory, **kwargs):
             result, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if output_type is EpisodeScript and kwargs['prompt_version'].startswith('dialogue_polish'):
+                result.segments[0].speaker_id, result.segments[1].speaker_id = 'host_b', 'host_a'
             if output_type is DialoguePolishReview:
                 check = next(c for c in result.checks if c.criterion == 'episode_framing')
                 check.verdict = 'fail'
@@ -223,10 +230,124 @@ class PolishingTests(unittest.TestCase):
             run = run_script(self.root)
             calls = len(self.fixture.calls)
             resumed = run_script(self.root, resume=True)
-        self.assertEqual(run.stages['polishing'].error.code, 'dialogue_polish_failed')
-        self.assertEqual(resumed.status, 'blocked')
+        self.assertEqual((run.status, resumed.status), ('completed', 'completed'), run.stages['polishing'].error)
         self.assertEqual(len(self.fixture.calls), calls)
-        self.assertFalse((self.root / 'episodes/ep_001/script.yaml').exists())
+        self.assertEqual(self.fixture.calls.count(DialoguePolishReview), 3)
+        work = self.root / 'runs' / run.run_id / 'polishing/ep_001'
+        self.assertEqual(json.loads((work / 'result.json').read_text())['status'], 'kept_draft')
+        self.assertEqual(read_yaml(self.root / 'episodes/ep_001/script.yaml'), fixtures.example_script().model_dump())
+
+    def test_a_deterministic_defect_left_after_both_repairs_keeps_the_checked_draft(self):
+        """Finding of 2026-10-02: a candidate with a deterministic defect (here below its length) never got a comparison,
+        so the kept-draft fallback, which needed one, was never reached and the run stopped. A kept draft also counts
+        as finished polishing, for the budget projection and the Studio."""
+        original = fixtures.example_script()
+        entry = fixtures.example_plan().episodes[0]
+        work = self.root / 'runs' / 'run_kept'
+        folder = work / 'polishing' / entry.episode_id
+        write_json(work / 'drafts' / f'{entry.episode_id}.json', original.model_dump())
+        short = original.model_copy(deep=True)
+        short.segments[1].text = 'Short.'
+        defect = 'Skript ist kürzer als 85 % der Zielwortzahl.'
+        versions = []
+
+        def invoke(prompt, output_type, version):
+            versions.append(version)
+            self.assertIs(output_type, EpisodeScript, 'a defective candidate is not compared')
+            return short.model_copy(deep=True)
+
+        def validate(script, _entry):
+            return [] if script == original else [defect]
+        candidate, _ = polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, validate)
+        self.assertEqual(candidate, original)
+        self.assertEqual(versions, [POLISH_PROMPT_VERSION] + ['dialogue_polish_repair.v1'] * 2)
+        result = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
+        self.assertEqual((result['status'], result['repairs'], result['review']), ('kept_draft', 2, None))
+        self.assertEqual(json.loads((folder / 'kept_draft.json').read_text(encoding='utf-8')), [defect])
+        self.assertEqual(json.loads((folder / 'script.json').read_text(encoding='utf-8')), original.model_dump())
+        self.assertTrue(finished(work, entry.episode_id, 'polishing'))
+        # A resume reaches the same outcome from the checkpoint, without a call.
+        polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, validate)
+        self.assertEqual(len(versions), 3)
+        # A kept draft that is no longer the run's draft is not finished.
+        changed = original.model_copy(deep=True)
+        changed.segments[0].text += ' Changed.'
+        write_json(work / 'drafts' / f'{entry.episode_id}.json', changed.model_dump())
+        self.assertFalse(finished(work, entry.episode_id, 'polishing'))
+        # A draft that fails the same checks cannot stand in: the run stops as before.
+        with self.assertRaises(AppError) as caught:
+            polish_dialogue(self.fixture.config, entry, original, None, invoke, self.root / 'invalid',
+                            lambda script, _entry: [defect])
+        self.assertEqual(caught.exception.code, 'dialogue_polish_failed')
+
+    def test_after_a_repair_a_new_point_on_unchanged_text_is_a_note(self):
+        """Finding of 2026-10-02: each comparison was fresh, so a later round could raise a new roles or framing point
+        on text the last round had passed and stop the run. The comparison after a repair now gets the last round's
+        failing points and the changed segments; a new point on an unchanged segment is noted, not repaired."""
+        original, entry, payloads = self.long_script(), fixtures.example_plan().episodes[0], []
+        roles = 'The partner only agrees here; let her test the assumption.'
+
+        def invoke(prompt, output_type, version):
+            if output_type is EpisodeScript:
+                candidate = original.model_copy(deep=True)
+                if version == 'dialogue_polish_repair.v1':
+                    candidate.segments[2].text = 'Satz Nummer 3, nun genau wie im Entwurf.'
+                return candidate
+            payloads.append(json.loads(prompt.splitlines()[-1]))
+            review = fixtures.polish_review(prompt)
+            check = next(c for c in review.checks
+                         if c.criterion == ('meaning' if len(payloads) == 1 else 'speaker_roles'))
+            check.verdict = 'fail'
+            if len(payloads) == 1:
+                check.reason, check.after = 'Segment 3 drops a qualification.', [Passage(segment_id='seg_003',
+                                                                                         quote='Satz Nummer 3.')]
+            else:
+                check.reason, check.after = roles, [Passage(segment_id='seg_005', quote='Satz Nummer 5.')]
+            return review
+        folder = self.root / 'notes'
+        polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, lambda *_: [])
+        self.assertEqual(len(payloads), 2)
+        self.assertNotIn('previous_checks', payloads[0])
+        self.assertEqual(payloads[1]['changed_segments'], ['seg_003'])
+        self.assertEqual(payloads[1]['previous_checks'], [{'criterion': 'meaning',
+            'point': 'meaning: Segment 3 drops a qualification.', 'segment_ids': ['seg_003'], 'outcome': 'repaired'}])
+        result = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
+        self.assertEqual((result['status'], result['repairs']), ('passed', 1))
+        self.assertEqual(json.loads((folder / 'accepted_notes.json').read_text(encoding='utf-8')),
+                         ['speaker_roles: ' + roles])
+
+    def test_a_repaired_point_still_open_blocks_and_a_resume_asks_the_same_comparison(self):
+        original, entry, prompts = self.long_script(), fixtures.example_plan().episodes[0], []
+        repairs = []
+
+        def invoke(prompt, output_type, version):
+            if output_type is EpisodeScript:
+                candidate = original.model_copy(deep=True)
+                if version == 'dialogue_polish_repair.v1':
+                    repairs.append(json.loads(prompt.splitlines()[-1])['issues'])
+                    candidate.segments[2].text = f'Satz Nummer 3, Fassung {len(repairs)}.'
+                return candidate
+            prompts.append(prompt)
+            if len(prompts) == 2:
+                raise KeyboardInterrupt  # stopped while the comparison after the repair was out
+            review = fixtures.polish_review(prompt)
+            if len(prompts) <= 3:
+                # The meaning point the repair answered, now quoted on a segment the repair left alone.
+                check = review.checks[0]
+                segment = 'seg_003' if len(prompts) == 1 else 'seg_002'
+                check.verdict, check.reason = 'fail', 'A qualification of the draft is still missing.'
+                check.after = [Passage(segment_id=segment, quote=f'Satz Nummer {segment[-1]}')]
+            return review
+        folder = self.root / 'open'
+        with self.assertRaises(KeyboardInterrupt):
+            polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, lambda *_: [])
+        self.assertIn('scope', json.loads((folder / 'checkpoint.json').read_text(encoding='utf-8')))
+        polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, lambda *_: [])
+        self.assertEqual(prompts[2], prompts[1], 'the resume asks the comparison the same question')
+        self.assertEqual(len(repairs), 2, 'the open meaning point is repaired again')
+        self.assertEqual(repairs[1], ['meaning: A qualification of the draft is still missing.'])
+        result = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
+        self.assertEqual((result['status'], result['repairs']), ('passed', 2))
 
     def long_script(self):
         """Six segments, so three demanding passages that are neither greeting nor sign-off exist."""

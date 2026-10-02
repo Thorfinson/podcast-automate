@@ -10,7 +10,8 @@ from podcast_automate.speech import GeminiSpeech
 from podcast_automate.voice_samples import (
     SAMPLE_TEXTS, generate_sample, generate_samples, ready_sample, sample_inventory,
 )
-from tests.test_speech import response
+# The sample texts are long enough for the speech health gate, so every take has a plausible length.
+from tests.test_speech import spoken
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg not installed")
@@ -24,7 +25,7 @@ class VoiceLibraryTests(unittest.TestCase):
 
     def test_reuse_across_projects_and_restart_needs_no_key_or_encoding(self):
         with patch("podcast_automate.speech.build_opener") as build:
-            build.return_value.open.side_effect = lambda *a, **k: response()
+            build.return_value.open.side_effect = spoken
             first = generate_sample(self.root, "Aoede", "de-DE", "test-key")
             build.assert_called_once()
         saved = ready_sample(self.projects, "Aoede", "de-DE")
@@ -41,7 +42,7 @@ class VoiceLibraryTests(unittest.TestCase):
 
     def test_adopts_old_project_speech_without_a_paid_call(self):
         with patch("podcast_automate.speech.build_opener") as build:
-            build.return_value.open.side_effect = lambda *a, **k: response()
+            build.return_value.open.side_effect = spoken
             GeminiSpeech("test-key").synthesize(SAMPLE_TEXTS["de-DE"], "Sadaltager", "de-DE", self.root / "cache/audio/gemini")
         with patch("podcast_automate.speech.build_opener") as build:
             generate_sample(self.projects / "second", "Sadaltager", "de-DE")
@@ -50,7 +51,7 @@ class VoiceLibraryTests(unittest.TestCase):
 
     def test_corrupt_mp3_rebuilt_from_saved_wav_and_model_change_is_not_reused(self):
         with patch("podcast_automate.speech.build_opener") as build:
-            build.return_value.open.side_effect = lambda *a, **k: response()
+            build.return_value.open.side_effect = spoken
             generate_sample(self.root, "Aoede", "de-DE", "test-key")
         saved = ready_sample(self.projects, "Aoede", "de-DE")
         saved.write_bytes(b"damaged")
@@ -68,7 +69,7 @@ class VoiceLibraryTests(unittest.TestCase):
             requested.append(json.loads(request.data)["voice"])
             if len(requested) == 2:
                 raise AppError("Quota reached", code="quota", status="waiting_for_quota")
-            return response()
+            return spoken(request)
         with patch("podcast_automate.voice_samples.GEMINI_VOICES", ("Zephyr", "Puck", "Aoede")), patch("podcast_automate.speech.build_opener") as build:
             build.return_value.open.side_effect = call
             with self.assertRaises(AppError):

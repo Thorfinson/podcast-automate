@@ -67,13 +67,23 @@ def prerequisite_answers(task, state):
             if state["tasks"][identifier]["status"] == "verified"]
 
 
-def revalidate(row):
-    """Send a verified answer back to be checked against its changed prerequisites; this is no rework."""
+PREREQUISITE_FEEDBACK = "A prerequisite changed. Revalidate this answer against the updated verified prerequisite."
+
+
+def revalidate(row, *, feedback=None, activity="Geänderte Voraussetzung wird gezielt nachgeprüft"):
+    """Send a verified answer back to be checked again; this is no rework.
+
+    The answer may come back unchanged: it never failed a review, so ``resubmit`` names it and the reader is not
+    told that an identical answer "already failed independent review" (answer_defects). A lock or a correction-only
+    mode from an earlier rejection does not carry over either (2026-10-02: a correct answer had to change wording)."""
     row.update(status="researching", draft_answer=row["answer"], answer=None, step=0, pending=None,
-               no_progress=0, fallbacks=0, outcome=None,
-               feedback=["A prerequisite changed. Revalidate this answer against the updated verified prerequisite."],
-               activity="Geänderte Voraussetzung wird gezielt nachgeprüft")
+               no_progress=0, fallbacks=0, outcome=None, answer_locked=False, lock=None, revise_only=False,
+               resubmit=digest(row["answer"]) if row.get("answer") else None,
+               feedback=list(feedback or [PREREQUISITE_FEEDBACK]), activity=activity)
     row["dependency_revision"] = row.get("dependency_revision", 0) + 1
+    # Counts against no limit; the report shows how often each question was checked again, on resume as well as after
+    # a reworked prerequisite (2026-10-02: one synthesis question four times).
+    row["revalidations"] = row.get("revalidations", 0) + 1
 
 
 def invalidate_dependents(state, changed):

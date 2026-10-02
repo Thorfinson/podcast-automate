@@ -243,13 +243,34 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(json.loads((self.folder / "routes.json").read_text(encoding="utf-8"))["adopted_rejection"], 2)
         self.assertEqual(cached_call(self.folder, "routes", DossierPatch, prompt, generate, validate=accept), empty_patch())
         self.assertEqual(len(calls), 3, "a replay reads the adopted receipt like any other")
-        # A stored answer that only the last attempt's leniency would pass is not adopted.
-        lenient_only = lambda value, final: None if final else strict(value, final)
+        # Each stored answer is judged as the attempt it answered (2026-10-02): the last attempt's answer with the last
+        # attempt's leniency, so a call stopped after its spent rejections is settled on resume without a new call ...
+        seen = []
+
+        def lenient_only(value, final):
+            seen.append(final)
+            if not final:
+                strict(value, final)
         with self.assertRaises(AppError):
             cached_call(self.folder, "other", DossierPatch, prompt, generate, validate=strict)
+        self.assertEqual(cached_call(self.folder, "other", DossierPatch, prompt, generate, validate=lenient_only),
+                         empty_patch())
+        self.assertEqual((len(calls), seen), (6, [True]))
+        self.assertEqual(json.loads((self.folder / "other.json").read_text(encoding="utf-8"))["adopted_rejection"], 2)
+        # ... while an earlier answer is still judged as a first attempt: one that only a last attempt's leniency
+        # would pass is never adopted.
+        seen.clear()
+
+        def first_attempt_only(value, final):
+            seen.append(final)
+            if final:
+                strict(value, final)
         with self.assertRaises(AppError):
-            cached_call(self.folder, "other", DossierPatch, prompt, generate, validate=lenient_only)
-        self.assertEqual(len(calls), 6)
+            cached_call(self.folder, "third", DossierPatch, prompt, generate, validate=strict)
+        self.assertEqual(cached_call(self.folder, "third", DossierPatch, prompt, generate, validate=first_attempt_only),
+                         empty_patch())
+        self.assertEqual((len(calls), seen), (9, [True, False]))
+        self.assertEqual(json.loads((self.folder / "third.json").read_text(encoding="utf-8"))["adopted_rejection"], 1)
 
     def test_changed_base_cannot_reuse_a_patch(self):
         generate = lambda p, s: empty_patch()

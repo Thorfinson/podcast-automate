@@ -92,8 +92,16 @@ if search and mode not in {"nosearch", "fetchonly"}:
     emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "results"}]}})
     emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t3", "name": "WebFetch", "input": {"url": "https://example.org/paper", "prompt": "read"}}]}})
 resets = int(time.time()) + 3600
-emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected" if mode == "quota" else "allowed",
-      "resetsAt": resets, "rateLimitType": "five_hour"}})
+# A seven-day window that runs low reports "allowed_warning" on every call that still goes through (2026-10-02).
+warned = mode in {"warning", "warning_retries"}
+emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected" if mode == "quota" else
+      "allowed_warning" if warned else "allowed", "resetsAt": resets, "rateLimitType": "seven_day" if warned else "five_hour",
+      **({"isUsingOverage": False, "overageStatus": "rejected"} if mode == "warning" else {})}})
+if mode == "warning_retries":
+    print("(node:14290) Warning: a deprecated API is used", file=sys.stderr)
+    emit({"type": "result", "subtype": "error_max_structured_output_retries", "is_error": True, "num_turns": 6,
+          "errors": ["Failed to provide valid structured output after 5 attempts"], "usage": {}})
+    sys.exit(1)
 emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Structured output provided successfully"}]}})
 if mode == "quota":
     emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 2,
@@ -192,6 +200,24 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertIn("claude update", str(error.exception))
         self.assertEqual(self.adapter.cli_version(), "2.1.283")
 
+    def test_the_output_cap_is_the_one_the_cli_lists_for_the_model(self):
+        # CLI 2.1.286 lists Opus 5.5 and Sonnet 5.5 with 128 000 output tokens; a blanket 64 000 cut the Transformer
+        # outline of 2026-10-02. Other model ids keep 64 000, which the fake CLI asserts for claude-opus-5.
+        self.assertEqual({model: claude_code.claude_environment(model)["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]
+                          for model in ("claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", None)},
+                         {"claude-sonnet-5-5": "128000", "claude-opus-5-5": "128000", "claude-opus-5": "64000",
+                          None: "64000"})
+        sonnet = ClaudeCodeAdapter(RuntimeSettings(text_timeout_seconds=4), model="claude-sonnet-5-5", reasoning_effort="high")
+        caps = []
+
+        def process(args, **kwargs):
+            caps.append(kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"])
+            raise AppError("Stopped by the test before any CLI starts.", code="claude_failed")
+        with patch.object(sonnet, "check_login"), patch.object(sonnet, "cli_version", return_value="2.1.286"), \
+                patch("podcast_automate.claude_code.run_process", side_effect=process), self.assertRaises(AppError):
+            sonnet.structured("Synthetic test only", Result, self.root / "sonnet", prompt_version="test")
+        self.assertEqual(caps, ["128000"])
+
     def test_failures_are_classified_and_receipts_carry_no_provider_text(self):
         expectations = {"quota": ("claude_quota_exhausted", "waiting_for_quota"),
                         "quota_text": ("claude_quota_exhausted", "waiting_for_quota"),
@@ -252,6 +278,35 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         monday = datetime.fromisoformat(error.exception.details["blocked_until"])
         self.assertEqual(monday.weekday(), 0)
         self.assertEqual(error.exception.details["reason"], "weekly_limit")
+
+    def test_a_window_warning_is_no_block_and_a_failure_under_it_keeps_its_own_class(self):
+        """2026-10-02: Claude's weekly window reported "allowed_warning" on every call, and each failing call became
+        claude_quota_exhausted until the reset; the shared store then kept auto runs of all projects off Claude."""
+        with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "warning_retries"}), self.assertRaises(AppError) as error:
+            self.call("warning_retries")
+        self.assertEqual((error.exception.code, error.exception.status), ("claude_structured_output", "failed"))
+        self.assertNotIn("blocked_until", json.loads((self.root / "warning_retries/failure.json").read_text(encoding="utf-8")))
+        diagnostics = json.loads((self.root / "warning_retries/diagnostics.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota", diagnostics.get("categories", {}))
+        with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "warning"}):
+            _, metadata = self.call("warning")
+        # The warning stays visible as the call's window facts, and the extra-usage fields where the CLI names them.
+        self.assertEqual((metadata["rate_limit"]["status"], metadata["rate_limit"]["window"]), ("allowed_warning", "seven_day"))
+        self.assertEqual((metadata["rate_limit"]["using_overage"], metadata["rate_limit"]["overage_status"]), (False, "rejected"))
+        _, plain = self.call("plain")
+        self.assertEqual(set(plain["rate_limit"]), {"status", "window", "resets_at"})
+
+    def test_the_schema_is_measured_as_windows_receives_it(self):
+        # Every '"' of the schema travels as '\"': a schema whose raw text fits can exceed the line once escaped.
+        schema = json.dumps(claude_code.strict_schema(Result), separators=(",", ":"), ensure_ascii=True)
+        with patch.object(claude_code, "MAX_SCHEMA_CHARS", len(schema) + 1), self.assertRaises(AppError) as error:
+            self.call("escaped")
+        self.assertEqual(error.exception.code, "invalid_output_schema")
+        with patch.object(claude_code, "MAX_COMMAND_LINE_CHARS", 100), self.assertRaises(AppError) as error:
+            self.call("long_line")
+        self.assertEqual(error.exception.code, "invalid_output_schema")
+        self.assertFalse((self.root / "long_line/diagnostics.json").exists())
+        self.assertEqual(self.call("fits")[0].reason, "Alpha Beta")
 
     def test_research_requires_observed_search_tool_events(self):
         with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "nosearch"}), self.assertRaises(AppError) as error:
@@ -338,7 +393,8 @@ class ClaudeHelperTests(unittest.TestCase):
         self.assertEqual(classify_claude_failure("Reached maximum budget ($1)", subtype="error_max_budget_usd").code, "claude_budget_cap")
         quota = classify_claude_failure("You've hit your limit", subtype="error_during_execution")
         self.assertEqual((quota.code, quota.status), ("claude_quota_exhausted", "waiting_for_quota"))
-        limited = classify_claude_failure("", rate_limit={"status": "exceeded", "resetsAt": 1789825200, "rateLimitType": "seven_day"})
+        # The CLI's status of a refused request is "rejected" (2.1.283 to 2.1.286); "allowed_warning" is not a block.
+        limited = classify_claude_failure("", rate_limit={"status": "rejected", "resetsAt": 1789825200, "rateLimitType": "seven_day"})
         self.assertEqual(limited.details["reason"], "seven_day")
         self.assertEqual(classify_claude_failure("Not logged in").code, "authentication_required")
         self.assertEqual(classify_claude_failure("socket hang up").code, "claude_failed")
@@ -351,6 +407,38 @@ class ClaudeHelperTests(unittest.TestCase):
         self.assertEqual((by_category.code, by_category.details["output_limit_tokens"]), ("claude_output_limit", None))
         window = classify_claude_failure("API Error: The model has reached its context window limit.", subtype="success")
         self.assertEqual((window.code, window.details["reason"]), ("claude_output_limit", "context_window"))
+
+    def test_structured_fields_decide_before_whole_words_of_the_text(self):
+        warning = {"status": "allowed_warning", "resetsAt": 1790000000, "rateLimitType": "seven_day"}
+        refused = {"status": "rejected", "resetsAt": 1790000000, "rateLimitType": "seven_day"}
+        cases = [
+            # (message, keyword arguments, expected code); the first group are the review's demonstrations.
+            ("(node:14290) Warning: a deprecated API is used", {}, "claude_failed"),
+            ("Unexpected quotation mark in the answer", {}, "claude_failed"),
+            ("The catalog in the prompt is long", {}, "claude_failed"),
+            ("", {"subtype": "error_max_structured_output_retries", "rate_limit": warning}, "claude_structured_output"),
+            ("OAuth token has expired. Please run /login", {"rate_limit": warning}, "authentication_required"),
+            ("Claude's response exceeded the 32000 output token maximum.",
+             {"subtype": "success", "api_error": "max_output_tokens", "rate_limit": warning}, "claude_output_limit"),
+            ("socket hang up", {"rate_limit": warning}, "claude_failed"),
+            # Structured fields that name the cause.
+            ("", {"rate_limit": refused}, "claude_quota_exhausted"),
+            ("You've hit your limit", {"api_error": "rate_limit"}, "claude_quota_exhausted"),
+            ("", {"api_error": "authentication_failed"}, "authentication_required"),
+            ("rate limit words", {"subtype": "error_max_structured_output_retries"}, "claude_structured_output"),
+            # Whole words of the text still classify.
+            ("API Error: 429 Too Many Requests", {}, "claude_quota_exhausted"),
+            ("rate_limit_error: slow down", {}, "claude_quota_exhausted"),
+            ("Organization quota used up", {}, "claude_quota_exhausted"),
+            ("Please log in again", {}, "authentication_required"),
+            ("Invalid API key · Please run /login", {}, "authentication_required"),
+        ]
+        for message, kwargs, code in cases:
+            with self.subTest(message=message, **{key: str(value) for key, value in kwargs.items()}):
+                self.assertEqual(classify_claude_failure(message, **kwargs).code, code)
+        quota = classify_claude_failure("", rate_limit=refused)
+        self.assertEqual((quota.details["blocked_until"], quota.details["reason"]),
+                         (datetime.fromtimestamp(1790000000, timezone.utc).isoformat(), "seven_day"))
 
     def test_command_resolution_prefers_path_then_home_install_and_unwraps_npm_shims(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -18,11 +18,23 @@ from podcast_automate.runner import manifest_path, outputs_valid
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.speech import AudioChoice, audio_generation_record
-from podcast_automate.storage import digest, file_hash, init_project, project_hash, read_yaml, write_json, write_yaml
+from podcast_automate.storage import (digest, file_hash, file_lock, init_project, project_hash, project_lock, read_yaml,
+                                      write_json, write_yaml)
 from podcast_automate.studio import BriefProposal, Studio, make_server, read_json, record_interruption
 from podcast_automate.studio_worker import perform, probe_key
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
+
+# Studio tests start real workers; a worker keeps Windows awake unless told not to (studio_worker, 2026-10-02).
+_KEEP_AWAKE = patch.dict(os.environ, {"PLA_KEEP_AWAKE": "0"})
+
+
+def setUpModule():
+    _KEEP_AWAKE.start()
+
+
+def tearDownModule():
+    _KEEP_AWAKE.stop()
 
 
 class OutlineGateTests(fixtures.ScriptProjectCase):
@@ -634,6 +646,150 @@ class StudioHttpTests(unittest.TestCase):
         self.assertTrue(decision["human_listening_reviewed"])
         self.assertEqual(decision["listening_note"], "Kapitel 2 war dicht.")
 
+    def test_decisions_are_written_while_another_episode_is_recorded_but_not_while_their_own_is(self):
+        """2026-10-02: the exclusive project lock refused every listening review and spoken form while a Gemini
+        recording held the project's shared lock."""
+        self.publish_episode()
+        self.publish_episode("ep_002")
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"audio_approved": True})
+        with project_lock(self.root, shared=True), file_lock(self.root / "episodes/ep_002/.audio.lock"):
+            self.assertEqual(self.request("/api/projects/example/listening_review",
+                                          {"episode": "ep_001", "reviewed": True, "note": "Gut."})[0], 200)
+            self.assertEqual(self.request("/api/projects/example/spoken_override",
+                                          {"episode": "ep_001", "segment_id": "seg_002", "spoken": "Anders."})[0], 200)
+        decision = read_yaml(self.root / "episodes/ep_001/audio_review.yaml")
+        self.assertEqual((decision["listening_note"], decision["spoken_overrides"]), ("Gut.", {"seg_002": "Anders."}))
+        with project_lock(self.root, shared=True), file_lock(self.root / "episodes/ep_001/.audio.lock"):
+            status, body, _ = self.request("/api/projects/example/listening_review",
+                                           {"episode": "ep_001", "reviewed": False, "note": ""})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "episode_busy"))
+        self.assertTrue(read_yaml(self.root / "episodes/ep_001/audio_review.yaml")["human_listening_reviewed"])
+
+    def test_local_sources_outside_the_project_come_only_from_disk(self):
+        """2026-10-02: in LAN mode any device in the home network could point a research run at any file on this
+        computer through the brief's local sources."""
+        from podcast_automate.storage import load_project
+        saved_elsewhere = str(self.workspace / "notes" / "eigene.txt")
+        config = load_project(self.root)
+        config.local_sources = [saved_elsewhere]
+        write_yaml(self.root / "project.yaml", config.model_dump(mode="json"))
+        detail = json.loads(self.request("/api/projects/example")[1])
+        upload = "inputs/uploads/" + "a" * 64 + ".txt"
+        foreign = [str(self.workspace / "secret.txt"), "../other/project.yaml", "inputs/../../escape.txt"]
+        data = {"config": {**detail["config"], "local_sources": [saved_elsewhere, *foreign, upload]},
+                "config_hash": detail["config_hash"], "text": detail["text"]}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        self.assertEqual(read_yaml(self.root / "project.yaml")["local_sources"], [saved_elsewhere, upload])
+        # A save of the unchanged list keeps it, and the brief's hash with it.
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(self.request("/api/projects/example/save", {"config": detail["config"],
+                         "config_hash": detail["config_hash"], "text": detail["text"]})[0], 200)
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["config_hash"], detail["config_hash"])
+        # A new project takes no path outside itself from the browser.
+        brief = {**self.config.model_dump(mode="json"), "topic": "Neu", "local_sources": [*foreign, upload]}
+        status, body, _ = self.request("/api/projects", {"config": brief, "text": {}})
+        self.assertEqual(status, 200, body)
+        created = self.workspace / "projects" / json.loads(body)["id"]
+        self.assertEqual(read_yaml(created / "project.yaml")["local_sources"], [upload])
+
+    def test_a_gemini_re_render_is_bound_to_the_tags_on_the_readers_page(self):
+        """2026-10-02: after "Ausdruck neu setzen" a re-render spoke tags nobody had read."""
+        from podcast_automate.expression import EXPRESSION_VERSION
+        self.publish_episode()
+        folder = self.root / "episodes/ep_001"
+        audio = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"},
+                            expression=True)
+        write_json(self.root / "studio/audio.json", audio.model_dump())
+        script_hash = file_hash(folder / "script.yaml")
+        write_json(folder / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": script_hash,
+                                                "segments": {"seg_001": "<breath> What does this model compare?"}})
+        write_yaml(folder / "audio_review.yaml", {"audio_approved": True, "scripts": {"ep_001": script_hash},
+                                                  "audio_generation": audio_generation_record(audio)})
+        self.app.key = "test-key"
+        data = {"action": "audio", "episode": "ep_001", "rerender": True, "script_hash": script_hash,
+                "readable_hash": file_hash(folder / "script.md"), "config_hash": project_hash(self.config),
+                "audio_hash": digest(audio.model_dump())}
+        with patch("podcast_automate.studio.subprocess.Popen") as process:
+            process.return_value.stdin = io.StringIO()
+            process.return_value.stdin.close = Mock()
+            process.return_value.poll.return_value = None
+            status, body, _ = self.request("/api/projects/example/start", data)
+            self.assertEqual((status, json.loads(body)["code"]), (400, "script_edited"))
+            process.assert_not_called()
+            status, body, _ = self.request("/api/projects/example/start",
+                                           {**data, "expression_hash": file_hash(folder / "expression.json")})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(process.return_value.stdin.getvalue())["expression_hash"],
+                             file_hash(folder / "expression.json"))
+
+    def test_the_queue_says_when_a_recording_waits_for_the_key_and_each_episode_names_its_speech_size(self):
+        self.publish_episode()
+        write_json(self.root / "studio/audio_queue.json", [{"episode": "ep_001", "queued_at": "2026-10-01T10:00:00+00:00",
+                                                           "data": {}}])
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"spoken_overrides": {"seg_001": "Kurz."}})
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+            # After a restart the key is gone; the queue says so instead of waiting for a place (2026-10-02).
+            self.assertEqual(json.loads(self.request("/api/projects/example")[1])["audio_queue"][0]["waiting"], "key")
+            self.app.key = "test-key"
+            detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(detail["audio_queue"][0]["waiting"], "place")
+        script = example_script()
+        expected = len("Kurz.") + sum(len(segment.text) for segment in script.segments[1:])
+        speech = detail["episodes"][0]["speech"]
+        self.assertEqual(speech, {"characters": expected, "minutes": detail["episodes"][0]["metrics"]["estimated_minutes"]})
+
+    def test_the_overview_reads_cards_and_the_page_keeps_derived_values_while_their_files_are_unchanged(self):
+        """2026-10-02: each overview poll built every project's page: the 16 MB question state, the 12-16 MB
+        inputs.json hashed for the outline, every script; about 65 MB and 0.6 s with the mutex held."""
+        self.publish_episode()
+        work = self.root / "runs/run_o"
+        for name in ("series_plan.json", "knowledge_model.json", "inputs.json", "script_request.json"):
+            write_json(work / name, {"episodes": [{"episode_id": "ep_001"}, {"episode_id": "ep_002"}]} if name == "series_plan.json" else {"name": name})
+        write_yaml(work / "run_manifest.yaml", RunManifest(run_id="run_o", kind="script", project_hash="0" * 64, input_hash="c" * 64,
+                                                           stages={"planning": StageRecord(status="completed")}).model_dump(mode="json"))
+        write_json(self.root / "studio/outline.json", {"run_id": "run_o"})
+        with patch.object(self.app, "detail", side_effect=AssertionError("the overview builds no project page")):
+            status, body, _ = self.request("/api/projects")
+        self.assertEqual(status, 200, body)
+        card = json.loads(body)["projects"][0]
+        self.assertEqual((card["id"], card["has_outline"], card["episode_count"], card["script_count"]), ("example", True, 2, 1))
+        self.assertEqual(card["episodes"][0]["episode_id"], "ep_001")
+        with patch("podcast_automate.studio.outline_hash", wraps=outline_hash) as hashed, \
+                patch("podcast_automate.studio.sample_inventory", return_value={}) as samples:
+            first = json.loads(self.request("/api/projects/example")[1])
+            second = json.loads(self.request("/api/projects/example")[1])
+            self.assertEqual(hashed.call_count, 1)
+            self.assertEqual(first["outline"]["hash"], second["outline"]["hash"])
+            write_json(work / "inputs.json", {"name": "changed"})
+            third = json.loads(self.request("/api/projects/example")[1])
+            self.assertEqual(hashed.call_count, 2)
+            self.assertNotEqual(third["outline"]["hash"], first["outline"]["hash"])
+            self.assertEqual(third["outline"]["hash"], outline_hash(work))
+            self.assertLessEqual(samples.call_count, 1)
+
+    def test_a_draft_being_redone_or_stopped_is_no_outline_to_show_revise_or_approve(self):
+        """2026-10-02: a revision stopped at the output limit kept the plan it replaced on the page as the outline;
+        its revise button then stopped at once (invalid_plan) and offered the same button again."""
+        work = self.root / "runs/run_o"
+        write_json(work / "series_plan.json", example_plan().model_dump())
+        write_json(self.root / "studio/outline.json", {"run_id": "run_o"})
+
+        def planning(record):
+            write_yaml(work / "run_manifest.yaml", RunManifest(run_id="run_o", kind="script", project_hash="0" * 64,
+                       input_hash="c" * 64, stages={"planning": record}).model_dump(mode="json"))
+        planning(StageRecord(status="blocked", attempts=2, error=Failure(code="claude_output_limit", message="Zu lang.")))
+        self.assertIsNone(json.loads(self.request("/api/projects/example")[1])["outline"])
+        self.assertFalse(json.loads(self.request("/api/projects")[1])["projects"][0]["has_outline"])
+        for action in ("replan", "script"):
+            status, body, _ = self.request("/api/projects/example/start", {"action": action, "message": "Kürzer.", "plan_hash": "x"})
+            self.assertEqual((status, json.loads(body)["code"]), (400, "plan_required"))
+        self.assertFalse((self.root / "studio/job.json").exists())
+        planning(StageRecord(status="running", attempts=3))
+        self.assertIsNone(json.loads(self.request("/api/projects/example")[1])["outline"])
+        planning(StageRecord(status="completed", attempts=3))
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["outline"]["run_id"], "run_o")
+        self.assertTrue(json.loads(self.request("/api/projects")[1])["projects"][0]["has_outline"])
+
     def test_an_episode_without_a_quality_report_carries_no_notes(self):
         self.publish_episode()
         detail = json.loads(self.request("/api/projects/example")[1])
@@ -975,7 +1131,8 @@ class StudioStopTests(unittest.TestCase):
                                                    "started_at": "2026-09-01T10:00:00+00:00", "run": run})
         with self.started():
             self.app.start("example", {"action": "assistant", "message": "Kürzer bitte"})
-        self.assertEqual(json.loads((self.root / "studio/paused_job.json").read_text(encoding="utf-8"))["id"], "r")
+        # Each lane parks in its own file (2026-10-02); paused_job.json is the single slot of older Studios.
+        self.assertEqual(json.loads((self.root / "studio/paused_research.json").read_text(encoding="utf-8"))["id"], "r")
         chat = json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))
         write_json(self.root / "studio/job.json", {**chat, "status": "completed"})
         self.app.workers.clear()
@@ -990,7 +1147,7 @@ class StudioStopTests(unittest.TestCase):
         # Resuming the parked run takes it back into the job record, which keeps the run from the start.
         with self.started():
             resumed = self.app.start("example", {"action": "resume", "run_id": "run_r"})
-        self.assertFalse((self.root / "studio/paused_job.json").exists())
+        self.assertFalse((self.root / "studio/paused_research.json").exists())
         self.assertEqual(resumed["run"]["run_id"], "run_r")
         self.assertTrue((self.root / "studio/stderr" / (resumed["id"] + ".log")).is_file())
 
@@ -1000,6 +1157,142 @@ class StudioStopTests(unittest.TestCase):
         with self.started():
             self.app.start("example", {"action": "research"})
         self.assertFalse((self.root / "studio/paused_job.json").exists())
+
+    def script_run(self, run_id="run_s", status="blocked", error=None):
+        run = RunManifest(run_id=run_id, kind="script", status=status, project_hash="p", input_hash="i",
+                          stages={"review": StageRecord(status=status, attempts=1, error=error)})
+        write_yaml(manifest_path(self.root, run_id).parent / "run_manifest.yaml", run.model_dump(mode="json"))
+        return run.model_dump(mode="json")
+
+    def test_a_parked_run_of_one_lane_is_never_displaced_by_another_lanes_stop(self):
+        """2026-10-02: one paused_job.json slot; a later stop of another lane parked over a stopped research run,
+        whose stop card and scheduled resume then disappeared."""
+        research = self.research_run(error=Failure(code="research_questions_blocked", message="offen"))
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "blocked",
+                   "finished_at": "2026-09-01T10:00:00+00:00", "run": research})
+        with self.started():
+            self.app.start("example", {"action": "assistant", "message": "Kürzer bitte"})
+        script = self.script_run(error=Failure(code="script_review_failed", message="Einwände"))
+        write_json(self.root / "studio/job.json", {"id": "s", "action": "script", "status": "blocked",
+                   "finished_at": "2026-09-02T10:00:00+00:00", "run": script})
+        self.app.workers.clear()
+        with self.started():
+            check = self.app.start("example", {"action": "check"})
+        parked = {path.name: json.loads(path.read_text(encoding="utf-8"))["id"]
+                  for path in (self.root / "studio").glob("paused_*.json")}
+        self.assertEqual(parked, {"paused_research.json": "r", "paused_script.json": "s"})
+        write_json(self.root / "studio/job.json", {**check, "status": "completed"})
+        self.app.workers.clear()
+        detail = self.app.detail("example")
+        self.assertEqual(detail["job"]["id"], "s", "the newest stop is the project's job")
+        self.assertEqual(sorted(job["id"] for job in detail["parked_jobs"]), ["r", "s"])
+        # The single slot of older Studios is still read.
+        old = self.research_run(run_id="run_old", status="waiting_for_quota",
+                                error=Failure(code="subscriptions_exhausted", message="leer"))
+        (self.root / "studio/paused_research.json").unlink()
+        write_json(self.root / "studio/paused_job.json", {"id": "o", "action": "research", "status": "waiting_for_quota",
+                   "retry_at": "2026-01-01T00:00:00+00:00", "run": old})
+        self.assertEqual(sorted(job["id"] for job in self.app.detail("example")["parked_jobs"]), ["o", "s"])
+        self.assertEqual(self.app.due_resumes(), [("example", "run_old", 0)])
+
+    def test_a_transient_technical_stop_resumes_by_itself_after_a_pause_three_times_at_most(self):
+        """2026-10-02: about 186 resumes by hand against 8 automatic ones; only quota waits resumed by themselves."""
+        from podcast_automate.subscriptions import parse_iso
+        stopped = "2026-09-01T10:00:00+00:00"
+        base = parse_iso(stopped).timestamp()
+        job = {"id": "t", "action": "resume", "status": "failed", "finished_at": stopped,
+               "run": self.research_run(status="failed", error=Failure(code="timeout", message="Zeitlimit"))}
+        write_json(self.root / "studio/job.json", job)
+        shown = self.app.job(self.root)
+        self.assertEqual((shown["auto_resume_kind"], shown["auto_resume_at"]), ("transient", "2026-09-01T10:10:00+00:00"))
+        self.assertEqual(self.app.due_resumes(base + 599), [])
+        self.assertEqual(self.app.due_resumes(base + 600), [("example", "run_r", 0)])
+        write_json(self.root / "studio/job.json", {**job, "auto_resume_count": 2})
+        self.assertEqual(self.app.job(self.root)["auto_resume_at"], "2026-09-01T11:30:00+00:00")
+        write_json(self.root / "studio/job.json", {**job, "auto_resume_count": 3})
+        self.assertTrue(self.app.job(self.root)["auto_resume_exhausted"])
+        self.assertEqual(self.app.due_resumes(base + 86400), [])
+        # Never for a decision, a limit, a login or a stop the user made.
+        for code, status, manifest in (("research_questions_blocked", "blocked", "blocked"),
+                                       ("research_budget_exhausted", "blocked", "blocked"),
+                                       ("authentication_required", "failed", "failed"),
+                                       ("interrupted", "interrupted", "pending")):
+            with self.subTest(code=code):
+                run = self.research_run(status=manifest, error=Failure(code=code, message="x"))
+                write_json(self.root / "studio/job.json", {**job, "status": status, "run": run})
+                self.assertNotIn("auto_resume_at", self.app.job(self.root))
+                self.assertEqual(self.app.due_resumes(base + 86400), [])
+        # A due one resumes once the project is free, and the attempt is counted.
+        write_json(self.root / "studio/job.json", {**job, "run": self.research_run(
+            status="failed", error=Failure(code="stall", message="still"))})
+        with project_lock(self.root):
+            self.assertEqual(self.app.resume_due(base + 600), [])
+        with self.started():
+            self.assertEqual(self.app.resume_due(base + 600), ["example"])
+        self.assertEqual(json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))["auto_resume_count"], 1)
+
+    def running_research(self, job_id):
+        run = RunManifest(run_id="run_e", kind="research", status="running", project_hash="p", input_hash="i",
+                          stages={"dossier": StageRecord(status="running", attempts=1)})
+        write_yaml(manifest_path(self.root, "run_e").parent / "run_manifest.yaml", run.model_dump(mode="json"))
+        write_json(self.root / "studio/job.json", {"id": job_id, "action": "resume", "status": "running",
+                   "started_at": "2026-09-01T10:00:00+00:00", "run": run.model_dump(mode="json")})
+
+    def test_a_worker_that_outlived_its_studio_runs_elsewhere_and_is_stopped_by_its_recorded_identity(self):
+        """2026-10-02: a busy lock was written as "interrupted" on every poll; "Fortsetzen" met the busy project and
+        "Anhalten" found no job."""
+        from podcast_automate.studio import record_worker
+        job_id = "c" * 32
+        self.running_research(job_id)
+        before = (self.root / "studio/job.json").read_bytes()
+        with project_lock(self.root):
+            # Without a record of its worker, the held project lock is the sign that it runs.
+            shown = self.app.job(self.root)
+            self.assertEqual((shown["status"], shown["external"], shown["external_stoppable"]), ("running", True, False))
+            self.assertEqual(self.request("/api/projects/example/stop", {})[0], 400)
+        self.assertEqual((self.root / "studio/job.json").read_bytes(), before)
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        record_worker(self.root, job_id, process)
+        shown = self.app.job(self.root)
+        self.assertEqual((shown["status"], shown["external_stoppable"]), ("running", True))
+        self.assertEqual((self.root / "studio/job.json").read_bytes(), before)
+        status, body, _ = self.request("/api/projects/example/stop", {})
+        self.assertEqual(status, 200, body)
+        process.wait(timeout=10)
+        self.assertEqual(self.app.job(self.root)["status"], "interrupted")
+        saved = RunManifest.model_validate(read_yaml(manifest_path(self.root, "run_e").parent / "run_manifest.yaml"))
+        self.assertEqual(saved.status, "pending")
+
+    def test_a_recorded_worker_that_ended_is_interrupted_once_the_project_is_free(self):
+        from podcast_automate.studio import record_worker
+        job_id = "d" * 32
+        self.running_research(job_id)
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        record_worker(self.root, job_id, process)
+        process.wait(timeout=10)
+        with project_lock(self.root):
+            # Another process holds the project: shown as interrupted, written once the lock is free.
+            self.assertEqual(self.app.job(self.root)["status"], "interrupted")
+            self.assertEqual(json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))["status"], "running")
+        self.assertEqual(self.app.job(self.root)["status"], "interrupted")
+        self.assertEqual(json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))["status"], "interrupted")
+
+    def test_old_status_locks_and_worker_records_are_swept_with_the_logs(self):
+        studio = self.root / "studio"
+        current, finished = "e" * 32, "f" * 32
+        write_json(studio / "job.json", {"id": current, "status": "running"})
+        old = time.time() - 7200
+        files = [studio / f".status-{current}.lock", studio / f".status-{finished}.lock",
+                 studio / "workers" / f"{finished}.json", studio / "stderr" / f"{finished}.log"]
+        for path in files:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"")
+            os.utime(path, (old, old))
+        self.app.stderr_file(self.root, "0" * 32)
+        self.assertEqual([path.exists() for path in files], [True, False, False, False])
 
     def test_a_vanished_worker_resets_its_run_and_reports_its_last_error_output(self):
         run = RunManifest(run_id="run_v", kind="research", status="running", project_hash="p", input_hash="i",

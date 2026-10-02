@@ -13,10 +13,12 @@ from podcast_automate.models import Chapter, EpisodeScript
 from podcast_automate.research_models import ResearchDossier
 from podcast_automate.runner import status
 from podcast_automate.script_models import Dependency, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan
-from podcast_automate.script_pipeline import REVIEW_REPAIR_VERSION, changed_segments, follow_up_scope
-from podcast_automate.script_checks import planning_dossier, quotation_errors
+from podcast_automate.script_pipeline import (REVIEW_REPAIR_VERSION, WRITE_EPISODE_VERSION, changed_segments,
+                                              follow_up_scope)
+from podcast_automate.script_checks import (SCRIPT_REVIEW_VERSION, SERIES_PLAN_VERSION, planning_dossier,
+                                            quotation_errors)
 from podcast_automate.scripting import run_script, validate_plan, validate_script
-from podcast_automate.storage import read_yaml, write_json, write_yaml
+from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
 from tests.research_fixtures import TEXT
@@ -99,6 +101,202 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertFalse(approval["audio_approved"])
         self.assertEqual(approval["status"], "awaiting_user_script_review")
         self.assertEqual(approval["scripts"]["ep_001"], report["episodes"]["ep_001"]["script_sha256"])
+
+    def test_the_planner_reads_the_editorial_brief_without_the_audio_part_length(self):
+        # Behaviour change of 2 October 2026: max_episode_minutes (30) is the longest audio part of a recording.
+        # In the planning brief the model took it for an episode cap and split one long explanation into
+        # several 30-minute episodes, although an episode may take up to 60.
+        aimed = self.config.model_copy(update={"series_goal": {"understand": 3, "evaluate": 1, "apply": 0},
+                                               "target_total_minutes": 90})
+        write_yaml(self.root / "project.yaml", aimed.model_dump(mode="json"))
+        briefs = []
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is SeriesPlan:
+                briefs.append(json.loads(prompt.splitlines()[-1])["brief"])
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            planned = run_script(self.root, plan_only=True)
+        self.assertEqual(planned.stages["planning"].status, "completed")
+        self.assertEqual(len(briefs), 1)
+        brief = briefs[0]
+        self.assertFalse({"max_episode_minutes", "runtime", "voice_profile", "research_limits"} & set(brief))
+        self.assertEqual((brief["topic"], brief["target_total_minutes"], brief["series_goal"]["understand"]),
+                         ("Test topic", 90, 3))
+        self.assertEqual(brief["depth_request"], aimed.depth_request)
+
+    def note_research_limits(self, **keys):
+        """Add keys to the research run's quality gate as the research of 2026-10-02 writes them; the gate is a
+        hashed output of the research run, so its recorded hash follows."""
+        work = self.root / "runs" / self.research.run_id
+        gate = work / "research_quality_gate.json"
+        saved = json.loads(gate.read_text(encoding="utf-8"))
+        for key, value in keys.items():
+            saved[key] = value(saved[key]) if callable(value) else value
+        write_json(gate, saved)
+        manifest = read_yaml(work / "run_manifest.yaml")
+        relative = gate.relative_to(self.root).as_posix()
+        for record in manifest["stages"].values():
+            if relative in (record.get("outputs") or {}):
+                record["outputs"][relative] = file_hash(gate)
+        write_yaml(work / "run_manifest.yaml", manifest)
+
+    def test_noted_research_limits_reach_the_plan_the_writer_and_the_script_review(self):
+        """Finding of 2026-10-02: research_quality_gate.json holds the limits the research noted for the script and
+        the quality report says the script states them, but the script lane read only whether the gate passed."""
+        def source_limit(rows):
+            rows[0].update(source_limit=True, missing=["Keine Quelle nennt Personenstunden."], finding_ids=["f_energy"])
+            return rows
+        self.note_research_limits(requirements=source_limit, noted_limits=["Die Gegenposition stützt sich auf eine Studie."],
+                                  script_notes=["Die Gegenposition stützt sich auf eine Studie.",
+                                                "Das Werk liegt nur als Abstract vor."])
+        seen = {}
+        def model(prompt, output_type, directory, **kwargs):
+            payload = json.loads(prompt.splitlines()[-1])
+            seen.setdefault(kwargs["prompt_version"], payload.get("research_limits"))
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.model_dump())
+        gate = self.root / "runs" / self.research.run_id / "research_quality_gate.json"
+        question = json.loads(gate.read_text(encoding="utf-8"))["requirements"][0]["question"]
+        self.assertEqual(seen[SERIES_PLAN_VERSION], [
+            {"limit_id": "limit_001", "text": "Keine Quelle nennt Personenstunden.", "finding_ids": ["f_energy"],
+             "question": question},
+            {"limit_id": "limit_002", "text": "Die Gegenposition stützt sich auf eine Studie.", "finding_ids": []},
+            {"limit_id": "limit_003", "text": "Das Werk liegt nur als Abstract vor.", "finding_ids": []}])
+        # The only episode is the final one: it states every limit, the first with the finding it concerns.
+        expected = [{"text": "Keine Quelle nennt Personenstunden.", "question": question, "finding_ids": ["f_energy"]},
+                    {"text": "Die Gegenposition stützt sich auf eine Studie.", "finding_ids": []},
+                    {"text": "Das Werk liegt nur als Abstract vor.", "finding_ids": []}]
+        self.assertEqual(seen[WRITE_EPISODE_VERSION], expected)
+        self.assertEqual(seen[SCRIPT_REVIEW_VERSION], expected)
+
+    def test_the_writer_reads_its_episode_and_the_series_context_instead_of_the_whole_plan(self):
+        """2026-10-02: the writing payload carried the whole series plan; the Asimov finale's prompt reached about
+        780 000 characters. What the prompt uses is the episode entry and series_context."""
+        payloads = []
+        def model(prompt, output_type, directory, **kwargs):
+            if kwargs["prompt_version"] in (SERIES_PLAN_VERSION, WRITE_EPISODE_VERSION):
+                payloads.append(json.loads(prompt.splitlines()[-1]))
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        planning, writing = payloads
+        # A research run without noted limits changes nothing in either payload.
+        self.assertNotIn("research_limits", planning)
+        self.assertNotIn("research_limits", writing)
+        plan = example_plan()
+        self.assertEqual(writing["series"], {"scope_note": plan.scope_note, "dependencies": []})
+        self.assertEqual(writing["episode"], plan.episodes[0].model_dump())
+        self.assertEqual(writing["series_context"]["episode_path"][0]["episode_id"], "ep_001")
+
+    def test_script_prompts_take_the_projects_terminology_and_the_teaching_reviews_its_goal(self):
+        """2026-10-02: the planner, the writer and the script review named Query, Key and Value for every topic, also
+        for the Asimov series (editorial.terminology), and the editorial and teaching reviews of a script never saw
+        the brief's series_goal they judge by."""
+        from types import SimpleNamespace
+        from podcast_automate.editorial import MACHINE_LEARNING_TERMS, TERMINOLOGY, TOPIC_TERMINOLOGY
+        from podcast_automate.script_pipeline import ScriptRun
+        # Weighted below 2 for understand and apply, so the series review keeps the fixture's criteria.
+        goal = {"understand": 1, "evaluate": 3, "apply": 1}
+        write_yaml(self.root / "project.yaml", self.config.model_copy(update={"series_goal": goal}).model_dump(mode="json"))
+        prompts = []
+        def model(prompt, output_type, directory, **kwargs):
+            prompts.append((output_type, kwargs["prompt_version"], prompt))
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            self.assertEqual(run_script(self.root).status, "completed")
+        script_lane = [prompt for _, version, prompt in prompts
+                       if version in (SERIES_PLAN_VERSION, WRITE_EPISODE_VERSION, SCRIPT_REVIEW_VERSION)]
+        self.assertEqual(len(script_lane), 3)
+        self.assertTrue(all(TOPIC_TERMINOLOGY in p and TERMINOLOGY not in p and MACHINE_LEARNING_TERMS not in p
+                            for p in script_lane))
+        goals = {schema.__name__: json.loads(prompt.splitlines()[-1]).get("series_goal")
+                 for schema, _, prompt in prompts if schema in (EditorialReview, TeachingReview, ListenerReadback)}
+        self.assertEqual(goals, {"EditorialReview": goal, "TeachingReview": goal, "ListenerReadback": None})
+        transformer = SimpleNamespace(config=self.config.model_copy(update={"topic": "Wie ein Transformer lernt",
+                                                                           "language": "de-DE"}),
+                                      central_question="Wie ein Transformer lernt")
+        self.assertEqual(ScriptRun.terms(transformer), TOPIC_TERMINOLOGY + MACHINE_LEARNING_TERMS)
+
+    def test_a_resume_returns_the_reservation_of_a_call_a_hard_stop_left_open(self):
+        """Finding of 2026-10-02: a Studio stop ends the worker with taskkill /F, so no handler refunds the calls it
+        had out. The research lane reconciles them on resume (research.reconcile_budget); script runs did not."""
+        stopped = []
+        def killed(prompt, output_type, directory, **kwargs):
+            if output_type is ScriptReview and not stopped:
+                write_json(directory / "output_schema.json", {})  # the adapter had sent the call
+                stopped.append(int(directory.name.split("_")[1]))
+                raise KeyboardInterrupt
+            return self.model(prompt, output_type, directory, **kwargs)
+        # The hard stop: the worker's own refund never runs.
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=killed), \
+             patch("podcast_automate.script_pipeline.refund_call"), self.assertRaises(KeyboardInterrupt):
+            run_script(self.root)
+        run_id = json.loads((self.root / "runs/latest.json").read_text(encoding="utf-8"))["run_id"]
+        budget_path = self.root / "runs" / run_id / "budget.json"
+        self.assertEqual(json.loads(budget_path.read_text(encoding="utf-8"))["model_calls"], len(self.calls) + 1)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            resumed = run_script(self.root, resume=True, run_id=run_id)
+        self.assertEqual(resumed.status, "completed")
+        budget = json.loads(budget_path.read_text(encoding="utf-8"))
+        self.assertEqual((budget["model_calls"], budget["refunded"]), (len(self.calls), stopped))
+
+    def test_a_local_source_outside_the_project_is_refused_before_any_call(self):
+        from podcast_automate.scripting import local_source_paths
+        outside = self.root.parent / "outside.txt"
+        outside.write_text("Fremde Datei.", encoding="utf-8")
+        for value in (str(outside), "../outside.txt", "inputs/../../outside.txt"):
+            with self.subTest(path=value):
+                config = self.config.model_copy(update={"local_sources": [value]})
+                write_yaml(self.root / "project.yaml", config.model_dump(mode="json"))
+                with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model), \
+                     self.assertRaises(AppError) as refused:
+                    run_script(self.root)
+                self.assertEqual((refused.exception.code, refused.exception.status), ("invalid_request", "blocked"))
+                self.assertIn("außerhalb des Projektordners", str(refused.exception))
+        self.assertEqual(self.calls, [])
+        inside = self.config.model_copy(update={"local_sources": ["inputs/uploads/a.txt"]})
+        self.assertEqual(local_source_paths(self.root, inside), [(self.root / "inputs/uploads/a.txt").resolve()])
+
+    def test_a_second_series_correction_keeps_the_series_issue_beside_the_checks_objection(self):
+        """Finding of 2026-10-02: the second attempt of a series correction was asked only against the objections of
+        its evidence check, so a correction that satisfied them could drop the series issue it was made for."""
+        sentence = " Episode one established this order first."
+        asked, series_calls = [], []
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            version, payload = kwargs["prompt_version"], json.loads(prompt.splitlines()[-1])
+            if output_type is SeriesPlan:
+                second = value.episodes[0].model_copy(deep=True)
+                second.episode_id, second.title = "ep_002", "Further consequences"
+                value.episodes.append(second)
+            elif output_type is EpisodeScript:
+                value.episode_id = (payload.get("episode") or payload.get("original_script") or payload.get("draft"))["episode_id"]
+                if version == REVIEW_REPAIR_VERSION:
+                    asked.append([issue["reason"] for issue in payload["review"]["issues"]])
+                    value.segments[-1].text += sentence
+            elif output_type is ScriptReview and version.endswith("+followup") and len(asked) == 1:
+                check = value.claim_checks[-1]
+                check.verdict, check.changed_fields = "drift", ["scope"]
+                check.reason = "The repaired segment claims more than the finding supports."
+            elif output_type is SeriesReview:
+                series_calls.append(version)
+                if len(series_calls) == 1:
+                    value.checks[2].verdict = "fail"
+                    value.checks[2].reason = "Episode 2 contradicts the order episode 1 established."
+                    value.checks[2].evidence = [e for e in value.checks[2].evidence if e.episode_id == "ep_002"]
+            return value, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(len(asked[0]), 1)
+        self.assertTrue(asked[0][0].startswith("progression:"), asked)
+        self.assertIn("claims more than the finding supports", asked[1][0], "the check's objection comes first")
+        self.assertEqual(asked[1][1:], asked[0], "and the series issue stays in the second attempt's input")
 
     def test_the_script_review_sees_gap_probe_statuses_without_previews(self):
         seen = []
@@ -439,6 +637,24 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual([(i.segment_ids[0], i.category) for i in scoped.advisories],
                          [("seg_005", "grounding"), ("seg_003", "clarity")])
 
+    def test_a_new_whole_episode_point_after_a_repair_is_an_advisory_unless_it_repeats_or_is_critical(self):
+        """Finding of 2026-10-02: a point naming no segment was always in scope, so a new whole-episode structure point
+        in a later review blocked. It now blocks only as a repeat of an earlier whole-episode point of its category,
+        or as a factual or source error; the code decides, not the review's basis."""
+        whole = lambda category, reason: ScriptIssue(category=category, segment_ids=[], reason=reason)
+        previous = ScriptReview(issues=[whole("structure", "No worked example."), whole("depth", "Stays abstract.")],
+                                limitations=[])
+        review = ScriptReview(issues=[whole("structure", "Still no worked example."), whole("scope", "Drifts into training."),
+                                      whole("grounding", "The year is wrong."), whole("grounding", "A claim lacks a finding.")],
+                              limitations=[], issue_basis=["previous", "changed", "factual_error", "previous"],
+                              advisories=[whole("structure", "The outro is thin."), whole("depth", "Stays abstract."),
+                                          whole("clarity", "One term is unexplained.")])
+        scoped = follow_up_scope(review, previous, ["seg_001"])
+        self.assertEqual([i.reason for i in scoped.issues],
+                         ["Still no worked example.", "The year is wrong.", "The outro is thin."])
+        self.assertEqual([i.reason for i in scoped.advisories],
+                         ["Drifts into training.", "A claim lacks a finding.", "Stays abstract.", "One term is unexplained."])
+
     def test_review_policy_fix_rechecks_latest_draft_without_resetting_used_repairs(self):
         def rejected(prompt, output_type, directory, **kwargs):
             value, meta = self.model(prompt, output_type, directory, **kwargs)
@@ -509,6 +725,24 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             write_yaml(self.root / "project.yaml", self.config.model_dump())
             with self.assertRaises(AppError) as raised:
                 run_script(self.root, resume=True)
+        self.assertEqual(raised.exception.code, "inputs_changed")
+
+    def test_raised_limits_or_deadline_keep_a_resumable_script_run(self):
+        # Operational fields are bound as the run started (storage.bound_brief, 2026-10-02): the Studio saves the brief
+        # while a run waits for quota, and a raised call limit or a longer deadline used to end the run for good.
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            first = run_script(self.root)
+            self.config.research_limits = self.config.research_limits.model_copy(
+                update={"model_calls": self.config.research_limits.model_calls + 250})
+            self.config.runtime = self.config.runtime.model_copy(
+                update={"text_timeout_seconds": self.config.runtime.text_timeout_seconds + 600})
+            write_yaml(self.root / "project.yaml", self.config.model_dump())
+            resumed = run_script(self.root, resume=True, run_id=first.run_id)
+            self.assertEqual((resumed.run_id, resumed.status), (first.run_id, "completed"))
+            self.config.depth_request = "A changed explanation approach"
+            write_yaml(self.root / "project.yaml", self.config.model_dump())
+            with self.assertRaises(AppError) as raised:
+                run_script(self.root, resume=True, run_id=first.run_id)
         self.assertEqual(raised.exception.code, "inputs_changed")
 
     def test_modified_readable_script_is_reexported_without_model_calls(self):
@@ -621,6 +855,23 @@ class ScriptValidationTests(unittest.TestCase):
         self.assertEqual(validate_script(script, entry), [])
         script.segments[0].knowledge_refs.append("f_consequence")
         self.assertTrue(any("previously introduced" in item for item in validate_script(script, entry)))
+
+    def test_the_dialogue_covers_the_core_and_may_cite_supporting_findings_in_any_scene(self):
+        """Two tiers since 2026-10-02: only the core finding_ids must be cited."""
+        entry = example_plan().episodes[0]
+        entry.supporting_finding_ids = ["f_detail", "f_figure"]
+        script = example_script()
+        self.assertEqual(validate_script(script, entry, check_duration=False), [], "no supporting finding is required")
+        script.segments[0].knowledge_refs = ["f_detail"]
+        script.segments[1].knowledge_refs = ["f_energy", "f_figure"]
+        self.assertEqual(validate_script(script, entry, check_duration=False), [])
+        script.segments[1].knowledge_refs = ["f_figure"]
+        self.assertEqual(validate_script(script, entry, check_duration=False),
+                         ["The dialogue must cover every planned finding.",
+                          "Core findings (finding_ids) not yet cited: f_energy. Supporting and recalled findings need "
+                          "not be cited."])
+        script.segments[1].knowledge_refs = ["f_energy", "f_invented"]
+        self.assertTrue(any("previously introduced" in e for e in validate_script(script, entry, check_duration=False)))
 
 
 class AssembledDossierScriptTests(fixtures.ScriptProjectCase):

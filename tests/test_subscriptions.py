@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from podcast_automate import subscriptions
+from podcast_automate import storage, subscriptions
 from podcast_automate.errors import AppError
 from podcast_automate.models import RuntimeSettings
 from podcast_automate.subscriptions import (choose_subscription, claude_quota, claude_quota_state, codex_quota,
@@ -158,6 +158,70 @@ class SubscriptionStoreTests(unittest.TestCase):
             self.assertEqual(claude_quota(refresh=True, clock=self.clock)["reason"], "claude_missing")
         self.assertNotIn("private@example.org", (self.root / "subscriptions.json").read_text(encoding="utf-8"))
         self.assertNotIn("org-private", (self.root / "subscriptions.json").read_text(encoding="utf-8"))
+
+    def test_a_paused_run_resumes_at_the_failing_providers_reset_else_backs_off(self):
+        """2026-10-02: a Codex error without details took Claude's reset or a fixed half hour, and three automatic
+        resumes were spent within 90 minutes of a Codex week limit."""
+        now = datetime.fromtimestamp(self.seconds, timezone.utc)
+        codex_reset, claude_reset = now + timedelta(hours=3), now + timedelta(days=2)
+        quota = lambda **details: AppError("Kontingent", code="quota_exhausted", status="waiting_for_quota",  # noqa: E731
+                                           details=details)
+        # Nothing known: 30 minutes, then one hour, then two, whichever provider failed.
+        self.assertEqual([subscriptions.quota_retry_at(quota(), clock=self.clock, attempt=n) for n in (0, 1, 2)],
+                         [(now + timedelta(minutes=m)).isoformat() for m in (30, 60, 120)])
+        subscriptions.update_store("codex_cli", {"snapshot": {"resets_at": codex_reset.isoformat()}})
+        record_quota_failure("claude_code", AppError("Claude", code="claude_quota_exhausted", status="waiting_for_quota",
+                             details={"blocked_until": claude_reset.isoformat(), "reason": "seven_day"}), clock=self.clock)
+        self.assertEqual(subscriptions.quota_retry_at(quota(provider="claude_code"), clock=self.clock), claude_reset.isoformat())
+        self.assertEqual(subscriptions.quota_retry_at(quota(provider="codex_cli"), clock=self.clock), codex_reset.isoformat())
+        named = now + timedelta(hours=7)
+        self.assertEqual(subscriptions.quota_retry_at(quota(provider="codex_cli", blocked_until=named.isoformat()),
+                                                      clock=self.clock), named.isoformat())
+        both = AppError("leer", code="subscriptions_exhausted", status="waiting_for_quota",
+                        details={"earliest_reset": None, "earliest_provider": None})
+        self.assertEqual(subscriptions.quota_retry_at(both, clock=self.clock), codex_reset.isoformat())
+        # A reset in the past is no answer; the backoff applies.
+        self.seconds += 4 * 3600
+        self.assertEqual(subscriptions.quota_retry_at(quota(provider="codex_cli"), clock=self.clock, attempt=1),
+                         (datetime.fromtimestamp(self.seconds, timezone.utc) + timedelta(hours=1)).isoformat())
+
+    def test_an_unusable_subscription_is_passed_over_until_its_note_expires_or_a_call_succeeds(self):
+        candidates = {"codex_cli": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"},
+                      "claude_code": {"model": "claude-sonnet-5-5", "reasoning_effort": "high"}}
+        with patch.object(subscriptions, "codex_quota", return_value=snapshot("codex_cli", available=True)), \
+                patch.object(subscriptions, "claude_quota", return_value=snapshot("claude_code", available=True)):
+            self.assertEqual(choose_subscription(self.settings, candidates, prefer="claude_code", clock=self.clock)["provider"],
+                             "claude_code")
+            note = subscriptions.record_unavailable(
+                "claude_code", AppError("Anmeldung", code="authentication_required", status="blocked"), clock=self.clock)
+            self.assertEqual(note["reason"], "authentication_required")
+            choice = choose_subscription(self.settings, candidates, prefer="claude_code", clock=self.clock)
+            self.assertEqual(choice["provider"], "codex_cli")
+            self.assertIn("claude_unavailable (authentication_required)", choice["reason"])
+            self.seconds += subscriptions.UNAVAILABLE_SECONDS + 1
+            self.assertEqual(choose_subscription(self.settings, candidates, prefer="claude_code", clock=self.clock)["provider"],
+                             "claude_code")
+            subscriptions.record_unavailable("claude_code", AppError("alt", code="claude_version"), clock=self.clock)
+            record_claude_success(None, clock=self.clock)
+            self.assertIsNone(subscriptions.unavailable_state("claude_code", clock=self.clock))
+
+    def test_the_store_is_read_through_a_concurrent_rename(self):
+        until = datetime.fromtimestamp(self.seconds, timezone.utc) + timedelta(hours=5)
+        record_quota_failure("claude_code", AppError("Claude", code="claude_quota_exhausted", status="waiting_for_quota",
+                             details={"blocked_until": until.isoformat(), "reason": "five_hour"}), clock=self.clock)
+        real, reads = Path.read_text, []
+
+        def flaky(path, *args, **kwargs):
+            reads.append(path)
+            if len(reads) == 1:
+                raise PermissionError(13, "sharing violation")
+            return real(path, *args, **kwargs)
+
+        with patch.object(storage.os, "name", "nt"), patch.object(storage.time, "sleep"), \
+                patch.object(Path, "read_text", flaky):
+            # A read on the instant of another process's rename used to return {} and hide the block.
+            self.assertEqual(claude_quota_state(clock=self.clock)["blocked_until"], until.isoformat())
+        self.assertEqual(len(reads), 2)
 
     def test_overview_lines_name_windows_resets_and_login(self):
         with patch.dict(os.environ, {"PLA_CODEX_LIMITS": json.dumps({"used": 100, "resets": 1790109078})}):

@@ -81,6 +81,48 @@ class SourceTypeTests(unittest.TestCase):
         self.assertEqual(source_facts(guessed), {"published": "2025-03-01 (search result)"})
         self.assertEqual(source_facts(undated.model_copy(update={"source_type": "standard"})), {"type": "standard"})
 
+    def test_a_primary_work_or_an_open_access_book_is_read_with_the_book_limits(self):
+        # 2026-10-02: the article limit (300 pages, 1M characters) refused the OAPEN and DOAB books the search is sent to.
+        from unittest.mock import patch
+        from podcast_automate import sources
+        seen = []
+
+        def parse(raw, *, book=False):
+            seen.append(book)
+            return {"metadata": {}, "blocks": [[TEXT, 1]]}
+        cases = ((candidate(source_type="primary_work"), True),
+                 (candidate(url="https://library.oapen.org/bitstream/20.500/1/book.pdf", source_type="overview"), True),
+                 (candidate(url="https://link.springer.com/book/10.1007/978-3-030-1", source_type="overview"), True),
+                 (candidate(source_type="study"), False), (candidate(), False))
+        with tempfile.TemporaryDirectory() as temporary, patch("podcast_automate.sources.extract_pdf_isolated", side_effect=parse):
+            for found, book in cases:
+                with self.subTest(url=found.url, source_type=found.source_type):
+                    import_source(found, Path(temporary), "run_x", downloaded=(pdf(), "application/pdf", found.url))
+                    self.assertIs(seen[-1], book)
+        # A refusal in book mode names the book limits.
+        refused = sources.pdf_failure(b'{"error": "UnreadablePdf", "reason": "too_many_pages"}', book=True)
+        self.assertIn("2000 Seiten", str(refused))
+        self.assertIn("300 Seiten", str(sources.pdf_failure(b'{"error": "UnreadablePdf", "reason": "too_many_pages"}')))
+
+    def test_a_service_key_never_follows_a_redirect_to_another_host(self):
+        # 2026-10-02: urllib copies the Authorization header (CORE's key) onto every redirected request.
+        import urllib.request
+        from unittest.mock import patch
+        from podcast_automate.sources import PublicRedirect
+        handler = PublicRedirect()
+
+        def follow(new, headers=None):
+            request = urllib.request.Request("https://api.core.ac.uk/v3/search/works", headers=headers or {})
+            return handler.redirect_request(request, None, 302, "Found", {}, new)
+        with patch("podcast_automate.sources.public_url"):
+            key = {"Authorization": "Bearer secret"}
+            for new in ("https://elsewhere.example/works", "http://api.core.ac.uk/v3/search/works"):
+                with self.subTest(new=new), self.assertRaises(AppError) as refused:
+                    follow(new, key)
+                self.assertEqual(refused.exception.code, "source_download_failed")
+            self.assertEqual(follow("https://api.core.ac.uk/v3/other", key).full_url, "https://api.core.ac.uk/v3/other")
+            self.assertEqual(follow("https://elsewhere.example/paper.pdf").full_url, "https://elsewhere.example/paper.pdf")
+
     def test_a_document_or_candidate_from_before_types_dumps_exactly_as_before(self):
         legacy = candidate()
         self.assertNotIn("source_type", legacy.model_dump())
