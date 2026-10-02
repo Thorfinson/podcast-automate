@@ -41,10 +41,16 @@ def finished(work, episode, stage):
         return bool(path.is_file() and stamp.get("sha256") == file_hash(path))
     if stage == "polishing":
         folder = work / "polishing" / episode
-        result = read(folder / "result.json", {})
-        checkpoint = read(folder / "checkpoint.json", {})
-        return bool(result.get("status") == "passed" and read(folder / "script.json")
-                    and read(folder / "script.json") == checkpoint.get("candidate"))
+        result = read(folder / "result.json", {}) or {}
+        script = read(folder / "script.json")
+        if result.get("status") == "kept_draft":
+            # The polish kept the checked draft (polishing.polish_dialogue): finished when its script is that draft.
+            # Counted as open, it added two polishing calls per such episode to the budget projection and left the
+            # Studio's polishing row unfinished (finding of 2026-10-02).
+            return bool(script and script == read(work / "drafts" / f"{episode}.json")
+                        and digest(script) == result.get("original_digest") == result.get("polished_digest"))
+        checkpoint = read(folder / "checkpoint.json", {}) or {}
+        return bool(result.get("status") == "passed" and script and script == checkpoint.get("candidate"))
     if stage == "review":
         report = read(work / "reviews" / f"{episode}.json")
         checked = read(work / "reviewed" / f"{episode}.json")

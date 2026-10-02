@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 from podcast_automate.episode_audio import run_episode_audio, tag_episode
 from podcast_automate.errors import AppError
-from podcast_automate.expression import (ALLOWED_TAGS, EXPRESSION_VERSION, ExpressionPlan, episode_tag_limit,
-                                         expression_defects, plan_expression, untagged)
+from podcast_automate.expression import (ALLOWED_TAGS, EXPRESSION_PROMPT_VERSION, EXPRESSION_VERSION, ExpressionPlan,
+                                         episode_tag_limit, expression_defects, plan_expression, untagged)
 from podcast_automate.runner import manifest_path
 from podcast_automate.scripting import run_script
 from podcast_automate.speech import AudioChoice, same_audio_generation, selected_audio
@@ -49,6 +49,13 @@ class ExpressionDefectsTests(unittest.TestCase):
         rows = [(sid, "<breath> Gut.") for sid in many]
         self.assertEqual(episode_tag_limit(8), 3)
         self.assertTrue(any("At most 3 tags in this episode" in error for error in expression_defects(plan(*rows), many)))
+
+    def test_a_long_pause_never_opens_a_segment(self):
+        """All 44 <long pause> tags of the 29 Sep recordings opened their segment, on top of the assembly's pause, and
+        four left 3.5 to 7.3 s of dead air (2026-10-02). Inside a segment the tag stays allowed."""
+        errors = expression_defects(plan(("s1", "<long pause> Und genau hier wird es spannend.")), self.spoken)
+        self.assertTrue(any("never opens a segment" in error for error in errors), errors)
+        self.assertEqual(expression_defects(plan(("s2", "Das ist ja <long pause> fast schon unheimlich.")), self.spoken), [])
 
     def test_the_studio_names_exactly_the_allowed_tags(self):
         from pathlib import Path
@@ -95,6 +102,21 @@ class PlanExpressionTests(unittest.TestCase):
         self.assertEqual(tags, {})
         self.assertIn("only", rejected)
         self.assertEqual(len(calls), 3, "the first answer and two corrections")
+
+    def test_an_opening_long_pause_is_removed_without_a_correction_call(self):
+        first, second = self.script.segments
+        calls, prompts = [], []
+
+        def invoke(prompt, schema, version):
+            calls.append(version)
+            prompts.append(" ".join(prompt.split()))
+            return plan((first.segment_id, "<long pause> " + first.text),
+                        (second.segment_id, "<long pause> <sigh> " + second.text))
+        tags, rejected = plan_expression(invoke, self.script, self.spoken, language="de-DE", labels=self.labels)
+        # The first segment carried only the pause and goes without a tag; the second keeps its sigh.
+        self.assertEqual((tags, rejected), ({second.segment_id: "<sigh> " + second.text}, ""))
+        self.assertEqual(calls, [EXPRESSION_PROMPT_VERSION])
+        self.assertIn("Never put a long pause at a segment's start", prompts[0])
 
     def test_a_quota_stop_is_not_mistaken_for_an_invalid_answer(self):
         def invoke(prompt, schema, version):
@@ -152,13 +174,13 @@ class ExpressionRecordingTests(unittest.TestCase):
             run = run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=choice, api_key="test-key")
             self.assertEqual(run.status, "completed")
             self.assertEqual(list(run.stages), ["expression", "synthesis", "assembly", "publish"])
-            self.assertEqual((prompts, sent), ([EXPRESSION_VERSION], [tagged, second.text]))
+            self.assertEqual((prompts, sent), ([EXPRESSION_PROMPT_VERSION], [tagged, second.text]))
             saved = json.loads((manifest_path(self.root, run.run_id).parent / "expression.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["segments"], {first.segment_id: tagged})
             build.return_value.open.side_effect = AssertionError("No new speech call on resume")
             resumed = run_episode_audio(self.root, resume=True, run_id=run.run_id)
         self.assertEqual(resumed.status, "completed")
-        self.assertEqual(prompts, [EXPRESSION_VERSION], "the tags are placed once")
+        self.assertEqual(prompts, [EXPRESSION_PROMPT_VERSION], "the tags are placed once")
 
     def gemini(self):
         choice = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"},
@@ -199,7 +221,7 @@ class ExpressionRecordingTests(unittest.TestCase):
         tagged, calls = "<chuckle> " + first.text, []
         with patch("podcast_automate.episode_audio.AdapterPool", self.placing({first.segment_id: tagged}, calls)):
             record = tag_episode(self.root, "ep_001")
-        self.assertEqual((record["segments"], calls), ({first.segment_id: tagged}, [EXPRESSION_VERSION]))
+        self.assertEqual((record["segments"], calls), ({first.segment_id: tagged}, [EXPRESSION_PROMPT_VERSION]))
         read_hash = file_hash(self.root / "episodes/ep_001/expression.json")
         with self.assertRaises(AppError) as stale:
             self.recording(choice, [], expected_expression_hash="0" * 64)
@@ -209,6 +231,29 @@ class ExpressionRecordingTests(unittest.TestCase):
         self.assertEqual((run.status, sent), ("completed", [tagged, second.text]))
         used = json.loads((manifest_path(self.root, run.run_id).parent / "expression.json").read_text(encoding="utf-8"))
         self.assertEqual((used["segments"], used["source"]), ({first.segment_id: tagged}, "reading"))
+
+    def test_assembly_shortens_the_dead_air_of_segments_with_a_pause_tag_only(self):
+        """2026-10-02: a <long pause> left up to 7.3 s of silence; assembly now cuts it to 1.2 s (audio.assemble)."""
+        choice = self.gemini()
+        first, second = example_script().segments
+        head, tail = first.text.split(" ", 1)
+        tagged = {first.segment_id: f"{head} <long pause> {tail}", second.segment_id: "<sigh> " + second.text}
+        with patch("podcast_automate.episode_audio.AdapterPool", self.placing(tagged, [])):
+            tag_episode(self.root, "ep_001")
+        seen = {}
+
+        def assemble(script, paths, folder, **options):
+            seen.update(options)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "audio.mp3").write_bytes(b"test-audio")
+            write_json(folder / "audio_report.json", {"duration_seconds": 3})
+            return [folder / "audio.mp3", folder / "audio_report.json"]
+        with patch("podcast_automate.speech.build_opener") as build, \
+                patch("podcast_automate.episode_audio.assemble", side_effect=assemble):
+            build.return_value.open.side_effect = lambda *a, **k: response()
+            run = run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=choice, api_key="test-key")
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(seen["trim_pauses"], {first.segment_id})
 
     def test_a_segment_whose_spoken_form_changed_after_reading_is_spoken_without_its_tag(self):
         choice = self.gemini()
@@ -230,7 +275,7 @@ class ExpressionRecordingTests(unittest.TestCase):
             self.gemini()
             placed = express_published(self.root, manifest, "test-key")
             self.assertIsNone(express_published(self.root, manifest), "tags already placed are not placed again")
-        self.assertEqual((placed, calls), ({"ep_001": {"tags": 1, "rejected": ""}}, [EXPRESSION_VERSION]))
+        self.assertEqual((placed, calls), ({"ep_001": {"tags": 1, "rejected": ""}}, [EXPRESSION_PROMPT_VERSION]))
         progress = json.loads((self.root / "studio/expression/progress.json").read_text(encoding="utf-8"))
         self.assertEqual((progress["status"], progress["done"], progress["total"], progress["run_id"]),
                          ("completed", 1, 1, manifest.run_id))

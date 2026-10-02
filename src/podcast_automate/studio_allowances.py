@@ -18,12 +18,18 @@ from .storage import read_optional_json as read
 
 FRESH_ATTEMPT_CHOICES = (0, 1, 2, 3)
 EXTRA_CALL_CHOICES = (0, 100, 250, 500, 1000)
-# Stops whose card offers "Mit neuen Anläufen fortsetzen" (web/app.js STOP_RULES).
-SCRIPT_FRESH_CODES = {"script_review_failed", "teaching_research_required", "series_review_failed"}
-RESEARCH_FRESH_CODES = {
-    "rejected_output", "invalid_evidence_review", "invalid_question_routing", "invalid_research_patch",
-    "invalid_research_assessment", "invalid_search_receipt", "invalid_question_review", "invalid_evidence",
-    "invalid_question_plan", "invalid_question_scope", "question_scope_unresolved", "invalid_supplement"}
+# Stops whose card offers "Mit neuen Anläufen fortsetzen" (web/app.js STOP_RULES); the card shows the button and the
+# scheduler grants an allowance only where run_budget.fresh_attempts_plan finds something to set aside. Since
+# 2026-10-02 every correction loop of a script run has the button, and spent rejections stop as rejected_output.
+CORRECTION_LOOP_CODES = {
+    "rejected_output", "invalid_model_output", "invalid_evidence_review", "invalid_question_routing",
+    "invalid_research_patch", "invalid_research_assessment", "invalid_search_receipt", "invalid_question_review",
+    "invalid_evidence", "invalid_question_plan", "invalid_question_scope", "invalid_supplement", "invalid_teaching_review",
+    "invalid_script_evidence_review", "invalid_polish_review", "invalid_series_review", "invalid_script",
+    "invalid_revision", "invalid_polish_evidence", "invalid_series_evidence", "invalid_teaching_evidence",
+    "invalid_teaching_repair", "invalid_research_gap", "verified_question_split", "invalid_dossier_rebuild"}
+SCRIPT_FRESH_CODES = {"script_review_failed", "teaching_research_required", "series_review_failed"} | CORRECTION_LOOP_CODES
+RESEARCH_FRESH_CODES = {"question_scope_unresolved"} | CORRECTION_LOOP_CODES
 BUDGET_CODES = {"script_budget_insufficient", "research_budget_insufficient", "research_budget_exhausted"}
 
 
@@ -59,8 +65,9 @@ def used(root, run_id):
 
 
 def suggested_calls(job):
-    """The call limit a stop card suggests (web/app.js suggestedCalls): the projection's need, with a quarter more
-    for a script run's corrections, else fifty more."""
+    """The call limit a stop card suggests (web/app.js suggestedCalls): the projection's need, else fifty more. A
+    script run's need is the expectation calibrated on the project's last completed script run (script_budget), and
+    without one the minimum with a quarter more for corrections."""
     progress = (job or {}).get("progress") or {}
     ledger = (progress.get("research_questions") or {}).get("budget_projection")
     script = progress.get("budget_projection")
@@ -69,7 +76,13 @@ def suggested_calls(job):
         need = max(int(ledger.get("expected_remaining_calls") or 0), int(ledger.get("minimum_remaining_calls") or 0))
         return max(limit + 1, int(ledger["used"]) + need)
     if isinstance(script, dict) and isinstance(script.get("minimum_remaining_calls"), (int, float)):
-        return max(limit + 1, int(script.get("used", spent)) + math.ceil(int(script["minimum_remaining_calls"]) * 5 / 4))
+        minimum = int(script["minimum_remaining_calls"])
+        expected = script.get("expected_remaining_calls")
+        if script.get("calibration") and isinstance(expected, (int, float)):
+            need = max(int(expected), minimum)
+        else:
+            need = math.ceil(minimum * 5 / 4)
+        return max(limit + 1, int(script.get("used", spent)) + need)
     return max(limit, spent) + 50
 
 
@@ -114,7 +127,9 @@ def apply(root, job, code):
     if action is None:
         return False
     run_id = job["run"]["run_id"]
-    row = {"run_id": run_id, "job_id": job.get("id"), "code": code, "kind": action["kind"], "applied_at": now()}
+    # ``resumed`` turns true once the Studio started the resume (mark_resumed); until then it tries again.
+    row = {"run_id": run_id, "job_id": job.get("id"), "code": code, "kind": action["kind"], "applied_at": now(),
+           "resumed": False}
     try:
         if action["kind"] == "model_calls":
             approve_model_call_limit(root, run_id, action["model_calls"])
@@ -126,6 +141,24 @@ def apply(root, job, code):
         row.update(skipped=True, reason=str(exc)[:300])
     write_json(root / "studio/allowance_log.json", [*allowance_log(root), row])
     return not row.get("skipped")
+
+
+def awaiting_resume(root, job):
+    """An allowance already granted to this stopped job whose resume has not started: the approval is written, so
+    the Studio resumes without granting again (2026-10-02: a resume refused after the grant left the run waiting
+    for good, its allowance spent). Rows written before the field existed count as resumed."""
+    return any(row.get("job_id") == (job or {}).get("id") and not row.get("skipped") and row.get("resumed") is False
+               for row in allowance_log(root))
+
+
+def mark_resumed(root, job_id):
+    rows = allowance_log(root)
+    changed = False
+    for row in rows:
+        if row.get("job_id") == job_id and row.get("resumed") is False:
+            row["resumed"], changed = True, True
+    if changed:
+        write_json(root / "studio/allowance_log.json", rows)
 
 
 def summary(root, run_id):

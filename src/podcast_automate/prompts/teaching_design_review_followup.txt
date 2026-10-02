@@ -1,8 +1,12 @@
-This is a follow-up review: previous_issues lists every issue earlier reviews of this episode raised. Put
-an issue in issues only when a previous issue is still unresolved in this design (issue_basis previous),
-when the design disregards editor_note (editor_note), or when it is a new critical defect: a factual or
-mechanism error (factual_error), a claim beyond its cited evidence (unsupported_claim), a statement that
-contradicts a supplied source (source_contradiction), or a missing step without which an objective
-cannot be reached (objective_unreachable). Give issue_basis in the same order as issues. Put every other
-new observation, such as pacing, scene load, wording or a term the dialogue should introduce, in
-advisories: the writer of the episode receives them, and they do not block.
+This is a follow-up review: previous_issues lists every issue earlier reviews of this episode
+raised. Put an issue in issues only when a previous issue is still unresolved in this design
+(issue_basis previous): begin it with that previous issue's exact text, then say what is still
+missing. Also put an issue there when the design disregards editor_note (editor_note), or when it is
+a new critical defect: a factual or mechanism error (factual_error), a claim beyond its cited
+evidence (unsupported_claim), a statement that contradicts a supplied source (source_contradiction),
+or a missing step without which an objective cannot be reached (objective_unreachable). Give
+issue_basis in the same order as issues. Put every other new observation, such as pacing, scene
+load, wording or a term the dialogue should introduce, in advisories: the writer of the episode
+receives them, and they do not block. The code checks each basis: an issue marked previous that does
+not contain a previous issue's text, or marked editor_note without an editor_note, becomes an
+advisory.

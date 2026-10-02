@@ -163,10 +163,46 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         self.assertEqual(run.status, "waiting_for_quota")
         self.assertEqual(run.stages["planning"].error.code, "subscriptions_exhausted")
         self.assertIn("Sperre bis", run.stages["planning"].error.message)
+        # The manifest keeps the reset the automatic resume waits for (studio_worker, subscriptions.quota_retry_at).
+        self.assertEqual(run.stages["planning"].error.details, {"earliest_reset": fakes.reset, "earliest_provider": "codex_cli"})
         work = self.root / "runs" / run.run_id
         choice = json.loads((work / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))
         self.assertEqual(choice["provider"], "codex_cli")
         self.assertFalse((work / "calls/call_001/provider_switch.json").exists())
+
+    def test_an_unusable_subscription_hands_the_call_to_the_other_one_and_a_fixed_provider_still_stops(self):
+        """2026-10-02: an expired login, a missing subscription login or too old a CLI stopped auto runs although the
+        other subscription had quota. Under auto the call moves on and Claude is passed over while its note lasts."""
+        QuotaFakes(self)
+        claude_calls, codex_calls = [], []
+
+        def claude(adapter, prompt, output_type, directory, **kwargs):
+            claude_calls.append(directory.name)
+            raise AppError("Claude-Anmeldung muss erneuert werden", code="authentication_required", status="blocked")
+
+        def codex(adapter, prompt, output_type, directory, **kwargs):
+            codex_calls.append(directory.name)
+            return self.model(prompt, output_type, directory, **kwargs)
+
+        with patch("podcast_automate.scripting.CodexAdapter.structured", autospec=True, side_effect=codex), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
+            run = run_script(self.root, backend="auto")
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(claude_calls, ["call_001"], "after the switch the note keeps Claude out")
+        self.assertEqual(codex_calls[0], "call_001")
+        work = self.root / "runs" / run.run_id
+        switch = json.loads((work / "calls/call_001/provider_switch.json").read_text(encoding="utf-8"))
+        self.assertEqual((switch["from"], switch["to"], switch["error_code"]), ("claude_code", "codex_cli", "authentication_required"))
+        self.assertEqual(subscriptions.unavailable_state("claude_code")["reason"], "authentication_required")
+        second = json.loads((work / "calls/call_002/provider_choice.json").read_text(encoding="utf-8"))
+        self.assertEqual(second["provider"], "codex_cli")
+        self.assertIn("claude_unavailable (authentication_required)", second["reason"])
+        with patch.object(subscriptions, "codex_quota", side_effect=AssertionError("no quota query")), \
+                patch.object(subscriptions, "claude_quota", side_effect=AssertionError("no quota query")), \
+                patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=AssertionError("no codex")), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
+            fixed = run_script(self.root, backend="claude_code")
+        self.assertEqual((fixed.status, fixed.stages["planning"].error.code), ("blocked", "authentication_required"))
 
     def test_a_claude_run_switched_by_the_user_continues_with_astra_and_keeps_its_work(self):
         """2026-09-29: Claude's seven-day window ran low while both projects were in the script review, and the user
@@ -295,6 +331,36 @@ class PoolUnitTests(unittest.TestCase):
                          "claude-opus-5")
 
 
+    def test_a_busy_quota_store_never_costs_a_paid_answer_or_hides_the_providers_error(self):
+        """2026-10-02: the store lock timed out after Claude had answered; project_busy dropped the answer, and a
+        resume paid for it again."""
+        config = TopicBrief(topic="Thema")
+        answer = TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz")
+        busy = AppError("Für dieses Projekt läuft bereits ein Auftrag.", code="project_busy", status="blocked")
+        pool = AdapterPool(config.runtime, text_generation_settings(config, backend="claude_code"))
+        with tempfile.TemporaryDirectory() as temp, patch.object(subscriptions, "update_store", side_effect=busy), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured",
+                      return_value=(answer, {"rate_limit": {"status": "allowed", "window": "five_hour"}})):
+            self.assertEqual(pool.structured("Prompt", TextProbeOutput, Path(temp) / "ok", prompt_version="test")[0], answer)
+        quota = AppError("Claude-Abo-Kontingent erreicht", code="claude_quota_exhausted", status="waiting_for_quota")
+        with tempfile.TemporaryDirectory() as temp, patch.object(subscriptions, "update_store", side_effect=busy), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=quota), \
+                self.assertRaises(AppError) as error:
+            pool.structured("Prompt", TextProbeOutput, Path(temp) / "quota", prompt_version="test")
+        self.assertEqual(error.exception.code, "claude_quota_exhausted")
+        self.assertEqual(error.exception.details["provider"], "claude_code")
+
+    def test_a_fixed_codex_quota_error_names_its_provider_without_a_quota_query(self):
+        config = TopicBrief(topic="Thema")
+        pool = AdapterPool(config.runtime, text_generation_settings(config, backend="codex_cli"))
+        quota = AppError("Abo-Kontingent erreicht", code="quota_exhausted", status="waiting_for_quota")
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(subscriptions, "codex_quota", side_effect=AssertionError("no quota query")), \
+                patch("podcast_automate.provider_pool.CodexAdapter.structured", side_effect=quota), \
+                self.assertRaises(AppError) as error:
+            pool.structured("Prompt", TextProbeOutput, Path(temp) / "quota", prompt_version="test")
+        self.assertEqual(error.exception.details, {"provider": "codex_cli"})
+
     def test_a_listener_or_expression_call_asks_at_its_stage_level_and_records_the_runs(self):
         config = TopicBrief(topic="Thema")
         seen = []
@@ -346,8 +412,11 @@ class ProbeCliAndDoctorTests(unittest.TestCase):
         with self.assertRaises(AppError) as changed:
             run_probe(self.root, resume=True, run_id=run_id, backend="codex_cli")
         self.assertEqual(changed.exception.code, "inputs_changed")
-        code, data = self.invoke("resume", str(self.root), "--run-id", run_id, "--api-key", "x", "--json")
+        code, data = self.invoke("resume", str(self.root), "--run-id", run_id, "--api-key", "--json")
         self.assertEqual((code, data["code"]), (1, "invalid_backend"))
+        # A key given as a value is refused before anything else (2026-10-02: the process list shows it).
+        code, data = self.invoke("resume", str(self.root), "--run-id", run_id, "--api-key", "x", "--json")
+        self.assertEqual((code, data["code"]), (1, "invalid_request"))
 
     def test_quota_command_and_doctor_report_both_subscriptions(self):
         overview = {"checked_at": "2026-09-19T10:00:00+00:00", "any_usable": True, "any_available": False,
@@ -379,7 +448,11 @@ class ProbeCliAndDoctorTests(unittest.TestCase):
         self.assertFalse(data["ready"])
 
 
-class StatusAndStudioTests(test_studio.StudioHttpTests):
+class StatusAndStudioTests(unittest.TestCase):
+    # The Studio's server and request helper only; inheriting StudioHttpTests ran all its tests a second time.
+    setUp = test_studio.StudioHttpTests.setUp
+    request = test_studio.StudioHttpTests.request
+
     def test_status_digest_follows_the_run_provider(self):
         work = self.root / "runs/run_test"
         job = {"id": "job_one", "status": "running", "run": {"run_id": "run_test", "kind": "script", "status": "running",

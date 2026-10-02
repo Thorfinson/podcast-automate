@@ -3,19 +3,28 @@ actual reasoning against the source sections and the audience's starting knowled
 reference alone is not support. Are prerequisites taught before use? Do examples preserve the
 supported mechanism? Do the objectives cover the episode question at the requested depth? Are there
 concrete inferential steps, a useful opening, progression and a synthesis rather than a contents
-list? Could this plan produce a fluent but unteachable essay? Check that its first and last scenes
-prepare the episode intro and outro, the series introduction in episode 1 and the series-wide recap
-and synthesis in the final episode. At this design stage require those functions and their
-reasoning, not finished spoken greetings. Missing framing belongs in editorial issues, not external
-research_gaps. Report concrete fixable design issues in issues. Missing indispensable evidence goes
-in research_gaps with a focused question and why it is needed. Do not demand unrelated scope. For
-every gap already reported by the design, copy its question exactly into gap_assessments. Decide
-explicitly if it is required_for_objective and explain the decision. Classify every assessed or
-newly reported gap: kind=evidence means missing external factual support; kind=editorial_context
-means prior example text, a transition, or an illustrative position/representation still needs to be
-selected or passed along. Missing internal material cannot be found by web research. Use the
-prerequisite_context to resolve it or report a concrete editorial correction. Do not classify an
-unsupported scientific mechanism as editorial. A known limitation that the episode can explain
-honestly is not automatically missing prerequisite evidence. Do not demand an exact convergence
-proof or a general success guarantee when neither is an episode objective or a claim of the design.
-Essential missing mechanisms remain blocking. Use the project's language.
+list? Could this plan produce a fluent but unteachable essay? A qualitative case traced through an
+idea's reasoning is a complete worked example; do not demand a measured result, a calculation, a
+misconception or a limit the episode does not need. Where brief.series_goal weights understand at 2
+or 3, check that the design explains the episode's idea or theory in its own logic, attributed to
+its author, before any test or critique, and gives that exposition the larger share; a design whose
+main work is studies, data or replications instead is an issue. Check that its first and last scenes
+prepare the episode intro and outro and, in episode 1, the series introduction. In the final episode
+check that the design as a whole is the series' synthesis: its scenes build the answer to the
+series' central question from what the earlier episodes contributed, not a recap in the closing
+scene. At this design stage require those functions and their reasoning, not finished spoken
+greetings. Missing framing belongs in editorial issues, not external research_gaps. Report concrete
+fixable design issues in issues, and say in each whether the design can fix it from the supplied
+material or whether it is a limit of the sources the episode should name honestly. Missing
+indispensable evidence that research could supply goes in research_gaps with a focused question and
+why it is needed. Do not demand unrelated scope. For every gap already reported by the design, copy
+its question exactly into gap_assessments. Decide explicitly if it is required_for_objective and
+explain the decision. Classify every assessed or newly reported gap: kind=evidence means missing
+external factual support; kind=editorial_context means prior example text, a transition, or an
+illustrative position/representation still needs to be selected or passed along. Missing internal
+material cannot be found by web research. Use the prerequisite_context to resolve it or report a
+concrete editorial correction. Do not classify an unsupported scientific mechanism as editorial. A
+known limitation that the episode can explain honestly is not automatically missing prerequisite
+evidence. Do not demand an exact convergence proof or a general success guarantee when neither is an
+episode objective or a claim of the design. Essential missing mechanisms remain blocking. Use the
+project's language.

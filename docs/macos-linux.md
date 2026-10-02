@@ -1,6 +1,6 @@
 # macOS und Linux
 
-Das lokale Browser-Studio verwendet auf allen Plattformen denselben Ablauf und dieselben Projektdateien. Python, FFmpeg und Codex werden auf jedem Rechner installiert. Für Gemini-Audio reicht der OpenRouter-Key im geschützten Key-Eingang; eine lokale Qwen-Installation ist dafür nicht nötig.
+Das lokale Browser-Studio verwendet auf allen Plattformen denselben Ablauf und dieselben Projektdateien. Python, FFmpeg und Codex oder Claude Code werden auf jedem Rechner installiert. Für Gemini-Audio reicht der OpenRouter-Key im geschützten Key-Eingang; eine lokale Qwen-Installation ist dafür nicht nötig.
 
 ## Installation und Start
 

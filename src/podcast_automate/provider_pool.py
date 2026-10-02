@@ -4,8 +4,9 @@
 turns that form into an adapter for each call: a fixed provider as before, or the subscription
 rule for ``auto`` (the preferred subscription while it has quota, else the other, else pause; new runs
 prefer Claude). The decision is written to
-``provider_choice.json`` in the call directory; a mid-call switch after a quota error is recorded
-in ``provider_switch.json`` and repeats the same call once with the other subscription. A call whose
+``provider_choice.json`` in the call directory; a mid-call switch after a quota error, or after a failure that
+finds the subscription unusable (login, plan, CLI version), is recorded in ``provider_switch.json`` and repeats
+the same call once with the other subscription. A call whose
 streaming output stalls is repeated once on the same provider (``stall_retry.json``), and so is one whose
 answer Claude could not bring into the requested shape (``format_retry.json``); a prompt too large for
 Claude's window is routed to Codex under the automatic rule.
@@ -18,6 +19,7 @@ from . import subscriptions
 from .claude_code import ADAPTER_VERSION as CLAUDE_ADAPTER_VERSION, MAX_BUDGET_USD, ClaudeCodeAdapter, prompt_limit
 from .codex import CodexAdapter
 from .errors import AppError
+from .logs import logger
 from .models import TextProbeOutput, now
 from .openrouter import ADAPTER_VERSION, DEFAULT_MAX_OUTPUT_TOKENS, OpenRouterAdapter
 from .prompts import instructions
@@ -30,6 +32,25 @@ from .text_settings import (AUTO_PREFERENCE, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAU
 # Failures repeated once on the same provider before they stop the run, with the receipt each leaves in the call
 # folder: a stalled stream, and an answer the Claude CLI could not bring into the requested shape.
 REPEATED_ONCE = {"stall": "stall_retry.json", "claude_structured_output": "format_retry.json"}
+# Failures that say a subscription cannot be used right now (login, plan, CLI), not that its quota is spent. Under
+# the automatic rule the call moves to the other subscription, as after a quota error, and the store notes it
+# (subscriptions.record_unavailable); a fixed provider still stops with the error (2026-10-02: an expired login
+# stopped auto runs although the other subscription had quota).
+UNAVAILABLE_CODES = frozenset({"authentication_required", "subscription_required", "claude_version", "claude_missing",
+                               "codex_missing", "missing_executable", "unsupported_claude_launcher",
+                               "unsupported_codex_launcher"})
+
+
+def bookkeeping(action, *args, **kwargs):
+    """A note in the shared quota store never decides a call: when the store is busy or unreadable, the call keeps
+    its own outcome (2026-10-02: a lock timeout after a paid answer raised project_busy, and the answer was bought
+    again on resume)."""
+    try:
+        return action(*args, **kwargs)
+    except (AppError, OSError, ValueError) as exc:
+        logger("provider_pool").warning("Kontingentvermerk nicht gespeichert (%s): %s",
+                                        getattr(exc, "code", type(exc).__name__), exc)
+        return None
 
 
 def subscription_selection(config, backend, *, model=None, reasoning_effort=None) -> dict:
@@ -175,11 +196,22 @@ class AdapterPool:
                     write_json(directory / REPEATED_ONCE[exc.code], {"provider": choice["provider"], "message": str(exc),
                                "retried_at": now()})
                     continue
-                if exc.status != "waiting_for_quota" or choice["provider"] not in SUBSCRIPTION_PROVIDERS:
+                if choice["provider"] not in SUBSCRIPTION_PROVIDERS:
                     raise
-                # A Claude block is a cheap note for every mode; re-reading Codex windows only serves the rule.
-                if mode == "auto" or choice["provider"] == "claude_code":
-                    subscriptions.record_quota_failure(choice["provider"], exc, settings=self.settings)
+                unavailable = mode == "auto" and exc.code in UNAVAILABLE_CODES
+                if exc.status != "waiting_for_quota" and not unavailable:
+                    raise
+                if unavailable:
+                    bookkeeping(subscriptions.record_unavailable, choice["provider"], exc)
+                else:
+                    # The paused run is resumed at this provider's reset (subscriptions.quota_retry_at).
+                    exc.details.setdefault("provider", choice["provider"])
+                    # A Claude block is a cheap note for every mode; re-reading Codex windows only serves the rule.
+                    if mode == "auto" or choice["provider"] == "claude_code":
+                        noted = bookkeeping(subscriptions.record_quota_failure, choice["provider"], exc,
+                                            settings=self.settings)
+                        if choice["provider"] == "codex_cli" and isinstance(noted, dict) and noted.get("resets_at"):
+                            exc.details.setdefault("blocked_until", noted["resets_at"])
                 if mode != "auto":
                     raise
                 tried.append(choice["provider"])
@@ -196,7 +228,7 @@ class AdapterPool:
                 choice = alternative
                 continue
             if choice["provider"] == "claude_code":
-                subscriptions.record_claude_success(metadata.get("rate_limit"))
+                bookkeeping(subscriptions.record_claude_success, metadata.get("rate_limit"))
             return output, metadata
 
     def probe(self, topic, directory):

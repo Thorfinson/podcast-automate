@@ -8,6 +8,10 @@ Every instruction sent to a text model lives here as one file per prompt. Code c
 - `instructions(name, **values)` returns task instructions without trailing whitespace. The caller
   appends `"\n"` and the JSON payload; the last line of every prompt stays the JSON object.
 - Placeholders are limited to `{language}` and `{maximum}`. A file may not contain other braces.
+- A rule block may depend on the project. `editorial.terminology(language, topic, question)` returns
+  the topic-neutral `terminology_rule` and adds `terminology_machine_learning` only for a
+  machine-learning topic in a project that is not English (since 2026-10-02). The research prompts
+  still compose `terminology`, the earlier rule with the machine-learning names, unchanged.
 
 A file holds one paragraph wrapped at 100 columns. Loading joins the lines with single spaces, so
 line breaks are free to change while the text is not.

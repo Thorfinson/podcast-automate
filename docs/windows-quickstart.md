@@ -34,7 +34,7 @@ claude auth status --json
 .\.venv\Scripts\pla.exe text-probe .\projects\energy-models --backend claude_code
 ~~~
 
-`pla quota` zeigt ohne Modellaufruf das Codex-Fenster in Prozent mit Reset-Zeitpunkt und den Claude-Stand (Anmeldung, gegebenenfalls vermerkte Sperre). Im Studio und mit `--backend auto` wird vor jedem Modellaufruf so entschieden: Codex, solange es Kontingent hat, sonst Claude, sonst Pause bis zum frühesten Reset.
+`pla quota` zeigt ohne Modellaufruf das Codex-Fenster in Prozent mit Reset-Zeitpunkt und den Claude-Stand (Anmeldung, gegebenenfalls vermerkte Sperre). Im Studio und mit `--backend auto` wird vor jedem Modellaufruf so entschieden: seit 26.09.2026 Claude, solange es Kontingent hat (`text_settings.AUTO_PREFERENCE`), sonst Codex, sonst Pause bis zum frühesten Reset. Ist ein Abo gerade nicht nutzbar, etwa wegen abgelaufener Anmeldung oder zu alter CLI, nimmt die Regel seit 02.10.2026 für zehn Minuten das andere.
 
 Die Probe übergibt das Thema an Codex und erwartet validiertes JSON mit möglichen Vertiefungsfragen. Sie prüft die Anbindung und verbraucht Abo-Kontingent. Sie führt noch keine Recherche durch. Ergebnis und verfügbare Nutzungsmetadaten liegen unter probes/text/<run_id>/.
 

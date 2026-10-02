@@ -148,16 +148,15 @@ def effective_limits(work, limits, input_hash):
     approval = read_budget_approval(work)
     if approval is None:
         return limits
-    if (approval.run_id != work.name or approval.input_hash != input_hash or
-        approval.model_calls < limits.model_calls or
-            (approval.search_rounds is not None and approval.search_rounds < limits.search_rounds) or
-            (approval.sources is not None and approval.sources < limits.sources)):
+    if approval.run_id != work.name or approval.input_hash != input_hash:
         raise AppError("Die Erhöhung des Aufruflimits gehört nicht zu diesem Auftrag.",
                        code="invalid_budget_approval", status="blocked")
-    update = {"model_calls": approval.model_calls}
+    # The project's limits are not part of a resumed run's hash (storage.bound_brief, 2026-10-02), so they may have been
+    # raised above an earlier approval of this run since; the higher of the two applies. Before, that stopped the run.
+    update = {"model_calls": max(approval.model_calls, limits.model_calls)}
     for key in ("search_rounds", "sources"):
         if getattr(approval, key) is not None:
-            update[key] = getattr(approval, key)
+            update[key] = max(getattr(approval, key), getattr(limits, key))
     return limits.model_copy(update=update)
 
 
@@ -466,20 +465,18 @@ def stuck_calls(work):
     return rows
 
 
-def approve_fresh_attempts(root, run_id):
-    """Give every stuck call of a stopped research run a fresh set of correction attempts, after the user
-    explicitly asked for it. The spent rejections move aside unchanged (``<name>_superseded_NN_MM.json``),
-    so the resume asks the model anew with nothing of the stop carried over; each approval is recorded in
-    ``fresh_attempts.json``. A running run is never touched."""
-    from .research_patches import MAX_REJECTIONS, supersede_rejections
-    work, manifest = _text_run(root, run_id)
+def fresh_attempts_plan(work, manifest):
+    """What ``approve_fresh_attempts`` would set aside for this stopped run, without touching anything; raises the
+    refusal the approval would raise. The Studio offers the button only where this finds something (2026-10-02:
+    the button was offered on research stops without a stuck call, and again after an allowance had reset the
+    repairs, and then failed)."""
     if manifest.status == "running":
         raise AppError("Der Lauf arbeitet gerade; neue Anläufe erst, wenn er angehalten hat.", code="invalid_retry_request")
     if manifest.kind == "script":
         # A supplementary research of the teaching stage that spent its corrections (teaching_research.stuck_supplements).
         # Also a script review whose repairs are spent on points that still stop the run (grounding, scope, structure).
         from .script_pipeline import MAX_REVIEW_REPAIRS, NOTED_CATEGORIES
-        from .teaching_research import stuck_supplements, supersede_corrections
+        from .teaching_research import stuck_supplements
         folders = stuck_supplements(work)
         # A series correction that failed its evidence check, or a spent round the series review still objects to:
         # set aside, so the next resume corrects the series in a new round (the user's explicit choice).
@@ -499,6 +496,36 @@ def approve_fresh_attempts(root, run_id):
         if not folders and not reviews and not failed_series:
             raise AppError("Keine Nachrecherche, keine Skriptprüfung und keine Serienkorrektur dieses Laufs hat ihre "
                            "Korrekturversuche verbraucht.", code="invalid_retry_request")
+        return {"supplements": folders, "reviews": reviews, "series_repair": failed_series}
+    if manifest.kind != "research":
+        raise AppError("Neue Anläufe gibt es nur für einen Recherche- oder Skriptauftrag.", code="invalid_retry_request")
+    stuck = stuck_calls(work)
+    if not stuck:
+        raise AppError("Kein Schritt dieses Laufs hat seine Korrekturversuche verbraucht.", code="invalid_retry_request")
+    return {"calls": stuck}
+
+
+def fresh_attempts_available(root, run_id):
+    """Whether "Mit neuen Anläufen fortsetzen" would be accepted for this stopped run now."""
+    try:
+        work, manifest = _text_run(root, run_id)
+        fresh_attempts_plan(work, manifest)
+    except (AppError, OSError, ValueError, KeyError, TypeError):
+        return False
+    return True
+
+
+def approve_fresh_attempts(root, run_id):
+    """Give every stuck call of a stopped research run a fresh set of correction attempts, after the user
+    explicitly asked for it. The spent rejections move aside unchanged (``<name>_superseded_NN_MM.json``),
+    so the resume asks the model anew with nothing of the stop carried over; each approval is recorded in
+    ``fresh_attempts.json``. A running run is never touched."""
+    from .research_patches import MAX_REJECTIONS, supersede_rejections
+    work, manifest = _text_run(root, run_id)
+    plan = fresh_attempts_plan(work, manifest)
+    if manifest.kind == "script":
+        from .teaching_research import supersede_corrections
+        folders, reviews, failed_series = plan["supplements"], plan["reviews"], plan["series_repair"]
         if failed_series:
             number = 1 + len(list(work.glob("series_repair_superseded_*.json")))
             failed_series.replace(work / f"series_repair_superseded_{number:02d}.json")
@@ -513,11 +540,7 @@ def approve_fresh_attempts(root, run_id):
         path = work / "fresh_attempts.json"
         write_json(path, [*(json.loads(path.read_text(encoding="utf-8")) if path.exists() else []), record])
         return record
-    if manifest.kind != "research":
-        raise AppError("Neue Anläufe gibt es nur für einen Recherche- oder Skriptauftrag.", code="invalid_retry_request")
-    stuck = stuck_calls(work)
-    if not stuck:
-        raise AppError("Kein Schritt dieses Laufs hat seine Korrekturversuche verbraucht.", code="invalid_retry_request")
+    stuck = plan["calls"]
     for folder, name in stuck:
         supersede_rejections(folder, name, MAX_REJECTIONS + 1)
     record = {"calls": [(folder / name).relative_to(work).as_posix() for folder, name in stuck], "approved_at": now()}

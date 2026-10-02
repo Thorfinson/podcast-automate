@@ -8,7 +8,7 @@
 - [windows-quickstart.md](windows-quickstart.md): Wie installiere ich die Anwendung unter Windows 11, prüfe Codex- und Claude-Abo, bereite die lokale Sprachausgabe vor und erzeuge die erste Hörprobe?
 - [macos-linux.md](macos-linux.md): Wie installiere und starte ich das Studio unter macOS oder Linux, optional mit lokalem Qwen, und was ist beim Wechsel auf einen anderen Rechner zu beachten?
 - [qwen-windows.md](qwen-windows.md): Wie richte ich Qwen3-TTS in `.venv-tts` mit AMD-PyTorch und festen Versionen ein und vergleiche die neun eingebauten Stimmen auf Deutsch und Englisch?
-- [gemini-audio.md](gemini-audio.md): Wie wähle ich Gemini 3.1 Flash TTS über OpenRouter mit seinen 30 Stimmen und der gemeinsamen Hörprobenbibliothek, und was ist daran noch nicht praktisch geprüft?
+- [gemini-audio.md](gemini-audio.md): Wie wähle ich Gemini 3.8 Flash TTS über OpenRouter mit seinen 30 Stimmen und der gemeinsamen Hörprobenbibliothek, und was ist daran noch nicht praktisch geprüft?
 
 ## Referenz: so verhält sich das Produkt heute
 

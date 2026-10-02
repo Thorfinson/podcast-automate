@@ -2,7 +2,7 @@
 
 ## Stand und Bewertungsgrundlage
 
-Der priorisierte Hauptfall ist eine quellengebundene Podcastserie, deren Umfang sich aus dem Thema und der gewünschten Tiefe ergibt. Gesamtdauer und Folgenzahl sind nicht fest vorgegeben; jede Folge dauert höchstens 30 Minuten. Bewertet werden Recherche, Erklärungstiefe, Aufbau über mehrere Folgen und Hörqualität.
+Der priorisierte Hauptfall ist eine quellengebundene Podcastserie, deren Umfang sich aus dem Thema und der gewünschten Tiefe ergibt. Gesamtdauer und Folgenzahl sind nicht fest vorgegeben; jede Folge dauert höchstens 60 Minuten (seit 30.09.2026, vorher 30) und wird in Teilen von höchstens 30 Minuten vertont. Bewertet werden Recherche, Erklärungstiefe, Aufbau über mehrere Folgen und Hörqualität.
 
 Version 0.1 enthält CLI und Browser-Studio mit echter Themenrecherche, Quellenabruf, belegtem Dossier, Serienplanung, Lehrplanung, quellengeprüften Dialogskripten mit Polishing, Serienprüfung, Wiederaufnahme und der Vertonung freigegebener Folgen mit lokalem Qwen oder Gemini über OpenRouter einschließlich automatischer Montage und MP3-Export. Die Tests prüfen simulierte Modellantworten und echte FFmpeg-Verarbeitung von Testsignalen. Eine vollständige Serie mit sechs Folgen und exportierten MP3s liegt vor („Die Entwicklung der Transformer-Architektur“, produziert vom 13. bis 16.09.2026). Das Audit vom 19.09.2026 hat sie bewertet: Die Einzelurteile stehen in [docs/history/quality-audit-2026-09-19.md](history/quality-audit-2026-09-19.md), die daraus umgesetzten Änderungen in [quality-audit-2026-09-19-implementation.md](quality-audit-2026-09-19-implementation.md). Quellen- und Strukturprüfungen belegen weiterhin keine ausreichende Erklärungstiefe; dafür gibt es die redaktionelle Prüfung gegen den gewünschten Anspruch. Die menschliche Hörabnahme dieser Serie steht noch aus; jeder Audiobericht trägt `human_listening_reviewed: false`, bis sie im Studio vermerkt wird.
 
@@ -26,7 +26,7 @@ Tutor-Pädagogik, Quiz, Lernstandsdiagnostik und Wiederholungsplanung sind auße
 | Hörbarkeit | Tempo, Aussprache, Pausen und Kapitel unterstützen die Erklärung. | Ein formal korrektes Skript ist gesprochen schwer nachvollziehbar. |
 | Automatische Produktion | Zwei beständige Stimmen, passende Übergänge, Lautheit und fertige Dateien entstehen ohne manuellen Schnitt. | Der Nutzer muss Audioschnipsel sortieren, verbinden oder im Editor reparieren. |
 | Zuverlässigkeit | Abo-Pausen und technische Fehler lassen sich mit erhaltenen Ergebnissen fortsetzen. | Eine Unterbrechung erzwingt die Neuberechnung der Serie oder einen ungefragten API-Wechsel. |
-| Laufzeit | Aus dem Inhalt geplante und tatsächlich gemessene Dauer werden ausgewiesen; jede Audiofolge bleibt bei höchstens 30 Minuten. | Eine feste Gesamtstundenzahl gilt als Qualitätsnachweis oder Wortzahl wird mit Tiefe gleichgesetzt. |
+| Laufzeit | Aus dem Inhalt geplante und tatsächlich gemessene Dauer werden ausgewiesen; jede Folge bleibt bei höchstens 60 Minuten, jeder vertonte Teil bei höchstens 30. | Eine feste Gesamtstundenzahl gilt als Qualitätsnachweis oder Wortzahl wird mit Tiefe gleichgesetzt. |
 
 ## Was der Tiefencheck leisten muss
 
@@ -70,7 +70,7 @@ Vor dem Aufbau der vollständigen Recherchepipeline wurde auf Windows 11 mit der
 
 Der Test dokumentiert Modell- und Laufzeitversionen, Speicherbedarf, Erzeugungsdauer, Verständlichkeit, Stimmenkonstanz und Aussprache. Eine kurze Hörprobe dient der anfänglichen Auswahl von Modell und Stimmen. Sie ist kein wiederkehrender manueller Schnittschritt.
 
-Im Produktionslauf werden fehlende oder beschädigte Segmente, leere Ausgabe, auffällige Stille, Pegelfehler und unplausible Dauer automatisch geprüft. Betroffene Segmente erhalten begrenzte Reparaturversuche. Verbleibende Befunde blockieren den betroffenen finalen Export mit einer konkreten Fehlermeldung. Kapitel und Laufzeit werden an den tatsächlich montierten Audiodaten geprüft.
+Im Produktionslauf werden fehlende oder beschädigte Segmente, leere oder unerwartete Ausgabe und die gemessene Dauer automatisch geprüft. Gemini-Aufnahmen durchlaufen seit 02.10.2026 zusätzlich eine Plausibilitätsprüfung auf unerklärte Stille und unplausible Sprechrate: Eine durchgefallene Aufnahme wird einmal neu angefragt, danach hält die Vertonung mit `invalid_speech` und der Segment-ID an ([Gemini-Audio](gemini-audio.md#aufnahmeprüfung-pausen-und-lautheit)). Qwen-Aufnahmen haben diese Prüfung nicht. Verbleibende Befunde blockieren den betroffenen finalen Export mit einer konkreten Fehlermeldung. Kapitel und Laufzeit werden an den tatsächlich montierten Audiodaten geprüft. Lautheit und Spitzenpegel des fertigen MP3 werden gemessen und im Audiobericht festgehalten, aber nicht als Gate bewertet.
 
 Eine ergänzende lokale Rücktranskription wird anhand bekannter Auslassungen und Wiederholungen bewertet. Sie darf nicht allein als Nachweis für korrekte Aussprache gelten. Automatische Fehlererkennung kann keine fehlerfreie oder durchgehend natürliche Sprachausgabe garantieren; die Hörprüfung des Piloten bleibt ein eigenes Abnahmekriterium.
 

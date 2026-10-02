@@ -1,8 +1,8 @@
 # Podcast Automate
 
-Ein persönliches Recherche-zu-Podcast-System: Du gibst ein Thema vor, das Studio recherchiert belegt im Web, plant eine Deep-Dive-Serie, schreibt und prüft Dialogskripte und vertont freigegebene Folgen als MP3. Alles läuft lokal; Modellaufrufe gehen über dein Codex-Abo oder OpenRouter, Sprache über lokales Qwen oder Gemini.
+Ein persönliches Recherche-zu-Podcast-System: Du gibst ein Thema vor, das Studio recherchiert belegt im Web, plant eine Deep-Dive-Serie, schreibt und prüft Dialogskripte und vertont freigegebene Folgen als MP3. Alles läuft lokal; Modellaufrufe gehen über dein Claude- oder Codex-Abo oder über OpenRouter, Sprache über lokales Qwen oder Gemini.
 
-Die Erklärungen setzen kein Fach- oder Mathematikwissen voraus und bauen ihre Tiefe über vertraute Bilder, durchgearbeitete Beispiele und benannte Grenzen auf. Serienlänge und Folgenzahl ergeben sich aus dem Thema; eine Folge dauert höchstens 30 Minuten.
+Die Erklärungen setzen kein Fach- oder Mathematikwissen voraus und bauen ihre Tiefe über vertraute Bilder, durchgearbeitete Beispiele und benannte Grenzen auf. Serienlänge und Folgenzahl ergeben sich aus dem Thema; eine Folge dauert bis zu 60 Minuten und wird in Teilen von höchstens 30 Minuten vertont.
 
 ## Schnellstart
 
@@ -12,7 +12,7 @@ Die Erklärungen setzen kein Fach- oder Mathematikwissen voraus und bauen ihre T
 | macOS | `brew install python@3.12 ffmpeg`, dann `sh scripts/setup.sh` ([Details](docs/macos-linux.md)) | `Podcast-Studio.command` doppelklicken |
 | Linux | Python ab 3.12 und FFmpeg installieren, dann `sh scripts/setup.sh` | `sh Podcast-Studio.sh` |
 
-Das Studio öffnet `http://127.0.0.1:8765` und ist nur auf diesem Rechner erreichbar. Für die belegte Web-Recherche wird die Codex CLI mit angemeldetem ChatGPT-Abo benötigt. Ein OpenRouter-Key ist optional und wird nur für die Sitzung im Speicher gehalten. `pla doctor --skip-tts` prüft die Installation ohne lokales Qwen.
+Das Studio öffnet `http://127.0.0.1:8765` und ist nur auf diesem Rechner erreichbar. Für die belegte Web-Recherche wird ein angemeldetes Abo benötigt: Claude Code mit Claude-Max-Abo oder die Codex CLI mit ChatGPT-Abo; über OpenRouter wird nicht gesucht. Ein OpenRouter-Key ist optional und wird nur für die Sitzung im Speicher gehalten. `pla doctor --skip-tts` prüft die Installation ohne lokales Qwen.
 
 ## Ablauf im Studio
 
@@ -27,16 +27,16 @@ Jeder Schritt ist wiederaufnehmbar. Fertige Ergebnisse werden per Hash gebunden;
 
 ## Anbieter und Kosten
 
-- **Text**: Claude-Max-Abo über Claude Code (Claude Opus 5.5, Effort `xhigh`, ab Claude Code 2.1.280), Codex-Abo (GPT-6 Astra, Reasoning `xhigh`) oder OpenRouter-Modelle für Inhaltsverzeichnis, Lehrkonzept, Skripte, Polishing und Prüfungen. Die Vorauswahl **Automatisch** nimmt Claude, bis dessen Kontingent erschöpft ist, dann Codex, und pausiert erst, wenn beide Abos leer sind. Die Web-Recherche läuft über das gewählte Abo. Die Kataloge stehen in `text_settings.py`; `pla doctor` nennt ihr Prüfdatum, `pla quota` den Kontingentstand beider Abos. [Plan und Umsetzungsstand](docs/claude-backend-plan.md).
-- **Audio**: lokales Qwen3-TTS (Windows mit AMD-GPU erprobt) oder Gemini 3.1 Flash TTS über OpenRouter mit 30 Stimmen und gemeinsamer Hörprobenbibliothek.
-- **Budget**: Ein Recherche- oder Skriptlauf hat standardmäßig 750 Modellaufrufe. Ein Recherchelauf hält nach der Planung an und legt eine Hochrechnung vor (Teilfragen, voraussichtliche Aufrufe, Stunden; Erfahrungswert 16 Aufrufe je Teilfrage, gemessen ab dem ersten veröffentlichten Lauf); erst die Freigabe des Rechercheplans im Studio oder mit `pla approve --research-plan` startet die Teilfragen, `pla research --approve-plan` verzichtet auf den Stopp. Ein Skriptlauf braucht ohne Reparaturen mindestens einen Aufruf für das Inhaltsverzeichnis und neun je Folge; die Prognose steht vor jeder kostenpflichtigen Stufe im Studio, und ein zu knappes Limit stoppt den Lauf, bevor Aufrufe verbraucht werden. [Planfreigabe](docs/research.md#planfreigabe-und-hochrechnung), [Aufrufe je Folge](docs/scripts.md#modellaufrufe-je-folge).
+- **Text**: Claude-Max-Abo über Claude Code (Standard seit 29.09.2026: Claude Sonnet 5.5 mit Effort `high`, ab Claude Code 2.1.284; Opus 5.5 ab 2.1.280 wählbar), Codex-Abo (GPT-6 Astra, Reasoning `xhigh`) oder OpenRouter-Modelle für Inhaltsverzeichnis, Lehrkonzept, Skripte, Polishing und Prüfungen. Die Vorauswahl **Automatisch** nimmt Claude, bis dessen Kontingent erschöpft ist, dann Codex, und pausiert erst, wenn beide Abos leer sind; ist ein Abo gerade nicht nutzbar (Anmeldung abgelaufen, kein Abo, CLI fehlt oder zu alt), nimmt sie seit 02.10.2026 für zehn Minuten (`subscriptions.UNAVAILABLE_SECONDS`) das andere, statt anzuhalten. Die Web-Recherche läuft über das gewählte Abo. Die Kataloge stehen in `text_settings.py`; `pla doctor` nennt ihr Prüfdatum, `pla quota` den Kontingentstand beider Abos. [Plan und Umsetzungsstand](docs/claude-backend-plan.md).
+- **Audio**: lokales Qwen3-TTS (Windows mit AMD-GPU erprobt) oder Gemini 3.8 Flash TTS (`google/gemini-3.8-flash-tts`) über OpenRouter mit 30 Stimmen und gemeinsamer Hörprobenbibliothek.
+- **Budget**: Ein Recherche- oder Skriptlauf hat standardmäßig 750 Modellaufrufe (`ResearchLimits.model_calls`). Ein Recherchelauf hält nach der Planung an und legt eine Hochrechnung vor (Teilfragen, voraussichtliche Aufrufe, Stunden; Erfahrungswert 16 Aufrufe je Teilfrage, `question_budget.DEFAULT_CALLS_PER_TASK`, gemessen ab dem ersten veröffentlichten Lauf); erst die Freigabe des Rechercheplans im Studio oder mit `pla approve --research-plan` startet die Teilfragen, `pla research --approve-plan` verzichtet auf den Stopp. Ein Skriptlauf braucht ohne Reparaturen mindestens einen Aufruf für das Inhaltsverzeichnis und neun je Folge (`script_budget.STAGE_CALLS`); die Prognose steht vor jeder kostenpflichtigen Stufe im Studio, neben der Untergrenze auch die Erwartung nach dem letzten abgeschlossenen Skriptlauf des Projekts. Nur die Untergrenze entscheidet: Ein zu knappes Limit stoppt den Lauf, bevor Aufrufe verbraucht werden. [Planfreigabe](docs/research.md#planfreigabe-und-hochrechnung), [Aufrufe je Folge](docs/scripts.md#modellaufrufe-je-folge).
 
 ## Einzelbefehle
 
 | Befehl | Zweck |
 | --- | --- |
 | `pla studio` | Studio im Browser öffnen; `--lan` (unter Windows `Podcast-Studio-WLAN.cmd`) auch vom Handy im Heimnetz |
-| `pla init <projekt> --topic "…"` | Projekt mit validiertem Auftrag anlegen |
+| `pla init <projekt> --topic "…"` | Projekt mit validiertem Auftrag anlegen; trägt die auf dem Rechner bereits genutzte Qwen-Revision ein |
 | `pla doctor [<projekt>] [--skip-tts]` | Installation, Codex- und Claude-Anmeldung, Abo-Kontingent, TTS-Umgebung und Katalogalter prüfen |
 | `pla quota` | Kontingent beider Abos ohne Modellaufruf anzeigen |
 | `pla research <projekt>` | Belegtes Dossier erstellen |
@@ -74,11 +74,11 @@ Jede Modellantwort muss ein striktes JSON-Schema erfüllen und wird deterministi
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v   # FFmpeg im PATH, etwa zwei Minuten
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v   # FFmpeg im PATH, einige Minuten
 node --test tests/studio_ui.test.cjs
 ```
 
-Modellantworten werden simuliert; FFmpeg wird echt aufgerufen. Regressionen mit echten Modellaufrufen liegen unter [evals/](evals/).
+Modellantworten werden simuliert; FFmpeg wird echt aufgerufen. Umfang der Suiten und welche Tests zu welchem Modul gehören, steht in [AGENTS.md](AGENTS.md). Regressionen mit echten Modellaufrufen liegen unter [evals/](evals/).
 
 ## Dokumentation
 

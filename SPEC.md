@@ -2,7 +2,7 @@
 
 ## 1. Produktentscheidung
 
-Stand der Priorisierung: 2026-09-10. Der Hauptfall ist eine persönliche Deep-Dive-Podcastserie zu einem vorgegebenen Thema. Umfang und gewünschte inhaltliche Tiefe bestimmen die Folgenzahl und Gesamtdauer. Komplexe Themen bekommen die zusätzlichen Folgen, die ihre gründliche Erklärung benötigt. Es gibt keine feste Gesamtlänge oder Folgenzahl. Eine einzelne Folge dauert höchstens 30 Minuten.
+Stand der Priorisierung: 2026-09-10. Der Hauptfall ist eine persönliche Deep-Dive-Podcastserie zu einem vorgegebenen Thema. Umfang und gewünschte inhaltliche Tiefe bestimmen die Folgenzahl und Gesamtdauer. Komplexe Themen bekommen die zusätzlichen Folgen, die ihre gründliche Erklärung benötigt. Es gibt keine feste Gesamtlänge oder Folgenzahl. Eine einzelne Folge dauert höchstens 60 Minuten (seit 30.09.2026, vorher 30) und wird in Teilen von höchstens 30 Minuten vertont.
 
 Der Nutzer gibt ein Thema oder eine zentrale Frage vor. Personen, Thesen, Vorträge, Papers, Links und eigene Dateien sind optionale Ausgangspunkte. Die Quellenrecherche gehört zum MVP; ein bereits gefüllter Quellenordner ist keine Voraussetzung.
 
@@ -103,7 +103,7 @@ Ohne zusätzliche Zeitvorgabe wird die Serienlänge aus dem Inhalt abgeleitet. N
 
 Die Freigabe eines Gesamtlaufs umfasst dessen automatisch geprüfte Skripte und begrenzte Reparaturen. Vor jedem Rendern werden die aktuellen Qualitätsprüfungen und die freigegebenen Input-Hashes protokolliert. Automatische Textkorrekturen innerhalb dieses Laufs benötigen erneute bestandene Checks. Eine manuelle Änderung an Eingaben oder Produktionskonfiguration erfordert eine erneute Audio-Freigabe; eine bloße Wiederaufnahme eines unveränderten Laufs übernimmt dessen Freigabe.
 
-`pla status` zeigt Fortschritt, fertige Folgen und konkrete Pausierungs- oder Fehlergründe. `pla resume` setzt den letzten unterbrochenen Lauf mit unveränderten gültigen Ergebnissen fort. Ein ausgeschöpftes Abo-Kontingent führt zu `waiting_for_quota`, nicht zu unvollständigen Endergebnissen oder einem automatischen Wechsel auf bezahlte APIs.
+`pla status` zeigt Fortschritt, fertige Folgen und konkrete Pausierungs- oder Fehlergründe. `pla resume` setzt den letzten unterbrochenen Lauf mit unveränderten gültigen Ergebnissen fort. Betriebsfelder des Auftrags gehören seit 02.10.2026 nicht zur Identität eines fortgesetzten Laufs (`storage.bound_brief`): in jeder Laufart `runtime` und `research_limits`, in der Recherche zusätzlich `voice_profile`, `tts_backend`, `text_backend` und `host_names`. Ein höheres Limit oder eine längere Zeitgrenze, gespeichert während ein Lauf wartet, lässt ihn fortsetzbar; inhaltliche Änderungen verlangen weiterhin einen neuen Lauf. Trägt der Lauf schon eine eigene Limitfreigabe (`pla approve`), darf das Projektlimit sie nicht übersteigen, sonst hält er mit `invalid_budget_approval` an (`run_budget.effective_limits`). Ein ausgeschöpftes Abo-Kontingent führt zu `waiting_for_quota`, nicht zu unvollständigen Endergebnissen oder einem automatischen Wechsel auf bezahlte APIs.
 
 ## 5. Datenverträge
 
@@ -118,10 +118,10 @@ Die vollständigen Verträge werden schrittweise als validierbare Schemas umgese
 | `audience_level`, `prior_knowledge` | Anspruch und bereits bekannte Grundlagen |
 | `depth_request` | Gewünschte inhaltliche Tiefe und Erklärschwerpunkte; unabhängig von der Hörzeit |
 | `focus_questions`, `excluded_topics` | Gewünschte Schwerpunkte und Grenzen |
-| `seed_people`, `seed_urls`, `local_sources` | Optionale Rechercheeinstiege; Personen brauchen eine belegte Quellenzuordnung |
+| `seed_people`, `seed_urls`, `local_sources` | Optionale Rechercheeinstiege; Personen brauchen eine belegte Quellenzuordnung. Lokale Quellen müssen im Projektordner liegen; Recherche- und Skriptläufe weisen andere Pfade ab (seit 02.10.2026, siehe Abschnitt 11) |
 | `target_total_minutes` | Optionaler, ausdrücklich genannter Planungswunsch; standardmäßig nicht gesetzt (`null`), keine implizite Gesamtzeitgrenze |
-| `max_episode_minutes` | Harte Obergrenze 30 |
-| `research_limits` | Begrenzung für Suchrunden, Quellen und Modellaufrufe pro Arbeitslauf; keine pauschale Grenze für Serienumfang |
+| `max_episode_minutes` | Fest 30: längster Audioteil einer Vertonung, keine Obergrenze der Folge; die Folgenplanung sieht den Wert nicht (seit 02.10.2026) |
+| `research_limits` | Begrenzung für Suchrunden, Quellen und Modellaufrufe pro Arbeitslauf; keine pauschale Grenze für Serienumfang. Wie `runtime` ein Betriebsfeld, das nicht zur Identität eines fortgesetzten Laufs gehört (Abschnitt 4) |
 | `text_backend`, `tts_backend`, `voice_profile` | CLI-Standardadapter (`codex_cli`, `qwen3_local`) und beständige Qwen-Sprecherstimmen; keine Zugangsdaten. Die im Studio gewählten Anbieter liegen daneben in `studio/text.json` (Textmodell, Reasoning-Stufe), `studio/audio.json` (Qwen oder Gemini samt Stimmen) und `studio/execution.json` (sequenziell/parallel); Einzelbefehle übergeben sie als Optionen |
 | `style_profile_id` | Standard `de_calm_deep` |
 | `export_context` | Standard `private_learning`; öffentlicher Export bleibt außerhalb des MVP |
@@ -174,6 +174,8 @@ Der Serienplan enthält die Leitfrage, die gewünschte Tiefe, die inhaltlich beg
 
 Eine Abdeckungsmatrix ordnet jede priorisierte Teilfrage und jeden zentralen Claim einer oder mehreren Folgen zu. Erneute Verwendung wird als notwendige Vertiefung oder kurze Rückschau begründet.
 
+Umgesetzt ist der Folgenplan als `EpisodePlan` im Serienplan (`script_models.py`), seit 02.10.2026 mit zwei Stufen von Befunden: `finding_ids` sind der Kern, den die Szenen der Folge vollständig entwickeln; `supporting_finding_ids` sind Einzelheiten, die der Dialog zur Stützung zitieren darf, ohne sie abzudecken. Jeder Befund des Dossiers ist in einer Folge Kern oder Ergänzung oder wird begründet ausgelassen, nie beides (`script_checks.validate_plan`). `recap_finding_ids` nennt die Befunde früherer Folgen, die eine Rückschau zitiert; ohne sie nennt eine Folge nur die Frage einer früheren Folge. `research_limit_ids` ordnet jede in der Recherche vermerkte Grenze der Folge zu, die die betroffene Aussage verwendet; eine nicht zugeordnete Grenze nennt die erste Folge, deren Befunde sie betrifft, sonst die letzte. Ältere Pläne ohne diese Felder behalten Hash und Verhalten.
+
 ### 5.5 EpisodePlan und Skript
 
 Ein Episodenplan enthält `episode_id`, `mode: deep_dive`, Stilprofil, Zeitbudget, Sprecherrollen und Szenen. Jede Szene hat eine Funktion, Frage, Zielzeit, relevante Wissensmodell-IDs, Erklärschritte und einen Übergang.
@@ -193,7 +195,7 @@ Die gesprochene Fassung besteht aus vollständigen Erklärungen. Regie und Refer
 5. Aussagen quellenübergreifend verbinden und bestehende Widersprüche erklären.
 6. Abdeckung und verbleibende Lücken dokumentieren. Bei ausgeschöpftem Budget mit sichtbaren Lücken enden.
 
-Jede priorisierte Teilfrage braucht tragfähiges Material oder einen dokumentierten Befund, warum sie nicht beantwortet werden kann. Wesentliche ungeklärte Grundlagen blockieren die davon abhängigen Folgen. Quellenanzahl allein ist kein Qualitätsnachweis; fehlende unabhängige Bestätigung wird sichtbar gemacht.
+Jede priorisierte Teilfrage braucht tragfähiges Material oder einen dokumentierten Befund, warum sie nicht beantwortet werden kann. Seit 02.10.2026 komponiert, schließt und veröffentlicht ein Recherchelauf kein Dossier, solange eine Teilfrage weder eine geprüfte Antwort noch eine Blockade trägt (`research_questions_open`); eine blockierte Teilfrage hält den Lauf ihrerseits an (`research_questions_blocked`), bis sie redaktionell entschieden oder als Lücke akzeptiert ist. Wesentliche ungeklärte Grundlagen blockieren die davon abhängigen Folgen. Quellenanzahl allein ist kein Qualitätsnachweis; fehlende unabhängige Bestätigung wird sichtbar gemacht.
 
 ### Pflichtniveau
 
@@ -203,7 +205,7 @@ Für jede zentrale Erklärfrage müssen im Plan und Skript erkennbar sein:
 
 - präzise Begriffe und benötigte Voraussetzungen,
 - eine nachvollziehbare Erklärung des Wie und Warum, soweit die Quellen dies tragen,
-- mindestens ein ausführlich durchgearbeitetes Beispiel oder eine Fallanalyse,
+- mindestens ein ausführlich durchgearbeitetes Beispiel oder eine Fallanalyse; ein qualitativer Fall ohne Zahlen zählt,
 - Belege sowie relevante Grenzen, Alternativen oder Unsicherheiten,
 - eine Antwort auf die Folgenfrage und deren Beitrag zur Serienfrage.
 
@@ -244,7 +246,7 @@ Die Serie ist das Standardprodukt. Ihre Länge ergibt sich aus Teilfragen, notwe
 
 Der Plan ordnet die Folgen nach notwendigen Grundlagen und aufeinander aufbauenden Fragen. Geeignete Zwecke sind Grundlagen, Mechanismus, Vertiefung, Gegenposition, Fallstudie, Anwendung und Synthese. Eine Serie muss nicht alle Zwecke als getrennte Folgen verwenden.
 
-Jede Folge benennt knapp, welches Wissen sie voraussetzt, und beantwortet eine eigene Frage substanziell. Kurze Rückschauen sind erlaubt. Bereits erklärte Grundlagen sollen nicht bei jeder Folge wieder den Hauptteil bilden. Die letzte Folge verbindet die Ergebnisse und markiert verbleibende offene Fragen.
+Jede Folge benennt knapp, welches Wissen sie voraussetzt, und beantwortet eine eigene Frage substanziell. Kurze Rückschauen sind erlaubt. Bereits erklärte Grundlagen sollen nicht bei jeder Folge wieder den Hauptteil bilden. Die letzte Folge ist als Ganzes die Synthese der Serie (seit 02.10.2026): Sie verbindet die Ergebnisse und markiert verbleibende Grenzen und offene Fragen; eine Syntheseszene, die einen Fall durch die zusammengesetzte Antwort führt, darf dort das durchgearbeitete Beispiel ersetzen.
 
 ## 8. Storytelling und Sprechstil
 
@@ -265,7 +267,7 @@ Die Textbackends sind Codex CLI mit vorhandener ChatGPT-Abo-Anmeldung und Claude
 
 Suche, Abruf und Textextraktion benötigen echte Werkzeuganbindungen. Zunächst werden die Suchwerkzeuge des gewählten CLI-Backends genutzt und ihre Verfügbarkeit durch einen realen Abruf geprüft. Ein Modell darf keine nicht abgerufenen Quellen als gelesene Evidenz ausgeben. Nicht zugängliche Texte bleiben Quellenkandidaten oder dokumentierte Lücken.
 
-Die Abo-Kontingente gelten auch für automatisierte Aufrufe. Fertige Stufenergebnisse werden gespeichert; bei ausgeschöpftem Kontingent wird pausiert. Wiederholungen bei technischen oder Validierungsfehlern sind begrenzt. Ein Anbieterwechsel bleibt eine ausdrückliche Konfigurationsentscheidung: Die Auswahl `auto` legt fest, dass vor jedem Aufruf Claude genommen wird, solange es Kontingent hat, sonst Codex, und dass der Lauf erst pausiert, wenn beide Abos leer sind (Läufe, die vor dem 26.09.2026 mit Codex als erster Wahl gespeichert wurden, behalten diese Reihenfolge); ein fest gewählter Anbieter wechselt nie. Die Entscheidung je Aufruf wird im Laufordner festgehalten. Für den MVP werden keine API-Zahlungsdaten vorausgesetzt.
+Die Abo-Kontingente gelten auch für automatisierte Aufrufe. Fertige Stufenergebnisse werden gespeichert; bei ausgeschöpftem Kontingent wird pausiert. Wiederholungen bei technischen oder Validierungsfehlern sind begrenzt. Ein Anbieterwechsel bleibt eine ausdrückliche Konfigurationsentscheidung: Die Auswahl `auto` legt fest, dass vor jedem Aufruf Claude genommen wird, solange es Kontingent hat, sonst Codex, und dass der Lauf erst pausiert, wenn beide Abos leer sind (Läufe, die vor dem 26.09.2026 mit Codex als erster Wahl gespeichert wurden, behalten diese Reihenfolge). Ist ein Abo gerade nicht nutzbar (Anmeldung abgelaufen, keine Abo-Anmeldung, CLI fehlt oder zu alt), nimmt `auto` seit 02.10.2026 für zehn Minuten das andere (`subscriptions.UNAVAILABLE_SECONDS`), statt anzuhalten; ein fest gewählter Anbieter wechselt nie. Eine Kontingentpause übernimmt den Reset-Zeitpunkt des Anbieters, der das Limit meldete; ohne bekannten Reset wartet die automatische Fortsetzung 30 Minuten, danach jeweils doppelt so lange (`subscriptions.RETRY_BACKOFF_SECONDS`). Die Entscheidung je Aufruf wird im Laufordner festgehalten. Für den MVP werden keine API-Zahlungsdaten vorausgesetzt.
 
 ## 10. Qualitätsprüfungen
 
@@ -278,14 +280,14 @@ Die Abo-Kontingente gelten auch für automatisierte Aufrufe. Fertige Stufenergeb
 | `research_coverage_check` | Ja bei wesentlichen Lücken | Teilfragen und Grundlagen sind abgedeckt oder mit begründeten Folgen für den Umfang markiert. |
 | `depth_check` | Ja | Zentrale Fragen werden anhand von Erklärschritten, ausgearbeiteten Beispielen, Evidenz und Grenzen substanziell beantwortet. |
 | `series_planning_check` | Ja | Fragen, Claims und Voraussetzungen sind Folgen zugeordnet; vertagte Kerninhalte gehen nicht verloren. |
-| `series_script_check` | Ja für neue vollständige Skriptläufe | Die finalen Texte aller geplanten Folgen werden gemeinsam auf Abdeckung, Voraussetzungen, Fortschritt, vertagte Kernfragen und Synthese geprüft. Teilaufträge und ältere Läufe erhalten keine nachträgliche Gesamtfreigabe. |
+| `series_script_check` | Ja für neue vollständige Skriptläufe | Die finalen Texte aller geplanten Folgen werden gemeinsam auf Abdeckung, Voraussetzungen, Fortschritt, vertagte Kernfragen, Synthese und Bogen geprüft, je nach Serienziel auch auf Darstellung und Anleitung (`series_review.CRITERIA`, `GOAL_CRITERIA`); ältere Berichte mit fünf Kriterien bleiben gültig. Ein Befund, der nur eine Grenze der Quellen beschreibt (`source_limit`), wird Hinweis statt Blocker. Teilaufträge und ältere Läufe erhalten keine nachträgliche Gesamtfreigabe. |
 | `continuity_check` | Ja bei Verständnisbruch | Reihenfolge und Übergänge funktionieren; Begriffe werden vor ihrer notwendigen Verwendung erklärt. |
 | `redundancy_check` | Warnung | Unnötige Wiederholungen innerhalb und zwischen Folgen ersetzen keine Vertiefung. |
 | `duration_check` | Ja | Geplante und geschätzte Laufzeit bleiben je Folge bei höchstens 60 Minuten; jeder Audioteil dauert höchstens 30 Minuten, gemessen vor dem Export. |
 | `rights_check` | Geplantes Gate | Individuelle Rechtezustände und Exportsperren sind noch nicht implementiert. Aktuell gelten ausschließlich private Nutzung und die deterministischen Dossier-Zitatgrenzen; siehe Abschnitt 11. |
 | `audio_readiness_check` | Ja vor Rendern | Sprecher, gesprochener Text, Pausen und Kapitel sind eindeutig. |
 | `audio_output_check` | Ja vor finalem Audioexport | Alle Segmente sind vorhanden und technisch gültig; Montage, gemessene Dauer und Kapitel stimmen überein. |
-| `advisories` | Nein | Nichtblockierende Hinweise neben den Gates: erneut definierte Begriffe, wiederholte Hinweise auf erfundene Beispiele, langer Kaltstart und Dauer über dem Ziel (`script_advisories.py`) sowie Befunde aus nur einer Forschungsgruppe in der Recherche. Sie stehen in `reports/script_quality.yaml` unter `episodes.<ep>.advisories` beziehungsweise im Recherchebericht und im Studio unter „Hinweise der Prüfungen“; nichts wertet sie automatisch aus. |
+| `advisories` | Nein | Nichtblockierende Hinweise neben den Gates: erneut definierte Begriffe, wiederholte Hinweise auf erfundene Beispiele, langer Kaltstart und Dauer über dem Ziel (`script_advisories.py`, deutsche und seit 02.10.2026 englische Muster; andere Sprachen nur Kaltstart und Dauer), Befunde der Serienprüfung, die nur eine Quellengrenze beschreiben oder in der Nachprüfung einer Korrekturrunde neu eine unveränderte Folge betreffen, sowie Befunde aus nur einer Forschungsgruppe in der Recherche. Sie stehen in `reports/script_quality.yaml` unter `episodes.<ep>.advisories` und `series_review.advisories` beziehungsweise im Recherchebericht und im Studio unter „Hinweise der Prüfungen“; nichts wertet sie automatisch aus. |
 
 ID- und Schema-Prüfungen sind maschinell deterministisch. Inhaltliche Tiefe, Evidenzpassung und Natürlichkeit benötigen redaktionelle Bewertung; eine Quellen-ID beweist keine sachliche Richtigkeit. Der Bericht trennt automatische Prüfungen, Modellbewertungen und menschliche Befunde.
 
@@ -298,8 +300,8 @@ Implementiert in Version 0.1:
 - `export_context` ist auf `private_learning` begrenzt. Die Anwendung bietet keinen öffentlichen Veröffentlichungsworkflow und erteilt keine Rechtefreigabe für Weiterveröffentlichung.
 - Alle importierten Quellen speichern `license_status: unknown`, `allowed_usage: private_learning` und `private: true`. Das sind feste Kennzeichnungen, keine individuell einstellbaren Rechte oder Exportsperren. Private Skripte, Show Notes und Audio dürfen diese Quellen verwenden.
 - Paraphrasen sind der Standard; kurze Zitate bleiben ihrer Quelle zugeordnet. Das Dossier begrenzt direkte Zitate und zugerechnete Paraphrasen pro Quelle. Dies ersetzt keine Prüfung sämtlicher späterer gesprochener Formulierungen auf Nutzungsrechte.
-- Projektdateien, Originalquellen und Recherchekontexte werden lokal gespeichert. Ausgewählte Inhalte werden für die beauftragte Verarbeitung an Codex beziehungsweise OpenRouter übertragen. Gemini-Audio verwendet ebenfalls OpenRouter.
-- Zugangsdaten bleiben außerhalb von Prompts und gespeicherten Auftragsdaten; technische Diagnosen und Live-Anzeigen bereinigen bekannte Zugangsdaten. Eine allgemeine Erkennung und Entfernung personenbezogener Daten ist noch nicht implementiert.
+- Projektdateien, Originalquellen und Recherchekontexte werden lokal gespeichert. Ausgewählte Inhalte werden für die beauftragte Verarbeitung an Codex, Claude Code beziehungsweise OpenRouter übertragen. Gemini-Audio verwendet ebenfalls OpenRouter. Lokale Quellen werden nur aus dem Projektordner gelesen; das Studio übernimmt vom Browser nur Pfade unter `inputs/` und Pfade außerhalb nur aus der Datei auf der Platte (seit 02.10.2026).
+- Zugangsdaten bleiben außerhalb von Prompts und gespeicherten Auftragsdaten; technische Diagnosen und Live-Anzeigen bereinigen bekannte Zugangsdaten. Ein Quellenabruf mit Zugangsschlüssel folgt einer Weiterleitung nur auf demselben Host und nie von https zu http; die CLI nimmt einen OpenRouter-Key nicht als Befehlszeilenwert an, sondern fragt ihn verdeckt ab oder liest `OPENROUTER_API_KEY` (beides seit 02.10.2026). Eine allgemeine Erkennung und Entfernung personenbezogener Daten ist noch nicht implementiert.
 
 Geplant, vor Erweiterung auf öffentliche Exporte:
 
@@ -314,16 +316,16 @@ Als Ausbauziel soll die folgende Transparenznotiz in die Exporte aufgenommen wer
 ## 12. Audio und Wiederaufnahme
 
 - Audio wird nur nach expliziter Freigabe und bestandenen blockierenden Prüfungen erzeugt.
-- TTS läuft lokal in einer separaten Umgebung oder über Gemini bei OpenRouter. Qwen3-TTS ist der lokale Kandidat; Modellvariante, Modellrevision, Stimmen und AMD-Laufzeit wurden am 13.09.2026 auf dem Zielrechner festgelegt und erprobt, siehe [docs/qwen-windows.md](docs/qwen-windows.md).
+- TTS läuft lokal in einer separaten Umgebung oder über Gemini bei OpenRouter. Qwen3-TTS ist der lokale Kandidat; Modellvariante, Modellrevision, Stimmen und AMD-Laufzeit wurden am 13.09.2026 auf dem Zielrechner festgelegt und erprobt, siehe [docs/qwen-windows.md](docs/qwen-windows.md). `pla init` trägt seit 02.10.2026 die auf dem Rechner bereits verwendete Qwen-Revision in `runtime.tts_revision` ein, statt `main` zu lassen.
 - Rendering erfolgt pro Sprechersegment, anschließend werden Segmente automatisch zu Folgen zusammengesetzt. Der Nutzer muss keinen Audioeditor bedienen.
-- Die strukturierte Regie steuert Sprecherzuordnung, Pausen und Kapitel. FFmpeg und ffprobe übernehmen Montage und Messung; unbeabsichtigte Randstille darf korrigiert werden, Sprachlaute und geplante Denkpausen müssen erhalten bleiben.
+- Die strukturierte Regie steuert Sprecherzuordnung, Pausen und Kapitel. FFmpeg und ffprobe übernehmen Montage und Messung; unbeabsichtigte Randstille darf korrigiert werden, Sprachlaute und geplante Denkpausen müssen erhalten bleiben. In Segmenten mit Pausen-Tag kürzt die Montage Stillen über 1,5 Sekunden auf 1,2 Sekunden, und ein `<long pause>` eröffnet nie ein Segment (seit 02.10.2026, [docs/gemini-audio.md](docs/gemini-audio.md#aufnahmeprüfung-pausen-und-lautheit)).
 - Der Cache-Key berücksichtigt Provider, Modellrevision, Stimme, gesprochenen Segmenttext, Aussprache- und TTS-Einstellungen einschließlich gegebenenfalls verwendeter Seeds.
 - Nur geänderte oder fehlende Segmente werden neu gerendert. Fehlgeschlagene Folgen können einzeln fortgesetzt werden.
-- Fehlende oder beschädigte Dateien, leere Ausgabe, auffällige Stille, Pegelfehler und unplausible Dauer führen zu gezielter Prüfung und begrenzten Reparaturversuchen. Bleibt ein Fehler bestehen, wird er mit Segment-ID gemeldet und der betroffene finale Export blockiert.
-- Standardformat ist MP3, 44.1 kHz, Stereo und lautheitsnormalisiert auf -16 LUFS.
+- Fehlende oder beschädigte Dateien, leere Ausgabe, auffällige Stille, Pegelfehler und unplausible Dauer führen zu gezielter Prüfung und begrenzten Reparaturversuchen. Bleibt ein Fehler bestehen, wird er mit Segment-ID gemeldet und der betroffene finale Export blockiert. Umgesetzt ist das seit 02.10.2026 für Gemini als Plausibilitätsprüfung jeder Aufnahme: Ab 80 Zeichen muss die Sprechrate zwischen 8 und 25 Zeichen pro Sekunde liegen, und jede Stille über 2,5 Sekunden braucht ein Pausen-Tag (`speech.take_defect`). Eine durchgefallene Aufnahme wird einmal neu angefragt, danach hält die Vertonung mit `invalid_speech` und der Segment-ID an. Qwen-Aufnahmen haben diese Prüfung nicht; Gateway- und Verbindungsfehler der Gemini-Anbindung werden zweimal wiederholt.
+- Standardformat ist MP3, 44.1 kHz, Stereo und lautheitsnormalisiert auf -16 LUFS: seit 02.10.2026 mit linearer Verstärkung und einem True-Peak-Limiter bei -2 dBFS (`audio.LIMITER_CEILING_DB`); `audio_report.json` hält Verfahren und gemessene Lautheit des MP3 fest (`loudness_mode`, `output_loudness`).
 - Kapitelmarken werden aus der tatsächlichen Audio-Zeitleiste erzeugt. Zu lange Folgen werden automatisch sinnvoll aufgeteilt oder überarbeitet und erneut geprüft.
 - Aussprache und Stimmenkonstanz werden im Audiopilot bewertet und über die Sprechformtabelle des Projekts (`studio/spoken_forms.json`) sowie Überschreibungen je Segment mit erneuter Vertonung einzelner Segmente unterstützt, siehe [docs/studio.md](docs/studio.md#sprechformen-pausen-hostnamen-und-redaktionelle-notizen). Ergänzende lokale Rücktranskription zur Erkennung von Auslassungen und Wiederholungen ist als deterministischer Vergleich vorbereitet (`transcription_check.py`), aber noch mit keinem Erkenner verbunden; sie garantiert keine fehlerfreie Aussprache.
-- Vor Produktion werden Umfang und, soweit aus dem Pilot ableitbar, Renderzeit und Speicherbedarf angezeigt. Der Lauf protokolliert tatsächliche Renderdauer, Cache-Nutzung und verfügbare Abo-Verbrauchsdaten. Unbekanntes Restkontingent wird als unbekannt ausgewiesen. Geschätzte API-Dollarwerte einer CLI sind keine tatsächlich berechneten Abo-Kosten.
+- Vor Produktion werden Umfang und, soweit aus dem Pilot ableitbar, Renderzeit und Speicherbedarf angezeigt. Das Studio zeigt vor einer Aufnahme die Zeichen des Sprechtexts und die geschätzten Minuten, ohne Preis, weil er sich offline nicht prüfen lässt. Der Lauf protokolliert tatsächliche Renderdauer, Cache-Nutzung und verfügbare Abo-Verbrauchsdaten. Unbekanntes Restkontingent wird als unbekannt ausgewiesen. Geschätzte API-Dollarwerte einer CLI sind keine tatsächlich berechneten Abo-Kosten.
 
 Musik, aufwendiges Sounddesign und ein dritter Host sind keine Voraussetzungen für den ersten MVP.
 

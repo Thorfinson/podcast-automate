@@ -104,6 +104,7 @@ class SourceReader:
         return sum(1 for token in set(tokens) if counts and token in counts)
 
     def read(self, windows, *, max_chars=36_000):
+        """The requested sections and their neighbours within ``max_chars`` (None: no limit); the rest is deferred."""
         chosen, deferred, used = {}, [], 0
         # Read the requested passage before its neighbors. A large earlier window
         # must not silently displace the actual target of a later request.
@@ -121,7 +122,7 @@ class SourceReader:
             ref = f"{source.id}#{section.id}"
             if ref in chosen:
                 continue
-            if used + len(section.text) > max_chars:
+            if max_chars is not None and used + len(section.text) > max_chars:
                 deferred.append(ref)
                 continue
             chosen[ref] = (source, section)
@@ -129,7 +130,10 @@ class SourceReader:
         by_source = defaultdict(list)
         for ref, (source, section) in chosen.items():
             by_source[source.id].append({"reference": ref, "text": section.text, "page": section.page})
+        # ``citation`` only for a work the editor provided: it has no address, and without it the evidence check took
+        # the published work for the editor's notes (research_evidence.user_notes, 2026-10-02).
         context = [{"source_id": sid, "title": self.sources[sid].title, "url": self.sources[sid].final_url,
+                    **({"citation": self.sources[sid].citation} if self.sources[sid].citation else {}),
                     **source_facts(self.sources[sid]), "text_hash": self.sources[sid].text_hash,
                     "extraction_coverage": self.sources[sid].extraction_coverage.model_dump() if self.sources[sid].extraction_coverage else None,
                     "reliability_note": self.sources[sid].reliability_note, "uncertainties": self.sources[sid].uncertainties,

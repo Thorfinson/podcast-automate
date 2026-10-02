@@ -14,16 +14,26 @@ from pydantic import ValidationError
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.scripting import run_script
-from podcast_automate.speech import (RATE_LIMIT_RETRIES, AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech, PausePolicy,
-                                    SPEECH_ENDPOINT, SPEECH_VERSION, audio_catalog, audio_generation_record,
+from podcast_automate.speech import (RATE_LIMIT_RETRIES, SPOKEN_TAG, AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech,
+                                    PausePolicy, SPEECH_ENDPOINT, SPEECH_VERSION, audio_catalog, audio_generation_record,
                                     same_audio_generation, speech_settings, split_input)
-from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
+from podcast_automate.models import TopicBrief
+from podcast_automate.storage import digest, file_hash, file_lock, read_yaml, write_json, write_yaml
 from podcast_automate.studio_worker import perform
 from tests import script_fixtures as fixtures
 from tests.test_audio import tone
 
 
-PCM = b"\x10\x00\xf0\xff" * 24000
+# Two seconds of an audible tone (±4096, -18 dBFS). Until 2026-10-02 the fixture was ±16, which the speech health
+# gate rightly takes for a take without audible speech.
+SOUND = b"\x00\x10\x00\xf0"
+PCM = SOUND * 24000
+
+
+def take(seconds, *, silence=0.0):
+    """Gemini PCM of ``seconds`` of sound, with ``silence`` seconds of digital silence in its middle."""
+    half = SOUND * round(seconds * 6000)
+    return half + b"\0\0" * round(silence * 24000) + half
 
 
 def response(pcm=PCM, content_type="audio/pcm", generation="gen-test"):
@@ -31,6 +41,12 @@ def response(pcm=PCM, content_type="audio/pcm", generation="gen-test"):
     result.status = 200
     result.headers = {"Content-Type":content_type, "X-Generation-Id":generation}
     return result
+
+
+def spoken(request, **kwargs):
+    """A take as long as the request's text takes to say at 16 characters per second, the measured median."""
+    text = " ".join(SPOKEN_TAG.sub(" ", json.loads(request.data)["input"]).split())
+    return response(take(max(1.0, len(text) / 16)))
 
 
 class SpeechTests(unittest.TestCase):
@@ -77,7 +93,8 @@ class SpeechTests(unittest.TestCase):
         self.assertNotIn("test-key", str(raised.exception))
 
     def test_http_failures_do_not_retry_or_echo_provider_messages(self):
-        for code in (302, 400, 401, 402, 503):
+        # 503 left this list on 2026-10-02: a gateway or overload answer is now asked again twice (next test).
+        for code in (302, 400, 401, 402, 500):
             with self.subTest(code=code), patch("podcast_automate.speech.build_opener") as build:
                 build.return_value.open.side_effect = HTTPError(SPEECH_ENDPOINT, code, "test-key", {}, io.BytesIO(b"test-key"))
                 with self.assertRaises(AppError) as raised:
@@ -113,6 +130,151 @@ class SpeechTests(unittest.TestCase):
         self.assertEqual((stopped.exception.code, stopped.exception.status), ("openrouter_rate_limit", "waiting_for_quota"))
         self.assertNotIn("test-key", str(stopped.exception))
 
+    def test_a_rate_limit_in_one_project_slows_every_project_and_never_shortens_a_pause(self):
+        """2026-10-02: the throttle was per project folder, while the Studio's limit on parallel recordings is global."""
+        from podcast_automate.speech import run_gemini_tts, shared_throttle, throttle
+        projects = self.cache / "projects"
+        first, second = projects / "first", projects / "second"
+        shared = shared_throttle(first)
+        self.assertEqual((shared, shared_throttle(second)), (projects / ".gemini_throttle.json",) * 2)
+        limited = HTTPError(SPEECH_ENDPOINT, 429, "quota", {"Retry-After": "20"}, io.BytesIO())
+        with patch("podcast_automate.speech.build_opener") as build, patch("podcast_automate.speech.time.sleep") as pause:
+            build.return_value.open.side_effect = [limited, response()]
+            GeminiSpeech("test-key", throttle_file=shared).synthesize("Hallo", "Aoede", "de-DE", first / "cache/audio/gemini")
+            self.assertFalse((first / "cache/audio/gemini/throttle.json").exists())
+            pause.reset_mock()
+            build.return_value.open.side_effect = [response()]
+            GeminiSpeech("test-key", throttle_file=shared).synthesize("Servus", "Aoede", "de-DE", second / "cache/audio/gemini")
+            self.assertTrue(pause.call_args_list and 15 < pause.call_args_list[0].args[0] <= 20)
+            # An episode recording uses the shared file of its projects folder.
+            config = TopicBrief(topic="Gemeinsame Drossel")
+            script = fixtures.example_script()
+            write_json(shared, {"until": time.time() + 30, "attempt": 1})
+            pause.reset_mock()
+            build.return_value.open.side_effect = lambda *a, **k: response()
+            choice = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Aoede", "host_b": "Puck"})
+            (second / "work").mkdir(parents=True)
+            run_gemini_tts(config, script, second, second / "work", choice, "test-key")
+            self.assertTrue(pause.call_args_list and 25 < pause.call_args_list[0].args[0] <= 30)
+        # A shorter pause never replaces a longer one, and the update holds the throttle's lock.
+        write_json(shared, {"until": time.time() + 100, "attempt": 1})
+        with patch("podcast_automate.speech.file_lock", wraps=file_lock) as lock:
+            throttle(None, "5", 2, path=shared)
+        lock.assert_called_once_with(projects / ".gemini_throttle.lock", timeout=30)
+        saved = json.loads(shared.read_text(encoding="utf-8"))
+        self.assertGreater(saved["until"], time.time() + 90)
+        self.assertEqual(saved["attempt"], 2)
+
+    def test_a_gateway_error_a_cut_transfer_or_a_reset_is_asked_again_twice(self):
+        """2026-10-02: one 502 among about 1,800 requests stopped a whole episode."""
+        from http.client import IncompleteRead, RemoteDisconnected
+        failing = lambda code: HTTPError(SPEECH_ENDPOINT, code, "test-key", {}, io.BytesIO(b"test-key"))
+        cases = {"502": [failing(502), failing(503), response()], "504": [failing(504), response()],
+                 "cut": [IncompleteRead(b"x", 10), response()], "reset": [URLError(ConnectionResetError()), response()],
+                 "disconnected": [RemoteDisconnected("closed"), response()]}
+        for name, answers in cases.items():
+            with self.subTest(name), patch("podcast_automate.speech.build_opener") as build, \
+                    patch("podcast_automate.speech.time.sleep") as pause:
+                build.return_value.open.side_effect = answers
+                self.assertTrue(self.engine.synthesize("Hallo " + name, "Aoede", "de-DE", self.cache).is_file())
+                self.assertEqual(build.return_value.open.call_count, len(answers))
+                self.assertEqual([call.args[0] for call in pause.call_args_list], [3.0, 6.0][:len(answers) - 1])
+        # A third failure stops the recording as before, without echoing the provider's message.
+        with patch("podcast_automate.speech.build_opener") as build, patch("podcast_automate.speech.time.sleep"):
+            build.return_value.open.side_effect = [failing(503), failing(502), failing(503)]
+            with self.assertRaises(AppError) as stopped:
+                self.engine.synthesize("Grüß dich", "Aoede", "de-DE", self.cache)
+            self.assertEqual(build.return_value.open.call_count, 3)
+        self.assertEqual(stopped.exception.code, "openrouter_unavailable")
+        self.assertNotIn("test-key", str(stopped.exception))
+        # A timeout is not transient here: the request may still be running at the provider.
+        with patch("podcast_automate.speech.build_opener") as build, patch("podcast_automate.speech.time.sleep"):
+            build.return_value.open.side_effect = [TimeoutError(), response()]
+            with self.assertRaises(AppError) as stopped:
+                self.engine.synthesize("Bis gleich", "Aoede", "de-DE", self.cache)
+            self.assertEqual((build.return_value.open.call_count, stopped.exception.code), (1, "openrouter_connection"))
+
+    def test_an_implausible_take_is_recorded_once_more_and_then_stops_with_its_segment(self):
+        """The health gate (2026-10-02): Asimov ep_013 s3_09, 1,248 characters spoken in 0.37 s, passed every check
+        and was exported. A take of 80 characters or more must come at 8 to 25 characters per second."""
+        from podcast_automate.speech import run_gemini_tts
+        text = "Diese Erklärung ist lang genug, damit die Sprechgeschwindigkeit geprüft wird, und sie endet hier. " * 2
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = [response(take(0.37)), response(take(len(text) / 16))]
+            path = self.engine.synthesize(text, "Aoede", "de-DE", self.cache)
+            self.assertEqual(build.return_value.open.call_count, 2)
+        with wave.open(str(path), "rb") as wav:
+            self.assertAlmostEqual(wav.getnframes() / 24000, len(text) / 16, delta=0.01)
+        # Twice implausible: nothing is cached, and the stop names the segment and both measurements.
+        script = fixtures.example_script()
+        script.segments[0].text = text.strip()
+        config = TopicBrief(topic="Gesundheitstest")
+        choice = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Aoede", "host_b": "Puck"})
+        root = self.cache / "projects/example"
+        (root / "work").mkdir(parents=True)
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = [response(take(0.37)), response(take(60))]
+            with self.assertRaises(AppError) as stopped:
+                run_gemini_tts(config, script, root, root / "work", choice, "test-key")
+        self.assertEqual((stopped.exception.code, stopped.exception.status), ("invalid_speech", "blocked"))
+        self.assertIn(f"Abschnitt {script.segments[0].segment_id}:", str(stopped.exception))
+        self.assertIn("Zeichen pro Sekunde", str(stopped.exception))
+        self.assertEqual(stopped.exception.details["segment_id"], script.segments[0].segment_id)
+        self.assertEqual(list((root / "cache/audio/gemini").glob("*.wav")), [])
+
+    def test_silence_needs_a_pause_tag_and_an_inaudible_take_fails(self):
+        from podcast_automate.speech import take_defect
+        short = "Kurz gesagt: so ist es."
+        self.assertEqual(take_defect(take(2, silence=2.4), short), "")
+        self.assertIn("3.0 s Stille", take_defect(take(2, silence=3.0), short))
+        self.assertEqual(take_defect(take(2, silence=7.3), "<long pause> " + short), "")
+        self.assertIn("Stille", take_defect(take(2, silence=7.3), "<sigh> " + short))
+        self.assertIn("keine hörbare Sprache", take_defect(b"\x10\x00\xf0\xff" * 24000, short))
+        # The rate counts speech only: a tagged pause of 7 s does not make 100 characters look slow.
+        hundred = "x" * 100
+        self.assertEqual(take_defect(take(100 / 16, silence=7), "<long pause> " + hundred), "")
+        for seconds, plausible in ((100 / 8, True), (100 / 25, True), (100 / 7, False), (100 / 27, False)):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(take_defect(take(seconds), hundred) == "", plausible)
+        # Below 80 characters the rate is not judged: "Ja." may take a second.
+        self.assertEqual(take_defect(take(3), "x" * 79), "")
+
+    def test_a_cached_take_that_fails_the_gate_is_recorded_again_on_the_next_render(self):
+        text = "Ein Abschnitt, der vor dem Gesundheitstest abgeschnitten aufgenommen und so gespeichert wurde. " * 2
+        settings = speech_settings(text, "Aoede", "de-DE")
+        path = self.cache / (digest(settings) + ".wav")
+        with wave.open(str(path), "wb") as wav:
+            wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+            wav.writeframes(take(0.37))
+        write_json(path.with_suffix(".json"), {"settings": settings, "sha256": file_hash(path)})
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = spoken
+            self.assertEqual(self.engine.synthesize(text, "Aoede", "de-DE", self.cache), path)
+            self.assertEqual(build.return_value.open.call_count, 1)
+            # The new take passes and is served from the cache from now on.
+            self.engine.synthesize(text, "Aoede", "de-DE", self.cache)
+            self.assertEqual(build.return_value.open.call_count, 1)
+        with wave.open(str(path), "rb") as wav:
+            self.assertGreater(wav.getnframes() / 24000, 10)
+
+    def test_a_segment_lock_file_is_removed_once_nobody_holds_or_awaits_it(self):
+        """2026-10-02: 830 and 551 lock files were left in two projects' cache/audio/gemini/locks."""
+        import os
+        from podcast_automate.parallel_speech import LockedGeminiSpeech, release_lock_files
+        locks = self.cache / "locks"
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = lambda *a, **k: response()
+            LockedGeminiSpeech("test-key").synthesize("Hallo", "Aoede", "de-DE", self.cache)
+        # Windows refuses to delete a lock file a waiting worker has open; elsewhere a deleted one could be held
+        # twice, so it stays there.
+        self.assertEqual(len(list(locks.glob("*.lock"))), 0 if os.name == "nt" else 1)
+        stale, held = locks / "stale.lock", locks / "held.lock"
+        stale.touch()
+        with held.open("a+b"):
+            release_lock_files(self.cache)
+            self.assertTrue(held.exists())
+        self.assertEqual(stale.exists(), os.name != "nt")
+
     def test_an_account_limited_to_zero_data_retention_names_the_privacy_setting(self):
         body = (b'{"error":{"message":"0 endpoints out of 1 requested are available matching your guardrail restrictions '
                 b'and data policy. ZDR violation (account settings): 1 endpoint excluded test-key","code":404}}')
@@ -135,11 +297,16 @@ class SpeechTests(unittest.TestCase):
         self.assertEqual("".join(chunks), text)
         self.assertTrue(all(len(part) <= 6000 for part in chunks))
         with patch("podcast_automate.speech.build_opener") as build:
-            build.return_value.open.side_effect = lambda *a, **k: response()
+            # Each part is answered with a take of plausible length, which the health gate requires since 2026-10-02.
+            build.return_value.open.side_effect = spoken
             result = self.engine.synthesize(text, "Sadaltager", "de-DE", self.cache)
             self.assertEqual(build.return_value.open.call_count, len(chunks))
         with wave.open(str(result), "rb") as wav:
-            self.assertEqual(wav.getnframes(), len(PCM)//2 * len(chunks))
+            self.assertEqual(wav.getnframes(), sum(len(take(len(part.strip()) / 16)) // 2 for part in chunks))
+        # The joined take is served from the cache again without a request.
+        with patch("podcast_automate.speech.build_opener") as build:
+            self.assertEqual(self.engine.synthesize(text, "Sadaltager", "de-DE", self.cache), result)
+            build.assert_not_called()
 
     def test_key_in_input_and_missing_key_block_before_network(self):
         with patch("podcast_automate.speech.build_opener") as build:
@@ -436,7 +603,8 @@ class GeminiEpisodeTests(unittest.TestCase):
     def test_voice_sample_uses_selected_language_and_reuses_cached_speech(self):
         request = {"action":"audio_sample", "text":{}, "voice":"Aoede", "language":"de-DE", "api_key":"test-key"}
         with patch("podcast_automate.speech.build_opener") as build:
-            build.return_value.open.side_effect = lambda *a, **k: response(self.pcm)
+            # The 180-character sample text needs a take of plausible length (speech health gate, 2026-10-02).
+            build.return_value.open.side_effect = spoken
             first = perform(self.root, request)
             again = perform(self.root, request)
             self.assertEqual(build.return_value.open.call_count, 1)

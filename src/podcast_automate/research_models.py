@@ -110,11 +110,19 @@ class Finding(Contract):
     claim_contract: ClaimContract | None = None  # Legacy documents remain readable, never implicitly upgraded.
     supporting_contracts: list[ClaimContract] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def explain_illustration_limits(self):
-        if bool(self.illustration) != bool(self.illustration_limit):
-            raise ValueError("An illustration and its limits must be supplied together")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def explain_illustration_limits(cls, data):
+        # An illustration travels only with its limits. No prompt states that pairing, and the schema cannot carry it
+        # without changing every saved call's signature, so a lone half is dropped instead of refused: an illustration
+        # without limits would reach the script as fact, and limits without an illustration bound nothing
+        # (Transformer, 2026-10-02: four reader calls were refused for it).
+        if isinstance(data, dict):
+            illustration = str(data.get("illustration") or "").strip()
+            limit = str(data.get("illustration_limit") or "").strip()
+            if bool(illustration) != bool(limit):
+                return {**data, "illustration": "", "illustration_limit": ""}
+        return data
 
 
 class QuestionCoverage(Contract):

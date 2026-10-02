@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .audio import ffmpeg
 from .errors import AppError
-from .speech import GEMINI_VOICES, GeminiSpeech, cached_audio, speech_settings
+from .speech import GEMINI_VOICES, GeminiSpeech, cached_audio, shared_throttle, speech_settings
 from .storage import digest, file_hash, inside, project_lock, write_json
 
 SAMPLE_TEXTS = {
@@ -69,7 +69,8 @@ def generate_sample(root, voice, language, api_key=None):
                         shutil.copyfile(candidate, wav)
                         shutil.copyfile(candidate.with_suffix(".json"), wav.with_suffix(".json"))
                         break
-            wav = GeminiSpeech(api_key).synthesize(SAMPLE_TEXTS[language], voice, language, cache)
+            engine = GeminiSpeech(api_key, throttle_file=shared_throttle(root))
+            wav = engine.synthesize(SAMPLE_TEXTS[language], voice, language, cache)
             target = sample_path(projects, voice, language)
             target.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=target.parent) as temporary:

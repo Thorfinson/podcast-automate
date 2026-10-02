@@ -2,7 +2,8 @@
 
 The store lives at ``~/.podcast-automate/subscriptions.json`` (override: ``PLA_SUBSCRIPTIONS_STORE``).
 It holds the last Codex rate-limit snapshot, the last Claude login facts, the last Claude rate-limit
-event and any active Claude block. Workers, the Studio server and the status monitor share it through
+event, any active Claude block and, per subscription, a short-lived note when a call found it unusable
+(login, plan, CLI version). Workers, the Studio server and the status monitor share it through
 the lock file next to it. Codex can report its windows before a call; Claude cannot, so a Claude
 block starts with the first limit error and ends at the reset time that error named.
 """
@@ -22,11 +23,16 @@ from .codex import executable_command, subscription_environment
 from .codex_stream import read_rate_limits
 from .errors import AppError
 from .process import run_process
-from .storage import file_lock, write_json
+from .storage import file_lock, read_text, write_json
 
 CODEX_CACHE_SECONDS = 120
 LOGIN_CACHE_SECONDS = 600
 QUERY_TIMEOUT = 20
+# How long a subscription whose call found it unusable (login, plan, CLI version) is passed over by the automatic
+# rule before it is checked again; as long as a cached login is trusted.
+UNAVAILABLE_SECONDS = LOGIN_CACHE_SECONDS
+# The first automatic resume after a pause without a known reset waits this long; each further one twice as long.
+RETRY_BACKOFF_SECONDS = 1800
 WINDOW_LABELS = {10080: "Wochenfenster", 300: "5-Stunden-Fenster"}
 REASON_LABELS = {
     "codex_missing": "Codex CLI nicht gefunden", "claude_missing": "Claude Code nicht gefunden",
@@ -37,6 +43,8 @@ REASON_LABELS = {
     "usage_not_allowed": "Nutzung derzeit nicht erlaubt", "weekly_limit": "Wochenlimit",
     "opus_limit": "Opus-Limit", "session_limit": "Sitzungslimit", "unclear_limit": "Limit",
     "five_hour": "5-Stunden-Fenster", "seven_day": "Wochenfenster", "unsupported_version": "CLI zu alt",
+    "claude_version": "CLI zu alt", "unsupported_claude_launcher": "CLI nicht startbar",
+    "unsupported_codex_launcher": "CLI nicht startbar",
 }
 _refresh = threading.Lock()
 
@@ -47,8 +55,10 @@ def store_path() -> Path:
 
 
 def read_store() -> dict:
+    # Through the retry that outlasts another process renaming the store onto itself: a read that failed on that
+    # instant returned {}, which hid an active block (2026-10-02).
     try:
-        data = json.loads(store_path().read_text(encoding="utf-8"))
+        data = json.loads(read_text(store_path()))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -236,30 +246,68 @@ def record_quota_failure(provider, error, *, settings=None, clock=time.time):
     return None
 
 
-def quota_retry_at(error, *, clock=time.time) -> str:
-    """When a paused run may be resumed automatically: the reset the error named, else the latest
-    Codex snapshot or Claude block, else a conservative half hour. Always in the future."""
+def quota_retry_at(error, *, clock=time.time, attempt=0) -> str:
+    """When a paused run may be resumed automatically, always in the future.
+
+    The reset the error named comes first. Else the store's reset of the provider that failed (``provider`` or
+    ``earliest_provider`` in the details; both providers for an error that names none), else a wait that doubles
+    with each automatic resume (``attempt``): 30 minutes, one hour, two hours. 2026-10-02: a Codex error without
+    details took Claude's reset or a fixed half hour, and three resumes were spent within 90 minutes."""
     details = getattr(error, "details", None) or {}
-    candidates = [details.get("earliest_reset"), details.get("blocked_until"),
-                  ((read_store().get("codex_cli") or {}).get("snapshot") or {}).get("resets_at"),
-                  (claude_quota_state(clock=clock) or {}).get("blocked_until")]
+    provider = details.get("provider") or details.get("earliest_provider")
+    candidates = [details.get("blocked_until"), details.get("earliest_reset")]
+    if provider in (None, "codex_cli"):
+        candidates.append(((read_store().get("codex_cli") or {}).get("snapshot") or {}).get("resets_at"))
+    if provider in (None, "claude_code"):
+        candidates.append((claude_quota_state(clock=clock) or {}).get("blocked_until"))
     for value in candidates:
         parsed = parse_iso(value)
         if parsed and parsed.timestamp() > clock():
             return parsed.isoformat()
-    return iso_at(clock() + 1800)
+    steps = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 0 else 0
+    return iso_at(clock() + RETRY_BACKOFF_SECONDS * 2 ** min(steps, 4))
+
+
+def record_unavailable(provider, error, *, clock=time.time):
+    """Note that a call found ``provider`` unusable (expired login, no subscription login, too old a CLI): the
+    automatic rule passes it over for ``UNAVAILABLE_SECONDS`` and then checks it again; a completed Claude call
+    clears the note. 2026-10-02: such a failure stopped auto runs although the other subscription had quota."""
+    if provider not in {"codex_cli", "claude_code"}:
+        return None
+    note = {"reason": getattr(error, "code", None) or "unavailable", "detected_at": iso_at(clock()),
+            "until": iso_at(clock() + UNAVAILABLE_SECONDS)}
+    update_store(provider, {"unavailable": note})
+    return note
+
+
+def unavailable_state(provider, *, clock=time.time) -> dict | None:
+    note = (read_store().get(provider) or {}).get("unavailable")
+    if not isinstance(note, dict):
+        return None
+    until = parse_iso(note.get("until"))
+    return note if until is not None and until.timestamp() > clock() else None
+
+
+def with_unavailable(provider, snapshot, *, clock=time.time) -> dict:
+    """The snapshot as the rule sees it: unusable while a call's note says so, naming that call's reason."""
+    note = unavailable_state(provider, clock=clock)
+    if note is None or not isinstance(snapshot, dict):
+        return snapshot
+    return {**snapshot, "available": False, "usable": False, "reason": note.get("reason") or "unavailable",
+            "unavailable_until": note.get("until")}
 
 
 def record_claude_success(rate_limit=None, *, clock=time.time):
-    """A completed Claude call ends any block and keeps the CLI's latest window facts."""
+    """A completed Claude call ends any block or unavailability note and keeps the CLI's latest window facts."""
     values = {}
     if isinstance(rate_limit, dict):
         values["last_rate_limit"] = {"status": rate_limit.get("status"), "window": rate_limit.get("window"),
                                      "resets_at": rate_limit.get("resets_at"), "observed_at": iso_at(clock())}
     # Nothing to note and nothing to clear: leave the store untouched (and uncreated).
-    if not values and not isinstance((read_store().get("claude_code") or {}).get("block"), dict):
+    current = read_store().get("claude_code") or {}
+    if not values and not any(isinstance(current.get(key), dict) for key in ("block", "unavailable")):
         return
-    update_store("claude_code", values, remove=("block",))
+    update_store("claude_code", values, remove=("block", "unavailable"))
 
 
 def describe_snapshot(provider, snapshot) -> str:
@@ -300,6 +348,7 @@ def choose_subscription(settings, candidates: dict, *, prefer="codex_cli", exclu
             continue
         snapshot = codex_quota(settings, refresh=refresh, clock=clock) if provider == "codex_cli" else \
             claude_quota(refresh=refresh, clock=clock)
+        snapshot = with_unavailable(provider, snapshot, clock=clock)
         snapshots[provider] = snapshot
         if provider in exclude or not snapshot.get("available"):
             continue
@@ -329,8 +378,8 @@ def choose_subscription(settings, candidates: dict, *, prefer="codex_cli", exclu
 
 def quota_overview(settings, *, refresh=True, clock=time.time) -> dict:
     """Both subscriptions at a glance, for ``pla quota``, the doctor and the Studio check."""
-    codex = codex_quota(settings, refresh=refresh, clock=clock)
-    claude = claude_quota(refresh=refresh, clock=clock)
+    codex = with_unavailable("codex_cli", codex_quota(settings, refresh=refresh, clock=clock), clock=clock)
+    claude = with_unavailable("claude_code", claude_quota(refresh=refresh, clock=clock), clock=clock)
     return {"checked_at": iso_at(clock()), "codex_cli": codex, "claude_code": claude,
             "lines": [describe_snapshot("codex_cli", codex), describe_snapshot("claude_code", claude)],
             "any_usable": bool(codex.get("usable") or claude.get("usable")),

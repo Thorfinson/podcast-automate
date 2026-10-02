@@ -138,15 +138,16 @@ def remaining_calls(state, folder):
     prompt and schema before a receipt can actually be used. Blocked tasks receive
     no further calls, whether they wait for an explicit gap approval or a new run.
     """
+    # Imported here: question_answering reaches research modules that import this one.
+    from .question_answering import search_folder
+    from .question_sources import attempt_folder
     questions, closing = set(), set()
     if state["phase"] == "completed":
         return questions, closing
     for task_id, row in state["tasks"].items():
         if row["status"] in {"verified", "blocked"}:
             continue
-        attempt = folder / "tasks" / task_id / f"attempt_{len(row['reopenings'])}"
-        if row.get("dependency_revision"):
-            attempt = attempt / f"dependency_{row['dependency_revision']}"
+        attempt = attempt_folder(folder, task_id, row)
         step = row["step"]
         if row["status"] == "reviewing":
             review = attempt / f"review_{step:03d}.json"
@@ -157,7 +158,8 @@ def remaining_calls(state, folder):
         pending = row.get("pending") or checkpoint(reader)
         if pending:
             if pending["action"] == "search_web":
-                search = reader.with_name("search.json")
+                # A step that already searched for other queries keeps this search in a folder of its own.
+                search = search_folder(reader.parent, pending.get("web_queries") or []) / "search.json"
                 if checkpoint(search) is None:
                     questions.add(search)
             if pending["action"] != "answer":
@@ -243,6 +245,8 @@ def plan_projection(work, root, state, limits):
             "seconds_per_call": seconds, "seconds_per_call_source": seconds_source,
             "projected_hours": round(projected * seconds / 3600, 1),
             "plan_hash": digest(state["plan"]), "plan_caps": list(state.get("plan_caps", [])),
+            # The scope review still split tasks in its last pass; the plan stands as it left it (plan_tasks).
+            **({"scope_note": state["scope_unresolved"]["note"]} if state.get("scope_unresolved") else {}),
             "projected_at": datetime.now(timezone.utc).isoformat()}
 
 
@@ -275,6 +279,8 @@ def plan_review_message(projection, run_id=None):
     if caps and projection["tasks"] > min(caps):
         text += (f" Eine Obergrenze von {min(caps)} Teilfragen wurde bereits angefordert; die Planung konnte den Plan "
                  "nicht weiter bündeln, ohne Verpflichtungen wegzulassen.")
+    if projection.get("scope_note"):
+        text += " " + projection["scope_note"]
     command = f"pla approve <projekt> --research-plan {run_id or '<run_id>'} [--max-tasks N]"
     return (text + " Der Rechercheplan wartet auf Freigabe: im Studio „Rechercheplan freigeben“ oder "
             + command + ", danach fortsetzen. Bis dahin wird kein weiterer Modellaufruf verbraucht.")

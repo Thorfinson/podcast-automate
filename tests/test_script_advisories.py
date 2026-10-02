@@ -1,4 +1,4 @@
-"""Deterministic advisory counters over a finished script; German patterns, fixed sentences."""
+"""Deterministic advisory counters over a finished script; German and English patterns, fixed sentences."""
 import unittest
 
 from podcast_automate.models import Chapter, EpisodeScript, Segment
@@ -54,9 +54,10 @@ class RedefinedTerms(unittest.TestCase):
         self.assertEqual(redefined_terms(script("Ein Vektor ist eine Liste von Zahlen.",
                                                 "Ein Vektor ist wieder eine Liste."), [], "de-DE"), [])
 
-    def test_patterns_do_not_fire_on_another_language(self):
+    def test_patterns_do_not_fire_on_a_language_without_patterns(self):
+        # English has patterns since 2026-10-02 (EnglishPatterns); a third language still gets none.
         rows = redefined_terms(script("An attention head is a weighted selection.",
-                                      "An attention head is a weighted selection."), ["attention head"], "en-US")
+                                      "An attention head is a weighted selection."), ["attention head"], "fr-FR")
         self.assertEqual(rows, [])
 
     def test_established_terms_come_from_reviewed_rows_only_and_fall_back_to_the_id(self):
@@ -90,6 +91,9 @@ class Hedging(unittest.TestCase):
                                                  "In unserem Beispiel gilt das weiter."), "de-DE"), [])
 
     def test_other_languages_have_no_patterns(self):
+        self.assertEqual(repeated_hedging(script("C'est hypothetisch.", "Aussi hypothetisch.",
+                                                 "Encore hypothetisch."), "fr-FR"), [])
+        # The German words are no English hedge either.
         self.assertEqual(repeated_hedging(script("This is hypothetisch.", "Also hypothetisch.",
                                                  "Still hypothetisch."), "en-US"), [])
 
@@ -143,6 +147,44 @@ class OpeningAndDuration(unittest.TestCase):
         # the count is that whole-number percentage, like every other advisory count.
         self.assertEqual(rows[0]["count"], 133)
         self.assertIsInstance(rows[0]["count"], int)
+
+
+class EnglishPatterns(unittest.TestCase):
+    """2026-10-02: the English Ontologies series got no measurement at all; English carries its own patterns."""
+
+    def test_each_english_definition_pattern_is_counted(self):
+        for sentence in ("An ontology is a shared vocabulary of a domain.",
+                         "The ontology, that is the shared vocabulary, comes back.",
+                         "An ontology means a shared vocabulary.",
+                         "We call this shared vocabulary an ontology.",
+                         "This structure is known as an ontology.",
+                         "By an ontology we mean a shared vocabulary."):
+            with self.subTest(sentence=sentence):
+                rows = redefined_terms(script(sentence, sentence), ["ontology"], "en-US")
+                self.assertEqual([(r["code"], r["count"]) for r in rows], [("redefined_term", 2)])
+
+    def test_ordinary_english_use_of_an_established_term_never_counts(self):
+        self.assertEqual(redefined_terms(script("An ontology is expensive to maintain.",
+                                                "The ontology grows every week.",
+                                                "Teams use the ontology to align their terms."), ["ontology"], "en-US"), [])
+
+    def test_english_hedges_count_and_back_references_or_the_ordinary_verb_do_not(self):
+        rows = repeated_hedging(script("This is a thought experiment, not a real measurement.",
+                                       "The numbers are made up.",
+                                       "We have not actually measured this."), "en-US")
+        self.assertEqual([(r["code"], r["count"]) for r in rows], [("repeated_hedging", 4)])
+        self.assertEqual(rows[0]["segment_ids"], ["seg_001", "seg_002", "seg_003"])
+        self.assertEqual(hedging_hits(script("In our thought experiment the value rises.",
+                                             "This thought experiment shows the difference.",
+                                             "The format was invented in 2017.",
+                                             "That is not a real alternative.",
+                                             "There is no real difference between them."), "en-US"), [])
+
+    def test_an_english_episode_gets_every_advisory(self):
+        episode = script("An ontology is a shared vocabulary. " + " ".join(["word"] * 110),
+                         "An ontology is again a shared vocabulary. Hypothetical, a thought experiment, not measured.")
+        rows = advisories(episode, plan(), script_metrics(episode), language="en-US", terms=["ontology"])
+        self.assertEqual([r["code"] for r in rows], ["redefined_term", "repeated_hedging", "long_cold_open"])
 
 
 class Combined(unittest.TestCase):

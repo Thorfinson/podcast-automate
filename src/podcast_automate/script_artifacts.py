@@ -114,7 +114,9 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
                  "## Kapitel", "", *[f"- {c.title}" for c in script.chapters], "",
                  "## Grenzen und offene Vertiefungen", "", *[f"- {q}" for q in entry.deferred_questions], "",
                  "## Quellen", ""]
-        used = {e.reference.split("#")[0] for f in dossier.findings if f.id in entry.finding_ids for e in f.evidence}
+        # The supporting findings an episode may cite are its sources too; a plan without them lists as before.
+        listed_findings = {*entry.finding_ids, *entry.supporting_finding_ids}
+        used = {e.reference.split("#")[0] for f in dossier.findings if f.id in listed_findings for e in f.evidence}
         # Two URLs of the same work are one source for a listener; the assessment's work_id
         # says which those are, and a normalised title covers the sources without one.
         works = {a.source_id: a.work_id for a in dossier.source_assessments if a.work_id}

@@ -1,0 +1,4 @@
+For machine learning keep Query, Key, Value, Attention, Attention scores, Attention weights,
+Softmax, Embedding, Layer Normalization, Residual Connection, Training and Inference in the prose of
+other languages. Do not replace these names with literal translations such as Suchanfrage,
+Schluessel, skalierte Passung or Mischgewichte.

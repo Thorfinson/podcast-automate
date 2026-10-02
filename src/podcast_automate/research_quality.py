@@ -201,6 +201,13 @@ def render_quality(report):
     if report.get("passed_with_accepted_gaps"):
         lines += ["Die Recherche wurde mit ausdrücklich akzeptierten Lücken abgeschlossen. Die betroffenen Teilfragen "
                   "und verbliebenen Einwände stehen unten; das Dossier behauptet für sie keine Antwort.", ""]
+    if report.get("passed_with_noted_limits"):
+        # Not "complete": what is unmet or noted stays visible as a limit (2026-10-02: Ontologies passed with 6 of 9
+        # requirements unmet and was published as if gaps had been accepted).
+        lines += [f"Die Recherche wurde mit vermerkten Grenzen abgeschlossen: {report['closed']} von {report['total']} "
+                  "Leitfragen erfüllen alle Merkmale. Was offen oder nur eingeschränkt belegt ist, steht unten als Grenze "
+                  "(Quellengrenzen, unverändert vermerkte Einwände, Hinweise fürs Skript); dafür wird nicht weiter "
+                  "recherchiert.", ""]
     for row in report["requirements"]:
         lines += [f"## {'Erfüllt' if row['passed'] else 'Offen'}: {row['question']}", "", row["reason"], ""]
         lines += [f"- {CRITERIA[key]}: {'erfüllt' if row[key] else 'offen'}" for key in CRITERIA]
@@ -208,6 +215,10 @@ def render_quality(report):
         lines += [f"- Als Grenze vermerkt: {item}" for item in row.get("noted", [])]
         if row.get("source_limit"):
             lines += ["- Grenze der verfügbaren Quellen: wird nicht weiter recherchiert und ist im Skript zu benennen"]
+        if row.get("recorded_limit"):
+            lines += ["- Als Grenze vermerkt: Keine Teilfrage dieser Leitfrage hat sich seit dem letzten Urteil geändert, und "
+                      "ihr Einwand wurde vermerkt, war strittig oder betrifft eine akzeptierte Lücke. Das Urteil bleibt, "
+                      "bis sich eine ihrer Antworten ändert; das Skript benennt die Grenze"]
         if row.get("accepted_gap_tasks"):
             lines += [f"- Akzeptierte Lücke: Teilfrage {tid}" for tid in row["accepted_gap_tasks"]]
         lines += [""]
@@ -262,14 +273,32 @@ def render_quality(report):
                   "Die geprüfte Antwort behandelt das jeweilige Kriterium mit belegten Befunden; die Gesamtprüfung hielt es "
                   "für nicht ganz vollständig. Das steht hier als Grenze und wurde nicht erneut recherchiert.", "",
                   *[f"- {objection}" for objection in report["noted_limits"]], ""]
-    if report.get("noted_after_reworks"):
+    spent = [row for row in report.get("noted_after_reworks", []) if row.get("basis") != "rework_blocked"]
+    blocked = [row for row in report.get("noted_after_reworks", []) if row.get("basis") == "rework_blocked"]
+    if spent:
         lines += ["## Einwände nach zwei Nachbesserungen", "",
                   "Diese Teilfragen wurden zweimal nachgebessert und behalten ihre zuletzt geprüfte Antwort. Spätere "
                   "Einwände der Gesamtprüfung stehen hier als Grenzen; sie haben den Lauf nicht mehr angehalten.", "",
-                  *[f"- {row['task_id']}: {row['objection']}" for row in report["noted_after_reworks"]], ""]
+                  *[f"- {row['task_id']}: {row['objection']}" for row in spent], ""]
+    if blocked:
+        lines += ["## Einwände, die eine Nachbesserung nicht schließen konnte", "",
+                  "Die Nachbesserung dieser Teilfragen fand keine neuen Belege und endete blockiert. Sie behalten ihre "
+                  "zuvor geprüfte Antwort; der Einwand steht hier als Grenze.", "",
+                  *[f"- {row['task_id']}: {row['objection']}" + (f" (Nachbesserung: {row['rework_block']})"
+                                                                 if row.get("rework_block") else "") for row in blocked], ""]
+    if report.get("revalidations"):
+        lines += ["## Nachprüfungen nach geänderten Voraussetzungen", "",
+                  "Beschreibend, nicht blockierend: So oft wurde eine geprüfte Antwort erneut gegen eine nachgebesserte "
+                  "Voraussetzung geprüft. Diese Nachprüfungen zählen nicht als Nachbesserung.", "",
+                  *[f"- {row.get('question') or row['task_id']}: {row['count']}×" for row in report["revalidations"]], ""]
     if report.get("residual_objections"):
-        lines += ["## Verbliebene Prüfeinwände" + ("" if report.get("passed_with_residual_objections") else " zu akzeptierten Lücken"), "",
-                  *[f"- {objection}" for objection in report["residual_objections"]], ""]
+        if report.get("passed_with_residual_objections"):
+            heading = "## Verbliebene Prüfeinwände"
+        elif report.get("passed_with_accepted_gaps") and not report.get("passed_with_noted_limits"):
+            heading = "## Verbliebene Prüfeinwände zu akzeptierten Lücken"
+        else:
+            heading = "## Verbliebene Prüfeinwände, als Grenzen vermerkt oder strittig"
+        lines += [heading, "", *[f"- {objection}" for objection in report["residual_objections"]], ""]
     return "\n".join(lines)
 
 

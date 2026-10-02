@@ -35,8 +35,8 @@ from .research_advisor import advisor_selection
 from .research_ledger import read_value
 from .research_evidence import verbatim
 from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source, library_view, load_library
-from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash, project_lock, read_text,
-                      read_optional_json, read_yaml, write_json, write_yaml)
+from .storage import (atomic_text, bound_brief, digest, file_hash, file_lock, inside, load_project, project_hash, project_lock,
+                      read_text, read_optional_json, read_yaml, write_json, write_yaml)
 from .text_settings import validate_model, validate_reasoning
 
 RESEARCH_VERSION = "research.v3-complete-brief"
@@ -325,6 +325,20 @@ def saved_discovery(work, topic):
     return None
 
 
+def unanswered_questions(work: Path) -> list[str]:
+    """Rows of the run's question ledger that hold neither a verified answer nor a block, in plan order: the row rule
+    of ``question_research.require_answers``. A run without a ledger (the composed workflow before it) has none."""
+    state_path = work / "question_research/state.json"
+    if state_path.exists():
+        state = read_value(state_path)
+        tasks = state.get("tasks") or {}
+        order = [spec["id"] for spec in (state.get("plan") or {}).get("tasks", []) if spec.get("id") in tasks]
+        return [task_id for task_id in order or list(tasks) if tasks[task_id].get("status") not in {"verified", "blocked"}]
+    ledger = read_optional_json(work / "research_questions.json", {}) or {}
+    return [str(row.get("id")) for row in ledger.get("questions") or []
+            if isinstance(row, dict) and row.get("status") not in {"verified", "blocked"}]
+
+
 def latest_research_run(root: Path):
     """The research run whose stored sources seed a new one: the newest completed, else the newest at all; None
     without one. A run stopped right after its start holds almost no sources (Transformer, 2026-09-30)."""
@@ -358,6 +372,13 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
     root = root.resolve()
     config = load_project(root)
     local_files = [(root / value).resolve() for value in config.local_sources]
+    # A local source is read into the run and its text goes to the model: only files of this project qualify, never
+    # an absolute path or one that leaves the folder (review 2026-10-02).
+    outside = [value for value, path in zip(config.local_sources, local_files) if not path.is_relative_to(root)]
+    if outside:
+        raise AppError("Lokale Quellen müssen im Projektordner liegen; außerhalb liegt: " + ", ".join(outside) +
+                       ". Die Datei in den Projektordner kopieren oder im Studio als Material hochladen und "
+                       "local_sources in project.yaml anpassen.", code="local_source_outside", status="blocked")
     local_hashes = {str(path): file_hash(path) if path.is_file() else None for path in local_files}
     with project_lock(root):
         validate_model(model)
@@ -384,11 +405,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 check_adapter_versions(selection)
         bound_config = config
         if resume:
-            # A longer execution deadline does not alter the research inputs.
-            # Keep the original fingerprint and still reject every content change.
-            snapshot = read_yaml(path.parent / "project_snapshot.yaml")
-            bound_config = config.model_copy(update={"runtime": config.runtime.model_copy(
-                update={"text_timeout_seconds": snapshot["runtime"]["text_timeout_seconds"]})})
+            # Operational settings (deadlines, limits, voices, host names) do not alter the research inputs: they are
+            # hashed as the run started (storage.bound_brief), and every content change is still rejected.
+            bound_config = bound_brief(config, read_yaml(path.parent / "project_snapshot.yaml"), "research")
         # One rule for the brief's identity, shared with every other lane: ``project_hash`` drops
         # a field that is unset, so existing research manifests keep their pre-field hash.
         config_hash = project_hash(bound_config)
@@ -496,28 +515,43 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         # Research tasks may report from several threads; the read-modify-write of the activity
         # envelope and the observer's job file happen one at a time.
         progress_lock = threading.Lock()
+        # The digest of what this process last reported. Both envelopes carry the whole question ledger (2 to 2.6 MB
+        # each in the Asimov and Ontologies runs), so an unchanged report is not written again (2026-10-02); the
+        # envelope's updated_at stays the time of its last real change, as the Studio reads it.
+        reported = {}
 
         def progress(activity, quality=None, round_number=None):
             with progress_lock:
-                previous = json.loads((work / "research_activity.json").read_text(encoding="utf-8")) if (work / "research_activity.json").exists() else {}
                 current = limits()
+                question_path = work / "research_questions.json"
+                # A search call reports from outside the ledger lock while another worker may be saving
+                # the ledger; the read outlasts that rename.
+                ledger = read_text(question_path) if question_path.exists() else None
+                fingerprint = digest({"activity": activity, "quality": quality, "round": round_number, "ledger": ledger,
+                                      "limits": [current.model_calls, current.search_rounds]})
+                if reported.get("digest") == fingerprint:
+                    return
+                activity_path = work / "research_activity.json"
+                try:
+                    # The Studio's progress watcher and the status monitor add fields to this envelope; they stay.
+                    previous = json.loads(read_text(activity_path)) if activity_path.exists() else {}
+                except (OSError, ValueError):
+                    previous = {}
                 data = {**previous, "phase": "research", "activity": activity,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                         "model_call_limit": current.model_calls,
                         "search_round_limit": current.search_rounds}
                 if quality is not None:
                     data["research_quality"] = quality
-                question_path = work / "research_questions.json"
-                if question_path.exists():
+                if ledger is not None:
                     # Existing Studio processes also read this envelope. Keep the new
                     # ledger visible without restarting a server holding session keys.
-                    # A search call reports from outside the ledger lock while another worker may be
-                    # saving the ledger; the read outlasts that rename.
-                    data["research_questions"] = json.loads(read_text(question_path))
+                    data["research_questions"] = json.loads(ledger)
                 if round_number is not None:
                     data["research_round"] = round_number
-                write_json(work / "research_activity.json", data)
+                write_json(activity_path, data)
                 write_json(work / "progress.json", data)
+                reported["digest"] = fingerprint
                 observer = run_observer.get()
                 if observer:
                     observer(manifest)
@@ -724,6 +758,13 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             final_review_path = work / "complete_research/source_review.json"
             if not quality["passed"]:
                 raise AppError("Die Recherche ist noch nicht vollständig geprüft.", code="research_coverage_incomplete", status="blocked")
+            # Never published while a question is still open, whatever the gate recorded (Transformer, 2026-10-02:
+            # published as completed with two rows still researching).
+            unanswered = unanswered_questions(work)
+            if unanswered:
+                raise AppError("Teilfragen ohne geprüfte Antwort: " + ", ".join(unanswered) + ". Die Recherche wird nicht "
+                               "veröffentlicht; Antworten und Stand bleiben gespeichert, ein Fortsetzen bearbeitet sie weiter.",
+                               code="research_questions_open", status="blocked")
             accepted_rows = quality.get("accepted_gaps", [])
             files = {
                 "research/research_plan.yaml": {"schema_version": "1.0", "run_id": manifest.run_id,
@@ -779,9 +820,14 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 outputs.append(calibration)
             write_json(root / "reports/research_quality.json", {
                 "run_id": manifest.run_id, "reference_check": "passed",
+                # Noted limits are their own outcome: both completed runs of 2026-10-01 had no accepted gap and still
+                # said accepted_gaps_remaining, and claimed complete coverage with requirements failing.
                 "model_review": ("residual_objections_remaining" if quality.get("passed_with_residual_objections") else
-                                 "accepted_gaps_remaining" if quality.get("passed_with_accepted_gaps") else "no_remaining_issues"),
-                "human_reviewed": False, "complete_topic_coverage": not accepted_rows, "coverage_scope": "agreed_brief",
+                                 "accepted_gaps_remaining" if quality.get("passed_with_accepted_gaps") else
+                                 "noted_limits_remaining" if quality.get("passed_with_noted_limits") else "no_remaining_issues"),
+                "human_reviewed": False,
+                "complete_topic_coverage": not accepted_rows and quality.get("closed") == quality.get("total"),
+                "coverage_scope": "agreed_brief",
                 "accepted_gaps": accepted_rows, "residual_objections": quality.get("residual_objections", []),
                 "quality_gate": quality, "sources": len(index.sources),
                 "findings": len(dossier.findings), "access_failures": index.failures,

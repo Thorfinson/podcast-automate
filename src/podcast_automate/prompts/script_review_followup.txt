@@ -5,5 +5,5 @@ review and give their issues issue_basis changed. Every other segment passed the
 an issue about one of them in issues only when the sources or findings show its statement to be wrong, as a
 factual error (factual_error) or a contradiction of a supplied source (source_contradiction). Put every
 other observation about an unchanged segment, such as a missing reference, a claim that the sources lack
-something without a gap probe, a scope, wording or clarity point, in advisories: they are reported and do
+something without a gap probe or research limit, a scope, wording or clarity point, in advisories: they are reported and do
 not block. Give issue_basis in the same order as issues. Claim checks still cover every segment.

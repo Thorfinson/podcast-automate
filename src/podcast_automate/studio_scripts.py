@@ -77,10 +77,17 @@ def script_previews(root, run):
             try:
                 polished = read(f"polishing/{identifier}/script.json")
                 result = read(f"polishing/{identifier}/result.json")
-                checkpoint = read(f"polishing/{identifier}/checkpoint.json")
-                if (result.get("status") == "passed" and checkpoint.get("candidate") == polished
-                        and result.get("original_digest") == digest(original)
-                        and result.get("polished_digest") == digest(polished)):
+                if result.get("status") == "kept_draft":
+                    # The polish kept the checked draft (script_checkpoints.finished): finished when its script is that
+                    # draft. Read only as "passed", such an episode never showed as polished or reviewed (2026-10-02).
+                    done = (polished == original
+                            and digest(polished) == result.get("original_digest") == result.get("polished_digest"))
+                else:
+                    checkpoint = read(f"polishing/{identifier}/checkpoint.json")
+                    done = (result.get("status") == "passed" and checkpoint.get("candidate") == polished
+                            and result.get("original_digest") == digest(original)
+                            and result.get("polished_digest") == digest(polished))
+                if done:
                     candidate, state = polished, "polished"
             except (OSError, ValueError, AppError):
                 pass

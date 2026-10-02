@@ -17,10 +17,22 @@ from .errors import AppError
 from .logs import failure_records, logger, record_failure
 from .models import EpisodeScript, Failure, RunManifest, StageRecord, now
 from .provider_pool import AdapterPool, subscription_selection
-from .storage import (digest, file_hash, inside, load_project, project_hash, project_lock,
+from .storage import (bound_brief, digest, file_hash, inside, load_project, project_hash, project_lock,
                       read_optional_json, read_yaml, write_json, write_yaml)
 
 PROBE_BACKENDS = ("codex_cli", "claude_code", "auto")
+# What a paused stage keeps of its error for the automatic resume (studio_worker, subscriptions.quota_retry_at):
+# these keys only and plain values only, so a manifest never holds model output or provider text.
+RETRY_DETAIL_KEYS = ("provider", "blocked_until", "earliest_reset", "earliest_provider", "reason")
+
+
+def failure_details(error: AppError) -> dict | None:
+    """The reset facts of a quota pause; None for every other stop, so its manifest dumps as before."""
+    if error.status != "waiting_for_quota":
+        return None
+    details = {key: value for key in RETRY_DETAIL_KEYS
+               if isinstance(value := (error.details or {}).get(key), (str, int, float, bool))}
+    return details or None
 
 # Optional observer in the isolated Studio worker; no global project state.
 run_observer = ContextVar("run_observer", default=None)
@@ -60,9 +72,13 @@ def status(root: Path, run_id: str | None = None) -> dict:
         return {"topic": config.topic, "status": "not_started", "run": None}
     path = manifest_path(root, run_id)
     manifest = RunManifest.model_validate(read_yaml(path))
+    snapshot = path.parent / "project_snapshot.yaml"
+    # A research run is bound to its brief without the operational fields, as its resume checks it.
+    bound = (bound_brief(config, read_yaml(snapshot), "research")
+             if manifest.kind == "research" and snapshot.is_file() else config)
     return {
         "topic": config.topic, "status": manifest.status,
-        "project_changed": manifest.project_hash != project_hash(config),
+        "project_changed": manifest.project_hash != project_hash(bound),
         "run": manifest.model_dump(mode="json"),
         "invalid_completed_stages": [
             name for name, record in manifest.stages.items()
@@ -207,7 +223,7 @@ def execute_stages(root: Path, manifest: RunManifest, path: Path, actions: dict,
                                  code="invalid_local_data")
                 logger("runner").error("Stufe %s fehlgeschlagen: %s: %s", name, type(exc).__name__, exc, exc_info=exc)
             record.status = manifest.status = error.status
-            record.error = Failure(code=error.code, message=str(error))
+            record.error = Failure(code=error.code, message=str(error), details=failure_details(error))
             save()
             return manifest
     manifest.status = "completed"

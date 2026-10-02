@@ -29,6 +29,39 @@ def tone(path: Path, *, silent=False):
         stream.writeframes(struct.pack(f"<{len(samples)}h", *samples))
 
 
+def take_with_gap(path: Path, gap: float, *, amplitude=4000, clicks=0):
+    """Half a second of tone, ``gap`` seconds of silence, half a second of tone; ``clicks`` is the height of spikes
+    eight times a second, the kind of peak that pushed loudnorm out of its linear mode."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rate = 22050
+    sound = [int(amplitude * math.sin(2 * math.pi * 230 * i / rate)) for i in range(rate // 2)]
+    if clicks:
+        for i in range(0, len(sound), rate // 8):
+            sound[i] = clicks
+    samples = sound + [0] * round(gap * rate) + sound
+    with wave.open(str(path), "wb") as stream:
+        stream.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        stream.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+
+class SilenceTests(unittest.TestCase):
+    def test_silent_runs_include_the_edges_and_only_long_runs_are_shortened(self):
+        from array import array
+        from podcast_automate.audio import shortened_silences, silent_runs
+        rate, loud = 1000, [1000] * 100
+        samples = array("h", [0] * 300 + loud + [0] * 2000 + loud + [0] * 1000)
+        self.assertEqual(silent_runs(samples, rate), [(0, 300), (400, 2000), (2500, 1000)])
+        shortened, removed = shortened_silences(samples, rate)
+        # Only the 2 s run exceeds 1.5 s; it keeps 0.6 s at each end, so speech neither starts nor stops abruptly.
+        self.assertEqual(removed, 800)
+        self.assertEqual(silent_runs(shortened, rate), [(0, 300), (400, 1200), (1700, 1000)])
+        # Interleaved stereo is measured per frame.
+        stereo = array("h", [value for sample in samples for value in (sample, sample)])
+        self.assertEqual(silent_runs(stereo, rate, channels=2), silent_runs(samples, rate))
+        untouched = array("h", loud + [0] * 1500 + loud)
+        self.assertEqual(shortened_silences(untouched, rate), (untouched, 0))
+
+
 class TtsLanguageTests(unittest.TestCase):
     def test_project_language_reaches_worker_request(self):
         for locale, language in (("de-DE", "German"), ("en-US", "English")):
@@ -128,6 +161,49 @@ class AudioTests(unittest.TestCase):
         raised = ((pauses.same_speaker_ms - 100) + (pauses.chapter_break_ms - 100)) / 1000
         self.assertGreaterEqual(measured + 0.1, planned + raised)
         self.assertAlmostEqual(measured, planned + raised, delta=0.1)
+
+    def test_peaks_are_limited_after_the_linear_gain_and_the_report_names_the_mode(self):
+        """2026-10-02: in 29 of 30 exports loudnorm's linear mode fell back to dynamic compression without saying so,
+        because the gain would have lifted the true peak above -1.5 dBTP. A quiet take with clicks forces that case."""
+        paths = []
+        for index in range(len(self.script.segments)):
+            paths.append(self.root / f"peaky {index}.wav")
+            take_with_gap(paths[-1], 0.5, amplitude=700, clicks=2500)
+        assemble(self.script, paths, self.root / "limited")
+        report = json.loads((self.root / "limited/audio_report.json").read_text())
+        levels = report["input_loudness"]
+        self.assertEqual(report["target_lufs"], -16)
+        self.assertEqual(report["loudness_mode"], "linear_gain_limiter")
+        self.assertAlmostEqual(report["gain_db"], -16 - float(levels["input_i"]), places=2)
+        self.assertGreater(float(levels["input_tp"]) + report["gain_db"], -1.5, "the case loudnorm handled dynamically")
+        self.assertAlmostEqual(report["output_loudness"]["integrated_lufs"], -16, delta=1)
+        self.assertLessEqual(report["output_loudness"]["true_peak_dbtp"], -1.5)
+        # Measured again on the produced MP3, not taken from the report.
+        measured = ffmpeg(["-i", str(self.root / "limited/audio.mp3"), "-af",
+                           "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"])
+        output = json.loads(re.findall(r'\{\s*"input_i".*?\}', measured, flags=re.DOTALL)[-1])
+        self.assertAlmostEqual(float(output["input_i"]), -16, delta=1)
+        self.assertLessEqual(float(output["input_tp"]), -1.5)
+
+    def test_dead_air_is_shortened_only_in_segments_with_a_pause_tag(self):
+        """A <long pause> left 3.5 to 7.3 s of silence in the 29 Sep exports (2026-10-02)."""
+        paths = []
+        for index in range(len(self.script.segments)):
+            paths.append(self.root / f"gap {index}.wav")
+            take_with_gap(paths[-1], 4.0)
+        tagged = self.script.segments[1].segment_id
+        assemble(self.script, paths, self.root / "trimmed", trim_pauses={tagged})
+        timeline = json.loads((self.root / "trimmed/timeline.json").read_text())["segments"]
+        # One second of tone around the gap: 4 s untouched, cut to 1.2 s in the tagged segment. The silence is
+        # measured in 20 ms windows, so resampler ringing at its edge may cost one window.
+        for row, seconds in zip(timeline, [5.0, 2.2, 5.0, 5.0], strict=True):
+            self.assertAlmostEqual(row["speech_end_seconds"] - row["start_seconds"], seconds, delta=0.025)
+        self.assertEqual([row.get("trimmed_silence_ms") is None for row in timeline], [True, False, True, True])
+        self.assertAlmostEqual(timeline[1]["trimmed_silence_ms"], 2800, delta=25)
+        report = json.loads((self.root / "trimmed/audio_report.json").read_text())
+        self.assertAlmostEqual(report["trimmed_silence_seconds"], 2.8, delta=0.025)
+        expected = 17.2 + sum(s.pause_after_ms for s in self.script.segments) / 1000
+        self.assertAlmostEqual(float(audio_info(self.root / "trimmed/audio.mp3")["format"]["duration"]), expected, delta=0.1)
 
     def test_without_a_policy_the_planned_pauses_are_used_unchanged(self):
         assemble(self.script, self.paths, self.root / "unchanged")

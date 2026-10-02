@@ -18,7 +18,7 @@ from .execution import ExecutionChoice, selected_execution
 from .models import EpisodeScript, RunManifest, StageRecord
 from .polishing import HOST_ROLES, POLISH_VERSION
 from .provider_pool import AdapterPool, check_adapter_versions, text_generation_settings  # noqa: F401  (re-exported)
-from .research import refund_call, reserve_call, unanswered, validate_dossier
+from .research import reconcile_budget, refund_call, reserve_call, unanswered, validate_dossier
 from .research_patches import re_asked
 from .research_models import ResearchDossier
 from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
@@ -31,14 +31,30 @@ from .script_checks import (MAX_PLAN_REPAIRS, checked_series_plan, episode_sourc
 from .script_models import SeriesPlan
 from .script_pipeline import SPOKEN_DIALOGUE, ScriptRun  # noqa: F401
 from .series_review import SERIES_REVIEW_VERSION, reviewed_scripts, series_report
-from .storage import digest, file_hash, load_project, project_hash, project_lock, read_yaml, write_json, write_yaml
+from .storage import (bound_brief, digest, file_hash, load_project, project_hash, project_lock, read_yaml, write_json,
+                      write_yaml)
 from .teaching import DESIGN_VERSION, TEACHING_VERSION
 
 SCRIPT_VERSION = "script.v5-dialogue-polish"
 STAGES = ("planning", "teaching", "writing", "polishing", "review", "publish")
 
 
+def local_source_paths(root: Path, config):
+    """Each configured local source, resolved; one outside the project folder is refused (2026-10-02: an absolute
+    path or ``..`` let a script run hash any readable file of the machine). Studio uploads live in inputs/uploads."""
+    root = Path(root).resolve()
+    paths = []
+    for relative in config.local_sources:
+        local = (root / relative).resolve()
+        if not local.is_relative_to(root):
+            raise AppError(f"Lokale Quelle liegt außerhalb des Projektordners: {relative}. Nur Dateien im Projektordner "
+                           "sind erlaubt.", code="invalid_request", status="blocked")
+        paths.append(local)
+    return paths
+
+
 def load_research(root: Path, config):
+    local_files = local_source_paths(root, config)
     try:
         run_id = json.loads((root / "research/latest.json").read_text(encoding="utf-8"))["run_id"]
     except (OSError, ValueError, KeyError) as exc:
@@ -70,8 +86,7 @@ def load_research(root: Path, config):
             quality.get("brief_hash") != digest(requirements_for(config))):
         raise AppError("Die Recherche deckt den ursprünglichen Auftrag noch nicht vollständig ab. Zuerst die offenen Leitfragen recherchieren.",
                        code="research_coverage_incomplete", status="blocked")
-    for relative in config.local_sources:
-        local = (root / relative).resolve()
+    for local in local_files:
         source_id = "src_" + hashlib.sha256(str(local).encode()).hexdigest()[:16]
         saved_source = next((s for s in sources.sources if s.id == source_id), None)
         if not saved_source or not local.is_file() or file_hash(local) != saved_source.raw_hash:
@@ -272,11 +287,21 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                                                    reasoning_effort=reasoning_effort, saved=state["saved_backend"])
         check_adapter_versions(text_generation)
         notes = style_notes(root)
-        config_hash, inputs, input_hash = run_inputs(config, research_id, dossier, discovery, sources, context,
+        # A resumed run binds its operational fields (runtime, research_limits) as it started (storage.bound_brief):
+        # a raised limit or a longer deadline saved while it waited no longer ends it; a content edit still does.
+        hash_config = config
+        if resume:
+            snapshot = state["path"].parent / "project_snapshot.yaml"
+            hash_config = bound_brief(config, read_yaml(snapshot) if snapshot.is_file() else None, "script")
+        config_hash, inputs, input_hash = run_inputs(hash_config, research_id, dossier, discovery, sources, context,
                                                      state, text_generation, notes)
         work = state["path"].parent
         manifest = bind_manifest(root, work, state, config, config_hash, inputs, input_hash, research_id,
                                  text_generation, plan_only)
+        if resume:
+            # A Studio stop ends the worker hard (taskkill /F), so the calls it had out keep their reservation; the
+            # research lane returns them on resume, and script runs do too since 2026-10-02 (up to five parallel calls).
+            reconcile_budget(work)
         # The inputs keep the selection the run started with; an approved switch only changes who answers.
         text_generation = text_switch(work, manifest.input_hash, text_generation)
         adapter = build_adapter(config, text_generation, api_key)

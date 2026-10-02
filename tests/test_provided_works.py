@@ -56,6 +56,27 @@ class ProvidedWorksTests(unittest.TestCase):
         # Saved documents without a citation keep their old form, so their hashes stay valid.
         self.assertNotIn("citation", json.loads(document().model_dump_json()))
 
+    def test_a_provided_copy_reaches_the_evidence_check_as_the_work_it_cites(self):
+        # 2026-10-02: the read passages carried no citation, and the check took the copy without an address for notes.
+        from podcast_automate.research_evidence import user_notes
+        from podcast_automate.research_models import SourceIndex
+        from podcast_automate.research_reader import SourceReader
+        from podcast_automate.research_tasks import ReaderWindow
+        section = SourceSection(id="sec_a", text="Text of the provided work.")
+        base = {"type": "text", "title": "Kuran (1995)", "authors": [], "published_date": "1995", "imported_at": "x",
+                "url": "", "final_url": "", "reliability_note": "x", "uncertainties": [], "raw_path": "r", "raw_hash": "h",
+                "sections": [section]}
+        work = SourceDocument(id="src_work", text_hash="w", citation="Kuran: Private Truths, Public Lies (1995)",
+                              source_type="primary_work", **base)
+        note = SourceDocument(id="src_note", text_hash="n", **base)
+        reader = SourceReader(SourceIndex(sources=[work, note], failures=[]))
+        context = {row["source_id"]: row for row in reader.read(
+            [ReaderWindow(reference=f"{sid}#sec_a", before=0, after=0) for sid in ("src_work", "src_note")])["context"]}
+        self.assertEqual(context["src_work"]["citation"], "Kuran: Private Truths, Public Lies (1995)")
+        self.assertNotIn("citation", context["src_note"], "every other source is read as before")
+        self.assertFalse(user_notes(context["src_work"]))
+        self.assertTrue(user_notes(context["src_note"]))
+
 
 if __name__ == "__main__":
     unittest.main()

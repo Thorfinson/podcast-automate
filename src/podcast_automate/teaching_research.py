@@ -12,7 +12,7 @@ from pydantic import Field
 
 from .prompts import instructions
 from .errors import AppError
-from .editorial import TERMINOLOGY, TEACHING_SCOPE
+from .editorial import TEACHING_SCOPE, terminology
 from .models import Contract, Identifier, NonEmpty
 from .research import source_context
 from .research_models import Evidence, Finding, ResearchDiscovery, SourceIndex, admissible
@@ -25,7 +25,8 @@ from .storage import digest, file_hash, inside, write_json
 VERSION = "teaching_research.v1"
 # The prompt tag is separate from VERSION: VERSION also binds stored supplement receipts, and a
 # wording change must not invalidate the receipts of runs that already hold one.
-PROMPT_VERSION = "teaching_research.v4-allowance"
+# v5-terms (2026-10-02): the topic's own terminology rule instead of the machine-learning names in every call.
+PROMPT_VERSION = "teaching_research.v5-terms"
 MAX_SUPPLEMENTS = 3
 # Correction attempts of a supplement answer the check rejected, as in research_patches.cached_call; before,
 # one rejected answer ended the script run, and a resume replayed it unchanged (Ontologies, 2026-09-27).
@@ -309,6 +310,8 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
         return result
 
     maximum = min(3, config.research_limits.sources)
+    # ``cached`` replays a stored answer without comparing its prompt, so a saved supplement survives a changed rule.
+    terms = terminology(config.language, config.topic, config.central_question)
 
     def within_assignment(found):
         if found.topic != config.topic or len(found.candidates) > maximum or not all(
@@ -318,7 +321,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
                            code="invalid_supplement", status="blocked")
 
     discovery = cached("discovery", ResearchDiscovery,
-        TERMINOLOGY + TEACHING_SCOPE +
+        terms + TEACHING_SCOPE +
         instructions("foundation_discovery", maximum=maximum) + "\n" +
         json.dumps({"topic": config.topic, "language": config.language, "episode": entry.model_dump(),
                     "prior_knowledge": config.prior_knowledge, "questions": questions}, ensure_ascii=False),
@@ -360,7 +363,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
     data = {"questions": questions, "episode": entry.model_dump(), "language": config.language,
             "findings": [f.model_dump() for f in known.findings if f.id in entry.finding_ids], "sources": context,
             "source_budget": source_budget(context, known)}
-    text = TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + instructions("foundation_supplement")
+    text = terms + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS + instructions("foundation_supplement")
     if known.assembled:
         text += " " + ASSEMBLED_ALLOWANCE
     rejected = sorted(directory.glob("evidence_rejected_*.json"))
@@ -405,7 +408,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
                                code="invalid_supplement", status="blocked")
 
         review = cached("review", FoundationReview,
-            TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
+            terms + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
             instructions("foundation_review") + " " + instructions("foundation_review_basis") + "\n" +
             json.dumps({**data, "supplement": supplement.model_dump(),
                         "findings": [f.model_dump() for f in findings],

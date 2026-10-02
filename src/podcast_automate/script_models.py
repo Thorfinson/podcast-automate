@@ -47,13 +47,21 @@ class EpisodePlan(LaterFields):
     recap_finding_ids: list[Identifier] = Field(default_factory=list, description=(
         "Findings introduced in earlier episodes that this episode recalls, e.g. in the finale's synthesis; "
         "they may be cited but need not all be covered."))
+    # Two tiers since 2026-10-02: finding_ids are the core the dialogue must develop. An assembled dossier holds every
+    # verified answer (Transformer: 327 findings, about 55 per episode, one cited finding per 140 spoken words), and
+    # covering all of them pulled episodes into detail instead of the theory-first explanation the user asked for.
+    supporting_finding_ids: list[Identifier] = Field(default_factory=list, description=(
+        "Study detail this episode may cite where it backs a statement, in any scene, without covering it; "
+        "never one of the episode's own finding_ids."))
+    research_limit_ids: list[Identifier] = Field(default_factory=list, description=(
+        "The limit_id of each entry in research_limits this episode states where the affected statement is used."))
 
-    LATER = {"series_role": "", "recap_finding_ids": []}
+    LATER = {"series_role": "", "recap_finding_ids": [], "supporting_finding_ids": [], "research_limit_ids": []}
 
 
 def episode_findings(entry):
-    """The findings an episode may cite: its own, then those it recalls from earlier episodes."""
-    return [*entry.finding_ids, *(f for f in entry.recap_finding_ids if f not in entry.finding_ids)]
+    """The findings an episode may cite: its core, its supporting ones, then those it recalls from earlier episodes."""
+    return list(dict.fromkeys([*entry.finding_ids, *entry.supporting_finding_ids, *entry.recap_finding_ids]))
 
 
 class SeriesPlan(Contract):

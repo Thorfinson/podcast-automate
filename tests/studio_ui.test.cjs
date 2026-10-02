@@ -1089,11 +1089,12 @@ test('a re-render posts the rerender flag with the session token and no fresh ap
   const request=app.requests.find(r=>r.path==='/api/projects/test/start');
   assert.equal(request.options.method,'POST');
   assert.equal(request.options.headers['X-Studio-Token'],'csrf');
-  // No checkbox on the reading page: the server applies the saved approval by the pipeline's rule.
+  // No checkbox on the reading page: the server applies the saved approval by the pipeline's rule. Since 2026-10-02 the
+  // re-render also carries the hash of the tags on the page (empty when none were placed), since it speaks them.
   assert.deepEqual(JSON.parse(request.options.body),{action:'audio',episode:'ep_001',approve_audio:false,rerender:true,
-    script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
+    expression_hash:'',script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
   // The approval-page button still sends the checkbox state and no rerender flag, and the hash of the tags read
-  // with the script (empty when none were placed); only a new approval binds them.
+  // with the script (empty when none were placed).
   app.run('episodeIndex=0;$("audio-approval").checked=true;');
   assert.deepEqual(JSON.parse(JSON.stringify(app.run('audioRequest()'))),{episode:'ep_001',approve_audio:true,expression_hash:'',script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
 });
@@ -2157,7 +2158,8 @@ test('saving what a paused run is bound to warns before the save',()=>{
   assert.ok(!app.run('renderStyleNotes()').includes('angehaltener Lauf'));
 });
 
-test('drafting and revising the outline are named as such, with the previous draft marked as not approvable',()=>{
+test('drafting and revising the outline are named as such, and the replaced draft leaves the page',()=>{
+  // 2026-10-02: the replaced plan stayed on the page while it was redone, and after the revision stopped.
   const app=studio(), p=workflowProject(app);
   p.outline.approval=null;
   Object.assign(p.job,{action:'replan',status:'running',run:{run_id:'run_o',kind:'script',status:'running',stages:{planning:{status:'running',attempts:1}}},progress:{phase:'script',stage:'planning',activity:'Inhaltsverzeichnis wird korrigiert · Korrekturrunde 2 von 3',episodes:[]}});
@@ -2166,20 +2168,37 @@ test('drafting and revising the outline are named as such, with the previous dra
   const html=app.elements.get('content').innerHTML;
   assert.ok(html.includes('Das Inhaltsverzeichnis wird überarbeitet.'));
   assert.ok(html.includes('Korrekturrunde 2 von 3'));
+  assert.ok(!html.includes('Build the explanation.'),'the replaced draft is not shown');
+  assert.ok(!html.includes('data-action="script"')&&!html.includes('data-action="replan"'));
   app.run(`project.job.action='plan';project.outline=null;lastJobView='';render();`);
   assert.ok(app.elements.get('job-bar').innerHTML.includes('Inhaltsverzeichnis entsteht'));
   assert.ok(!app.elements.get('job-bar').innerHTML.includes('Ausarbeitung läuft'));
 });
 
-test('an outline that stays contradictory is redrafted with a hint instead of resumed',()=>{
+test('an outline that stays contradictory is drafted anew instead of resumed or revised',()=>{
+  // The planning stage never completed, so there is no outline to revise: scripting.outline_revision refuses a hint.
   const app=studio();
   app.run(`project={id:'p',config:boot.defaults,research:'Dossier',outline:null,job:{id:'j',action:'plan',status:'blocked',message:'Das Inhaltsverzeichnis enthält nach der automatischen Korrektur noch einen Widerspruch.',
     run:{run_id:'run_o',kind:'script',status:'blocked',stages:{planning:{status:'blocked',attempts:1,error:{code:'invalid_plan'}}}}}};step=PAGE.outline;render();`);
   const card=app.elements.get('stop-card').innerHTML;
   assert.ok(card.includes('Inhaltsverzeichnis bleibt widersprüchlich'));
-  assert.ok(card.includes('id="stop-feedback"'));
-  assert.ok(card.includes('data-action="replan" data-feedback="stop-feedback"'));
+  assert.ok(card.includes('data-action="plan"'));
+  assert.ok(!card.includes('data-action="replan"'));
   assert.ok(!card.includes('data-action="resume"'));
+});
+
+test('a revision stopped at the output limit starts a new outline instead of revising the draft it replaced',()=>{
+  // 2026-10-02 (Transformer project): the restart revised the stopped run, which stopped at once with invalid_plan
+  // and offered the same button again.
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,research:'Dossier',outline:null,job:{id:'j',action:'replan',status:'blocked',message:'Zu lang.',
+    run:{run_id:'run_o',kind:'script',status:'blocked',stages:{planning:{status:'blocked',attempts:2,error:{code:'claude_output_limit'}}}}}};step=PAGE.outline;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Antwort zu lang für einen Aufruf'));
+  assert.ok(card.includes('data-action="plan"'));
+  assert.ok(!card.includes('data-action="replan"'));
+  assert.equal(app.run(`restartAction({run:{kind:'script',status:'blocked',stages:{planning:{status:'completed',attempts:1}}}})`),'replan_feedback',
+    'a completed outline still takes a revision hint');
 });
 
 test('a restarted server renews the session token once instead of failing every click',async()=>{
@@ -2612,4 +2631,169 @@ test('the missing-works panel shows today\'s CORE calls against the daily allowa
   assert.ok(app.run('worksPanel()').includes('für heute aufgebraucht'));
   app.run(`project.server.core=null;`);
   assert.ok(!app.run('worksPanel()').includes('CORE heute'),'without a key nothing is shown');
+});
+
+// Findings of the product review, 2026-10-02.
+test('every stop code the backend raises has its own card instead of the generic one',()=>{
+  const app=studio();
+  const info=(code,kind='research')=>app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'${code}'},run:{run_id:'r',kind:'${kind}',stages:{}}})`);
+  const expected={missing_executable:'fix',unsupported_codex_launcher:'fix',unsupported_claude_launcher:'fix',openrouter_forbidden:'fix',
+    openrouter_search_unsupported:'fix',invalid_backend:'fix',credential_in_prompt:'dead',credential_in_response:'dead',
+    invalid_output_schema:'dead',unsupported_run:'dead',missing_outputs:'dead',worker_stop:'dead',research_context_incomplete:'dead',
+    research_questions_open:'retry',question_scope_unresolved:'retry',invalid_speech:'retry',audio_approval_required:'decision'};
+  for(const [code,kind] of Object.entries(expected)){
+    const stop=info(code);
+    assert.equal(stop.kind,kind,code);
+    assert.ok(!stop.text.includes(`(Code ${code})`),`${code} falls through to the generic card`);
+  }
+  for(const code of ['missing_executable','unsupported_codex_launcher','unsupported_claude_launcher'])assert.ok(info(code).actions.includes('check'),code);
+  assert.ok(info('openrouter_forbidden').actions.includes('key'));
+  for(const code of ['openrouter_search_unsupported','invalid_backend'])assert.ok(info(code).actions.includes('open_brief'),code);
+  assert.ok(info('audio_approval_required','episode_audio').actions.includes('audio_again'));
+  assert.ok(info('research_questions_open').text.includes('„Fortsetzen“ recherchiert sie weiter'));
+  assert.ok(info('question_scope_unresolved').text.includes('„Fortsetzen“ kommt jetzt daran vorbei'));
+  assert.ok(info('research_context_incomplete').text.includes('nicht mehr lesbar'));
+  assert.ok(info('invalid_speech','episode_audio').text.includes('zweimal zu kurz, zu lang oder mit langer Stille'));
+  // Correction loops that fell through before.
+  for(const [code,kind] of [['invalid_polish_evidence','script'],['invalid_series_evidence','script'],['invalid_teaching_evidence','script'],
+    ['invalid_teaching_repair','script'],['invalid_research_gap','script'],['verified_question_split','research'],['invalid_dossier_rebuild','research']])
+    assert.equal(info(code,kind).title,'Korrekturversuche aufgebraucht',code);
+  // A missing answer is asked again; a spent correction loop no longer hides behind that promise.
+  assert.ok(info('invalid_model_output').text.includes('Mit neuen Anläufen fortsetzen'));
+  // An audio card uses the same rules: a stopped Gemini episode names the implausible take.
+  app.run(`project={id:'p',config:boot.defaults,episodes:[],audio_jobs:[{id:'a1',episode:'ep_001',status:'blocked',error_code:'invalid_speech',message:'Abschnitt seg_004 zu kurz.',run:{run_id:'run_a',kind:'episode_audio',stages:{}}}]};`);
+  assert.ok(app.run('renderAudioJob(project.audio_jobs[0])').includes('Unplausible Gemini-Aufnahme'));
+});
+
+test('fresh attempts are offered only where the server says the backend accepts them',()=>{
+  const app=studio();
+  const card=job=>app.run(`renderStopCard(${JSON.stringify(job)},stopInfo(${JSON.stringify(job)}))`);
+  const research={id:'j',status:'blocked',action:'resume',stop:{code:'rejected_output'},run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research'}};
+  assert.ok(card(research).includes('data-action="fresh-attempts"'),'an older server without the field keeps the earlier rule');
+  assert.ok(!card({...research,fresh_attempts:false}).includes('data-action="fresh-attempts"'),'no stuck call: nothing to offer');
+  assert.ok(card({...research,fresh_attempts:true}).includes('data-action="fresh-attempts"'));
+  // After an allowance reset the repairs, the script review card no longer offers what the backend would refuse.
+  const review={id:'s',status:'blocked',action:'resume',stop:{code:'script_review_failed'},run:{run_id:'run_s',kind:'script',stages:{}},progress:{phase:'script'}};
+  assert.ok(!card({...review,fresh_attempts:false}).includes('data-action="fresh-attempts"'));
+  assert.ok(card({...review,fresh_attempts:false}).includes('data-action="resume"'));
+  // The series review and a stored series-repair failure get the path the backend has had all along.
+  const series={...review,stop:{code:'series_review_failed'},fresh_attempts:true};
+  assert.ok(card(series).includes('data-action="fresh-attempts"'));
+  assert.ok(card(series).includes('gibt der Serienkorrektur eine neue Runde'));
+  assert.ok(!card({...series,fresh_attempts:false}).includes('neue Runde'));
+  assert.ok(card({...review,stop:{code:'invalid_series_evidence'},fresh_attempts:true}).includes('data-action="fresh-attempts"'));
+});
+
+test('a transient technical stop announces its automatic resume and says when they are used up',()=>{
+  const app=studio();
+  const later=new Date(Date.now()+600000).toISOString();
+  const job={id:'t',status:'failed',action:'resume',stop:{code:'timeout'},run:{run_id:'r',kind:'research',stages:{}},auto_resume_kind:'transient',auto_resume_at:later,auto_resume_count:1};
+  const note=app.run(`waitNote(${JSON.stringify(job)})`);
+  assert.ok(note.includes('vorübergehender technischer Fehler'));
+  assert.ok(note.includes('Versuch 2 von 3'));
+  const spent=app.run(`waitNote(${JSON.stringify({...job,auto_resume_at:undefined,auto_resume_exhausted:true})})`);
+  assert.ok(spent.includes('der Fehler kam jedes Mal wieder'));
+  assert.ok(!spent.includes('Nach dem Reset'));
+});
+
+test('a worker that outlived a Studio restart runs elsewhere and is stopped only where its identity is known',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,research:'d',job:{id:'j',action:'resume',status:'running',external:true,external_stoppable:false,started_at:new Date().toISOString(),run:{run_id:'r',kind:'research',status:'running',stages:{}},progress:{phase:'research'}}};step=PAGE.research;render();`);
+  const bar=app.elements.get('job-bar').innerHTML;
+  assert.ok(bar.includes('läuft außerhalb dieses Studios'));
+  assert.ok(!bar.includes('data-action="stop"'),'without its pid the Studio cannot stop it');
+  assert.ok(app.elements.get('stop-card').innerHTML.includes('endet von selbst'));
+  app.run(`project.job.external_stoppable=true;lastJobView='';renderJob();`);
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('data-action="stop"'));
+});
+
+test('a paused run of another lane keeps its stop card on its own page',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job={id:'s',action:'script',status:'blocked',stop:{code:'script_review_failed'},run:{run_id:'run_s',kind:'script',status:'blocked',stages:{review:{status:'blocked'}}}};
+  p.parked_jobs=[p.job,{id:'r',action:'research',status:'failed',stop:{code:'timeout'},run:{run_id:'run_r',kind:'research',status:'failed',stages:{}}}];
+  app.run(`project=${JSON.stringify(p)};overviewPage=false;step=PAGE.research;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Zeitlimit eines Modellaufrufs'));
+  assert.ok(card.includes('data-action="resume" data-run-id="run_r"'));
+});
+
+test('polls run one at a time, skip a hidden tab but for its title, and poll again when it shows',async()=>{
+  const app=studio(), p=workflowProject(app);
+  await app.run(`selectProject('test',${JSON.stringify(p)})`);
+  app.responses.set('/api/projects/test',p);
+  const polls=()=>app.requests.filter(r=>r.path==='/api/projects/test').length;
+  const before=polls();
+  // Two ticks while the first answer is still on its way: one request.
+  await Promise.all([app.run('poll()'),app.run('poll()')]);
+  assert.equal(polls(),before+1);
+  app.run('document.hidden=true;');
+  await app.run('poll()');
+  assert.equal(polls(),before+2,'a hidden tab still polls once a minute, for its title');
+  await app.run('poll()');
+  assert.equal(polls(),before+2,'and not more often');
+  app.run('document.hidden=false;');
+  await app.run('poll()');
+  assert.equal(polls(),before+3);
+  // The overview polls every ten seconds.
+  app.responses.set('/api/projects',{projects:[],trash:[],server:{}});
+  app.run(`overviewPage=true;lastPollAt.overview=0;boot.capabilities={project_overview:true};`);
+  await app.run('poll()');await app.run('poll()');
+  assert.equal(app.requests.filter(r=>r.path==='/api/projects').length,1);
+});
+
+test('a new server instance reloads the session and says when the key is gone and recordings wait for it',async()=>{
+  const app=studio(), p=workflowProject(app);
+  await app.run(`selectProject('test',${JSON.stringify(p)})`);
+  await new Promise(resolve=>setTimeout(resolve,0));  // the page's own start-up reads the bootstrap first
+  app.run(`boot.server={instance:'old'};boot.key_available=true;`);
+  app.responses.set('/api/projects/test',{...p,server:{instance:'new'}});
+  app.responses.set('/api/bootstrap',{token:'fresh',voices:['Aiden','Vivian'],projects:[],defaults:app.run('boot.defaults'),key_available:false,server:{instance:'new'}});
+  await app.run('poll()');
+  assert.equal(app.run('boot.token'),'fresh');
+  assert.equal(app.run('boot.server.instance'),'new');
+  assert.ok(app.elements.get('notice').textContent.includes('muss erneut eingegeben werden'));
+  // The queue names the key as the reason, with the field to enter it.
+  app.run(`project.episodes=[{script:{episode_id:'ep_001',title:'Eins'},speech:{characters:12000,minutes:14.6}}];project.audio_queue=[{episode:'ep_001',position:1,waiting:'key'}];`);
+  const queue=app.run('renderAudioQueue()');
+  assert.ok(queue.includes('wartet auf den OpenRouter-Key'));
+  assert.ok(queue.includes('id="queue-key"'));
+  assert.ok(queue.includes('ca. 15 Min. Audio · 12.000 Zeichen Sprechtext'));
+  app.run(`project.audio_queue=[{episode:'ep_001',position:1,waiting:'place'}];`);
+  assert.ok(app.run('renderAudioQueue()').includes('wartet auf einen freien Platz'));
+});
+
+test('a paid recording shows its size before approval, for one episode and for all',()=>{
+  const app=studio(), p=workflowProject(app);
+  const episode=(id,chars,minutes)=>({...publishedEpisode({}),script:{...publishedEpisode({}).script,episode_id:id,title:id},speech:{characters:chars,minutes}});
+  p.episodes=[episode('ep_001',30000,24.4),episode('ep_002',20000,16)];
+  p.audio_settings={provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}};
+  app.run(`project=${JSON.stringify(p)};boot.key_available=true;boot.capabilities={parallel_audio:true};episodeIndex=0;`);
+  const card=app.run(`renderApprovalCard(project.episodes[0],project.audio_settings,true)`);
+  assert.ok(card.includes('ca. 24 Min. Audio · 30.000 Zeichen Sprechtext'));
+  assert.ok(!/USD|€|Kosten/.test(card),'no price: it cannot be checked offline');
+  const all=app.run('renderApproveAll(true)');
+  assert.ok(all.includes('Umfang zusammen:</strong> ca. 40 Min. Audio · 50.000 Zeichen Sprechtext'));
+});
+
+test('a calibrated script projection shows the expected calls beside the minimum and suggests the limit from them',()=>{
+  const app=studio();
+  const progress={phase:'script',model_calls:140,model_call_limit:150,budget_projection:{used:140,minimum_remaining_calls:20,feasible:true,
+    expected_remaining_calls:60,expected_shortfall:50,calibration:{run_id:'run_old'},expected_label:'Erwartung nach dem letzten abgeschlossenen Skriptlauf.'}};
+  assert.equal(app.run(`suggestedCalls({progress:${JSON.stringify(progress)}})`),200);
+  assert.equal(app.run(`suggestedCalls({progress:${JSON.stringify({...progress,budget_projection:{used:140,minimum_remaining_calls:20}})}})`),165);
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j',action:'script',status:'running',started_at:new Date().toISOString(),run:{run_id:'r',kind:'script',status:'running',stages:{}},progress:${JSON.stringify(progress)}}};drawerOpen=true;renderJob();`);
+  const html=app.elements.get('job-status').innerHTML;
+  assert.ok(html.includes('mindestens 20 weitere nötig · erwartet etwa 60, mehr als verfügbar'));
+  assert.ok(html.includes('Erwartung nach dem letzten abgeschlossenen Skriptlauf.'));
+});
+
+test('the research page names a pass with noted limits and how often an answer was checked again',()=>{
+  const app=studio();
+  const ledger={closed:1,total:1,phase:'completed',questions:[{id:'q1',question:'Warum?',status:'verified',steps:2,read_sections:3,revalidations:2,acceptance:['x']}]};
+  assert.ok(app.run(`renderResearchQuestions(${JSON.stringify(ledger)},new Set(),false,'r',0,0)`).includes('2 Mal erneut geprüft'));
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j',action:'research',status:'completed',run:{run_id:'r',kind:'research',status:'completed',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},
+    research_quality:{closed:1,total:2,passed:true,passed_with_noted_limits:true,requirements:[{question:'Q1',passed:true,reason:'ok'},{question:'Q2',passed:false,recorded_limit:true,reason:'Quelle schweigt'}]}}}};step=PAGE.research;render();`);
+  const html=app.elements.get('research-progress').innerHTML;
+  assert.ok(html.includes('bestanden mit vermerkten Grenzen'));
+  assert.ok(html.includes('◇ Q2</strong> · als Grenze vermerkt'));
 });

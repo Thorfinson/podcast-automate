@@ -132,6 +132,19 @@ class RunBudgetTests(unittest.TestCase):
             with self.subTest(sources=value), self.assertRaises(AppError):
                 approve_model_call_limit(self.root, self.run.run_id, sources=value)
 
+    def test_project_limits_raised_above_a_run_approval_apply_instead_of_stopping_the_run(self):
+        # Limits left the resumed run's hash (storage.bound_brief, 2026-10-02), so project.yaml may now be raised while a
+        # run with an earlier approval waits; the higher limit applies, and the approval stays bound to its own run.
+        baseline = self.fixture.config.research_limits
+        approve_model_call_limit(self.root, self.run.run_id, baseline.model_calls + 10,
+                                 search_rounds=baseline.search_rounds + 2)
+        raised = baseline.model_copy(update={"model_calls": baseline.model_calls + 500, "sources": baseline.sources + 7})
+        limits = effective_limits(self.work, raised, self.run.input_hash)
+        self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources),
+                         (baseline.model_calls + 500, baseline.search_rounds + 2, baseline.sources + 7))
+        with self.assertRaises(AppError):
+            effective_limits(self.work, raised, "0" * 64)
+
     def test_limit_must_be_an_explicit_integer_increase(self):
         for limit in (True, 39, 0, "120", 120.5):
             with self.subTest(limit=limit), self.assertRaises(AppError):
@@ -144,6 +157,36 @@ class RunBudgetTests(unittest.TestCase):
         # The two 18-question runs of 2026-09-26/27 needed 600 to 750 calls and up to 46 search rounds.
         self.assertEqual((limits.model_calls, limits.search_rounds, limits.sources), (750, 48, 150))
         self.assertEqual(TopicBrief(topic="Existing project", research_limits={"model_calls": 40}).research_limits.model_calls, 40)
+
+
+class FreshAttemptOfferTests(unittest.TestCase):
+    def test_fresh_attempts_are_offered_only_where_the_approval_would_set_something_aside(self):
+        """2026-10-02: "Mit neuen Anläufen fortsetzen" stood on research stops without a stuck call, and again after
+        an allowance had reset the repairs; both times the backend refused it."""
+        import tempfile
+        from pathlib import Path
+        from podcast_automate.models import RunManifest, StageRecord
+        from podcast_automate.research_patches import MAX_REJECTIONS
+        from podcast_automate.run_budget import approve_fresh_attempts, fresh_attempts_available
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        work = root / "runs/run_r"
+
+        def manifest(status):
+            write_yaml(work / "run_manifest.yaml", RunManifest(run_id="run_r", kind="research", status=status,
+                       project_hash="p", input_hash="i", stages={"dossier": StageRecord(status=status)}).model_dump(mode="json"))
+        manifest("blocked")
+        self.assertFalse(fresh_attempts_available(root, "run_r"))
+        for number in range(MAX_REJECTIONS + 1):
+            write_json(work / f"question_research/tasks/t1/patch_rejected_{number:02d}.json", {"code": "rejected_output"})
+        self.assertTrue(fresh_attempts_available(root, "run_r"))
+        manifest("running")
+        self.assertFalse(fresh_attempts_available(root, "run_r"), "a running run is never touched")
+        manifest("blocked")
+        approve_fresh_attempts(root, "run_r")
+        self.assertFalse(fresh_attempts_available(root, "run_r"), "once set aside there is nothing left to offer")
+        self.assertFalse(fresh_attempts_available(root, "run_missing"))
 
 
 if __name__ == "__main__":

@@ -265,8 +265,11 @@ class OpenRouterScriptTests(unittest.TestCase):
             first = run_script(self.root, backend="openrouter", model="vendor/test-model", api_key=KEY)
             self.assertEqual(first.status, "waiting_for_quota")
             output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                code = main(["resume", str(self.root), "--api-key", "rotated-key", "--json"])
+            # The rotated key comes from the hidden prompt; a key on the command line is refused (2026-10-02).
+            with contextlib.redirect_stdout(output), \
+                    patch("podcast_automate.cli.getpass.getpass", return_value="rotated-key") as prompt:
+                code = main(["resume", str(self.root), "--api-key", "--json"])
+            prompt.assert_called_once()
         self.assertEqual(code, 0)
         self.assertEqual(self.fixture.calls.count(EpisodeScript), 2)
         self.assertEqual(json.loads(output.getvalue())["run"]["run_id"], first.run_id)

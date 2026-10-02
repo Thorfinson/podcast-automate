@@ -2,10 +2,11 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from podcast_automate.codex import CodexAdapter, executable_command
+from podcast_automate.codex import CodexAdapter, classify_failure, codex_reset, executable_command
 from podcast_automate.errors import AppError
 from podcast_automate.models import RuntimeSettings
 from podcast_automate.process import run_process
@@ -35,6 +36,15 @@ if mode == "quota":
     sys.exit(1)
 if mode == "schema":
     print(json.dumps({"type": "turn.failed", "error": {"message": "invalid_json_schema: propertyNames is not permitted. test-only-secret"}}))
+    sys.exit(1)
+if mode == "retry_then_fail":
+    # A rate-limit retry the turn outlived, then a failure of its own that is no quota.
+    print(json.dumps({"type": "error", "message": "rate limit reached; retrying 1/5"}))
+    print("(node:14290) Warning: a deprecated API is used", file=sys.stderr)
+    print(json.dumps({"type": "turn.failed", "error": {"message": "stream disconnected before completion"}}))
+    sys.exit(1)
+if mode == "quota_reset":
+    print(json.dumps({"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again in 2 days 3 hours."}}))
     sys.exit(1)
 topic = json.loads(sys.stdin.read().splitlines()[-1])["topic"]
 schema = json.loads(pathlib.Path(args[args.index("--output-schema")+1]).read_text())
@@ -139,6 +149,49 @@ class CodexTests(unittest.TestCase):
                     # No JSON answer is not an answer: the call is a plain failure with the text kept.
                     self.assertFalse((self.root / mode / "rejected_output.json").exists())
                     self.assertEqual((self.root / mode / "rejected_output.txt").read_text(encoding="utf-8"), '{"topic": "cut off')
+
+    def test_only_the_turns_own_failure_is_classified_and_a_named_reset_is_kept(self):
+        """2026-10-02: an earlier rate-limit retry in the same turn made a later stream failure a quota pause."""
+        with patch.dict(os.environ, {"PLA_TEST_MODE": "retry_then_fail"}), self.assertRaises(AppError) as error:
+            self.adapter.probe("Thema", self.root / "retry_then_fail")
+        self.assertEqual((error.exception.code, error.exception.status), ("codex_failed", "failed"))
+        with patch.dict(os.environ, {"PLA_TEST_MODE": "quota_reset"}), self.assertRaises(AppError) as error:
+            self.adapter.probe("Thema", self.root / "quota_reset")
+        self.assertEqual((error.exception.code, error.exception.details["provider"]), ("quota_exhausted", "codex_cli"))
+        until = datetime.fromisoformat(error.exception.details["blocked_until"])
+        self.assertLess(abs(until - datetime.now(timezone.utc) - timedelta(days=2, hours=3)), timedelta(minutes=5))
+        self.assertIn("Voraussichtlich wieder verfügbar ab", str(error.exception))
+
+    def test_failure_classes_read_the_category_before_whole_words(self):
+        now = datetime(2026, 10, 2, 8, 0, tzinfo=timezone.utc)
+        cases = [
+            # (failure text, the turn's failure object, expected code)
+            ("(node:14290) Warning: something", None, "codex_failed"),
+            ("Unexpected quotation in the answer", None, "codex_failed"),
+            ("usage_limit_reached", None, "quota_exhausted"),
+            ("HTTP 429 Too Many Requests", None, "quota_exhausted"),
+            ("401 Unauthorized", None, "authentication_required"),
+            ("x", {"message": "x", "codexErrorInfo": "usageLimitExceeded"}, "quota_exhausted"),
+            ("x", {"message": "x", "codexErrorInfo": {"responseTooManyFailedAttempts": {"httpStatusCode": 429}}},
+             "quota_exhausted"),
+            ("x", {"message": "x", "codexErrorInfo": "unauthorized"}, "authentication_required"),
+            # The app-server's category decides: a server error that mentions a rate limit is no quota.
+            ("rate limit while retrying", {"codexErrorInfo": "internalServerError"}, "codex_failed"),
+            ("usage limit", {"codexErrorInfo": "other"}, "quota_exhausted"),
+        ]
+        for message, error, code in cases:
+            with self.subTest(message=message, error=error):
+                self.assertEqual(classify_failure(message, error=error, now=now).code, code)
+        local = now.astimezone()
+        relative = classify_failure("You've hit your usage limit. Try again in 1 day 2 hours 30 minutes.", now=now)
+        self.assertEqual(relative.details["blocked_until"], (now + timedelta(days=1, hours=2, minutes=30)).isoformat())
+        dated = classify_failure("You've hit your usage limit. Try again at Oct 4th, 2026 3:04 PM.", now=now)
+        self.assertEqual(datetime.fromisoformat(dated.details["blocked_until"]),
+                         local.replace(month=10, day=4, hour=15, minute=4, second=0, microsecond=0))
+        today = codex_reset("try again at 11:59 PM", now=now)
+        self.assertEqual(today.astimezone().strftime("%H:%M"), "23:59")
+        self.assertTrue(now < today <= now + timedelta(days=1))
+        self.assertNotIn("blocked_until", classify_failure("usage_limit_reached", now=now).details)
 
     def test_recovered_stream_error_does_not_invalidate_success(self):
         with patch.dict(os.environ, {"PLA_TEST_MODE": "retry"}):

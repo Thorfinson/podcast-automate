@@ -7,7 +7,8 @@ import re
 import tempfile
 import time
 import wave
-from http.client import HTTPException
+from array import array
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
@@ -15,12 +16,13 @@ from urllib.request import Request, build_opener
 
 from pydantic import Field, SecretStr, model_serializer, model_validator
 
+from .audio import PAUSE_TAGS, silent_runs
 from .errors import AppError
 from .models import Contract, HostVoices
 from .openrouter import NoRedirect, api_failure
 from .qwen_worker import spoken_settings
 from .spoken_forms import SpokenForms, spoken_text
-from .storage import digest, file_hash, inside, write_json
+from .storage import digest, file_hash, file_lock, inside, read_text, write_json
 
 # The Gemini speech models on offer, the newest family only; switching or adding one is an entry
 # here. Verified against OpenRouter's public models API (output_modalities=speech) on 2026-09-26:
@@ -165,21 +167,84 @@ def cached_audio(path, settings):
         return None
 
 
+def evict(path):
+    """Remove a cache entry, its record first, so a half-removed entry is never taken for a valid one."""
+    path.with_suffix(".json").unlink(missing_ok=True)
+    path.unlink(missing_ok=True)
+
+
+# The health gate of every Gemini take (2026-10-02). A take of 80 characters or more is spoken at 8 to 25 characters
+# per second, counted from its first to its last audible sound without the silences over a second; the read-only
+# scan of 1,620 takes behind audio.SILENCE_LEVEL measured p1 12.9, median 16.6 and p99 20.4, and found one take of
+# 1,248 characters cut to 0.37 s (Asimov ep_013 s3_09, exported unnoticed). A silence over 2.5 s needs a pause tag.
+HEALTH_MIN_CHARACTERS = 80
+HEALTH_RATE = (8.0, 25.0)
+HEALTH_SILENCE_SECONDS = 2.5
+SAMPLE_RATE = 24000
+# The inline tags of the expression layer (expression.TAG) are performed, not read, so they are not characters.
+SPOKEN_TAG = re.compile(r"<[^<>\n]{1,40}>")
+
+
+def take_defect(pcm, heard):
+    """Why a take of ``heard`` (24 kHz mono PCM) cannot be what the engine was asked to say; empty if plausible."""
+    samples = array("h", pcm)
+    total = len(samples)
+    runs = silent_runs(samples, SAMPLE_RATE)
+    if sum(length for _, length in runs) >= total:
+        return "Die Aufnahme enthält keine hörbare Sprache."
+    long = [length / SAMPLE_RATE for _, length in runs if length > HEALTH_SILENCE_SECONDS * SAMPLE_RATE]
+    if len(long) > sum(heard.count(tag) for tag in PAUSE_TAGS):
+        return f"Die Aufnahme enthält {max(long):.1f} s Stille, die kein Pausen-Tag erklärt."
+    characters = len(" ".join(SPOKEN_TAG.sub(" ", heard).split()))
+    if characters >= HEALTH_MIN_CHARACTERS:
+        edges = sum(length for start, length in runs if start == 0 or start + length >= total)
+        pauses = sum(length for start, length in runs
+                     if 0 < start and start + length < total and length > SAMPLE_RATE)
+        rate = characters * SAMPLE_RATE / (total - edges - pauses)
+        if not HEALTH_RATE[0] <= rate <= HEALTH_RATE[1]:
+            return (f"{characters} Zeichen in {total / SAMPLE_RATE:.2f} s Audio, also {rate:.1f} Zeichen pro Sekunde; "
+                    f"plausibel sind {HEALTH_RATE[0]:g} bis {HEALTH_RATE[1]:g}.")
+    return ""
+
+
+def recorded_pcm(path):
+    with wave.open(str(path), "rb") as stream:
+        return stream.readframes(stream.getnframes())
+
+
 # Rate-limit answers (429) one request waits out before its recording stops: pauses of about 5, 10, 20, 40, 60 and
 # 60 seconds, or the provider's Retry-After, about three minutes in all.
 RATE_LIMIT_RETRIES = 6
+# A gateway or overload answer, a cut transfer or a reset connection is asked again twice, after 3 and 6 seconds:
+# one 502 among about 1,800 requests used to stop a whole episode (2026-10-02).
+TRANSIENT_RETRIES = 2
+TRANSIENT_BACKOFF_SECONDS = 3.0
+TRANSIENT_CODES = {502, 503, 504}
+
+
+def transient(exc):
+    reason = exc.reason if isinstance(exc, URLError) and not isinstance(exc, HTTPError) else exc
+    if isinstance(reason, HTTPError):
+        return reason.code in TRANSIENT_CODES
+    return isinstance(reason, (IncompleteRead, ConnectionResetError))
 
 
 def throttle_path(cache):
     return cache / "throttle.json"
 
 
-def wait_for_throttle(cache):
-    """Wait until the pause a rate limit set has passed. It is shared through the cache folder, so every parallel
-    recording slows down together instead of each pressing on (the user's choice, 2026-09-29: start every approved
-    episode at once and throttle on 429)."""
+def shared_throttle(root):
+    """One throttle for every project in the Studio's projects folder, like its limit on parallel recordings: a 429
+    in one project slows the recordings of all of them (2026-10-02)."""
+    return Path(root).parent / ".gemini_throttle.json"
+
+
+def wait_for_throttle(cache, *, path=None):
+    """Wait until the pause a rate limit set has passed. It is shared through ``path`` (the cache folder's own file
+    when none is given), so every parallel recording slows down together instead of each pressing on (the user's
+    choice, 2026-09-29: start every approved episode at once and throttle on 429)."""
     try:
-        until = float(json.loads(throttle_path(cache).read_text(encoding="utf-8")).get("until", 0))
+        until = float(json.loads(read_text(path or throttle_path(cache))).get("until", 0))
     except (OSError, ValueError, TypeError, AttributeError):
         return
     delay = until - time.time()
@@ -187,23 +252,27 @@ def wait_for_throttle(cache):
         time.sleep(min(delay, 120))
 
 
-def throttle(cache, retry_after, attempt):
-    """After a 429: every recording waits the provider's Retry-After, else a pause that doubles with each attempt."""
+def throttle(cache, retry_after, attempt, *, path=None):
+    """After a 429: every recording waits the provider's Retry-After, else a pause that doubles with each attempt.
+    The update holds a lock, so two recordings throttling at once never shorten each other's pause."""
     try:
         seconds = float(retry_after)
     except (TypeError, ValueError):
         seconds = min(60.0, 5.0 * 2 ** (attempt - 1))
     seconds = max(1.0, min(seconds, 120.0))
-    try:
-        current = float(json.loads(throttle_path(cache).read_text(encoding="utf-8")).get("until", 0))
-    except (OSError, ValueError, TypeError, AttributeError):
-        current = 0.0
-    cache.mkdir(parents=True, exist_ok=True)
-    write_json(throttle_path(cache), {"until": max(current, time.time() + seconds), "attempt": attempt})
+    path = path or throttle_path(cache)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(path.with_suffix(".lock"), timeout=30):
+        try:
+            current = float(json.loads(read_text(path)).get("until", 0))
+        except (OSError, ValueError, TypeError, AttributeError):
+            current = 0.0
+        write_json(path, {"until": max(current, time.time() + seconds), "attempt": attempt})
 
 
 class GeminiSpeech:
-    def __init__(self, api_key=None, *, timeout=600, model=GEMINI_MODEL):
+    def __init__(self, api_key=None, *, timeout=600, model=GEMINI_MODEL, throttle_file=None):
+        """``throttle_file`` is the shared rate-limit file (``shared_throttle``); without it each cache folder has one."""
         key = (api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY", "")).strip()
         if key and (len(key) > 512 or any(not 33 <= ord(c) <= 126 for c in key)):
             raise AppError("Ungültiger OpenRouter-Key.", code="invalid_key", status="blocked")
@@ -212,6 +281,7 @@ class GeminiSpeech:
         self._key = SecretStr(key)
         self.timeout = timeout
         self.model = model
+        self.throttle_file = throttle_file
 
     def require_key(self):
         if not self._key.get_secret_value():
@@ -228,8 +298,13 @@ class GeminiSpeech:
             raise AppError("Der API-Key darf nicht im gesprochenen Text stehen.", code="credential_in_prompt", status="blocked")
         settings = speech_settings(text, voice, language, spoken, self.model)
         path = cache / (digest(settings) + ".wav")
-        if cached_audio(path, settings):
+        cached = cached_audio(path, settings)
+        # A take joined from request-sized parts was checked part by part when it was made.
+        if cached and (cached.get("parts") or not take_defect(recorded_pcm(path), heard)):
             return path
+        if cached:
+            # A cached take that fails the health gate is never replayed; it is recorded anew (2026-10-02).
+            evict(path)
         parts = split_input(heard)
         if len(parts) > 1:
             children = [self.synthesize(part, voice, language, cache) for part in parts]
@@ -247,15 +322,38 @@ class GeminiSpeech:
                 "parts": [child.name for child in children], "speech_quality_verified": False})
             return path
         self.require_key()
+        started = time.monotonic()
+        # The health gate: an implausible take is asked for once more, then the recording stops (take_defect).
+        pcm, generation = self.request(heard, voice, cache)
+        if defect := take_defect(pcm, heard):
+            pcm, generation = self.request(heard, voice, cache)
+            if again := take_defect(pcm, heard):
+                raise AppError(f"Gemini lieferte zweimal eine unplausible Aufnahme. Zuerst: {defect} Dann: {again} "
+                               "Fertige Abschnitte bleiben gespeichert; Fortsetzen nimmt diesen Abschnitt neu auf.",
+                               code="invalid_speech", status="blocked")
+        cache.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=cache) as temporary:
+            wav = Path(temporary) / "audio.wav"
+            with wave.open(str(wav), "wb") as output:
+                output.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+                output.writeframes(pcm)
+            wav.replace(path)
+        write_json(path.with_suffix(".json"), {"settings": settings, "sha256": file_hash(path),
+            "generation_id": generation if re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", generation) and secret not in generation else None,
+            "elapsed_seconds": round(time.monotonic() - started, 3), "speech_quality_verified": False})
+        return path
+
+    def request(self, heard, voice, cache):
+        """One take of ``heard``: its checked PCM and the provider's generation id."""
+        secret = self._key.get_secret_value()
         payload = {"model": self.model, "input": heard, "voice": voice, "response_format": "pcm"}
         request = Request(SPEECH_ENDPOINT, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Authorization": "Bearer " + secret, "Content-Type": "application/json",
                      "X-OpenRouter-Title": "Podcast Automate"}, method="POST")
-        started = time.monotonic()
-        attempt, failure = 0, None
+        attempt, retried, failure = 0, 0, None
         while True:
             # A rate limit one recording met makes every parallel recording wait (throttle).
-            wait_for_throttle(cache)
+            wait_for_throttle(cache, path=self.throttle_file)
             try:
                 with build_opener(NoRedirect()).open(request, timeout=self.timeout) as response:
                     if response.status != 200:
@@ -277,12 +375,22 @@ class GeminiSpeech:
             except HTTPError as exc:
                 if exc.code == 429 and attempt < RATE_LIMIT_RETRIES:
                     attempt += 1
-                    throttle(cache, exc.headers.get("Retry-After") if exc.headers else None, attempt)
+                    throttle(cache, exc.headers.get("Retry-After") if exc.headers else None, attempt,
+                             path=self.throttle_file)
                     exc.close()
+                    continue
+                if transient(exc) and retried < TRANSIENT_RETRIES:
+                    retried += 1
+                    exc.close()
+                    time.sleep(TRANSIENT_BACKOFF_SECONDS * retried)
                     continue
                 failure = exc
                 break
-            except (TimeoutError, URLError, OSError, HTTPException):
+            except (TimeoutError, URLError, OSError, HTTPException) as exc:
+                if transient(exc) and retried < TRANSIENT_RETRIES:
+                    retried += 1
+                    time.sleep(TRANSIENT_BACKOFF_SECONDS * retried)
+                    continue
                 raise AppError("Gemini-Audioverbindung unterbrochen. Fertige Abschnitte bleiben gespeichert; später fortsetzen.",
                                code="openrouter_connection", status="blocked") from None
         if failure is not None:
@@ -315,22 +423,15 @@ class GeminiSpeech:
             pass
         if secret.encode() in pcm or error_body or pcm.startswith((b"<html", b"<!DOCTYPE")):
             raise AppError("Unerwartete Antwort statt Audio.", code="invalid_audio", status="blocked")
-        cache.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=cache) as temporary:
-            wav = Path(temporary) / "audio.wav"
-            with wave.open(str(wav), "wb") as output:
-                output.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
-                output.writeframes(pcm)
-            wav.replace(path)
-        write_json(path.with_suffix(".json"), {"settings": settings, "sha256": file_hash(path),
-            "generation_id": generation if re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", generation) and secret not in generation else None,
-            "elapsed_seconds": round(time.monotonic() - started, 3), "speech_quality_verified": False})
-        return path
+        return pcm, generation
 
 
-def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None, expression=None):
-    """``expression`` maps a segment id to its spoken text with inline tags (expression.plan_expression)."""
-    engine = GeminiSpeech(api_key, timeout=config.runtime.tts_timeout_seconds, model=choice.model)
+def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=None, overrides=None, expression=None,
+                   engine=None):
+    """``expression`` maps a segment id to its spoken text with inline tags (expression.plan_expression); ``engine``
+    is the adapter to record with, a ``parallel_speech.LockedGeminiSpeech`` when episodes record in parallel."""
+    engine = engine or GeminiSpeech(api_key, timeout=config.runtime.tts_timeout_seconds, model=choice.model,
+                                    throttle_file=shared_throttle(root))
     table = table if table is not None else SpokenForms()
     rows, paths = [], []
     for segment in script.segments:
@@ -338,7 +439,14 @@ def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=No
             "total_segments": len(script.segments), "current_segment": segment.segment_id})
         voice = choice.voices[segment.speaker_id]
         spoken = (expression or {}).get(segment.segment_id) or spoken_text(segment, table, overrides)
-        path = engine.synthesize(segment.text, voice, config.language, root / "cache/audio/gemini", spoken=spoken)
+        try:
+            path = engine.synthesize(segment.text, voice, config.language, root / "cache/audio/gemini", spoken=spoken)
+        except AppError as exc:
+            if exc.code != "invalid_speech":
+                raise
+            # Named by segment, so the listener knows which passage to check (SPEC.md §12).
+            raise AppError(f"Abschnitt {segment.segment_id}: {exc}", code=exc.code, status=exc.status,
+                           details={**exc.details, "segment_id": segment.segment_id}) from exc
         paths.append(path)
         rows.append({"segment_id": segment.segment_id, "path": path.relative_to(root / "cache/audio").as_posix(),
             "sha256": file_hash(path), "settings": speech_settings(segment.text, voice, config.language, spoken, choice.model)})

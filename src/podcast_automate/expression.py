@@ -18,7 +18,10 @@ from .models import Contract, Identifier, NonEmpty
 from .prompts import instructions
 from .research_patches import corrected_call
 
+# The record format of expression.json; saved readings carry it, so it stays while the prompt changes.
 EXPRESSION_VERSION = "audio_expression.v1"
+# The prompt's own tag (prompts/audio_expression.txt). v2, 2026-10-02: never a <long pause> at a segment's start.
+EXPRESSION_PROMPT_VERSION = "audio_expression.v2"
 # Google's documented vocal events for Gemini 3.8 Flash TTS (English names, also in German text), kept to those
 # that fit a factual two-host podcast; screams, sobs, growls, sneezes and the like are left out. The first four
 # passed the listen test of 2026-09-29, the others are documented and heard in scripts/gemini-tags-test.py.
@@ -26,6 +29,9 @@ ALLOWED_TAGS = ("<short pause>", "<long pause>", "<breath>", "<exhales>", "<sigh
                 "<laugh>", "<chuckle>", "<giggle>", "<gasp>", "<tsk>", "<throat-clearing>")
 MAX_TAGS_PER_SEGMENT = 2
 TAG = re.compile(r"<[^<>\n]{1,40}>")
+# All 44 <long pause> tags of the 29 Sep recordings opened their segment, where assembly already pauses (900 ms at
+# a chapter start), and four of them left 3.5 to 7.3 s of dead air. The tag may stand inside a segment only.
+OPENING_LONG_PAUSE = re.compile(r"\A\s*<long pause>\s*")
 
 
 class TaggedSegment(Contract):
@@ -44,6 +50,17 @@ def untagged(text):
 def episode_tag_limit(count):
     """Tags one episode may carry: sparse, about one for every four segments."""
     return max(3, count // 4)
+
+
+def without_opening_pause(plan):
+    """``plan`` with a <long pause> at a segment's start removed, and a segment left without a tag dropped. A
+    deterministic fix, so a model answer that breaks only this rule costs no correction call."""
+    rows = []
+    for row in plan.segments:
+        text = OPENING_LONG_PAUSE.sub("", row.text, count=1)
+        if TAG.search(text):
+            rows.append(TaggedSegment(segment_id=row.segment_id, text=text))
+    return ExpressionPlan(segments=rows)
 
 
 def expression_defects(plan, spoken):
@@ -66,6 +83,8 @@ def expression_defects(plan, spoken):
             errors.append(f"{row.segment_id}: at most {MAX_TAGS_PER_SEGMENT} tags per segment.")
         if untagged(row.text) != " ".join(spoken[row.segment_id].split()):
             errors.append(f"{row.segment_id}: the words changed; without its tags the text must be exactly the given one.")
+        if OPENING_LONG_PAUSE.match(row.text):
+            errors.append(f"{row.segment_id}: a <long pause> never opens a segment; the recording already pauses there.")
         for match in TAG.finditer(row.text):
             before = row.text[match.start() - 1] if match.start() else " "
             after = row.text[match.end()] if match.end() < len(row.text) else " "
@@ -92,14 +111,14 @@ def plan_expression(invoke, script, spoken, *, language, labels):
                       "text": spoken[s.segment_id]} for s in script.segments]}, ensure_ascii=False)
 
     def check(plan):
-        errors = expression_defects(plan, spoken)
+        errors = expression_defects(without_opening_pause(plan), spoken)
         if errors:
             raise AppError(" ".join(errors), code="invalid_expression", status="blocked")
 
     try:
-        plan = corrected_call(invoke, prompt, ExpressionPlan, EXPRESSION_VERSION, check)
+        plan = corrected_call(invoke, prompt, ExpressionPlan, EXPRESSION_PROMPT_VERSION, check)
     except AppError as exc:
         if exc.code != "invalid_expression":
             raise
         return {}, str(exc)
-    return {row.segment_id: row.text for row in plan.segments}, ""
+    return {row.segment_id: row.text for row in without_opening_pause(plan).segments}, ""

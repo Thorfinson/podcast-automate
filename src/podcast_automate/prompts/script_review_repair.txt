@@ -5,7 +5,8 @@ explanations, examples, limits and IDs elsewhere; do not regress earlier correct
 reference its assigned findings and those introduced in earlier scenes. For a finding first
 introduced in a later scene, move its explanation there. All plan and reference constraints still
 apply. When an issue says a statement claims the sources lack, omit or do not measure something and
-no gap_probes entry backs it, delete that statement instead of rewording it; state a limit only
-where a finding or a gap probe names it. When an issue says a statement contradicts a source or goes
+neither a gap_probes entry nor research_limits backs it, delete that statement instead of rewording
+it; state a limit only where a finding, a gap probe or research_limits names it, and keep a limit
+research_limits names. When an issue says a statement contradicts a source or goes
 beyond a finding's contract, restate it exactly as the finding states it, with its reference, or
 remove it; never replace it with a new claim of your own.

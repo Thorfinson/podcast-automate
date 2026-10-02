@@ -11,7 +11,10 @@ from .evidence_models import BRIEF, FindingSupport, ResearchObjection, SourceAss
 
 
 class QuestionTask(LaterFields):
-    id: Identifier = Field(max_length=32, pattern=r"^task_[a-z0-9_]+$")
+    # The general identifier rule only. A ``^task_`` pattern stood here, but Identifier's own pattern overrode it in
+    # validation and schema alike, so plans name tasks freely (``t52``, ``v41_flash_messungen``) and stored plans
+    # keep validating (2026-10-02: the dead pattern removed; the schema is unchanged).
+    id: Identifier = Field(max_length=32)
     requirement_ids: list[Identifier] = Field(min_length=1)
     question_ids: list[Identifier] = Field(min_length=1)
     question: NonEmpty
