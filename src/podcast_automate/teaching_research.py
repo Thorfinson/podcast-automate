@@ -20,7 +20,7 @@ from .evidence_models import ClaimContract, FindingSupport, SourceAssessment
 from .research_evidence import EVIDENCE_INSTRUCTIONS, scope_assessments, support_errors, verbatim
 from .research_patches import corrected_call
 from .sources import canonical_url, clean, import_failure, import_source
-from .storage import digest, file_hash, inside, write_json
+from .storage import OPERATIONAL_FIELDS, bound_brief, digest, file_hash, inside, read_yaml, write_json
 
 VERSION = "teaching_research.v1"
 # The prompt tag is separate from VERSION: VERSION also binds stored supplement receipts, and a
@@ -99,8 +99,21 @@ def probe_questions(work, entry):
 
 
 def binding(config, entry, dossier):
-    return digest({"version": VERSION, "config": config.model_dump(),
-                   "episode": entry.model_dump(), "dossier": dossier.model_dump()})
+    """What a supplement belongs to: the brief's content, the episode and the dossier. The operational fields
+    (storage.OPERATIONAL_FIELDS) stay out, as they do for a resumed run's hash (storage.bound_brief): a raised limit
+    or a longer timeout saved while the run waited stopped every resume with invalid_supplement (2026-10-02 review)."""
+    brief = {key: value for key, value in config.model_dump().items() if key not in OPERATIONAL_FIELDS}
+    return digest({"version": VERSION, "config": brief, "episode": entry.model_dump(), "dossier": dossier.model_dump()})
+
+
+def bindings(work, config, entry, dossier):
+    """The bindings a supplement of this episode may carry: today's, and the earlier one over the whole brief, as it is
+    now and as the run started (its project_snapshot.yaml), so a supplement made before 2026-10-02 still counts."""
+    snapshot = work / "project_snapshot.yaml"
+    started = bound_brief(config, read_yaml(snapshot) if snapshot.is_file() else None, "script")
+    return {binding(config, entry, dossier), *(digest({"version": VERSION, "config": brief.model_dump(),
+                                                       "episode": entry.model_dump(), "dossier": dossier.model_dump()})
+                                              for brief in (config, started))}
 
 
 def named_question(text, questions):
@@ -268,10 +281,13 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
         request["probes"] = probes
     directories = supplement_directories(work, entry)
     directory = None
+    accepted = bindings(work, config, entry, dossier)
     for previous in directories:
         path = previous / "request.json"
-        if path.exists() and json.loads(path.read_text(encoding="utf-8")) == request:
-            directory = previous
+        saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        if saved is not None and saved.get("binding") in accepted and {**saved, "binding": None} == {**request, "binding": None}:
+            # The request as it was saved, an earlier binding form included: its files stay as they are.
+            directory, request = previous, saved
             break
     if directory is None:
         if len(directories) >= MAX_SUPPLEMENTS:
@@ -460,7 +476,7 @@ def apply_foundations(root, work, config, entries, dossier, context, sources):
         if not receipt_path.exists():
             continue
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        if receipt["binding"] != binding(config, entry, dossier):
+        if receipt["binding"] not in bindings(work, config, entry, dossier):
             raise AppError("Die Nachrecherche passt nicht zum freigegebenen Plan.", code="invalid_supplement", status="blocked")
         required = {(directory / name).relative_to(root).as_posix() for name in REQUIRED_FILES}
         if not required <= receipt.get("outputs", {}).keys():

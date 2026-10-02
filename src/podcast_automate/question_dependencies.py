@@ -67,6 +67,15 @@ def prerequisite_answers(task, state):
             if state["tasks"][identifier]["status"] == "verified"]
 
 
+def prerequisites_current(task, state, verification):
+    """Whether ``verification`` was made against today's prerequisites: each one verified or accepted as a gap, and
+    the answers it bound unchanged. The resume checks every verified answer so (question_research.initialise), and
+    keep_spent_answers an answer that comes back after a failed rework."""
+    expected = {a["task_id"]: a["answer_hash"] for a in prerequisite_answers(task, state)}
+    covered = set(expected) | set(gap_prerequisites(task, state))
+    return covered == set(task.depends_on) and (verification or {}).get("prerequisite_hashes", {}) == expected
+
+
 PREREQUISITE_FEEDBACK = "A prerequisite changed. Revalidate this answer against the updated verified prerequisite."
 
 
@@ -81,6 +90,11 @@ def revalidate(row, *, feedback=None, activity="Geänderte Voraussetzung wird ge
                resubmit=digest(row["answer"]) if row.get("answer") else None,
                feedback=list(feedback or [PREREQUISITE_FEEDBACK]), activity=activity)
     row["dependency_revision"] = row.get("dependency_revision", 0) + 1
+    if row.get("reopenings"):
+        # The rework of the last reopening is over: the answer was verified again. A block of this check is no failed
+        # rework, and the answer from before that reopening, which an audit rejected, does not come back
+        # (question_synthesis.failed_rework; 2026-10-02 review).
+        row["reopenings"][-1]["settled"] = True
     # Counts against no limit; the report shows how often each question was checked again, on resume as well as after
     # a reworked prerequisite (2026-10-02: one synthesis question four times).
     row["revalidations"] = row.get("revalidations", 0) + 1

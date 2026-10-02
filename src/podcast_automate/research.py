@@ -826,7 +826,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                                  "accepted_gaps_remaining" if quality.get("passed_with_accepted_gaps") else
                                  "noted_limits_remaining" if quality.get("passed_with_noted_limits") else "no_remaining_issues"),
                 "human_reviewed": False,
-                "complete_topic_coverage": not accepted_rows and quality.get("closed") == quality.get("total"),
+                # Remaining objections, disputed ones included, leave the coverage open as well (2026-10-02 review).
+                "complete_topic_coverage": (not accepted_rows and quality.get("closed") == quality.get("total")
+                                            and not quality.get("residual_objections")),
                 "coverage_scope": "agreed_brief",
                 "accepted_gaps": accepted_rows, "residual_objections": quality.get("residual_objections", []),
                 "quality_gate": quality, "sources": len(index.sources),

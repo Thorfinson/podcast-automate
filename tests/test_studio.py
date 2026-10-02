@@ -772,6 +772,8 @@ class StudioHttpTests(unittest.TestCase):
         its revise button then stopped at once (invalid_plan) and offered the same button again."""
         work = self.root / "runs/run_o"
         write_json(work / "series_plan.json", example_plan().model_dump())
+        for name in ("knowledge_model.json", "inputs.json", "script_request.json"):
+            write_json(work / name, {"name": name})
         write_json(self.root / "studio/outline.json", {"run_id": "run_o"})
 
         def planning(record):

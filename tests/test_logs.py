@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from podcast_automate.logs import LOGGER, configure_logging, failure_records, logger, record_failure
+from podcast_automate.logs import LOGGER, configure_logging, failure_records, log_target, logger, record_failure, release_logging
 from podcast_automate.models import RunManifest, StageRecord
 from podcast_automate.runner import execute_stages, status
 from podcast_automate.storage import init_project
@@ -50,13 +50,27 @@ class FailureRecordTests(unittest.TestCase):
 
 
 class ConfigureLoggingTests(unittest.TestCase):
+    def test_a_release_through_another_spelling_of_the_path_closes_the_handler(self):
+        """2026-10-02 review: the worker configured its log under the resolved project path and the caller released it
+        under the unresolved one (an 8.3 temp name on Windows CI, /var for /private/var on macOS); the handler stayed
+        open, and Windows refused to remove the folder."""
+        root = logging.getLogger(LOGGER)
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "sub").mkdir()
+            spelled = Path(folder) / "sub" / ".." / "studio.log"
+            configure_logging(spelled)
+            open_handlers = lambda: [h for h in root.handlers if getattr(h, "pla_target", None) == log_target(spelled)]
+            self.assertEqual(len(open_handlers()), 1)
+            release_logging(Path(folder).resolve() / "studio.log")
+            self.assertEqual(open_handlers(), [])
+
     def test_file_handler_is_added_once_and_receives_records(self):
         root = logging.getLogger(LOGGER)
         with tempfile.TemporaryDirectory() as folder:
             log = Path(folder) / "studio.log"
             configure_logging(log)
             configure_logging(log)
-            handlers = [h for h in root.handlers if getattr(h, "pla_target", None) == str(log)]
+            handlers = [h for h in root.handlers if getattr(h, "pla_target", None) == log_target(log)]
             self.assertEqual(len(handlers), 1)
             try:
                 logger("test").warning("Hallo Protokoll")

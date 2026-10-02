@@ -218,8 +218,10 @@ class AdapterPool:
                 try:
                     alternative = self.choose(mode, prefer, candidates, exclude=tried, refresh=True)
                 except AppError as final:
-                    # Both subscriptions are out: name both resets. A blocked login keeps the quota error.
-                    if final.status == "waiting_for_quota":
+                    # Both subscriptions are out: name both resets. A blocked login keeps the quota error. A provider
+                    # that is unusable (an expired login, too old a CLI) beside one out of quota stops with its own
+                    # error, which the user can fix now: the quota pause waited for the other's reset, days at times.
+                    if final.status == "waiting_for_quota" and not unavailable:
                         raise final from exc
                     raise exc from final
                 write_json(directory / "provider_switch.json", {

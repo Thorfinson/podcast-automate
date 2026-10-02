@@ -916,6 +916,55 @@ class AssembledDossierScriptTests(fixtures.ScriptProjectCase):
         self.assertNotIn(TEXT, json.dumps(published, ensure_ascii=False))
 
 
+class PublishedArchiveTests(fixtures.ScriptProjectCase):
+    def test_publishing_a_new_outline_archives_the_old_series_and_a_resume_keeps_its_own(self):
+        old = example_plan().episodes[0].model_copy(update={"episode_id": "ep_009", "title": "From an older outline"})
+        write_yaml(self.root / "episodes/ep_009/episode_plan.yaml", old.model_dump())
+        write_yaml(self.root / "episodes/ep_009/script.yaml", {"older": True})
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            run = run_script(self.root)
+            self.assertEqual(run.status, "completed")
+            self.assertEqual([p.name for p in sorted((self.root / "episodes").glob("ep_*"))], ["ep_001"])
+            (archive,) = (self.root / "episodes/archive").iterdir()
+            self.assertTrue((archive / "ep_009/script.yaml").is_file())
+            run_script(self.root, resume=True, run_id=run.run_id)
+        self.assertEqual(len(list((self.root / "episodes/archive").iterdir())), 1, "a resume of the outline archives nothing")
+        self.assertTrue((self.root / "episodes/ep_001/script.yaml").is_file())
+
+
+class EpisodeArchiveTests(unittest.TestCase):
+    def test_episodes_of_another_outline_move_to_the_archive_and_this_outlines_stay(self):
+        """The user's choice of 2026-10-02: a new outline's scripts were published beside the old series, and old
+        episodes the new plan lacks stayed in the Studio with their recordings. They move to episodes/archive/ now;
+        an episode of this outline (a resume, a revision, one episode at a time) stays where it is."""
+        import tempfile
+        from pathlib import Path
+        from podcast_automate.script_artifacts import archive_other_series
+        with tempfile.TemporaryDirectory() as folder:
+            root, plan = Path(folder), example_plan()
+            entry = plan.episodes[0]
+            write_yaml(root / "episodes/ep_001/episode_plan.yaml", entry.model_dump())
+            write_yaml(root / "episodes/ep_001/script.yaml", {"kept": True})
+            write_yaml(root / "episodes/ep_002/episode_plan.yaml",
+                       entry.model_copy(update={"episode_id": "ep_002", "title": "An older outline"}).model_dump())
+            write_json(root / "episodes/ep_002/audio_latest.json", {"parts": [{"audio": "exports/ep_002/run_a/part_01.mp3"}]})
+            (root / "episodes/ep_003").mkdir()
+            archive = archive_other_series(root, plan, "run_new")
+            self.assertEqual([p.name for p in sorted((root / "episodes").glob("ep_*"))], ["ep_001"])
+            self.assertEqual([p.name for p in sorted(archive.glob("ep_*"))], ["ep_002", "ep_003"])
+            self.assertEqual(json.loads((archive / "ep_002/audio_latest.json").read_text(encoding="utf-8"))["parts"][0]["audio"],
+                             "exports/ep_002/run_a/part_01.mp3", "the recording stays where its report names it")
+            receipt = json.loads((archive / "receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual((receipt["run_id"], receipt["episodes"]), ("run_new", ["ep_002", "ep_003"]))
+            self.assertIsNone(archive_other_series(root, plan, "run_new"), "nothing else to archive")
+            # A new outline whose first episode differs takes the old one along, whatever its id.
+            renewed = plan.model_copy(deep=True)
+            renewed.episodes[0].title = "A new first episode"
+            later = archive_other_series(root, renewed, "run_newer")
+            self.assertEqual([p.name for p in later.glob("ep_*")], ["ep_001"])
+            self.assertEqual(len(list((root / "episodes/archive").iterdir())), 2)
+
+
 class QuotationTests(unittest.TestCase):
     WORDS = ("models assign an energy to each configuration and lower energy marks a better fit between "
              "observed variables while learning and inference remain distinct operations of the same "

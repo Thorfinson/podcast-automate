@@ -36,6 +36,12 @@ def logger(name: str | None = None) -> logging.Logger:
     return logging.getLogger(LOGGER + ("." + name if name else ""))
 
 
+def log_target(path: Path) -> str:
+    """A file handler's key: the resolved path, so a release through another spelling of the same file (an 8.3 temp
+    name on Windows, /var for /private/var on macOS) finds it. The raw text missed it and left the file open."""
+    return str(Path(path).resolve())
+
+
 def configure_logging(path: Path | None = None, *, level=logging.INFO, stderr_level=logging.ERROR) -> logging.Logger:
     """Idempotent: one rotating file handler per path and one terminal handler per process."""
     root = logging.getLogger(LOGGER)
@@ -48,7 +54,7 @@ def configure_logging(path: Path | None = None, *, level=logging.INFO, stderr_le
         handler.setFormatter(OneLine("%(levelname)s: %(message)s"))
         handler.pla_target = "stderr"
         root.addHandler(handler)
-    if path is not None and str(path) not in targets:
+    if path is not None and log_target(path) not in targets:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             handler = RotatingFileHandler(path, maxBytes=MAX_BYTES, backupCount=BACKUPS, encoding="utf-8")
@@ -57,7 +63,7 @@ def configure_logging(path: Path | None = None, *, level=logging.INFO, stderr_le
             return root
         handler.setLevel(level)
         handler.setFormatter(logging.Formatter(FILE_FORMAT))
-        handler.pla_target = str(path)
+        handler.pla_target = log_target(path)
         root.addHandler(handler)
     return root
 
@@ -68,7 +74,7 @@ def release_logging(path: Path | None) -> None:
         return
     root = logging.getLogger(LOGGER)
     for handler in list(root.handlers):
-        if getattr(handler, "pla_target", None) == str(path):
+        if getattr(handler, "pla_target", None) == log_target(path):
             root.removeHandler(handler)
             handler.close()
 

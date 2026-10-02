@@ -205,6 +205,37 @@ class SubscriptionStoreTests(unittest.TestCase):
             record_claude_success(None, clock=self.clock)
             self.assertIsNone(subscriptions.unavailable_state("claude_code", clock=self.clock))
 
+    def test_a_login_checked_after_the_note_ends_it_and_a_noted_provider_is_checked_afresh(self):
+        """2026-10-02 review: after 'claude auth login', the connection check, the doctor and the next resume still
+        reported Claude unusable until the ten-minute note ran out."""
+        candidates = {"codex_cli": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"},
+                      "claude_code": {"model": "claude-sonnet-5-5", "reasoning_effort": "high"}}
+        login = AppError("Anmeldung", code="authentication_required", status="blocked")
+        note = subscriptions.record_unavailable("claude_code", login, clock=self.clock)
+        detected = subscriptions.parse_iso(note["detected_at"])
+
+        def claude(seconds, usable=True):
+            checked = (detected + timedelta(seconds=seconds)).isoformat()
+            return {**snapshot("claude_code", available=usable, usable=usable), "checked_at": checked}
+        self.assertFalse(subscriptions.with_unavailable("claude_code", claude(-5), clock=self.clock)["usable"],
+                         "the login check from before the failing call does not end the note")
+        self.assertTrue(subscriptions.with_unavailable("claude_code", claude(5), clock=self.clock)["available"])
+        self.assertEqual(subscriptions.with_unavailable("claude_code", claude(5, usable=False), clock=self.clock)["reason"],
+                         "authentication_required")
+        # Too old a CLI for one model is no login reason: the login check knows no model, so the note stands.
+        subscriptions.record_unavailable("claude_code", AppError("alt", code="claude_version"), clock=self.clock)
+        self.assertFalse(subscriptions.with_unavailable("claude_code", claude(5), clock=self.clock)["usable"])
+        subscriptions.record_unavailable("claude_code", login, clock=self.clock)
+        refreshed = []
+
+        def fresh(*, refresh=False, clock=None):
+            refreshed.append(refresh)
+            return claude(5)
+        with patch.object(subscriptions, "codex_quota", return_value=snapshot("codex_cli", available=True)), \
+                patch.object(subscriptions, "claude_quota", side_effect=fresh):
+            choice = choose_subscription(self.settings, candidates, prefer="claude_code", clock=self.clock)
+        self.assertEqual((choice["provider"], refreshed), ("claude_code", [True]))
+
     def test_the_store_is_read_through_a_concurrent_rename(self):
         until = datetime.fromtimestamp(self.seconds, timezone.utc) + timedelta(hours=5)
         record_quota_failure("claude_code", AppError("Claude", code="claude_quota_exhausted", status="waiting_for_quota",
@@ -217,7 +248,7 @@ class SubscriptionStoreTests(unittest.TestCase):
                 raise PermissionError(13, "sharing violation")
             return real(path, *args, **kwargs)
 
-        with patch.object(storage.os, "name", "nt"), patch.object(storage.time, "sleep"), \
+        with patch.object(storage, "SHARING_VIOLATIONS", True), patch.object(storage.time, "sleep"), \
                 patch.object(Path, "read_text", flaky):
             # A read on the instant of another process's rename used to return {} and hide the block.
             self.assertEqual(claude_quota_state(clock=self.clock)["blocked_until"], until.isoformat())

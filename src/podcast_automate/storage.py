@@ -86,6 +86,11 @@ def atomic_text(path: Path, text: str) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+# Only Windows has the momentary sharing violations below. Tests switch the retry on through this flag: patching
+# os.name instead turns every Path built meanwhile into a WindowsPath on Linux and macOS.
+SHARING_VIOLATIONS = os.name == "nt"
+
+
 def outlast_sharing_violation(operation, timeout: float = 2.0):
     """Run ``operation``; on Windows, wait out a momentary permission error with doubling backoff.
 
@@ -100,7 +105,7 @@ def outlast_sharing_violation(operation, timeout: float = 2.0):
         try:
             return operation()
         except PermissionError:
-            if os.name != "nt" or time.monotonic() >= deadline:
+            if not SHARING_VIOLATIONS or time.monotonic() >= deadline:
                 raise
             time.sleep(delay)
             delay = min(delay * 2, 0.05)

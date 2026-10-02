@@ -11,7 +11,6 @@ from .prompts import instructions
 from .editorial import TEACHING_SCOPE, terminology
 from .errors import AppError
 from .models import Contract, EpisodeScript, Identifier, LaterFields, NonEmpty
-from .research import unanswered
 from .research_patches import corrected_call
 from .script_models import ScriptIssue
 from .storage import digest, write_json
@@ -30,10 +29,6 @@ CRITERIA = ("coverage", "prerequisites", "progression", "deferred_questions", "s
 LEGACY_CRITERIA = ("coverage", "prerequisites", "progression", "deferred_questions", "synthesis")
 # Checked only when the brief's series_goal weights their aim at 2 or 3.
 GOAL_CRITERIA = {"exposition": "understand", "guidance": "apply"}
-# Provider failures after which no verdict on the correction exists; with research.unanswered (a timeout, a stall, the
-# user's stop, a quota pause, a missing login) a resume goes on with the round instead of replaying its failure.
-PROVIDER_FAILURE_CODES = frozenset({"codex_failed", "claude_failed", "claude_structured_output",
-                                    "openrouter_unavailable", "openrouter_connection"})
 
 
 def series_criteria(config=None):
@@ -294,9 +289,18 @@ def write_repair_receipt(work, receipt):
     write_json(work / "series_repair.json", {"receipt": receipt, "sha256": digest(receipt)})
 
 
+# The verdicts on a correction itself: its evidence check rejected it, or it broke the source mapping or structure
+# after its repeated attempts. Only they are the round's decision.
+CORRECTION_VERDICTS = frozenset({"script_review_failed", "invalid_script"})
+
+
 def resumable(error):
-    """A failure inside a correction round after which no verdict on the correction exists."""
-    return unanswered(error) or error.code in PROVIDER_FAILURE_CODES
+    """A failure inside a correction round after which no verdict on the correction exists, so a resume goes on with
+    the round instead of replaying it: a timeout, a stall, the user's stop, a quota pause, a provider failure, and as
+    well a spent call limit, a missing key, a busy project or a malformed answer. Until 2026-10-02 only the first kinds
+    were listed, and the others were recorded as the round's decision: every resume raised them again without a call,
+    after a raised limit too."""
+    return error.code not in CORRECTION_VERDICTS
 
 
 def script_digests(scripts):

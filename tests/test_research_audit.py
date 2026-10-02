@@ -22,7 +22,8 @@ from podcast_automate.research_quality import FollowUpAssessment, ResearchAssess
 from podcast_automate.research_reader import SourceReader
 from podcast_automate.research_review import SourceReview, SourceReviewIssue
 from podcast_automate.research_tasks import QuestionPlan, ReopenPlan, ResearchDecision
-from podcast_automate.storage import write_json
+from podcast_automate.question_dependencies import revalidate
+from podcast_automate.storage import digest, write_json
 from tests import research_fixtures as fixtures
 from tests.question_fixtures import answer_for, claim_contract, complete_fixture_response, decision, support_receipts, task_value
 
@@ -343,6 +344,80 @@ class FailedReworkTests(AuditCase):
                 self.assertIn("## Einwände, die eine Nachbesserung nicht schließen konnte", self.quality(work))
                 dossier = json.loads((work / "complete_research/dossier.json").read_text(encoding="utf-8"))
                 self.assertEqual([f["id"] for f in dossier["findings"]], ["task_definition__f_energy"])
+
+
+    def test_a_block_after_the_rework_ended_verified_does_not_bring_back_the_answer_before_it(self):
+        """2026-10-02 review: revalidate() adds no reopening, so a question whose rework had verified A2 and whose later
+        revalidation blocked went back to A1, the answer the audit had rejected."""
+        first, second = {"summary": "A1"}, {"summary": "A2"}
+        row = {"status": "verified", "answer": second, "verification": {"answer_hash": digest(second)},
+               "reopenings": [{"reason": ["Objection."], "previous_answer": first,
+                               "previous_verification": {"answer_hash": digest(first)}}]}
+        blocked = {**copy.deepcopy(row), "status": "blocked", "answer": None, "outcome": "evidence_block"}
+        self.assertEqual(SynthesisMixin.failed_rework(blocked)[0], first, "the rework itself blocked: A1 comes back")
+        revalidate(row)
+        row.update(status="blocked", outcome="evidence_block")
+        self.assertIsNone(SynthesisMixin.failed_rework(row))
+
+    def test_a_kept_answer_is_checked_again_when_its_prerequisite_changed(self):
+        """2026-10-02 review: a prerequisite and its dependent were reopened in one round; the prerequisite's rework
+        passed, the dependent's blocked, and the dependent came back verified against the prerequisite's old answer."""
+        self.hook = lambda prompt, schema, payload, kwargs: QuestionPlan(tasks=[task_value(), {
+            **task_value("task_synthesis", "synthesis"), "depends_on": ["task_definition"]}]) if schema is QuestionPlan else None
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        row = engine.state["tasks"]["task_synthesis"]
+        kept = row["answer"]
+        row["reopenings"].append({"reason": ["Objection."], "previous_answer": kept,
+                                  "previous_verification": row["verification"]})
+        row.update(status="blocked", answer=None, outcome="evidence_block", reason="Keine neuen Belege.")
+        saved = copy.deepcopy(engine.state)
+        self.assertEqual(engine.keep_spent_answers(), ["task_synthesis"])
+        self.assertEqual(row["status"], "verified", "an unchanged prerequisite: the answer stands")
+        engine.state = copy.deepcopy(saved)
+        prerequisite = engine.state["tasks"]["task_definition"]
+        prerequisite["answer"] = {**prerequisite["answer"], "summary": "Reworked."}
+        engine.keep_spent_answers()
+        row = engine.state["tasks"]["task_synthesis"]
+        self.assertEqual((row["status"], row["draft_answer"], row["resubmit"]), ("researching", kept, digest(kept)))
+        self.assertTrue(row["reopenings"][-1]["settled"], "a block of this check returns to no earlier answer")
+
+    def test_an_access_gap_approved_for_a_blocked_rework_is_taken_up_before_its_answer_comes_back(self):
+        """2026-10-02 review: the run restored the answer from before the rework first, and the access gap the editor
+        had approved for that blocked question was never taken up."""
+        def flow(prompt, schema, payload, kwargs):
+            if schema is ResearchAssessment:
+                return ResearchAssessment(requirements=[failing("rq_001", "The mechanism is absent.",
+                                                                "task_definition__f_energy")], issues=[])
+            if schema is ReopenPlan:
+                return ReopenPlan(routes=[dict(index=0, task_ids=["task_definition"], reason="Routed.",
+                                               anchors=[anchor("task_definition", payload["objections"][0])])])
+            if schema is ResearchDecision and payload.get("reopening"):
+                return decision("blocked")
+        self.hook = flow
+        with patch.object(QuestionResearch, "keep_spent_answers", return_value=[]), self.assertRaises(AppError):
+            self.engine().run(self.discovery, self.index)
+        approval = {"task_id": "task_definition", "criterion": 0, "source": "src_closed", "evidence": "HTTP 403", "reason": ""}
+        engine = QuestionResearch(self.root, self.work, self.config, self.model,
+                                  lambda activity: write_json(self.work / "research_activity.json", {"activity": activity}),
+                                  access_gaps=lambda: [approval])
+        engine.run(self.discovery, self.index)
+        row = engine.state["tasks"]["task_definition"]
+        self.assertEqual((engine.state["phase"], row["status"], row.get("access_gaps")), ("completed", "verified", [approval]))
+
+    def test_a_finish_on_disputed_objections_is_a_finish_on_noted_limits(self):
+        """2026-10-02 review: every requirement met and the one remaining issue disputed as a review disagreement; the
+        quality report said no_remaining_issues beside the objection it listed."""
+        from types import SimpleNamespace
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        gate = self.gate()
+        self.assertFalse(gate.get("passed_with_noted_limits"), "a clean pass")
+        dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        disputed = SimpleNamespace(issues=[SimpleNamespace(reason="The second case is disputed.")])
+        report = engine.tolerate(dossier, disputed, {**gate, "blocking_gaps": []})
+        self.assertEqual((report["residual_objections"], report["passed_with_noted_limits"]),
+                         (["The second case is disputed."], True))
 
 
 class RevalidationTests(AuditCase):

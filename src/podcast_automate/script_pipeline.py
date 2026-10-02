@@ -922,7 +922,9 @@ class ScriptRun:
             write_json(self.work / "reviewed" / f"{episode_id}.json", repaired.model_dump())
             changed = True
         failure = next((outcome for outcome in outcomes.values() if isinstance(outcome, Exception)), None)
-        if failure is not None:
+        # A rejection is the round's decision (series_review.resumable) and goes first. Raised after another episode's
+        # timeout, it was forgotten: the resume checked the kept correction again and could adopt it unasked (2026-10-02).
+        if failure is not None and not rejections:
             raise failure
         if rejections:
             raise AppError("Die Korrektur der Serienprüfung hat die Belegprüfung nicht bestanden; "

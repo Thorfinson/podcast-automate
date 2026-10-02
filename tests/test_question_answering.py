@@ -3,7 +3,8 @@ and the settling of a review's final attempt (2026-10-02)."""
 import threading
 import unittest
 
-from podcast_automate.question_answering import TaskResearchMixin, VIEW_CHARS, read_context, review_passes
+from podcast_automate.question_answering import (TaskResearchMixin, VIEW_CHARS, carry_earlier, read_context, review_memory,
+                                                review_passes, review_scope)
 from podcast_automate.question_dependencies import revalidate
 from podcast_automate.research_evidence import support_errors
 from podcast_automate.research_ledger import read_value
@@ -177,6 +178,63 @@ class WorkflowTests(unittest.TestCase):
         verdict = AnswerReview.model_validate(verification["review"])
         self.assertTrue(review_passes(verdict, spec))
         self.assertEqual(support_errors(answer.findings, verdict, read_context(engine.reader, [self.ref])), [])
+
+    def test_a_kept_receipt_names_only_the_passages_given_to_this_review(self):
+        """2026-10-02 review: an earlier passing receipt may have assessed another finding's passage, which the rework
+        replaced. Put back unchanged, support_errors refused it after the review was stored, on every resume."""
+        engine, spec, row = self.completed()
+        answer = QuestionAnswer.model_validate(row["answer"])
+        earlier = AnswerReview.model_validate(row["verification"]["review"])
+        earlier.finding_support[0].references = [self.ref, "src_replaced#s1"]
+        verdict = AnswerReview.model_validate(row["verification"]["review"])
+        verdict.finding_support[0].verdict = "contradicted"
+        verdict.finding_support[0].unsupported_clauses = ["Configurations are assigned energies."]
+        passages = read_context(engine.reader, [self.ref])
+        scope = {"may_fail": {"finding_ids": [], "criteria": [], "source_adequacy": False}}
+        advisories = carry_earlier(verdict, {"review": earlier.model_dump()}, scope, passages)
+        self.assertEqual((verdict.finding_support[0].verdict, verdict.finding_support[0].references), ("supported", [self.ref]))
+        self.assertEqual(len(advisories), 1)
+        self.assertEqual(support_errors(answer.findings, verdict, passages), [])
+
+    def test_a_criterion_that_lost_or_moved_a_finding_is_judged_afresh(self):
+        """2026-10-02 review: review_scope saw only the current findings. A criterion whose second finding the rework
+        removed kept its earlier pass, and the answer was stored as verified on the remaining finding alone."""
+        _, _, row = self.completed()
+        answer = QuestionAnswer.model_validate(row["answer"])
+        hashes = {f.id: digest(f.model_dump()) for f in answer.findings}
+        resting = list(answer.criteria[0].finding_ids)
+        memory = {"step": 1, "finding_hashes": {**hashes, "f_extra": "0" * 64}, "failed_criteria": [],
+                  "blocking_findings": [], "source_adequacy": True, "criterion_findings": {"0": [*resting, "f_extra"]}}
+        scope = review_scope(memory, answer)
+        self.assertEqual((scope["changed_finding_ids"], scope["may_fail"]["criteria"], scope["may_fail"]["source_adequacy"]),
+                         ([], [0], True))
+        # A memory from before the criterion sets were kept cannot tell which criterion lost the finding: all may fail.
+        legacy = {key: value for key, value in memory.items() if key != "criterion_findings"}
+        self.assertEqual(review_scope(legacy, answer)["may_fail"]["criteria"], [0])
+        # Nothing removed or regrouped: the earlier pass stands as before.
+        same = {**memory, "finding_hashes": hashes, "criterion_findings": {"0": resting}}
+        self.assertEqual(review_scope(same, answer)["may_fail"], {"finding_ids": [], "criteria": [], "source_adequacy": False})
+        verdict = AnswerReview.model_validate(row["verification"]["review"])
+        self.assertEqual(review_memory(1, answer, verdict, [])["criterion_findings"], {"0": resting})
+
+    def test_a_search_round_taken_meanwhile_is_this_questions_budget_block(self):
+        """2026-10-02 review: web_search checked for a free round under the ledger lock and reserved it in the call,
+        after the lock. A question beside it that took the last round stopped the whole run for an approval."""
+        from unittest.mock import patch
+        from podcast_automate.errors import AppError
+        engine, spec, row = self.completed()
+        write_json(self.fixture.work / "budget.json", {"model_calls": 1, "search_rounds": 0})
+        row = dict(row, web_attempts=0, reason="", outcome=None)
+        taken = AppError("Limit von 4 Rechercherunden erreicht.", code="research_budget_exhausted", status="blocked")
+        with patch.object(engine, "call", side_effect=taken) as called:
+            self.assertFalse(engine.web_search(spec, row, ["energy"]))
+        self.assertEqual(called.call_count, 1, "the round was free when checked")
+        self.assertEqual(row["outcome"], "budget_block")
+        self.assertIn("Web-Suchbudget", row["reason"])
+        # With the model calls spent as well, the run stops for an approval as before.
+        with patch.object(engine, "call", side_effect=taken), patch.object(engine, "calls_left", return_value=False), \
+                self.assertRaises(AppError):
+            engine.web_search(spec, dict(row, outcome=None), ["energy measured"])
 
     def test_an_earlier_objection_that_is_still_unresolved_still_blocks(self):
         _, _, row, _, _ = self.failed_then_reworked(lambda payload: self.review(payload, passed=False))

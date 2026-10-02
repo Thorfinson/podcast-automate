@@ -44,8 +44,8 @@ from .prompts import instructions
 from .question_answering import ACCESS_GAP_READER, TaskResearchMixin, answer_errors, read_context, review_passes
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
                               plan_projection, plan_review_message, run_timings)
-from .question_dependencies import (gap_prerequisites, gatekeepers, invalidate_dependents, ordered_tasks,
-                                    prerequisite_answers, prerequisite_met, revalidate)
+from .question_dependencies import (gatekeepers, invalidate_dependents, ordered_tasks, prerequisite_met,
+                                    prerequisites_current, revalidate)
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
 from .question_sources import restore_attempts
 from .question_synthesis import PROMPT_GENERATION, SynthesisMixin
@@ -737,9 +737,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                     rechecks[task.id] = errors
                     continue
                 if self.state.get("evidence_version") == EVIDENCE_VERSION:
-                    expected = {a["task_id"]: a["answer_hash"] for a in prerequisite_answers(task, self.state)}
-                    covered = set(expected) | set(gap_prerequisites(task, self.state))
-                    if covered != set(task.depends_on) or verification.get("prerequisite_hashes", {}) != expected:
+                    if not prerequisites_current(task, self.state, verification):
                         # A prerequisite was reworked after this answer was verified: the answer is checked against it
                         # again, as invalidate_dependents does. Before, the resume stopped for good (Ontologies,
                         # 2026-10-02: t53, noted after its reworks, kept an answer checked against t52's old answer).
@@ -1063,9 +1061,11 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.adopt_retries()
         while True:
             self.adopt_accepted_gaps()
-            self.keep_spent_answers()
+            # The editor's decisions on blocked questions first: an access gap or a provided work reopens its question,
+            # which keep_spent_answers would otherwise have set back to an earlier answer, dropping the decision.
             self.adopt_access_gaps()
             self.adopt_provided_works()
+            self.keep_spent_answers()
             self.research_tasks()
             self.adopt_accepted_gaps()
             # A rework that ended blocked gets its verified answer back at once, with the objection noted as a limit,

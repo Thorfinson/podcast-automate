@@ -12,7 +12,7 @@ from podcast_automate import storage
 class ReplaceFileTests(unittest.TestCase):
     def test_a_momentary_sharing_violation_on_windows_is_retried_once_the_reader_is_gone(self):
         sleeps = []
-        with patch.object(storage.os, "name", "nt"), \
+        with patch.object(storage, "SHARING_VIOLATIONS", True), \
                 patch.object(storage.os, "replace", side_effect=[PermissionError(13, "sharing violation"), None]) as replace, \
                 patch.object(storage.time, "sleep", side_effect=sleeps.append):
             storage.replace_file("tmp", "target")
@@ -20,7 +20,7 @@ class ReplaceFileTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.001])
 
     def test_other_platforms_raise_at_once_without_sleeping(self):
-        with patch.object(storage.os, "name", "posix"), \
+        with patch.object(storage, "SHARING_VIOLATIONS", False), \
                 patch.object(storage.os, "replace", side_effect=PermissionError(13, "denied")) as replace, \
                 patch.object(storage.time, "sleep", side_effect=AssertionError("no retry outside Windows")):
             with self.assertRaises(PermissionError):
@@ -31,7 +31,7 @@ class ReplaceFileTests(unittest.TestCase):
         # The deadline is read at 0.0 s; eight retries fall inside the two seconds, the ninth check is past it.
         clock = iter([0.0, *(0.1 * n for n in range(1, 9)), 2.5])
         sleeps = []
-        with patch.object(storage.os, "name", "nt"), \
+        with patch.object(storage, "SHARING_VIOLATIONS", True), \
                 patch.object(storage.os, "replace", side_effect=PermissionError(13, "locked")) as replace, \
                 patch.object(storage.time, "sleep", side_effect=sleeps.append), \
                 patch.object(storage.time, "monotonic", side_effect=lambda: next(clock)):
@@ -58,13 +58,13 @@ class FlakyPath:
 class ReadTextTests(unittest.TestCase):
     def test_a_read_during_a_concurrent_rename_on_windows_is_retried(self):
         path, sleeps = FlakyPath(1, '{"model_calls": 3}'), []
-        with patch.object(storage.os, "name", "nt"), patch.object(storage.time, "sleep", side_effect=sleeps.append):
+        with patch.object(storage, "SHARING_VIOLATIONS", True), patch.object(storage.time, "sleep", side_effect=sleeps.append):
             self.assertEqual(storage.read_text(path), '{"model_calls": 3}')
         self.assertEqual((path.reads, sleeps), (2, [0.001]))
 
     def test_other_platforms_and_missing_files_raise_at_once(self):
         path = FlakyPath(1)
-        with patch.object(storage.os, "name", "posix"), \
+        with patch.object(storage, "SHARING_VIOLATIONS", False), \
                 patch.object(storage.time, "sleep", side_effect=AssertionError("no retry outside Windows")):
             with self.assertRaises(PermissionError):
                 storage.read_text(path)
