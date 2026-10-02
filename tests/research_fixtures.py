@@ -46,10 +46,25 @@ def dossier_from_prompt(prompt):
         open_questions=[])
 
 
+def composed_generation():
+    """Research as runs started before 2026-10-01 did it: a model composes the dossier (prompt generation 2), whose
+    findings keep their answers' ids (f_energy). The fixtures the script, teaching and audio tests build on stay there;
+    a run started now assembles its dossier (question_synthesis.ASSEMBLED_GENERATION), and its tests say so."""
+    return patch("podcast_automate.question_research.PROMPT_GENERATION", 2)
+
+
+def assessed_finding(payload):
+    """The energy finding as the assessment payload names it: ``f_energy`` in a composed dossier, qualified by its
+    task in an assembled one (question_synthesis.dossier_finding_id)."""
+    findings = payload.get("findings") or payload.get("dossier", {}).get("findings", [])
+    ids = [f["id"] for f in findings]
+    return next((fid for fid in ids if fid == "f_energy" or fid.endswith("__f_energy")), ids[0] if ids else "f_energy")
+
+
 def assessment_from_prompt(prompt):
     payload = json.loads(prompt.splitlines()[-1])
     return ResearchAssessment(requirements=[RequirementAssessment(requirement_id=r["id"],
-        finding_ids=["f_energy"], direct_answer=True, explanation=True, evidence=True,
+        finding_ids=[assessed_finding(payload)], direct_answer=True, explanation=True, evidence=True,
         cross_check=True, boundaries=True, reason="The synthetic fixture meets this bounded requirement.",
         missing=[], search_queries=[]) for r in payload["brief"]["requirements"]], issues=[])
 

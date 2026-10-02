@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import socket
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
-from podcast_automate.research import run_research, validate_dossier
+from podcast_automate.research import DISCOVERY_VERSION, run_research, validate_dossier
 from podcast_automate.research_dates import run_date
 from podcast_automate.research_patches import DossierPatch
 from podcast_automate.research_review import SourceReview, SourceReviewIssue
@@ -26,7 +27,16 @@ from podcast_automate.sources import (blocked_sources, canonical_url, extract, i
 from podcast_automate.storage import write_yaml
 from tests import research_fixtures as fixtures
 from tests.research_fixtures import TEXT, HTML, discovery, dossier_from_prompt
+from tests.research_fixtures import composed_generation
 from tests.question_fixtures import complete_fixture_response, decision, task_value
+
+
+def setUpModule():
+    # These tests follow a dossier a model composes and audits (prompt generation 2), as runs started before
+    # 2026-10-01 still do; the assembled dossier of a run started now has its own tests in test_question_research.
+    composed = composed_generation()
+    composed.start()
+    unittest.addModuleCleanup(composed.stop)
 
 
 class SourceTests(unittest.TestCase):
@@ -39,6 +49,17 @@ class SourceTests(unittest.TestCase):
         self.assertNotIn("invent sources", text)
         self.assertNotIn("Navigation", text)
         self.assertEqual(sections, extract(HTML, "text/html", "page")[3])
+
+    def test_a_provided_book_is_read_beyond_the_page_limit_of_a_downloaded_pdf(self):
+        from podcast_automate import pdf_text
+        writer, buffer = PdfWriter(), io.BytesIO()
+        for _ in range(pdf_text.MAX_PAGES + 1):
+            writer.add_blank_page(72, 72)
+        writer.write(buffer)
+        with self.assertRaises(pdf_text.UnreadablePdf):
+            pdf_text.extract_pdf(buffer.getvalue())
+        self.assertEqual(pdf_text.extract_pdf(buffer.getvalue(), book=True)["metadata"]["extraction_coverage"]["pages_total"],
+                         pdf_text.MAX_PAGES + 1)
 
     def test_real_pdf_extraction_preserves_page_reference(self):
         writer = PdfWriter()
@@ -68,17 +89,25 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(document.title, "Search title")
         self.assertIn("Models assign an energy", document.sections[0].text)
 
-    def open_access_case(self, url, title, answers):
-        """Import one candidate while ``download`` answers from ``answers``; returns the document and the fetched URLs."""
+    def open_access_case(self, url, title, answers, headers=None, env=None):
+        """Import one candidate while ``download`` answers from ``answers``; returns the document and the fetched URLs.
+        An address a case does not answer is not found, as a free service without the work answers. Unpaywall's
+        contact address and CORE's key are set only by ``env``, whatever the machine running the tests has."""
         fetched = []
-        def fetch(address):
+        def fetch(address, sent=None):
             fetched.append(address)
-            answer = answers[address]
+            if headers is not None and sent:
+                headers[address] = sent
+            answer = answers.get(address, AppError("Quellenabruf fehlgeschlagen (HTTP 404).", code="source_download_failed",
+                                                   details={"http_status": 404}))
             if isinstance(answer, Exception):
                 raise answer
             return answer
         candidate = SourceCandidate(url=url, title=title, authors=[], published_date="", rationale="Test", primary_source=False)
-        with patch("podcast_automate.sources.download", side_effect=fetch), tempfile.TemporaryDirectory() as temporary:
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"PLA_UNPAYWALL_EMAIL", "PLA_CORE_API_KEY"}} | (env or {})
+        with patch.dict(os.environ, environment, clear=True), patch("podcast_automate.sources.download", side_effect=fetch), \
+                tempfile.TemporaryDirectory() as temporary:
             try:
                 return import_source(candidate, Path(temporary), "run_test")[0], fetched
             except AppError as exc:
@@ -119,6 +148,71 @@ class SourceTests(unittest.TestCase):
             closed_url: refused,
             "https://api.openalex.org/works/doi:10.1257/jep.14.3.137": (json.dumps({"locations": []}).encode(), "application/json", "")})
         self.assertIs(error, refused)
+
+    REFUSED = AppError("Quellenabruf fehlgeschlagen (HTTP 403).", code="source_download_failed", details={"http_status": 403})
+
+    def test_without_an_openalex_copy_the_next_free_services_are_asked_in_turn(self):
+        # 2026-10-01: for 26 of 34 addresses Asimov's run could not read, OpenAlex alone had no copy.
+        url = "https://www.sciencedirect.com/science/article/pii/10.1016/j.joep.2024.102700"
+        doi = "10.1016/j.joep.2024.102700"
+        scholar = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=openAccessPdf"
+        document, fetched = self.open_access_case(url, "Fairness in the field", {
+            url: self.REFUSED,
+            f"https://api.openalex.org/works/doi:{doi}": (json.dumps({"locations": []}).encode(), "application/json", ""),
+            scholar: (json.dumps({"openAccessPdf": {"url": "https://repository.example/fair.pdf"}}).encode(), "application/json", ""),
+            "https://repository.example/fair.pdf": (HTML, "text/html", "https://repository.example/fair.pdf")})
+        self.assertIn("Open-access copy of the same work found via Semantic Scholar", document.reliability_note)
+        # Unpaywall and CORE need the user's contact address or key and are not asked without them.
+        self.assertFalse(any("unpaywall" in address or "core.ac.uk" in address for address in fetched))
+        self.assertEqual(fetched[-2:], [scholar, "https://repository.example/fair.pdf"])
+
+    def test_a_pmc_article_behind_a_captcha_is_read_from_europe_pmc(self):
+        url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC3735133/"
+        xml = (b"<?xml version='1.0'?><article><front><article-title>The Oregon experiment</article-title></front><body>"
+               b"<sec><p>" + TEXT.encode() + b"</p></sec></body></article>")
+        full_text = "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC3735133/fullTextXML"
+        document, _ = self.open_access_case(url, "The Oregon experiment", {
+            url: (self.CHALLENGE, "text/html", url), full_text: (xml, "application/xml", full_text)})
+        self.assertIn("Open-access copy of the same work found via Europe PMC", document.reliability_note)
+        self.assertIn(TEXT, " ".join(s.text for s in document.sections))
+
+    def test_unpaywall_and_core_are_asked_with_the_users_address_and_key(self):
+        url, doi = "https://www.cambridge.org/core/journals/x/article/10.1017/S0003055419000018", "10.1017/S0003055419000018"
+        core = "https://api.core.ac.uk/v3/search/works?q=doi%3A%2210.1017/S0003055419000018%22&limit=3"
+        sent, temporary = {}, tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        store = Path(temporary.name) / "core_usage.json"
+        answers = {
+            url: self.REFUSED,
+            core: (json.dumps({"results": [{"downloadUrl": "https://core.example/ostrom.pdf"}]}).encode(), "application/json", ""),
+            "https://core.example/ostrom.pdf": (HTML, "text/html", "https://core.example/ostrom.pdf")}
+        env = {"PLA_UNPAYWALL_EMAIL": "reader@example.org", "PLA_CORE_API_KEY": "core-test-key", "PLA_CORE_USAGE_STORE": str(store)}
+        document, fetched = self.open_access_case(url, "Governing the commons", answers, headers=sent, env=env)
+        self.assertIn("found via CORE", document.reliability_note)
+        self.assertEqual(sent[core], {"Authorization": "Bearer core-test-key"})
+        unpaywall = next(address for address in fetched if "api.unpaywall.org" in address)
+        self.assertIn("email=reader%40example.org", unpaywall)
+        self.assertLess(fetched.index(unpaywall), fetched.index(core))
+        # Every CORE search counts against the day's allowance in one shared file (2026-10-01: about 1000 a day).
+        self.assertEqual(json.loads(store.read_text(encoding="utf-8"))["calls"], 1)
+        # With the day's calls used up, CORE is skipped and the refusal stands.
+        refused, skipped = self.open_access_case(url, "Governing the commons", answers, env={**env, "PLA_CORE_DAILY_LIMIT": "1"})
+        self.assertIs(refused, self.REFUSED)
+        self.assertNotIn(core, skipped)
+        self.assertEqual(json.loads(store.read_text(encoding="utf-8"))["calls"], 1)
+
+    def test_a_scan_without_a_text_layer_brings_a_free_copy(self):
+        url, doi = "https://example.org/max-neef-scan.pdf", None
+        work = {"title": "Human Scale Development", "locations": [{"is_oa": True, "pdf_url": "https://repository.example/hsd.pdf"}]}
+        search = "https://api.openalex.org/works?search=Human%20Scale%20Development&per_page=3"
+        scan = {"blocks": [], "metadata": {"extraction_coverage": {"pages_total": 12, "pages_with_text": 0}}}
+        with patch("podcast_automate.sources.extract_pdf_isolated", return_value=scan):
+            document, _ = self.open_access_case(url, "Human Scale Development", {
+                url: (b"%PDF-1.4 scanned", "application/pdf", url),
+                search: (json.dumps({"results": [work]}).encode(), "application/json", ""),
+                "https://repository.example/hsd.pdf": (HTML, "text/html", "https://repository.example/hsd.pdf")})
+        self.assertEqual(document.final_url, "https://repository.example/hsd.pdf")
+        self.assertIn("found via OpenAlex", document.reliability_note)
 
     def test_other_failures_ask_for_no_copy(self):
         url = "https://example.org/paper.pdf"
@@ -347,7 +441,7 @@ class ResearchTests(fixtures.ResearchProjectCase):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
             self.assertEqual(run_research(self.root).status, "completed")
         # v5 (2026-09-30) types every candidate and treats attachments as maps; independence stays required.
-        self.assertEqual([version for version, _ in seen], ["research_discovery.v5-types"])
+        self.assertEqual([version for version, _ in seen], [DISCOVERY_VERSION])
         self.assertIn("For every empirical or performance claim family, include at least one source not "
                       "authored by the organisation making the claim, or state in limitations that none "
                       "was found.", seen[0][1])

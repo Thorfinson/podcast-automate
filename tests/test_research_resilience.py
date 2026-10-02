@@ -41,10 +41,12 @@ from podcast_automate.studio import make_server, read_json
 from podcast_automate.studio_progress import disputed_objection, disputed_objections, research_progress
 from podcast_automate.text_settings import auto_candidates
 from tests import research_fixtures as fixtures
+from tests.research_fixtures import composed_generation
 from tests.question_fixtures import answer_for, complete_fixture_response, decision, question_response, task_value
 from tests.test_codex_stream import SERVER, Result
 from tests.test_provider_pool import QuotaFakes
-from tests.test_question_research import QuestionResearchTests
+from tests.test_question_research import QuestionResearchTests, failing_follow_up
+from podcast_automate.research_quality import FollowUpAssessment
 
 INPUT_HASH = "a" * 64
 
@@ -374,6 +376,8 @@ class AcceptedGapTests(WorkflowCase):
                 report.requirements[0].explanation = False
                 report.requirements[0].reason = "The definition lacks its stated scope."
                 return report
+            if schema is FollowUpAssessment:
+                return failing_follow_up(payload, reason="The definition lacks its stated scope.")
             if schema is ReopenPlan:
                 return ReopenPlan(routes=[dict(index=i, task_ids=["task_definition"], reason="Scope missing.")
                                           for i in range(len(payload["objections"]))])
@@ -383,11 +387,16 @@ class AcceptedGapTests(WorkflowCase):
                 answer.summary += f" Revision {len(drafts)}."
                 return decision("answer", answer=answer)
         self.fixture.hook = object_to_definition
-        with self.assertRaises(AppError) as blocked:
-            self.run_engine()
-        self.assertEqual(blocked.exception.code, "research_questions_blocked")
-        self.assertEqual(len(self.engine_state()["tasks"]["task_definition"]["reopenings"]), 2)
-        self.assertGreater(len(drafts), 0)
+        # Both reworks are still spent on the objection; after them it is noted against the last verified answer and
+        # the run completes (keep_spent_answers, the user's choice of 2026-10-02), while the accepted gap stays a gap.
+        self.run_engine()
+        state = self.engine_state()
+        self.assertEqual(len(state["tasks"]["task_definition"]["reopenings"]), 2)
+        self.assertEqual(state["tasks"]["task_definition"]["status"], "verified")
+        self.assertEqual(state["tasks"]["task_empirical"]["outcome"], "accepted_gap")
+        self.assertEqual([row["task_id"] for row in state["noted_objections"].values()
+                          if row.get("basis") == "reworks_spent"], ["task_definition"])
+        self.assertEqual(len(drafts), 2)  # the first answer was given before this hook; one per rework
 
     def engine_state(self):
         return read_value(self.work / "question_research/state.json")
@@ -608,6 +617,7 @@ class RejectedReceiptTests(WorkflowCase):
         self.assertEqual(again.exception.code, "invalid_model_output")
         self.assertEqual(len(self.fixture.calls), calls)
 
+    @composed_generation()
     def test_saved_receipt_that_fails_todays_check_is_retired_and_re_asked(self):
         self.run_engine()
         path = self.work / "question_research/synthesis/audit_00/assessment.json"

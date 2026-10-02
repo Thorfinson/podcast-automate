@@ -204,18 +204,19 @@ test('when the automatic attempts stop, one click adopts every retry advice and 
     row('a',{auto_retries:5,auto_stop:'limit',advice:advice('0.5','Hinweis A')}),
     row('b',{auto_retries:2,auto_stop:'no_progress',advice:advice('0.2','Hinweis B')}),
     row('c',{auto_retries:1,advice:{...advice('0.1',''),recommendation:'accept_gap'}}),
-    row('d',{auto_retries:0,advice:advice('0.0','alt'),retries:1})]};
+    row('d',{auto_retries:0,advice:advice('0.0','alt'),retries:1}),
+    row('e',{auto_retries:0,advice:{...advice('0.0','Hinweis E'),recommendation:'raise_limit',limit:'sources'}})]};
   app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:24}}};overviewPage=false;step=PAGE.research;render();`);
   const page=jobView(app);
   assert.ok(page.includes('Automatische neue Versuche: 5 von 5 · Die 5 automatischen Versuche sind ausgeschöpft.'));
   assert.ok(page.includes('Automatische neue Versuche: 2 von 5 · Der letzte automatische Versuch hat keinen neuen Abschnitt gelesen'));
-  // Only current retry advice counts: not a gap recommendation, not advice from before a new attempt.
-  assert.ok(page.includes('data-action="apply-advice" data-run-id="run_x">Empfehlungen übernehmen und fortsetzen</button><span class="hint">2 Teilfragen mit dem Hinweis des Beraters erneut versuchen.'));
+  // Only current retry advice counts, a raised limit included: not a gap recommendation, not advice from before a new attempt.
+  assert.ok(page.includes('data-action="apply-advice" data-run-id="run_x">Empfehlungen übernehmen und fortsetzen</button><span class="hint">3 Teilfragen mit dem Hinweis des Beraters erneut versuchen.'));
   app.run(`$('retry-hint-b').value='Hinweis B, ergänzt';`);
   app.responses.set('/api/projects/p',app.run('structuredClone(project)'));
   await app.run(`applyAdvice({dataset:{runId:'run_x'}})`);
   const approvals=app.requests.filter(r=>r.path==='/api/projects/p/approve').map(r=>JSON.parse(r.options.body));
-  assert.deepEqual(approvals,[{kind:'retry',run_id:'run_x',task_id:'a',hint:'Hinweis A'},{kind:'retry',run_id:'run_x',task_id:'b',hint:'Hinweis B, ergänzt'}]);
+  assert.deepEqual(approvals,[{kind:'retry',run_id:'run_x',task_id:'a',hint:'Hinweis A'},{kind:'retry',run_id:'run_x',task_id:'b',hint:'Hinweis B, ergänzt'},{kind:'retry',run_id:'run_x',task_id:'e',hint:'Hinweis E'}]);
   assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/start').options.body),{action:'resume',run_id:'run_x'});
   // Reworking reopened questions is named as such, with what is still open.
   const round=app.run(`researchRound({phase:'questions',audit_round:1,reopened:18,questions:[{reopened:1,status:'verified'},{reopened:1,status:'researching'}]})`);
@@ -290,6 +291,26 @@ test('a disputed objection shows both positions and one click decides and resume
   // A disagreement without a stored dispute, a new unanchored objection, still ends the run as before.
   const rule=app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'review_disagreement'},run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research'}})`);
   assert.equal(rule.kind,'dead');
+});
+
+test('a run that keeps spent answers resumes past questions whose reworks are spent, without a decision',()=>{
+  // Transformer, 2026-10-02: the run stopped on two such questions and one waiting on them, and no card offered
+  // "Fortsetzen", although the resume keeps their verified answers (question_synthesis.keep_spent_answers).
+  const app=studio();
+  const row=(id,extra)=>({id,question:id,status:'verified',activity:'x',steps:3,read_sections:2,acceptance:['k'],reopened:2,answer:'A',findings:[],sources:[],limits:[],depends_on:[],...extra});
+  const ledger={closed:55,total:60,accepted:2,phase:'blocked',audit_round:6,keeps_spent_answers:true,residual_finish:null,questions:[
+    row('mqa',{status:'blocked',outcome:'audit_block'}),row('aufbau',{status:'blocked',outcome:'audit_block'}),
+    row('messungen',{status:'blocked',outcome:'prerequisite_block',depends_on:['aufbau']}),
+    row('synthese',{status:'blocked',outcome:'accepted_gap',accepted_gap:true})]};
+  const job=l=>({status:'blocked',action:'resume',stop:{code:'research_questions_blocked'},run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:l}});
+  assert.equal(app.run(`blockedSettled(${JSON.stringify(ledger)}).map(q=>q.id).join(',')`),'mqa,aufbau,messungen');
+  assert.equal(app.run(`canResume(${JSON.stringify(job(ledger))})`),true);
+  // A run of an earlier generation still waits for the decision.
+  assert.equal(app.run(`canResume(${JSON.stringify(job({...ledger,keeps_spent_answers:false}))})`),false);
+  // Any other advised block stays a decision of its own.
+  const other={...ledger,questions:[...ledger.questions,row('t19',{status:'blocked',outcome:'evidence_block',
+    advice:{key:'0.0',recommendation:'retry',diagnosis:'d',hint:'h'}})]};
+  assert.equal(app.run(`canResume(${JSON.stringify(job(other))})`),false);
 });
 
 test('with the finish requested, spent reworks and questions waiting on passed prerequisites make the run resumable',()=>{
@@ -1987,6 +2008,15 @@ test('a dead end names its exit instead of a futile resume, and accepted gaps al
   assert.ok(!page.includes('Nächster Schritt: Fortsetzen'));
   assert.ok(page.includes('Ergebnis: Als Lücke akzeptiert'));
   assert.equal(app.run('navigationStates()[1][0]'),'Neustart nötig');
+  // Once the Studio's code changed after the stop, a correction may fit the checkpoint: "Fortsetzen" is offered too
+  // (Asimov, 2026-10-01: morris_evaluate stopped on a receipt a later fix sorts into its own folder).
+  app.run(`project.job.finished_at='2026-10-01T15:36:10Z';project.server={code_updated_at:'2026-10-01T15:40:57Z'};render();`);
+  const updated=app.elements.get('stop-card').innerHTML;
+  assert.ok(updated.includes('Seit dem Stopp wurde das Studio aktualisiert'));
+  assert.ok(updated.includes('data-action="resume"'));
+  assert.ok(updated.includes('data-action="research" data-confirm='),'a new run stays the way out if it stops again');
+  app.run(`project.server={code_updated_at:'2026-10-01T15:30:00Z'};render();`);
+  assert.ok(!app.elements.get('stop-card').innerHTML.includes('data-action="resume"'),'older code than the stop changes nothing');
 });
 
 test('a script run over its call limit gets the approval as a button that also resumes',()=>{
@@ -2548,4 +2578,38 @@ test('the brief summary shows what the series is for and how current its sources
   app.run(`project.chat[0].recency_months=0`);
   assert.equal(app.run('proposalChangesBrief()'),false,'removing a rule that is not set changes nothing');
   assert.ok(app.run('setupSummary()').includes('Keine Vorgabe'));
+});
+
+test('the research page lists the missing works and uploads one as raw bytes for its questions',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const works={missing:[{work:'Kuran: Private Truths, Public Lies (1995)',state:'blocked',provided:null,tasks:[{id:'t_kuran',question:'Präferenzfälschung?'}]},
+    {work:'Goodhart (1975)',state:'retrying',provided:'work_ab',tasks:[{id:'t_good',question:'Reflexivität?'}]}],
+    provided:[{id:'work_ab',citation:'Goodhart (1975)',tasks:['t_good']},{id:'work_cd',citation:'Hacking (1995)',tasks:[]}]};
+  app.run(`project={id:'p',config:boot.defaults,works:${JSON.stringify(works)}};`);
+  const panel=app.run('worksPanel()');
+  assert.ok(panel.includes('Kuran: Private Truths, Public Lies (1995)</strong> <span class="tag">Frage blockiert'));
+  assert.ok(panel.includes('Gebraucht für: Präferenzfälschung?'));
+  assert.ok(panel.includes('Goodhart (1975)</strong> <span class="tag">hochgeladen'));
+  assert.ok(!panel.includes('data-work-index="1"'),'an uploaded work offers no second upload');
+  assert.ok(panel.includes('Weitere hochgeladene Werke:</strong> Hacking (1995)'));
+  // The file goes as it is, with the citation and its questions in the address.
+  app.run(`$('work-file-0').files=[{name:'kuran.pdf'}];`);
+  const path='/api/projects/p/work?citation=Kuran%3A+Private+Truths%2C+Public+Lies+%281995%29&task=t_kuran';
+  app.responses.set(path,{work:{id:'work_ef'},works:{...works,missing:[{...works.missing[0],provided:'work_ef'}]}});
+  await app.run(`uploadWork({dataset:{workIndex:'0'}})`);
+  const sent=app.requests.find(r=>r.path===path);
+  assert.equal(sent.options.headers['Content-Type'],'application/octet-stream');
+  assert.equal(sent.options.body.name,'kuran.pdf');
+  assert.equal(app.run('project.works.missing[0].provided'),'work_ef');
+});
+
+test('the missing-works panel shows today\'s CORE calls against the daily allowance',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,works:{missing:[],provided:[]},server:{core:{date:'2026-10-01',calls:37,limit:1000}}};`);
+  assert.ok(app.run('worksPanel()').includes('CORE heute: 37 von 1000 Abrufen.'));
+  app.run(`project.server.core.calls=1000;`);
+  assert.ok(app.run('worksPanel()').includes('für heute aufgebraucht'));
+  app.run(`project.server.core=null;`);
+  assert.ok(!app.run('worksPanel()').includes('CORE heute'),'without a key nothing is shown');
 });

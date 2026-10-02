@@ -14,7 +14,7 @@ from .prompts import instructions
 from .question_dependencies import prerequisite_answers, prerequisite_gaps
 from .question_sources import reserve_source, restore_attempts, source_identity
 from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, evidence_profile, collapse_assessments, collapse_support, verbatim,
-                                evidence_summary, support_errors)
+                                evidence_summary, scope_assessments, support_errors)
 from .research_gap_probe import settle
 from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
 from .research_models import ResearchDiscovery, SourceDocument, SourceIndex, admissible, is_idea
@@ -37,6 +37,13 @@ ACCESS_GAP_REVIEW = ("accepted_access_gaps lists acceptance criteria the editor 
                      "source refused retrieval. Judge those criteria on their remaining parts: pass one when those parts are "
                      "met and the answer names the gap in its limits without claiming the refused part. The refused source "
                      "does not count against source_adequacy.")
+# Only after this question searched the web (Ontologies, 2026-09-30: honest answers that only vendor estimates
+# exist failed "independent effort figures" and blocked, so the finding "there are only vendor claims" was lost).
+EVIDENCE_ABSENCE_REVIEW = ("This question's reader searched the web. A criterion that demands a kind of evidence (independent, "
+                           "published within a recency window, a number of studies, measured figures) passes when the answer "
+                           "shows with read passages what does exist, states in its limits that the demanded kind was not "
+                           "found, and claims nothing beyond the passages. Criteria that ask for an exposition, a mechanism "
+                           "or a definition are judged as before.")
 PREREQUISITE_GAP_READER = ("prerequisite_gaps lists prerequisites of this synthesis that the editor accepted as gaps: they "
                            "have no verified answer. Build the synthesis from the verified prerequisite answers and your "
                            "sources, do not fill a gap with claims of your own, and name each gap in limits.")
@@ -169,6 +176,21 @@ def review_outcome(review, task, findings, passages):
 def access_gap_rows(spec, row):
     return [{"criterion": gap["criterion"], "criterion_text": spec.acceptance[gap["criterion"]], "source": gap["source"],
              "evidence": gap["evidence"], "editor_note": gap.get("reason", "")} for gap in row.get("access_gaps", [])]
+
+
+def search_folder(folder, queries):
+    """Where a step's web search keeps its receipts. One step can search twice, first in the automatic recovery
+    and then by the reader's own choice; a search for other queries than the one saved there gets a folder of its
+    own, so it never takes the earlier search's receipts for its own (Asimov, 2026-10-01: morris_evaluate stopped on
+    "Der gespeicherte Abrufbeleg passt nicht zum aktuellen Quellenindex")."""
+    request = folder / "search_request.json"
+    if not request.exists():
+        return folder
+    try:
+        saved = json.loads(read_value(request)["prompt"].rsplit("\n", 1)[1]).get("queries")
+    except (OSError, ValueError, KeyError, IndexError, AttributeError):
+        return folder
+    return folder if saved == list(queries) else folder / f"search_{digest(list(queries))[:8]}"
 
 
 def read_context(reader, refs):
@@ -337,14 +359,20 @@ class TaskResearchMixin:
             # Only then, so every other review prompt stays byte for byte as before.
             text += " " + PREREQUISITE_GAP_REVIEW
             payload["prerequisite_gaps"] = gaps
+        searched = row.get("web_attempts", 0) >= 1
+        if searched:
+            text += " " + EVIDENCE_ABSENCE_REVIEW
         prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
 
         def well_formed(verdict, final):
             # Shape defects are corrected by a repeated call; substantive non-passes are feedback.
-            support_errors(answer.findings, normalise_review(verdict, spec), passages)
+            # An assessment of a source no finding cites is dropped, not refused (2026-10-01: Asimov's asimov_evaluate
+            # and Ontologies' t18 each assessed one extra source, and the refusals spent both automatic fresh attempts).
+            support_errors(answer.findings, scope_assessments(normalise_review(verdict, spec), answer.findings, passages), passages)
 
-        verdict = normalise_review(self.call(self.task_folder(spec, row),
-                                             f"review_{row['step']:03d}", AnswerReview, prompt, validate=well_formed), spec)
+        verdict = scope_assessments(normalise_review(self.call(self.task_folder(spec, row), f"review_{row['step']:03d}", AnswerReview, prompt,
+                                             validate=well_formed, tag=".absence" if searched else ""), spec),
+                                    answer.findings, passages)
         blocking, limitations = review_outcome(verdict, spec, answer.findings, passages)
         # The accepted gap travels with the verified answer whatever the answer's own limits say.
         limitations += [{"finding_id": "", "kind": "accepted_access_gap",
@@ -441,7 +469,7 @@ class TaskResearchMixin:
             self.attempts = restore_attempts(self.folder, self.index)
         source_limit = self.limits().sources
         remaining = source_limit - len(self.attempts)
-        folder = self.task_folder(spec, row) / f"step_{row['step']:03d}"
+        folder = search_folder(self.task_folder(spec, row) / f"step_{row['step']:03d}", queries)
         receipt = folder / "downloads.json"
         request_path = folder / "search_request.json"
         resuming = (folder / "search.json").exists() or request_path.exists()
@@ -466,11 +494,13 @@ class TaskResearchMixin:
             attempted = {s.url or s.raw_path for s in self.index.sources} | {f["source"] for f in self.index.failures}
             remaining = source_limit - len(attempted)
         maximum = min(4, remaining)
-        prompt = (instructions("question_search", maximum=maximum) + "\n" +
+        prompt = (instructions("question_search", maximum=maximum) + " " + instructions("open_archives") + "\n" +
             json.dumps({"task": spec.model_dump(), "queries": queries, "known_sources": source_catalog(self.index),
                         "read_refs": row["read_refs"], "feedback": row["feedback"], "failures": self.index.failures,
+                        # Not for an explain task: its primary works may be old (Ontologies, 2026-10-01: the search
+                        # for the 2014 W3C standards reported "recency filter cannot be met").
                         **({"recency_months": self.config.recency_months, **research_day(self.config, self.work)}
-                           if self.config.recency_months else {})}, ensure_ascii=False))
+                           if self.config.recency_months and spec.aim != "explain" else {})}, ensure_ascii=False))
         if request_path.exists():
             request = read_value(request_path)
             prompt, maximum = request["prompt"], request["maximum"]
@@ -487,7 +517,9 @@ class TaskResearchMixin:
                 raise AppError("Die Suche überschreitet ihren Quellenauftrag: höchstens so viele Kandidaten wie erlaubt, "
                                "jeder mit Quellentyp, keine Ideenquelle.", code="invalid_model_output", status="blocked")
 
-        extra = self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed)
+        # ".archives": the search names open archives to prefer (open_archives, 2026-10-01); a resumed step keeps
+        # the prompt it saved in search_request.json.
+        extra = self.call(folder, "search", QuestionSearch, prompt, search=True, validate=well_formed, tag=".archives")
         result = read_value(receipt) if receipt.exists() else {
             "processed": [], "attempted": [], "base": self.state["index_hash"], "added": [], "failures": []}
         result.setdefault("attempted", [source_identity(url) for url in result["processed"]])
@@ -627,8 +659,9 @@ class TaskResearchMixin:
                         if defects:
                             raise AppError("The answer fails its fixed checks; correct exactly these and answer again: "
                                            + " ".join(defects), code="invalid_model_output", status="blocked")
-                # ".view": the reader sees this question's earlier passages too (VIEW_CHARS, 2026-09-30).
-                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked, tag=".view")
+                # ".view": the reader sees this question's earlier passages too (VIEW_CHARS, 2026-09-30);
+                # ".absence": a demanded kind of evidence the web search did not find is answered as a result (2026-10-01).
+                decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked, tag=".view.absence")
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
                 self.save(f"{spec.question} · {decision.reason}")

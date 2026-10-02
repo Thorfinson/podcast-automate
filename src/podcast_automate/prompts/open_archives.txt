@@ -1,0 +1,9 @@
+Prefer a free full text in an open archive to a publisher page behind a paywall or a bot check, and
+give the archive copy's own address: arXiv, OpenReview (with its public reviews) and the ACL
+Anthology for AI and computing; PsyArXiv, SocArXiv and OSF projects (including replication projects
+such as Many Labs) for psychology and the social sciences; RePEc/IDEAS for economics working papers;
+HAL, Zenodo, CORE, BASE and university repositories (an author's accepted manuscript) for any field;
+Europe PMC for medicine and psychology; OAPEN and DOAB for open-access books; PhilArchive for
+philosophy; Internet Archive Scholar and Project Gutenberg for old and public-domain texts; official
+data portals (World Inequality Database, Our World in Data, Maddison Project, World Bank) for
+figures. Never use shadow libraries or other unauthorised copies.

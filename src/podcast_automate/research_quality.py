@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from typing import Literal
 
 from pydantic import Field
 
@@ -39,6 +40,30 @@ class ResearchAssessment(Contract):
     issues: list[NonEmpty]
 
 
+# What closes a gap: new reading or a corrected answer (research), or nothing the run can do, because it is a property
+# of the available sources that the script states (limit). A follow-up assessment names it for every row and issue.
+REMEDY = ("research: new reading or a corrected answer can close it; limit: it is a property of the available "
+          "sources (a work only as an abstract, a third-party copy or not freely available, figures only a vendor or "
+          "the authors report, independence no source establishes) that the script must state")
+
+
+class FollowUpRequirement(RequirementAssessment):
+    remedy: Literal["research", "limit", "none"] = Field(description="For a requirement not fully met, " + REMEDY +
+                                                                     "; none when nothing is missing.")
+
+
+class AssessmentIssue(Contract):
+    text: NonEmpty
+    remedy: Literal["research", "limit"] = Field(description=REMEDY + ".")
+    task_ids: list[NonEmpty] = Field(description="The tasks whose answers the issue concerns.")
+
+
+class FollowUpAssessment(Contract):
+    """The assessment from the second round of an assembled dossier on (question_synthesis.follow_up_assessment)."""
+    requirements: list[FollowUpRequirement]
+    issues: list[AssessmentIssue]
+
+
 def requirements_for(config):
     questions = list(dict.fromkeys([config.central_question or config.topic, *config.focus_questions]))
     return [{"id": f"rq_{i:03d}", "question": question} for i, question in enumerate(questions, 1)]
@@ -64,6 +89,21 @@ def cite_findings(dossier, assessment):
         if any(fid in relations for fid in row.finding_ids):
             row.finding_ids = list(dict.fromkeys(f for fid in row.finding_ids for f in relations.get(fid, [fid])))
     return assessment
+
+
+def check_follow_up(dossier, assessment, scope, task_ids):
+    """Deterministic shape of a follow-up assessment: exactly the requirements in scope, real finding and task IDs."""
+    if Counter(r.requirement_id for r in assessment.requirements) != Counter(scope["requirements"]):
+        raise AppError("Die Folgebewertung beurteilt genau die Leitfragen aus requirements_in_scope, jede einmal: "
+                       + ", ".join(scope["requirements"]) + ".", code="invalid_research_assessment", status="blocked")
+    unknown = sorted({fid for r in assessment.requirements for fid in r.finding_ids} - {f.id for f in dossier.findings})
+    if unknown:
+        raise AppError("Die Folgebewertung verweist auf unbekannte Befunde: " + ", ".join(unknown[:12])
+                       + ". finding_ids nennt nur Befund-IDs aus findings.", code="invalid_research_assessment", status="blocked")
+    strange = sorted({tid for issue in assessment.issues for tid in issue.task_ids} - set(task_ids))
+    if strange:
+        raise AppError("Die Folgebewertung nennt unbekannte Teilfragen: " + ", ".join(strange[:12])
+                       + ". task_ids nennt nur Kennungen aus answers.", code="invalid_research_assessment", status="blocked")
 
 
 def check_assessment(config, dossier, assessment):
@@ -100,13 +140,19 @@ def quality_report(config, dossier, discovery, index, assessment, grounding_issu
         result = next(r for r in assessment.requirements if r.requirement_id == requirement["id"])
         evidence_backed = any(f.kind != "limitation" and any(e.reference.split("#")[0] in external for e in f.evidence)
                               for f in (findings[fid] for fid in result.finding_ids))
-        missing = list(result.missing)
+        missing, noted = list(result.missing), []
+        criteria_met = all(getattr(result, key) for key in CRITERIA)
+        if dossier.assembled and criteria_met and evidence_backed:
+            # All five criteria met: what the assessment still lists is a limit of the answer, not missing research
+            # (the user's choice, 2026-10-02: Ontologies failed 6 of 9 requirements only on such lists, such as
+            # person-hours no source reports, and went from 2 to 1 to 0 passed requirements in three rounds).
+            missing, noted = [], missing
         if not evidence_backed:
             missing.append("Es fehlt eine inhaltliche Antwort mit unabhängig abgerufenem Textbeleg.")
-        passed = all(getattr(result, key) for key in CRITERIA) and not missing
+        passed = criteria_met and not missing
         gap_tasks = sorted(tid for tid, gap in accepted.items() if requirement["id"] in gap.get("requirement_ids", []))
         rows.append({**requirement, **result.model_dump(), "passed": passed, "missing": missing,
-                     "accepted_gap_tasks": gap_tasks})
+                     **({"noted": noted} if noted else {}), "accepted_gap_tasks": gap_tasks})
     questions = {q.id: q.question for q in discovery.questions}
     accepted_questions = {qid for gap in accepted.values() for qid in gap.get("question_ids", [])}
     gaps, tolerated = [], []
@@ -159,11 +205,19 @@ def render_quality(report):
         lines += [f"## {'Erfüllt' if row['passed'] else 'Offen'}: {row['question']}", "", row["reason"], ""]
         lines += [f"- {CRITERIA[key]}: {'erfüllt' if row[key] else 'offen'}" for key in CRITERIA]
         lines += [f"- Noch benötigt: {gap}" for gap in row["missing"]]
+        lines += [f"- Als Grenze vermerkt: {item}" for item in row.get("noted", [])]
+        if row.get("source_limit"):
+            lines += ["- Grenze der verfügbaren Quellen: wird nicht weiter recherchiert und ist im Skript zu benennen"]
         if row.get("accepted_gap_tasks"):
             lines += [f"- Akzeptierte Lücke: Teilfrage {tid}" for tid in row["accepted_gap_tasks"]]
         lines += [""]
     if report["blocking_gaps"]:
         lines += ["## Weitere offene Punkte", "", *[f"- {gap}" for gap in report["blocking_gaps"]], ""]
+    if report.get("script_notes"):
+        lines += ["## Hinweise fürs Skript", "",
+                  "Grenzen der verfügbaren Quellen und Punkte zu unveränderten Antworten, die die Folgebewertung nannte. "
+                  "Sie öffnen keine Recherche; das Skript benennt sie, wo es die betroffenen Aussagen verwendet.", "",
+                  *[f"- {note}" for note in report["script_notes"]], ""]
     rows = (report.get("advisories") or {}).get("single_group_findings") or []
     if rows:
         lines += ["## Befunde aus nur einer Forschungsgruppe", "",
@@ -203,6 +257,16 @@ def render_quality(report):
                       f"  Prüfer: {row['review']['reason']}",
                       f"  Entscheidung: {side}" + (f" ({row['note']})" if row.get("note") else "")]
         lines += [""]
+    if report.get("noted_limits"):
+        lines += ["## Als Grenzen vermerkte Vollständigkeitseinwände", "",
+                  "Die geprüfte Antwort behandelt das jeweilige Kriterium mit belegten Befunden; die Gesamtprüfung hielt es "
+                  "für nicht ganz vollständig. Das steht hier als Grenze und wurde nicht erneut recherchiert.", "",
+                  *[f"- {objection}" for objection in report["noted_limits"]], ""]
+    if report.get("noted_after_reworks"):
+        lines += ["## Einwände nach zwei Nachbesserungen", "",
+                  "Diese Teilfragen wurden zweimal nachgebessert und behalten ihre zuletzt geprüfte Antwort. Spätere "
+                  "Einwände der Gesamtprüfung stehen hier als Grenzen; sie haben den Lauf nicht mehr angehalten.", "",
+                  *[f"- {row['task_id']}: {row['objection']}" for row in report["noted_after_reworks"]], ""]
     if report.get("residual_objections"):
         lines += ["## Verbliebene Prüfeinwände" + ("" if report.get("passed_with_residual_objections") else " zu akzeptierten Lücken"), "",
                   *[f"- {objection}" for objection in report["residual_objections"]], ""]

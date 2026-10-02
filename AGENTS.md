@@ -84,6 +84,7 @@ Derived from imports and patch targets in `tests/`. Regenerate with the snippet 
 - `question_research`, `question_answering`, `question_synthesis`, `question_scope`, `question_budget`, `question_dependencies` → `test_question_research`, `test_research_parallel`, `test_research_plan_gate`, `test_research_resilience`, `test_research_invariants`, `test_evidence_contracts`, `test_model_trace`
 - `script_advisories` → `test_script_advisories`; the report field is asserted by `test_scripting`
 - `research_gap_probe` → `test_gap_probe`, `test_question_research`, `test_research`, `test_research_quality`, `test_scripting`, `test_teaching_research`
+- `provided_works` → `test_provided_works`; the run reading a provided work and retrying its question in `test_question_research`, the raw upload route in `test_studio`, the book limits of `pdf_text` in `test_research`; the research page's list of missing works in the browser suite
 - `research_dates`, source types, idea sources and task aims (`research_models`, `research_tasks`, `research_evidence`, `question_research.check_aims`, `sources.import_source`, `pdf_text`) → `test_source_types` in addition to the research list below; the starting library (`sources.load_library`) → `test_research`
 - `research` and every `research_*` module → `test_source_types`, `test_research`, `test_research_parallel`, `test_research_plan_gate`, `test_research_invariants`, `test_research_migration`, `test_research_quality`, `test_research_refinement`, `test_research_resilience`, `test_research_status`, `test_evidence_contracts`, `test_question_research`, `test_gap_probe`, `test_attachments`, `test_parallel`, `test_run_budget`, `test_prompts`
 - `run_budget`, `script_budget`, `script_checkpoints` → `test_run_budget`, `test_script_budget`, `test_question_research`, `test_research`, `test_research_parallel`, `test_research_plan_gate` (plan approvals and their receipts), `test_research_resilience`, `test_studio`, `test_studio_progress`, `test_teaching_research`, `test_provider_pool`
@@ -127,6 +128,10 @@ for mod in sorted(mapping):
 - Run-folder invariant: on a resume, only `budget.json`, `budget_projection.json` and the status record
   `run_manifest.yaml` (the runner stamps `updated_at`) may change. Every other file under `runs/<run_id>/`
   must stay byte-identical; `test_research_plan_gate` hashes the whole folder to check it.
+- A research run started now assembles its dossier from the verified answers (prompt generation 3; finding ids
+  `task_definition__f_energy`). Tests written for the composed dossier of older runs, and the fixtures the
+  script, teaching and audio tests build on, pin generation 2 with `research_fixtures.composed_generation()`;
+  a test of the default path leaves it unpinned.
 - Model responses come from `patch("podcast_automate.<module>.CodexAdapter.structured")` and the helpers
   in `tests/*_fixtures.py`. The script fixture asserts `search=False`; supplementary research is patched at
   `script_pipeline.research_foundations`.

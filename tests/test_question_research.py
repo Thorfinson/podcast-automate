@@ -20,7 +20,7 @@ from podcast_automate.research_evidence import support_errors
 from podcast_automate.research_ledger import bootstrap_legacy, public_ledger, read_value, save_value
 from podcast_automate.research_models import Evidence, Finding, ResearchDossier, SourceIndex, SourceSection
 from podcast_automate.research_patches import DossierPatch
-from podcast_automate.research_quality import ResearchAssessment
+from podcast_automate.research_quality import FollowUpAssessment, ResearchAssessment
 from podcast_automate.research_reader import SourceReader
 from podcast_automate.research_review import SourceReview
 from podcast_automate.research_review import SourceReviewIssue
@@ -31,10 +31,21 @@ from podcast_automate.storage import digest, file_hash, init_project, write_json
 from podcast_automate.run_budget import approve_model_call_limit
 from podcast_automate.studio_progress import research_progress
 from tests import research_fixtures as fixtures
+from tests.research_fixtures import composed_generation
 
 
 from tests.question_fixtures import (task_value, decision, answer_for, question_response, complete_fixture_response, claim_contract,
                                      support_receipts)
+
+
+def failing_follow_up(payload, reason="A required mechanism is still absent.", remedy="research"):
+    """A follow-up that still finds the first requirement in scope unmet (question_synthesis.follow_up_assessment)."""
+    ids = [f["id"] for f in payload["findings"]]
+    cited = next((fid for fid in ids if fid.endswith("__f_energy")), ids[0])
+    return FollowUpAssessment(requirements=[dict(requirement_id=rid, finding_ids=[cited], direct_answer=True,
+        explanation=index != 0, evidence=True, cross_check=True, boundaries=True, reason=reason if index == 0 else "Met.",
+        missing=[], search_queries=[], remedy=remedy if index == 0 else "none")
+        for index, rid in enumerate(payload["follow_up"]["requirements_in_scope"])], issues=[])
 
 
 class QuestionResearchTests(unittest.TestCase):
@@ -132,6 +143,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(passes, [1, 2])
         self.assertEqual(len(engine.state["plan"]["tasks"]), 3, "the second pass's split is kept")
 
+    @composed_generation()
     def test_complete_workflow_freezes_verified_answers_and_replay_has_no_calls(self):
         engine = self.engine()
         outputs = engine.run(self.discovery, self.index)
@@ -147,6 +159,7 @@ class QuestionResearchTests(unittest.TestCase):
         public = json.loads((self.work / "research_questions.json").read_text())
         self.assertEqual((public["closed"], public["total"], public["phase"]), (1, 1, "completed"))
 
+    @composed_generation()
     def test_material_beyond_one_window_is_composed_and_audited_in_bounded_parts(self):
         assessed = []
 
@@ -275,6 +288,7 @@ class QuestionResearchTests(unittest.TestCase):
         # Assessing exactly the listed sources is what the source check expects, part by part and merged.
         support_errors(findings, review, context)
 
+    @composed_generation()
     def test_an_audit_that_also_assesses_a_source_no_finding_cites_passes_without_it(self):
         # Ontologies, 2026-09-27: a part copied two sources from the outline into its assessments; the
         # extra rows cost a whole retry. Every cited source still needs its one assessment.
@@ -391,6 +405,7 @@ class QuestionResearchTests(unittest.TestCase):
         # A first round, or a correction revision, reviews the whole dossier.
         self.assertIsNone(engine.settled_findings(synthesis / "audit_01", 1, now, context, expected))
 
+    @composed_generation()
     def test_answers_beyond_one_output_are_composed_in_parts_even_when_the_prompt_fits(self):
         # The prompt budget is untouched: the answers alone bound the opening batch, because the
         # dossier a call writes grows with them and the CLI cuts an answer at its output cap.
@@ -420,6 +435,7 @@ class QuestionResearchTests(unittest.TestCase):
             self.engine().run(self.discovery, self.index)
             self.assertEqual(len(self.calls), count, "a replay makes no calls")
 
+    @composed_generation()
     def test_new_runs_state_the_synthesis_evidence_rule_and_old_runs_keep_their_prompts(self):
         prompts = []
 
@@ -547,7 +563,9 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(first.status, "completed", first.model_dump())
         self.assertEqual(first.run_id, resumed.run_id)
         self.assertEqual(len(self.calls), used)
-        self.assertEqual(used, 8)
+        # Discovery, plan, scope review, reader, answer review and the assessment: an assembled dossier (prompt
+        # generation 3) needs no composing call and no second source review of findings their answers' reviews checked.
+        self.assertEqual(used, 6)
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
         report = json.loads((self.root / "reports/research_quality.json").read_text())
         self.assertTrue(report["quality_gate"]["passed"])
@@ -573,8 +591,8 @@ class QuestionResearchTests(unittest.TestCase):
             resumed = run_research(self.root, resume=True, run_id=first.run_id)
         self.assertEqual(resumed.status, "completed", resumed.model_dump())
         self.assertEqual(resumed.run_id, first.run_id)
-        self.assertEqual(len(self.calls), 8)
-        self.assertEqual(json.loads((work / "budget.json").read_text())["model_calls"], 8)
+        self.assertEqual(len(self.calls), 6)
+        self.assertEqual(json.loads((work / "budget.json").read_text())["model_calls"], 6)
         self.assertEqual(json.loads((work / "research_activity.json").read_text())["model_call_limit"], 250)
 
     def test_research_reads_increased_allowance_before_next_call(self):
@@ -588,7 +606,7 @@ class QuestionResearchTests(unittest.TestCase):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
             run = run_research(self.root)
         self.assertEqual(run.status, "completed", run.model_dump())
-        self.assertEqual(len(self.calls), 8)
+        self.assertEqual(len(self.calls), 6)
 
     def test_pause_after_answer_resumes_at_independent_review(self):
         def pause(prompt, schema, payload, kwargs):
@@ -782,6 +800,28 @@ class QuestionResearchTests(unittest.TestCase):
         # The new attempt reads the hint and the suggested source as feedback.
         self.assertTrue(seen and "PubMed Central" in seen[0] and "https://pmc.example/paper" in seen[0])
 
+    def test_blocked_questions_are_advised_side_by_side_with_several_workers(self):
+        # 2026-09-30: 18 blocked Asimov questions would have waited about an hour for one advisor call after another.
+        import threading
+        together = threading.Barrier(3)
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(f"task_{name}", "empirical") for name in "abc"])
+            if schema is ResearchDecision:
+                return decision("blocked")
+            if schema is BlockAdvice:
+                together.wait(timeout=5)  # all three are inside the advisor at once, or this times out
+                return BlockAdvice(diagnosis="Kein Zugang.", recommendation="accept_gap", limit="none", hint="", sources=[])
+        self.hook = hook
+        engine = QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None, advisor=True, workers=3)
+        with self.assertRaises(AppError) as raised:
+            engine.run(self.discovery, self.index)
+        self.assertEqual(raised.exception.code, "research_questions_blocked")
+        self.assertEqual(sum(call[0] is BlockAdvice for call in self.calls), 3)
+        rows = read_value(self.work / "question_research/state.json")["tasks"]
+        self.assertEqual({row["advice"]["recommendation"] for row in rows.values()}, {"accept_gap"})
+
     def test_advice_against_a_new_attempt_stops_the_run_with_the_advice_stored(self):
         self.rejecting(BlockAdvice(diagnosis="Die geforderte Studie gibt es nicht frei.", recommendation="accept_gap",
                                    limit="none", hint="", sources=[]))
@@ -912,6 +952,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(state["tasks"]["task_empirical"]["status"], "blocked")
         self.assertEqual(public_ledger(state)["closed"], 1)
 
+    @composed_generation()
     def test_only_concretely_routed_answer_reopens(self):
         self.hook = lambda prompt, schema, payload, kwargs: QuestionPlan(tasks=[task_value(),
             task_value("task_empirical", "empirical")]) if schema is QuestionPlan else None
@@ -946,6 +987,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual((ledger["audit_round"], ledger["reopened"]), (1, 1))
         self.assertEqual(engine.last_activity, "Konkrete Einwände werden ihren ursprünglichen Recherchefragen zugeordnet")
 
+    @composed_generation()
     def test_a_routed_review_disagreement_starts_no_research_and_the_other_objections_still_route(self):
         # Regression, Psychohistorie run of 2026-09-20: the router called a status-note complaint an
         # unsupported demand. The run stopped after registering the objections routed so far, so the
@@ -958,8 +1000,9 @@ class QuestionResearchTests(unittest.TestCase):
         dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text())
 
         def anchor(task_id, resolution):
-            return ResearchObjection(id=f"obj_{resolution}", rule="criterion", task_id=task_id, criterion_index=0,
-                finding_ids=[], evidence_refs=[], missing_evidence=f"{resolution}: a check is missing.",
+            # A support defect still reopens; a completeness objection to a covered criterion is only noted.
+            return ResearchObjection(id=f"obj_{resolution}", rule="support", task_id=task_id, criterion_index=None,
+                finding_ids=["f_energy"], evidence_refs=[], missing_evidence=f"{resolution}: a check is missing.",
                 reason="Named by the audit.", correction="Supply the check.",
                 closure_condition="The check is met by read evidence.", resolution=resolution)
         plan = ReopenPlan(routes=[
@@ -994,8 +1037,9 @@ class QuestionResearchTests(unittest.TestCase):
         dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text())
 
         def anchor(task_id, resolution):
-            return ResearchObjection(id=f"obj_{task_id}_{resolution}", rule="criterion", task_id=task_id, criterion_index=0,
-                finding_ids=[], evidence_refs=[self.ref], missing_evidence="", reason="The wording widens the source.",
+            return ResearchObjection(id=f"obj_{task_id}_{resolution}", rule="claim_preservation", task_id=task_id,
+                criterion_index=None, finding_ids=["f_energy"], evidence_refs=[self.ref], missing_evidence="",
+                reason="The wording widens the source.",
                 correction="Restore the source's limit.", closure_condition="The answer keeps the source's limit.",
                 resolution=resolution)
         plan = ReopenPlan(routes=[
@@ -1053,6 +1097,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(len(self.calls), calls)
         return disputed, decisions, resumed
 
+    @composed_generation()
     def test_finishing_with_residual_objections_ends_the_loop_with_them_on_record(self):
         # The editor ends the audit loop: the next audit's open objection is not reworked again but recorded.
         engine = self.reopened_for_wording()
@@ -1175,6 +1220,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(engine.settle_residual(), ["task_follow"])
         self.assertEqual((follow["status"], follow["answer"], follow["verification"]), ("verified", answer, verification))
 
+    @composed_generation()
     def test_following_the_reviewer_closes_the_disputed_objection_on_record(self):
         disputed, decisions, resumed = self.disputed_run()
         decisions[disputed] = {"objection_id": disputed, "decision": "reviewer", "note": "Die Stelle trägt die Formulierung.",
@@ -1192,6 +1238,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("dem Prüfer gefolgt, Einwand geschlossen (Die Stelle trägt die Formulierung.)", report)
         self.assertIn("The read passage now carries the wording.", report)
 
+    @composed_generation()
     def test_an_upheld_objection_goes_back_to_its_question_as_it_stands(self):
         disputed, decisions, resumed = self.disputed_run()
         decisions[disputed] = {"objection_id": disputed, "decision": "objection", "note": "",
@@ -1210,14 +1257,50 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(engine.state["disputed_objections"][disputed]["decision"], "objection")
         self.assertIn("Einwand aufrechterhalten", (self.work / "research_quality.md").read_text(encoding="utf-8"))
 
+    @composed_generation()
+    def test_a_completeness_objection_to_a_treated_criterion_is_noted_not_researched_again(self):
+        # 2026-10-01, the user's choice: the audit rounds did not settle, and 178 of Transformer's 220 objections said
+        # a criterion its answer already treats was not quite complete. Such an objection is a limit on record; a
+        # criterion the answer leaves without any finding is still researched.
+        from podcast_automate.research_quality import render_quality
+        self.hook = lambda prompt, schema, payload, kwargs: QuestionPlan(tasks=[task_value(),
+            task_value("task_empirical", "empirical")]) if schema is QuestionPlan else None
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text())
+        engine.state["tasks"]["task_empirical"]["answer"]["criteria"][0]["finding_ids"] = []
+
+        def criterion(task_id, text):
+            return ResearchObjection(id=f"obj_{task_id}", rule="criterion", task_id=task_id, criterion_index=0,
+                finding_ids=[], evidence_refs=[], missing_evidence=text, reason=text, correction="Complete the criterion.",
+                closure_condition="The criterion is met in full by read evidence.", resolution="research")
+        plan = ReopenPlan(routes=[
+            dict(index=0, task_ids=["task_definition"], reason="Not quite complete.", anchors=[criterion("task_definition", "A second case is missing.")]),
+            dict(index=1, task_ids=["task_empirical"], reason="Not treated at all.", anchors=[criterion("task_empirical", "No finding treats it.")])])
+
+        def routed(folder, name, schema, prompt, *, validate=None, **kwargs):
+            validate(plan, True)
+            return plan
+        with patch.object(engine, "call", side_effect=routed):
+            reopened, blocked = engine.reopen(dossier, SourceReview(issues=[], limitations=[]),
+                {"blocking_gaps": ["A second case is missing.", "No finding treats it."], "requirements": []})
+        self.assertEqual((reopened, blocked), (["task_empirical"], []))
+        self.assertEqual(engine.state["tasks"]["task_definition"]["status"], "verified")
+        self.assertEqual([row["task_id"] for row in engine.state["noted_objections"].values()], ["task_definition"])
+        self.assertEqual([row["task_id"] for row in engine.state["objections"].values()], ["task_empirical"])
+        self.assertEqual(engine.noted_limits(), ["A second case is missing."])
+        report = json.loads((self.work / "research_quality_gate.json").read_text(encoding="utf-8"))
+        self.assertIn("## Als Grenzen vermerkte Vollständigkeitseinwände", render_quality({**report, "noted_limits": engine.noted_limits()}))
+
+    @composed_generation()
     def test_a_second_defect_of_a_finding_with_an_open_objection_is_its_own_objection(self):
         # Asimov, round two: eleven new defects of findings that already had an open objection of the same
         # rule were refused as a "changed closure condition", three times, which would have stopped the run.
         engine = self.reopened_for_wording()
         dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text())
         first = next((oid, row) for oid, row in engine.state["objections"].items() if row["task_id"] == "task_definition")
-        second = ResearchObjection(id="obj_new", rule="criterion", task_id="task_definition", criterion_index=0,
-            finding_ids=[], evidence_refs=[self.ref], missing_evidence="", reason="The example omits the source's unit.",
+        second = ResearchObjection(id="obj_new", rule="claim_preservation", task_id="task_definition", criterion_index=None,
+            finding_ids=["f_energy"], evidence_refs=[self.ref], missing_evidence="", reason="The example omits the source's unit.",
             correction="Name the unit.", closure_condition="The example names the unit the source uses.", resolution="revise")
         plan = ReopenPlan(routes=[dict(index=0, task_ids=["task_definition"], reason="A second wording defect.", anchors=[second])])
 
@@ -1235,6 +1318,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(engine.existing_objection(engine.state["objections"], set(), second, "obj_other"),
                          next(oid for oid, row in rows.items() if oid != first[0]))
 
+    @composed_generation()
     def test_a_wording_objection_reopens_its_question_only_to_correct_the_answer(self):
         engine = self.reopened_for_wording()
         wording, mixed = engine.state["tasks"]["task_definition"], engine.state["tasks"]["task_empirical"]
@@ -1260,6 +1344,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(engine.state["tasks"]["task_definition"]["status"], "verified")
         self.assertEqual(offered, [["answer"]])
 
+    @composed_generation()
     def test_a_rejected_correction_falls_back_to_an_ordinary_reopening(self):
         engine = self.reopened_for_wording()
         offered = []
@@ -1282,6 +1367,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("read", offered[1])
         self.assertFalse(engine.state["tasks"]["task_definition"]["revise_only"])
 
+    @composed_generation()
     def test_reworked_answers_leave_source_wide_limits_to_one_closing_pass(self):
         # Regression, Asimov run of 2026-09-27: a reworked answer paraphrased more of a source that other findings
         # also cite. The batch's strict reference repair stopped the run instead of deferring that shared limit.
@@ -1317,6 +1403,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertTrue(all(allowed and deferred for _, allowed, deferred in batches))
         self.assertIn(("reopened_references", False, False), seen)
 
+    @composed_generation()
     def test_full_audit_reopens_only_empirical_task_then_rechecks_before_publish(self):
         reviews, reviewed_tasks = [], []
         def revise(prompt, schema, payload, kwargs):
@@ -1344,6 +1431,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual(engine.state["phase"], "completed")
         self.assertEqual(engine.state["audit_round"], 1)
 
+    @composed_generation()
     def test_repeated_final_objections_remain_blocking_and_reopenings_are_bounded(self):
         drafts = []
         def reject(prompt, schema, payload, kwargs):
@@ -1481,7 +1569,90 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("one sentence that names the passage and the defect, at most 300 characters", prompts[AnswerReview])
         self.assertIn("at most 300 characters", prompts[ResearchDecision])
         self.assertIn("allowed_actions", prompts[ResearchDecision])
-        self.assertIn((ResearchDecision, "question_research.v3-clauses.view.reader"), self.calls)
+        self.assertIn((ResearchDecision, "question_research.v3-clauses.view.absence.reader"), self.calls)
+        self.assertNotIn("demands a kind of evidence", prompts[AnswerReview], "no web search, no absence rule")
+
+    def test_a_second_web_search_in_one_step_keeps_its_own_receipts(self):
+        # Asimov, 2026-10-01: the recovery searched in step 31, the reader then chose its own search in the same step,
+        # took the recovery's download receipt for its own and stopped on "passt nicht zum aktuellen Quellenindex".
+        from podcast_automate.question_answering import search_folder
+        step = self.work / "question_research/tasks/task_a/attempt_0/step_031"
+        self.assertEqual(search_folder(step, ["energy"]), step, "the first search keeps the step folder")
+        save_value(step / "search_request.json", {"prompt": "rules\n" + json.dumps({"queries": ["energy"]}), "maximum": 4})
+        self.assertEqual(search_folder(step, ["energy"]), step, "a resumed search finds its receipts")
+        other = search_folder(step, ["Pomeranz review"])
+        self.assertEqual((other.parent, other), (step, search_folder(step, ["Pomeranz review"])))
+        self.assertNotEqual(other, search_folder(step, ["de Vries review"]))
+
+    def test_an_assessment_of_a_source_no_finding_cites_is_dropped_not_refused(self):
+        # 2026-10-01: Ontologies' t18 assessed an invented "..._placeholder_unused" source, Asimov's asimov_evaluate an
+        # uncited one; each refusal was asked again twice and then spent an automatic fresh attempt.
+        def hook(prompt, schema, payload, kwargs):
+            if schema is AnswerReview:
+                review = question_response(prompt, schema)
+                extra = review.source_assessments[0].model_copy(update={"source_id": "src_0000000000000000_placeholder_unused"})
+                return review.model_copy(update={"source_assessments": [*review.source_assessments, extra]})
+        self.hook = hook
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["tasks"]["task_definition"]["status"], "verified")
+        self.assertFalse(list(self.work.rglob("review_*_rejected_*.json")))
+
+    def test_a_provided_work_is_read_as_evidence_and_its_blocked_question_tried_again(self):
+        # 2026-10-01: the books no free source offered come from the editor's library visit.
+        from podcast_automate import provided_works
+        from podcast_automate.research_models import is_idea
+        explain = dict(task_value(), aim="explain", primary_works=["Kuran: Private Truths, Public Lies (1995)"])
+        self.hook = lambda prompt, schema, payload, kwargs: (QuestionPlan(tasks=[explain]) if schema is QuestionPlan
+                                                             else decision("blocked") if schema is ResearchDecision else None)
+        with self.assertRaises(AppError):
+            self.engine().run(self.discovery, self.index)
+        row = provided_works.add(self.root, fixtures.TEXT.encode(), citation="Kuran: Private Truths, Public Lies (1995)",
+                                 tasks=["task_definition"])
+        engine = self.engine()
+        engine.initialise(self.discovery, self.index, None, [])
+        self.assertEqual(engine.adopt_provided_works(), ["task_definition"])
+        task = engine.state["tasks"]["task_definition"]
+        source = next(s for s in engine.index.sources if s.citation)
+        self.assertEqual((task["status"], task["provided_work"]), ("researching", row["id"]))
+        self.assertIn(source.id, task["feedback"][0])
+        self.assertEqual((source.title, source.source_type, source.published_date), (row["citation"], "primary_work", "1995"))
+        self.assertFalse(is_idea(source), "a provided copy of a published work is evidence, not a note")
+        self.assertEqual(engine.state["provided_works"][row["id"]]["source_id"], source.id)
+        self.assertEqual(engine.adopt_provided_works(), [], "each work is read once")
+
+    def test_the_web_search_of_an_explain_task_gets_no_recency_window(self):
+        # Ontologies, 2026-10-01: the search for the 2014 W3C standards reported "recency filter cannot be met".
+        self.config.recency_months = 6
+        searched = {}
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[dict(task_value(), aim="explain", primary_works=["W3C: RDF 1.1 Primer"]),
+                                           task_value("task_follow", "empirical")])
+            if schema is ResearchDecision and payload["task"]["id"] not in searched:
+                return decision("search_web", web_queries=["energy model"])
+            if schema is QuestionSearch:
+                searched[payload["task"]["id"]] = payload
+                self.assertIn("PsyArXiv", prompt, "the search names the open archives")
+        self.hook = hook
+        self.engine().run(self.discovery, self.index)
+        self.assertNotIn("recency_months", searched["task_definition"])
+        self.assertEqual(searched["task_follow"]["recency_months"], 6)
+
+    def test_after_a_web_search_the_review_accepts_a_stated_absence_of_a_demanded_kind_of_evidence(self):
+        # Ontologies, 2026-09-30: "only vendor estimates exist" failed "independent effort figures" and blocked.
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        spec = QuestionPlan.model_validate(engine.state["plan"]).tasks[0]
+        row = engine.state["tasks"][spec.id]
+        reviews = []
+        self.hook = lambda prompt, schema, payload, kwargs: reviews.append(prompt) if schema is AnswerReview else None
+        row.update(status="reviewing", step=row["step"] + 1, web_attempts=1)
+        engine.verify(spec, row)
+        self.assertIn("demands a kind of evidence", reviews[-1])
+        self.assertIn((AnswerReview, f"question_research.v3-clauses.absence.review_{row['step']:03d}"), self.calls)
+        self.assertEqual(row["status"], "verified")
 
     def test_the_reader_sees_what_it_read_earlier_for_this_question(self):
         # Transformer, 2026-09-30: with only the latest read in view, attention_qkv read 34 sections in 10 steps
@@ -1656,6 +1827,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertEqual((row["status"], row["answer_locked"]), ("verified", False))
         self.assertEqual(row["verification"]["limitations"], [])
 
+    @composed_generation()
     def test_a_partially_supported_finding_passes_with_a_recorded_limitation_that_reaches_every_output(self):
         composed = []
         def partial(prompt, schema, payload, kwargs):
@@ -1774,6 +1946,369 @@ class QuestionResearchTests(unittest.TestCase):
         resumed.run(self.discovery, self.index)
         self.assertEqual((len(self.calls), resumed.state["active_tasks"]), (count, []))
         self.assertNotIn("active_task", read_value(path))
+
+
+    # --- the assembled dossier (prompt generation 3, 2026-10-01) ------------------------------------------------
+
+    def test_the_dossier_is_assembled_from_every_verified_answer_without_a_composing_call(self):
+        """The user's choice, 2026-10-01: a composed dossier kept at most 120 findings and dropped about two thirds
+        of the verified research (Ontologies: 120 of 335); the dossier is now the sum of the answers, and the audit
+        takes the receipts of their reviews instead of reviewing the findings again."""
+        assessed = []
+
+        def capture(prompt, schema, payload, kwargs):
+            if schema is ResearchAssessment:
+                assessed.append(payload)
+        self.hook = capture
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        schemas = [schema for schema, _ in self.calls]
+        self.assertEqual([s for s in schemas if s in (ResearchDossier, DossierPatch, SourceReview)], [])
+        self.assertEqual(schemas.count(ResearchAssessment), 1)
+        self.assertEqual(engine.state["prompt_generation"], 3)
+        answer = engine.state["tasks"]["task_definition"]["answer"]
+        dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        self.assertTrue(dossier.assembled)
+        self.assertEqual([f.id for f in dossier.findings], ["task_definition__f_energy"])
+        self.assertEqual(dossier.findings[0].model_dump(exclude={"id"}),
+                         Finding.model_validate(answer["findings"][0]).model_dump(exclude={"id"}))
+        self.assertEqual([(a.task_id, a.summary, a.finding_ids) for a in dossier.answers],
+                         [("task_definition", answer["summary"], ["task_definition__f_energy"])])
+        self.assertEqual([(c.question_id, c.status, c.finding_ids) for c in dossier.coverage],
+                         [("q_energy", "answered", ["task_definition__f_energy"])])
+        # The receipt is the answer review's, under the finding's dossier id.
+        review = json.loads((self.work / "complete_research/source_review.json").read_text(encoding="utf-8"))
+        verified = engine.state["tasks"]["task_definition"]["verification"]["review"]["finding_support"]
+        self.assertEqual(review["finding_support"], [{**verified[0], "finding_id": "task_definition__f_energy"}])
+        # The assessment reads the answers and their findings, not the excerpts.
+        self.assertEqual(set(assessed[0]) - {"brief"}, {"answers", "findings", "coverage", "sources"})
+        self.assertNotIn("evidence", assessed[0]["findings"][0])
+        gate = json.loads((self.work / "research_quality_gate.json").read_text(encoding="utf-8"))
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["dossier_hash"], digest(dossier.model_dump()))
+        self.assertEqual(json.loads((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))["assembled"], True)
+        self.assertIs(json.loads((self.work / "research_questions.json").read_text(encoding="utf-8"))["keeps_spent_answers"], True)
+
+    def test_an_assembled_dossier_keeps_every_finding_and_no_source_word_limit(self):
+        from podcast_automate.question_synthesis import assemble_dossier
+        from podcast_automate.research import validate_dossier
+        text = next(s.text for s in self.index.sources[0].sections if "Models assign an energy" in s.text)
+        sentences = [s.strip() for s in text.split(".") if len(s.split()) >= 4]
+        tasks, rows = [], {}
+        for number in range(30):
+            task = task_value(id=f"task_part_{number:02d}")
+            tasks.append(task)
+            # Every answer names its findings f_0 to f_4: ids inside an answer are local.
+            rows[task["id"]] = {"answer": {"summary": f"Answer {number}.", "limits": [f"Limit {number}."], "findings": [
+                dict(id=f"f_{k}", kind="claim", statement=f"Statement {number}-{k} " + " ".join(["about energies"] * 20),
+                     claim_contract=claim_contract(), evidence=[dict(reference=self.ref, excerpt=sentences[k % len(sentences)])])
+                for k in range(5)]}}
+        gap = task_value(id="task_access")
+        tasks.append(gap)
+        rows[gap["id"]] = {"answer": None}
+        plan = QuestionPlan(tasks=tasks)
+        accepted = {"task_access": {"question": gap["question"], "question_ids": ["q_energy"], "reason": "Paywalled."}}
+        dossier = assemble_dossier(self.discovery, plan, rows, accepted, "de-DE")
+        self.assertEqual(len(dossier.findings), 150)
+        self.assertEqual(len({f.id for f in dossier.findings}), 150)
+        self.assertEqual(dossier.findings[5].id, "task_part_01__f_0")
+        self.assertEqual(dossier.coverage[0].status, "partial")
+        self.assertIn("Paywalled.", dossier.coverage[0].gap)
+        self.assertEqual(dossier.open_questions, [])
+        context = read_context(SourceReader(self.index), [self.ref])
+        self.assertEqual(validate_dossier(dossier, self.discovery, context), [])
+        # Stored and read back unchanged; a dossier a model composed still holds at most 120 findings.
+        self.assertEqual(ResearchDossier.model_validate(dossier.model_dump()), dossier)
+        with self.assertRaises(ValueError):
+            ResearchDossier.model_validate({**dossier.model_dump(), "assembled": False, "answers": []})
+        composed = ResearchDossier.model_validate({**dossier.model_dump(), "assembled": False, "answers": [],
+                                                   "findings": dossier.model_dump()["findings"][:100]})
+        errors = validate_dossier(composed, self.discovery, context)
+        self.assertTrue(any("25 words" in e for e in errors) and any("150 words" in e for e in errors), errors)
+
+    def test_an_assessment_objection_reopens_its_question_and_the_next_assembly_settles_it(self):
+        assessments, routes = [], []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is FollowUpAssessment:
+                assessments.append(payload)
+            if schema is ResearchAssessment:
+                assessments.append(payload)
+                report = fixtures.assessment_from_prompt(prompt)
+                if len(assessments) == 1:
+                    report.requirements[0].explanation = False
+                    report.requirements[0].reason = "The mechanism is absent."
+                return report
+            if schema is ReopenPlan:
+                routes.append(payload)
+                return ReopenPlan(routes=[dict(index=i, task_ids=["task_definition"], reason="Mechanism absent.")
+                                          for i in range(len(payload["objections"]))])
+            if schema is ResearchDecision and payload["reopening"]:
+                answer = answer_for(self.ref)
+                answer.summary += " Revised with the mechanism."
+                return decision("answer", answer=answer)
+        self.hook = hook
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual((engine.state["phase"], engine.state["audit_round"], len(assessments)), ("completed", 1, 2))
+        # The second round judges again only what the rework changed (follow_up_assessment).
+        self.assertEqual((assessments[1]["follow_up"]["changed_tasks"], assessments[1]["follow_up"]["requirements_in_scope"]),
+                         (["task_definition"], ["rq_001"]))
+        self.assertEqual(len(engine.state["tasks"]["task_definition"]["reopenings"]), 1)
+        # The routing reads the answers and the findings' ids and passages, not their statements.
+        self.assertEqual(len(routes), 1)
+        self.assertNotIn("statement", routes[0]["dossier"]["findings"][0])
+        self.assertEqual(routes[0]["answers"]["task_definition"]["finding_ids"], ["task_definition__f_energy"])
+        self.assertIsNone(engine.state["seed_dossier"])
+        (objection,) = engine.state["objections"].values()
+        self.assertEqual((objection["task_id"], objection["status"]), ("task_definition", "closed"))
+        dossier = json.loads((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        self.assertTrue(dossier["answers"][0]["summary"].endswith("Revised with the mechanism."))
+        self.assertEqual([s for s, _ in self.calls if s in (ResearchDossier, DossierPatch, SourceReview)], [])
+
+    def test_an_objection_raised_again_stays_open_and_one_left_out_is_closed(self):
+        """An assembled audit checks no closure: the next assessment judges the whole again."""
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        old = {"id": "obj_old", "rule": "support", "task_id": "task_definition", "status": "open",
+               "finding_ids": ["task_definition__f_energy"], "closure_condition": "Earlier condition."}
+        engine.state["objections"] = {"obj_old": old}
+        engine.state["phase"] = "audit"
+        dossier, discovery, context = engine.compose()
+        from podcast_automate.question_synthesis import assembled_review
+        review = assembled_review(dossier, engine.state["tasks"], context)
+        report = {"requirements": [], "blocking_gaps": ["A new gap."], "objection_checks": []}
+        self.hook = lambda prompt, schema, payload, kwargs: ReopenPlan(routes=[dict(
+            index=0, task_ids=["task_definition"], reason="New gap.")]) if schema is ReopenPlan else None
+        reopened, blocked = engine.reopen(dossier, review, report)
+        self.assertEqual((reopened, blocked), (["task_definition"], []))
+        opened = [oid for oid, row in engine.state["objections"].items() if oid != "obj_old"]
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(engine.state["closed_objections"], ["obj_old"])
+
+    def test_the_call_projection_of_an_assembled_run_counts_only_its_assessment(self):
+        from podcast_automate.question_budget import remaining_calls
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        state = {**engine.state, "phase": "audit", "audit_round": 1}
+        _, closing = remaining_calls(state, self.work / "question_research")
+        self.assertEqual(sorted(path.name for path in closing), ["assessment.json"])
+        _, composed = remaining_calls({**state, "prompt_generation": 2, "seed_dossier": None}, self.work / "question_research")
+        self.assertEqual(sorted(path.name for path in composed), ["assessment.json", "dossier.json", "grounding_0.json"])
+
+    def test_a_composed_run_is_rebuilt_from_its_verified_answers_on_request(self):
+        from podcast_automate.run_budget import approve_dossier_rebuild
+
+        def stop(prompt, schema, payload, kwargs):
+            if schema is ResearchAssessment:
+                raise AppError("Stopped by the editor.", code="model_timeout", status="blocked")
+        self.hook = stop
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
+            with patch("podcast_automate.question_research.PROMPT_GENERATION", 2):
+                first = run_research(self.root)
+            self.assertNotEqual(first.status, "completed")
+            work = self.root / "runs" / first.run_id
+            self.assertIn(ResearchDossier, [s for s, _ in self.calls])
+            composed = {p.relative_to(work).as_posix(): file_hash(p) for p in (work / "question_research/synthesis/audit_00").rglob("*")
+                        if p.is_file()}
+            approval = approve_dossier_rebuild(self.root, first.run_id)
+            self.assertEqual(approval.run_id, first.run_id)
+            self.assertEqual(approve_dossier_rebuild(self.root, first.run_id), approval)
+            self.hook = lambda *args: None
+            count = len(self.calls)
+            resumed = run_research(self.root, resume=True, run_id=first.run_id)
+        self.assertEqual(resumed.status, "completed", resumed.model_dump())
+        # Only the assessment of the assembled whole was asked; no question was researched again.
+        self.assertEqual([s for s, _ in self.calls[count:]], [ResearchAssessment])
+        state = read_value(work / "question_research/state.json")
+        self.assertEqual((state["prompt_generation"], state["audit_round"]), (3, 1))
+        self.assertEqual(state["rebuilds"][0]["from_audit_round"], 0)
+        superseded = read_value(work / "question_research/synthesis/superseded_audit_00.json")
+        self.assertEqual(superseded["prompt_generation"], 2)
+        self.assertEqual(superseded["composed_findings"]["owners"], {"f_energy": ["task_definition"]})
+        # The composed round's receipts stay as they were, beside the new round.
+        self.assertEqual(composed, {p.relative_to(work).as_posix(): file_hash(p)
+                                    for p in (work / "question_research/synthesis/audit_00").rglob("*") if p.is_file()})
+        self.assertTrue((work / "question_research/synthesis/audit_01/assessment.json").exists())
+        dossier = json.loads((work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        self.assertEqual(([f["id"] for f in dossier["findings"]], dossier["assembled"]), (["task_definition__f_energy"], True))
+        with self.assertRaises(AppError) as done:
+            approve_dossier_rebuild(self.root, first.run_id)
+        self.assertEqual(done.exception.code, "invalid_dossier_rebuild")
+
+
+    def test_after_two_reworks_an_objection_is_noted_and_the_run_completes_with_the_last_verified_answer(self):
+        """The user's choice, 2026-10-02: a question whose reworks are spent no longer stops the run. Before, every
+        audit round blocked another such question, so Transformer stopped again after each decision."""
+        drafts = []
+
+        def reject(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                answer = answer_for(self.ref)
+                drafts.append(1)
+                answer.summary += f" Revision {len(drafts)}."
+                return decision("answer", answer=answer)
+            if schema is ResearchAssessment:
+                report = fixtures.assessment_from_prompt(prompt)
+                report.requirements[0].explanation = False
+                report.requirements[0].reason = "A required mechanism is still absent."
+                return report
+            if schema is FollowUpAssessment:
+                return failing_follow_up(payload)
+            if schema is ReopenPlan:
+                return ReopenPlan(routes=[dict(index=i, task_ids=["task_definition"], reason="Required mechanism absent.")
+                                          for i in range(len(payload["objections"]))])
+        self.hook = reject
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        row = engine.state["tasks"]["task_definition"]
+        self.assertEqual((row["status"], len(row["reopenings"]), len(drafts)), ("verified", 2, 3))
+        self.assertEqual(engine.state["phase"], "completed")
+        (noted,) = [n for n in engine.state["noted_objections"].values() if n.get("basis") == "reworks_spent"]
+        self.assertEqual(noted["task_id"], "task_definition")
+        self.assertIn("A required mechanism is still absent.", noted["objection"])
+        dossier = json.loads((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        self.assertTrue(dossier["answers"][0]["summary"].endswith("Revision 3."))
+        gate = json.loads((self.work / "research_quality_gate.json").read_text(encoding="utf-8"))
+        self.assertTrue(gate["passed"])
+        self.assertEqual([r["task_id"] for r in gate["noted_after_reworks"]], ["task_definition"])
+        self.assertIn("Einwände nach zwei Nachbesserungen", (self.work / "research_quality.md").read_text(encoding="utf-8"))
+
+    def test_a_spent_or_accepted_question_with_a_verified_answer_keeps_it_on_resume(self):
+        """Questions a run stopped on before 2026-10-02: one blocked after its reworks and one the editor accepted as
+        a gap while it still had its verified answer both return with that answer, their objection as a limit."""
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        path = self.work / "question_research/state.json"
+        for accepted in (False, True):
+            with self.subTest(accepted=accepted):
+                state = read_value(path)
+                row = state["tasks"]["task_definition"]
+                row.update(status="blocked", outcome="accepted_gap" if accepted else "audit_block",
+                           reason="Wiederholte Gesamtprüfung widerspricht dem Abschluss: Tabellenzahl prüfen.")
+                if accepted:
+                    row["accepted_gap"] = {"task_id": "task_definition", "reason": "", "approved_at": "2026-10-01T20:22:01Z"}
+                state.update(phase="blocked", audit_round=state["audit_round"] + 1, noted_objections={})
+                save_value(path, state)
+                count = len(self.calls)
+                resumed = self.engine()
+                resumed.run(self.discovery, self.index)
+                row = resumed.state["tasks"]["task_definition"]
+                self.assertEqual((row["status"], resumed.state["phase"]), ("verified", "completed"))
+                self.assertNotIn("accepted_gap", row)
+                # Nothing changed since the last assessment and it had passed: the follow-up asks no call.
+                self.assertEqual([s for s, _ in self.calls[count:]], [])
+                (noted,) = resumed.state["noted_objections"].values()
+                self.assertEqual((noted["basis"], noted["task_id"]), ("reworks_spent", "task_definition"))
+                dossier = json.loads((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+                self.assertEqual([f["id"] for f in dossier["findings"]], ["task_definition__f_energy"])
+
+    def test_a_requirement_whose_five_criteria_are_met_passes_and_its_wishes_are_noted(self):
+        """The user's choice, 2026-10-02: what the assessment still lists for a requirement it judges met on all five
+        criteria is a limit, not missing research (Ontologies: 6 of 9 requirements failed only on such lists)."""
+        def wishes(prompt, schema, payload, kwargs):
+            if schema is ResearchAssessment:
+                report = fixtures.assessment_from_prompt(prompt)
+                report.requirements[0].missing = ["Person-hours for stewardship, which no source reports."]
+                return report
+        self.hook = wishes
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        gate = json.loads((self.work / "research_quality_gate.json").read_text(encoding="utf-8"))
+        self.assertTrue(gate["passed"])
+        self.assertEqual((gate["requirements"][0]["missing"], gate["requirements"][0]["noted"]),
+                         ([], ["Person-hours for stewardship, which no source reports."]))
+        self.assertIn("Als Grenze vermerkt: Person-hours", (self.work / "research_quality.md").read_text(encoding="utf-8"))
+        self.assertEqual([s for s, _ in self.calls].count(ReopenPlan), 0)
+
+
+    def test_two_questions_spent_in_the_same_round_are_both_noted(self):
+        """Transformer, 2026-10-02: the second spent question of a round looked up an objection the first had
+        already moved to the noted ones, and the run stopped with a KeyError."""
+        drafts = []
+
+        def reject(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is ResearchDecision:
+                drafts.append(payload["task"]["id"])
+                answer = answer_for(self.ref)
+                answer.summary += f" Revision {len(drafts)}."
+                return decision("answer", answer=answer)
+            if schema is ResearchAssessment:
+                report = fixtures.assessment_from_prompt(prompt)
+                report.requirements[0].explanation = False
+                report.requirements[0].reason = "A required mechanism is still absent."
+                return report
+            if schema is FollowUpAssessment:
+                return failing_follow_up(payload)
+            if schema is ReopenPlan:
+                return ReopenPlan(routes=[dict(index=i, task_ids=["task_definition", "task_empirical"], reason="Absent.")
+                                          for i in range(len(payload["objections"]))])
+        self.hook = reject
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual({tid: (row["status"], len(row["reopenings"])) for tid, row in engine.state["tasks"].items()},
+                         {"task_definition": ("verified", 2), "task_empirical": ("verified", 2)})
+        noted = sorted(row["task_id"] for row in engine.state["noted_objections"].values() if row.get("basis") == "reworks_spent")
+        self.assertEqual(noted, ["task_definition", "task_empirical"])
+        self.assertEqual(sorted(drafts), ["task_definition"] * 3 + ["task_empirical"] * 3)
+        self.assertEqual([o for o in engine.state["objections"].values() if o.get("status") == "open"
+                          and o["id"] not in engine.state.get("closed_objections", [])], [])
+
+
+    def test_a_follow_up_judges_only_what_changed_and_records_limits_instead_of_researching_them(self):
+        """2026-10-02: each round judged the whole again, flipped unchanged verdicts and raised the same limits of the
+        sources as new objections, so the audit never settled. A follow-up judges again only the requirements a
+        changed answer serves; an unmet requirement whose gap is a limit of the sources, and a point about an
+        unchanged answer, are recorded instead of reopening a question."""
+        self.config.focus_questions = ["How is energy measured?"]
+        rounds = []
+
+        def two(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), {**task_value("task_empirical", "empirical"), "requirement_ids": ["rq_002"]}])
+            if schema is ResearchDecision:
+                answer = answer_for(self.ref)
+                answer.summary += f" Draft {len(rounds)}."
+                return decision("answer", answer=answer)
+            if schema is ResearchAssessment:
+                rounds.append(payload)
+                return ResearchAssessment(requirements=[
+                    dict(requirement_id="rq_001", finding_ids=["task_definition__f_energy"], direct_answer=True, explanation=False,
+                         evidence=True, cross_check=True, boundaries=True, reason="The mechanism is absent.", missing=[], search_queries=[]),
+                    dict(requirement_id="rq_002", finding_ids=["task_empirical__f_energy"], direct_answer=True, explanation=True,
+                         evidence=True, cross_check=True, boundaries=True, reason="Met.", missing=[], search_queries=[])], issues=[])
+            if schema is FollowUpAssessment:
+                rounds.append(payload)
+                follow_up = failing_follow_up(payload, reason="Only the abstract of the original is available.", remedy="limit")
+                return FollowUpAssessment.model_validate({**follow_up.model_dump(), "issues": [dict(
+                    text="The empirical answer names no sample size.", remedy="research", task_ids=["task_empirical"])]})
+            if schema is ReopenPlan:
+                return ReopenPlan(routes=[dict(index=i, task_ids=["task_definition"], reason="Mechanism absent.")
+                                          for i in range(len(payload["objections"]))])
+        self.hook = two
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["phase"], "completed")
+        self.assertEqual(len(rounds), 2)
+        # Only the reworked question changed; the requirement only it serves is judged again, the other keeps its verdict.
+        self.assertEqual((rounds[1]["follow_up"]["changed_tasks"], rounds[1]["follow_up"]["requirements_in_scope"]),
+                         (["task_definition"], ["rq_001"]))
+        self.assertEqual({tid: len(row["reopenings"]) for tid, row in engine.state["tasks"].items()},
+                         {"task_definition": 1, "task_empirical": 0})
+        gate = json.loads((self.work / "research_quality_gate.json").read_text(encoding="utf-8"))
+        rows = {row["requirement_id"]: row for row in gate["requirements"]}
+        self.assertEqual((rows["rq_001"]["passed"], rows["rq_001"].get("source_limit")), (False, True))
+        self.assertTrue(rows["rq_002"]["passed"])
+        self.assertEqual(gate["script_notes"], ["The empirical answer names no sample size."])
+        self.assertTrue(gate["passed"])
+        report = (self.work / "research_quality.md").read_text(encoding="utf-8")
+        self.assertIn("Grenze der verfügbaren Quellen", report)
+        self.assertIn("## Hinweise fürs Skript", report)
+        # The scope is saved before the call, so a resume asks the same question.
+        self.assertEqual(read_value(self.work / "question_research/synthesis/audit_01/assessment_scope.json")["requirements"], ["rq_001"])
 
 
 if __name__ == "__main__":

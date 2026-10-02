@@ -203,6 +203,56 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
     return errors
 
 
+# Words of one source an episode may quote verbatim (the user's choice, 2026-10-01). The rule held for the dossier
+# until then; an assembled dossier keeps every verified answer with its excerpts, and what is broadcast quotes sparingly.
+QUOTED_WORDS_PER_SOURCE = 25
+# Consecutive words the spoken text must share with one passage to count as quoted: shorter runs are common phrases.
+QUOTE_RUN = 6
+
+
+def spoken_words(text):
+    return re.findall(r"\w+", text.lower())
+
+
+def quotation_errors(script: EpisodeScript, sources: list[dict]) -> list[str]:
+    """Per source, the words of the dialogue that repeat one of its passages verbatim in runs of at least QUOTE_RUN
+    words; more than QUOTED_WORDS_PER_SOURCE from one source is a defect the writer fixes in their own words. A
+    translated quote is not verbatim and is not counted; ``sources`` are the passages the writer was given."""
+    runs = {}
+    for document in sources:
+        for section in document["sections"]:
+            words = spoken_words(section["text"])
+            for start in range(len(words) - QUOTE_RUN + 1):
+                runs.setdefault(tuple(words[start:start + QUOTE_RUN]), set()).add(document["source_id"])
+    quoted, example = {}, {}
+    for segment in script.segments:
+        words = spoken_words(segment.text)
+        covered = {}
+        for start in range(len(words) - QUOTE_RUN + 1):
+            for source_id in runs.get(tuple(words[start:start + QUOTE_RUN]), ()):
+                covered.setdefault(source_id, set()).update(range(start, start + QUOTE_RUN))
+        for source_id, positions in covered.items():
+            quoted[source_id] = quoted.get(source_id, 0) + len(positions)
+            example.setdefault(source_id, (segment.segment_id, " ".join(words[min(positions):max(positions) + 1])))
+    return [f"{source_id}: the dialogue repeats {count} words of this source verbatim (for example in "
+            f"{example[source_id][0]}: \"{example[source_id][1][:160]}\"); quote at most {QUOTED_WORDS_PER_SOURCE} words "
+            "of a source per episode and say the rest in the hosts' own words."
+            for source_id, count in sorted(quoted.items()) if count > QUOTED_WORDS_PER_SOURCE]
+
+
+def planning_dossier(dossier: ResearchDossier) -> dict:
+    """The dossier as the series plan reads it. An assembled dossier holds every verified answer, 800 000 characters
+    and more on the runs of 2026-10-01: the plan reads it without the excerpts and claim contracts, since it assigns
+    findings by what they state, and each episode's writing reads its findings whole. A composed dossier stays as it was."""
+    data = dossier.model_dump()
+    if dossier.assembled:
+        data.pop("source_assessments", None)
+        data["findings"] = [{key: value for key, value in finding.items()
+                             if key not in {"evidence", "claim_contract", "supporting_contracts"}}
+                            for finding in data["findings"]]
+    return data
+
+
 def episode_sources(episode, dossier, context, index=None):
     """Keep source context around evidence anchors, including paragraphs omitted by the dossier sampler."""
     cited = set(episode_findings(episode))

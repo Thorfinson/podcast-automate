@@ -7,6 +7,7 @@ from podcast_automate.evidence_models import ResearchObjection, ObjectionClosure
 from podcast_automate.research_review import SourceReview
 from podcast_automate.research_tasks import QuestionSearch, ReopenPlan
 from podcast_automate.research_advisor import BlockAdvice
+from podcast_automate.research_quality import FollowUpAssessment
 
 
 def claim_contract():
@@ -59,12 +60,19 @@ def complete_fixture_response(value, payload):
         value = value.model_copy(update={"executed_queries": payload.get("queries", ["energy"]),
                                         "counterevidence": "No contrary result in this synthetic fixture."})
     elif isinstance(value, ReopenPlan):
+        # A support defect of a finding the task owns: a defect that still reopens its question. A completeness
+        # objection to a criterion the answer already treats is only noted (question_synthesis.criterion_covered).
+        owners = payload.get("finding_owners", {})
+
+        def anchor(task_id, text, reason):
+            owned = next((fid for fid, owning in owners.items() if task_id in owning), None)
+            # A task without findings of its own (an accepted gap) can only be named by its fixed criterion.
+            return ResearchObjection(id="obj_fixture", rule="support" if owned else "criterion", task_id=task_id,
+                criterion_index=None if owned else 0, finding_ids=[owned] if owned else [], evidence_refs=[],
+                missing_evidence=text, reason=reason, correction="Supply the required mechanism.",
+                closure_condition="The missing support is supplied by checked evidence.", resolution="research")
         for route in value.routes:
-            route.anchors = [ResearchObjection(id="obj_fixture", rule="criterion", task_id=task_id,
-                criterion_index=0, finding_ids=[], evidence_refs=[], missing_evidence=payload["objections"][route.index],
-                reason=route.reason, correction="Supply the required mechanism.",
-                closure_condition="The missing criterion is met by checked evidence.", resolution="research")
-                for task_id in route.task_ids]
+            route.anchors = [anchor(task_id, payload["objections"][route.index], route.reason) for task_id in route.task_ids]
     return value
 
 
@@ -107,6 +115,13 @@ def question_response(prompt, schema):
                             supported=True, source_adequacy=True, issues=[]), payload)
     if schema is SourceReview:
         return complete_fixture_response(SourceReview(issues=[], limitations=[]), payload)
+    if schema is FollowUpAssessment:
+        # A follow-up that finds every requirement in scope met and raises nothing (question_synthesis.follow_up_assessment).
+        ids = [f["id"] for f in payload["findings"]]
+        cited = next((fid for fid in ids if fid.endswith("__f_energy")), ids[0])
+        return FollowUpAssessment(requirements=[dict(requirement_id=rid, finding_ids=[cited], direct_answer=True,
+            explanation=True, evidence=True, cross_check=True, boundaries=True, reason="The fixture meets it.",
+            missing=[], search_queries=[], remedy="none") for rid in payload["follow_up"]["requirements_in_scope"]], issues=[])
     if schema is BlockAdvice:
         # The default advice starts nothing on its own, so a blocked fixture run still stops for its decisions.
         return BlockAdvice(diagnosis="Synthetische Beratung ohne neuen Zugang.", recommendation="accept_gap",

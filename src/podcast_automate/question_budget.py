@@ -171,13 +171,16 @@ def remaining_calls(state, folder):
         if checkpoint(review) is None:
             questions.add(review)
     synthesis = folder / "synthesis" / f"audit_{state['audit_round']:02d}"
-    names = ([f"batch_{start:03d}" for start in range(0, len(state["dirty_tasks"]), 4)]
+    # From prompt generation 3 on the dossier is assembled from the answers and their reviews carry its receipts:
+    # the closing calls are the assessment and the routing (question_synthesis.ASSEMBLED_GENERATION).
+    assembled = int(state.get("prompt_generation", 1)) >= 3
+    names = ([] if assembled else [f"batch_{start:03d}" for start in range(0, len(state["dirty_tasks"]), 4)]
              if state["seed_dossier"] else ["dossier"])
     for name in names:
         path = synthesis / f"{name}.json"
         if checkpoint(path) is None:
             closing.add(path)
-    for revision in range(3):
+    for revision in range(0 if assembled else 3):
         path = synthesis / f"grounding_{revision}.json"
         review = checkpoint(path)
         if review is None:

@@ -349,9 +349,15 @@ def repair_references(folder, name, dossier, discovery, context, config, generat
     if errors:
         targets, questions = error_targets(dossier, errors, discovery)
         if allowed_ids is not None and not targets <= set(allowed_ids):
-            write_json(folder / f"{name}_errors.json", {"errors": errors})
-            raise AppError("Die Belegkorrektur würde Befunde unveränderter Recherchefragen bearbeiten; Prüfdetails sind gespeichert.",
-                           code="invalid_evidence", status="blocked")
+            # A source-wide limit the allowed findings pushed over is repaired in them alone; the whole dossier is
+            # checked afterwards as always (Ontologies, 2026-10-01: an audit correction lengthened 8 findings and 12
+            # sources passed 150 paraphrased words, and the run stopped without a repair). With none of them
+            # allowed, the repair would have to edit findings of unchanged questions.
+            if not targets & set(allowed_ids):
+                write_json(folder / f"{name}_errors.json", {"errors": errors})
+                raise AppError("Die Belegkorrektur würde Befunde unveränderter Recherchefragen bearbeiten; Prüfdetails sind gespeichert.",
+                               code="invalid_evidence", status="blocked")
+            targets &= set(allowed_ids)
         # Include available sections of affected sources: a bad anchor can name a
         # nonexistent section, so selecting just that reference cannot repair it.
         affected_sources = {e.reference.split("#")[0] for f in dossier.findings if f.id in targets for e in f.evidence}

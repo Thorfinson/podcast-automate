@@ -11,18 +11,19 @@ from collections import Counter
 
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
-from .evidence_models import EVIDENCE_VERSION, FindingSupport
+from .evidence_models import EVIDENCE_VERSION, FindingSupport, SourceAssessment
 from .prompts import instructions
 from .question_answering import read_context
 from .question_dependencies import invalidate_dependents
 from .question_ownership import editable_findings, finding_owners, preserve_unrelated
 from .research_gap_probe import coverage_terms, gap_id, probe, settle
 from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_EVIDENCE_RULE, SYNTHESIS_INSTRUCTIONS,
-                                blocks, evidence_summary, scope_assessments, support_errors, validate_objection,
-                                validate_synthesis)
+                                blocks, collapse_assessments, collapse_support, evidence_summary, scope_assessments,
+                                support_errors, validate_objection, validate_synthesis)
 from .research_ledger import VERSION, read_value, save_value
-from .research_models import ResearchDiscovery, ResearchDossier
+from .research_models import AnswerDigest, Finding, QuestionCoverage, ResearchDiscovery, ResearchDossier
 from .research_patches import edit_dossier, patch_prompt, repair_references
+from .research_quality import (CRITERIA, FollowUpAssessment, RequirementAssessment, check_follow_up, requirements_for)
 from .research_quality import (ResearchAssessment, check_assessment, cite_findings, quality_brief, quality_report,
                                render_quality)
 from .research_retrieval import merge_context, references, select_context
@@ -37,7 +38,15 @@ from .storage import atomic_text, digest, write_json
 PROMPT_BUDGET_CHARS = 240_000
 # The generation of the composing prompts a run was started with. A rule added to those prompts
 # applies from the next generation on; earlier runs keep their prompt text and their receipts.
-PROMPT_GENERATION = 2
+PROMPT_GENERATION = 3
+# From this generation on the dossier is assembled from the verified answers without a model call
+# (assemble_dossier). A composed dossier kept at most MAX_FINDINGS findings and, under the source-wide
+# word limits, about a third of the verified research; every audit round then asked for the rest again
+# (2026-10-01: 120 of 335 findings in Ontologies, 36 of 59 questions without one). The user's choice: the
+# dossier holds every verified answer, and the 25-word quote rule applies to the broadcast script.
+ASSEMBLED_GENERATION = 3
+# The editor's request to assemble an earlier run's dossier from its verified answers (run_budget.approve_dossier_rebuild).
+DOSSIER_REBUILD = "dossier_rebuild.json"
 # The dossier a call writes is about as long as the verified answers it integrates, and the CLI cuts
 # an answer at its output cap (claude_code.MAX_OUTPUT_TOKENS; 32 000 tokens without that setting,
 # roughly 150 000 characters of German JSON). So the answers one composing call integrates stay
@@ -174,6 +183,102 @@ def compact_assessment_material(dossier, review):
             "source_assessments": list(assessments.values())}
 
 
+def dossier_finding_id(task_id, finding_id):
+    """A finding's id in an assembled dossier. Ids inside an answer are local (Ontologies, 2026-10-01: five ids
+    shared by two answers), so the task qualifies every one of them; a reworked answer never renames another's."""
+    return f"{task_id}__{finding_id}"
+
+
+def assemble_dossier(discovery, plan, rows, accepted, language):
+    """The dossier as the sum of the verified answers, without a model call: every finding of every answer, unchanged
+    but for its qualified id, in plan order; per research question the findings of the tasks that serve it; and the
+    answers' summaries and limits. Accepted gaps stay coverage gaps, as in a composed dossier. Each finding was
+    checked against its passages by the review of its answer (question_answering); nothing is rewritten here."""
+    findings, digests = [], []
+    for task in plan.tasks:
+        answer = rows[task.id].get("answer")
+        if task.id in accepted or not answer:
+            continue
+        ids = {f["id"]: dossier_finding_id(task.id, f["id"]) for f in answer["findings"]}
+        findings.extend(Finding.model_validate({**f, "id": ids[f["id"]]}) for f in answer["findings"])
+        digests.append(AnswerDigest(task_id=task.id, question=task.question, question_ids=list(task.question_ids),
+                                    summary=answer["summary"], limits=list(answer.get("limits", [])),
+                                    finding_ids=list(ids.values())))
+    german = language.startswith("de")
+    coverage = []
+    for question in discovery.questions:
+        serving = [t for t in plan.tasks if question.id in t.question_ids]
+        answered = {d.task_id for d in digests if question.id in d.question_ids}
+        gaps = [f"{t.question}: {accepted[t.id].get('reason') or ('akzeptierte Lücke' if german else 'accepted gap')}"
+                if t.id in accepted else
+                (f"{t.question}: nicht beantwortet" if german else f"{t.question}: not answered")
+                for t in serving if t.id not in answered]
+        if not serving:
+            gaps = ["Keine Teilfrage des Plans dient dieser Leitfrage." if german else "No task of the plan serves this question."]
+        coverage.append(QuestionCoverage(
+            question_id=question.id, status="answered" if not gaps else "partial" if answered else "unanswered",
+            finding_ids=[fid for d in digests if d.task_id in answered for fid in d.finding_ids], gap=" ".join(gaps)))
+    note = (f"Zusammengesetzt aus {len(digests)} einzeln an ihren Quellen geprüften Antworten auf "
+            f"{len(plan.tasks)} Teilfragen; die Befunde stehen unverändert so, wie ihre Prüfung sie bestätigt hat."
+            if german else
+            f"Assembled from {len(digests)} answers to {len(plan.tasks)} tasks, each checked against its sources; "
+            "the findings stand unchanged as their review confirmed them.")
+    return ResearchDossier(topic=discovery.topic, scope_note=note, findings=findings, coverage=coverage,
+                           open_questions=[], assembled=True, answers=digests)
+
+
+def assembled_review(dossier, rows, context):
+    """The source review of an assembled dossier: each finding keeps the support receipt and its sources the
+    assessments of the independent review of the answer it comes from, under the finding's dossier id. A source
+    several answers cite keeps the assessment claiming the least independence (collapse_assessments)."""
+    support, assessments, limitations = [], [], []
+    for row in dossier.answers:
+        review = (rows[row.task_id].get("verification") or {}).get("review") or {}
+        local = {f["id"] for f in rows[row.task_id]["answer"]["findings"]}
+        support.extend(FindingSupport.model_validate({**receipt, "finding_id": dossier_finding_id(row.task_id, receipt["finding_id"])})
+                       for receipt in review.get("finding_support", []) if receipt["finding_id"] in local)
+        assessments.extend(SourceAssessment.model_validate(a) for a in review.get("source_assessments", []))
+        limitations.extend(review.get("limitations", []))
+    review = SourceReview(issues=[], limitations=list(dict.fromkeys(limitations)), finding_support=collapse_support(support),
+                          source_assessments=collapse_assessments(assessments))
+    return scope_assessments(review, dossier.findings, context)
+
+
+def assembled_assessment_material(dossier, review, context):
+    """An assembled dossier as the assessment reads it: each verified answer with its summary and limits, every
+    finding with its kind, statement, cited sources and support verdict, the coverage, and one identity row per
+    source. The excerpts and claim contracts were checked by the answers' reviews and stay in the dossier; whole,
+    the material ran to 850 000 to 920 000 characters on the runs of 2026-10-01."""
+    verdicts = {r.finding_id: r for r in review.finding_support}
+    titles = {source["source_id"]: source["title"] for source in context}
+    sources = [{"title": titles.get(a.source_id, ""), **{k: v for k, v in a.model_dump().items() if k in SOURCE_IDENTITY_FIELDS}}
+               for a in review.source_assessments]
+    return {"answers": [a.model_dump() for a in dossier.answers],
+            "findings": [{"id": f.id, "kind": f.kind, "statement": f.statement,
+                          "sources": sorted({e.reference.split("#")[0] for e in f.evidence}),
+                          **({"verdict": verdicts[f.id].verdict, "empirical_status": verdicts[f.id].empirical_status}
+                             if f.id in verdicts else {})} for f in dossier.findings],
+            "coverage": [{"question_id": c.question_id, "status": c.status, "gap": c.gap} for c in dossier.coverage],
+            "sources": sources}
+
+
+def assembled_routing_material(tasks, answers, dossier):
+    """An assembled dossier as the objection routing reads it: the tasks, each answer's summary, limits and findings,
+    and every finding with its kind and cited passages. The statements are the answers' own; an anchor names a
+    task, its criterion and the findings it concerns, and the router finds them through the answers."""
+    return {"tasks": [{k: v for k, v in t.model_dump().items() if k in ROUTING_TASK_FIELDS} for t in tasks],
+            "anchored_issues": [],
+            "answers": {tid: None if not answer else {"summary": answer.get("summary"), "limits": answer.get("limits", []),
+                                                       "finding_ids": [dossier_finding_id(tid, f["id"])
+                                                                       for f in answer.get("findings", [])]}
+                        for tid, answer in answers.items()},
+            "dossier": {"topic": dossier.topic,
+                        "findings": [{"id": f.id, "kind": f.kind, "evidence": [{"reference": e.reference} for e in f.evidence]}
+                                     for f in dossier.findings],
+                        "coverage": [c.model_dump() for c in dossier.coverage], "open_questions": dossier.open_questions,
+                        "synthesis": []}}
+
+
 class SynthesisMixin:
     """Compose, audit and, when the audit fails, reopen only the concretely challenged tasks."""
 
@@ -189,10 +294,57 @@ class SynthesisMixin:
     def synthesis_rule(self):
         return SYNTHESIS_EVIDENCE_RULE if self.prompt_generation >= 2 else ""
 
+    def adopt_dossier_rebuild(self):
+        """The editor's request (run_budget.approve_dossier_rebuild) to assemble a composed run's dossier from its
+        verified answers. The answers, their reviews and every receipt stay; the composed dossier and the objections
+        its audits raised are set aside in ``synthesis/superseded_audit_NN.json``, and the next audit round, in a
+        folder of its own, judges the assembled whole. Spent reworks still count against a question's limit."""
+        path = self.work / DOSSIER_REBUILD
+        if self.prompt_generation >= ASSEMBLED_GENERATION or not path.exists():
+            return
+        request = json.loads(path.read_text(encoding="utf-8"))
+        if request.get("run_id") != self.work.name:
+            raise AppError("Der Neuaufbau des Dossiers gehört nicht zu diesem Lauf.", code="invalid_dossier_rebuild",
+                           status="blocked")
+        audit_round = int(self.state["audit_round"])
+        keys = ("seed_dossier", "composed_findings", "finding_owners", "verified_baseline", "objections",
+                "closed_objections", "noted_objections", "disputed_objections", "review_disagreements",
+                "accepted_gap_objections")
+        save_value(self.folder / "synthesis" / f"superseded_audit_{audit_round:02d}.json",
+                   {"prompt_generation": self.prompt_generation, "audit_round": audit_round,
+                    "approved_at": request.get("approved_at"), **{key: self.state.get(key) for key in keys}})
+        for key in keys:
+            self.state.pop(key, None)
+        self.state.update(prompt_generation=ASSEMBLED_GENERATION, seed_dossier=None, dirty_tasks=[],
+                          audit_round=audit_round + 1,
+                          phase="synthesis" if self.state["phase"] in {"synthesis", "audit"} else self.state["phase"])
+        self.state.setdefault("rebuilds", []).append({"from_audit_round": audit_round, "approved_at": request.get("approved_at")})
+
+    def assemble(self, discovery, plan, accepted):
+        """The dossier of prompt generation 3: the sum of the verified answers (assemble_dossier), without a model call."""
+        from .research import validate_dossier
+        self.state["phase"] = "synthesis"
+        if not any(row.get("answer") for tid, row in self.state["tasks"].items() if tid not in accepted):
+            raise AppError("Keine Teilfrage hat eine geprüfte Antwort; das Dossier hat keinen Inhalt.",
+                           code="research_coverage_incomplete", status="blocked")
+        dossier = assemble_dossier(discovery, plan, self.state["tasks"], accepted, self.config.language)
+        context = read_context(self.reader, [e.reference for f in dossier.findings for e in f.evidence])
+        errors = validate_dossier(dossier, discovery, context)
+        if errors:
+            raise AppError("Das zusammengesetzte Dossier besteht die Quellenprüfung nicht: " + " ".join(errors[:5]),
+                           code="invalid_evidence", status="blocked")
+        self.state["composed_findings"] = {"dossier_hash": digest(dossier.model_dump()),
+                                           "owners": {fid: [row.task_id] for row in dossier.answers for fid in row.finding_ids}}
+        self.state.pop("verified_baseline", None)
+        self.save(f"Dossier aus {len(dossier.answers)} geprüften Antworten mit {len(dossier.findings)} Befunden zusammengesetzt")
+        return dossier, discovery, context
+
     def compose(self):
         discovery = ResearchDiscovery.model_validate(self.state["discovery"])
         plan = QuestionPlan.model_validate(self.state["plan"])
         accepted = self.accepted_summary()
+        if self.prompt_generation >= ASSEMBLED_GENERATION:
+            return self.assemble(discovery, plan, accepted)
         answers = [{"task": task.model_dump(), "answer": self.state["tasks"][task.id]["answer"],
                     "evidence_review": self.state["tasks"][task.id].get("verification", {}).get("review"),
                     "review_limitations": (self.state["tasks"][task.id].get("verification") or {}).get("limitations", [])}
@@ -387,10 +539,18 @@ class SynthesisMixin:
     def audit(self, dossier, discovery, context):
         folder = self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}"
         self.state["phase"] = "audit"
-        self.save("Gesamtdossier wird auf Quellenbezüge, Widersprüche und alle ursprünglichen Leitfragen geprüft")
         tasks = QuestionPlan.model_validate(self.state["plan"]).tasks
         accepted = self.accepted_summary()
-        for revision in range(3):
+        review = None
+        if dossier.assembled:
+            # Every finding was checked against its passages by the review of its answer, and is unchanged since: the
+            # audit takes those receipts and judges the whole against the brief. An objection the assessment raises
+            # goes back to its question, never into the dossier text, so the dossier stays the sum of its answers.
+            self.save("Quellenbelege der Einzelprüfungen übernommen; das Gesamtdossier wird gegen alle Leitfragen bewertet")
+            review = assembled_review(dossier, self.state["tasks"], context)
+        else:
+            self.save("Gesamtdossier wird auf Quellenbezüge, Widersprüche und alle ursprünglichen Leitfragen geprüft")
+        for revision in range(0 if dossier.assembled else 3):
             expected = self.state.get("objections", {})
 
             def well_formed(review, final, dossier=dossier, findings=None, objections=None):
@@ -459,13 +619,18 @@ class SynthesisMixin:
                 allowed_ids=targets)
             preserve_unrelated(before, dossier, targets)
         text = instructions("research_assessment", language=self.config.language)
-        payload = {"brief": quality_brief(self.config), "dossier": dossier.model_dump(), "sources": context,
-                   "finding_support": [r.model_dump() for r in review.finding_support],
-                   "source_assessments": [a.model_dump() for a in review.source_assessments]}
+        if dossier.assembled:
+            # One call over the answers and their findings: about 450 000 characters on the runs of 2026-10-01, which
+            # the 1 000 000-token windows of Sonnet and Opus 5.5 take (claude_code.prompt_limit).
+            payload = {"brief": quality_brief(self.config), **assembled_assessment_material(dossier, review, context)}
+        else:
+            payload = {"brief": quality_brief(self.config), "dossier": dossier.model_dump(), "sources": context,
+                       "finding_support": [r.model_dump() for r in review.finding_support],
+                       "source_assessments": [a.model_dump() for a in review.source_assessments]}
         if accepted:
             text += " " + instructions("accepted_gaps")
             payload["accepted_gaps"] = [{"task_id": tid, **gap} for tid, gap in accepted.items()]
-        if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
+        if not dossier.assembled and len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
             payload["sources"] = select_context(context, {e.reference for f in dossier.findings for e in f.evidence})
             if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
                 # The assessment judges coverage, explanation and independence against the reviewed
@@ -477,14 +642,34 @@ class SynthesisMixin:
                 payload.update(compact_assessment_material(dossier, review))
             if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
                 payload["sources"] = source_identity(payload["sources"])
-        self.save("Bewertung des Gesamtdossiers gegen alle Leitfragen läuft")
-        assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
-                               validate=lambda candidate, final: check_assessment(self.config, dossier,
-                                                                                   cite_findings(dossier, candidate)))
+        previous = self.previous_assessment(folder) if dossier.assembled else None
+        notes, limits = [], set()
+        if previous is None:
+            self.save("Bewertung des Gesamtdossiers gegen alle Leitfragen läuft")
+            assessment = self.call(folder, "assessment", ResearchAssessment, text + "\n" + json.dumps(payload, ensure_ascii=False),
+                                   validate=lambda candidate, final: check_assessment(self.config, dossier,
+                                                                                       cite_findings(dossier, candidate)))
+        else:
+            assessment, notes, limits = self.follow_up_assessment(folder, text, payload, previous, dossier, tasks)
         report = quality_report(self.config, dossier, discovery, self.index, assessment,
                                 [*(i.reason for i in review.issues), *self.upheld_objections().values()],
                                 accepted=accepted, gap_probes=self.probe_declared_gaps(dossier),
                                 review_limitations=self.review_limitations())
+        if dossier.assembled:
+            # A requirement the follow-up judged unmet for a limit of the sources is recorded, not researched again.
+            for row in report["requirements"]:
+                if row["requirement_id"] in limits and not row["passed"]:
+                    row["source_limit"] = True
+            if notes:
+                report["script_notes"] = notes
+            # This round's verdicts and the answers they judged: the next round's follow-up starts from them.
+            save_value(folder / "assessment_merged.json", {
+                "requirements": [r.model_dump() for r in assessment.requirements], "issues": list(assessment.issues),
+                "script_notes": notes, "source_limits": sorted(limits),
+                "passed": [row["requirement_id"] for row in report["requirements"] if row["passed"]]})
+            self.state.update(assessed_round=self.state["audit_round"],
+                              assessed_answers={tid: digest(row["answer"]) for tid, row in self.state["tasks"].items()
+                                                if row.get("answer")})
         if self.state.get("disputed_objections"):
             report["disputed_objections"] = list(self.state["disputed_objections"].values())
         dossier = dossier.model_copy(update={"evidence_version": EVIDENCE_VERSION,
@@ -499,6 +684,104 @@ class SynthesisMixin:
         self.state["composed_findings"]["dossier_hash"] = digest(dossier.model_dump())
         self.save()
         return dossier, review, report
+
+    def previous_assessment(self, folder):
+        """The last assembled round's verdicts, for a follow-up assessment from the second assembled round on. None for
+        the first such round, and for a round that already holds a whole assessment (begun before follow-ups existed),
+        so a resume asks the call it saved."""
+        if (folder / "assessment.json").exists():
+            return None
+        first = int(self.state["rebuilds"][0]["from_audit_round"]) + 1 if self.state.get("rebuilds") else 0
+        for number in range(int(self.state["audit_round"]) - 1, first - 1, -1):
+            prior = self.folder / "synthesis" / f"audit_{number:02d}"
+            if (prior / "assessment_merged.json").exists():
+                return {**read_value(prior / "assessment_merged.json"), "audit_round": number}
+            if (prior / "assessment.json").exists():
+                # A round assessed before this record existed (2026-10-02): its whole assessment is the record.
+                value = json.loads((prior / "assessment.json").read_text(encoding="utf-8"))["value"]
+                return {"requirements": value["requirements"], "issues": value["issues"], "script_notes": [],
+                        "source_limits": [], "audit_round": number}
+        return None
+
+    def changed_since(self, previous):
+        """The questions whose answer changed since the previous assessment: by the answers it judged, or, for a
+        round assessed before they were recorded, by the model calls made for a question since that assessment."""
+        rows = self.state["tasks"]
+        if self.state.get("assessed_round") == previous["audit_round"] and "assessed_answers" in self.state:
+            assessed = self.state["assessed_answers"]
+            return sorted(tid for tid, row in rows.items() if row.get("answer") and digest(row["answer"]) != assessed.get(tid))
+        timings = self.state.get("call_timings", [])
+        last = max((i for i, t in enumerate(timings) if str(t.get("name", "")).startswith("assessment")), default=-1)
+        return sorted({t["task"] for t in timings[last + 1:] if t.get("task") in rows and rows[t["task"]].get("answer")})
+
+    def follow_up_scope(self, previous, dossier, tasks):
+        """What a follow-up assessment judges again: a requirement a changed question serves, one whose cited findings
+        changed, and one that failed for a gap research can close. Every other requirement keeps its verdict."""
+        changed = self.changed_since(previous)
+        owner = {fid: row.task_id for row in dossier.answers for fid in row.finding_ids}
+        rows = {r["requirement_id"]: r for r in previous["requirements"]}
+        passed = (set(previous["passed"]) if "passed" in previous
+                  else {rid for rid, r in rows.items() if all(r[key] for key in CRITERIA)})
+        failed = set(rows) - passed - set(previous.get("source_limits", []))
+        serving = {rid for task in tasks if task.id in changed for rid in task.requirement_ids}
+        touched = {rid for rid, r in rows.items() if any(owner.get(fid) in changed or fid not in owner for fid in r["finding_ids"])}
+        return {"previous_round": previous["audit_round"], "changed_tasks": changed,
+                "requirements": [r["id"] for r in requirements_for(self.config)
+                                 if r["id"] not in rows or r["id"] in failed | serving | touched]}
+
+    def previous_outcomes(self, previous, changed):
+        """What became of each objection of the previous round, as the follow-up reads it."""
+        saved = self.state.get("objection_outcomes") or {}
+        if saved.get("audit_round") == previous["audit_round"]:
+            return saved["rows"]
+        return [{"objection": issue, "tasks": {}} for issue in previous.get("issues", [])]
+
+    def follow_up_assessment(self, folder, text, payload, previous, dossier, tasks):
+        """From the second assembled round on, the assessment judges again only what changed or is still open
+        (follow_up_scope); every other requirement keeps its verdict. An issue stops the run only when research can
+        close it and it concerns a changed answer; a limit of the sources or a point about an unchanged answer goes to
+        the script notes. Before (2026-10-02), each round judged the whole again: verdicts flipped without a change
+        (Transformer's rq_008 four times in five rounds), every round raised four to six points such as "only the
+        abstract was read" again, and each reworked answer gave the next round new details, so the loop never settled.
+        The scope is saved before the call (``assessment_scope.json``), so a resume asks the same question."""
+        scope_path = folder / "assessment_scope.json"
+        if scope_path.exists():
+            scope = read_value(scope_path)
+        else:
+            scope = self.follow_up_scope(previous, dossier, tasks)
+            save_value(scope_path, scope)
+        rows = {r["requirement_id"]: r for r in previous["requirements"]}
+        known = {f.id for f in dossier.findings}
+        fresh, issues = {}, []
+        if scope["requirements"]:
+            self.save(f"Folgebewertung: {len(scope['requirements'])} Leitfragen und {len(scope['changed_tasks'])} "
+                      "geänderte Antworten werden neu beurteilt, der Rest behält sein Urteil")
+            follow_up = {"requirements_in_scope": scope["requirements"], "changed_tasks": scope["changed_tasks"],
+                         "previous_requirements": [{k: r[k] for k in ("requirement_id", *CRITERIA, "reason", "missing")}
+                                                   for r in previous["requirements"]],
+                         "previous_issues": self.previous_outcomes(previous, scope["changed_tasks"]),
+                         "script_notes": previous.get("script_notes", [])}
+            result = self.call(folder, "assessment_followup", FollowUpAssessment,
+                               text + " " + instructions("research_assessment_followup") + "\n"
+                               + json.dumps({**payload, "follow_up": follow_up}, ensure_ascii=False),
+                               validate=lambda candidate, final: check_follow_up(dossier, candidate, scope, [t.id for t in tasks]))
+            fresh = {r.requirement_id: r for r in result.requirements}
+            issues = result.issues
+        merged = []
+        for requirement in requirements_for(self.config):
+            rid = requirement["id"]
+            if rid in fresh:
+                merged.append(RequirementAssessment.model_validate(fresh[rid].model_dump(exclude={"remedy"})))
+            else:
+                row = rows[rid]
+                merged.append(RequirementAssessment.model_validate({**{key: row[key] for key in RequirementAssessment.model_fields},
+                                                                    "finding_ids": [f for f in row["finding_ids"] if f in known]}))
+        changed = set(scope["changed_tasks"])
+        blocking = [i.text for i in issues if i.remedy == "research" and set(i.task_ids) & changed]
+        notes = list(dict.fromkeys([*previous.get("script_notes", []), *(i.text for i in issues if i.text not in blocking)]))
+        limits = ({rid for rid in previous.get("source_limits", []) if rid not in fresh}
+                  | {rid for rid, row in fresh.items() if row.remedy == "limit"})
+        return ResearchAssessment(requirements=merged, issues=blocking), notes, limits
 
     def settled_findings(self, folder, revision, dossier, context, expected):
         """What the last round's final review already settled, for a targeted audit from the second round on.
@@ -661,8 +944,10 @@ class SynthesisMixin:
                 if row["audit_round"] == self.state["audit_round"] and row["decision"] == "objection" and row.get("objection")}
 
     def objections(self, review, report):
+        # A requirement unmet only for a limit of the sources (follow_up_assessment) is recorded, not researched.
         return list(dict.fromkeys([*(i.reason for i in review.issues), *report["blocking_gaps"],
-            *(row["reason"] + " " + " ".join(row["missing"]) for row in report["requirements"] if not row["passed"])]))
+            *(row["reason"] + " " + " ".join(row["missing"]) for row in report["requirements"]
+              if not row["passed"] and not row.get("source_limit"))]))
 
     def tolerate(self, dossier, review, report, finish=None):
         """Every remaining objection targets an accepted gap or is a recorded review disagreement: finish, with
@@ -674,7 +959,7 @@ class SynthesisMixin:
             report.update(passed_with_residual_objections=True, residual_note=finish.get("note", ""))
         self.write_gate(report)
         self.save("Abschluss mit dokumentierten Resteinwänden auf Wunsch der Redaktion" if finish else
-                  "Verbliebene Einwände betreffen nur akzeptierte Lücken; die Recherche wird abgeschlossen")
+                  "Verbliebene Einwände sind als Grenzen vermerkt oder betreffen akzeptierte Lücken; die Recherche wird abgeschlossen")
         return report
 
     @staticmethod
@@ -694,6 +979,17 @@ class SynthesisMixin:
             return "obj_" + digest([identifier, anchor.closure_condition])[:16]
         return identifier
 
+    def criterion_covered(self, anchor):
+        """A completeness objection to a criterion the verified answer already treats with findings. It is noted as
+        a limit of the dossier instead of reopening the question: such objections kept every audit round busy and the
+        loop did not settle (2026-10-01, the user's choice: 178 of Transformer's 220 objections were of this kind; the
+        first series added as many new objections per round as it closed). A criterion the answer leaves without any
+        finding is still researched, and every other rule (support, sources, claims, synthesis, scope) still reopens."""
+        if anchor is None or anchor.rule != "criterion" or anchor.criterion_index is None:
+            return False
+        answer = (self.state["tasks"].get(anchor.task_id) or {}).get("answer") or {}
+        return any(c.get("index") == anchor.criterion_index and c.get("finding_ids") for c in answer.get("criteria", []))
+
     def reopen(self, dossier, review, report):
         """Route objections to tasks; return the ids reopened and the ids blocked for exhausted reopenings."""
         tasks = QuestionPlan.model_validate(self.state["plan"]).tasks
@@ -712,6 +1008,10 @@ class SynthesisMixin:
         # Following the reviewer closes the disputed objection; the dispute itself stays in the report.
         closed |= {oid for oid, row in self.state.get("disputed_objections", {}).items()
                    if row["audit_round"] == self.state["audit_round"] and row["decision"] == "reviewer"}
+        if dossier.assembled:
+            # An assembled audit checks no closure: each round's assessment judges the whole again, so an earlier
+            # objection it does not raise again is closed, and one it raises again is registered open anew.
+            closed |= set(registry)
         # Which earlier objections this audit closed: the ledger shows each question's still open ones.
         self.state["closed_objections"] = sorted(closed)
         text = instructions("objection_routes")
@@ -723,7 +1023,9 @@ class SynthesisMixin:
         if accepted:
             text += " " + instructions("accepted_gaps")
             payload["accepted_gaps"] = [{"task_id": tid, **gap} for tid, gap in accepted.items()]
-        if len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
+        if dossier.assembled:
+            payload.update(assembled_routing_material(tasks, payload["answers"], dossier))
+        elif len(text) + chars(payload) > PROMPT_BUDGET_CHARS:
             # Many answers: the routing reads what an objection is matched against, not the receipts.
             payload.update(compact_routing_material(tasks, payload["answers"], review, dossier))
 
@@ -771,7 +1073,7 @@ class SynthesisMixin:
             well_formed(routes, True)
             write_json(folder / "routes_merged.json", {"parts": len(parts), "objections_per_part": [len(p) for p in parts],
                        "routes": routes.model_dump(mode="json")})
-        reasons, disagreements = {}, []
+        reasons, disagreements, opened = {}, [], set()
         # Per task, how its objections resolve and which passages they cite: a task whose objections all
         # say "revise" (the read passages suffice) only corrects its answer instead of researching again.
         resolutions, cited = {}, {}
@@ -794,6 +1096,11 @@ class SynthesisMixin:
                         # registered so far in the state, and the resumed audit would no longer match its receipts.
                         disagreements.append(anchor.model_dump())
                         continue
+                    if task_id not in accepted and self.criterion_covered(anchor):
+                        self.state.setdefault("noted_objections", {})[identifier] = {
+                            **anchor.model_dump(), "id": identifier, "objection": objections[route.index],
+                            "audit_round": self.state["audit_round"], "status": "noted"}
+                        continue
                     routed = True
                     resolutions.setdefault(task_id, set()).add(anchor.resolution)
                     cited.setdefault(task_id, []).extend(anchor.evidence_refs)
@@ -803,6 +1110,7 @@ class SynthesisMixin:
                             **anchor.model_dump(), "id": identifier, "objection": objections[route.index], "status": "accepted_gap"}
                     else:
                         registry[identifier] = {**anchor.model_dump(), "id": identifier, "status": "open"}
+                        opened.add(identifier)
                 if routed:
                     reasons.setdefault(task_id, []).append(objections[route.index] + " " + route.reason)
         if disagreements:
@@ -812,6 +1120,12 @@ class SynthesisMixin:
             if task_id in accepted:
                 continue
             row = self.state["tasks"][task_id]
+            if len(row["reopenings"]) >= self.state["limits"]["reopenings"] and dossier.assembled and row.get("answer"):
+                # Its reworks are spent: the verified answer stays, and the objection is a limit (keep_spent_answers).
+                spent = [oid for oid in opened if oid in registry and registry[oid].get("task_id") == task_id]
+                self.note_after_reworks(task_id, texts, spent)
+                opened.difference_update(spent)  # noted, no longer open (Transformer, 2026-10-02: two spent at once)
+                continue
             if len(row["reopenings"]) >= self.state["limits"]["reopenings"]:
                 row.update(status="blocked", outcome="audit_block",
                            reason="Wiederholte Gesamtprüfung widerspricht dem Abschluss: " + " ".join(texts))
@@ -831,9 +1145,67 @@ class SynthesisMixin:
                                        if ref in self.reader.lookup]
             reopened.append(task_id)
         dirty = invalidate_dependents(self.state, [t for t in reasons if t not in accepted])
-        self.state.update(seed_dossier=dossier.model_dump(), dirty_tasks=dirty, finding_owners=owners,
-                          audit_round=self.state["audit_round"]+1, phase="questions")
+        if dossier.assembled:
+            # What became of each objection, for the next round's follow-up assessment.
+            self.state["objection_outcomes"] = {"audit_round": self.state["audit_round"], "rows": [
+                {"objection": objections[route.index],
+                 "tasks": {tid: "reworked" if tid in reopened else "blocked" if tid in blocked else "accepted_gap"
+                           if tid in accepted else "disputed" if all(a.resolution == "review_disagreement"
+                                                                     for a in route.anchors if a.task_id == tid)
+                           else "noted" for tid in route.task_ids}}
+                for route in (routes.routes if routes else [])]}
+            # Registered open again by this routing: not closed after all.
+            self.state["closed_objections"] = sorted(closed - opened)
+        # An assembled dossier is made again from the answers; only a composed one is the next round's seed.
+        self.state.update(seed_dossier=None if dossier.assembled else dossier.model_dump(), dirty_tasks=dirty,
+                          finding_owners=owners, audit_round=self.state["audit_round"]+1, phase="questions")
         self.save("Konkrete Einwände werden ihren ursprünglichen Recherchefragen zugeordnet" if reopened or blocked
                   else "Verbliebene Einwände betreffen nur akzeptierte Lücken oder unbelegte Prüfforderungen" if disagreements
-                  else "Verbliebene Einwände betreffen nur akzeptierte Lücken")
+                  else "Verbliebene Einwände sind als Grenzen vermerkt oder betreffen akzeptierte Lücken")
         return reopened, blocked
+
+    def note_after_reworks(self, task_id, texts, identifiers):
+        """Record the objections to a question whose two reworks are spent as limits of its verified answer
+        (``noted_objections`` with basis ``reworks_spent``); they leave the register of open objections."""
+        registry = self.state.setdefault("objections", {})
+        noted = self.state.setdefault("noted_objections", {})
+        text = " ".join(texts)
+        for identifier in identifiers or ["spent_" + digest([task_id, text])[:16]]:
+            noted[identifier] = {**registry.pop(identifier, {"id": identifier, "task_id": task_id}), "objection": text,
+                                 "audit_round": self.state["audit_round"], "status": "noted", "basis": "reworks_spent"}
+
+    def keep_spent_answers(self):
+        """Prompt generation 3 (the user's choice, 2026-10-02): a question whose two reworks are spent keeps its last
+        verified answer instead of stopping the run, and the objection that blocked it is noted as a limit. So is a
+        question accepted as a gap while it still had a verified answer: before, accepting it dropped that answer
+        from the dossier (Transformer, 2026-10-01: both synthesis questions, so requirement 10 lost its answer), and
+        every audit round blocked another spent question, so the run stopped again after each decision."""
+        if self.prompt_generation < ASSEMBLED_GENERATION:
+            return []
+        kept = []
+        with self.guarded():
+            closed = set(self.state.get("closed_objections", []))
+            for task_id, row in self.state["tasks"].items():
+                answer, verification = row.get("answer"), row.get("verification") or {}
+                spent = row.get("outcome") == "audit_block" or row.get("accepted_gap")
+                if row["status"] != "blocked" or not spent or not answer or verification.get("answer_hash") != digest(answer):
+                    continue
+                reason = row.get("reason") or "Einwand nach zwei Nachbesserungen."
+                self.note_after_reworks(task_id, [reason], [oid for oid, objection in self.state.get("objections", {}).items()
+                                                            if objection.get("task_id") == task_id and oid not in closed])
+                row.pop("accepted_gap", None)
+                row.update(status="verified", outcome=answer.get("outcome", "supported_answer"), reason="",
+                           activity="Nach zwei Nachbesserungen bleibt die zuletzt geprüfte Antwort; der Einwand steht als Grenze im Bericht")
+                kept.append(task_id)
+            if kept:
+                self.save("Zweimal nachgebesserte Teilfragen behalten ihre geprüfte Antwort; ihre Einwände stehen als Grenzen im Bericht")
+        return kept
+
+    def noted_after_reworks(self):
+        """The objections noted against questions whose reworks are spent, as the quality report lists them."""
+        return [{"task_id": row.get("task_id"), "objection": row["objection"]}
+                for row in self.state.get("noted_objections", {}).values() if row.get("basis") == "reworks_spent"]
+
+    def noted_limits(self):
+        """The completeness objections noted as limits (criterion_covered), as the quality report lists them."""
+        return [row["objection"] for row in self.state.get("noted_objections", {}).values() if row.get("basis") != "reworks_spent"]

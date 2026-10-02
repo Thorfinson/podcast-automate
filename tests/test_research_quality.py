@@ -11,6 +11,15 @@ from podcast_automate.runner import outputs_valid
 from podcast_automate.scripting import load_research
 from podcast_automate.storage import read_yaml, write_yaml
 from tests import research_fixtures as fixtures
+from tests.research_fixtures import composed_generation
+
+
+def setUpModule():
+    # These tests follow a dossier a model composes and audits (prompt generation 2), as runs started before
+    # 2026-10-01 still do; the assembled dossier of a run started now has its own tests in test_question_research.
+    composed = composed_generation()
+    composed.start()
+    unittest.addModuleCleanup(composed.stop)
 
 
 class ResearchQualityTests(fixtures.ResearchProjectCase):

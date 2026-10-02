@@ -145,6 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--finish-with-residuals", action="store_true",
                          help="Nach der nächsten Gesamtprüfung abschließen; verbliebene Einwände stehen im Qualitätsbericht "
                               "(--reason wird als Notiz gespeichert)")
+    approve.add_argument("--rebuild-dossier", action="store_true",
+                         help="Das Dossier beim nächsten Fortsetzen aus allen geprüften Antworten zusammensetzen; das bisher "
+                              "verfasste Dossier und seine Prüfeinwände werden beiseitegelegt, nichts wird neu recherchiert")
     approve.add_argument("--dispute", nargs=2, metavar=("OBJECTION_ID", "SEITE"),
                          help="Streitfall der Gesamtprüfung entscheiden: reviewer (dem Prüfer folgen) oder objection "
                               "(Einwand aufrechterhalten); --reason wird als Notiz gespeichert")
@@ -239,18 +242,18 @@ def run_command(args) -> int:
         elif args.command == "approve":
             from .run_budget import (approve_criterion_gap, approve_fresh_attempts, approve_model_call_limit,
                                      approve_research_gap, approve_research_plan, approve_research_retry,
-                                     approve_residual_finish, approve_text_switch, decide_review_disagreement,
-                                     request_teaching_redesign)
+                                     approve_dossier_rebuild, approve_residual_finish, approve_text_switch,
+                                     decide_review_disagreement, request_teaching_redesign)
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
             if (args.model_calls is None and args.search_rounds is None and args.sources is None and not args.accept_gap
                     and not args.retry and not args.access_gap and not args.dispute and not args.finish_with_residuals
                     and not args.fresh_attempts and args.research_plan is None and not args.redesign_teaching
-                    and not args.text_switch):
+                    and not args.text_switch and not args.rebuild_dossier):
                 raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --sources, --accept-gap, "
                                "--access-gap, --dispute, --finish-with-residuals, --fresh-attempts, --retry, "
-                               "--redesign-teaching oder --text-switch.",
+                               "--redesign-teaching, --rebuild-dossier oder --text-switch.",
                                code="invalid_request", status="blocked")
             if bool(args.access_gap) != bool(args.blocked_source):
                 raise AppError("--access-gap und --blocked-source gehören zusammen.", code="invalid_request", status="blocked")
@@ -280,6 +283,8 @@ def run_command(args) -> int:
                 data["teaching_redesign"] = redesign.model_dump(mode="json")
             if args.finish_with_residuals:
                 data["residual_finish"] = approve_residual_finish(root, run_id, args.reason).model_dump(mode="json")
+            if args.rebuild_dossier:
+                data["dossier_rebuild"] = approve_dossier_rebuild(root, run_id).model_dump(mode="json")
             if args.dispute:
                 objection_id, side = args.dispute
                 choice = decide_review_disagreement(root, run_id, objection_id, side, args.reason)

@@ -88,6 +88,12 @@ class ResidualFinish(Contract):
     approved_at: datetime
 
 
+class DossierRebuild(Contract):
+    run_id: Identifier
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    approved_at: datetime
+
+
 class PlanApproval(Contract):
     run_id: Identifier
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -412,6 +418,38 @@ def approve_residual_finish(root, run_id, note=""):
         return ResidualFinish.model_validate(existing)
     approval = ResidualFinish(run_id=manifest.run_id, input_hash=manifest.input_hash, note=note.strip(), approved_at=now())
     write_json(work / "residual_finish.json", approval.model_dump(mode="json"))
+    return approval
+
+
+def approve_dossier_rebuild(root, run_id):
+    """Assemble this run's dossier from its verified answers at the next resume (question_synthesis.ASSEMBLED_GENERATION).
+
+    For a run whose dossier a model composed: that dossier and the objections its audits raised are set aside in the
+    run folder, every verified answer and receipt stays, and the next audit judges the assembled whole. No question is
+    researched again for the rebuild itself. Only a research run that is not complete and was composed is rebuilt.
+    """
+    from .question_synthesis import ASSEMBLED_GENERATION, DOSSIER_REBUILD
+    from .research_ledger import read_value
+    work, manifest = _text_run(root, run_id)
+    if manifest.kind != "research":
+        raise AppError("Nur ein Rechercheauftrag hat ein Dossier, das neu zusammengesetzt werden kann.",
+                       code="invalid_dossier_rebuild")
+    state_path = work / "question_research/state.json"
+    if not state_path.exists():
+        raise AppError("Für diesen Lauf gibt es noch keine Recherchefragen.", code="invalid_dossier_rebuild")
+    state = read_value(state_path)
+    if state.get("phase") == "completed":
+        raise AppError("Die Recherche ist bereits abgeschlossen.", code="invalid_dossier_rebuild")
+    path = work / DOSSIER_REBUILD
+    if path.exists():
+        saved = DossierRebuild.model_validate_json(path.read_text(encoding="utf-8"))
+        if saved.run_id == manifest.run_id and saved.input_hash == manifest.input_hash:
+            return saved
+    if int(state.get("prompt_generation", 1)) >= ASSEMBLED_GENERATION:
+        raise AppError("Das Dossier dieses Laufs wird bereits aus den geprüften Antworten zusammengesetzt.",
+                       code="invalid_dossier_rebuild")
+    approval = DossierRebuild(run_id=manifest.run_id, input_hash=manifest.input_hash, approved_at=now())
+    write_json(path, approval.model_dump(mode="json"))
     return approval
 
 

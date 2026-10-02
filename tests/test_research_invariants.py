@@ -13,6 +13,15 @@ from podcast_automate.research_tasks import QuestionPlan, QuestionSearch
 from podcast_automate.storage import digest, write_json
 from tests import test_question_research as fixtures
 from tests.question_fixtures import answer_for, decision, task_value
+from tests.research_fixtures import composed_generation
+
+
+def setUpModule():
+    # These tests follow a dossier a model composes and audits (prompt generation 2), as runs started before
+    # 2026-10-01 still do; the assembled dossier of a run started now has its own tests in test_question_research.
+    composed = composed_generation()
+    composed.start()
+    unittest.addModuleCleanup(composed.stop)
 
 
 class ResearchInvariantTests(unittest.TestCase):

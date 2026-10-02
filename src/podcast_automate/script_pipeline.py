@@ -29,8 +29,8 @@ from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
 from .script_checkpoints import NOTED_CATEGORIES, series_adoption
-from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_sources,
-                            script_review_signature, validate_script)
+from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_sources, planning_dossier,
+                            quotation_errors, script_review_signature, validate_script)
 from .script_evidence import SCRIPT_EVIDENCE_INSTRUCTIONS, settle_receipts, validate_claim_checks
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
@@ -185,7 +185,7 @@ class ScriptRun:
         prompt = (instructions("series_plan", language=config.language) + " " + PLAIN_LANGUAGE +
                   instructions("series_plan_tail") + "\n" +
                   json.dumps({"brief": {**config.model_dump(mode="json"), "central_question": self.central_question},
-                              "dossier": dossier.model_dump(),
+                              "dossier": planning_dossier(dossier),
                               "research_questions": [q.model_dump() for q in self.discovery.questions]}, ensure_ascii=False))
         if self.previous_outline is not None:
             prompt += "\n" + instructions("series_plan_revision") + "\n" + json.dumps(
@@ -522,9 +522,17 @@ class ScriptRun:
                        json.dumps(self.revision, ensure_ascii=False))
         return prompt
 
+    def script_errors(self, draft, entry):
+        """validate_script, and for an assembled dossier the quotation rule over the passages the writer was given:
+        at most 25 words of one source per episode (script_checks.quotation_errors)."""
+        errors = validate_script(draft, entry)
+        if self.dossier.assembled:
+            errors += quotation_errors(draft, episode_sources(entry, self.dossier, self.context, self.sources))
+        return errors
+
     def script_defects(self, draft, entry, errors_file, message):
         """Raise for a rewritten script that breaks its plan, naming every defect so the correction can fix it."""
-        errors = validate_script(draft, entry)
+        errors = self.script_errors(draft, entry)
         if errors:
             write_json(errors_file, errors)
             raise AppError(message + " " + " ".join(errors), code="invalid_script", status="blocked")
@@ -539,7 +547,7 @@ class ScriptRun:
             if saved == {"input_hash": signature, "sha256": file_hash(destination)}:
                 return [destination, stamp]
         draft = self.invoke(prompt, EpisodeScript, WRITE_EPISODE_VERSION)
-        errors = validate_script(draft, entry)
+        errors = self.script_errors(draft, entry)
         if errors:
             draft = corrected_call(self.invoke, prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
                 {"errors": errors, "draft": draft.model_dump()}, ensure_ascii=False),
@@ -563,7 +571,7 @@ class ScriptRun:
             (self.work / "drafts" / f"{entry.episode_id}.json").read_text(encoding="utf-8"))
         folder = self.work / "polishing" / entry.episode_id
         candidate, files = polish_dialogue(self.config, entry, original, self.teaching_for(entry),
-                                           self.invoke, folder, validate_script,
+                                           self.invoke, folder, self.script_errors,
                                            series_context=episode_series_context(plan, entry),
                                            prerequisite_context=prerequisite_context(plan, entry, self.work),
                                            style_notes=self.style_notes)
@@ -615,7 +623,7 @@ class ScriptRun:
                     result = None
                 if dossier.evidence_version and saved.get("evidence_review_version") != EVIDENCE_VERSION:
                     result = None
-                if validate_script(draft, entry):
+                if self.script_errors(draft, entry):
                     raise AppError("Gespeicherter Review-Entwurf ist ungültig.", code="invalid_script", status="blocked")
 
         def save(pending=False):

@@ -196,6 +196,8 @@ def public_ledger(state, index=None):
         accepted = task.get("accepted_gap") or None
         rows.append({"id": spec["id"], "question": spec["question"], "kind": spec["kind"],
                      "requirement_ids": spec["requirement_ids"], "acceptance": spec["acceptance"],
+                     # The works an explain task reads: what the Studio lists as missing while it is blocked.
+                     "primary_works": spec.get("primary_works", []),
                      "status": task["status"], "activity": task["activity"], "steps": task["step"],
                      "depends_on": spec.get("depends_on", []), "outcome": task.get("outcome"),
                      "accepted_gap": bool(accepted), "accepted_reason": (accepted or {}).get("reason", ""),
@@ -224,6 +226,9 @@ def public_ledger(state, index=None):
             "blocked": len(blocked), "accepted": sum(r["accepted_gap"] for r in rows), "phase": phase,
             "reopenable": sum(r["reopenable"] for r in rows),
             "audit_round": int(state.get("audit_round", 0)), "reopened": sum(1 for r in rows if r["reopened"]),
+            # From prompt generation 3 on, a question whose reworks are spent keeps its verified answer on resume
+            # (question_synthesis.keep_spent_answers): the Studio offers the resume without a decision for it.
+            "keeps_spent_answers": int(state.get("prompt_generation", 1)) >= 3,
             "source_count": len(index.sources) if index else None,
             "blocked_sources": blocked_sources(index) if index else [],
             "source_failures": len(index.failures) if index else None,

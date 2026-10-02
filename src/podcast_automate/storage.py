@@ -100,9 +100,14 @@ def write_yaml(path: Path, data: object) -> None:
     atomic_text(path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
 
 
+# libyaml's safe parser where PyYAML has it: the Studio reads every script and quality report on each poll, and
+# the pure-Python parser made a page take seconds (2026-10-01: 2.8 s for the project list, 1.2 s with this).
+YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
 def read_yaml(path: Path) -> dict:
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=YAML_LOADER)
     except (OSError, yaml.YAMLError) as exc:
         raise AppError(f"Datei nicht lesbar: {path}", code="invalid_project", status="blocked") from exc
     if not isinstance(data, dict):

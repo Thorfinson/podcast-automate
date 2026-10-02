@@ -14,6 +14,7 @@ import time
 import uuid
 import webbrowser
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from typing import Literal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -43,11 +44,12 @@ from .script_pipeline import failed_teaching
 from .speech import (AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
                      same_audio_generation)
 from .storage import (atomic_text, digest, file_hash, init_project, inside, load_project, project_hash, project_lock,
-                      read_yaml, write_json, write_yaml)
+                      read_text, read_yaml, write_json, write_yaml)
 from .voice_samples import ready_sample, sample_inventory
 from .spoken_forms import SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report
 from .studio_messages import clean, paths_only, user_text
-from . import studio_allowances
+from . import provided_works, studio_allowances
+from .sources import core_usage
 from .production_report import production_report
 from .studio_scripts import review_notes, script_previews
 from .downloads import disposition, podcast_download, podcast_zip
@@ -76,6 +78,23 @@ TEXT_ACTIONS = {"assistant", "research", "plan", "replan", "script", "revise", "
 DIAGNOSTIC_FILES = re.compile(r"(runs/\w[\w.-]*/(?:\w[\w.-]*/)*\w[\w.-]*\.(?:txt|md|json)|studio/failures/\w[\w.-]*\.txt"
                               r"|studio/stderr/[a-f0-9]{32}\.log)")
 CHAT_LIMIT_STEP = 50
+# What a project card needs of a research question: its state and what the resume and stop decisions count
+# (app.js blockedSettled, unadvised, canResume). Findings, sources and review notes made the list 2 MB, read
+# again on every poll (2026-10-01); the project page still gets the whole rows.
+OVERVIEW_QUESTION_FIELDS = ("id", "question", "kind", "status", "outcome", "depends_on", "accepted_gap", "reopened",
+                            "reopenable", "retries", "auto_retries", "retry_requested", "access_gap_requested",
+                            "activity", "steps", "web_attempts")
+
+
+def overview_job(job):
+    """The job as a project card sees it: the research ledger with short question rows."""
+    ledger = ((job or {}).get("progress") or {}).get("research_questions")
+    if not isinstance(ledger, dict) or not ledger.get("questions"):
+        return job
+    rows = [{**{field: row[field] for field in OVERVIEW_QUESTION_FIELDS if field in row},
+             **({"advice": {"key": row["advice"].get("key"), "recommendation": row["advice"].get("recommendation")}}
+                if isinstance(row.get("advice"), dict) else {})} for row in ledger["questions"]]
+    return {**job, "progress": {**job["progress"], "research_questions": {**ledger, "questions": rows}}}
 
 
 def stop_code(job):
@@ -200,7 +219,17 @@ def record_interruption(root, *, expected_job_id=None, audio_job_id=None,
 
 
 def read_json(path, default=None):
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+    # Through storage.read_text: the server and the workers read files another process is replacing, which on
+    # Windows is a sharing violation for a few milliseconds (2026-10-01: Asimov's worker died reading progress.json).
+    return json.loads(read_text(path)) if path.exists() else default
+
+
+def code_updated_at():
+    """When the package's code or prompts last changed: a run that stopped earlier on a checkpoint that no longer
+    fitted may fit the corrected code (2026-10-01: Asimov's morris_evaluate, fixed after its stop)."""
+    package = Path(__file__).parent
+    times = [path.stat().st_mtime for path in [*package.glob("*.py"), *package.glob("prompts/*.txt")] if path.exists()]
+    return datetime.fromtimestamp(max(times), timezone.utc).isoformat() if times else None
 
 
 def code_fingerprint():
@@ -658,7 +687,9 @@ class Studio:
 
     def server_state(self):
         return {"instance": self.instance, "stale": code_fingerprint() != self.code_stamp,
-                "restart_requested": self.restart_requested}
+                "restart_requested": self.restart_requested, "code_updated_at": code_updated_at(),
+                # Today's calls against CORE's daily allowance, once the user has set a key (sources.core_usage).
+                "core": core_usage() if os.environ.get("PLA_CORE_API_KEY") else None}
 
     def request_restart(self, data):
         """Restart once nothing runs, so the scheduler and every new job use the current code."""
@@ -735,7 +766,7 @@ class Studio:
             try:
                 data = self.detail(item["id"])
                 projects.append({"id": data["id"], "topic": data["config"]["topic"],
-                    "config_hash": data["config_hash"], "job": data["job"], "audio_jobs": data["audio_jobs"],
+                    "config_hash": data["config_hash"], "job": overview_job(data["job"]), "audio_jobs": data["audio_jobs"],
                     "has_research": bool(data["research"]), "has_outline": bool(data["outline"]),
                     "episode_count": len({e["script"]["episode_id"] for e in data["episodes"]} |
                         {e["episode_id"] for e in (data["outline"] or {}).get("plan", {}).get("episodes", [])}),
@@ -838,6 +869,8 @@ class Studio:
                 "chat_budget": {"used": chat_budget.get("model_calls", 0),
                                 "limit": chat_limits(root, config.research_limits).model_calls},
                 "attachments": attachments.inventory(root),
+                # The books and articles blocked questions lack, and the copies the editor provided.
+                "works": provided_works.overview(root, provided_works.latest_ledger(root)),
                 "outline": None, "episodes": [], "research": None, "run": None}
         proposal = next((item for item in reversed(data["chat"]) if item.get("role") == "assistant"), None)
         data["proposal_hash"] = digest(proposal) if proposal else None
@@ -1093,6 +1126,17 @@ class Studio:
             rows = attachments.add(root, data.get("files"),
                                    secrets=(self.key, os.environ.get("OPENROUTER_API_KEY", "")))
         return {"attachments": rows}
+
+    def upload_work(self, project, raw, query):
+        """A copy of a published work the editor provides for blocked questions (provided_works). Unlike other
+        project inputs it may arrive while a research run works: the files are written whole, and the run reads
+        the work at its next pass, without the project lock its worker holds."""
+        root = self.root(project)
+        ledger = provided_works.latest_ledger(root) or {}
+        known = {row.get("id") for row in ledger.get("questions") or []}
+        tasks = [task for task in query.get("task", []) if task in known]
+        row = provided_works.add(root, raw, citation=(query.get("citation") or [""])[0], tasks=tasks)
+        return {"work": row, "works": provided_works.overview(root, ledger)}
 
     def remove_attachment(self, project, data):
         root = self.root(project)
@@ -1403,12 +1447,26 @@ class StudioHandler(BaseHTTPRequestHandler):
         app = self.server.studio
         try:
             path = unquote(urlsplit(self.path).path)
-            limit = attachments.MAX_BODY_BYTES if re.fullmatch(r"/api/projects/[^/]+/upload", path) else 128000
+            work = re.fullmatch(r"/api/projects/([^/]+)/work", path)
+            limit = (provided_works.MAX_WORK_BYTES if work else
+                     attachments.MAX_BODY_BYTES if re.fullmatch(r"/api/projects/[^/]+/upload", path) else 128000)
             length = self.headers.get("Content-Length", "0")
             # Only a body within the endpoint's limit is ever read, also to refuse it; an oversized one never is.
             self.unread = int(length) if mutation and length.isdigit() and 0 < int(length) <= limit else 0
             self.guard(mutation)
-            if mutation:
+            if mutation and work:
+                # A book as raw bytes, its citation in the query. Only application/octet-stream is taken: like JSON
+                # it needs the browser's preflight, so no other page can post a file here.
+                if self.headers.get("Content-Type", "").split(";")[0] != "application/octet-stream":
+                    raise AppError("Datei als application/octet-stream erwartet.", code="invalid_request")
+                size = int(length) if length.isdigit() else 0
+                if not 0 < size <= limit:
+                    raise AppError(f"Das Werk darf höchstens {limit // (1024 * 1024)} MB groß sein.", code="invalid_work")
+                raw = self.rfile.read(size)
+                self.unread = 0
+                with app.mutex:
+                    result = app.upload_work(work[1], raw, parse_qs(urlsplit(self.path).query))
+            elif mutation:
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     raise AppError("JSON-Anfrage erwartet.", code="invalid_request")
                 size = int(self.headers.get("Content-Length", "0"))
