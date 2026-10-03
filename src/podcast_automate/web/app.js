@@ -42,6 +42,8 @@ let playingSample = null;
 let followWorkflow = true;
 let scriptEpisodeId=null, readingSnapshot=null;
 let overviewPage=false, overviewData={projects:[],trash:[]};
+// The settings page (studio_settings): what holds for every project, edited as a draft and saved in one go.
+let settingsPage=false, settingsData=null, settingsDraft=null;
 let navigationEpoch=0;
 let setupSending=false;
 let pendingAttachments=[], readingAttachments=false;
@@ -213,7 +215,7 @@ function stepTimeHints() {
   return hints;
 }
 function updatePageUrl(push=false) {
-  const url=overviewPage?"/":project?`/?project=${encodeURIComponent(project.id)}&step=${pageKeys[step]}`:"/?new=1";
+  const url=settingsPage?"/?view=settings":overviewPage?"/":project?`/?project=${encodeURIComponent(project.id)}&step=${pageKeys[step]}`:"/?new=1";
   const history=window.history;
   if(push&&history?.pushState)history.pushState(null,"",url);
   else history?.replaceState(null,"",url);
@@ -221,7 +223,7 @@ function updatePageUrl(push=false) {
 function navigatePage(target,{automatic=false,push=true}={}) {
   if(!Number.isInteger(target)||target<0||target>=steps.length)return;
   navigationEpoch++;
-  overviewPage=false;step=target;followWorkflow=automatic;updatePageUrl(push);render();
+  overviewPage=false;settingsPage=false;step=target;followWorkflow=automatic;updatePageUrl(push);render();
   // A conversation opens at its newest reply, right above the pinned composer.
   if(step===PAGE.brief&&(project?.chat||[]).length)scrollChatToEnd();
 }
@@ -366,10 +368,11 @@ function setupSummary() {
     <dt>Stimmen</dt><dd>${escape(audioLabel(a))} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
     <dt>Textausarbeitung</dt><dd>${mode(x.text,"5 gleichzeitig")}</dd><dt>Vertonung</dt><dd>${a.provider==="qwen3_local"?"Sequenziell · lokale Grafikkarte":mode(x.audio,"alle freigegebenen Folgen")}</dd>
     <dt>Lückenprobe</dt><dd>${project.jev_probe?`Wortsuche und Jev · OpenRouter${project.jev_default?" · Standard für deutschsprachige Projekte; ohne Key nur Wortsuche":""}`:"Wortsuche"} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${project.jev_probe?"Jev ausschalten":"Jev dazunehmen"}</button></dd>
-    <dt>Ohne Rückfrage</dt><dd>${allowanceControls(project.allowances)}</dd></dl>
-    <p class="hint">Vorab-Erlaubnisse gelten je Lauf: neue Anläufe, wenn ein Schritt seine automatischen Korrekturen verbraucht hat, und ein höheres Aufruflimit, wenn das genehmigte knapp wird. Das Studio gibt sie frei und setzt selbst fort. Lücken, strittige Einwände und andere redaktionelle Entscheidungen bleiben bei dir.</p>
+    <dt>Ohne Rückfrage</dt><dd>${escape(allowanceSummary(project.allowances))}</dd></dl>
+    <p class="hint">Textmodell, Stimmen, Ausführung, Vorab-Erlaubnisse und Limits gelten für alle Projekte und werden in den Einstellungen geändert.</p>
+    <div class="actions"><button type="button" class="secondary small" data-action="open-settings">Einstellungen öffnen</button></div>
     <p class="hint">Jev findet die Stellen, an denen eine gemeldete Lücke vielleicht doch beantwortet ist, auch wenn Lücke und Quelle verschiedene Sprachen sprechen. Gelesen und bestätigt werden sie weiterhin vom Textmodell. Das kostet etwa 0,60 USD OpenRouter-Guthaben je neuem Skriptlauf und braucht den OpenRouter-Key; laufende Aufträge behalten ihre Lückenproben.</p>
-    <p class="hint">Änderungswünsche schreibst du dem Partner. Parallel gilt für Skript, Polishing, Prüfung und unabhängige Recherche-Teilfragen; das Lehrkonzept bleibt in Reihenfolge. Bestehende Textaufträge behalten beim Fortsetzen ihren Modus.</p>
+    <p class="hint">Änderungswünsche am Auftrag schreibst du dem Partner.</p>
     ${proposal&&!project.proposal_applied?`<button data-action="apply-proposal" ${running()||setupSending||pendingAttachments.length||project.proposal_current===false||!boot.capabilities?.conversational_setup?"disabled":""}>Diese Auswahl übernehmen</button><p class="hint">${project.proposal_current===false?"Die Anhänge haben sich geändert. Bitte den Partner im Chat die Zusammenfassung aktualisieren lassen.":"Das speichert den Auftrag. Recherche, Plan- und Audiofreigabe erfolgen weiterhin auf den folgenden Seiten."}</p>`:""}
     </section>`;
 }
@@ -429,12 +432,10 @@ function chatStatusBubble() {
 }
 // Setup: the conversation fills the working column with the composer pinned at its foot; the proposal sits in the rail.
 function renderBrief() {
-  const {proposal,config:c,audio:a,text:t}=setupSelection(), chat=project?.chat||[];
+  const {proposal,config:c,audio:a}=setupSelection(), chat=project?.chat||[];
   const compatible=boot.capabilities?.conversational_setup;
   const nextPage=recommendedPage()===PAGE.brief?PAGE.research:recommendedPage();
   const voices=audioCatalog()[a.provider]?.voices||[];
-  const presets=boot.text_catalog?.presets||[];
-  const chosen=presets.find(p=>presetMatches(p,t));
   const attachmentCount=(project?.attachments?.length||0)+pendingAttachments.length;
   const messages=chat.length?chat.map(m=>`<div class="chat-message ${m.role==="user"?"user":""}"><strong>${m.role==="user"?"Du":"Redaktion"}</strong><p>${escape(m.message)}</p></div>`).join(""):'<div class="chat-message"><strong>Redaktion</strong><p>Worum soll dein Podcast gehen – und was möchtest du danach besser verstehen? Du kannst direkt auch Wünsche zu Sprache, Tiefe oder Stimmen nennen.</p></div>';
   const otherJob=running()&&(project?.main_job??project?.job)?.action!=="assistant";
@@ -447,17 +448,86 @@ function renderBrief() {
     ${otherJob?'<p class="hint composer-lock">Während ein Auftrag läuft, ruht das Gespräch. Danach kannst du wieder schreiben.</p>':""}
     <form id="chat-form" class="composer"><fieldset ${running()||setupSending||readingAttachments||!compatible?"disabled":""}>${area("chat-message","Deine Nachricht","",3)}
     <div class="composer-tools">
-    ${presets.length?`<details class="composer-menu"><summary>Textmodell: ${chosen?escape(chosen.label):textChoiceSummary(t)}</summary><div class="text-model-picker"><span>Textmodell wählen</span><div class="actions">${presets.map(p=>`<button type="button" class="secondary small" data-text-preset="${escape(p.id)}" aria-pressed="${presetMatches(p,t)}">${escape(p.label)}</button>`).join("")}</div><p class="hint">Die Auswahl kommt in den Vorschlag und wird mit „Diese Auswahl übernehmen“ gespeichert. OpenRouter nutzt API-Guthaben. Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Claude und springt bei leerem Kontingent auf Codex um. Live-Recherche läuft über das gewählte Abo; Stimmen wählst du separat.</p></div></details>`:""}
     ${boot.capabilities?.project_attachments?`<details class="composer-menu"${attachmentCount?" open":""}><summary>Dateien anhängen${attachmentCount?` · ${attachmentCount}`:""}</summary><div class="attachment-picker"><label for="chat-files">Dateien anhängen · .md / .txt / .docx</label><input id="chat-files" type="file" accept=".md,.txt,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple aria-describedby="attachment-hint"><p id="attachment-hint" class="hint">Für deine Projektidee und als Ausgangsmaterial der Recherche. Bis zu 10 Dateien: Text je 256 KiB, DOCX je 2 MiB, insgesamt 1 MiB eingelesener Text. DOCX übernimmt Text und Tabellen, keine Bilder. Mit „Senden“ erhält dein Textmodell den Inhalt; bei langen Dateien zunächst gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein.</p><div id="attachment-list">${renderAttachments()}</div></div></details>`:'<p class="hint">Dateianhänge benötigen einen Studio-Neustart nach Ende laufender Aufträge.</p>'}
     <button type="submit">${setupSending?"Wird gesendet …":readingAttachments?"Dateien werden eingelesen …":"Senden"}</button></div></fieldset></form></section>
     </div><aside class="split-rail">
     ${setupSummary()}${proposalChangesBrief()?pausedHint(["config"]):""}
-    <details class="panel"><summary>Stimmen anhören</summary><p class="hint">${a.provider==="qwen3_local"?"Qwen":"Gemini"} · ${c.language==="en-US"?"English":"Deutsch"}. Sag dem Partner anschließend, welche beiden Stimmen du möchtest. Neue Gemini-Proben nutzen dein API-Guthaben.</p><div class="voice-library">${voices.map(v=>`<div class="sample-row"><strong>${escape(v)}</strong><button class="secondary small" data-preview-voice="${escape(v)}" data-preview-provider="${a.provider}" data-language="${c.language}" ${a.provider!=="qwen3_local"&&!savedSample(v,c.language)&&running()?"disabled":""}>${sampleButtonLabel(a.provider,v,c.language)}</button></div>`).join("")}</div>
+    <details class="panel"><summary>Stimmen anhören</summary><p class="hint">${a.provider==="qwen3_local"?"Qwen":"Gemini"} · ${c.language==="en-US"?"English":"Deutsch"}. Die beiden Stimmen wählst du in den Einstellungen. Neue Gemini-Proben nutzen dein API-Guthaben.</p><div class="voice-library">${voices.map(v=>`<div class="sample-row"><strong>${escape(v)}</strong><button class="secondary small" data-preview-voice="${escape(v)}" data-preview-provider="${a.provider}" data-language="${c.language}" ${a.provider!=="qwen3_local"&&!savedSample(v,c.language)&&running()?"disabled":""}>${sampleButtonLabel(a.provider,v,c.language)}</button></div>`).join("")}</div>
     ${a.provider==="openrouter_gemini_tts"?`<div id="voice-library-panel">${renderVoiceLibrary(c.language)}</div>`:""}</details>
-    <details class="panel"><summary>Geschützter OpenRouter-Key-Eingang</summary><p class="hint">Falls du OpenRouter wählst, hinterlege den Key hier. Er wird nicht an den redaktionellen Partner gesendet und bleibt nur im Sitzungsspeicher.</p>
-    ${textInput("api-key","OpenRouter-Key","","password")}<p id="key-status" class="hint">${boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt."}</p><div class="actions"><button class="secondary small" data-action="store-key">Key hinterlegen</button><button class="secondary small" data-action="forget-key">Sitzungs-Key entfernen</button></div></details>
     ${project?`<div class="actions"><button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button><button data-step="${nextPage}" ${proposal&&!project.proposal_applied?"disabled":""}>Weiter: ${steps[nextPage]} →</button></div>`:""}
     </aside></div>`;
+}
+// The settings page: text model, audio, execution, pre-approvals, limits, Claude and the OpenRouter key for every
+// project (studio_settings). Running and paused jobs keep what they bound; limits and the time limit of one call
+// apply when a job resumes.
+const EXECUTION_MODES=[["sequential","Sequenziell"],["parallel","Parallel"]];
+function settingField(id,label,control,hint="") {
+  return `<div class="field"><label for="${id}">${escape(label)}</label>${control}${hint?`<p class="hint">${hint}</p>`:""}</div>`;
+}
+function settingSelect(id,options,value) {
+  return `<select id="${id}">${options.map(([v,l])=>`<option value="${escape(String(v))}" ${String(v)===String(value)?"selected":""}>${escape(l)}</option>`).join("")}</select>`;
+}
+function settingNumber(id,value,min,max,step=1) {
+  return `<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${Number(value)}">`;
+}
+function renderSettings() {
+  const d=settingsDraft, data=settingsData, catalog=audioCatalog(), presets=boot.text_catalog?.presets||[];
+  const a=d.audio, voices=(catalog[a.provider]?.voices||[]).map(v=>[v,v]), gemini=catalog.openrouter_gemini_tts;
+  const chosen=presets.find(p=>presetMatches(p,d.text));
+  const choices=data.allowance_choices||{fresh_attempts:[0,1,2,3],extra_calls:[0,100,250,500,1000]};
+  const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
+  const limits=d.research_limits;
+  const textOptions=presets.map(p=>`<label class="setting-choice"><input type="radio" name="settings-text" value="${escape(p.id)}" ${p===chosen?"checked":""}><span>${escape(p.label)}</span></label>`).join("")+
+    (chosen?"":`<label class="setting-choice"><input type="radio" name="settings-text" value="" checked><span>Bisher: ${textChoiceSummary(d.text)}</span></label>`);
+  return `<header class="page-head"><div class="page-title"><span class="eyebrow">Studio</span><h1>Einstellungen</h1></div><span class="chip ${data.global?"done":"decision"}">${data.global?"Gilt für alle Projekte":"Noch je Projekt"}</span></header>
+    ${data.global?"":`<p class="note">Bisher hatte jedes Projekt eigene Werte. Angezeigt sind die ${data.source_project?`von „${escape(data.source_project)}“`:"Standardwerte"}; mit dem Speichern gelten sie für alle Projekte.</p>`}
+    <p class="hint">Laufende und angehaltene Aufträge behalten Textmodell, Ausführung und freigegebene Vertonungen; Limits und Zeitlimit gelten beim nächsten Fortsetzen.</p>
+    <section class="panel"><h2>Textmodell</h2><div class="setting-choices">${textOptions}</div>
+      ${settingField("settings-max-tokens","Höchstens Ausgabe-Tokens je Aufruf (nur OpenRouter)",settingNumber("settings-max-tokens",d.text.max_output_tokens||32768,1024,200000,1024))}
+      <p class="hint">Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Claude und springt bei leerem Kontingent auf Codex um. OpenRouter rechnet pro Aufruf ab; Live-Recherche läuft weiter über die Abos.</p></section>
+    <section class="panel"><h2>Audio</h2>
+      <div class="row">${settingField("settings-audio-provider","Anbieter",settingSelect("settings-audio-provider",Object.entries(catalog).map(([id,row])=>[id,row.label||id]),a.provider))}
+      ${a.provider==="openrouter_gemini_tts"&&gemini?.models?settingField("settings-audio-model","Sprachmodell",settingSelect("settings-audio-model",Object.entries(gemini.models),a.model||gemini.default_model)):""}</div>
+      <div class="row">${settingField("settings-voice-a","Stimme Host A",settingSelect("settings-voice-a",voices,a.voices.host_a))}${settingField("settings-voice-b","Stimme Host B",settingSelect("settings-voice-b",voices,a.voices.host_b))}</div>
+      <div class="row">${settingField("settings-pause-same","Pause gleiche Stimme (ms)",settingNumber("settings-pause-same",pauses.same_speaker_ms,0,10000,50))}${settingField("settings-pause-change","Pause Stimmwechsel (ms)",settingNumber("settings-pause-change",pauses.speaker_change_ms,0,10000,50))}${settingField("settings-pause-chapter","Pause Kapitelwechsel (ms)",settingNumber("settings-pause-chapter",pauses.chapter_break_ms,0,10000,50))}</div>
+      ${a.provider==="openrouter_gemini_tts"?`<label class="approval"><input id="settings-expression" type="checkbox" ${a.expression!==false?"checked":""}><span>Ausdrucksmarken vor der Vertonung setzen</span></label>`:""}
+      <p class="hint">Eine Änderung von Stimmen, Pausen oder Sprachmodell verlangt für noch nicht vertonte Folgen eine neue Audio-Freigabe.</p></section>
+    <section class="panel"><h2>Ausführung</h2><div class="row">${settingField("settings-exec-text","Textausarbeitung",settingSelect("settings-exec-text",EXECUTION_MODES,d.execution.text),"Parallel: bis zu 5 Folgen je Skript-, Polishing- und Prüfstufe; das Lehrkonzept bleibt in Reihenfolge.")}
+      ${settingField("settings-exec-audio","Vertonung",settingSelect("settings-exec-audio",EXECUTION_MODES,d.execution.audio),"Parallel nur mit Gemini; Qwen vertont lokal nacheinander.")}</div></section>
+    <section class="panel"><h2>Ohne Rückfrage</h2><div class="row">${settingField("settings-fresh","Neue Anläufe je Lauf",settingSelect("settings-fresh",choices.fresh_attempts.map(n=>[n,n?`bis ${n}×`:"keine"]),d.allowances.fresh_attempts))}
+      ${settingField("settings-extra","Aufruflimit erhöhen je Lauf",settingSelect("settings-extra",choices.extra_calls.map(n=>[n,n?`bis zu ${n} Aufrufe`:"nein"]),d.allowances.extra_calls))}</div>
+      <p class="hint">Neue Anläufe, wenn ein Schritt seine automatischen Korrekturen verbraucht hat, und ein höheres Aufruflimit, wenn das genehmigte knapp wird. Das Studio gibt sie frei und setzt selbst fort. Lücken, strittige Einwände und andere redaktionelle Entscheidungen bleiben bei dir.</p></section>
+    <section class="panel"><h2>Limits</h2><div class="row">${settingField("settings-calls","Modellaufrufe je Lauf",settingNumber("settings-calls",limits.model_calls,1,100000))}${settingField("settings-sources","Quellen je Recherche",settingNumber("settings-sources",limits.sources,1,10000))}${settingField("settings-rounds","Suchrunden je Recherche",settingNumber("settings-rounds",limits.search_rounds,1,10000))}</div>
+      ${settingField("settings-timeout","Zeitlimit eines Modellaufrufs (Minuten)",settingNumber("settings-timeout",Math.round(d.text_timeout_seconds/60),5,240),"Ein Aufruf, der länger braucht, wird beendet und beim Fortsetzen wiederholt. Große Inhaltsverzeichnisse brauchen mit Codex mehr als 30 Minuten.")}</section>
+    <section class="panel"><h2>Claude</h2><label class="approval"><input id="settings-claude-extra" type="checkbox" ${data.claude_extra_usage?"checked":""}><span>Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen</span></label>
+      <p class="hint">Solange eingeschaltet, versucht jeder Aufruf Claude, auch wenn ein Wochen- oder 5-Stunden-Limit gemeldet ist. Lehnt Claude trotzdem ab, kostet das einen Fehlversuch, und der Lauf weicht auf Codex aus oder pausiert wie bisher.</p></section>
+    <section class="panel"><h2>OpenRouter-Key</h2><p class="hint">Für OpenRouter-Text, Gemini-Audio und Jev. Er bleibt nur im Speicher dieses Studios und wird nach einem Neustart neu eingegeben; der redaktionelle Partner sieht ihn nie.</p>
+      ${textInput("api-key","OpenRouter-Key","","password")}<p id="key-status" class="hint">${data.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt."}</p><div class="actions"><button class="secondary small" data-action="store-key">Key hinterlegen</button><button class="secondary small" data-action="forget-key">Sitzungs-Key entfernen</button></div></section>
+    <div class="actions"><button data-action="save-settings">Einstellungen für alle Projekte speichern</button></div>`;
+}
+// The draft as the form holds it now; a preset sets provider, model and level together.
+function settingsFromForm() {
+  const d=structuredClone(settingsDraft), value=id=>$(id)?.value;
+  const presetId=document.querySelector?.('input[name="settings-text"]:checked')?.value;
+  const preset=(boot.text_catalog?.presets||[]).find(p=>p.id===presetId);
+  const tokens=Number(value("settings-max-tokens"))||d.text.max_output_tokens||32768;
+  d.text=preset?{provider:preset.provider,model:preset.model,reasoning_effort:preset.reasoning_effort,max_output_tokens:tokens}:{...d.text,max_output_tokens:tokens};
+  const provider=value("settings-audio-provider")||d.audio.provider;
+  d.audio={...d.audio,provider,voices:{host_a:value("settings-voice-a")||d.audio.voices.host_a,host_b:value("settings-voice-b")||d.audio.voices.host_b},
+    pauses:{same_speaker_ms:Number(value("settings-pause-same")),speaker_change_ms:Number(value("settings-pause-change")),chapter_break_ms:Number(value("settings-pause-chapter"))}};
+  if($("settings-audio-model"))d.audio.model=value("settings-audio-model");
+  if($("settings-expression"))d.audio.expression=!!$("settings-expression").checked;
+  d.execution={text:value("settings-exec-text"),audio:value("settings-exec-audio")};
+  d.allowances={fresh_attempts:Number(value("settings-fresh")),extra_calls:Number(value("settings-extra"))};
+  d.research_limits={model_calls:Number(value("settings-calls")),sources:Number(value("settings-sources")),search_rounds:Number(value("settings-rounds"))};
+  d.text_timeout_seconds=Math.round(Number(value("settings-timeout"))*60);
+  return d;
+}
+async function saveSettings() {
+  const settings=settingsFromForm();
+  const saved=await api("/api/settings",{settings,hash:settingsData.hash,claude_extra_usage:!!$("settings-claude-extra")?.checked});
+  settingsData=saved;settingsDraft=structuredClone(saved.settings);render();
+  notice("Gespeichert. Gilt für alle Projekte; laufende Aufträge behalten ihre Auswahl, Limits und Zeitlimit gelten beim nächsten Fortsetzen.","ok");
 }
 // Render the Markdown used by dossiers, escaping all source text. Raw HTML and
 // embedded images stay inert; only explicit HTTP(S) destinations become links.
@@ -826,19 +896,17 @@ async function saveSpokenOverride(episodeId, segmentId) {
 async function saveSpeechSettings() {
   const hostA=$("host-name-a").value.trim(), hostB=$("host-name-b").value.trim();
   if(!!hostA!==!!hostB)throw new Error("Beide Hostnamen angeben oder beide Felder leer lassen.");
-  const names=project.config?.host_names||{}, pauses=currentAudio().pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
+  const names=project.config?.host_names||{};
   const changes=[];
   if(hostA!==(names.host_a||"")||hostB!==(names.host_b||""))changes.push("config");
-  if(["same_speaker_ms","speaker_change_ms","chapter_break_ms"].some((key,i)=>Number($(["pause-same","pause-change","pause-chapter"][i]).value)!==Number(pauses[key]))||
-      JSON.stringify(parseSpokenForms($("spoken-forms").value).entries)!==JSON.stringify(project.spoken_forms?.entries||[]))changes.push("audio");
+  if(JSON.stringify(parseSpokenForms($("spoken-forms").value).entries)!==JSON.stringify(project.spoken_forms?.entries||[]))changes.push("audio");
   if(!confirmPaused(changes))return;
   await api(`/api/projects/${project.id}/save`,{config:{...project.config,host_names:hostA?{host_a:hostA,host_b:hostB}:null},
-    config_hash:project.config_hash,text:project.text,audio_settings:{...currentAudio(),pauses:{same_speaker_ms:Number($("pause-same").value),
-      speaker_change_ms:Number($("pause-change").value),chapter_break_ms:Number($("pause-chapter").value)}},
+    config_hash:project.config_hash,text:project.text,audio_settings:currentAudio(),
     audio_hash:project.audio_hash,spoken_forms:parseSpokenForms($("spoken-forms").value),
     spoken_forms_hash:project.spoken_forms_hash});
   project=await api(`/api/projects/${project.id}`);render();
-  notice("Gespeichert. Geänderte Pausen benötigen eine neue Audio-Freigabe; geänderte Hostnamen gelten für neue Skriptläufe.","ok");
+  notice("Gespeichert. Geänderte Sprechformen benötigen eine neue Audio-Freigabe; geänderte Hostnamen gelten für neue Skriptläufe.","ok");
 }
 function refreshScriptReader() {
   if(!readingSnapshot||!$("script-reader-controls")){$("content").innerHTML=renderScript();return;}
@@ -933,19 +1001,15 @@ function renderStyleNotes() {
     <div class="actions"><button class="secondary" data-action="save-notes" ${disabled()}>Notizen speichern</button></div></details>`;
 }
 function renderSpeechSettings(a) {
-  const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
   const names=project.config?.host_names||{};
-  const number=(id,label,value)=>`<div class="field"><label for="${id}">${escape(label)}</label><input id="${id}" type="number" min="0" max="10000" step="50" value="${Number(value)}"></div>`;
-  return `<details class="panel speech-settings"><summary>Sprechformen, Pausen und Hostnamen</summary>
-    <p class="hint">Gilt für alle Folgen dieses Projekts. Eine Änderung der Pausen verlangt eine neue Audio-Freigabe, weil sie hörbar ist.</p>
+  return `<details class="panel speech-settings"><summary>Sprechformen und Hostnamen</summary>
+    <p class="hint">Gilt für alle Folgen dieses Projekts. Die Pausen zwischen den Stimmen sind eine Audio-Einstellung für alle Projekte (Einstellungen).</p>
     ${area("spoken-forms","Sprechformen · eine Zeile je Eintrag: geschrieben = gesprochen",spokenFormsText(project.spoken_forms),5)}
     <p class="hint">Ein Bindestrich trennt Wörter, ein Punkt zwischen Zeichen nicht: der Eintrag „KL“ erreicht „KL-Abweichung“, der Eintrag „V3“ lässt „V3.2-Exp“ unverändert.</p>
-    <div class="row">${number("pause-same","Gleiche Stimme (ms)",pauses.same_speaker_ms)}${number("pause-change","Stimmwechsel (ms)",pauses.speaker_change_ms)}</div>
-    ${number("pause-chapter","Kapitelwechsel (ms)",pauses.chapter_break_ms)}
     <div class="row">${textInput("host-name-a","Name von Host A (optional)",names.host_a||"")}${textInput("host-name-b","Name von Host B (optional)",names.host_b||"")}</div>
     <p class="hint">Beide Namen oder keinen. Mit Namen sprechen sich die Hosts im Skript so an und Transkript und Leseseite zeigen sie; ohne Namen bleiben es Host A und Host B. Geänderte Namen gelten für neue Skriptläufe.</p>
     ${pausedHint(["config","audio"])}
-    <div class="actions"><button class="secondary" data-action="save-speech" ${disabled()}>Sprechformen, Pausen und Hostnamen speichern</button></div></details>`;
+    <div class="actions"><button class="secondary" data-action="save-speech" ${disabled()}>Sprechformen und Hostnamen speichern</button></div></details>`;
 }
 function renderListeningReview(e) {
   return `<section class="panel"><h2>Hörprüfung</h2>
@@ -1169,8 +1233,15 @@ async function loadOverview() {
 async function showOverview() {
   if(setupSending)throw new Error("Die Nachricht wird gerade gesendet. Bitte kurz warten.");
   const epoch=++navigationEpoch,data=await loadOverview();if(epoch!==navigationEpoch)return;
-  overviewData=data;overviewPage=true;project=null;followWorkflow=false;pendingAttachments=[];
+  overviewData=data;overviewPage=true;settingsPage=false;project=null;followWorkflow=false;pendingAttachments=[];
   $("project-select").value="";updatePageUrl();render();
+}
+async function showSettings(push=true) {
+  if(setupSending)throw new Error("Die Nachricht wird gerade gesendet. Bitte kurz warten.");
+  const epoch=++navigationEpoch,data=await api("/api/settings");if(epoch!==navigationEpoch)return;
+  settingsData=data;settingsDraft=structuredClone(data.settings);settingsPage=true;overviewPage=false;project=null;
+  followWorkflow=false;pendingAttachments=[];drawerOpen=false;
+  $("project-select").value="";updatePageUrl(push);render();
 }
 function refreshOverview() {
   const container=$("overview-projects");
@@ -1674,10 +1745,8 @@ function stopButton(action,job,info,target) {
   }
 }
 const FRESH_CHOICES=[0,1,2,3], CALL_CHOICES=[0,100,250,500,1000];
-function allowanceControls(a={}) {
-  const fresh=`<label>Neue Anläufe <select data-allowance="fresh_attempts">${FRESH_CHOICES.map(n=>`<option value="${n}" ${Number(a.fresh_attempts||0)===n?"selected":""}>${n?`bis ${n}× je Lauf`:"nie"}</option>`).join("")}</select></label>`;
-  const calls=`<label>Aufruflimit erhöhen <select data-allowance="extra_calls">${CALL_CHOICES.map(n=>`<option value="${n}" ${Number(a.extra_calls||0)===n?"selected":""}>${n?`um bis zu ${n} je Lauf`:"nie"}</option>`).join("")}</select></label>`;
-  return `${fresh} ${calls}`;
+function allowanceSummary(a={}) {
+  return `${a.fresh_attempts?`bis ${Number(a.fresh_attempts)}× neue Anläufe`:"keine neuen Anläufe"} · ${a.extra_calls?`bis zu ${Number(a.extra_calls)} zusätzliche Aufrufe`:"kein höheres Aufruflimit"} je Lauf`;
 }
 // What the allowances already gave the run on screen, so their use stays visible.
 function allowanceUse(a) {
@@ -2195,7 +2264,7 @@ function renderJob() {
   if(traceList)traceList.scrollTop=traceAtEnd?traceList.scrollHeight:traceScroll;
 }
 // Unfinished input survives a re-render of the same project; a project switch starts clean.
-const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","pause-same","pause-change","pause-chapter","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback","queue-key"];
+const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback","queue-key"];
 function formSnapshot() {
   const values={};
   for(const id of FORM_IDS){const el=$(id);if(el&&typeof el.value==="string"&&el.value!=="")values[id]=el.value;}
@@ -2211,7 +2280,7 @@ function formRestore(saved) {
 function render() {
   const saved=formSnapshot();
   renderNavigation();
-  $("content").innerHTML=overviewPage?renderOverview():[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step]();
+  $("content").innerHTML=settingsPage?renderSettings():overviewPage?renderOverview():[renderBrief,renderResearch,renderOutline,renderProduction,renderScript,renderAudio][step]();
   renderJob(); formRestore(saved); syncPlayButtons();
   if(!overviewPage&&window.matchMedia?.("(max-width: 720px)")?.matches)$("steps").querySelector?.('[aria-current="page"]')?.scrollIntoView?.({inline:"center",block:"nearest"});
 }
@@ -2231,7 +2300,7 @@ async function selectProject(id, loaded=null, requestedPage=null) {
   const epoch=++navigationEpoch;
   const selected=id?(loaded||await api("/api/projects/"+encodeURIComponent(id))):null;
   if(epoch!==navigationEpoch)return;
-  overviewPage=false;
+  overviewPage=false;settingsPage=false;
   pendingAttachments=[];drawerOpen=false;
   project=selected;
   $("project-select").value=id||"";
@@ -2261,10 +2330,10 @@ async function downloadZip(url) {
   setTimeout(()=>URL.revokeObjectURL(href),60000);
   notice("Das ZIP ist fertig und wird gespeichert.","ok");
 }
-async function sendSetupMessage(message, presetId=null) {
+async function sendSetupMessage(message) {
   message=message.trim();
   if((!message&&!pendingAttachments.length)||running()||setupSending||readingAttachments)return;
-  if(/sk-or-[A-Za-z0-9_-]{12,}/.test(message))throw new Error("Bitte den geschützten OpenRouter-Key-Eingang verwenden. Keys gehören nicht in den Chat.");
+  if(/sk-or-[A-Za-z0-9_-]{12,}/.test(message))throw new Error("Den OpenRouter-Key bitte in den Einstellungen hinterlegen. Keys gehören nicht in den Chat.");
   const initialTopic=message||pendingAttachments[0]?.name.replace(/\.(md|txt|docx)$/i,"");
   message=message||"Bitte leite aus meinen angehängten Dateien einen Vorschlag für das neue Podcast-Projekt ab und nutze sie als Ausgangsmaterial für die Recherche.";
   setupSending=true;refreshAttachmentComposer();
@@ -2280,7 +2349,7 @@ async function sendSetupMessage(message, presetId=null) {
       pendingAttachments=[];
       project=await api(`/api/projects/${project.id}`);
     }
-    await start("assistant",{message,...(presetId?{text_preset:presetId}:{})});
+    await start("assistant",{message});
     const field=$("chat-message");
     if(field)field.value="";
   }finally{setupSending=false;refreshAttachmentComposer();}
@@ -2363,12 +2432,11 @@ document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
   if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason();
-  if(event.target.dataset?.allowance){
-    const value=name=>Number(document.querySelector?.(`select[data-allowance="${name}"]`)?.value||0);
-    const saved=await api(`/api/projects/${project.id}/allowances`,{fresh_attempts:value("fresh_attempts"),extra_calls:value("extra_calls")});
-    project=await api(`/api/projects/${project.id}`);render();
-    const a=saved.allowances;
-    notice(a.fresh_attempts||a.extra_calls?`Gespeichert: ${a.fresh_attempts?`bis ${a.fresh_attempts}× neue Anläufe`:"keine neuen Anläufe"} und ${a.extra_calls?`bis zu ${a.extra_calls} zusätzliche Aufrufe`:"kein höheres Limit"} je Lauf ohne Rückfrage.`:"Gespeichert: Jeder Stopp wartet wieder auf dich.","ok");
+  if(event.target.id==="settings-audio-provider"){
+    // Another provider has other voices: its defaults stand until the user picks two of them.
+    const provider=event.target.value, draft=settingsFromForm();
+    settingsDraft={...draft,audio:{...draft.audio,provider,voices:{...(audioCatalog()[provider]?.defaults||draft.audio.voices)}}};
+    render();
   }
 }));
 document.addEventListener("click",event=>{
@@ -2379,12 +2447,6 @@ document.addEventListener("click",event=>{
     // Starting over or stopping costs finished work or a running call; such buttons say so first.
     if(button.dataset.confirm&&typeof window.confirm==="function"&&!window.confirm(button.dataset.confirm))return;
     if(button.dataset.scroll){$(button.dataset.scroll)?.scrollIntoView?.({block:"start"});return;}
-    if(button.dataset.textPreset){
-      const p=boot.text_catalog.presets.find(row=>row.id===button.dataset.textPreset);
-      if(!p)throw new Error("Bitte die Modellauswahl neu laden.");
-      const draft=$("chat-message")?.value.trim();
-      await sendSetupMessage(`${draft?draft+"\n\n":""}Nutze für die Textarbeit ${p.label} (Modell ${p.model}${p.reasoning_effort?", Reasoning "+p.reasoning_effort:""}).`,p.id);return;
-    }
     if(button.dataset.removePending!==undefined){if(!setupSending){pendingAttachments.splice(Number(button.dataset.removePending),1);refreshAttachmentComposer();}return;}
     if(button.dataset.removeAttachment){await removeAttachment(button.dataset.removeAttachment);return;}
     if(button.id==="new-project"||button.hasAttribute("data-new-project")){await selectProject("");return;}
@@ -2419,6 +2481,8 @@ document.addEventListener("click",event=>{
       await api("/api/quit",{});project=null;$("job-status").hidden=true;$("job-bar").hidden=true;$("content").innerHTML='<section class="empty"><h1>Bis zum nächsten Gespräch.</h1><p>Das Studio ist beendet. Öffne den Podcast-Studio-Starter in deinem Projektordner, um es wieder zu starten.</p></section>';return;
     }
     if(action==="apply-proposal"){await applySetupProposal();return;}
+    if(action==="open-settings"){await showSettings();return;}
+    if(action==="save-settings"){await saveSettings();return;}
     if(action==="store-key"){
       if(!await storeKey(button.dataset.keyField||"api-key"))throw new Error("Bitte zuerst den OpenRouter-Key eingeben.");
       if(button.dataset.thenResume){await resumeFrom(button);return;}
@@ -2433,7 +2497,7 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/approve`,{kind:"chat_calls",model_calls:Number(button.dataset.modelCalls)});
       project=await api(`/api/projects/${project.id}`);render();notice("Gesprächslimit erhöht. „Erneut senden“ schickt deine letzte Nachricht noch einmal.","ok");return;
     }
-    if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
+    if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";if(settingsData)settingsData.key_available=boot.key_available;$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
     if(action==="apply-advice"){await applyAdvice(button);notice("Empfehlungen übernommen. Der Lauf versucht die Teilfragen mit den Hinweisen des Beraters erneut.","ok");return;}
     if(action==="upload-work"){await uploadWork(button);return;}
@@ -2634,6 +2698,7 @@ attempt(async()=>{
   const params=window.location?new URLSearchParams(window.location.search):null;
   const requested=params?.get("project"), requestedStep=pageKeys.indexOf(params?.get("step"));
   if(requested&&boot.projects.some(p=>p.id===requested))await selectProject(requested,null,requestedStep<0?null:requestedStep);
+  else if(params?.get("view")==="settings")await showSettings(false);
   else if(params?.has("new"))await selectProject("");
   else await showOverview();
 });
@@ -2646,7 +2711,8 @@ window.addEventListener("popstate",()=>attempt(async()=>{
   if(id&&boot.projects.some(p=>p.id===id)) {
     if(project?.id===id){const target=index<0?recommendedPage():index;if(target===step&&!overviewPage)return;navigatePage(target,{push:false});}
     else await selectProject(id,null,index<0?null:index);
-  } else if(params.has("new"))await selectProject("");
+  } else if(params.get("view")==="settings")await showSettings(false);
+  else if(params.has("new"))await selectProject("");
   else await showOverview();
 }));
 

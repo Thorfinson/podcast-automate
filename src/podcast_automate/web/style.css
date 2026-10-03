@@ -289,6 +289,8 @@ dd{margin:0;overflow-wrap:anywhere}
 .check-card .approval{margin-top:6px}
 .approval{display:flex;align-items:flex-start;gap:12px;font-size:16px;font-weight:400;max-width:720px;margin-top:16px}
 .approval input{margin-top:4px}
+.setting-choices{display:flex;flex-direction:column;gap:8px;margin:8px 0 16px}
+.setting-choice{display:flex;align-items:center;gap:10px;font-weight:400}
 .pronunciation{margin:0;padding:0;border:0;background:transparent;max-width:none}
 .pronunciation[open]>summary{margin-bottom:10px}
 .pronunciation h3,.speech-settings h3{font-size:15px;margin:16px 0 6px;color:var(--green)}

@@ -109,8 +109,9 @@ class OpenRouterTests(unittest.TestCase):
         self.assertNotIn(KEY, str(caught.exception))
 
     def test_requested_models_keep_exact_ids_and_deepseek_max_in_schema_requests(self):
-        for model, effort in (("openai/gpt-6-astra", None), ("openai/gpt-6-astra-pro", "xhigh"),
-                              ("anthropic/claude-fable-5.1", None), ("deepseek/deepseek-v4.1-flash", "max")):
+        # The four OpenRouter text models the Studio offers since 2026-10-03, at their preset levels.
+        for model, effort in (("openai/gpt-6-astra", "xhigh"), ("anthropic/claude-opus-5.5", "medium"),
+                              ("anthropic/claude-sonnet-5.5", "high"), ("deepseek/deepseek-v4.1-flash", "max")):
             with self.subTest(model=model):
                 self.adapter = OpenRouterAdapter(RuntimeSettings(), model=model, api_key=KEY, reasoning_effort=effort)
                 _, metadata = self.call(envelope(model=model))

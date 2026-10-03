@@ -620,27 +620,47 @@ test('Markdown escapes link labels and leaves malformed syntax readable',()=>{
   assert.ok(!html.includes('<img'));
 });
 
-test('model presets remain distinct and sending one carries its explicit choice to the partner',async()=>{
+test('the settings page sets text model, audio, modes, pre-approvals, limits and Claude for every project',async()=>{
+  // The user's choice of 2026-10-03: one settings page instead of per-project choices; a model button in the chat
+  // started a call to the partner, and only an applied proposal saved the model for that one project.
   const app=studio();
-  const p=app.run(`({id:'test',config:boot.defaults,chat:[]})`);
-  await app.run(`selectProject('test',${JSON.stringify(p)})`);
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read replaces boot first
   const presets=[{id:'auto_subscriptions',label:'Automatisch · Claude, sonst Codex',provider:'auto',model:null,reasoning_effort:null},
-    {id:'claude_opus_sub',label:'Opus 5.5 · Claude-Abo',provider:'claude_code',model:'claude-opus-5-5',reasoning_effort:'xhigh'},
-    {id:'codex_astra',label:'Astra · Codex-Abo',provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'},
-    {id:'openrouter_astra',label:'Astra · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra',reasoning_effort:null},
-    {id:'openrouter_astra_pro',label:'Astra Pro · OpenRouter',provider:'openrouter',model:'openai/gpt-6-astra-pro',reasoning_effort:null},
-    {id:'openrouter_fable',label:'Claude Fable 5.1 · OpenRouter',provider:'openrouter',model:'anthropic/claude-fable-5.1',reasoning_effort:null},
-    {id:'openrouter_deepseek',label:'DeepSeek V4.1 Flash · max · OpenRouter',provider:'openrouter',model:'deepseek/deepseek-v4.1-flash',reasoning_effort:'max'}];
-  app.run(`boot.capabilities={conversational_setup:true};boot.text_catalog={presets:${JSON.stringify(presets)}};`);
-  const html=app.run('renderBrief()');
-  for(const preset of presets)assert.ok(html.includes(`data-text-preset="${preset.id}"`));
-  assert.ok(html.includes('Live-Recherche läuft über das gewählte Abo'));
-  assert.ok(html.includes('springt bei leerem Kontingent auf Codex um'));
-  app.responses.set('/api/projects/test',p);
-  await app.run(`sendSetupMessage('Nutze DeepSeek mit max','openrouter_deepseek')`);
-  const request=app.requests.find(r=>r.path==='/api/projects/test/start');
-  assert.equal(JSON.parse(request.options.body).text_preset,'openrouter_deepseek');
-  assert.ok(!app.requests.some(r=>r.path.endsWith('/save')||r.path.endsWith('/apply_proposal')));
+    {id:'openrouter_opus',label:'Opus 5.5 · medium · OpenRouter',provider:'openrouter',model:'anthropic/claude-opus-5.5',reasoning_effort:'medium'}];
+  const view={settings:{text:{provider:'auto',model:null,reasoning_effort:null,max_output_tokens:32768},
+      audio:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'},pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900}},
+      execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},
+      research_limits:{model_calls:750,sources:150,search_rounds:48},text_timeout_seconds:1800},
+    hash:'h1',global:false,source_project:'transformer',claude_extra_usage:false,key_available:false,
+    allowance_choices:{fresh_attempts:[0,1,2,3],extra_calls:[0,100,250,500,1000]}};
+  app.run(`boot.text_catalog={presets:${JSON.stringify(presets)}};boot.audio_catalog={qwen3_local:{label:'Qwen',voices:['Aiden','Vivian'],defaults:{host_a:'Aiden',host_b:'Vivian'}},
+    openrouter_gemini_tts:{label:'Gemini',voices:['Aoede','Sadaltager','Puck'],defaults:{host_a:'Sadaltager',host_b:'Aoede'},models:{'gemini-a':'Gemini A','gemini-b':'Gemini B'},default_model:'gemini-a'}};`);
+  app.responses.set('/api/settings',view);
+  await app.run('showSettings()');
+  const html=app.elements.get('content').innerHTML;
+  assert.ok(html.includes('<h1>Einstellungen</h1>')&&html.includes('Noch je Projekt')&&html.includes('von „transformer“'));
+  for(const p of presets)assert.ok(html.includes(`name="settings-text" value="${p.id}"`),p.id);
+  assert.ok(html.includes('value="auto_subscriptions" checked'),'the saved choice is the chosen preset');
+  for(const id of ['settings-audio-model','settings-voice-a','settings-pause-chapter','settings-exec-text','settings-fresh','settings-calls','settings-timeout','settings-claude-extra','api-key'])
+    assert.ok(html.includes(`id="${id}"`),id);
+  assert.ok(html.includes('<option value="Sadaltager" selected>'));
+  assert.ok(html.includes('id="settings-timeout" type="number" min="5" max="240" step="1" value="30"'));
+  app.run(`document.querySelector=selector=>selector.includes('settings-text')?{value:'openrouter_opus'}:null;
+    const set=(id,value)=>{$(id).value=value;};set('settings-max-tokens','65536');set('settings-audio-provider','openrouter_gemini_tts');set('settings-audio-model','gemini-b');
+    set('settings-voice-a','Puck');set('settings-voice-b','Aoede');set('settings-pause-same','300');set('settings-pause-change','500');set('settings-pause-chapter','1000');
+    $('settings-expression').checked=true;set('settings-exec-text','parallel');set('settings-exec-audio','parallel');set('settings-fresh','2');set('settings-extra','250');
+    set('settings-calls','1200');set('settings-sources','150');set('settings-rounds','48');set('settings-timeout','90');$('settings-claude-extra').checked=true;`);
+  await app.run('saveSettings()');
+  const body=JSON.parse(app.requests.filter(r=>r.path==='/api/settings'&&r.options?.method==='POST').at(-1).options.body);
+  assert.equal(body.hash,'h1');
+  assert.equal(body.claude_extra_usage,true);
+  assert.deepEqual(body.settings.text,{provider:'openrouter',model:'anthropic/claude-opus-5.5',reasoning_effort:'medium',max_output_tokens:65536});
+  assert.deepEqual(body.settings.audio,{provider:'openrouter_gemini_tts',voices:{host_a:'Puck',host_b:'Aoede'},
+    pauses:{same_speaker_ms:300,speaker_change_ms:500,chapter_break_ms:1000},model:'gemini-b',expression:true});
+  assert.deepEqual(body.settings.execution,{text:'parallel',audio:'parallel'});
+  assert.deepEqual(body.settings.allowances,{fresh_attempts:2,extra_calls:250});
+  assert.deepEqual(body.settings.research_limits,{model_calls:1200,sources:150,search_rounds:48});
+  assert.equal(body.settings.text_timeout_seconds,5400);
 });
 
 test('attachment picker supports text and DOCX with escaped names and no configuration forms',async()=>{
@@ -1030,7 +1050,7 @@ test('new episodes and later polish do not replace an open script or its reading
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 
-test('the audio page offers the spoken-form table, pause fields and the pronunciation report',()=>{
+test('the audio page offers the spoken-form table and the pronunciation report; pauses are a setting',()=>{
   const app=studio(), p=workflowProject(app);
   p.job.status='completed';p.job.run.status='completed';
   p.spoken_forms={schema_version:'1.0',entries:[{written:'H800',spoken:'H achthundert'}]};
@@ -1042,9 +1062,8 @@ test('the audio page offers the spoken-form table, pause fields and the pronunci
   app.run(`project=${JSON.stringify(p)};episodeIndex=0;`);
   const html=app.run('renderAudio()');
   assert.ok(html.includes('H800 = H achthundert'));
-  assert.ok(html.includes('id="pause-same"'));
-  assert.ok(html.includes('value="450"'));
-  assert.ok(html.includes('value="900"'));
+  assert.ok(!html.includes('id="pause-same"'),'the pauses moved to the settings page (2026-10-03)');
+  assert.ok(html.includes('Audio-Einstellung für alle Projekte'));
   assert.ok(html.includes('Aussprache prüfen'));
   assert.ok(html.includes('Versions- und Modellnamen'));
   assert.ok(html.includes('data-action="save-speech"'));
@@ -1140,9 +1159,9 @@ test('host names are edited in the speech panel and saved as a pair or not at al
   const html=app.run('renderAudio()');
   assert.ok(html.includes('id="host-name-a" type="text" value="Mara"'));
   assert.ok(html.includes('id="host-name-b" type="text" value="Jonas"'));
-  assert.ok(html.includes('Sprechformen, Pausen und Hostnamen'));
+  assert.ok(html.includes('Sprechformen und Hostnamen'));
   app.responses.set('/api/projects/test',p);
-  app.run(`$('host-name-a').value='Lena';$('host-name-b').value='Tom';$('pause-same').value='250';$('pause-change').value='450';$('pause-chapter').value='900';$('spoken-forms').value='H800 = H achthundert';`);
+  app.run(`$('host-name-a').value='Lena';$('host-name-b').value='Tom';$('spoken-forms').value='H800 = H achthundert';`);
   await app.run('saveSpeechSettings()');
   let request=app.requests.filter(r=>r.path==='/api/projects/test/save').at(-1);
   let body=JSON.parse(request.options.body);
@@ -1151,7 +1170,7 @@ test('host names are edited in the speech panel and saved as a pair or not at al
   assert.equal(body.config.topic,'New project');
   assert.equal(body.config_hash,'cfg');
   assert.deepEqual(body.spoken_forms.entries,[{written:'H800',spoken:'H achthundert'}]);
-  assert.deepEqual(body.audio_settings.pauses,{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900});
+  assert.equal(JSON.stringify(body.audio_settings),app.run('JSON.stringify(currentAudio())'),'the settings page\'s audio choice goes back unchanged');
   app.run(`$('host-name-b').value='';`);
   const before=app.requests.length;
   await assert.rejects(app.run('saveSpeechSettings()'),/Beide Hostnamen/);
@@ -1348,11 +1367,12 @@ test('polling the production page keeps a teaching preview open at its reading p
   assert.equal(detail.open,true);
   assert.equal(preview.scrollTop,180);
 });
-test('setup starts with a conversation and a protected key entry, without configuration forms',()=>{
+test('setup starts with a conversation, without configuration forms; the key is entered on the settings page',()=>{
   const app=studio(),html=app.run('renderBrief()');
   assert.ok(html.includes('id="chat-message"'));
   assert.ok(html.includes('Worum soll dein Podcast gehen'));
-  assert.ok(html.includes('id="api-key"'));
+  assert.ok(!html.includes('id="api-key"'),'the OpenRouter key moved to the settings page (2026-10-03)');
+  assert.ok(!html.includes('data-text-preset'),'the chat has no model buttons any more');
   for(const id of ['brief-form','topic','central_question','provider','model','host_a','host_b'])
     assert.ok(!html.includes(`id="${id}"`));
 });
@@ -2539,13 +2559,13 @@ test('the overview card offers the whole podcast as a download, not only a playe
   assert.ok(complete.includes('Podcast anhören'));
 });
 
-test('allowances are set in the brief and a stop they cover says the studio continues by itself',()=>{
+test('a project shows its pre-approvals and links to the settings, and a stop they cover says the studio continues by itself',()=>{
   const app=studio();
   app.run(`project={id:'p',config:boot.defaults,execution:{text:'parallel',audio:'parallel'},jev_probe:true,jev_default:true,chat:[],allowances:{fresh_attempts:2,extra_calls:250,used:{fresh_attempts:1,extra_calls:40}}};`);
   const html=app.run('setupSummary()');
-  assert.ok(html.includes('<option value="2" selected>bis 2× je Lauf</option>'));
-  assert.ok(html.includes('<option value="250" selected>um bis zu 250 je Lauf</option>'));
-  assert.ok(html.includes('redaktionelle Entscheidungen bleiben bei dir'));
+  assert.ok(html.includes('bis 2× neue Anläufe · bis zu 250 zusätzliche Aufrufe je Lauf'));
+  assert.ok(html.includes('data-action="open-settings"'));
+  assert.ok(!html.includes('data-allowance'),'set on the settings page for every project (2026-10-03)');
   assert.ok(html.includes('Standard für deutschsprachige Projekte; ohne Key nur Wortsuche'));
   assert.ok(app.run('allowanceUse(project.allowances)').includes('1 von 2 neuen Anläufen · 40 von 250 zusätzlichen Aufrufen'));
   assert.equal(app.run('allowanceUse({fresh_attempts:0,extra_calls:0})'),'');

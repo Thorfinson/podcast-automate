@@ -306,10 +306,12 @@ class StudioParallelTests(unittest.TestCase):
         self.assertEqual(marker.read_bytes(), before)
         self.assertEqual(self.app.overview()["trash"], [])
 
-    def test_chat_settings_require_applying_the_current_proposal(self):
+    def test_a_proposal_applies_its_brief_and_leaves_the_settings_to_their_page(self):
+        """Since 2026-10-03 text model, audio and execution are the settings page's, for every project; a proposal
+        from before, which still names them, applies its brief alone."""
         proposal = BriefProposal(message="Use this?", topic="Changed", central_question="Why?", prior_knowledge="",
-            depth_request="Deep", focus_questions=[], excluded_topics=[], execution={"text": "parallel", "audio": "sequential"},
-            text={"model": "gpt-6-astra", "reasoning_effort": "xhigh"}, audio_settings=REMOTE)
+            depth_request="Deep", focus_questions=[], excluded_topics=[], execution={"text": "sequential", "audio": "sequential"},
+            text={"model": "gpt-5.5", "reasoning_effort": "low"}, audio_settings=REMOTE)
         row = {"role": "assistant", **proposal.model_dump()}
         write_json(self.root / "studio/chat.json", [row])
         detail = self.app.detail("example")
@@ -319,8 +321,10 @@ class StudioParallelTests(unittest.TestCase):
         self.assertEqual(read_yaml(self.root / "project.yaml")["topic"], "Example")
         self.app.apply_proposal("example", request)
         result = self.app.detail("example")
-        self.assertEqual(result["execution"], {"text": "parallel", "audio": "sequential"})
-        self.assertEqual(result["text"]["reasoning_effort"], "xhigh")
+        self.assertEqual(read_yaml(self.root / "project.yaml")["topic"], "Changed")
+        self.assertEqual((result["execution"], result["audio_settings"]), (detail["execution"], detail["audio_settings"]))
+        self.assertEqual((result["text"]["model"], result["text"]["reasoning_effort"]), ("gpt-6-astra", "xhigh"),
+                         "the saved choice, with the provider's defaults written out")
         self.assertTrue(result["proposal_applied"])
         self.assertFalse((self.root / "studio/job.json").exists())
 

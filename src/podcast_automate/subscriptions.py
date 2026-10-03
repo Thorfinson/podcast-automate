@@ -207,9 +207,22 @@ def claude_quota_state(*, clock=time.time) -> dict | None:
     return block
 
 
+def claude_extra_usage() -> bool:
+    """Whether the user bought Claude usage beyond the subscription's windows (the settings page's switch,
+    2026-10-03). While it is on, a noted Claude block is passed over and every call tries Claude: a call refused
+    anyway costs one failed attempt, after which the run moves to Codex or pauses as before."""
+    return (read_store().get("claude_code") or {}).get("extra_usage") is True
+
+
+def set_claude_extra_usage(enabled: bool) -> bool:
+    update_store("claude_code", {"extra_usage": bool(enabled)})
+    return claude_extra_usage()
+
+
 def claude_quota(*, refresh=False, clock=time.time) -> dict:
     login = claude_login(refresh=refresh, clock=clock)
-    block = claude_quota_state(clock=clock)
+    extra = claude_extra_usage()
+    block = None if extra else claude_quota_state(clock=clock)
     usable = bool(login.get("logged_in")) and login.get("auth_method") == "claude.ai" and bool(login.get("version_supported"))
     if usable:
         reason = (block.get("reason") or "unclear_limit") if block else None
@@ -228,7 +241,7 @@ def claude_quota(*, refresh=False, clock=time.time) -> dict:
             "blocked_until": block.get("blocked_until") if block else None,
             "resets_at": block.get("blocked_until") if block else None, "reason": reason,
             "last_rate_limit": (read_store().get("claude_code") or {}).get("last_rate_limit"),
-            "checked_at": login.get("checked_at")}
+            "checked_at": login.get("checked_at"), **({"extra_usage": True} if extra else {})}
 
 
 def record_quota_failure(provider, error, *, settings=None, clock=time.time):
@@ -355,7 +368,8 @@ def describe_snapshot(provider, snapshot) -> str:
     if not snapshot.get("usable"):
         return f"Claude-Abo{plan}: nicht nutzbar · {REASON_LABELS.get(snapshot.get('reason'), snapshot.get('reason') or 'unbekannt')}{version}"
     if snapshot.get("available"):
-        return f"Claude-Abo{plan}: angemeldet über claude.ai{version} · bereit"
+        return f"Claude-Abo{plan}: angemeldet über claude.ai{version} · bereit" + (
+            " · Zusatzkontingent: Sperren werden übergangen" if snapshot.get("extra_usage") else "")
     until = local_text(snapshot.get("blocked_until"))
     return (f"Claude-Abo{plan}: angemeldet über claude.ai{version} · Sperre bis {until} "
             f"({REASON_LABELS.get(snapshot.get('reason'), snapshot.get('reason') or 'Limit')})")

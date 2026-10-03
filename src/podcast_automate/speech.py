@@ -16,6 +16,7 @@ from urllib.request import Request, build_opener
 
 from pydantic import Field, SecretStr, model_serializer, model_validator
 
+from . import studio_settings
 from .audio import PAUSE_TAGS, silent_runs
 from .errors import AppError
 from .models import Contract, HostVoices
@@ -87,11 +88,15 @@ class AudioChoice(Contract):
 
 def selected_audio(root, config):
     """The Studio's audio choice. A Gemini choice records expression unless it says otherwise: the user chose
-    that every Gemini recording gets its expression layer automatically (2026-09-29)."""
-    path = root / "studio/audio.json"
-    if not path.exists():
-        return AudioChoice(voices=config.voice_profile)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    that every Gemini recording gets its expression layer automatically (2026-09-29). The workspace settings' choice
+    holds for every project where they set one (studio_settings)."""
+    data = studio_settings.section(root, "audio")
+    if not isinstance(data, dict):
+        path = root / "studio/audio.json"
+        if not path.exists():
+            return AudioChoice(voices=config.voice_profile)
+        data = json.loads(path.read_text(encoding="utf-8"))
+    data = dict(data) if isinstance(data, dict) else data
     if isinstance(data, dict) and data.get("provider") == "openrouter_gemini_tts":
         data.setdefault("expression", True)
     return AudioChoice.model_validate(data)

@@ -436,6 +436,34 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertIn("wiederholt", run.stages["writing"].error.message)
         self.assertEqual(self.calls.count(EpisodeScript), 3)
 
+    def test_each_writing_correction_builds_on_the_latest_attempt_and_names_the_missing_words(self):
+        """Transformer, 2026-10-03: every re-ask started from the first draft again, so a script 40% short came back
+        short three times. Here each correction adds 50 words: from the latest attempt, the second one passes."""
+        repairs = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is EpisodeScript and kwargs["prompt_version"].startswith("write_episode_repair"):
+                self.calls.append(output_type)
+                payload = json.loads(prompt.splitlines()[-1])
+                repairs.append(payload)
+                value = EpisodeScript.model_validate(payload["draft"])
+                value.segments[1].text += " Wort" * 50
+                return value, {}
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is SeriesPlan:
+                value.episodes[0].target_minutes = 1.0
+            return value, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.model_dump())
+        self.assertEqual(len(repairs), 2)
+        # 16 words of the fixture script are 0.12 of 1 planned minute; its two default pauses of 400 ms count, so 85%
+        # need ceil((0.85 - 0.8 / 60) * 130) = 109 words and the full plan ceil((1 - 0.8 / 60) * 130) = 129.
+        self.assertIn("16 spoken words", repairs[0]["errors"][0])
+        self.assertIn("at least 109 words, about 129 for the full plan", repairs[0]["errors"][0])
+        self.assertEqual(repairs[1]["draft"]["segments"][1]["text"].count("Wort"), 50, "the first correction")
+        self.assertIn("66 spoken words", repairs[1]["errors"][0])
+
     def test_a_long_cold_open_reaches_the_quality_report_as_an_advisory(self):
         opening = " ".join(["Wort"] * 101)
         def model(prompt, output_type, directory, **kwargs):

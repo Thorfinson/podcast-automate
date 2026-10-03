@@ -46,11 +46,12 @@ SUBSCRIPTION_PROVIDERS = ("codex_cli", "claude_code")
 # The subscription the automatic rule asks first; the other one takes over when its quota is out.
 AUTO_PREFERENCE = "claude_code"
 TEXT_PROVIDERS = ("codex_cli", "claude_code", "openrouter", "auto")
-# Verified against https://openrouter.ai/api/v1/models on 2026-09-16.
+# The user's choice of 2026-10-03, verified against https://openrouter.ai/api/v1/models that day: each reports
+# structured_outputs, response_format and reasoning_effort. Astra Pro and Claude Fable 5.1 are no longer offered.
 OPENROUTER_MODELS = {
-    "openai/gpt-6-astra-pro": "GPT-6 Astra Pro",
     "openai/gpt-6-astra": "GPT-6 Astra",
-    "anthropic/claude-fable-5.1": "Claude Fable 5.1",
+    "anthropic/claude-opus-5.5": "Claude Opus 5.5",
+    "anthropic/claude-sonnet-5.5": "Claude Sonnet 5.5",
     "deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
 }
 OPENROUTER_EFFORTS = {model: (*REASONING_EFFORTS, "max") for model in OPENROUTER_MODELS}
@@ -66,12 +67,13 @@ TEXT_PRESETS = [
      "model": "claude-opus-5-5", "reasoning_effort": "xhigh"},
     {"id": "codex_astra", "label": "Astra · Codex-Abo", "provider": "codex_cli",
      "model": "gpt-6-astra", "reasoning_effort": "xhigh"},
-    {"id": "openrouter_astra", "label": "Astra · OpenRouter", "provider": "openrouter",
-     "model": "openai/gpt-6-astra", "reasoning_effort": None},
-    {"id": "openrouter_astra_pro", "label": "Astra Pro · OpenRouter", "provider": "openrouter",
-     "model": "openai/gpt-6-astra-pro", "reasoning_effort": None},
-    {"id": "openrouter_fable", "label": "Claude Fable 5.1 · OpenRouter", "provider": "openrouter",
-     "model": "anthropic/claude-fable-5.1", "reasoning_effort": None},
+    # The levels of the OpenRouter presets are the user's choice of 2026-10-03.
+    {"id": "openrouter_astra", "label": "Astra · xhigh · OpenRouter", "provider": "openrouter",
+     "model": "openai/gpt-6-astra", "reasoning_effort": "xhigh"},
+    {"id": "openrouter_opus", "label": "Opus 5.5 · medium · OpenRouter", "provider": "openrouter",
+     "model": "anthropic/claude-opus-5.5", "reasoning_effort": "medium"},
+    {"id": "openrouter_sonnet", "label": "Sonnet 5.5 · high · OpenRouter", "provider": "openrouter",
+     "model": "anthropic/claude-sonnet-5.5", "reasoning_effort": "high"},
     {"id": "openrouter_deepseek", "label": "DeepSeek V4.1 Flash · max · OpenRouter", "provider": "openrouter",
      "model": "deepseek/deepseek-v4.1-flash", "reasoning_effort": "max"},
 ]

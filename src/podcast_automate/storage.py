@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from . import studio_settings
 from .errors import AppError
 from .models import ResearchLimits, RuntimeSettings, TopicBrief
 
@@ -157,7 +158,15 @@ def read_yaml(path: Path) -> dict:
 
 
 def load_project(root: Path) -> TopicBrief:
-    return TopicBrief.model_validate(read_yaml(root / "project.yaml"))
+    """The project's brief, with the research limits and the time limit of one model call from the workspace settings
+    where they set them (studio_settings): those hold for every project of the Studio."""
+    config = TopicBrief.model_validate(read_yaml(root / "project.yaml"))
+    settings = studio_settings.load(root) or {}
+    if isinstance(settings.get("research_limits"), dict):
+        config.research_limits = ResearchLimits.model_validate(settings["research_limits"])
+    if type(settings.get("text_timeout_seconds")) is int and settings["text_timeout_seconds"] > 0:
+        config.runtime = config.runtime.model_copy(update={"text_timeout_seconds": settings["text_timeout_seconds"]})
+    return config
 
 
 def inside(root: Path, relative: str) -> Path:

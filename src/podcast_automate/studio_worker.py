@@ -30,7 +30,7 @@ from .run_budget import run_text_generation
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
-from .speech import GeminiSpeech, audio_catalog, selected_audio
+from .speech import GeminiSpeech, selected_audio
 from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
 from .studio import BriefProposal, TextChoice, audio_job_path, chat_limits, read_json
@@ -38,8 +38,6 @@ from .studio_progress import safe_script_progress, watch
 from .status_summary import start_monitor
 from .process import stop_process_tree
 from .voice_samples import generate_sample, generate_samples
-from .text_settings import (CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, EFFORT_EQUIVALENTS, OPENROUTER_EFFORTS,
-                            OPENROUTER_MODELS, PROVIDER_NOTES, REASONING_EFFORTS)
 
 
 def tag_episodes(root, episodes, api_key=None, *, run_id=None, progress=None):
@@ -163,21 +161,16 @@ def perform(root, request, sample_progress=None):
                 json.dumps({"brief": {key: getattr(config, key) for key in
                     ("topic", "central_question", "prior_knowledge", "depth_request", "focus_questions", "excluded_topics",
                      "language", "target_total_minutes", "seed_urls", "series_goal", "recency_months")},
+                    # What the settings page holds, for answers about it; the conversation does not change it.
                     "saved_settings": {"text": choice.normalized(), "audio_settings": selected_audio(root, config).model_dump(),
                                        "execution": selected_execution(root).model_dump()},
-                    "audio_catalog": audio_catalog(), "attachments": attachments.context(root),
-                    "text_catalog": {"codex_models": CODEX_MODELS, "openrouter_models": OPENROUTER_MODELS,
-                                     "openrouter_efforts": OPENROUTER_EFFORTS, "claude_models": CLAUDE_MODELS,
-                                     "claude_efforts": CLAUDE_EFFORTS, "effort_equivalents": EFFORT_EQUIVALENTS,
-                                     "providers": PROVIDER_NOTES},
-                    "reasoning_efforts": REASONING_EFFORTS, "requested_text": request.get("requested_text"),
+                    "attachments": attachments.context(root),
                     "conversation": conversation[-16:], "user_message": request["message"]}, ensure_ascii=False))
             proposal, _ = adapter.structured(prompt, BriefProposal, work / f"call_{number:03d}",
-                                              prompt_version="studio_brief.v5-goal-recency", search=False)
-            if request.get("requested_text"):
-                proposal.text = TextChoice.model_validate(request["requested_text"])
-            if proposal.text:
-                proposal.text = TextChoice.model_validate(proposal.text.normalized())
+                                              prompt_version="studio_brief.v7-settings-page", search=False)
+            # Text model, audio and execution are the settings page's for every project (studio_settings, 2026-10-03):
+            # a proposal carries the brief only, whatever the model put there.
+            proposal.text = proposal.audio_settings = proposal.execution = None
             conversation.extend([user_message,
                                  {"role": "assistant", **proposal.model_dump()}])
             write_json(root / "studio/chat.json", conversation)
