@@ -135,7 +135,10 @@ class ObjectionClosure(Contract):
 class SegmentClaimCheck(LaterFields):
     segment_id: Identifier
     finding_ids: list[Identifier]
-    verdict: Literal["preserved", "drift", "no_research_claim"]
+    # source_corrected: the finding misstates its own source section, and the segment follows that section. No defect
+    # of the dialogue (script_evidence.source_corrections); until 2026-10-03 it was drift, and every repair round
+    # flagged the same correct segments again (Ontologies ep_001: six segments, six repairs).
+    verdict: Literal["preserved", "drift", "no_research_claim", "source_corrected"]
     quote: NonEmpty
     reason: NonEmpty
     changed_fields: list[Literal["relation", "scope", "qualifications", "quantities", "basis", "source"]]

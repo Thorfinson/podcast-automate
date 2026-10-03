@@ -187,6 +187,8 @@ class AdapterPool:
             write_json(directory / "provider_choice.json", {**used, "search": search, "prompt_version": prompt_version,
                        "prompt_chars": len(prompt)})
             adapter = self.build(used)
+            # A success clears only the quota notes made before this call started (record_claude_success).
+            started = now()
             try:
                 output, metadata = adapter.structured(prompt, output_type, directory,
                                                       prompt_version=prompt_version, search=search)
@@ -230,7 +232,7 @@ class AdapterPool:
                 choice = alternative
                 continue
             if choice["provider"] == "claude_code":
-                bookkeeping(subscriptions.record_claude_success, metadata.get("rate_limit"))
+                bookkeeping(subscriptions.record_claude_success, metadata.get("rate_limit"), started_at=started)
             return output, metadata
 
     def probe(self, topic, directory):

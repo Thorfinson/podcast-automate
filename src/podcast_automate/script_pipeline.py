@@ -29,10 +29,11 @@ from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
 from .script_checkpoints import NOTED_CATEGORIES, series_adoption
-from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_limits, episode_sources,
+from .script_checks import (RELAXED_REVIEW_VERSIONS, SCRIPT_REVIEW_VERSION, checked_series_plan, episode_limits, episode_sources,
                             planning_dossier, quotation_errors, research_limits, script_review_signature,
                             validate_script)
-from .script_evidence import SCRIPT_EVIDENCE_INSTRUCTIONS, settle_receipts, validate_claim_checks
+from .script_evidence import (SCRIPT_EVIDENCE_INSTRUCTIONS, is_claim_drift, settle_receipts, source_corrections,
+                              validate_claim_checks)
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
 from .storage import atomic_text, digest, file_hash, write_json
@@ -71,6 +72,13 @@ def goal_and_recency(config):
 
 def review_blocks(review):
     return any(issue.category not in NOTED_CATEGORIES for issue in review.issues)
+
+
+def saved_verdict_stands(version, result):
+    """Whether a saved script review verdict holds on resume: one of today's review version, or one of a version
+    today's only relaxes (RELAXED_REVIEW_VERSIONS) that blocked nothing. Any other is reviewed again."""
+    return version == SCRIPT_REVIEW_VERSION or (version in RELAXED_REVIEW_VERSIONS and result is not None
+                                                and not review_blocks(result))
 
 
 def changed_segments(before, after):
@@ -670,7 +678,7 @@ class ScriptRun:
                 # latest corrected script and consumed repair allowance intact.
                 if saved.get("editorial_review_version") != EDITORIAL_REVIEW_VERSION:
                     result = None
-                if saved.get("script_review_version") != SCRIPT_REVIEW_VERSION:
+                if not saved_verdict_stands(saved.get("script_review_version"), result):
                     result = None
                 if dossier.evidence_version and saved.get("evidence_review_version") != EVIDENCE_VERSION:
                     result = None
@@ -810,7 +818,9 @@ class ScriptRun:
             payload["research_limits"] = limits
         task, version = instructions("script_review"), SCRIPT_REVIEW_VERSION
         if follow_up:
-            payload["previous_issues"] = [issue.model_dump() for issue in follow_up[0].issues]
+            # A drift issue is judged again by this review's claim check of its segment, not handed over to be reported
+            # again: copied back as a previous issue, a correct segment stayed blocked round after round (2026-10-03).
+            payload["previous_issues"] = [issue.model_dump() for issue in follow_up[0].issues if not is_claim_drift(issue)]
             payload["changed_segments"] = follow_up[1]
             task, version = task + " " + instructions("script_review_followup"), version + "+followup"
         # Two receipt slips are read as meant (settle_receipts) instead of re-asking the whole review.
@@ -821,6 +831,7 @@ class ScriptRun:
         # The drift receipts become issues; well_formed accepted their shape, so this cannot raise.
         reviewed.issues.extend(validate_claim_checks(reviewed, draft, dossier.findings, required=required,
                                                      sections=sections))
+        reviewed.limitations.extend(note for note in source_corrections(reviewed) if note not in reviewed.limitations)
         if follow_up:
             return follow_up_scope(reviewed, *follow_up)
         # A first review has no scope: whatever it set aside as an advisory counts as an issue.

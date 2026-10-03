@@ -380,7 +380,11 @@ def outline_hash(work: Path) -> str:
 
 
 # v11: core and supporting findings, research limits back a stated limit, framing checked by episode_framing alone.
-SCRIPT_REVIEW_VERSION = "script_review.v11-core-limits"
+# v12: a segment that follows its section where the finding misstates it is source_corrected, not drift.
+SCRIPT_REVIEW_VERSION = "script_review.v12-source-corrected"
+# Versions whose saved verdict still stands when it blocked nothing: v12 only stops blocking, so an episode v11 passed
+# is not reviewed again; one it blocked is, under v12, before the next repair.
+RELAXED_REVIEW_VERSIONS = frozenset({"script_review.v11-core-limits"})
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.
