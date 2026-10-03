@@ -7,6 +7,9 @@ from .script_models import ScriptIssue
 from .sources import clean
 
 SCRIPT_EVIDENCE_INSTRUCTIONS = fragment("script_evidence_instructions")
+# The issues validate_claim_checks makes of drift receipts start so. A review after a repair judges every segment's
+# claim again; such an issue is not handed to it as a previous issue to report again (script_pipeline.review_script).
+DRIFT_PREFIX = "Claim drift ("
 
 
 def settle_receipts(review, script, anchors=None):
@@ -59,8 +62,16 @@ def receipt_defects(check, segment, known, sections=None):
                        "drift when it asserts a research fact.")
     if check.verdict == "drift" and not check.changed_fields:
         defects.append(f"{sid}: drift must name its changed_fields.")
-    if sections and check.verdict == "preserved" and refs:
-        if not check.source_refs:
+    if check.verdict == "source_corrected" and not refs:
+        defects.append(f"{sid}: source_corrected is for a segment that cites the finding its section corrects; a segment "
+                       "without knowledge_refs is no_research_claim, or drift when it asserts a research fact.")
+    if check.verdict == "source_corrected" and not set(check.changed_fields) <= {"source"}:
+        defects.append(f"{sid}: source_corrected names no changed_fields but source; use drift when the segment itself "
+                       "changed a field against its section.")
+    if check.verdict == "source_corrected" and not check.source_refs:
+        defects.append(f"{sid}: source_corrected must name in source_refs the section the segment follows.")
+    if sections and check.verdict in {"preserved", "source_corrected"} and refs:
+        if check.verdict == "preserved" and not check.source_refs:
             defects.append(f"{sid}: name in source_refs the supplied source sections you compared the segment with, "
                            "not only its findings.")
         elif not set(check.source_refs) <= sections:
@@ -89,5 +100,17 @@ def validate_claim_checks(review, script, findings, *, required=True, sections=N
     for check in review.claim_checks:
         if check.verdict == "drift":
             issues.append(ScriptIssue(category="grounding", segment_ids=[check.segment_id],
-                reason="Claim drift (" + ", ".join(check.changed_fields) + "): " + check.reason))
+                reason=DRIFT_PREFIX + ", ".join(check.changed_fields) + "): " + check.reason))
     return issues
+
+
+def is_claim_drift(issue):
+    return issue.reason.startswith(DRIFT_PREFIX)
+
+
+def source_corrections(review):
+    """The segments that follow their section where its finding misstates it, as limitations of the review: no defect
+    of the dialogue, but the finding in the dossier is inaccurate there, and the reader of the script sees it."""
+    return [f"{check.segment_id}: Das Skript folgt {', '.join(check.source_refs)}; der Befund {', '.join(check.finding_ids)} "
+            f"gibt diesen Abschnitt ungenau wieder. {check.reason}"
+            for check in review.claim_checks if check.verdict == "source_corrected"]

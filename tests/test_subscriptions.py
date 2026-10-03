@@ -236,6 +236,23 @@ class SubscriptionStoreTests(unittest.TestCase):
             choice = choose_subscription(self.settings, candidates, prefer="claude_code", clock=self.clock)
         self.assertEqual((choice["provider"], refreshed), ("claude_code", [True]))
 
+    def test_a_success_clears_only_a_block_noted_before_its_call_started(self):
+        """2026-10-03: parallel calls ran into Claude's weekly limit; one that had started before the block finished after
+        it and cleared it, and the run paused until Codex's reset a week away instead of Claude's the next day."""
+        until = datetime.fromtimestamp(self.seconds, timezone.utc) + timedelta(hours=20)
+        started = datetime.fromtimestamp(self.seconds, timezone.utc).isoformat()
+        self.seconds += 60
+        weekly = AppError("Wochenlimit", code="claude_quota_exhausted", status="waiting_for_quota",
+                          details={"blocked_until": until.isoformat(), "reason": "seven_day"})
+        record_quota_failure("claude_code", weekly, clock=self.clock)
+        self.seconds += 60
+        record_claude_success({"status": "allowed_warning", "window": "seven_day"}, clock=self.clock, started_at=started)
+        self.assertEqual(claude_quota_state(clock=self.clock)["blocked_until"], until.isoformat(), "noted while it ran")
+        self.assertEqual(subscriptions.read_store()["claude_code"]["last_rate_limit"]["window"], "seven_day")
+        later = datetime.fromtimestamp(self.seconds, timezone.utc).isoformat()
+        record_claude_success(None, clock=self.clock, started_at=later)
+        self.assertIsNone(claude_quota_state(clock=self.clock), "a call started after the block ends it")
+
     def test_the_store_is_read_through_a_concurrent_rename(self):
         until = datetime.fromtimestamp(self.seconds, timezone.utc) + timedelta(hours=5)
         record_quota_failure("claude_code", AppError("Claude", code="claude_quota_exhausted", status="waiting_for_quota",

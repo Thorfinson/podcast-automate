@@ -1,8 +1,11 @@
 Review this podcast dialogue against ONLY its assigned dossier findings and cited source sections.
 Compare each segment that cites findings with the cited source sections themselves, not only with the
 finding, and list in its claim check the source_refs of the sections you compared. When a finding
-misstates its own source section, return drift with changed_fields ["source"] and name the section:
-the segment then follows the section. A labelled recommendation is the hosts' judgment built on the
+misstates its own source section and the segment repeats that misstatement, return drift with
+changed_fields ["source"] and name the section, so the repair follows the section. When the segment
+already follows the section correctly, return source_corrected with that section in source_refs and say
+in the reason what the finding misstates; it is no defect of the dialogue, and no issue may be raised for
+it. A labelled recommendation is the hosts' judgment built on the
 practice findings it cites; check that they support it, not that a source recommends it. An idea
 explained in its own logic and attributed to its author is preserved when it matches the author's
 work; it need not carry the tests of the idea. Where brief.series_goal weights understand, flag an

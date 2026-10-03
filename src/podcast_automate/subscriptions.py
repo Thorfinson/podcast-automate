@@ -64,14 +64,16 @@ def read_store() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def update_store(section: str, values: dict, *, remove=()) -> dict:
+def update_store(section: str, values: dict, *, remove=(), remove_if=None) -> dict:
+    """``remove_if`` decides under the lock whether each key of ``remove`` goes, from its current value."""
     path = store_path()
     with file_lock(path.with_name(".subscriptions.lock"), timeout=10):
         data = read_store()
         current = data.get(section) if isinstance(data.get(section), dict) else {}
         current.update(values)
         for key in remove:
-            current.pop(key, None)
+            if remove_if is None or remove_if(current.get(key)):
+                current.pop(key, None)
         data[section] = current
         data["version"] = 1
         write_json(path, data)
@@ -310,17 +312,25 @@ def with_unavailable(provider, snapshot, *, clock=time.time) -> dict:
             "unavailable_until": note.get("until")}
 
 
-def record_claude_success(rate_limit=None, *, clock=time.time):
-    """A completed Claude call ends any block or unavailability note and keeps the CLI's latest window facts."""
+def record_claude_success(rate_limit=None, *, clock=time.time, started_at=None):
+    """A completed Claude call ends a block or unavailability note made before it started (``started_at``; any note
+    without it) and keeps the CLI's latest window facts. A note made while it ran stays: on 2026-10-03 parallel calls
+    ran into the weekly limit, one that had started before the block finished after it and cleared it, and the run
+    paused until the other subscription's reset a week away instead of Claude's the next day."""
     values = {}
     if isinstance(rate_limit, dict):
         values["last_rate_limit"] = {"status": rate_limit.get("status"), "window": rate_limit.get("window"),
                                      "resets_at": rate_limit.get("resets_at"), "observed_at": iso_at(clock())}
+    started = parse_iso(started_at)
+
+    def noted_before(note):
+        detected = parse_iso(note.get("detected_at")) if isinstance(note, dict) else None
+        return isinstance(note, dict) and (started is None or detected is None or detected < started)
     # Nothing to note and nothing to clear: leave the store untouched (and uncreated).
     current = read_store().get("claude_code") or {}
-    if not values and not any(isinstance(current.get(key), dict) for key in ("block", "unavailable")):
+    if not values and not any(noted_before(current.get(key)) for key in ("block", "unavailable")):
         return
-    update_store("claude_code", values, remove=("block", "unavailable"))
+    update_store("claude_code", values, remove=("block", "unavailable"), remove_if=noted_before)
 
 
 def describe_snapshot(provider, snapshot) -> str:

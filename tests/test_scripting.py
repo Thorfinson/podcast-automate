@@ -621,6 +621,66 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         notes = json.loads((work / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
         self.assertEqual([n["reason"] for n in notes], ["The score direction needs an example."])
 
+    def test_a_segment_that_follows_its_section_where_the_finding_misstates_it_is_noted_not_repaired(self):
+        """2026-10-03 (Ontologies ep_001): the review marked six segments that followed their section correctly as drift,
+        each follow-up was handed those drifts back as previous issues and repeated them, and six repairs changed
+        nothing; it ended only when another model judged them preserved. Such a segment is source_corrected now: noted
+        in the review's limitations, never repaired, and a drift issue is judged again, not handed back."""
+        reviews, repairs = [], []
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            version = kwargs["prompt_version"]
+            if output_type is EpisodeScript and version == REVIEW_REPAIR_VERSION:
+                repairs.append(version)
+            if output_type is ScriptReview:
+                reviews.append((version, json.loads(prompt.splitlines()[-1])))
+                check = next(c for c in value.claim_checks if c.finding_ids)
+                check.changed_fields = ["source"]
+                if len(reviews) == 1:
+                    check.verdict, check.reason = "drift", "The segment repeats the finding's narrowing of its section."
+                else:
+                    check.verdict, check.reason = "source_corrected", "The finding narrows the section; the segment follows it."
+            return value, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual((len(reviews), len(repairs)), (2, 1), "one repair for the drift, none for the correction")
+        version, payload = reviews[1]
+        self.assertTrue(version.endswith("+followup"))
+        self.assertFalse([i for i in payload["previous_issues"] if i["reason"].startswith("Claim drift (")])
+        report = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001.json").read_text(encoding="utf-8"))
+        self.assertTrue(any("gibt diesen Abschnitt ungenau wieder" in note for note in report["limitations"]))
+        self.assertTrue(any("gibt diesen Abschnitt ungenau wieder" in note for note in
+                            read_yaml(self.root / "reports/script_quality.yaml")["episodes"]["ep_001"]["model_review"]["limitations"]))
+
+    def test_a_source_corrected_receipt_names_the_section_it_follows(self):
+        from podcast_automate.evidence_models import SegmentClaimCheck
+        from podcast_automate.script_evidence import receipt_defects, source_corrections
+        segment = next(s for s in example_script().segments if s.knowledge_refs)
+        known, sections = set(segment.knowledge_refs), {"src_a#sec_1"}
+        check = SegmentClaimCheck(segment_id=segment.segment_id, finding_ids=list(segment.knowledge_refs),
+                                  verdict="source_corrected", quote=segment.text, reason="The finding drops a qualification.",
+                                  changed_fields=["source"], source_refs=["src_a#sec_1"])
+        self.assertEqual(receipt_defects(check, segment, known, sections), [])
+        for broken in ({"source_refs": []}, {"source_refs": ["src_b#sec_9"]}, {"changed_fields": ["scope"]}):
+            with self.subTest(broken=broken):
+                self.assertTrue(receipt_defects(check.model_copy(update=broken), segment, known, sections))
+        (note,) = source_corrections(ScriptReview(issues=[], limitations=[], claim_checks=[check]))
+        self.assertIn("src_a#sec_1", note)
+
+    def test_a_saved_verdict_stands_across_a_relaxing_review_version_only_when_it_blocked_nothing(self):
+        from podcast_automate.script_checks import RELAXED_REVIEW_VERSIONS
+        from podcast_automate.script_pipeline import saved_verdict_stands
+        (relaxed,) = RELAXED_REVIEW_VERSIONS
+        passed = ScriptReview(issues=[ScriptIssue(category="clarity", segment_ids=["seg_001"], reason="Noted.")], limitations=[])
+        blocking = ScriptReview(issues=[ScriptIssue(category="grounding", segment_ids=["seg_001"], reason="Drift.")], limitations=[])
+        self.assertTrue(saved_verdict_stands(SCRIPT_REVIEW_VERSION, blocking))
+        self.assertTrue(saved_verdict_stands(relaxed, passed), "an episode the earlier version passed is not reviewed again")
+        self.assertFalse(saved_verdict_stands(relaxed, blocking), "one it blocked is reviewed again before a repair")
+        self.assertFalse(saved_verdict_stands("script_review.v8-evidence", passed))
+        self.assertFalse(saved_verdict_stands(relaxed, None))
+
     def test_the_review_scope_follows_changed_segments_and_previous_issues(self):
         before = example_script()
         after = before.model_copy(deep=True)
