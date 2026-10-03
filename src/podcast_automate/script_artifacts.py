@@ -15,11 +15,15 @@ from .storage import atomic_text, file_hash, outlast_sharing_violation, read_yam
 from .teaching import TEACHING_VERSION
 
 
+# Measured on the German Transformer recordings of 2026-10-02: 125 to 131 words per minute, pauses included.
+SPOKEN_WORDS_PER_MINUTE = 130
+
+
 def script_metrics(script: EpisodeScript) -> dict:
     words = sum(len(re.findall(r"\b[\w’-]+\b", s.text)) for s in script.segments)
     pauses = sum(s.pause_after_ms for s in script.segments) / 60_000
     return {"words": words, "segments": len(script.segments),
-            "estimated_minutes": round(words / 130 + pauses, 2),
+            "estimated_minutes": round(words / SPOKEN_WORDS_PER_MINUTE + pauses, 2),
             "conservative_minutes": round(words / 100 + pauses, 2),
             "duration_basis": "130 words/minute; conservative estimate 100; planned pauses included; not measured audio"}
 

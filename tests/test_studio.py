@@ -1060,6 +1060,81 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
 
+class WorkspaceSettingsTests(unittest.TestCase):
+    """The settings page (studio_settings): one text model, audio, execution, pre-approvals, research limits and time
+    limit for every project, the user's choice of 2026-10-03. Before, each project kept its own."""
+    request = StudioHttpTests.request
+
+    def setUp(self):
+        StudioHttpTests.setUp(self)
+        patcher = patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(self.workspace / "subscriptions.json")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.other = self.workspace / "projects" / "second"
+        init_project(self.other, TopicBrief(topic="A second project", voice_profile={"host_a": "Aiden", "host_b": "Vivian"}))
+        # The first project was changed last, so a first visit shows its values.
+        write_json(self.root / "studio/text.json", {"provider": "codex_cli", "model": "gpt-6-astra", "reasoning_effort": "xhigh",
+                                                    "max_output_tokens": 32768})
+        later = time.time() + 60
+        os.utime(self.root / "project.yaml", (later, later))
+
+    def view(self):
+        return json.loads(self.request("/api/settings")[1])
+
+    def test_saved_settings_hold_for_every_project_and_runs_take_them(self):
+        from podcast_automate import studio_allowances
+        from podcast_automate.execution import selected_execution
+        from podcast_automate.speech import selected_audio
+        from podcast_automate.storage import load_project
+        first = self.view()
+        self.assertEqual((first["global"], first["source_project"], first["settings"]["text"]["model"]),
+                         (False, "example", "gpt-6-astra"))
+        values = {**first["settings"],
+                  "text": {"provider": "openrouter", "model": "anthropic/claude-opus-5.5", "reasoning_effort": "medium",
+                           "max_output_tokens": 65536},
+                  "audio": {"provider": "openrouter_gemini_tts", "voices": {"host_a": "Sadaltager", "host_b": "Aoede"},
+                            "pauses": {"same_speaker_ms": 300, "speaker_change_ms": 500, "chapter_break_ms": 1000}},
+                  "execution": {"text": "parallel", "audio": "parallel"},
+                  "allowances": {"fresh_attempts": 2, "extra_calls": 250},
+                  "research_limits": {"model_calls": 1200, "sources": 150, "search_rounds": 48},
+                  "text_timeout_seconds": 5400}
+        status, body, _ = self.request("/api/settings", {"settings": values, "hash": first["hash"], "claude_extra_usage": True})
+        self.assertEqual(status, 200, body)
+        saved = json.loads(body)
+        self.assertEqual((saved["global"], saved["source_project"], saved["claude_extra_usage"]), (True, None, True))
+        for root in (self.root, self.other):
+            with self.subTest(project=root.name):
+                detail = json.loads(self.request(f"/api/projects/{root.name}")[1])
+                self.assertTrue(detail["settings_global"])
+                self.assertEqual((detail["text"]["model"], detail["text"]["max_output_tokens"]), ("anthropic/claude-opus-5.5", 65536))
+                config = load_project(root)
+                audio = selected_audio(root, config)
+                self.assertEqual((audio.provider, audio.voices["host_a"], audio.pauses.chapter_break_ms), ("openrouter_gemini_tts", "Sadaltager", 1000))
+                self.assertEqual((selected_execution(root).text, selected_execution(root).audio), ("parallel", "parallel"))
+                self.assertEqual(studio_allowances.allowances(root), {"fresh_attempts": 2, "extra_calls": 250})
+                self.assertEqual((config.research_limits.model_calls, config.runtime.text_timeout_seconds), (1200, 5400))
+        self.assertEqual(read_json(self.root / "studio/text.json")["model"], "gpt-6-astra", "the project's own file is left as it was")
+        # A project save keeps to the brief and leaves the settings to their page.
+        detail = json.loads(self.request("/api/projects/example")[1])
+        status, body, _ = self.request("/api/projects/example/save", {"config": detail["config"], "config_hash": detail["config_hash"],
+            "text": {"provider": "codex_cli"}, "audio_settings": detail["audio_settings"], "audio_hash": detail["audio_hash"]})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["text"]["model"], "anthropic/claude-opus-5.5")
+        self.assertEqual(read_json(self.root / "studio/text.json")["model"], "gpt-6-astra")
+
+    def test_a_stale_page_or_a_time_limit_out_of_range_saves_nothing(self):
+        first = self.view()
+        self.assertEqual(self.request("/api/settings", {"settings": first["settings"], "hash": "stale", "claude_extra_usage": False})[0], 400)
+        for minutes in (1, 600):
+            with self.subTest(minutes=minutes):
+                status, _, _ = self.request("/api/settings", {"settings": {**first["settings"], "text_timeout_seconds": minutes * 60},
+                                                              "hash": first["hash"], "claude_extra_usage": False})
+                self.assertEqual(status, 400)
+        self.assertEqual(self.request("/api/settings", {"settings": first["settings"], "hash": first["hash"]})[0], 400,
+                         "Claude's switch is part of every save")
+        self.assertFalse((self.workspace / "projects" / ".studio-settings.json").exists())
+        self.assertFalse(self.view()["global"])
+
 
 class StudioStopTests(unittest.TestCase):
     """Stops as the Studio reports them: a readable message, an honest automatic resume, a run that stays visible."""

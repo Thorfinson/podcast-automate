@@ -30,8 +30,8 @@ from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_pr
                         selected_execution, set_jev_probe,
                         settings_execution)
 from .logs import configure_logging, logger
-from .models import (Contract, EpisodeScript, Failure, RunManifest, RuntimeSettings, SeriesGoal, TopicBrief,
-                     host_labels, now)
+from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManifest, RuntimeSettings, SeriesGoal,
+                     TopicBrief, host_labels, now)
 from .episode_audio import saved_approval, saved_expression
 from .expression import TAG
 from .runner import manifest_path
@@ -51,7 +51,7 @@ from .spoken_forms import (SpokenForms, apply as apply_spoken_forms, load_forms,
                            spoken_text)
 from .studio_progress import memo
 from .studio_messages import clean, paths_only, user_text
-from . import provided_works, studio_allowances
+from . import provided_works, studio_allowances, studio_settings, subscriptions
 from .sources import core_usage
 from .production_report import production_report
 from .studio_scripts import review_notes, script_previews
@@ -961,8 +961,10 @@ class Studio:
         granted whose resume still failed is resumed on a later pass without granting again (2026-10-02: a Gemini
         recording held the project, the allowance was used up and the run never resumed)."""
         started = []
-        for path in sorted(self.projects.glob("*/studio/allowances.json")):
-            root, project = path.parents[1], path.parents[1].name
+        for path in sorted(self.projects.glob("*/project.yaml")):
+            root, project = path.parent, path.parent.name
+            if not any(studio_allowances.allowances(root).values()):
+                continue
             with self.mutex:
                 for job in self.stopped_jobs(root):
                     code = stop_code(job)[0]
@@ -1232,7 +1234,9 @@ class Studio:
         table = load_forms(root)
         data = {"id": project, "config": config.model_dump(mode="json"),
                 "config_hash": project_hash(config), "host_labels": host_labels(config),
-                "text": read_json(root / "studio/text.json", TextChoice().model_dump()),
+                "text": studio_settings.text_data(root, TextChoice().model_dump()),
+                # The settings page's values hold for every project (studio_settings); the page links there.
+                "settings_global": studio_settings.load(root) is not None,
                 "audio_settings": audio.model_dump(), "audio_hash": digest(audio.model_dump()),
                 "style_notes": style_notes(root), "style_notes_hash": digest(style_notes(root)),
                 "spoken_forms": table.model_dump(),
@@ -1260,8 +1264,9 @@ class Studio:
         data["proposal_hash"] = digest(proposal) if proposal else None
         data["proposal_current"] = attachments.proposal_current(root, proposal)
         applied = read_json(root / "studio/applied_proposal.json", {})
+        # Text, audio and execution are the settings page's since 2026-10-03: a proposal is applied by its brief alone.
         data["proposal_applied"] = bool(proposal and data["proposal_current"] and all(applied.get(key) == data[key] for key in
-            ("proposal_hash", "config_hash", "audio_hash", "execution_hash")) and applied.get("text_hash") == digest(data["text"]))
+            ("proposal_hash", "config_hash")))
         work = self.outline_work(root)
         if work is not None:
             data["outline"] = {"run_id": work.name, "plan": read_json(work / "series_plan.json"),
@@ -1366,10 +1371,12 @@ class Studio:
                 if data.get("spoken_forms_hash") != digest(load_forms(root).model_dump()):
                     raise AppError("Sprechformen inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
                 forms = SpokenForms.model_validate(data["spoken_forms"])
-            self.save_text(root, data["text"])
             write_yaml(root / "project.yaml", config.model_dump(mode="json"))
-            write_json(root / "studio/audio.json", audio.model_dump())
-            write_json(root / "studio/execution.json", execution.model_dump())
+            if studio_settings.load(root) is None:
+                # Without workspace settings the project keeps its own choices, as before 2026-10-03.
+                self.save_text(root, data["text"])
+                write_json(root / "studio/audio.json", audio.model_dump())
+                write_json(root / "studio/execution.json", execution.model_dump())
             if forms is not None:
                 # Only a request that carried the table writes it; a notes or voice save leaves it alone.
                 write_json(root / "studio/spoken_forms.json", forms.model_dump())
@@ -1388,6 +1395,73 @@ class Studio:
     def allowances(self, project, data):
         """Fresh attempts and extra calls the scheduler may grant this project's runs without asking."""
         return {"allowances": studio_allowances.set_allowances(self.root(project), data)}
+
+    def settings_values(self, root=None):
+        """The six workspace settings as one project sees them (its own files where the workspace sets none), or the
+        defaults of a new project without one."""
+        if root is None:
+            config = TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
+                                voice_profile={"host_a": "Aiden", "host_b": "Vivian"})
+            return {"text": TextChoice(**text_preset("auto_subscriptions")).normalized(),
+                    "audio": AudioChoice(voices=config.voice_profile).model_dump(),
+                    "execution": {"text": "sequential", "audio": "sequential"},
+                    "allowances": {"fresh_attempts": 0, "extra_calls": 0},
+                    "research_limits": config.research_limits.model_dump(),
+                    "text_timeout_seconds": config.runtime.text_timeout_seconds}
+        config = load_project(root)
+        execution = settings_execution(root)
+        return {"text": TextChoice.model_validate(studio_settings.text_data(root, TextChoice().model_dump())).normalized(),
+                "audio": selected_audio(root, config).model_dump(),
+                "execution": {"text": execution.text, "audio": execution.audio},
+                "allowances": studio_allowances.allowances(root),
+                "research_limits": config.research_limits.model_dump(),
+                "text_timeout_seconds": config.runtime.text_timeout_seconds}
+
+    def settings_view(self):
+        """The settings page: the workspace settings once saved; before that the values of the project changed last,
+        which a first save makes every project's (until 2026-10-03 each project had its own)."""
+        saved = studio_settings.load_dir(self.projects)
+        roots = sorted((path.parent for path in self.projects.glob("*/project.yaml")),
+                       key=lambda root: (root / "project.yaml").stat().st_mtime, reverse=True)
+        source = None if saved is not None or not roots else roots[0]
+        values = (self.settings_values(roots[0]) if roots else self.settings_values()) if saved is None else \
+            {**self.settings_values(), **{key: saved[key] for key in studio_settings.SECTIONS if key in saved}}
+        return {"settings": values, "hash": digest(values), "global": saved is not None,
+                "source_project": source.name if source else None,
+                "claude_extra_usage": subscriptions.claude_extra_usage(), "key_available": self.key_available(),
+                "allowance_choices": {"fresh_attempts": list(studio_allowances.FRESH_ATTEMPT_CHOICES),
+                                      "extra_calls": list(studio_allowances.EXTRA_CALL_CHOICES)}}
+
+    def save_settings(self, data):
+        """Save the workspace settings for every project (studio_settings). Runs keep what they bound at their start;
+        limits and the time limit of one call apply when a run resumes."""
+        if data.get("hash") != self.settings_view()["hash"]:
+            raise AppError("Einstellungen inzwischen geändert. Seite neu laden.", code="inputs_changed")
+        values = data.get("settings")
+        if not isinstance(values, dict) or set(values) != set(studio_settings.SECTIONS):
+            raise AppError("Alle Einstellungen angeben.", code="invalid_request")
+        choice = TextChoice.model_validate(values["text"])
+        normalized = choice.normalized()
+        if choice.provider == "openrouter":
+            from .openrouter import OpenRouterAdapter
+            OpenRouterAdapter(self.runtime(), model=normalized["model"], api_key=self.key or None,
+                              max_output_tokens=choice.max_output_tokens, reasoning_effort=choice.reasoning_effort)
+        execution = ExecutionChoice.model_validate(values["execution"])
+        timeout = values["text_timeout_seconds"]
+        if type(timeout) is not int or not 300 <= timeout <= 14400:
+            raise AppError("Zeitlimit eines Modellaufrufs: 5 bis 240 Minuten.", code="invalid_request")
+        settings = {"text": normalized, "audio": AudioChoice.model_validate(values["audio"]).model_dump(),
+                    "execution": {"text": execution.text, "audio": execution.audio},
+                    "allowances": studio_allowances.checked(values["allowances"]),
+                    "research_limits": ResearchLimits.model_validate(values["research_limits"]).model_dump(),
+                    "text_timeout_seconds": timeout}
+        extra = data.get("claude_extra_usage")
+        if not isinstance(extra, bool):
+            raise AppError("Claude-Zusatzkontingent ein- oder ausschalten.", code="invalid_request")
+        write_json(studio_settings.path_for(self.projects), {**settings, "changed_at": now()})
+        if extra != subscriptions.claude_extra_usage():
+            subscriptions.set_claude_extra_usage(extra)
+        return self.settings_view()
 
     def jev_probe(self, project, data):
         """Whether new script runs of this project also ask Jev in the gap probe (jev.py). A running job keeps its
@@ -1484,9 +1558,11 @@ class Studio:
             else:
                 config.pop("recency_months", None)
         config["target_total_minutes"] = chosen.target_total_minutes
-        text_choice = chosen.text or TextChoice.model_validate(read_json(root / "studio/text.json", {}))
-        audio = chosen.audio_settings or selected_audio(root, load_project(root))
-        execution = (chosen.execution or settings_execution(root)).model_copy(update={"jev_probe": False})
+        # Text model, audio and execution are set on the settings page for every project (studio_settings, the user's
+        # choice of 2026-10-03); a proposal applies its brief and keeps them as saved.
+        text_choice = TextChoice.model_validate(studio_settings.text_data(root, {}))
+        audio = selected_audio(root, load_project(root))
+        execution = settings_execution(root).model_copy(update={"jev_probe": False})
         if audio.provider == "qwen3_local":
             config["voice_profile"] = audio.voices
         result = self.save(project, {"config": config, "config_hash": data.get("config_hash"),
@@ -1539,8 +1615,6 @@ class Studio:
         payload = {"action": action, "message": str(data.get("message", ""))[:12000]}
         if action == "research" and data.get("seed_corpus") is True:
             payload["seed_corpus"] = True
-        if action == "assistant" and data.get("text_preset") is not None:
-            payload["requested_text"] = text_preset(data["text_preset"])
         if (self.key and self.key in payload["message"]) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}", payload["message"]):
             raise AppError("Den OpenRouter-Key bitte über den geschützten Key-Eingang hinterlegen, nicht im Chat.", code="credential_in_prompt")
         remote_episode = None
@@ -1653,7 +1727,7 @@ class Studio:
             if gpu and any(uses_gpu for _, uses_gpu in workers.values()):
                 raise AppError("Qwen vertont gerade in einem anderen Projekt auf der Grafikkarte. Diese Vertonung "
                                "zuerst fertigstellen oder anhalten.", code="gpu_busy")
-        payload["text"] = read_json(root / "studio/text.json", TextChoice().model_dump())
+        payload["text"] = studio_settings.text_data(root, TextChoice().model_dump())
         payload["api_key"] = self.key or None
         job = {"id": uuid.uuid4().hex, "action": action, "status": "running", "started_at": now(), "run": None}
         if action == "resume":
@@ -1899,6 +1973,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = {"key_available": bool(value or os.environ.get("OPENROUTER_API_KEY"))}
                     elif path == "/api/projects":
                         result = app.create(data)
+                    elif path == "/api/settings":
+                        result = app.save_settings(data)
                     elif path == "/api/server/restart":
                         result = app.request_restart(data)
                     elif path == "/api/restore":
@@ -1921,6 +1997,9 @@ class StudioHandler(BaseHTTPRequestHandler):
             elif path == "/api/projects":
                 with app.mutex:
                     result = app.overview()
+            elif path == "/api/settings":
+                with app.mutex:
+                    result = app.settings_view()
             elif (match := re.fullmatch(r"/api/projects/([^/]+)", path)):
                 with app.mutex:
                     result = app.detail(match[1])

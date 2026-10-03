@@ -7,6 +7,7 @@ from contextvars import copy_context
 
 from pydantic import model_serializer
 
+from . import studio_settings
 from .call_activity import CALL_SUBJECT
 from .models import Contract, now
 from .storage import write_json
@@ -46,9 +47,15 @@ class ExecutionChoice(Contract):
 
 def selected_execution(root: Path):
     """The saved modes, and whether new script runs also ask Jev in the gap probe. The probe has its own file,
-    ``studio/jev_probe.json``, so switching it never touches the hash of the modes a brief proposal applied."""
+    ``studio/jev_probe.json``, so switching it never touches the hash of the modes a brief proposal applied. The
+    workspace settings' modes hold for every project where they set them (studio_settings); the probe stays the
+    project's own."""
+    chosen = studio_settings.section(root, "execution")
     path = root / "studio/execution.json"
-    choice = ExecutionChoice.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else ExecutionChoice()
+    if isinstance(chosen, dict):
+        choice = ExecutionChoice.model_validate(chosen)
+    else:
+        choice = ExecutionChoice.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else ExecutionChoice()
     enabled, default = jev_probe_state(root)
     return choice.model_copy(update={"jev_probe": enabled, "jev_default": enabled and default})
 

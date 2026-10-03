@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pydantic import Field
 
+from . import studio_settings
 from .prompts import instructions
 from .call_activity import clean_status
 from .codex import CodexAdapter, subscription_environment  # noqa: F401  (tests patch CodexAdapter.structured here)
@@ -226,9 +227,9 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
         return
     try:
         from .run_budget import run_text_generation
-        choice = run_text_generation(work) or read(root / "studio/text.json", {})
+        choice = run_text_generation(work) or studio_settings.text_data(root, {})
     except (OSError, ValueError):
-        choice = read(root / "studio/text.json", {})
+        choice = studio_settings.text_data(root, {})
     provider = choice.get("provider", "codex_cli")
     model = STATUS_MODELS.get(provider)
     state.update(provider=provider, model=model, status="summarizing", calls=state.get("calls", 0) + 1)

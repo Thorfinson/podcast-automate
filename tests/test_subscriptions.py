@@ -236,6 +236,24 @@ class SubscriptionStoreTests(unittest.TestCase):
             choice = choose_subscription(self.settings, candidates, prefer="claude_code", clock=self.clock)
         self.assertEqual((choice["provider"], refreshed), ("claude_code", [True]))
 
+    def test_extra_usage_passes_over_a_noted_claude_block_while_it_is_on(self):
+        """2026-10-03: the user bought Claude usage beyond the weekly window; the Studio kept the noted block and paused
+        every run as 'both subscriptions exhausted' although Claude would have answered."""
+        until = datetime.fromtimestamp(self.seconds, timezone.utc) + timedelta(hours=20)
+        record_quota_failure("claude_code", AppError("Wochenlimit", code="claude_quota_exhausted", status="waiting_for_quota",
+                             details={"blocked_until": until.isoformat(), "reason": "seven_day"}), clock=self.clock)
+        login = {"logged_in": True, "auth_method": "claude.ai", "version_supported": True, "subscription": "max",
+                 "checked_at": datetime.fromtimestamp(self.seconds, timezone.utc).isoformat()}
+        with patch.object(subscriptions, "claude_login", return_value=login):
+            self.assertFalse(claude_quota(clock=self.clock)["available"])
+            subscriptions.set_claude_extra_usage(True)
+            snapshot = claude_quota(clock=self.clock)
+            self.assertEqual((snapshot["available"], snapshot.get("extra_usage")), (True, True))
+            self.assertIn("Zusatzkontingent", subscriptions.describe_snapshot("claude_code", snapshot))
+            self.assertEqual(claude_quota_state(clock=self.clock)["blocked_until"], until.isoformat(), "the block stays noted")
+            subscriptions.set_claude_extra_usage(False)
+            self.assertFalse(claude_quota(clock=self.clock)["available"])
+
     def test_a_success_clears_only_a_block_noted_before_its_call_started(self):
         """2026-10-03: parallel calls ran into Claude's weekly limit; one that had started before the block finished after
         it and cleared it, and the run paused until Codex's reset a week away instead of Claude's the next day."""

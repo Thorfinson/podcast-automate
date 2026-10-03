@@ -6,6 +6,7 @@ invalid outline and checkpoints every draft before the next paid call.
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from .errors import AppError
 from .models import EpisodeScript
 from .prompts import instructions
 from .research_models import ResearchDossier
-from .script_artifacts import script_metrics
+from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, script_metrics
 from .research_reader import source_facts
 from .script_models import MAX_EPISODE_MINUTES, EpisodePlan, SeriesPlan, episode_findings
 from .storage import digest, file_hash, write_json
@@ -225,8 +226,17 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
         errors.append(f"The planned speech estimate exceeds {MAX_EPISODE_MINUTES} minutes; shorten without losing "
                       "the explanation.")
     if check_duration and metrics["estimated_minutes"] < episode.target_minutes * 0.85:
-        errors.append("The script delivers less than 85% of the planned duration. Develop the missing reasoning, "
-                      "worked steps and consequences; do not fill the gap with repetition or longer pauses.")
+        # With the numbers since 2026-10-03: told only "less than 85%", the Transformer writer added about a tenth
+        # per correction and fell short three times in a row.
+        pauses = sum(s.pause_after_ms for s in script.segments) / 60_000
+
+        def words_for(minutes):
+            return math.ceil((minutes - pauses) * SPOKEN_WORDS_PER_MINUTE)
+        errors.append(f"The script delivers less than 85% of the planned duration: {metrics['words']} spoken words "
+                      f"make about {metrics['estimated_minutes']:.1f} of {episode.target_minutes:g} planned minutes at "
+                      f"{SPOKEN_WORDS_PER_MINUTE} words per minute. Write at least {words_for(episode.target_minutes * 0.85)} "
+                      f"words, about {words_for(episode.target_minutes)} for the full plan. Develop the missing "
+                      "reasoning, worked steps and consequences; do not fill the gap with repetition or longer pauses.")
     return errors
 
 

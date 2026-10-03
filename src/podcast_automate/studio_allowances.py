@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 
+from . import studio_settings
 from .errors import AppError
 from .models import now
 from .storage import load_project, write_json
@@ -34,21 +35,29 @@ BUDGET_CODES = {"script_budget_insufficient", "research_budget_insufficient", "r
 
 
 def allowances(root):
-    """The project's allowances; nothing is allowed until the user sets it."""
-    data = read(root / "studio/allowances.json", {}) or {}
+    """The project's allowances; nothing is allowed until the user sets it. The workspace settings' hold for every
+    project where they set them (studio_settings)."""
+    data = studio_settings.section(root, "allowances")
+    if not isinstance(data, dict):
+        data = read(root / "studio/allowances.json", {}) or {}
     fresh, extra = data.get("fresh_attempts"), data.get("extra_calls")
     return {"fresh_attempts": fresh if fresh in FRESH_ATTEMPT_CHOICES else 0,
             "extra_calls": extra if extra in EXTRA_CALL_CHOICES else 0}
 
 
-def set_allowances(root, data):
+def checked(data):
+    """The allowances of a request, refused unless each is one of the offered choices."""
     fresh, extra = data.get("fresh_attempts"), data.get("extra_calls")
     if type(fresh) is not int or fresh not in FRESH_ATTEMPT_CHOICES:
         raise AppError("Neue Anläufe ohne Rückfrage: 0 bis 3 je Lauf.", code="invalid_allowance")
     if type(extra) is not int or extra not in EXTRA_CALL_CHOICES:
         raise AppError("Aufruflimit ohne Rückfrage: " + ", ".join(map(str, EXTRA_CALL_CHOICES)) + " zusätzliche Aufrufe.",
                        code="invalid_allowance")
-    write_json(root / "studio/allowances.json", {"fresh_attempts": fresh, "extra_calls": extra, "changed_at": now()})
+    return {"fresh_attempts": fresh, "extra_calls": extra}
+
+
+def set_allowances(root, data):
+    write_json(root / "studio/allowances.json", {**checked(data), "changed_at": now()})
     return allowances(root)
 
 

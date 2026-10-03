@@ -22,7 +22,7 @@ from .research import refund_call, reserve_call, unanswered
 from .research_evidence import single_group_findings
 from .research_gap_probe import coverage_terms, gap_id, hit_sources, probe, settle, statuses, unread
 from .research_ledger import read_value
-from .research_patches import corrected_call, re_asked
+from .research_patches import MAX_REJECTIONS, corrected_call, re_asked
 from .run_budget import effective_limits, teaching_redesigns
 from .runner import manifest_path, run_observer
 from .script_artifacts import publish_scripts, render_script, script_metrics
@@ -48,8 +48,9 @@ PLAIN_WORDING = fragment("plain_language")
 # left to episode_framing (the final episode as a whole is the synthesis), no whole series plan in the payload, and
 # the project's own terminology rule. The series plan, the script review and both repairs changed with it.
 WRITE_EPISODE_VERSION = "write_episode.v9-core-limits"
-# The correction of a draft that breaks its plan repeats the writing prompt.
-WRITE_REPAIR_VERSION = "write_episode_repair.v2-core-limits"
+# The correction of a draft that breaks its plan repeats the writing prompt. v3: each correction carries the latest
+# attempt and its own defects, a short script the words it has and needs (write_episode).
+WRITE_REPAIR_VERSION = "write_episode_repair.v3-latest-draft"
 MAX_REVIEW_REPAIRS = 3
 # v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
 # repair restated such claims and the next review flagged them again). v4: a limit research_limits names is kept.
@@ -606,13 +607,20 @@ class ScriptRun:
             if saved == {"input_hash": signature, "sha256": file_hash(destination)}:
                 return [destination, stamp]
         draft = self.invoke(prompt, EpisodeScript, WRITE_EPISODE_VERSION)
-        errors = self.script_errors(draft, entry)
-        if errors:
-            draft = corrected_call(self.invoke, prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
-                {"errors": errors, "draft": draft.model_dump()}, ensure_ascii=False),
-                EpisodeScript, WRITE_REPAIR_VERSION,
-                lambda answer: self.script_defects(answer, entry, self.work / f"{entry.episode_id}_script_errors.json",
-                                                   "Skript verletzt Struktur- oder Quellenzuordnung."))
+        errors, repairs = self.script_errors(draft, entry), 0
+        while errors:
+            # Each correction reworks the latest attempt against its own defects, as corrected_call's re-asks do not:
+            # they repeat the first draft. Transformer, 2026-10-03: ep_005, 40% short, came back 32, 27 and 33% short,
+            # and an ep_006 attempt one finding ID from passing gave way to two that fell short again.
+            if repairs:
+                write_json(self.work / f"{entry.episode_id}_script_errors.json", errors)
+            if repairs > MAX_REJECTIONS:
+                raise AppError("Skript verletzt Struktur- oder Quellenzuordnung. " + " ".join(errors) +
+                               f" Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; die "
+                               "abgewiesenen Antworten liegen bei den Aufrufen.", code="invalid_script", status="blocked")
+            draft = self.invoke(prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
+                {"errors": errors, "draft": draft.model_dump()}, ensure_ascii=False), EpisodeScript, WRITE_REPAIR_VERSION)
+            errors, repairs = self.script_errors(draft, entry), repairs + 1
         write_json(destination, draft.model_dump())
         write_json(stamp, {"input_hash": signature, "sha256": file_hash(destination)})
         return [destination, stamp]
