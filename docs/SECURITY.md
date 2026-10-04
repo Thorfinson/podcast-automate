@@ -130,7 +130,9 @@ What never leaves the computer, or never gets in:
   `runs/<run_id>/failures/`, `<project>/studio/failures/`). Error messages and diagnostic files shown in the Studio
   replace its stored key with „[Key verborgen]“ (key hidden).
 - `calls/call_*/diagnostics.json` keeps only sanitised technical diagnostics, no raw error messages, prompts, tool
-  outputs or credentials; `work_context.json` keeps a bounded selection of a call's inputs, without full prompts or
+  outputs or credentials. The one exception is a Codex failure the adapter cannot name (`codex_failed`): its
+  `failure.json` and stop message carry Codex's own short reason, redacted by `model_trace.redact` and cut to 300
+  characters (`codex.provider_message`; why: D-129); `work_context.json` keeps a bounded selection of a call's inputs, without full prompts or
   source texts.
 - The rotating log files `.studio/studio.log`, `<project>/studio/worker.log` and `<project>/logs/pla.log` (tracebacks
   included) and the terminal output of every `pla` process pass through `logs.scrub`: the keys the process knows (the

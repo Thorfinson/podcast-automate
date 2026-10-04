@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -155,6 +156,10 @@ class CodexTests(unittest.TestCase):
         with patch.dict(os.environ, {"PLA_TEST_MODE": "retry_then_fail"}), self.assertRaises(AppError) as error:
             self.adapter.probe("Thema", self.root / "retry_then_fail")
         self.assertEqual((error.exception.code, error.exception.status), ("codex_failed", "failed"))
+        # A failure no class names carries Codex's own reason, in the stop and in its receipt (2026-10-04).
+        self.assertIn(": stream disconnected before completion.", str(error.exception))
+        receipt = json.loads((self.root / "retry_then_fail/failure.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["provider_message"], "stream disconnected before completion")
         with patch.dict(os.environ, {"PLA_TEST_MODE": "quota_reset"}), self.assertRaises(AppError) as error:
             self.adapter.probe("Thema", self.root / "quota_reset")
         self.assertEqual((error.exception.code, error.exception.details["provider"]), ("quota_exhausted", "codex_cli"))
@@ -182,6 +187,15 @@ class CodexTests(unittest.TestCase):
         for message, error, code in cases:
             with self.subTest(message=message, error=error):
                 self.assertEqual(classify_failure(message, error=error, now=now).code, code)
+        # Codex's own reason for an unnamed failure is kept without credentials and at most 300 characters long.
+        named = classify_failure("x", error={"message": "Model not on this plan; token=abc123 Bearer xyz"}, now=now)
+        self.assertEqual(named.details["provider_message"], "Model not on this plan; token=[entfernt] Bearer [entfernt]")
+        self.assertNotIn("abc123", str(named))
+        self.assertEqual(len(classify_failure("x", error={"message": "y" * 1000}, now=now).details["provider_message"]), 300)
+        # Without a turn failure the last line of the CLI's error output is the reason; none at all leaves it out.
+        self.assertEqual(classify_failure("noise\nconnection refused\n").details["provider_message"], "connection refused")
+        self.assertEqual((str(classify_failure("")), classify_failure("").details),
+                         ("Codex-Aufruf fehlgeschlagen. Verbindung, Abo und CLI-Konfiguration prüfen.", {}))
         local = now.astimezone()
         relative = classify_failure("You've hit your usage limit. Try again in 1 day 2 hours 30 minutes.", now=now)
         self.assertEqual(relative.details["blocked_until"], (now + timedelta(days=1, hours=2, minutes=30)).isoformat())

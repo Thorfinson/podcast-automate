@@ -35,10 +35,13 @@ REPEATED_ONCE = {"stall": "stall_retry.json", "claude_structured_output": "forma
 # Failures that say a subscription cannot be used right now (login, plan, CLI), not that its quota is spent. Under
 # the automatic rule the call moves to the other subscription, as after a quota error, and the store notes it
 # (subscriptions.record_unavailable); a fixed provider still stops with the error (2026-10-02: an expired login
-# stopped auto runs although the other subscription had quota).
+# stopped auto runs although the other subscription had quota). A failed Codex turn that codex.classify_failure cannot
+# name (``codex_failed``) counts too, since 2026-10-04: after the Codex account fell to the free plan, every call of
+# the Transformer run failed two seconds after its start and stopped the run three times, with Claude ready. A
+# failed turn's output is lost either way, so the call loses nothing by moving.
 UNAVAILABLE_CODES = frozenset({"authentication_required", "subscription_required", "claude_version", "claude_missing",
                                "codex_missing", "missing_executable", "unsupported_claude_launcher",
-                               "unsupported_codex_launcher"})
+                               "unsupported_codex_launcher", "codex_failed"})
 
 
 def bookkeeping(action, *args, **kwargs):

@@ -191,6 +191,43 @@ def checked_series_plan(work, prompt, invoke, dossier, central_question, signatu
         repairs += 1
 
 
+# The share of its planned minutes a script must reach (validate_script).
+MIN_DURATION_SHARE = 0.85
+# How far above the plan the writer's target is set, per writing model. ONLY Claude Sonnet 5.5 is measured: at high it
+# wrote 71 % of the target it was shown (Transformer ep_012, 2026-10-04, each scene 64 to 75 % of its share), so a draft
+# like that lands at 92 % of the plan; at 1.35 a 60-minute episode written at 75 % would already pass the hour, which
+# validate_script returns as too long. Every other model is shown the plan itself until its own drafts are measured.
+WRITER_TARGET_FACTORS = {"claude-sonnet-5-5": 1.3, "anthropic/claude-sonnet-5.5": 1.3}
+
+
+def writer_target_factor(text_generation) -> float:
+    """The target factor of the model that writes first under a run's text choice: its fixed model, or under ``auto``
+    the preferred candidate's (AdapterPool.plan). Under ``auto`` the other subscription writes while the first has no
+    quota, and its drafts get the first one's target."""
+    selection = text_generation or {}
+    if selection.get("provider") == "auto":
+        selection = (selection.get("candidates") or {}).get(selection.get("prefer", "codex_cli")) or {}
+    return WRITER_TARGET_FACTORS.get(selection.get("model"), 1.0)
+
+
+def word_budget(episode: EpisodePlan, factor=1.0) -> dict:
+    """The spoken words the writer is given for ``episode`` (prompt write_episode_length): the floor validate_script
+    holds a draft to, a target ``factor`` above the planned duration (writer_target_factor; 1.0 for every model but
+    Sonnet 5.5), and that target spread over the scenes by their explanation steps. The pauses are left aside, so the
+    floor asks a few words more than the check needs. The hour stays with the check, not the target: capped at 59
+    minutes, Sonnet's target for a one-hour episode would have left a draft at 71 % of it below the floor.
+
+    Until 2026-10-04 the writer derived the budget from target_minutes itself, and every first draft of the Transformer
+    series came in at 58 to 75 % of it. Shown the plan itself as the target, ep_012's first draft reached 71 %."""
+    def words(minutes):
+        return math.ceil(minutes * SPOKEN_WORDS_PER_MINUTE)
+    target = words(episode.target_minutes * factor)
+    steps = [len(scene.explanation_steps) for scene in episode.scenes]
+    return {"minimum_words": words(episode.target_minutes * MIN_DURATION_SHARE), "target_words": target,
+            "scene_words": {scene.scene_id: round(target * count / sum(steps))
+                            for scene, count in zip(episode.scenes, steps)}}
+
+
 def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_duration=True) -> list[str]:
     errors = []
     if script.episode_id != episode.episode_id or script.purpose != "deep_dive":
@@ -225,17 +262,18 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
     if check_duration and metrics["estimated_minutes"] > MAX_EPISODE_MINUTES:
         errors.append(f"The planned speech estimate exceeds {MAX_EPISODE_MINUTES} minutes; shorten without losing "
                       "the explanation.")
-    if check_duration and metrics["estimated_minutes"] < episode.target_minutes * 0.85:
+    if check_duration and metrics["estimated_minutes"] < episode.target_minutes * MIN_DURATION_SHARE:
         # With the numbers since 2026-10-03: told only "less than 85%", the Transformer writer added about a tenth
         # per correction and fell short three times in a row.
         pauses = sum(s.pause_after_ms for s in script.segments) / 60_000
 
         def words_for(minutes):
             return math.ceil((minutes - pauses) * SPOKEN_WORDS_PER_MINUTE)
-        errors.append(f"The script delivers less than 85% of the planned duration: {metrics['words']} spoken words "
-                      f"make about {metrics['estimated_minutes']:.1f} of {episode.target_minutes:g} planned minutes at "
-                      f"{SPOKEN_WORDS_PER_MINUTE} words per minute. Write at least {words_for(episode.target_minutes * 0.85)} "
-                      f"words, about {words_for(episode.target_minutes)} for the full plan. Develop the missing "
+        errors.append(f"The script delivers less than {MIN_DURATION_SHARE:.0%} of the planned duration: {metrics['words']} "
+                      f"spoken words make about {metrics['estimated_minutes']:.1f} of {episode.target_minutes:g} planned "
+                      f"minutes at {SPOKEN_WORDS_PER_MINUTE} words per minute. Write at least "
+                      f"{words_for(episode.target_minutes * MIN_DURATION_SHARE)} words, about "
+                      f"{words_for(episode.target_minutes)} for the full plan. Develop the missing "
                       "reasoning, worked steps and consequences; do not fill the gap with repetition or longer pauses.")
     return errors
 
@@ -391,10 +429,12 @@ def outline_hash(work: Path) -> str:
 
 # v11: core and supporting findings, research limits back a stated limit, framing checked by episode_framing alone.
 # v12: a segment that follows its section where the finding misstates it is source_corrected, not drift.
-SCRIPT_REVIEW_VERSION = "script_review.v12-source-corrected"
-# Versions whose saved verdict still stands when it blocked nothing: v12 only stops blocking, so an episode v11 passed
-# is not reviewed again; one it blocked is, under v12, before the next repair.
-RELAXED_REVIEW_VERSIONS = frozenset({"script_review.v11-core-limits"})
+# v13: a point the review files as an advisory stays one unless it concerns evidence or scope
+# (script_pipeline.STRICT_CATEGORIES); the prompt is unchanged.
+SCRIPT_REVIEW_VERSION = "script_review.v13-reviewer-advisories"
+# Versions whose saved verdict still stands when it blocked nothing: v12 and v13 only stop blocking, so an episode an
+# earlier version passed is not reviewed again; one it blocked is, under today's version, before the next repair.
+RELAXED_REVIEW_VERSIONS = frozenset({"script_review.v11-core-limits", "script_review.v12-source-corrected"})
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.

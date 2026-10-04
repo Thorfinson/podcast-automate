@@ -47,7 +47,7 @@ covers:
 | `focus_questions`, `excluded_topics` | `[]` | Desired focus and boundaries |
 | `seed_people`, `seed_urls`, `local_sources` | `[]` | Optional research entry points. People need an evidenced attribution to a source; local sources must lie inside the project folder ([Local files](SECURITY.md#local-files)) |
 | `target_total_minutes` | `null` | Optional, explicit planning wish (`pla init --total-minutes`, no default); no implicit total limit ([Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)) |
-| `max_episode_minutes` | `30`, fixed | What it means and why episode planning does not see it: [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length) |
+| `max_episode_minutes` | `30`, fixed | Unused since 2026-10-04 (one episode is one MP3); kept for the project hash of existing runs: [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length) |
 | `research_limits` | `search_rounds`, `sources`, `model_calls` | Limits per run, not on the series' scope; defaults and what happens at a limit: [Budgets](BUSINESS_LOGIC.md#budgets). Operational like `runtime`; the workspace settings replace it |
 | `text_backend` | `codex_cli` | CLI default text adapter: `codex_cli`, `claude_code` or `auto` (why: D-014); the Studio's choice is in the [Studio settings](#studio-settings) |
 | `tts_backend` | `qwen3_local` | CLI default speech adapter; the Studio's audio choice is in the [Studio settings](#studio-settings) |

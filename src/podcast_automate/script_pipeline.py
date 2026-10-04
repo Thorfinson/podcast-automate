@@ -29,9 +29,9 @@ from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
 from .script_checkpoints import NOTED_CATEGORIES, series_adoption
-from .script_checks import (RELAXED_REVIEW_VERSIONS, SCRIPT_REVIEW_VERSION, checked_series_plan, episode_limits, episode_sources,
-                            planning_dossier, quotation_errors, research_limits, script_review_signature,
-                            validate_script)
+from .script_checks import (RELAXED_REVIEW_VERSIONS, SCRIPT_REVIEW_VERSION, WRITER_TARGET_FACTORS, checked_series_plan,
+                            episode_limits, episode_sources, planning_dossier, quotation_errors, research_limits,
+                            script_review_signature, validate_script, word_budget, writer_target_factor)
 from .script_evidence import (SCRIPT_EVIDENCE_INSTRUCTIONS, is_claim_drift, settle_receipts, source_corrections,
                               validate_claim_checks)
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
@@ -47,7 +47,10 @@ PLAIN_WORDING = fragment("plain_language")
 # v9: core and supporting findings, research limits stated where the affected statement is used, the framing duties
 # left to episode_framing (the final episode as a whole is the synthesis), no whole series plan in the payload, and
 # the project's own terminology rule. The series plan, the script review and both repairs changed with it.
-WRITE_EPISODE_VERSION = "write_episode.v9-core-limits"
+# v10: the computed word budget (script_checks.word_budget) instead of a budget the writer derives itself. v11: for
+# Sonnet 5.5 alone its target set above the plan (script_checks.WRITER_TARGET_FACTORS), since Sonnet wrote 71 % of the
+# plan it was shown.
+WRITE_EPISODE_VERSION = "write_episode.v11-raised-target"
 # The correction of a draft that breaks its plan repeats the writing prompt. v3: each correction carries the latest
 # attempt and its own defects, a short script the words it has and needs (write_episode).
 WRITE_REPAIR_VERSION = "write_episode_repair.v3-latest-draft"
@@ -59,9 +62,14 @@ REVIEW_REPAIR_VERSION = "script_review_repair.v4-limits"
 SERIES_REPAIR_ATTEMPTS = 2
 # A new issue on a segment no repair touched blocks a follow-up review only as one of these.
 CRITICAL_BASIS = {"factual_error", "source_contradiction"}
-# The planner reads the editorial brief, not the whole project config. Its max_episode_minutes (30) is the longest
-# audio part of a recording; the model took it for an episode cap and cut one long explanation into several
-# 30-minute episodes (Transformer and Ontologies plans, 2026-10-02).
+# A point the review files as an advisory is its own verdict that the point does not block, and it stands, except for
+# these categories: evidence and scope count as issues wherever the scope reaches them. Until 2026-10-04 every other
+# category counted too, in a first review all of them: Ontologies ep_019 spent all three repairs on a closing-structure
+# point its reviewer filed as an advisory in every round ("trimming is optional … do not block").
+STRICT_CATEGORIES = frozenset({"grounding", "scope"})
+# The planner reads the editorial brief, not the whole project config. Its max_episode_minutes (30), the audio part
+# length until 2026-10-04 and unused since, was taken by the model for an episode cap: it cut one long explanation
+# into several 30-minute episodes (Transformer and Ontologies plans, 2026-10-02).
 PLANNING_BRIEF = {"topic", "language", "audience_level", "prior_knowledge", "depth_request", "focus_questions",
                   "excluded_topics", "seed_people", "target_total_minutes", "series_goal"}
 
@@ -98,7 +106,10 @@ def follow_up_scope(review, previous, changed):
 
     A whole-episode point (no segment) is in scope only as a repeat: the previous review raised a whole-episode
     point of its category. Until 2026-10-02 every such point was in scope, so a new whole-episode structure point
-    in a later review blocked although no earlier review had raised it."""
+    in a later review blocked although no earlier review had raised it.
+
+    A point the review itself files as an advisory stays one unless it concerns evidence or scope
+    (STRICT_CATEGORIES): only such a point counts as an issue in scope."""
     watched = set(changed) | {key for issue in previous.issues for key in issue.segment_ids}
     episode_wide = {issue.category for issue in previous.issues if not issue.segment_ids}
 
@@ -109,8 +120,9 @@ def follow_up_scope(review, previous, changed):
         basis = review.issue_basis[index] if index < len(review.issue_basis) else None
         (issues if in_scope(issue) or basis in CRITICAL_BASIS else advisories).append(issue)
     for issue in review.advisories:
-        # Only a noted point may stay an advisory on a segment the repair touched or a previous issue named.
-        (issues if in_scope(issue) and issue.category not in NOTED_CATEGORIES else advisories).append(issue)
+        # On a segment the repair touched or a previous issue named, an evidence or scope advisory counts as an issue;
+        # any other stays an advisory.
+        (issues if in_scope(issue) and issue.category in STRICT_CATEGORIES else advisories).append(issue)
     return review.model_copy(update={"issues": issues, "advisories": advisories})
 
 
@@ -544,16 +556,22 @@ class ScriptRun:
                    for f in self.dossier.findings if f.id in cited}
         return sections, anchors
 
-    def writing_prompt(self, plan, entry):
+    def writing_prompt(self, plan, entry, *, budget=True, factor=None):
+        """The writing prompt; ``budget=False`` leaves out the word budget (``length``), which gives the prompt as it
+        was before 2026-10-04, byte for byte, so write_episode can recognise a draft accepted under it. ``factor`` sets
+        the budget's target above the plan; by default the run's writer's (writer_target_factor)."""
         config, dossier = self.config, self.dossier
+        if factor is None:
+            factor = writer_target_factor(getattr(self.adapter, "text_generation", None))
         design_review = json.loads((self.work / "teaching" / entry.episode_id / "review.json").read_text(encoding="utf-8"))
         # The design review's non-blocking notes (teaching.review_scope); a design without them keeps its prompt.
         advisories = " " + instructions("write_episode_advisories") if design_review.get("advisories") else ""
+        length = " " + instructions("write_episode_length") if budget else ""
         cited = set(episode_findings(entry))
         limits = episode_limits(plan, entry, self.research_limits())
         prompt = (instructions("write_episode_opening", language=config.language) + " "
                   + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
-                  instructions("write_episode") + advisories + "\n" +
+                  instructions("write_episode") + advisories + length + "\n" +
                   json.dumps({"brief": {"language": config.language, "voices": config.voice_profile,
                                         "host_names": config.host_names,
                                         "audience": config.audience_level, "prior_knowledge": config.prior_knowledge,
@@ -568,6 +586,7 @@ class ScriptRun:
                                          "dependencies": [d.model_dump() for d in plan.dependencies
                                                           if d.before in cited and d.after in cited]},
                               "episode": entry.model_dump(),
+                              **({"length": word_budget(entry, factor)} if budget else {}),
                               "series_context": episode_series_context(plan, entry),
                               "prerequisite_context": prerequisite_context(plan, entry, self.work),
                               "teaching_design": self.teaching_for(entry).model_dump(),
@@ -606,6 +625,16 @@ class ScriptRun:
             saved = json.loads(stamp.read_text(encoding="utf-8"))
             if saved == {"input_hash": signature, "sha256": file_hash(destination)}:
                 return [destination, stamp]
+            # A draft accepted under another word budget, or before there was one, stands while it passes every check:
+            # the budget only guides the writer toward the length validate_script holds a draft to. So neither the
+            # budget's arrival (the Transformer run had 13 accepted drafts on 2026-10-04) nor a text switch to a writer
+            # with another target writes accepted drafts anew.
+            prompts = [self.writing_prompt(plan, entry, budget=False),
+                       *(self.writing_prompt(plan, entry, factor=f) for f in {1.0, *WRITER_TARGET_FACTORS.values()})]
+            if any(saved == {"input_hash": digest({"input": self.input_hash, "prompt": other}),
+                             "sha256": file_hash(destination)} for other in prompts) and not self.script_errors(
+                    EpisodeScript.model_validate_json(destination.read_text(encoding="utf-8")), entry):
+                return [destination, stamp]
         draft = self.invoke(prompt, EpisodeScript, WRITE_EPISODE_VERSION)
         errors, repairs = self.script_errors(draft, entry), 0
         while errors:
@@ -616,7 +645,7 @@ class ScriptRun:
                 write_json(self.work / f"{entry.episode_id}_script_errors.json", errors)
             if repairs > MAX_REJECTIONS:
                 raise AppError("Skript verletzt Struktur- oder Quellenzuordnung. " + " ".join(errors) +
-                               f" Der Aufruf wurde {MAX_REJECTIONS} Mal mit Korrekturhinweis wiederholt; die "
+                               f" Der Aufruf wurde {repairs} Mal mit Korrekturhinweis wiederholt; die "
                                "abgewiesenen Antworten liegen bei den Aufrufen.", code="invalid_script", status="blocked")
             draft = self.invoke(prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
                 {"errors": errors, "draft": draft.model_dump()}, ensure_ascii=False), EpisodeScript, WRITE_REPAIR_VERSION)
@@ -842,9 +871,13 @@ class ScriptRun:
         reviewed.limitations.extend(note for note in source_corrections(reviewed) if note not in reviewed.limitations)
         if follow_up:
             return follow_up_scope(reviewed, *follow_up)
-        # A first review has no scope: whatever it set aside as an advisory counts as an issue.
-        return reviewed.model_copy(update={"issues": [*reviewed.issues, *reviewed.advisories],
-                                           "advisories": [], "issue_basis": []})
+        # A first review has no scope: an evidence or scope point it set aside as an advisory counts as an issue. Any
+        # other advisory is the review's own verdict that the point does not block; it is reported as a note.
+        strict = [issue for issue in reviewed.advisories if issue.category in STRICT_CATEGORIES]
+        return reviewed.model_copy(update={"issues": [*reviewed.issues, *strict],
+                                           "advisories": [issue for issue in reviewed.advisories
+                                                          if issue.category not in STRICT_CATEGORIES],
+                                           "issue_basis": []})
 
     def repair_series(self, plan, grouped):
         """Rewrite the segments a failing series check cites, then review the result again.

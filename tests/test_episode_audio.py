@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from podcast_automate.cli import main
-from podcast_automate.episode_audio import check_rows, partition_audio, run_episode_audio, segment_durations
+from podcast_automate.episode_audio import check_rows, run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.models import Chapter, EpisodeScript, TopicBrief
 from podcast_automate.qwen_worker import spoken_settings
@@ -252,21 +252,26 @@ class EpisodeAudioTests(unittest.TestCase):
         self.assertEqual(stored["pauses"]["chapter_break_ms"], 1800)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
-    def test_the_pipeline_sizes_parts_with_the_pause_policy_it_will_apply(self):
+    def test_an_episode_is_one_mp3_whatever_its_length(self):
+        """The user's rule, 2026-10-04: one episode is one MP3. Until then an episode over 30 minutes was split into
+        parts (Ontologies: seven episodes of 33 to 37 minutes came in two). The montage gets the whole script and no
+        length limit; the script check bounds an episode before the recording."""
         from podcast_automate import episode_audio as module
-        seen, original = [], module.partition_audio
+        calls, original = [], module.assemble
 
-        def recording(script, durations, max_seconds):
-            seen.append(list(durations))
-            return original(script, durations, max_seconds)
-        choice = AudioChoice(voices=self.fixture.config.voice_profile,
-                             pauses={"same_speaker_ms": 5000, "speaker_change_ms": 5000, "chapter_break_ms": 5000})
-        with patch("podcast_automate.episode_audio.partition_audio", side_effect=recording):
-            self.assertEqual(self.render(audio_choice=choice.model_dump()).status, "completed")
+        def recording(script, paths, output, **kwargs):
+            calls.append(([s.segment_id for s in script.segments], output, kwargs.get("max_seconds")))
+            return original(script, paths, output, **kwargs)
+        with patch("podcast_automate.episode_audio.assemble", side_effect=recording):
+            run = self.render()
+        self.assertEqual(run.status, "completed")
         script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
-        # One-second tones: the first segment counts the 5 s minimum of its transition, the last
-        # one keeps its planned pause because nothing follows it.
-        self.assertEqual([round(d, 3) for d in seen[0]], [6.0, 1 + script.segments[-1].pause_after_ms / 1000])
+        destination = self.root / "exports/ep_001" / run.run_id
+        self.assertEqual(calls, [([s.segment_id for s in script.segments], destination, None)])
+        report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
+        self.assertEqual([p["audio"] for p in report["parts"]], [f"exports/ep_001/{run.run_id}/audio.mp3"])
+        self.assertEqual((destination / "playlist.m3u").read_text(encoding="utf-8"), "#EXTM3U\naudio.mp3\n")
+        self.assertIn("[Folge anhören](audio.mp3)", (destination / "README.md").read_text(encoding="utf-8"))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_a_changed_pause_policy_needs_a_fresh_approval(self):
@@ -309,40 +314,6 @@ class ListeningSheetTests(unittest.TestCase):
         self.assertIn("| Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |", single)
         self.assertIn("| 12:30 | Zweites | | | |", single)
         self.assertNotIn("Teil", single)
-
-
-class PartitionTests(unittest.TestCase):
-    def test_balanced_chapter_parts_preserve_all_segments_in_order(self):
-        original = fixtures.example_script()
-        segments, chapters = [], []
-        for i in range(4):
-            chapter = f"chapter_{i}"
-            chapters.append(Chapter(chapter_id=chapter, title=chapter))
-            segments.append(original.segments[i % 2].model_copy(update={"segment_id": f"segment_{i}",
-                "scene_id": chapter, "chapter_id": chapter}))
-        script = original.model_copy(update={"chapters": chapters, "segments": segments})
-        self.assertEqual(partition_audio(script, [720, 480, 540, 420], 1800), [[0, 1], [2, 3]])
-        self.assertEqual(partition_audio(original, [1020, 1020], 1800), [[0], [1]])
-        with self.assertRaises(AppError):
-            partition_audio(original, [1801, 1], 1800)
-
-    def test_parts_are_sized_with_the_pause_assembly_will_apply(self):
-        script = fixtures.example_script().model_copy(deep=True)
-        for segment in script.segments:
-            segment.pause_after_ms = 0
-        with tempfile.TemporaryDirectory() as temporary:
-            paths = [Path(temporary) / f"{s.segment_id}.wav" for s in script.segments]
-            for path in paths:
-                tone(path)  # one second each
-            planned = segment_durations(script, paths, None)
-            applied = segment_durations(script, paths, PausePolicy(speaker_change_ms=10000))
-        self.assertEqual(planned, [1.0, 1.0])
-        # The speaker change raises the first pause to the minimum; the episode end keeps 0.
-        self.assertEqual(applied, [11.0, 1.0])
-        # With the planned pauses alone the episode fits one part; with the pauses assembly will
-        # apply it must be split here, before the montage, instead of failing after synthesis.
-        self.assertEqual(partition_audio(script, planned, 12), [[0, 1]])
-        self.assertEqual(partition_audio(script, applied, 12), [[0], [1]])
 
 
 class ProjectHashTests(unittest.TestCase):

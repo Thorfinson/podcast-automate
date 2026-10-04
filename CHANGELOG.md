@@ -37,6 +37,10 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-10-04 · Under „Automatisch“ a Codex call that fails for an unknown reason moves to Claude instead of stopping the run, and such a stop names Codex's own reason.
+- 2026-10-04 · One episode is one MP3: a recording is no longer split into parts of at most 30 minutes.
+- 2026-10-04 · The script review's own advisories stay notes unless they concern evidence or scope; a review that stopped on such a point is reviewed once more on resume.
+- 2026-10-04 · The writer gets each episode's word budget computed, per episode and per scene; for Claude Sonnet 5.5 only, its target is set 30 % above the plan. Drafts accepted before the budget, or under another one, are kept on resume.
 - 2026-10-02 · A supplement to an assembled dossier counts only its own quoted and paraphrased words against the per-source limits.
 - 2026-10-03 · The setup conversation no longer proposes text model, audio or execution; a proposal carries only the brief.
 - 2026-10-03 · The Studio offers exactly four OpenRouter text models; Astra Pro and Claude Fable 5.1 are no longer offered.

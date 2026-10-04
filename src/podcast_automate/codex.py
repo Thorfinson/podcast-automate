@@ -14,6 +14,7 @@ from .prompts import instructions
 from .errors import AppError
 from .call_activity import CallActivity, contract_rejection, mentions, parsed_json, write_rejected_output
 from .codex_stream import run_app_server
+from .model_trace import redact
 from .models import RuntimeSettings, TextProbeOutput
 from .process import STALL_TIMEOUT_SECONDS, run_process
 from .storage import write_json
@@ -151,8 +152,28 @@ def classify_failure(message: str, *, error=None, now=None) -> AppError:
     if login:
         return AppError("Codex-Anmeldung muss erneuert werden: codex login",
                         code="authentication_required", status="blocked")
-    return AppError("Codex-Aufruf fehlgeschlagen. Verbindung und CLI-Konfiguration prüfen.",
-                    code="codex_failed")
+    # Codex's own reason, since no class above names one (2026-10-04: after the account fell to the free plan, every
+    # Transformer call failed two seconds after the start, and the stop said only "Verbindung prüfen").
+    reason = provider_message(error, message)
+    return AppError("Codex-Aufruf fehlgeschlagen" + (f": {reason}" if reason else "") +
+                    ". Verbindung, Abo und CLI-Konfiguration prüfen.", code="codex_failed",
+                    details={"provider_message": reason} if reason else {})
+
+
+# The longest provider message a failure keeps (provider_message).
+PROVIDER_MESSAGE_CHARS = 300
+
+
+def provider_message(error=None, text="") -> str:
+    """Codex's own short reason for a failed call the adapter cannot classify: the turn's error message, else the last
+    line of the CLI's error output, without credentials (model_trace.redact) and at most PROVIDER_MESSAGE_CHARS long.
+    Raw provider output stays unstored otherwise (SECURITY, D-129)."""
+    if isinstance(error, dict) and error.get("message"):
+        raw = str(error["message"])
+    else:
+        lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+        raw = lines[-1] if lines else ""
+    return " ".join(redact(raw).split())[:PROVIDER_MESSAGE_CHARS]
 
 
 class CodexAdapter:
@@ -284,7 +305,9 @@ class CodexAdapter:
             # Keep a useful failure receipt without persisting raw provider output or prompts.
             write_json(directory / "failure.json", {"code": failure.code, "message": str(failure),
                        "exit_code": result.returncode, "model": self.settings.codex_model,
-                       "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version})
+                       "reasoning_effort": self.reasoning_effort, "prompt_version": prompt_version,
+                       **({"provider_message": failure.details["provider_message"]}
+                          if failure.details.get("provider_message") else {})})
             raise failure
         try:
             text = response_file.read_text(encoding="utf-8")

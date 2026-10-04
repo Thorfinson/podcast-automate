@@ -77,17 +77,16 @@ blocks the affected final export:
 - For Gemini, every take passes the [plausibility check](#plausibility-check-of-gemini-takes).
 - A segment file that is missing or silent, or whose hash, voice or text does not match the job, stops the run with
   `invalid_audio`; a missing or silent one is named by its segment id.
-- A failed loudness measurement stops with `loudness_failed`, an episode or part longer than allowed with
-  `duration_exceeded`.
+- A failed loudness measurement stops with `loudness_failed`.
 
 ### Output format and chapters
 
 - The standard format is MP3 (192 kbit/s), 44.1 kHz, stereo, loudness-normalised to -16 LUFS (see
   [Loudness](#loudness)).
 - Chapter marks are produced from the actual audio timeline and embedded in the MP3.
-- An episode too long for one audio part ([part length](BUSINESS_LOGIC.md#episode-and-series-length)) is split
-  automatically into the fewest and most evenly sized consecutive parts. Chapters stay together unless one is longer
-  than a part; a single segment longer than a part stops with `duration_exceeded`.
+- **One episode is one MP3**, whatever its length; the montage sets no length limit, because the script check bounds
+  an episode before the recording ([Episode length](BUSINESS_LOGIC.md#episode-length)). Until 2026-10-04 an episode
+  over 30 minutes was split into parts of at most 30 minutes; recordings made then keep their parts. (why: D-128)
 
 ### Production estimate and logging
 
@@ -274,8 +273,6 @@ The three pause values are minimum pauses for the same voice, for a change of vo
 (`speech.PausePolicy`, default 250, 450 and 900 ms); a longer planned pause is kept. They are set on the
 [Settings page](STUDIO.md#settings-page), and the approval card shows them under „Pausen“ (pauses).
 
-- Assembly and the split into parts compute with the same applied pauses, so an episode near the length limit of a
-  part is split before assembly instead of failing only after the paid recording.
 - Changed pauses are audible and therefore need a new audio approval.
 - The default values are not stored in approvals and run inputs; only a deviating pause policy is stored there and
   changes the input hash.
@@ -411,15 +408,15 @@ Each recording run writes its export to `exports/<episode>/<run_id>/`:
 | `timeline.json` | Start, speech end, end, pause and trimmed silence of every segment |
 | `audio_report.json` | Duration, format, loudness and pause data; `speech_quality_verified: false` |
 | `transcript.md` | The approved text with host labels, in script order |
-| `README.md` | Links to the parts with their duration, the voices and any deviating spoken forms |
-| `playlist.m3u` | The parts in order |
+| `README.md` | Link to the MP3 with its duration, the voices and any deviating spoken forms |
+| `playlist.m3u` | The MP3 |
 | `show_notes.md` | Chapters with timestamps from the measured assembly, the voices, and pronunciation notes for segments with a deviating spoken form |
 | `listening_sheet.md` | The listening sheet, see below |
 
-An episode recorded in parts has the first five files once per part in `part_01/`, `part_02/` and so on; the other
-four cover all parts. The run also writes `reports/<episode>_audio.json`, `episodes/<episode>/audio_latest.json`
-(status `awaiting_listening_review`, pronunciation report, spoken-form overrides, chapters and parts) and
-`pronunciation.json` in the run folder.
+An episode recorded in parts before 2026-10-04 has the first five files once per part in `part_01/`, `part_02/` and so
+on; the other four cover all parts. The run also writes `reports/<episode>_audio.json`,
+`episodes/<episode>/audio_latest.json` (status `awaiting_listening_review`, pronunciation report, spoken-form
+overrides, chapters, and `parts` with the one MP3) and `pronunciation.json` in the run folder.
 
 The export never publishes anything (see [Source rights and privacy](SECURITY.md#source-rights-and-privacy)). The
 technical reports do not claim a passed listening review: pronunciation, naturalness and voice consistency are
@@ -431,8 +428,8 @@ After listening, you enter the **„Hörprüfung“** (listening review) with **
 review).
 
 - `listening_sheet.md` lies in the export next to the MP3 and has columns for unclear points, lost attention and
-  pronunciation. Each part's times start at 0:00, so for an episode recorded in parts the sheet names the part of
-  every row in a column of its own.
+  pronunciation. For an episode recorded in parts before 2026-10-04, each part's times start at 0:00, so the sheet
+  names the part of every row in a column of its own.
 - Only a human sets the listening review; no program step does. It is stored as `human_listening_reviewed` with
   `listening_note` in `episodes/<episode>/audio_review.yaml`; publishing a new recording of the episode clears an
   earlier listening review and its note.

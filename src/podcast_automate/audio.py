@@ -209,9 +209,12 @@ def embedded_chapters(path: Path) -> list[dict]:
 
 
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
-             *, max_seconds: float = 1800, language: str = "de-DE", labels: dict | None = None,
+             *, max_seconds: float | None = None, language: str = "de-DE", labels: dict | None = None,
              pauses=None, progress=None, trim_pauses=()) -> list[Path]:
-    """Mix, measure and encode one episode part; ``progress(step, done, total)`` reports each step.
+    """Mix, measure and encode one episode into one MP3; ``progress(step, done, total)`` reports each step.
+
+    ``max_seconds`` stops a montage longer than that; an episode has no such limit since 2026-10-04 (one episode is
+    one MP3), as the script check bounds its length before the recording.
 
     ``trim_pauses`` names the segments whose spoken text carries a pause tag: their silences over 1.5 s are cut
     to 1.2 s, since a <long pause> left up to 7.3 s of dead air in the 29 Sep exports. Other segments stay as
@@ -253,9 +256,9 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                 pause_ms, reason = applied_pause(script, index, pauses)
                 pause = round(pause_ms * 44100 / 1000)
                 position += frames + pause
-                if position / 44100 > max_seconds:
-                    raise AppError("Folge ist zu lang. Die automatische Aufteilung folgt im Serien-Meilenstein.",
-                                   code="duration_exceeded", status="blocked")
+                if max_seconds is not None and position / 44100 > max_seconds:
+                    raise AppError("Die Montage überschreitet die erlaubte Länge.", code="duration_exceeded",
+                                   status="blocked")
                 target.writeframesraw(b"\0" * (pause * 4))
                 timeline.append({
                     "segment_id": segment.segment_id, "chapter_id": segment.chapter_id,
@@ -301,8 +304,8 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                 str(encoded)])
         info = audio_info(encoded)
         duration = float(info["format"]["duration"])
-        if duration > max_seconds:
-            raise AppError("Die gemessene MP3 überschreitet die Folgenlänge.",
+        if max_seconds is not None and duration > max_seconds:
+            raise AppError("Die gemessene MP3 überschreitet die erlaubte Länge.",
                            code="duration_exceeded", status="blocked")
         written_chapters = embedded_chapters(encoded)
         encoded.replace(output / "audio.mp3")

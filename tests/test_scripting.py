@@ -16,7 +16,7 @@ from podcast_automate.script_models import Dependency, ScenePlan, ScriptIssue, S
 from podcast_automate.script_pipeline import (REVIEW_REPAIR_VERSION, WRITE_EPISODE_VERSION, changed_segments,
                                               follow_up_scope)
 from podcast_automate.script_checks import (SCRIPT_REVIEW_VERSION, SERIES_PLAN_VERSION, planning_dossier,
-                                            quotation_errors)
+                                            quotation_errors, word_budget)
 from podcast_automate.scripting import run_script, validate_plan, validate_script
 from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
@@ -103,9 +103,9 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(approval["scripts"]["ep_001"], report["episodes"]["ep_001"]["script_sha256"])
 
     def test_the_planner_reads_the_editorial_brief_without_the_audio_part_length(self):
-        # Behaviour change of 2 October 2026: max_episode_minutes (30) is the longest audio part of a recording.
-        # In the planning brief the model took it for an episode cap and split one long explanation into
-        # several 30-minute episodes, although an episode may take up to 60.
+        # Behaviour change of 2 October 2026: max_episode_minutes (30) was the longest audio part of a recording, and
+        # is unused since 4 October. In the planning brief the model took it for an episode cap and split one long
+        # explanation into several 30-minute episodes, although an episode may take up to 60.
         aimed = self.config.model_copy(update={"series_goal": {"understand": 3, "evaluate": 1, "apply": 0},
                                                "target_total_minutes": 90})
         write_yaml(self.root / "project.yaml", aimed.model_dump(mode="json"))
@@ -189,7 +189,61 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         plan = example_plan()
         self.assertEqual(writing["series"], {"scope_note": plan.scope_note, "dependencies": []})
         self.assertEqual(writing["episode"], plan.episodes[0].model_dump())
+        self.assertEqual(writing["length"], word_budget(plan.episodes[0]))
         self.assertEqual(writing["series_context"]["episode_path"][0]["episode_id"], "ep_001")
+
+    def test_the_writer_gets_its_word_budget_computed_per_episode_and_scene(self):
+        """Transformer, 2026-10-04: told to derive the budget from target_minutes, Sonnet 5.5 wrote every first draft at
+        58 to 75 % of it, and ep_012 stayed below the floor after three corrections. The floor is the one validate_script
+        holds a draft to; the target is spread over the scenes by their explanation steps."""
+        episode = example_plan().episodes[0].model_copy(update={"target_minutes": 50.0})
+        episode.scenes = [episode.scenes[0].model_copy(update={"scene_id": f"scene_{n}", "explanation_steps": ["Step."] * n})
+                          for n in (1, 2, 3)]
+        budget = word_budget(episode)
+        self.assertEqual((budget["minimum_words"], budget["target_words"]), (5525, 6500))
+        self.assertEqual(budget["scene_words"], {"scene_1": 1083, "scene_2": 2167, "scene_3": 3250})
+        # Shown the plan, Sonnet 5.5 wrote 71 % of it (ep_012): its target is 1.3 times the plan, the floor unchanged.
+        raised = word_budget(episode, 1.3)
+        self.assertEqual((raised["minimum_words"], raised["target_words"]), (5525, 8450))
+        self.assertEqual(raised["scene_words"], {"scene_1": 1408, "scene_2": 2817, "scene_3": 4225})
+        # The hour stays with the check: a one-hour target is not capped.
+        self.assertEqual(word_budget(episode.model_copy(update={"target_minutes": 60.0}), 1.3)["target_words"], 10140)
+        # The floor is the check's: a draft of minimum_words spoken words without pauses passes it.
+        script = example_script()
+        script.segments[1].text = " ".join(["Wort"] * (word_budget(example_plan().episodes[0])["minimum_words"] - 5))
+        for segment in script.segments:
+            segment.pause_after_ms = 0
+        self.assertFalse([e for e in validate_script(script, example_plan().episodes[0]) if "planned duration" in e])
+
+    def test_only_sonnet_5_5_as_the_first_writer_gets_the_raised_target(self):
+        """The factor is measured for Sonnet 5.5 alone; every other model is shown the plan until its drafts are measured.
+        Under auto the preferred candidate decides."""
+        from podcast_automate.script_checks import writer_target_factor
+        sonnet, astra = {"model": "claude-sonnet-5-5", "reasoning_effort": "high"}, {"model": "gpt-6-astra"}
+        cases = [({"provider": "claude_code", "model": "claude-sonnet-5-5"}, 1.3),
+                 ({"provider": "openrouter", "model": "anthropic/claude-sonnet-5.5"}, 1.3),
+                 ({"provider": "auto", "prefer": "claude_code", "candidates": {"claude_code": sonnet, "codex_cli": astra}}, 1.3),
+                 ({"provider": "claude_code", "model": "claude-opus-5-5"}, 1.0),
+                 ({"provider": "codex_cli", "model": "gpt-6-astra"}, 1.0),
+                 ({"provider": "openrouter", "model": "anthropic/claude-opus-5.5"}, 1.0),
+                 ({"provider": "auto", "prefer": "codex_cli", "candidates": {"claude_code": sonnet, "codex_cli": astra}}, 1.0),
+                 (None, 1.0)]
+        for selection, factor in cases:
+            with self.subTest(selection=selection):
+                self.assertEqual(writer_target_factor(selection), factor)
+
+    def test_a_sonnet_run_shows_the_writer_the_raised_target(self):
+        from podcast_automate.script_checks import WRITER_TARGET_FACTORS
+        lengths = []
+
+        def claude(adapter, prompt, output_type, directory, **kwargs):
+            if kwargs["prompt_version"] == WRITE_EPISODE_VERSION:
+                lengths.append(json.loads(prompt.splitlines()[-1])["length"])
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
+            run = run_script(self.root, backend="claude_code")
+        self.assertEqual(run.status, "completed", run.model_dump())
+        self.assertEqual(lengths, [word_budget(example_plan().episodes[0], WRITER_TARGET_FACTORS["claude-sonnet-5-5"])])
 
     def test_script_prompts_take_the_projects_terminology_and_the_teaching_reviews_its_goal(self):
         """2026-10-02: the planner, the writer and the script review named Query, Key and Value for every topic, also
@@ -464,6 +518,76 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(repairs[1]["draft"]["segments"][1]["text"].count("Wort"), 50, "the first correction")
         self.assertIn("66 spoken words", repairs[1]["errors"][0])
 
+    def earlier_prompt_run(self, **earlier):
+        """A two-episode run whose writing stops on ep_002 (one planned minute, 16 words) after ep_001 was accepted
+        under another writing prompt: ``earlier`` are its writing_prompt options, by default the prompt as it was before
+        the word budget. Returns the run, the fixture model for the resume, and the episodes each later writing call
+        was for; on the resume ep_002's drafts reach their length."""
+        earlier = earlier or {"budget": False}
+        from podcast_automate.script_pipeline import ScriptRun
+        written, long_enough = [], [False]
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            payload = json.loads(prompt.splitlines()[-1])
+            if output_type is SeriesPlan:
+                second = value.episodes[0].model_copy(deep=True)
+                second.episode_id, second.title, second.target_minutes = "ep_002", "Further consequences", 1.0
+                value.episodes.append(second)
+            elif output_type is EpisodeScript:
+                # Writing, polishing and repairs carry the episode under different keys.
+                value.episode_id = (payload.get("episode") or payload.get("draft") or payload.get("original"))["episode_id"]
+                if kwargs["prompt_version"] == WRITE_EPISODE_VERSION:
+                    written.append(value.episode_id)
+                if value.episode_id == "ep_002" and long_enough[0]:
+                    value.segments[1].text += " Wort" * 100
+            return value, meta
+        original = ScriptRun.writing_prompt
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
+                patch.object(ScriptRun, "writing_prompt", lambda run, plan, entry, **_: original(run, plan, entry, **earlier)):
+            run = run_script(self.root)
+        self.assertEqual(run.stages["writing"].error.code, "invalid_script", run.stages["writing"].error)
+        self.assertIn("3 Mal mit Korrekturhinweis", run.stages["writing"].error.message, "the three corrections it had")
+        written.clear()
+        long_enough[0] = True
+        return run, model, written
+
+    def test_a_draft_accepted_before_the_word_budget_is_kept_on_resume(self):
+        """Transformer, 2026-10-04: 13 drafts were accepted when ep_012 stopped the writing. The budget only states the
+        length validate_script already held them to, so a resume writes the open episode and keeps the rest."""
+        run, model, written = self.earlier_prompt_run()
+        drafts = self.root / "runs" / run.run_id / "drafts"
+        kept = {name: (drafts / name).read_bytes() for name in ("ep_001.json", "ep_001.checkpoint.json")}
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(resumed.stages["writing"].status, "completed", resumed.stages["writing"].error)
+        self.assertEqual(written, ["ep_002"])
+        self.assertEqual({name: (drafts / name).read_bytes() for name in kept}, kept)
+
+    def test_a_draft_accepted_under_another_writers_target_is_kept_after_a_text_switch(self):
+        """Only Sonnet 5.5 is shown a target above the plan, so a switch to another writer changes the writing prompt;
+        the drafts Sonnet wrote stand all the same."""
+        run, model, written = self.earlier_prompt_run(factor=1.3)
+        draft = self.root / "runs" / run.run_id / "drafts" / "ep_001.json"
+        before = draft.read_bytes()
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(resumed.stages["writing"].status, "completed", resumed.stages["writing"].error)
+        self.assertEqual((written, draft.read_bytes()), (["ep_002"], before))
+
+    def test_a_draft_accepted_before_the_word_budget_is_written_anew_when_it_fails_a_check_now(self):
+        run, model, written = self.earlier_prompt_run()
+        draft, stamp = (self.root / "runs" / run.run_id / "drafts" / name for name in ("ep_001.json", "ep_001.checkpoint.json"))
+        broken = json.loads(draft.read_text(encoding="utf-8"))
+        for segment in broken["segments"]:
+            segment["knowledge_refs"] = []
+        write_json(draft, broken)
+        write_json(stamp, {**json.loads(stamp.read_text(encoding="utf-8")), "sha256": file_hash(draft)})
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(resumed.stages["writing"].status, "completed", resumed.stages["writing"].error)
+        self.assertEqual(sorted(written), ["ep_001", "ep_002"])
+
     def test_a_long_cold_open_reaches_the_quality_report_as_an_advisory(self):
         opening = " ".join(["Wort"] * 101)
         def model(prompt, output_type, directory, **kwargs):
@@ -574,6 +698,65 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(self.calls.count(ScriptReview) - before, 3, "one new review after each of three new repairs")
         checkpoint = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_checkpoint.json").read_text(encoding="utf-8"))
         self.assertEqual(checkpoint["repairs"], 3)
+
+    def first_review_advises(self, *advisories):
+        """The fixture model whose first script review raises nothing and files ``advisories``; later reviews pass."""
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is ScriptReview and not kwargs["prompt_version"].endswith("+followup"):
+                value.advisories = list(advisories)
+            return value, meta
+        return model
+
+    def test_a_first_reviews_own_advisory_is_a_note_unless_it_concerns_evidence_or_scope(self):
+        """Ontologies ep_019, 2026-10-04: the review filed a closing-structure point as an advisory in every round
+        ("trimming is optional … do not block"), and the code counted it as an issue each time, until all three repairs
+        were spent and the run stopped. A structure, clarity, depth or dialogue advisory is now a note."""
+        structure = ScriptIssue(category="structure", segment_ids=["seg_002"], reason="Two summing-up turns; trimming is optional.")
+        clarity = ScriptIssue(category="clarity", segment_ids=["seg_001"], reason="The opening question could be sharper.")
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.first_review_advises(structure, clarity)):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 1, "no repair, so no review after one")
+        work = self.root / "runs" / run.run_id
+        report = json.loads((work / "reviews/ep_001.json").read_text(encoding="utf-8"))
+        self.assertEqual((report["issues"], [a["category"] for a in report["advisories"]]), ([], ["structure", "clarity"]))
+        notes = json.loads((work / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertEqual([n["reason"] for n in notes], [structure.reason, clarity.reason])
+
+    def test_a_first_reviews_evidence_advisory_still_counts_as_an_issue(self):
+        grounding = ScriptIssue(category="grounding", segment_ids=["seg_002"], reason="The score direction has no finding.")
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.first_review_advises(grounding)):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 2, "the first review and one after the repair it caused")
+
+    def test_a_review_stopped_under_v12_on_a_point_its_reviewer_called_optional_is_reviewed_again(self):
+        """Ontologies ep_019, 2026-10-04: three repairs spent on a structure point, and the run stopped. v13 only relaxes
+        v12, so the resume reviews the saved draft once more instead of stopping again; where the review files the point
+        as an advisory it is a note, and no repair runs."""
+        with patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.persistent_review("structure", "Three summing-up turns in a row.")):
+            run = run_script(self.root)
+        self.assertEqual(run.stages["review"].error.code, "script_review_failed")
+        path = self.root / "runs" / run.run_id / "reviews/ep_001_checkpoint.json"
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["repairs"], 3)
+        write_json(path, {**saved, "script_review_version": "script_review.v12-source-corrected"})
+        optional = ScriptIssue(category="structure", segment_ids=["seg_002"], reason="Still three turns; trimming is optional.")
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is ScriptReview:
+                value.advisories = [optional]
+            return value, meta
+        reviews, scripts = self.calls.count(ScriptReview), self.calls.count(EpisodeScript)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual(resumed.status, "completed", resumed.stages["review"].error)
+        self.assertEqual((self.calls.count(ScriptReview) - reviews, self.calls.count(EpisodeScript) - scripts), (1, 0))
+        notes = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertEqual([n["reason"] for n in notes], [optional.reason])
 
     def follow_up_model(self, basis):
         """The first review raises a grounding point on seg_002, which the repair rewrites. The first review after
@@ -700,14 +883,16 @@ class ScriptingTests(fixtures.ScriptProjectCase):
     def test_a_saved_verdict_stands_across_a_relaxing_review_version_only_when_it_blocked_nothing(self):
         from podcast_automate.script_checks import RELAXED_REVIEW_VERSIONS
         from podcast_automate.script_pipeline import saved_verdict_stands
-        (relaxed,) = RELAXED_REVIEW_VERSIONS
+        self.assertEqual(RELAXED_REVIEW_VERSIONS, {"script_review.v11-core-limits", "script_review.v12-source-corrected"})
         passed = ScriptReview(issues=[ScriptIssue(category="clarity", segment_ids=["seg_001"], reason="Noted.")], limitations=[])
         blocking = ScriptReview(issues=[ScriptIssue(category="grounding", segment_ids=["seg_001"], reason="Drift.")], limitations=[])
         self.assertTrue(saved_verdict_stands(SCRIPT_REVIEW_VERSION, blocking))
-        self.assertTrue(saved_verdict_stands(relaxed, passed), "an episode the earlier version passed is not reviewed again")
-        self.assertFalse(saved_verdict_stands(relaxed, blocking), "one it blocked is reviewed again before a repair")
+        for relaxed in sorted(RELAXED_REVIEW_VERSIONS):
+            with self.subTest(version=relaxed):
+                self.assertTrue(saved_verdict_stands(relaxed, passed), "an episode the earlier version passed is not reviewed again")
+                self.assertFalse(saved_verdict_stands(relaxed, blocking), "one it blocked is reviewed again before a repair")
+                self.assertFalse(saved_verdict_stands(relaxed, None))
         self.assertFalse(saved_verdict_stands("script_review.v8-evidence", passed))
-        self.assertFalse(saved_verdict_stands(relaxed, None))
 
     def test_the_review_scope_follows_changed_segments_and_previous_issues(self):
         before = example_script()
@@ -716,14 +901,19 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(changed_segments(before, after), ["seg_002"])
         self.assertEqual(changed_segments(before, before), [])
         point = lambda segment, category="grounding": ScriptIssue(category=category, segment_ids=[segment], reason="r")
+        # Of the review's own advisories in scope, only evidence and scope points count as issues (2026-10-04: a
+        # structure point its reviewer called optional in every round took all three repairs of Ontologies ep_019).
         review = ScriptReview(issues=[point("seg_001"), point("seg_003"), point("seg_004"), point("seg_005")],
                               limitations=[], issue_basis=["previous", "changed", "source_contradiction", "changed"],
-                              advisories=[point("seg_003", "clarity"), point("seg_002")])
+                              advisories=[point("seg_003", "clarity"), point("seg_002"), point("seg_001", "structure"),
+                                          point("seg_003", "scope")])
         previous = ScriptReview(issues=[point("seg_001")], limitations=[])
         scoped = follow_up_scope(review, previous, ["seg_002", "seg_003"])
-        self.assertEqual([i.segment_ids[0] for i in scoped.issues], ["seg_001", "seg_003", "seg_004", "seg_002"])
+        self.assertEqual([(i.segment_ids[0], i.category) for i in scoped.issues],
+                         [("seg_001", "grounding"), ("seg_003", "grounding"), ("seg_004", "grounding"),
+                          ("seg_002", "grounding"), ("seg_003", "scope")])
         self.assertEqual([(i.segment_ids[0], i.category) for i in scoped.advisories],
-                         [("seg_005", "grounding"), ("seg_003", "clarity")])
+                         [("seg_005", "grounding"), ("seg_003", "clarity"), ("seg_001", "structure")])
 
     def test_a_new_whole_episode_point_after_a_repair_is_an_advisory_unless_it_repeats_or_is_critical(self):
         """Finding of 2026-10-02: a point naming no segment was always in scope, so a new whole-episode structure point
@@ -738,10 +928,12 @@ class ScriptingTests(fixtures.ScriptProjectCase):
                               advisories=[whole("structure", "The outro is thin."), whole("depth", "Stays abstract."),
                                           whole("clarity", "One term is unexplained.")])
         scoped = follow_up_scope(review, previous, ["seg_001"])
-        self.assertEqual([i.reason for i in scoped.issues],
-                         ["Still no worked example.", "The year is wrong.", "The outro is thin."])
+        self.assertEqual([i.reason for i in scoped.issues], ["Still no worked example.", "The year is wrong."])
+        # The structure point the review filed as an advisory repeats a whole-episode category, and stays an advisory
+        # all the same: only evidence and scope advisories count as issues (2026-10-04).
         self.assertEqual([i.reason for i in scoped.advisories],
-                         ["Drifts into training.", "A claim lacks a finding.", "Stays abstract.", "One term is unexplained."])
+                         ["Drifts into training.", "A claim lacks a finding.", "The outro is thin.", "Stays abstract.",
+                          "One term is unexplained."])
 
     def test_review_policy_fix_rechecks_latest_draft_without_resetting_used_repairs(self):
         def rejected(prompt, output_type, directory, **kwargs):

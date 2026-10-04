@@ -119,7 +119,9 @@ class TopicBrief(Contract):
     seed_urls: list[str] = Field(default_factory=list)
     local_sources: list[str] = Field(default_factory=list)
     target_total_minutes: float | None = Field(default=None, gt=0)
-    # The longest audio part a recording is split into, not a cap on an episode (that is MAX_EPISODE_MINUTES).
+    # Unused since 2026-10-04, when one episode became one MP3; until then the longest audio part a recording was split
+    # into. Kept because every run's project hash (storage.project_hash) includes it: dropping it would refuse every
+    # resume with inputs_changed. The cap on an episode is script_models.MAX_EPISODE_MINUTES.
     max_episode_minutes: Literal[30] = 30
     research_limits: ResearchLimits = Field(default_factory=ResearchLimits)
     # project.yaml records the CLI defaults. The Studio stores a project's actual provider

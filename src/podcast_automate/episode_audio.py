@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import json
 import uuid
-import wave
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .audio import PAUSE_TAGS, applied_pause, assemble, run_tts, worker_path
+from .audio import PAUSE_TAGS, assemble, run_tts, worker_path
 from .errors import AppError
 from .expression import EXPRESSION_VERSION, plan_expression, untagged
 from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels
@@ -93,48 +92,6 @@ def select_script(script, segments, *, title=None, episode_id=None):
     return EpisodeScript(episode_id=episode_id or script.episode_id, title=title or script.title,
         purpose=script.purpose, chapters=[c for c in script.chapters if c.chapter_id in chapters],
         segments=segments)
-
-
-def segment_durations(script, paths, pauses):
-    """Seconds each segment occupies in the montage: its audio plus the pause assembly will apply.
-
-    The same ``applied_pause`` decides both numbers, so a part that fits here also fits in
-    ``assemble``. Sizing parts with the planned pause alone let a near-cap episode pass
-    partitioning and fail with ``duration_exceeded`` after synthesis had been paid for.
-    """
-    durations = []
-    for index, wav in enumerate(paths):
-        with wave.open(str(wav), "rb") as stream:
-            seconds = stream.getnframes() / stream.getframerate()
-        durations.append(seconds + applied_pause(script, index, pauses)[0] / 1000)
-    return durations
-
-
-def partition_audio(script, durations, max_seconds):
-    """Keep chapters together; choose the fewest, most evenly sized consecutive parts."""
-    limit = max_seconds - 0.2  # MP3 encoder delay can add a few milliseconds.
-    chunks = []
-    for chapter in script.chapters:
-        indices = [i for i, s in enumerate(script.segments) if s.chapter_id == chapter.chapter_id]
-        if sum(durations[i] for i in indices) <= limit:
-            chunks.append(indices)
-        else:
-            chunks.extend([[i] for i in indices])
-    if any(sum(durations[i] for i in chunk) > limit for chunk in chunks):
-        raise AppError("Ein einzelnes Segment überschreitet die Dateilänge.", code="duration_exceeded", status="blocked")
-    best = [(0, 0.0, [])] + [None] * len(chunks)
-    for end in range(1, len(chunks) + 1):
-        duration = 0.0
-        for start in range(end - 1, -1, -1):
-            duration += sum(durations[i] for i in chunks[start])
-            if duration > limit:
-                break
-            count, cost, groups = best[start]
-            candidate = (count + 1, cost + duration * duration,
-                         groups + [[i for chunk in chunks[start:end] for i in chunk]])
-            if best[end] is None or candidate[:2] < best[end][:2]:
-                best[end] = candidate
-    return best[-1][2]
 
 
 def timestamp(seconds: float) -> str:
@@ -504,29 +461,25 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 raise AppError("Skript während der Vertonung geändert; Montage wartet auf Textprüfung.", code="script_edited", status="blocked")
             report = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
             paths = validate_audio(script, report)
-            groups = partition_audio(script, segment_durations(script, paths, choice.pauses),
-                                     config.max_episode_minutes * 60)
             destination = root / "exports" / episode / manifest.run_id
             # Segments whose recording carries a pause tag: assembly shortens their dead air (audio.assemble).
             paused = {key for key, text in expression_tags().items() if any(tag in text for tag in PAUSE_TAGS)}
-            outputs, parts = [], []
-            for number, indices in enumerate(groups, 1):
-                part = select_script(script, [script.segments[i] for i in indices],
-                    title=script.title if len(groups) == 1 else f"{script.title} – Teil {number} von {len(groups)}")
-                folder = destination if len(groups) == 1 else destination / f"part_{number:02d}"
 
-                def assembly_progress(step, done=0, total=0, number=number):
-                    # The Studio shows the montage step instead of a finished synthesis counter.
-                    write_json(work / "progress.json", {"status": "assembly", "step": step, "part": number,
-                        "parts": len(groups), "completed_segments": done, "total_segments": total})
-                outputs.extend(assemble(part, [paths[i] for i in indices], folder,
-                    max_seconds=config.max_episode_minutes * 60, language=config.language,
-                    labels=host_labels(config), pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused))
-                audio_report = json.loads((folder / "audio_report.json").read_text(encoding="utf-8"))
-                parts.append({"part": number, "audio": (folder / "audio.mp3").relative_to(root).as_posix(),
-                              "duration_seconds": audio_report["duration_seconds"],
-                              "segment_ids": [s.segment_id for s in part.segments]})
-            write_json(work / "parts.json", {"parts": parts, "total_seconds": sum(p["duration_seconds"] for p in parts)})
+            def assembly_progress(step, done=0, total=0):
+                # The Studio shows the montage step instead of a finished synthesis counter.
+                write_json(work / "progress.json", {"status": "assembly", "step": step,
+                                                    "completed_segments": done, "total_segments": total})
+            # One episode is one MP3, whatever its length (the user's rule, 2026-10-04). Until then an episode over 30
+            # minutes (max_episode_minutes) was split into parts of at most 30 minutes; the script check alone bounds
+            # an episode now, at script_models.MAX_EPISODE_MINUTES. parts.json keeps its form, with the one part.
+            whole = select_script(script, list(script.segments), title=script.title)
+            outputs = assemble(whole, paths, destination, language=config.language, labels=host_labels(config),
+                               pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused)
+            audio_report = json.loads((destination / "audio_report.json").read_text(encoding="utf-8"))
+            parts = [{"part": 1, "audio": (destination / "audio.mp3").relative_to(root).as_posix(),
+                      "duration_seconds": audio_report["duration_seconds"],
+                      "segment_ids": [s.segment_id for s in whole.segments]}]
+            write_json(work / "parts.json", {"parts": parts, "total_seconds": parts[0]["duration_seconds"]})
             return [*outputs, work / "parts.json"]
 
         def publish():
@@ -540,7 +493,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             for part in parts["parts"]:
                 audio = root / part["audio"]
                 relative = audio.relative_to(destination).as_posix()
-                lines.append(f"- [Teil {part['part']} anhören]({relative}) – {part['duration_seconds']/60:.2f} Minuten")
+                lines.append(f"- [Folge anhören]({relative}) – {part['duration_seconds']/60:.2f} Minuten")
                 playlist.append(relative)
             if overrides:
                 lines.extend(["", "## Abweichende Sprechformen", ""])

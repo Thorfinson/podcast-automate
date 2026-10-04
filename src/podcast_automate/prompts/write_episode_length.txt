@@ -1,0 +1,7 @@
+length is this episode's word budget in spoken words, and it takes the place of deriving words
+from target_minutes yourself: write at least length.minimum_words and aim for length.target_words.
+length.scene_words spreads the target over the scenes by their explanation steps. Plan each scene's
+turns against its share before you write it; a scene may take more or fewer words where its
+reasoning needs them, but the total counts. First drafts tend to come out far shorter than intended,
+so compare the length with the budget before you answer. Reach it with the reasoning, worked steps,
+examples and consequences the teaching design asks for, never with repetition, recaps or banter.

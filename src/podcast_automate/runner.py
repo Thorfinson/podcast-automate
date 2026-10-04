@@ -165,8 +165,7 @@ def run_probe(root: Path, *, kind: str | None = None,
         def assembly_stage():
             report = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
             paths = [inside(root / "cache/audio", row["path"]) for row in report["segments"]]
-            return assemble(script, paths, root / "probes/audio" / manifest.run_id,
-                            max_seconds=config.max_episode_minutes * 60, language=config.language)
+            return assemble(script, paths, root / "probes/audio" / manifest.run_id, language=config.language)
 
         actions = {"codex_probe": text_stage, "synthesis": synthesis_stage, "assembly": assembly_stage}
         return execute_stages(root, manifest, path, actions)

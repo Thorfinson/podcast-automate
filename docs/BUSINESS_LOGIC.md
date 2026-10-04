@@ -101,7 +101,8 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 
 ### An unusable subscription under `auto`
 
-- Unusable means an expired login, no subscription login, or a CLI that is missing, cannot start or is too old
+- Unusable means an expired login, no subscription login, a CLI that is missing, cannot start or is too old, or a
+  Codex call that failed for a reason the adapter cannot name (`codex_failed`, since 2026-10-04; why: D-130)
   (`provider_pool.UNAVAILABLE_CODES`). Under `auto` such a failure moves the call to the other subscription as a quota
   failure does, and the rule passes the failed one over for ten minutes (`subscriptions.UNAVAILABLE_SECONDS`, 600 s,
   as long as a cached login is trusted). For a login reason (`subscriptions.LOGIN_REASONS`) it re-checks the login at
@@ -387,11 +388,12 @@ sub-questions and their decisions: [RESEARCH](RESEARCH.md#blocked-sub-questions-
 
 ### Episode length
 
-- An episode lasts at most 60 minutes (`script_models.MAX_EPISODE_MINUTES`); the recording splits it into parts of at
-  most 30 minutes. (why: D-003)
-- `max_episode_minutes` in `project.yaml` is fixed at 30: the longest audio part of a recording, not a cap on an
-  episode. Series planning does not see it, because the planner reads only the editorial fields of the brief
-  ([SCRIPTS](SCRIPTS.md#series-plan)). (why: D-070)
+- An episode lasts at most 60 minutes (`script_models.MAX_EPISODE_MINUTES`). (why: D-128)
+- **One episode is one MP3**, whatever its length; the recording is not split (`episode_audio`). Until 2026-10-04 it
+  was split into parts of at most 30 minutes. (why: D-128)
+- `max_episode_minutes` in `project.yaml` is fixed at 30 and unused since then; it stays because every run's project
+  hash includes it, and removing it would refuse every resume with `inputs_changed`. Series planning does not see it,
+  because the planner reads only the editorial fields of the brief ([SCRIPTS](SCRIPTS.md#series-plan)). (why: D-070)
 - The series plan sizes `target_minutes` per episode by the explanation needed, 15 to 60 minutes
   (`prompts/series_plan.txt`); one connected explanation stays in one episode.
 
@@ -402,9 +404,11 @@ sub-questions and their decisions: [RESEARCH](RESEARCH.md#blocked-sub-questions-
   2026-10-02 measured 125 to 131), plus a slow comparison estimate at 100. The check per audio provider is open (see
   V-16).
 - A script estimated above 60 minutes is returned; one under 85 % of its planned duration is returned for revision of
-  its content (`script_checks.py`). This catches a gross miss of the scope, not missing depth of explanation. The slow
-  estimate is no measured duration and does not limit the text further.
-- After rendering, the measured audio duration counts: each audio part is checked against the 30-minute limit before
-  export, and episodes that are too long are revised or split before the final export; the speaking rate is never
-  raised to get around the limit. Splitting into parts: [AUDIO](AUDIO.md#recording-flow); the gate `duration_check`:
+  its content (`script_checks.MIN_DURATION_SHARE`). This catches a gross miss of the scope, not missing depth of
+  explanation. The slow estimate is no measured duration and does not limit the text further. The writer gets this
+  floor and a target as a computed word budget; only for Claude Sonnet 5.5 is that target above the plan
+  ([SCRIPTS](SCRIPTS.md#what-each-step-receives)).
+- The script check before the recording is the length limit: the montage writes the whole episode as one MP3 and
+  stops at no length, and the speaking rate is never raised to shorten an episode. The measured duration is in the
+  audio report ([AUDIO](AUDIO.md#output-format-and-chapters)); the gate `duration_check`:
   [QUALITY](QUALITY.md#quality-gates).

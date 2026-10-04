@@ -281,7 +281,7 @@ last line), outputs (Pydantic contracts as strict JSON schema) and deterministic
 `prompts.py`. Shared rule blocks (terminology, teaching standard, continuity, episode framing, evidence rules) are
 placed before the task-specific instructions.
 
-Every call carries a version tag in code, for example `write_episode.v9-core-limits`
+Every call carries a version tag in code, for example `write_episode.v11-raised-target`
 (`script_pipeline.WRITE_EPISODE_VERSION`). Checkpoints are bound to the hash of the complete composed prompt, so a
 text change repeats only the affected calls ([Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
 When the meaning of a prompt changes, the tag at the call site is bumped so receipts show which wording produced a
@@ -436,8 +436,8 @@ Each stage's full outputs are listed in [Research outputs](RESEARCH.md#outputs),
 and [Exports and listening sheet](AUDIO.md#exports-and-listening-sheet).
 
 After audio approval, every selected episode additionally gets an export folder `exports/<episode_id>/<run_id>/` with
-`audio.mp3`, `chapters.json`, `transcript.md` and `show_notes.md` among other files; an episode recorded in several
-parts has one `part_NN/` folder per part. During audio generation, `timeline.json` in the same folder records the
+`audio.mp3`, `chapters.json`, `transcript.md` and `show_notes.md` among other files; one MP3 per episode since
+2026-10-04, and an episode recorded in parts before that has one `part_NN/` folder per part. During audio generation, `timeline.json` in the same folder records the
 actually measured segment times and their mapping to script and chapters. Reusable audio segments are in
 `cache/audio/`.
 
@@ -495,7 +495,7 @@ Every model call has its folder `runs/<run_id>/calls/call_NNN/`:
 | `metadata.json` | Adapter | Provider, models, versions, usage, cost and search figures (below) |
 | `response.json` | Adapter | The validated answer |
 | `rejected_output.json` | Adapter | A parsed answer the contract rejected; it is model output like an accepted answer, and the call stays charged |
-| `failure.json` | Adapter | Code, message, exit code, model, level, prompt version and CLI version of a failed call, never raw provider output or the prompt; with `rejected_output` the rejected fields |
+| `failure.json` | Adapter | Code, message, exit code, model, level, prompt version and CLI version of a failed call, never raw provider output or the prompt; with `rejected_output` the rejected fields; with `codex_failed` Codex's own short reason (`provider_message`, redacted, at most 300 characters) |
 | `search_events.json` | Subscription adapters | Observed search and open-page tool events |
 | `diagnostics.json` | `call_activity.CallActivity` | Cleaned technical diagnostics, also after timeout or stop (times, request size, events, error categories such as connection, rate limit or answer format); no raw error messages, prompts, tool output or credentials |
 | `activity.json` | `call_activity.CallActivity` | Public activity record of the call |

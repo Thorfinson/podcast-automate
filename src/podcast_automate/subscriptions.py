@@ -38,7 +38,7 @@ REASON_LABELS = {
     "codex_missing": "Codex CLI nicht gefunden", "claude_missing": "Claude Code nicht gefunden",
     "missing_executable": "CLI nicht startbar", "authentication_required": "nicht angemeldet",
     "subscription_required": "keine Abo-Anmeldung", "timeout": "Kontingentabfrage ohne Antwort",
-    "codex_failed": "Kontingentabfrage fehlgeschlagen", "rate_limit_reached": "Limit erreicht",
+    "codex_failed": "Codex-Aufruf oder Kontingentabfrage fehlgeschlagen", "rate_limit_reached": "Limit erreicht",
     "window_exhausted": "Fenster ausgeschöpft", "spend_control_reached": "Ausgabengrenze erreicht",
     "usage_not_allowed": "Nutzung derzeit nicht erlaubt", "weekly_limit": "Wochenlimit",
     "opus_limit": "Opus-Limit", "session_limit": "Sitzungslimit", "unclear_limit": "Limit",

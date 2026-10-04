@@ -133,7 +133,7 @@ Short recaps are allowed; explained foundations should not form the main part of
 
 - Only the project's editorial fields (`script_pipeline.PLANNING_BRIEF`: `topic`, `language`, `audience_level`,
   `prior_knowledge`, `depth_request`, `focus_questions`, `excluded_topics`, `seed_people`, `target_total_minutes`,
-  `series_goal`), not the whole configuration (why: D-070); the audio part length `max_episode_minutes` stays hidden.
+  `series_goal`), not the whole configuration (why: D-070); the unused `max_episode_minutes` stays hidden.
 - An [assembled dossier](RESEARCH.md#assembled-dossier) without quote excerpts and claim profiles
   (`script_checks.planning_dossier`): the plan assigns findings by their statement, and each episode reads its
   findings in full when written.
@@ -225,6 +225,17 @@ A subject example at the start and an open question at the end are not enough.
   writing, polishing and its comparison, the script review, and the editorial and teaching reviews.
 - Writing gets only the plan's `scope_note` and the dependencies between the episode's findings, not the whole series
   plan; order, roles and questions come from the series context (why: D-073).
+- Writing gets its word budget computed, as `length` in the payload (`script_checks.word_budget`,
+  `prompts/write_episode_length.txt`): at least the words of 85 % of `target_minutes` (the check below), a target, and
+  that target spread over the scenes by the number of their explanation steps. Until 2026-10-04 the writer derived the
+  budget itself, and every first draft of the Transformer series came in at 58 to 75 % of it. (why: D-127)
+- **Only for Claude Sonnet 5.5** the target is set above the plan, at 1.3 times its words
+  (`script_checks.WRITER_TARGET_FACTORS`): shown the plan itself, Sonnet wrote 71 % of it. Every other model is shown
+  the plan until its own drafts are measured. The factor follows the run's first writer: its fixed model, or under
+  `auto` the preferred candidate, so an `auto` call that falls to Codex gets Sonnet's target. The hour limit stays with
+  the check below, not the target.
+- A draft accepted under another budget, or before there was one, stands on resume while it still passes every check,
+  also after a text switch to a writer with another target; only the open episodes are written anew.
 
 ### Reading before recording
 
@@ -318,7 +329,8 @@ sets the audio approval back to pending.
 - At writing, a draft that breaks these checks or falls short of its planned duration (the 85 % rule in
   [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)) is corrected up to three times, each
   correction reworking the latest attempt against its own defects; a short script is told how many words it has and
-  needs at `script_artifacts.SPOKEN_WORDS_PER_MINUTE`. Then writing stops with `invalid_script`.
+  needs at `script_artifacts.SPOKEN_WORDS_PER_MINUTE`. Then writing stops with `invalid_script`, and the message names
+  the three corrections.
 
 ### Evidence review
 
@@ -334,6 +346,11 @@ and the dialogue.
   adoption, and drafts and objections stay saved. **„Mit neuen Anläufen fortsetzen“** (resume with fresh attempts) or
   `pla approve <project> --fresh-attempts` gives a review stopped this way three new revisions against the same
   review report.
+- A point the review itself files as an advisory (`advisories`) is its own verdict that the point does not block, and
+  it stays a note in the report and `accepted_notes.json`, in the first review and after a revision. Only an evidence
+  or scope point (`script_pipeline.STRICT_CATEGORIES`: `grounding`, `scope`) counts as an objection wherever the scope
+  reaches it. Until 2026-10-04 every first-review advisory counted, and after a revision every one but clarity, depth
+  and dialogue. (why: D-126)
 - After a subscription pause too, a text already corrected need not be written again.
 
 ### Scoped follow-up review
@@ -349,7 +366,9 @@ An objection about the whole episode, without a segment, blocks only if the prev
 category about the whole episode, or as a factual or source error. Everything else, for example a missing reference
 or a statement about something missing without a gap probe in a segment the previous review passed unchanged, is an
 advisory (`advisories`) in the report and notes. Code sets the scope by comparing the versions; the verdict only
-marks what is critical. So the review converges instead of finding new details in the same text every round.
+marks what is critical. So the review converges instead of finding new details in the same text every round. Within
+the scope, a point the review filed as an advisory blocks only as an evidence or scope point
+([above](#evidence-review)).
 
 If a version had no blocking objections and a later revision (say, for understandability) breaks its evidence, the
 evidenced version stands with its notes; the discarded version and its review are kept in
@@ -363,12 +382,14 @@ The review compares each segment that cites findings with the cited source secti
 
 - If a finding deviates from its source and the segment repeats the error, that is a deviation in the field `source`,
   and the repair follows the section.
-- If the segment already follows the section, the verdict is `source_corrected` (`script_checks.SCRIPT_REVIEW_VERSION`
-  = `script_review.v12-source-corrected`): no objection, but a note in the review limitations that the dossier
+- If the segment already follows the section, the verdict is `source_corrected` (since
+  `script_review.v12-source-corrected`): no objection, but a note in the review limitations that the dossier
   finding is inaccurate, shown in the Studio when reading (why: D-085). A deviation therefore does not enter the
   follow-up review as a previous objection; that review judges each segment afresh.
-- A `script_review.v11-core-limits` verdict that blocked nothing stays valid on resume
-  (`script_checks.RELAXED_REVIEW_VERSIONS`); a blocking one is reviewed again before the next correction.
+- Today's version is `script_review.v13-reviewer-advisories` (`script_checks.SCRIPT_REVIEW_VERSION`). A
+  `script_review.v11-core-limits` or `script_review.v12-source-corrected` verdict that blocked nothing stays valid on
+  resume (`script_checks.RELAXED_REVIEW_VERSIONS`); a blocking one is reviewed again before the next correction, also
+  when its repairs are spent.
 
 ### Reader, editorial and teaching reviews
 

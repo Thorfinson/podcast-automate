@@ -363,6 +363,39 @@ class PoolUnitTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "claude_quota_exhausted")
         self.assertEqual(error.exception.details["provider"], "claude_code")
 
+    def test_a_codex_call_that_fails_for_an_unnamed_reason_moves_to_claude_under_auto(self):
+        """2026-10-04: the Codex account fell to the free plan, every call of the Transformer run (Codex first) failed
+        two seconds after its start as codex_failed, and the run stopped three times with Claude ready. Under auto the
+        call now moves to Claude and Codex is passed over for a while; a fixed Codex choice still stops."""
+        config = TopicBrief(topic="Thema")
+        answer = TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz")
+        failed = AppError("Codex-Aufruf fehlgeschlagen: model not available on your plan.", code="codex_failed",
+                          details={"provider_message": "model not available on your plan"})
+        astra_first = {**text_generation_settings(config, backend="auto"), "prefer": "codex_cli"}
+        QuotaFakes(self)
+        with tempfile.TemporaryDirectory() as temp, \
+                patch("podcast_automate.provider_pool.CodexAdapter.structured", side_effect=failed), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", return_value=(answer, {})):
+            folder = Path(temp) / "auto"
+            output, _ = AdapterPool(config.runtime, astra_first).structured("Prompt", TextProbeOutput, folder,
+                                                                           prompt_version="test")
+            self.assertEqual(output, answer)
+            self.assertEqual(json.loads((folder / "provider_choice.json").read_text(encoding="utf-8"))["provider"],
+                             "claude_code")
+            switch = json.loads((folder / "provider_switch.json").read_text(encoding="utf-8"))
+            self.assertEqual((switch["from"], switch["to"], switch["error_code"]), ("codex_cli", "claude_code", "codex_failed"))
+            self.assertIn("model not available on your plan", switch["message"])
+            self.assertEqual(subscriptions.unavailable_state("codex_cli")["reason"], "codex_failed")
+            # The next call goes to Claude at once while the note holds.
+            with patch("podcast_automate.provider_pool.CodexAdapter.structured", side_effect=AssertionError("passed over")):
+                AdapterPool(config.runtime, astra_first).structured("Prompt", TextProbeOutput, Path(temp) / "next",
+                                                                    prompt_version="test")
+            with patch("podcast_automate.provider_pool.CodexAdapter.structured", side_effect=failed), \
+                    self.assertRaises(AppError) as fixed:
+                AdapterPool(config.runtime, text_generation_settings(config, backend="codex_cli")).structured(
+                    "Prompt", TextProbeOutput, Path(temp) / "fixed", prompt_version="test")
+        self.assertEqual(fixed.exception.code, "codex_failed")
+
     def test_a_fixed_codex_quota_error_names_its_provider_without_a_quota_query(self):
         config = TopicBrief(topic="Thema")
         pool = AdapterPool(config.runtime, text_generation_settings(config, backend="codex_cli"))
