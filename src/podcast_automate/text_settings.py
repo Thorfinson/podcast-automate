@@ -30,12 +30,25 @@ DEFAULT_CLAUDE_EFFORT = "high"
 CLAUDE_MODELS = {"claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-opus-5-5": "Claude Opus 5.5",
                  "claude-opus-5": "Claude Opus 5"}
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-# Stages whose task needs less thought than the run's level: a first-time listener who should only take in
-# what the dialogue itself explains, and the placing of expression tags for Gemini's reading. Each call of
-# these stages uses at most this level on a subscription; evidence and teaching reviews, writing and every
-# repair keep the run's own (2026-09-29, after the review calls of Astra at xhigh took 7 to 10 minutes each).
-# prompt_version's family names the stage; provider_choice.json records the run's level as ``run_effort``.
-STAGE_EFFORT_CAPS = {"listener_readback": "medium", "audio_expression": "medium"}
+# Stages whose task needs less thought than the run's level: the placing of expression tags for Gemini's reading,
+# and every review at the routine role A1 (STAGE_AUTHORITY), today only the first-time listener, who should take in
+# only what the dialogue itself explains. Each such call uses at most this level on a subscription; evidence and
+# teaching reviews, writing and every repair keep the run's own (2026-09-29, after the review calls of Astra at
+# xhigh took 7 to 10 minutes each). prompt_version's family names the stage; provider_choice.json records the run's
+# level as ``run_effort``.
+STAGE_EFFORT_CAPS = {"audio_expression": "medium"}
+A1_EFFORT = "medium"
+# The role each review plays (review-loop plan §5, §10): A1 routine review at A1_EFFORT, A2 expert review at the run's
+# level. A call of any other family plays A2 too, so it keeps today's candidates. Moving a review to A1 needs its
+# stage's eval and a decision entry (plan §10).
+STAGE_AUTHORITY = {"listener_readback": "A1", "dialogue_polish_review": "A2", "editorial_review": "A2",
+                   "teaching_review": "A2", "script_review": "A2", "teaching_design_review": "A2",
+                   "series_review": "A2"}
+# A prompt_version carrying this tag is a call of the final adjudicator A3, the bounded last attempt of a loop whose
+# repairs are spent (plan §9.2). Under ``auto`` it asks Codex first, at A3_EFFORT; Claude has no A3 entry until an
+# Opus limit is noted for Opus alone (V-12), since one Opus limit blocks the whole Claude subscription for 5 hours.
+A3_TAG = "+a3"
+A3_EFFORT = "xhigh"
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
 # The levels an automatic choice may set for both subscriptions at once.
 SHARED_EFFORTS = tuple(effort for effort in REASONING_EFFORTS if effort in CLAUDE_EFFORTS)
@@ -108,10 +121,25 @@ def auto_candidates(codex_model=None, effort=None):
             "claude_code": {"model": DEFAULT_CLAUDE_MODEL, "reasoning_effort": effort or DEFAULT_CLAUDE_EFFORT}}
 
 
+def a3_entry(codex_model=None):
+    """The A3 rung of the ladder an automatic run stores: Codex only, at A3_EFFORT."""
+    return {"prefer": "codex_cli",
+            "candidates": {"codex_cli": {"model": codex_model or DEFAULT_CODEX_MODEL, "reasoning_effort": A3_EFFORT}}}
+
+
+def call_role(prompt_version):
+    """The role one call plays, read off its prompt_version: A3 by its tag, else its family's STAGE_AUTHORITY."""
+    version = prompt_version or ""
+    if A3_TAG in version:
+        return "A3"
+    return STAGE_AUTHORITY.get(version.split(".")[0], "A2")
+
+
 def stage_effort(prompt_version, effort):
-    """The level one call uses: the run's own, lowered to the cap of a stage STAGE_EFFORT_CAPS names. A call
-    without an explicit level keeps the provider's default."""
-    cap = STAGE_EFFORT_CAPS.get((prompt_version or "").split(".")[0])
+    """The level one call uses: the run's own, lowered to the cap of a stage STAGE_EFFORT_CAPS names or of the role
+    A1. A call without an explicit level keeps the provider's default."""
+    cap = STAGE_EFFORT_CAPS.get((prompt_version or "").split(".")[0]) or (
+        A1_EFFORT if call_role(prompt_version) == "A1" else None)
     if cap is None or effort not in EFFORT_ORDER or EFFORT_ORDER.index(effort) <= EFFORT_ORDER.index(cap):
         return effort
     return cap

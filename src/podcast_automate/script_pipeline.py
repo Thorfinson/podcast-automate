@@ -23,6 +23,7 @@ from .research_evidence import single_group_findings
 from .research_gap_probe import coverage_terms, gap_id, hit_sources, probe, settle, statuses, unread
 from .research_ledger import read_value
 from .research_patches import MAX_REJECTIONS, corrected_call, re_asked
+from .review_authority import GATE_CAP, SCOPE_RULE, a3_unavailable, gate_holds, record_round
 from .run_budget import effective_limits, teaching_redesigns
 from .runner import manifest_path, run_observer
 from .script_artifacts import publish_scripts, render_script, script_metrics
@@ -40,6 +41,7 @@ from .storage import atomic_text, digest, file_hash, write_json
 from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, build_teaching_plan,
                        prerequisite_context)
 from .teaching_research import apply_foundations, named_question, research_foundations
+from .text_settings import A3_TAG
 
 SPOKEN_DIALOGUE = fragment("spoken_dialogue")
 # research.PLAIN_LANGUAGE without its terminology rule, which the script lane takes from the project (plain_language).
@@ -98,20 +100,48 @@ def follow_up_scope(review, previous, changed):
 
     A whole-episode point (no segment) is in scope only as a repeat: the previous review raised a whole-episode
     point of its category. Until 2026-10-02 every such point was in scope, so a new whole-episode structure point
-    in a later review blocked although no earlier review had raised it."""
-    watched = set(changed) | {key for issue in previous.issues for key in issue.segment_ids}
+    in a later review blocked although no earlier review had raised it.
+
+    ``issue_basis`` of the result names one basis per kept issue, the review's own or, where it gave none, the one the
+    scope found (``previous`` for a point on a segment a previous issue named or a repeated whole-episode point,
+    ``changed`` otherwise), so the gate can tell a critical point from a dismissable one (``dismissable``)."""
+    named = {key for issue in previous.issues for key in issue.segment_ids}
+    watched = set(changed) | named
     episode_wide = {issue.category for issue in previous.issues if not issue.segment_ids}
 
     def in_scope(issue):
         return bool(set(issue.segment_ids) & watched) if issue.segment_ids else issue.category in episode_wide
-    issues, advisories = [], []
+
+    def found(issue):
+        return "previous" if not issue.segment_ids or set(issue.segment_ids) & named else "changed"
+    issues, bases, advisories = [], [], []
     for index, issue in enumerate(review.issues):
         basis = review.issue_basis[index] if index < len(review.issue_basis) else None
-        (issues if in_scope(issue) or basis in CRITICAL_BASIS else advisories).append(issue)
+        if in_scope(issue) or basis in CRITICAL_BASIS:
+            issues.append(issue)
+            bases.append(basis or found(issue))
+        else:
+            advisories.append(issue)
     for issue in review.advisories:
         # Only a noted point may stay an advisory on a segment the repair touched or a previous issue named.
-        (issues if in_scope(issue) and issue.category not in NOTED_CATEGORIES else advisories).append(issue)
-    return review.model_copy(update={"issues": issues, "advisories": advisories})
+        if in_scope(issue) and issue.category not in NOTED_CATEGORIES:
+            issues.append(issue)
+            bases.append(found(issue))
+        else:
+            advisories.append(issue)
+    return review.model_copy(update={"issues": issues, "issue_basis": bases, "advisories": advisories})
+
+
+def dismissable(review, index):
+    """Whether the gate may turn issue ``index`` of a scoped review into a note (review-loop plan §7.1): a clarity,
+    depth or dialogue point (NOTED_CATEGORIES) that a follow-up review raised without a factual or source basis and
+    that is no claim drift. Only a follow-up review's own points carry a basis (follow_up_scope). The teaching points a
+    clean review is joined by carry none and keep blocking: they are dismissable only once the script review ended
+    with accepted notes, which the end of review_episode handles as before."""
+    issue = review.issues[index]
+    basis = review.issue_basis[index] if index < len(review.issue_basis) else None
+    return (issue.category in NOTED_CATEGORIES and basis is not None and basis not in CRITICAL_BASIS
+            and not is_claim_drift(issue))
 
 
 def failed_teaching(work):
@@ -673,12 +703,13 @@ class ScriptRun:
         signature = script_review_signature(self.input_hash, file_hash(draft_file), plan, entry, work)
         # ``previous``: the draft and review before the last repair, which scope the review after it.
         # ``passed``: the latest draft whose review left nothing blocking, kept if a later repair breaks it.
-        result, repairs, previous, passed, teaching_pending = None, 0, None, None, False
+        # ``a3``: the final adjudicator's step, ``repaired`` once its repair stands, ``discarded`` if A0 rejected it.
+        result, repairs, previous, passed, teaching_pending, a3 = None, 0, None, None, False, None
         if checkpoint.exists():
             saved = json.loads(checkpoint.read_text(encoding="utf-8"))
             if saved.get("input_hash") == signature:
                 draft = EpisodeScript.model_validate(saved["draft"])
-                repairs = saved["repairs"]
+                repairs, a3 = saved["repairs"], saved.get("a3")
                 previous, passed = saved.get("previous"), saved.get("passed")
                 result = ScriptReview.model_validate(saved["review"]) if saved["review"] else None
                 teaching_pending = bool(saved.get("teaching_pending"))
@@ -700,7 +731,7 @@ class ScriptRun:
                                    "script_review_version": SCRIPT_REVIEW_VERSION,
                                    "evidence_review_version": EVIDENCE_VERSION,
                                    "previous": previous, "passed": passed,
-                                   **({"teaching_pending": True} if pending else {})})
+                                   **({"teaching_pending": True} if pending else {}), **({"a3": a3} if a3 else {})})
 
         def taught(reviewed):
             """A review that found nothing is joined by the teaching assessment, whose points are repaired alike."""
@@ -718,7 +749,8 @@ class ScriptRun:
             if previous:
                 follow_up = (ScriptReview.model_validate(previous["review"]),
                              changed_segments(EpisodeScript.model_validate(previous["draft"]), draft))
-            reviewed = self.review_script(plan, entry, draft, original_draft, probes, follow_up=follow_up)
+            reviewed = self.review_script(plan, entry, draft, original_draft, probes, follow_up=follow_up,
+                                          tag=A3_TAG if a3 == "repaired" else "")
             if not reviewed.issues:
                 # Kept before the teaching assessment starts, so a stop during it does not ask this review again
                 # (found by stopping a run at each of its calls, 2026-09-29).
@@ -740,15 +772,39 @@ class ScriptRun:
                 if teaching_pending:
                     result = taught(result)
                     save()
+        def held(review):
+            """The points that keep the loop going (G-cap, review-loop plan §7.2): every point, except a dismissable
+            one once its loop had one repair round. Such a point is a note from then on and still reaches a repair that
+            other points cause, as the review is handed over whole. Until 2026-10-04 clarity, depth and dialogue points
+            took all three repairs and then passed as notes anyway."""
+            return [issue for index, issue in enumerate(review.issues) if gate_holds(repairs) or not dismissable(review, index)]
+
+        def record(review):
+            """Append this round's points to the issue record; a resume deciding the same round again adds nothing."""
+            kept, final = held(review), a3 == "repaired"
+            record_round(work / "reviews" / f"{entry.episode_id}_issues.jsonl", stage="script_review",
+                         episode=entry.episode_id, round_=repairs + final, points=[
+                             *({"category": issue.category, "segment_ids": issue.segment_ids,
+                                "dismissable": dismissable(review, index),
+                                "status": "blocking" if issue in kept else "note",
+                                "decided_by": {"role": "A3" if final else "A2"} if issue in kept else GATE_CAP}
+                               for index, issue in enumerate(review.issues)),
+                             *({"category": issue.category, "segment_ids": issue.segment_ids, "dismissable": False,
+                                "status": "note", "decided_by": SCOPE_RULE} for issue in review.advisories)])
+
+        def repair_prompt():
+            return (self.writing_prompt(plan, entry) + "\n" + instructions("script_review_repair") + "\n" +
+                    json.dumps({"draft": draft.model_dump(), "review": result.model_dump()}, ensure_ascii=False))
+
         if result is None:
             result = check()
             save()
-        while result.issues and repairs < MAX_REVIEW_REPAIRS:
+        while True:
+            record(result)
+            if not held(result) or repairs >= MAX_REVIEW_REPAIRS:
+                break
             previous = {"draft": draft.model_dump(), "review": result.model_dump()}
-            draft = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
-                "\n" + instructions("script_review_repair") + "\n" +
-                json.dumps({"draft": draft.model_dump(), "review": result.model_dump()}, ensure_ascii=False),
-                EpisodeScript, REVIEW_REPAIR_VERSION,
+            draft = corrected_call(self.invoke, repair_prompt(), EpisodeScript, REVIEW_REPAIR_VERSION,
                 lambda answer: self.script_defects(answer, entry, work / f"{entry.episode_id}_review_errors.json",
                                                    "Überarbeitetes Skript verletzt die Quellenzuordnung oder Struktur."))
             repairs += 1
@@ -763,6 +819,32 @@ class ScriptRun:
                        {"set_aside": {"draft": draft.model_dump(), "review": result.model_dump()}, "repairs": repairs})
             draft, result = EpisodeScript.model_validate(passed["draft"]), ScriptReview.model_validate(passed["review"])
             save()
+            # Recorded as the last round now, so a resume, which starts from this review, adds nothing.
+            record(result)
+        if review_blocks(result) and a3 is None:
+            # A3 (review-loop plan §9.2): where the run stopped until 2026-10-04, one more repair and one more review at
+            # the final adjudicator's role. A point that stops the run may only be repaired or stop it (operator
+            # decision 2), so no verdict call comes first. A repair A0 rejects is discarded: one call, no re-ask, and the
+            # draft before it stays. Without quota the call pauses the run as any call does; with no usable subscription
+            # for A3 at all the run stops as before, and a resume tries again.
+            try:
+                answer = self.invoke(repair_prompt(), EpisodeScript, REVIEW_REPAIR_VERSION + A3_TAG)
+            except AppError as exc:
+                if not a3_unavailable(exc):
+                    raise
+                raise AppError("Skriptreview meldet weiterhin Einwände; der abschließende Korrekturversuch braucht ein "
+                               "nutzbares Abo (unter „Automatisch“ Codex) und folgt beim Fortsetzen: " + str(exc),
+                               code="script_review_failed", status="blocked", details={"a3": "unavailable"}) from exc
+            if self.script_errors(answer, entry):
+                a3 = "discarded"
+            else:
+                previous = {"draft": draft.model_dump(), "review": result.model_dump()}
+                draft, a3, result = answer, "repaired", None
+            save()
+            if a3 == "repaired":
+                result = check()
+                save()
+                record(result)
         # A correction the series review adopted for exactly this draft is what stands (series_adoption).
         adopted = series_adoption(work, entry.episode_id, draft.model_dump())
         report = work / "reviews" / f"{entry.episode_id}.json"
@@ -773,8 +855,8 @@ class ScriptRun:
         # Advisories, the points a follow-up review found outside its scope, are reported the same way.
         accepted = bool(result.issues) and not review_blocks(result)
         if review_blocks(result):
-            raise AppError("Skriptreview meldet weiterhin Einwände; Reviewbericht prüfen.",
-                           code="script_review_failed", status="blocked")
+            raise AppError("Skriptreview meldet weiterhin Einwände, auch nach dem abschließenden Korrekturversuch; "
+                           "Reviewbericht prüfen.", code="script_review_failed", status="blocked", details={"a3": a3})
         if result.issues or result.advisories:
             write_json(work / "reviews" / f"{entry.episode_id}_accepted_notes.json",
                        [i.model_dump() for i in [*result.issues, *result.advisories]])
@@ -787,9 +869,10 @@ class ScriptRun:
         write_json(reviewed_file, adopted["draft"] if adopted else draft.model_dump())
         return [reviewed_file, report, teaching_report_file, *teaching_outputs]
 
-    def review_script(self, plan, entry, draft, original_draft, probes, follow_up=None):
+    def review_script(self, plan, entry, draft, original_draft, probes, follow_up=None, tag=""):
         """One evidence-bound script review call, with its deterministic claim checks. ``follow_up`` is the review
-        before a repair and the segments the repair changed; the review then blocks only within follow_up_scope."""
+        before a repair and the segments the repair changed; the review then blocks only within follow_up_scope.
+        ``tag`` marks the call's role in its prompt_version (text_settings.A3_TAG)."""
         config, dossier, work = self.config, self.dossier, self.work
         required = bool(dossier.evidence_version)
         ids = {s.segment_id for s in draft.segments}
@@ -831,6 +914,7 @@ class ScriptRun:
             payload["previous_issues"] = [issue.model_dump() for issue in follow_up[0].issues if not is_claim_drift(issue)]
             payload["changed_segments"] = follow_up[1]
             task, version = task + " " + instructions("script_review_followup"), version + "+followup"
+        version += tag
         # Two receipt slips are read as meant (settle_receipts) instead of re-asking the whole review.
         reviewed = corrected_call(lambda *args, **kwargs: settle_receipts(self.invoke(*args, **kwargs), draft, anchors),
             self.terms() + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +

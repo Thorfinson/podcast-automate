@@ -25,8 +25,8 @@ from .openrouter import ADAPTER_VERSION, DEFAULT_MAX_OUTPUT_TOKENS, OpenRouterAd
 from .prompts import instructions
 from .storage import write_json
 from .text_settings import (AUTO_PREFERENCE, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, SUBSCRIPTION_PROVIDERS,
-                            TEXT_PROVIDERS, auto_candidates, provider_model, stage_effort, validate_model,
-                            validate_reasoning)
+                            TEXT_PROVIDERS, a3_entry, auto_candidates, call_role, provider_model, stage_effort,
+                            validate_model, validate_reasoning)
 
 
 # Failures repeated once on the same provider before they stop the run, with the receipt each leaves in the call
@@ -58,7 +58,10 @@ def subscription_selection(config, backend, *, model=None, reasoning_effort=None
     if backend == "auto":
         provider_model("auto", model)
         effort = validate_reasoning(reasoning_effort, provider="auto")
+        # The ladder holds only the rung that differs from the candidates: A1 is the candidates at the A1 level
+        # (text_settings.stage_effort), A2 the candidates themselves. A run saved without it uses the candidates for A3.
         return {"provider": "auto", "prefer": AUTO_PREFERENCE, "candidates": auto_candidates(config.runtime.codex_model, effort),
+                "ladder": {"A3": a3_entry(config.runtime.codex_model)},
                 "adapter_versions": {"claude_code": CLAUDE_ADAPTER_VERSION}}
     if backend == "claude_code":
         model = provider_model("claude_code", validate_model(model)) or DEFAULT_CLAUDE_MODEL
@@ -133,9 +136,14 @@ class AdapterPool:
         if self.openrouter is not None:
             self.openrouter.require_key()
 
-    def plan(self, *, search=False):
-        """Mode, preferred provider and candidate configurations for one call."""
+    def plan(self, *, search=False, role=None):
+        """Mode, preferred provider and candidate configurations for one call. Under ``auto`` an A3 call takes the
+        run's stored A3 rung; every other role, and a run saved without a ladder, the candidate pair. A fixed choice
+        serves every role with its one model."""
         if self.provider == "auto":
+            rung = (self.text_generation.get("ladder") or {}).get(role) if not search else None
+            if rung:
+                return "auto", rung["prefer"], rung["candidates"]
             return "auto", self.text_generation.get("prefer", "codex_cli"), self.text_generation["candidates"]
         if self.provider == "openrouter":
             if not search:
@@ -164,7 +172,8 @@ class AdapterPool:
                                                  refresh=refresh)
 
     def structured(self, prompt, output_type, directory, *, prompt_version, search=False, research=False):
-        mode, prefer, candidates = self.plan(search=search or research)
+        role = call_role(prompt_version)
+        mode, prefer, candidates = self.plan(search=search or research, role=role)
         if mode == "openrouter":
             self.openrouter.require_key()
             return self.openrouter.structured(prompt, output_type, directory, prompt_version=prompt_version, search=search)
@@ -179,13 +188,13 @@ class AdapterPool:
         choice = self.choose(mode, prefer, candidates, exclude=tried)
         repeated = set()
         while True:
-            # A stage with a lower level (text_settings.STAGE_EFFORT_CAPS) asks at that level and records the run's.
+            # A stage or role with a lower level (text_settings.stage_effort) asks at that level and records the run's.
             effort = stage_effort(prompt_version, choice.get("reasoning_effort"))
             used = choice if effort == choice.get("reasoning_effort") else {
                 **choice, "reasoning_effort": effort, "run_effort": choice.get("reasoning_effort")}
             self.last_choice = used
             write_json(directory / "provider_choice.json", {**used, "search": search, "prompt_version": prompt_version,
-                       "prompt_chars": len(prompt)})
+                       "role": role, "prompt_chars": len(prompt)})
             adapter = self.build(used)
             # A success clears only the quota notes made before this call started (record_claude_success).
             started = now()

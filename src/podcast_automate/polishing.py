@@ -12,6 +12,7 @@ from .errors import AppError
 from .editorial import CONTINUITY, TERMINOLOGY, EPISODE_FRAMING, terminology
 from .models import Contract, EpisodeScript, Identifier, NonEmpty
 from .research_patches import corrected_call
+from .review_authority import GATE_CAP, SCOPE_RULE, gate_holds, record_round
 from .storage import digest, write_json
 from .teaching import Passage
 
@@ -34,6 +35,9 @@ HOST_ROLES = {
 POLISH_CRITERIA = ("meaning", "completeness", "speaker_roles", "spoken_language", "episode_framing")
 # What the polish must keep of the checked draft; a loss blocks in every round (scoped_points).
 FIDELITY_CRITERIA = frozenset({"meaning", "completeness"})
+# The points the gate may turn into notes: what passed as a note once both repairs were spent (review-loop plan §7.1).
+DISMISSABLE = frozenset({"spoken_language"})
+REVIEW_STAGE = "dialogue_polish_review"
 
 
 class PolishCheck(Contract):
@@ -188,6 +192,13 @@ def scoped_points(points, scope):
     return blocking, [*notes, *(row for row in kept if row not in notes)]
 
 
+def decided(points, status, decided_by):
+    """Comparison points as rows of the issue record (review_authority.record_round)."""
+    return [{"category": point["criterion"], "segment_ids": point["segment_ids"],
+             "dismissable": point["criterion"] in DISMISSABLE, "status": status, "decided_by": decided_by}
+            for point in points]
+
+
 def follow_up_payload(scope):
     if not scope:
         return None
@@ -258,21 +269,23 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
                                       follow_up=follow_up_payload(scope), rule=rule)
             save()
         blocking, notes = scoped_points(comparison_points(review, original, candidate) if review is not None else [], scope)
+        # G-cap (review-loop plan §7.2): a spoken-language point keeps the loop going for one repair round and is a
+        # note after that; it still goes to a repair other points cause. Each repair had left a new wording detail
+        # (Asimov ep_007, 2026-09-29), and until 2026-10-04 such points passed as notes only once both repairs were
+        # spent. Meaning, completeness, roles and framing keep blocking as before.
+        capped = [] if gate_holds(repairs) else [point for point in blocking if point["criterion"] in DISMISSABLE]
+        blocking = [point for point in blocking if point not in capped]
+        if review is not None:
+            record_round(work / "issues.jsonl", stage=REVIEW_STAGE, episode=entry.episode_id, round_=repairs, points=[
+                *decided(blocking, "blocking", {"role": "A2"}), *decided(capped, "note", GATE_CAP),
+                *decided(notes, "note", SCOPE_RULE)])
         issues = errors + [point["issue"] for point in blocking]
         if not issues:
-            if notes:
-                write_json(work / "accepted_notes.json", [point["issue"] for point in notes])
+            if capped or notes:
+                write_json(work / "accepted_notes.json", [point["issue"] for point in [*capped, *notes]])
             break
-        write_json(work / "issues.json", issues)
+        write_json(work / "issues.json", issues + [point["issue"] for point in capped])
         if repairs >= 2:
-            # Both repairs spent and only the spoken language still faulted, never meaning, completeness, roles or
-            # framing: the candidate stands with its points on record, and the script review reads the whole dialogue
-            # again. Each repair had left a new wording detail (Asimov ep_007, 2026-09-29: an inserted sentence that
-            # repeated the next one), so those points no longer stop the run.
-            failing = {point["criterion"] for point in blocking}
-            if not errors and failing <= {"spoken_language"}:
-                write_json(work / "accepted_notes.json", [*issues, *(point["issue"] for point in notes)])
-                break
             # Anything else, a verdict or a deterministic defect such as a polish below its length: the checked draft
             # stays the script, so the loss never reaches publication and the run goes on (Asimov ep_012, 2026-09-29:
             # a reasoning step lost in both repairs). The review stage judges that draft in full, its framing and roles
@@ -285,11 +298,12 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
             raise AppError(f"Dialogüberarbeitung benötigt Korrektur: {work / 'issues.json'}",
                            code="dialogue_polish_failed", status="blocked")
         repaired = invoke(prompt + "\n" + instructions("dialogue_polish_repair") + "\n" + json.dumps({
-                              "candidate": candidate.model_dump(), "issues": issues}, ensure_ascii=False),
+                              "candidate": candidate.model_dump(), "issues": issues + [point["issue"] for point in capped]},
+                              ensure_ascii=False),
                           EpisodeScript, "dialogue_polish_repair.v1")
         changed = changed_segments(candidate, repaired)
         if review is not None:
-            scope = {"previous": [{**point, "blocking": True} for point in blocking] +
+            scope = {"previous": [{**point, "blocking": True} for point in [*blocking, *capped]] +
                                  [{**point, "blocking": False} for point in notes], "changed": changed}
         elif scope:
             # A round stopped by a deterministic defect had no comparison: its changes add to those of the round before.

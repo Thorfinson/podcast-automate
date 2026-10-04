@@ -19,6 +19,7 @@ from podcast_automate.script_checks import (SCRIPT_REVIEW_VERSION, SERIES_PLAN_V
                                             quotation_errors)
 from podcast_automate.scripting import run_script, validate_plan, validate_script
 from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
+from podcast_automate.text_settings import A3_TAG
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
 from tests.research_fixtures import TEXT
@@ -547,15 +548,19 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(len(self.calls), calls)
         self.assertFalse((self.root / "episodes/ep_001/script.md").exists())
 
-    def test_persistent_editorial_points_are_noted_once_the_repairs_are_spent(self):
+    def test_persistent_editorial_points_are_noted_after_one_repair_round(self):
         """Until 2026-09-29 a depth point the three repairs could not settle stopped the run; the user chose that
-        clarity, depth and dialogue points become notes the reader sees before approving audio (Ontologies)."""
+        clarity, depth and dialogue points become notes the reader sees before approving audio (Ontologies). Until
+        2026-10-04 they took all three repairs first; now one (G-cap, operator decision 1 of the review-loop plan)."""
         with patch("podcast_automate.scripting.CodexAdapter.structured",
                    side_effect=self.persistent_review("depth", "The example is not worked through.")):
             run = run_script(self.root)
         self.assertEqual(run.status, "completed", run.stages["review"].error)
-        self.assertEqual(self.calls.count(ScriptReview), 4, "the first review and one after each of three repairs")
+        self.assertEqual(self.calls.count(ScriptReview), 2, "the first review and one after the single repair")
         work = self.root / "runs" / run.run_id
+        records = [json.loads(line) for line in (work / "reviews/ep_001_issues.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(r["round"], r["status"], r["decided_by"]["role"]) for r in records],
+                         [(0, "blocking", "A2"), (1, "note", "G")])
         notes = json.loads((work / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
         self.assertEqual([n["reason"] for n in notes], ["The example is not worked through."])
         self.assertEqual(json.loads((work / "reviews/ep_001.json").read_text(encoding="utf-8"))["issues"][0]["category"], "depth")
@@ -571,9 +576,104 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             resumed = run_script(self.root, resume=True)
         self.assertEqual((record["reviews"], record["supplements"]), (["ep_001"], []))
         self.assertEqual(resumed.stages["review"].error.code, "script_review_failed")
-        self.assertEqual(self.calls.count(ScriptReview) - before, 3, "one new review after each of three new repairs")
+        self.assertEqual(self.calls.count(ScriptReview) - before, 4,
+                         "one new review after each of three new repairs, and a new final review at A3")
         checkpoint = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_checkpoint.json").read_text(encoding="utf-8"))
-        self.assertEqual(checkpoint["repairs"], 3)
+        self.assertEqual((checkpoint["repairs"], checkpoint["a3"]), (3, "repaired"))
+
+    def a3_model(self, *, passes=True, repair=None):
+        """A grounding point that survives the loop's three repairs; ``passes`` decides the review after the A3 repair,
+        ``repair`` replaces the A3 repair's answer."""
+        persistent = self.persistent_review("grounding", "The claim has no supporting finding.")
+
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = persistent(prompt, output_type, directory, **kwargs)
+            version = kwargs["prompt_version"]
+            if output_type is EpisodeScript and version == REVIEW_REPAIR_VERSION + A3_TAG and repair:
+                value = repair(value)
+            if output_type is ScriptReview and version.endswith(A3_TAG) and passes:
+                value.issues = []
+            return value, meta
+        return model
+
+    def call_roles(self, work):
+        return {choice["prompt_version"]: choice["role"] for choice in
+                (json.loads(path.read_text(encoding="utf-8")) for path in work.glob("calls/*/provider_choice.json"))}
+
+    def test_a3_takes_one_more_repair_and_review_where_the_run_stopped(self):
+        """Review-loop plan §9.2: where the spent repairs stopped the run, the final adjudicator repairs once more and
+        reviews the result; the run goes on only when that review passes."""
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.a3_model()):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 5, "the first review, three after the repairs, one at A3")
+        work = self.root / "runs" / run.run_id
+        roles = self.call_roles(work)
+        self.assertEqual((roles[REVIEW_REPAIR_VERSION + A3_TAG], roles[SCRIPT_REVIEW_VERSION + "+followup" + A3_TAG],
+                          roles[REVIEW_REPAIR_VERSION], roles[SCRIPT_REVIEW_VERSION + "+followup"]), ("A3", "A3", "A2", "A2"))
+        checkpoint = json.loads((work / "reviews/ep_001_checkpoint.json").read_text(encoding="utf-8"))
+        self.assertEqual((checkpoint["repairs"], checkpoint["a3"]), (3, "repaired"))
+        self.assertEqual(json.loads((work / "reviews/ep_001.json").read_text(encoding="utf-8"))["issues"], [])
+
+    def test_an_a3_repair_that_fails_the_structure_check_is_discarded_and_the_run_stops(self):
+        def broken(script):
+            script.segments[1].text, script.segments[1].knowledge_refs = "A3 broke this.", []
+            return script
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.a3_model(repair=broken)):
+            run = run_script(self.root)
+            calls = len(self.calls)
+            record = (self.root / "runs" / run.run_id / "reviews/ep_001_issues.jsonl").read_bytes()
+            resumed = run_script(self.root, resume=True)
+        self.assertEqual((self.root / "runs" / run.run_id / "reviews/ep_001_issues.jsonl").read_bytes(), record,
+                         "a resume that does no new work leaves the issue record as it was")
+        self.assertEqual((run.stages["review"].error.code, resumed.status), ("script_review_failed", "blocked"))
+        self.assertIn("abschließenden Korrekturversuch", run.stages["review"].error.message)
+        self.assertEqual(len(self.calls), calls, "the resume asks nothing again")
+        self.assertEqual(self.calls.count(ScriptReview), 4, "no review of a discarded repair")
+        checkpoint = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_checkpoint.json").read_text(encoding="utf-8"))
+        self.assertEqual(checkpoint["a3"], "discarded")
+        self.assertNotIn("A3 broke this.", json.dumps(checkpoint["draft"]), "the draft before the repair stays")
+
+    def test_an_a3_call_without_quota_pauses_and_without_a_usable_subscription_stops_and_a_resume_tries_again(self):
+        """Plan §9.2 step 6: A3 is never served by another model. Without quota it pauses the run like any call; with
+        no usable subscription for its rung the stage stops with its old code. Either way a resume tries A3 again."""
+        for error, status in ((AppError("Kein Abo hat gerade Kontingent.", code="subscriptions_exhausted",
+                                         status="waiting_for_quota"), "waiting_for_quota"),
+                              (AppError("Kein Abo-Anbieter ist nutzbar.", code="subscription_required",
+                                         status="blocked"), "blocked")):
+            model, down = self.a3_model(), [True]
+
+            def failing(prompt, output_type, directory, **kwargs):
+                if kwargs["prompt_version"].endswith(A3_TAG) and down[0]:
+                    raise error
+                return model(prompt, output_type, directory, **kwargs)
+            with self.subTest(code=error.code), patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=failing):
+                run = run_script(self.root)
+                down[0] = False
+                resumed = run_script(self.root, resume=True, run_id=run.run_id)
+                self.assertEqual(run.status, status)
+                if status == "blocked":
+                    self.assertEqual(run.stages["review"].error.code, "script_review_failed")
+                    self.assertIn("nutzbares Abo", run.stages["review"].error.message)
+                self.assertEqual(resumed.status, "completed", resumed.stages["review"].error)
+
+    def test_a_clarity_point_with_a_factual_basis_keeps_blocking_after_its_gate_round(self):
+        """Review-loop plan §7.1: a point filed under a dismissable category with a factual or source basis is never
+        dismissable; it keeps the loop going as before."""
+        def model(prompt, output_type, directory, **kwargs):
+            value, meta = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is ScriptReview:
+                value.issues = [ScriptIssue(category="clarity", segment_ids=["seg_001"], reason="Says the score rises.")]
+                value.issue_basis = ["factual_error"] if kwargs["prompt_version"].endswith("+followup") else []
+            return value, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        self.assertEqual(self.calls.count(ScriptReview), 4, "all three repairs, then a note as before 2026-10-04")
+        work = self.root / "runs" / run.run_id
+        records = [json.loads(line) for line in (work / "reviews/ep_001_issues.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(r["round"], r["status"], r["dismissable"]) for r in records],
+                         [(n, "blocking", False) for n in range(4)])
 
     def follow_up_model(self, basis):
         """The first review raises a grounding point on seg_002, which the repair rewrites. The first review after

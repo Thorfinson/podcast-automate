@@ -138,8 +138,9 @@ structured(prompt, output_type, directory, *, prompt_version, search=False) -> (
 ### Adapter pool
 
 `provider_pool.AdapterPool` builds the adapter for every call of a run from the run's saved text choice. It applies
-the provider rule ([Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection)), lowers
-the level of capped stages (`text_settings.stage_effort`) and repeats a call once on the same provider after a stalled
+the provider rule ([Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection)) with the
+call's role (`text_settings.call_role`; under `auto` an A3 call takes the run's stored `ladder`), lowers the level of
+capped stages and of A1 (`text_settings.stage_effort`) and repeats a call once on the same provider after a stalled
 stream (`stall`) or a Claude answer in the wrong format (`claude_structured_output`; `provider_pool.REPEATED_ONCE`).
 Each decision leaves a receipt in the call folder ([Per-call records](#per-call-records)). A saved run binds the
 adapter contract it started with (`openrouter.ADAPTER_VERSION` `openrouter.v1`, `claude_code.ADAPTER_VERSION`
@@ -487,7 +488,7 @@ Every model call has its folder `runs/<run_id>/calls/call_NNN/`:
 
 | File | Written by | Content |
 | --- | --- | --- |
-| `provider_choice.json` | Adapter pool | Provider, model, reasoning level, mode, reason and quota snapshots of the decision; `run_effort` when a stage cap lowered the level; `search`, `prompt_version`, `prompt_chars` |
+| `provider_choice.json` | Adapter pool | Provider, model, reasoning level, mode, reason and quota snapshots of the decision; `run_effort` when a stage or role cap lowered the level; `search`, `prompt_version`, `role` ([Roles of review calls](BUSINESS_LOGIC.md#roles-of-review-calls); not in calls before 2026-10-04), `prompt_chars` |
 | `provider_switch.json` | Adapter pool | A switch inside the call: `from`, `to`, `error_code`, `message`, `switched_at` |
 | `stall_retry.json`, `format_retry.json` | Adapter pool | Receipt of the one repeat after a stalled stream (`stall`) or a Claude answer in the wrong format (`claude_structured_output`) |
 | `prompt_size.json` | Adapter pool | Prompt length, limit and the provider left out for it |

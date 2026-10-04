@@ -25,7 +25,7 @@ The test commands are under [The two suites](#the-two-suites). Installing and up
 | --- | --- |
 | `src/podcast_automate/cli.py` | `pla` entry point; one subcommand per run kind |
 | `src/podcast_automate/research*.py`, `question_*.py`, `sources.py`, `jev.py` | Research run: sub-questions, reading, answer review, dossier |
-| `src/podcast_automate/scripting.py`, `script_*.py`, `polishing.py`, `teaching*.py`, `series_review.py` | Script run: plan, teaching plans, writing, polishing, reviews |
+| `src/podcast_automate/scripting.py`, `script_*.py`, `polishing.py`, `teaching*.py`, `series_review.py`, `review_authority.py` | Script run: plan, teaching plans, writing, polishing, reviews and who settles their points |
 | `src/podcast_automate/episode_audio.py`, `audio.py`, `speech.py`, `parallel_speech.py`, `qwen_worker.py` | Audio run: synthesis, assembly, export |
 | `src/podcast_automate/claude_code.py`, `codex*.py`, `openrouter.py`, `provider_pool.py`, `subscriptions.py` | Text provider adapters and the per-call provider choice |
 | `src/podcast_automate/studio*.py`, `web/` | Local Studio server, worker processes and the browser UI |
@@ -148,6 +148,7 @@ modules a change reaches through transitive dependents. Regenerate the raw list 
 - `provider_pool` → `test_provider_pool`; `text_generation_settings` lives here and is exercised by `test_scripting` and `test_text_selection`
 - `question_research`, `question_answering`, `question_synthesis`, `question_scope`, `question_budget`, `question_dependencies`, `question_ownership`, `question_sources` → `test_question_research`, `test_question_answering`, `test_research_audit`, `test_research_parallel`, `test_research_plan_gate`, `test_research_resilience`, `test_research_invariants`, `test_evidence_contracts`, `test_model_trace`; `question_ownership` is reached only through `question_synthesis`
 - `script_advisories` → `test_script_advisories`; the report field is asserted by `test_scripting`
+- `review_authority` → `test_review_authority`, `test_polishing`, `test_scripting`, `test_teaching`; the review loops of `polishing`, `script_pipeline` and `teaching` use it, so their lines apply as well. `scripts/call-baseline.py` → `test_review_authority`, which loads the script from its file and reaches `production_report` through it
 - `research_gap_probe` → `test_gap_probe`, `test_jev`, `test_question_research`, `test_research`, `test_research_quality`, `test_scripting`, `test_teaching_research`
 - `provided_works` → `test_provided_works`; the run reading a provided work and retrying its question in `test_question_research`, the raw upload route in `test_studio`, the book limits of `pdf_text` in `test_research`; the research page's list of missing works in the browser suite
 - `research_dates`, source types, idea sources and task aims (`research_models`, `research_tasks`, `research_evidence`, `question_research.check_aims`, `sources.import_source`, `pdf_text`) → `test_source_types` in addition to the research list below; the starting library (`sources.load_library`) → `test_research`
@@ -167,7 +168,7 @@ modules a change reaches through transitive dependents. Regenerate the raw list 
 - `studio_allowances`, `production_report`, and the restart when idle in `studio` → `test_studio_automation`; the page side is in the browser suite. No test imports `production_report` directly; it is reached through `studio`, whose line applies as well
 - `studio`, `studio_worker`, `studio_progress`, `studio_scripts`, `studio_messages`, `studio_trash` → `test_expression`, `test_studio`, `test_studio_automation`, `test_studio_progress`, `test_studio_scripts`, `test_studio_trash`, `test_attachments`, `test_cli`, `test_core`, `test_parallel`, `test_platforms`, `test_provider_pool`, `test_research_parallel`, `test_research_plan_gate` (the plan approval route and the gated Studio resume), `test_research_resilience`, `test_setup_schema`, `test_speech`, `test_teaching`, `test_text_selection`, `test_question_research`, `test_run_budget`; `test_studio_trash` reaches `studio_trash` through the `studio` routes
 - `teaching`, `teaching_research` → `test_teaching`, `test_teaching_research`, `test_episode_framing`, `test_polishing`, `test_scripting`, `test_run_budget`
-- `text_settings` → `test_text_selection`, `test_research_resilience`, `test_teaching_research`, `test_provider_pool` (defaults and the stage levels of `stage_effort`), and `test_cli` for the doctor catalog line
+- `text_settings` → `test_review_authority` (`call_role`, the A1 level), `test_text_selection`, `test_research_resilience`, `test_teaching_research`, `test_provider_pool` (defaults and the stage levels of `stage_effort`), and `test_cli` for the doctor catalog line
 - `scripts/setup-qwen.py` → `test_qwen_setup`, which loads the script from its file, so the regenerated list does not show it
 
 Regenerate the raw list from the repository root (Windows: `.\.venv\Scripts\python.exe scripts\test_map.py`):

@@ -18,21 +18,60 @@ on 4 October 2026. Rules that already hold are owned by [BUSINESS_LOGIC](../BUSI
 
 ## Status
 
-**Planned; nothing implemented.** Step 0 (the call baseline, V-10) comes first and may change the scope of the plan.
+**In progress: the deterministic half is built (4 October 2026); the Jev half and the evals are open.**
+
+Built:
+
+- **Step 0, tool only.** `scripts/call-baseline.py` counts a run's calls by stage and role and its review rounds by
+  category. It has not run on real projects yet: V-10 stays open, and its result may still change the scope of the
+  steps below.
+- **Steps 1 and 2.** `role` in every `provider_choice.json`; `review_authority.py` with the issue identity and
+  `issues.jsonl`; `text_settings.STAGE_AUTHORITY` and the A1 cap; the stored A3 rung (`ladder`) of new `auto` runs.
+- **Steps 6, 7 and 9 for G-cap.** One repair round for dismissable points in polishing and the script review
+  (D-121). Step 7 needs no code of its own: the teaching points enter the script review's loop only when that review
+  is clean, so §7.1 never makes them dismissable there, and after the loop they already pass as notes when the review
+  ended with accepted notes.
+- **Step 8.** The A3 step in the script review and the teaching design (D-122, D-123).
+
+Open: step 0 on the latest complete projects (V-10); step 3 for G-jev, the `jev_gate` switch and the key hint (§7.8);
+step 4 (needs human labels); step 5 beyond the baseline script; G-jev activation (V-11, V-15, §7.7); steps 10 and 11
+(V-12 to V-14); the mini eval podcast (§19), whose cases expect G-jev.
+
+Where the build differs from the text below:
+
+- **G-cap counts the loop's repairs, not each point's.** A dismissable point blocks only before its loop's first
+  repair (`review_authority.GATE_ROUNDS`), which is the end rule of §1.1 applied earlier. A dismissable point raised
+  after a repair is a note at once; it still reaches a repair other points cause.
+- **A3 makes no verdict call before its repair.** For a point that blocks today A3 may only repair or stop (decision 2),
+  so the step is one repair and one review by the stage's own reviewer at the role A3: at most two calls, and A0 and
+  the scope rules unchanged. A repair that fails A0 gets no re-ask.
+- **The issue record decides nothing.** The loop state that decides stays in each stage's checkpoint, which already
+  survives a resume; `issues.jsonl` only feeds §16. It also holds what `gate_shadow.jsonl` (§14) would hold for G-cap;
+  a shadow file comes with G-jev. There is no `decision_gate.py` until G-jev.
+- **A3 without quota pauses instead of stopping.** Like any call, it waits for its subscription's reset, and the
+  automatic resume tries A3 again; only when no subscription of the A3 rung is usable at all (under `auto`: Codex
+  missing or logged out) does the stage stop with its old code. A stop of `teaching_design_failed` reads in the Studio
+  as one that resuming cannot help, which held for every such stop until now.
+- **`script_budget.STAGE_CALLS` is unchanged.** It counts the mandatory calls without repairs; A3 runs only after spent
+  repairs, and the expected calls already scale with the project's last run.
+- **`teaching_review_failed` gets no A3 step.** The teaching points of a clean review are repaired inside the script
+  review's loop, so this stop is reached only by runs saved under older rules.
+- **A clarity, depth or dialogue point with a factual or source basis** keeps blocking for all three repairs, as §7.1
+  says, and then still passes as a note as before; the end rule of §1.1 is unchanged.
 
 The operator decided on 4 October 2026:
 
 1. **A dismissable point gets one repair round** and then passes as a note (G-cap, [§7.2](#72-gate-variants)). Today
    such points pass only once all repairs are spent: three rounds in the script review, two in polishing.
-   (why: D-TODO(review-gate-one-round))
+   (why: D-121)
 2. **The final adjudicator (A3) may only repair or stop.** It never closes a point that blocks today without asking
-   the operator ([§9.2](#92-a3-terminal-step)). (why: D-TODO(a3-repair-or-stop))
+   the operator ([§9.2](#92-a3-terminal-step)). (why: D-122)
 3. **Script text and source passages may go to TypeSafe** for the Jev gate
    ([§7.7](#77-data-and-decision-record)). When the gate is on but the OpenRouter key is missing, the Studio says so
-   and offers to add it ([§7.8](#78-missing-key-in-the-studio)). (why: D-TODO(jev-gate-data-flow))
+   and offers to add it ([§7.8](#78-missing-key-in-the-studio)). (why: D-124)
 4. **A gate may miss at most 10 % of real blockers**, measured as the 95 % upper bound
    ([§13.2](#132-labels-and-sample-size)). The eval therefore needs at least 30 labelled blockers per activated stage.
-   (why: D-TODO(gate-miss-rate-10-percent))
+   (why: D-125)
 
 ## 1. Problem
 

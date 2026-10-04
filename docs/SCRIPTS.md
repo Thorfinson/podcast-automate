@@ -259,6 +259,12 @@ overall conclusion.
   `spoken_language` objection for the repair loop.
 - A comparison with missing criteria or invented evidence is asked again with its defects. Its objections go into a
   repair, at most two; resume keeps candidate, comparison, scope and attempt counter.
+- A `spoken_language` objection (`polishing.DISMISSABLE`) keeps the loop going for one repair only (G-cap,
+  `review_authority.GATE_ROUNDS`); from the second comparison on it is a note. While another objection keeps the loop
+  going it still goes into that repair. (why: D-121)
+- Each decided comparison appends its points to `polishing/<episode>/issues.jsonl`: status (`blocking`, `note`) and who
+  decided it (the reviewer, the gate or the scope rule). Nothing reads it back; it feeds the call counts of the
+  [review-loop plan](specs/2026-10-04-review-loop-decision-gates-plan.md#16-success-metrics).
 
 ### Scoped comparison after a repair
 
@@ -270,7 +276,7 @@ new point on unchanged text is a note in `polishing/<episode>/accepted_notes.jso
 
 ### After both repairs
 
-- If only spoken-language objections remain, the polished version stands, its points in `accepted_notes.json`.
+- Spoken-language objections are notes by then (above); the polished version stands with them in `accepted_notes.json`.
 - For any other remainder (meaning, completeness, roles, framing, or a deterministic defect such as a too-short
   version), the reviewed draft stays the script if it passes the structure check (`kept_draft.json`, `result.json`
   with `status: kept_draft`) (why: D-075), so the polished version's defect never reaches publication. Only if the
@@ -327,14 +333,37 @@ the worked-out explanation steps, how start and end connect, understandability, 
 and the dialogue.
 
 - Up to three revisions (`script_pipeline.MAX_REVIEW_REPAIRS`).
-- If then only objections about understandability, depth or dialogue remain (`script_checkpoints.NOTED_CATEGORIES`:
-  `clarity`, `depth`, `dialogue`), the script is adopted; the points stay in the review report and
+- An objection about understandability, depth or dialogue (`script_checkpoints.NOTED_CATEGORIES`: `clarity`, `depth`,
+  `dialogue`) keeps the loop going for one revision only (G-cap, `review_authority.GATE_ROUNDS`); in every review after
+  a revision it is a note, unless the review gives it the basis `factual_error` or `source_contradiction`
+  (`script_pipeline.dismissable`). While other objections keep the loop going, the next revision still gets the whole
+  review, notes included. (why: D-121)
+- The teaching points that join a review without objections ([below](#reader-editorial-and-teaching-reviews)) keep all
+  three revisions, as before.
+- If then only notes remain, the script is adopted; the points stay in the review report and
   `reviews/<episode>_accepted_notes.json`, visible when reading before the audio approval.
-- Evidence errors and objections about scope or structure keep blocking; otherwise remaining objections block
-  adoption, and drafts and objections stay saved. **„Mit neuen Anläufen fortsetzen“** (resume with fresh attempts) or
-  `pla approve <project> --fresh-attempts` gives a review stopped this way three new revisions against the same
-  review report.
+- Evidence errors and objections about scope or structure keep blocking. Where they would stop the run, a final step
+  at the role A3 follows first ([Final step at A3](#final-step-at-a3)). Only if that fails does the run stop with
+  `script_review_failed`; drafts and objections stay saved. **„Mit neuen Anläufen fortsetzen“** (resume with fresh
+  attempts) or `pla approve <project> --fresh-attempts` gives a review stopped this way three new revisions against
+  the same review report, and a new final step.
 - After a subscription pause too, a text already corrected need not be written again.
+- Each decided review appends its points to `reviews/<episode>_issues.jsonl`, as in polishing.
+
+### Final step at A3
+
+Where spent revisions stopped the run until 2026-10-04, one more revision and one more scoped review run at the role A3
+(`text_settings.A3_TAG` in their prompt version; model choice:
+[BUSINESS_LOGIC](BUSINESS_LOGIC.md#roles-of-review-calls)) (why: D-122):
+
+- An objection that would stop the run may only be revised or stop it; A3 never passes it as a note. So no verdict call
+  comes first: at most two calls per episode.
+- The revision gets one structure check and no re-ask. If it fails, it is discarded, the text before it stays, and the
+  run stops.
+- A3 is never served by another model. Without quota its call pauses the run like any call, and the automatic
+  resume at the reset tries it again; with no usable subscription for it (under `auto`: Codex missing or logged out)
+  the stage stops as before, the message says so, and a resume tries again.
+- The checkpoint keeps the step (`a3`: `repaired` or `discarded`), so a resume asks nothing again.
 
 ### Scoped follow-up review
 
@@ -380,7 +409,8 @@ A fresh reader call, a separate editorial review and a teaching review also chec
 - An episode's evidence review is saved before its teaching review starts, so a stop during the teaching review does
   not ask it again (`teaching_pending` in the checkpoint).
 - The application checks the evidence and completeness of the reviews. A missing required explanation step or a
-  negative verdict leads to a revision and, if problems persist, to a block.
+  negative verdict leads to a revision. If the evidence review ended with accepted notes, the teaching points of the
+  final text are notes too; otherwise they block.
 
 ### Limits of the review
 

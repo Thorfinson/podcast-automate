@@ -8,6 +8,8 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-10-04 · Final step at A3: where spent repairs stopped the script review or the teaching design, one more repair and review run first; under `auto` on Codex (Astra at `xhigh`).
+- 2026-10-04 · Every model call records its review role (`role` in `provider_choice.json`), and the polishing and script reviews record their points per round (`issues.jsonl`); `scripts/call-baseline.py` counts a run's calls by stage, role and review category.
 - 2026-10-03 · Settings page „Einstellungen“ next to „Übersicht“: text model, audio, execution, pre-approvals, limits, call time limit and OpenRouter key now apply to all projects (`projects/.studio-settings.json`).
 - 2026-10-03 · Settings switch „Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen“ for bought Claude extra usage: every call tries Claude despite stored blocks.
 - 2026-10-02 · The script budget shows the expected calls, calibrated on the project's last completed script run, next to the lower bound.
@@ -37,6 +39,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-10-04 · A spoken-language point in polishing, and a clarity, depth or dialogue point in the script review, now costs one repair round and is a note after that, instead of taking every repair first.
 - 2026-10-02 · A supplement to an assembled dossier counts only its own quoted and paraphrased words against the per-source limits.
 - 2026-10-03 · The setup conversation no longer proposes text model, audio or execution; a proposal carries only the brief.
 - 2026-10-03 · The Studio offers exactly four OpenRouter text models; Astra Pro and Claude Fable 5.1 are no longer offered.

@@ -532,8 +532,9 @@ def approve_fresh_attempts(root, run_id):
         for folder in folders:
             supersede_corrections(folder)
         for path, saved in reviews:
-            # The draft and its review stay; the next resume repairs against that review again, MAX_REVIEW_REPAIRS times.
-            write_json(path, {**saved, "repairs": 0})
+            # The draft and its review stay; the next resume repairs against that review again, MAX_REVIEW_REPAIRS times,
+            # and then takes a new final step at A3 (script_pipeline.review_episode).
+            write_json(path, {**{key: value for key, value in saved.items() if key != "a3"}, "repairs": 0})
         record = {"supplements": [folder.relative_to(work).as_posix() for folder in folders],
                   "reviews": [path.name.removesuffix("_checkpoint.json") for path, _ in reviews],
                   "series_repair": bool(failed_series), "approved_at": now()}

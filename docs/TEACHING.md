@@ -213,6 +213,11 @@ runs on the subscriptions ([Text providers and model selection](BUSINESS_LOGIC.m
   correction round follows without another click: each point of criticism is answered with concrete passages from the
   revised plan, then a fresh call reviews the whole plan independently; the correction list is no proof of passing.
   Plans that stopped after two attempts can also use this round on resume.
+- If points stay open after the focused correction, a final step at the role A3 makes one more focused correction and
+  one more review ([Roles of review calls](BUSINESS_LOGIC.md#roles-of-review-calls)) (why: D-122). A correction that
+  fails the plan check or does not answer every point is discarded and the plan before it stays; only then does the
+  run stop with `teaching_design_failed`. Without quota the A3 call pauses the run; with no usable subscription for it
+  the run stops right away, and a resume tries again. The checkpoint keeps the step (`a3`).
 - The limits and the finished corrections, comparisons and reading reviews are kept on resume.
 - With persisting defects, or an exhausted budget or quota, the results stay saved; merely resuming does not reset
   the attempt limits.
@@ -236,9 +241,9 @@ earlier point, ignoring case, whitespace and trailing punctuation, counts as ear
 
 ### Redesign with a hint
 
-If an episode's teaching plan keeps open points after the focused correction round (`teaching_design_failed`), the
-hold card offers **„Lehrkonzept mit Hinweis neu entwerfen“** (redesign the teaching plan with a hint); on the command
-line `pla approve <project> --redesign-teaching <episode> --hint "…"`.
+If an episode's teaching plan keeps open points after the focused correction round and the final step
+(`teaching_design_failed`), the hold card offers **„Lehrkonzept mit Hinweis neu entwerfen“** (redesign the teaching
+plan with a hint); on the command line `pla approve <project> --redesign-teaching <episode> --hint "…"`.
 
 - The hint, for example „Keine Abfragesprache wörtlich vorlesen, Abkürzungen beim ersten Mal ausschreiben“ ("Do not
   read query language out verbatim; spell out abbreviations the first time"), is bound to the run as a request

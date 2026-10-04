@@ -97,10 +97,10 @@ class PolishingTests(unittest.TestCase):
         published = (self.root / 'episodes/ep_001/script.yaml').read_text(encoding='utf-8')
         self.assertNotIn('1000 possibilities', published)
 
-    def test_only_spoken_language_points_after_both_repairs_do_not_stop_the_run(self):
+    def test_a_spoken_language_point_gets_one_repair_round_and_then_is_a_note(self):
         """Asimov ep_007, 2026-09-29: each repair left a new wording detail, the last one a sentence repeating the
-        next. With meaning, completeness, roles and framing intact, such points are recorded and the run goes on;
-        the drift test above keeps a meaning failure blocking."""
+        next. Such points passed as notes once both repairs were spent; since 2026-10-04 (G-cap, operator decision 1 of
+        the review-loop plan) after one repair round. The drift test above keeps a meaning failure blocking."""
         point = "The inserted sentence repeats the next one; merge both."
 
         def model(prompt, output_type, directory, **kwargs):
@@ -112,9 +112,40 @@ class PolishingTests(unittest.TestCase):
         with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
             run = run_script(self.root)
         self.assertEqual(run.status, 'completed', run.stages['polishing'].error)
-        self.assertEqual(self.fixture.calls.count(DialoguePolishReview), 3)
-        notes = json.loads((self.root / 'runs' / run.run_id / 'polishing/ep_001/accepted_notes.json').read_text(encoding='utf-8'))
-        self.assertEqual(notes, ['spoken_language: ' + point])
+        self.assertEqual(self.fixture.calls.count(DialoguePolishReview), 2, "the first comparison and one after the repair")
+        folder = self.root / 'runs' / run.run_id / 'polishing/ep_001'
+        self.assertEqual(json.loads((folder / 'accepted_notes.json').read_text(encoding='utf-8')), ['spoken_language: ' + point])
+        records = [json.loads(line) for line in (folder / 'issues.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([(r['round'], r['status'], r['decided_by']) for r in records],
+                         [(0, 'blocking', {'role': 'A2'}), (1, 'note', {'role': 'G', 'gate': 'cap'})])
+        self.assertEqual(records[0]['issue_id'], records[1]['issue_id'], "one point, whatever its wording")
+
+    def test_a_spoken_language_point_still_reaches_a_repair_that_a_meaning_loss_causes(self):
+        """G-cap ends only the spoken-language point's own claim on the loop: while a meaning loss keeps it going, the
+        point goes to the repair too, and it never blocks the stage on its own."""
+        original, entry, repairs = self.long_script(), fixtures.example_plan().episodes[0], []
+
+        def invoke(prompt, output_type, version):
+            if output_type is EpisodeScript:
+                if version == 'dialogue_polish_repair.v1':
+                    repairs.append(json.loads(prompt.splitlines()[-1])['issues'])
+                return original.model_copy(deep=True)
+            review = fixtures.polish_review(prompt)
+            if len(repairs) < 2:
+                for criterion in ('spoken_language', 'meaning'):
+                    check = next(c for c in review.checks if c.criterion == criterion)
+                    check.verdict, check.reason = 'fail', f'{criterion} point'
+                    check.after = [Passage(segment_id='seg_003', quote='Satz Nummer 3.')]
+            return review
+        folder = self.root / 'capped'
+        polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, lambda *_: [])
+        self.assertEqual(repairs, [['meaning: meaning point', 'spoken_language: spoken_language point']] * 2)
+        records = [json.loads(line) for line in (folder / 'issues.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([(r['round'], r['category'], r['status']) for r in records],
+                         [(0, 'meaning', 'blocking'), (0, 'spoken_language', 'blocking'),
+                          (1, 'meaning', 'blocking'), (1, 'spoken_language', 'note')])
+        result = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
+        self.assertEqual((result['status'], result['repairs']), ('passed', 2))
 
     def test_missing_criteria_or_invented_comparison_evidence_cannot_pass(self):
         for corruption in ('criterion', 'before_quote', 'after_quote'):

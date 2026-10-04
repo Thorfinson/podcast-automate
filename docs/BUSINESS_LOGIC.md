@@ -121,10 +121,28 @@ When the Studio resumes by itself: [STUDIO](STUDIO.md#stopping-and-resuming).
 
 ### Lower effort for two stages
 
-Two stages ask at most at `medium`, even when the run is set higher (`text_settings.STAGE_EFFORT_CAPS`): the
-first-time reader (`listener_readback`), which should take in only what the dialogue itself explains, and placing the
-expression tags for the recording (`audio_expression`). Evidence review, teaching review, writing and every correction
-keep the run's level. (why: D-023)
+Two stages ask at most at `medium`, even when the run is set higher: the first-time reader (`listener_readback`),
+which should take in only what the dialogue itself explains, as the one review at the role A1
+(`text_settings.A1_EFFORT`, [below](#roles-of-review-calls)), and placing the expression tags for the recording
+(`audio_expression`, `text_settings.STAGE_EFFORT_CAPS`). Evidence review, teaching review, writing and every
+correction keep the run's level. A run on OpenRouter keeps its level for both. (why: D-023)
+
+### Roles of review calls
+
+Each call plays a role, read off its prompt version (`text_settings.call_role`) and recorded as `role` in its
+`provider_choice.json`:
+
+| Role | Calls | Model and level |
+| --- | --- | --- |
+| A1 | routine reviews (`text_settings.STAGE_AUTHORITY`; today only `listener_readback`) | the run's choice, at most at `medium` |
+| A2 | every other review, and every call that is no review | the run's choice at its level, as before |
+| A3 | the final step where spent repairs would stop the run (prompt version with `+a3`; [SCRIPTS](SCRIPTS.md#final-step-at-a3), [TEACHING](TEACHING.md#revisions-and-stops)) | under `auto` Codex alone, Astra at `xhigh`, even while Claude has quota; a fixed choice uses its own model and level |
+
+- Under `auto`, A3 never moves to Claude: an Opus limit would block the whole Claude subscription for 5 hours, and Codex
+  quota can be read before the call. Without Codex quota an A3 call pauses the run until Codex's reset; with Codex
+  missing or logged out the stage stops as before. Either way a resume tries A3 again. (why: D-123)
+- A role chooses only within the run's own choice: it adds no provider, and the fixed path reads no quota.
+- Calls with web search keep the rule of their run; roles do not apply to them.
 
 ### Research always runs on a subscription
 
@@ -136,7 +154,8 @@ they follow the automatic rule (Claude, else Codex) with the catalog defaults, b
 
 - The text provider choice is fixed when a script or research run starts (`script_request.json`,
   `research_request.json`) and is part of its inputs; for `auto` both candidates (`claude-sonnet-5-5`/`high`,
-  `gpt-6-astra`/`xhigh`) and the first choice (`prefer: claude_code`) are stored.
+  `gpt-6-astra`/`xhigh`), the first choice (`prefer: claude_code`) and, since 2026-10-04, the A3 rung (`ladder`) are
+  stored. A run saved without `ladder` serves A3 with its candidate pair, like every other call.
 - Resume uses the stored choice: a different `--backend` or candidate list is refused as a changed input. Changes
   apply to new runs; the only exception is an explicit switch (next section).
 - Audio runs store the audio provider and both voices separately; resume keeps them too.
@@ -162,6 +181,8 @@ Rules of a switch (why: D-024):
 
 - Astra works over the Codex subscription at `xhigh`; Claude with the catalog default Sonnet 5.5 at `high`, even when
   the job started with Opus.
+- `claude` and `astra` also take the catalog's A3 rung (Codex first); `claude-only`, `astra-only` and `openrouter`
+  serve A3 with their one model ([Roles of review calls](#roles-of-review-calls)).
 - The receipt `runs/<run_id>/text_switch.json` applies from the job's next start. A later choice replaces it;
   choosing the original selection removes it.
 - Inputs, hash, checkpoints and approvals stay unchanged, and `script_request.json` or `research_request.json` keeps

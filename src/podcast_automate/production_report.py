@@ -30,7 +30,7 @@ def minutes_between(start, end):
 
 
 def production_report(work, *, allowance_rows=()):
-    stages = defaultdict(lambda: {"calls": 0, "failed": 0, "minutes": 0.0, "providers": Counter()})
+    stages = defaultdict(lambda: {"calls": 0, "failed": 0, "minutes": 0.0, "providers": Counter(), "roles": Counter()})
     versions = defaultdict(lambda: {"calls": 0, "minutes": 0.0, "first": None, "last": None})
     providers = defaultdict(lambda: {"calls": 0, "minutes": 0.0, "reported_usd": 0.0, "billed_usd": 0.0})
     starts, ends = [], []
@@ -47,6 +47,8 @@ def production_report(work, *, allowance_rows=()):
         stage["calls"] += 1
         stage["minutes"] += minutes
         stage["providers"][provider] += 1
+        # The review-loop role (text_settings.call_role); calls from before 2026-10-04 record none.
+        stage["roles"][choice.get("role") or "unbekannt"] += 1
         if activity.get("status") not in {"completed", None}:
             stage["failed"] += 1
         row = versions[version]
@@ -76,7 +78,8 @@ def production_report(work, *, allowance_rows=()):
                            "failed": row["failed"], "minutes": round(row["minutes"], 1),
                            "share": round(row["minutes"] / total_minutes, 3) if total_minutes else 0,
                            "minutes_per_call": round(row["minutes"] / row["calls"], 1),
-                           "providers": dict(row["providers"])} for family, row in stages.items()),
+                           "providers": dict(row["providers"]), "roles": dict(row["roles"])}
+                          for family, row in stages.items()),
                          key=lambda row: -row["minutes"]),
         "versions": sorted(({"version": version, **{key: round(value, 1) if key == "minutes" else value
                                                     for key, value in row.items()}}

@@ -279,8 +279,44 @@ class TeachingTests(unittest.TestCase):
         self.assertEqual(run.stages["teaching"].error.code, "teaching_design_failed")
         self.assertEqual(len(self.fixture.calls), calls)
         self.assertEqual(resumed.status, "blocked")
-        self.assertEqual(self.fixture.calls.count(TeachingPlanRepair), 1)
-        self.assertEqual(self.fixture.calls.count(TeachingPlanReview), 4)
+        self.assertEqual(self.fixture.calls.count(TeachingPlanRepair), 2, "the focused repair and the one at A3")
+        self.assertEqual(self.fixture.calls.count(TeachingPlanReview), 5)
+
+    def a3_design_run(self, *, discard):
+        """A design whose review objects until the review at A3; ``discard`` makes the A3 repair fail A0."""
+        from podcast_automate.text_settings import A3_TAG
+        versions = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            result, meta = self.model(prompt, output_type, directory, **kwargs)
+            version = kwargs["prompt_version"]
+            versions.append(version)
+            if output_type is TeachingPlanRepair and version.endswith(A3_TAG) and discard:
+                result.design.episode_id = "ep_999"
+            if output_type is TeachingPlanReview and not version.endswith(A3_TAG):
+                result.issues = ["The plan introduces results before the task and needed concepts."]
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        folder = self.root / "runs" / run.run_id / "teaching/ep_001"
+        return run, folder, [v for v in versions if v.endswith(A3_TAG)]
+
+    def test_a3_repairs_a_design_once_more_after_its_focused_repair(self):
+        """Review-loop plan §9.2: where the focused repair left open points and the run stopped, the final adjudicator
+        repairs once more, and the review of that repair decides."""
+        run, folder, a3_calls = self.a3_design_run(discard=False)
+        self.assertEqual(run.status, "completed", run.stages["teaching"].error)
+        self.assertEqual(len(a3_calls), 2, "one repair and one review at A3")
+        self.assertEqual(json.loads((folder / "checkpoint.json").read_text(encoding="utf-8"))["a3"], "repaired")
+
+    def test_an_a3_design_repair_that_fails_the_plan_check_is_discarded(self):
+        run, folder, a3_calls = self.a3_design_run(discard=True)
+        self.assertEqual(run.stages["teaching"].error.code, "teaching_design_failed")
+        self.assertEqual(len(a3_calls), 1, "no review of a discarded repair")
+        checkpoint = json.loads((folder / "checkpoint.json").read_text(encoding="utf-8"))
+        self.assertEqual(checkpoint["a3"], "discarded")
+        focused = json.loads((folder / "focused_repair.json").read_text(encoding="utf-8"))
+        self.assertEqual(checkpoint["design"], focused["design"], "the design before the A3 repair stays")
 
     def test_a_design_that_keeps_its_defects_is_designed_anew_with_the_editors_note(self):
         """Ontologies, 2026-09-28: ep_001 kept reading SPARQL keywords aloud after two repairs and the focused

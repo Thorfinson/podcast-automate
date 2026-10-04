@@ -363,6 +363,42 @@ class PoolUnitTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "claude_quota_exhausted")
         self.assertEqual(error.exception.details["provider"], "claude_code")
 
+    def test_a3_asks_codex_at_xhigh_under_auto_and_the_runs_model_when_fixed(self):
+        """Review-loop plan §11.3: under ``auto`` the stored ladder serves A3 with Codex alone at xhigh, also while
+        Claude, the run's first choice, has quota, and pauses rather than ask Claude when Codex is out. A run saved
+        without a ladder serves A3 like every other call; a fixed choice serves it with its own model, reading no quota."""
+        config = TopicBrief(topic="Thema")
+        answer = TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz")
+        auto = text_generation_settings(config, backend="auto", reasoning_effort="high")
+        self.assertEqual(auto["ladder"], {"A3": {"prefer": "codex_cli", "candidates": {
+            "codex_cli": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"}}}})
+        legacy = {key: value for key, value in auto.items() if key != "ladder"}
+        fixed = text_generation_settings(config, backend="claude_code")
+        self.assertNotIn("ladder", fixed)
+        fakes, served = QuotaFakes(self), []
+        a3, a2 = "script_review.v12+followup+a3", "script_review.v12+followup"
+
+        def call(selection, version, directory):
+            AdapterPool(config.runtime, selection).structured("Prompt", TextProbeOutput, directory, prompt_version=version)
+            choice = json.loads((directory / "provider_choice.json").read_text(encoding="utf-8"))
+            return choice["provider"], choice["model"], choice["reasoning_effort"], choice["role"]
+        with tempfile.TemporaryDirectory() as temp, \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=lambda *a, **k: (served.append("claude"), (answer, {}))[1]), \
+                patch("podcast_automate.provider_pool.CodexAdapter.structured", side_effect=lambda *a, **k: (served.append("codex"), (answer, {}))[1]):
+            root = Path(temp)
+            self.assertEqual(call(auto, a3, root / "auto_a3"), ("codex_cli", "gpt-6-astra", "xhigh", "A3"))
+            self.assertEqual(call(auto, a2, root / "auto_a2"), ("claude_code", "claude-sonnet-5-5", "high", "A2"))
+            self.assertEqual(call(legacy, a3, root / "legacy_a3"), ("claude_code", "claude-sonnet-5-5", "high", "A3"))
+            fakes.codex = False
+            with self.assertRaises(AppError) as paused:
+                call(auto, a3, root / "codex_out")
+            self.assertEqual((paused.exception.status, served), ("waiting_for_quota", ["codex", "claude", "claude"]))
+            with patch.object(subscriptions, "codex_quota", side_effect=AssertionError("no quota query")), \
+                    patch.object(subscriptions, "claude_quota", side_effect=AssertionError("no quota query")):
+                self.assertEqual(call(fixed, a3, root / "fixed_a3"), ("claude_code", "claude-sonnet-5-5", "high", "A3"))
+        # A resume keeps the saved form, ladder or none: the catalog never rewrites it.
+        self.assertIs(text_generation_settings(config, saved=legacy), legacy)
+
     def test_a_fixed_codex_quota_error_names_its_provider_without_a_quota_query(self):
         config = TopicBrief(topic="Thema")
         pool = AdapterPool(config.runtime, text_generation_settings(config, backend="codex_cli"))

@@ -127,6 +127,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **Resuming a stopped review or correction stops again at the same place:** verdicts and spent attempts are saved,
   and a resume buys no new attempts. Use „Mit neuen Anläufen fortsetzen“ or `pla approve <project> --fresh-attempts`
   (`run_budget.py`). ([Stopping and resuming](STUDIO.md#stopping-and-resuming))
+- ⚠ **A call asks Codex at `xhigh` although the run prefers Claude:** its prompt version carries `+a3`, the tag of the
+  final step at A3, which under `auto` goes to Codex alone (`text_settings.A3_TAG`). Never put `+a3` into another
+  prompt version tag. ([Roles of review calls](BUSINESS_LOGIC.md#roles-of-review-calls))
 - ⚠ **The series review of a large series fails or blocks:** all final texts are passed in full, without truncation,
   and can exceed a provider's context limit. Choose a model with a larger context or review a smaller series.
   ([Scope and limits of the series review](SCRIPTS.md#scope-and-limits-of-the-series-review))

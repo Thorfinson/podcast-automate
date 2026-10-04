@@ -15,9 +15,11 @@ from .errors import AppError
 from .editorial import TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING, terminology
 from .models import Contract, Identifier, NonEmpty
 from .research_patches import corrected_call
+from .review_authority import a3_unavailable
 from .script_advisories import humanised
 from .script_models import ScriptIssue, episode_findings
 from .storage import atomic_text, digest, write_json
+from .text_settings import A3_TAG
 
 TEACHING_VERSION = "teaching.v3"
 DESIGN_VERSION = "teaching_design.v2"
@@ -442,6 +444,9 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
     checkpoint = work / "checkpoint.json"
     design, review, repairs = None, None, 0
     focused_repair = False
+    # The final adjudicator's step after the focused repair (review-loop plan §9.2): ``repaired`` once its repair
+    # stands, ``discarded`` when A0 rejected it.
+    a3 = None
     reused_draft = False
     scope = review_scope(work)
     # The earlier issues the saved review was given; a review saved before this rule is judged against the scope.
@@ -453,6 +458,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
             review = TeachingPlanReview.model_validate(saved["review"]) if saved["review"] else None
             repairs = saved["repairs"]
             focused_repair = saved.get("focused_repair", False)
+            a3 = saved.get("a3")
             review_previous = saved.get("review_previous", review_previous)
         elif saved.get("design", {}).get("episode_id") == entry.episode_id:
             # A changed source/prompt requires a fresh independent review, not a wholesale rewrite.
@@ -463,7 +469,8 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
     def save():
         write_json(checkpoint, {"input_hash": signature, "design": design.model_dump(),
                                "review": review.model_dump() if review else None, "repairs": repairs,
-                               "focused_repair": focused_repair, "review_previous": review_previous})
+                               "focused_repair": focused_repair, "review_previous": review_previous,
+                               **({"a3": a3} if a3 else {})})
 
     if design is None:
         design = invoke(prompt, TeachingPlan, DESIGN_PROMPT_VERSION + noted)
@@ -496,7 +503,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                     "sources": sources, "prerequisite_context": continuity or [],
                     **({"editor_note": editor_note} if editor_note else {}),
                     **({"previous_issues": review_previous} if review_previous else {})}, ensure_ascii=False),
-                TeachingPlanReview, DESIGN_REVIEW_VERSION + noted + followup,
+                TeachingPlanReview, DESIGN_REVIEW_VERSION + noted + followup + (A3_TAG if a3 == "repaired" else ""),
                 lambda answer, previous=review_previous: validate_design_review(answer, design, previous))
             # Code, not the review, decides which of its issues still block (design rule, 2026-09-30).
             review = scoped_review(review, review_previous, editor_note)
@@ -521,12 +528,36 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
         if not issues:
             break
         if repairs >= 2:
+            focused = (prompt + "\n" + instructions("teaching_design_focused_repair") + "\n" +
+                       json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False))
+            if focused_repair and a3 is None:
+                # A3 (review-loop plan §9.2): one more focused repair and one more review at the final adjudicator's
+                # role before the run stops. A repair A0 rejects is discarded and the design before it stays. Without
+                # quota the call pauses the run; with no usable subscription for A3 the run stops as before.
+                try:
+                    answer = invoke(focused, TeachingPlanRepair, "teaching_design_focused_repair.v2-goal" + noted + A3_TAG)
+                except AppError as exc:
+                    if not a3_unavailable(exc):
+                        raise
+                    raise AppError("Das Lehrkonzept hat nach der gezielten Korrektur noch offene Punkte; der "
+                                   "abschließende Korrekturversuch braucht ein nutzbares Abo (unter „Automatisch“ Codex) "
+                                   "und folgt beim Fortsetzen: " + " ".join(issues), code="teaching_design_failed",
+                                   status="blocked", details={"a3": "unavailable"}) from exc
+                try:
+                    validate_focused_repair(answer, issues)
+                    rejected = bool(validate_teaching_plan(answer.design, entry))
+                except AppError:
+                    rejected = True
+                a3 = "discarded" if rejected else "repaired"
+                if not rejected:
+                    design, review = answer.design, None
+                save()
+                continue
             if focused_repair:
-                raise AppError("Das Lehrkonzept hat auch nach der gezielten automatischen Korrektur noch offene Punkte: " +
-                               " ".join(issues), code="teaching_design_failed", status="blocked")
-            repaired = corrected_call(invoke, prompt + "\n" + instructions("teaching_design_focused_repair") + "\n" +
-                json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False),
-                TeachingPlanRepair, "teaching_design_focused_repair.v2-goal" + noted,
+                raise AppError("Das Lehrkonzept hat auch nach der gezielten automatischen Korrektur und dem "
+                               "abschließenden Korrekturversuch noch offene Punkte: " + " ".join(issues),
+                               code="teaching_design_failed", status="blocked", details={"a3": a3})
+            repaired = corrected_call(invoke, focused, TeachingPlanRepair, "teaching_design_focused_repair.v2-goal" + noted,
                 lambda answer: validate_focused_repair(answer, issues))
             focused_repair = True
             save()
