@@ -3,7 +3,7 @@
 Same contract as :class:`CodexAdapter`: ``structured(prompt, output_type, directory, ...)`` returns a
 validated object and public metadata. The CLI runs non-interactively with ``--output-format
 stream-json``; the last ``result`` line carries ``structured_output``. Verified against Claude Code
-2.1.92 on 2026-09-19 (``docs/claude-backend-plan.md``, Phase 0), against 2.1.283 with Opus 5.5 on
+2.1.92 on 2026-09-19 (``docs/specs/2026-09-19-claude-backend-plan.md``, Phase 0), against 2.1.283 with Opus 5.5 on
 2026-09-26 and against 2.1.284 with Sonnet 5.5 on 2026-09-29.
 """
 from __future__ import annotations

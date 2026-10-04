@@ -1,32 +1,32 @@
-# Gezielte Recherche und Wiederaufnahme
+# Targeted research and resume
 
-Die produktive Recherche verwendet feste Teilfragen, gezieltes Nachlesen, unabhängige Antwortprüfungen und gespeicherte Einzelabschlüsse. Der frühere Runden-Controller wurde entfernt. Alte Rechercheläufe werden weiterhin über `bootstrap_legacy` eingelesen und mit dem aktuellen Ablauf fortgesetzt; Quellen, gültige Entwürfe und verbrauchte Aufrufe bleiben erhalten.
+Production research uses fixed sub-questions, targeted re-reading, independent answer reviews and stored individual completions. The earlier round controller has been removed. Old research runs are still read in through `bootstrap_legacy` and continued with the current flow; sources, valid drafts and consumed calls are kept.
 
-## Automatisierte Regressionen
+## Automated regressions
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m unittest tests.test_research tests.test_question_research tests.test_research_quality tests.test_research_refinement tests.test_research_invariants tests.test_research_migration -v
 node --test tests/studio_ui.test.cjs
 ```
 
-Alle Python-Fälle gehören auch zur regulären Testsuite. Sie prüfen mit temporären Projekten und simulierten Modellen insbesondere:
+All Python cases are also part of the regular test suite. Using temporary projects and simulated models, they check in particular:
 
-- Auffindbarkeit gespeicherter Abschnitte, Seitenangaben, Nachbarkontext und Leselimits.
-- Schutz unbeteiligter Befunde und erneute Prüfung geänderter Belege.
-- Quellen- und Aufruflimits sowie Wiederaufnahme ohne wiederholte Suchen oder Downloads.
-- Vollständigkeit der ursprünglichen Leitfragen, unabhängige Prüfung und begrenztes Wiederöffnen.
-- Import historischer Entwurfs- und Reparaturformate, unveränderte Quellen und Prüfsummen sowie das Fortsetzen vor und nach der alten Review-Stufe.
+- Findability of stored sections, page references, neighbouring context and read limits.
+- Protection of uninvolved findings and renewed review of changed evidence.
+- Source and call limits, and resuming without repeated searches or downloads.
+- Completeness of the original guiding questions, independent review and limited reopening.
+- Import of historical draft and repair formats, unchanged sources and checksums, and resuming before and after the old review stage.
 
-Migrationstests erzeugen die historischen Dateien direkt. Eine zweite ausführbare Recherchepipeline und Tests ihrer inzwischen ungenutzten Steuerungslogik sind dafür nicht erforderlich. Den heutigen Rechercheablauf beschreiben [docs/research.md](../../docs/research.md) und [docs/research-evidence.md](../../docs/research-evidence.md); die Analyse vom 17.09.2026 mit dem Hintergrund der ursprünglichen Fehler wurde am 19.09.2026 entfernt und bleibt in der Git-Historie (`docs/research-analysis.md`). Das separate Akzeptanzskript wurde in die Invariantentests aufgenommen.
+Migration tests create the historical files directly. A second executable research pipeline and tests of its now unused control logic are not needed for that. The current research flow is described in [docs/RESEARCH.md](../../docs/RESEARCH.md) and its [evidence contracts](../../docs/RESEARCH.md#evidence-contracts); the analysis of 17.09.2026 with the background of the original errors was removed on 19.09.2026 and remains in the Git history (`docs/research-analysis.md`). The separate acceptance script was merged into the invariant tests.
 
-## Kontrolle mit einem gespeicherten Quellenbestand
+## Check with a stored source corpus
 
-`check_saved_reader.py` arbeitet ausschließlich lesend: keine Modellaufrufe, Downloads oder Änderungen am Forschungsauftrag.
+`check_saved_reader.py` works read-only: no model calls, downloads or changes to the research job.
 
 ```powershell
 .\.venv\Scripts\python.exe evals/research_refinement/check_saved_reader.py projects/mir-gehts-um-die-inhalte-der-doumente-di-c85f45 run_20260916_121103_388868_a082fa2a --query "Max-Neef Human Scale Development singular satisfiers synergic satisfiers definitions" --key-term "singular satisfiers" --key-term "synergic satisfiers" --expect-reference "src_6622dc67b5fea004#sec_f1dc13c2699a5406"
 ```
 
-Der gespeicherte Prüffall enthält **37 Quellen und 4.275 Abschnitte**. Die erwartete Originaldefinition auf Seite 24 erreicht **Rang 1**; das Nachlesen liefert sie mit zwei Nachbarabschnitten. Der Import übernimmt den letzten formal gültigen Entwurf mit **86 Befunden** aus `round_003/dossier_patch_applied.json`.
+The stored test case contains **37 sources and 4,275 sections**. The expected original definition on page 24 reaches **rank 1**; re-reading returns it with two neighbouring sections. The import adopts the last formally valid draft with **86 findings** from `round_003/dossier_patch_applied.json`.
 
-Diese Kontrolle belegt die Auffindbarkeit dieser Passage und die Lesbarkeit des historischen Bestands. Simulierte Tests und gespeicherte Quellen ersetzen keinen vollständigen Lauf mit echten Modellen oder die fachliche Abnahme einer fertigen Serie. Eine prozentuale Laufzeitverbesserung oder allgemeine Forschungsqualität lässt sich daraus nicht ableiten.
+This check demonstrates the findability of this passage and the readability of the historical corpus. Simulated tests and stored sources do not replace a full run with real models or the subject-matter acceptance of a finished series. No percentage runtime improvement or general research quality can be derived from it.

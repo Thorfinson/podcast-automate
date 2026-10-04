@@ -19,7 +19,7 @@ class Result(Contract):
     reason: str
 
 
-# A stand-in for the Claude Code CLI 2.1.92 envelope observed on 2026-09-19 (docs/claude-backend-plan.md, Phase 0).
+# A stand-in for the Claude Code CLI 2.1.92 envelope observed on 2026-09-19 (docs/specs/2026-09-19-claude-backend-plan.md, Phase 0).
 FAKE_CLAUDE = r'''
 import json, os, sys, time
 sys.stdin.reconfigure(encoding="utf-8")

@@ -5,7 +5,7 @@ project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 case "$(uname -s)" in
     Darwin|Linux) ;;
-    *) printf '%s\n' 'Für Windows: docs/windows-quickstart.md'; exit 1 ;;
+    *) printf '%s\n' 'Für Windows: docs/OPERATIONS.md, Abschnitt "Install on Windows 11"'; exit 1 ;;
 esac
 if [ -z "${PYTHON:-}" ]; then
     if command -v python3.12 >/dev/null 2>&1; then PYTHON=python3.12; else PYTHON=python3; fi
@@ -26,4 +26,4 @@ for program in ffmpeg ffprobe; do
         exit 1
     fi
 done
-printf '%s\n' 'Studio bereit: sh Podcast-Studio.sh' 'macOS: alternativ Podcast-Studio.command doppelklicken.' 'Lokales Qwen ist optional; Einrichtung: docs/macos-linux.md'
+printf '%s\n' 'Studio bereit: sh Podcast-Studio.sh' 'macOS: alternativ Podcast-Studio.command doppelklicken.' 'Lokales Qwen ist optional; Einrichtung: docs/OPERATIONS.md'

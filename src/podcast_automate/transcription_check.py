@@ -8,7 +8,7 @@ This module does the deterministic half of that check. It takes per-segment tran
 recogniser, aligns them word by word against the spoken text with ``difflib``, and reports a word
 error rate with the missing and inserted words. It never blocks: a recogniser makes its own
 mistakes, especially on the technical names this check exists for, so its findings are a reason to
-listen to a segment, not a verdict about it. ``SPEC.md`` requires that separation.
+listen to a segment, not a verdict about it. ``docs/AUDIO.md`` requires that separation.
 
 The recogniser itself is not part of this module or of the test suites. ``transcribe`` is any
 callable that maps a WAV path to text; ``asr_worker.py`` would supply one from a local model.

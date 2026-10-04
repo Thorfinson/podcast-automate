@@ -14,7 +14,7 @@ from . import __version__
 from .doctor import inspect
 from .errors import AppError
 from .episode_audio import run_episode_audio
-from .logs import configure_logging, logger, release_logging
+from .logs import add_secret, configure_logging, logger, release_logging
 from .models import RuntimeSettings, SCHEMAS, TopicBrief
 from .polishing import DialoguePolishReview
 from .runner import run_probe, status
@@ -143,8 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--text-switch", nargs="?", const="claude", choices=tuple(SWITCH_OPTIONS),
                          help="Skript- oder Rechercheauftrag ab dem nächsten Fortsetzen weiter mit: claude (Claude, sonst "
                               "Astra; Standard), astra (Astra, sonst Claude), claude-only, astra-only oder openrouter "
-                              "(bezahlt, mit --switch-model und Key). Astra arbeitet auf xhigh, Claude auf der Stufe des "
-                              "Laufs; Zwischenstände bleiben gültig")
+                              "(bezahlt, mit --switch-model und Key). Astra arbeitet auf xhigh, Claude mit Standardmodell und "
+                              "-stufe des Katalogs; Zwischenstände bleiben gültig")
     approve.add_argument("--switch-model", help="OpenRouter-Modell für --text-switch openrouter, z. B. openai/gpt-6-astra")
     approve.add_argument("--finish-with-residuals", action="store_true",
                          help="Nach der nächsten Gesamtprüfung abschließen; verbliebene Einwände stehen im Qualitätsbericht "
@@ -408,6 +408,7 @@ def run_command(args) -> int:
                     except (EOFError, getpass.GetPassWarning):
                         raise AppError("Keine verdeckte Key-Eingabe möglich; OPENROUTER_API_KEY verwenden.",
                                        code="openrouter_key_required", status="blocked") from None
+                add_secret(api_key)
                 manifest = run_script(args.project_dir, episode=getattr(args, "episode", None),
                                       revise=getattr(args, "revise", None), feedback=getattr(args, "feedback", ""),
                                       resume=args.command == "resume", run_id=getattr(args, "run_id", None),

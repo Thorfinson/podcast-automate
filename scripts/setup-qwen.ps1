@@ -11,7 +11,7 @@ if (-not [System.IO.Path]::IsPathRooted($ProjectDir)) {
 }
 $ProjectDir = [System.IO.Path]::GetFullPath($ProjectDir)
 if (-not (Test-Path -LiteralPath $controllerPython)) {
-    throw 'Install the controller in .venv first; see docs/windows-quickstart.md.'
+    throw 'Install the controller in .venv first; see docs/OPERATIONS.md.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'project.yaml'))) {
     throw 'Create the project with pla init before configuring Qwen.'

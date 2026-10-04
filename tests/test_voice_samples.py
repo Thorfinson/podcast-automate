@@ -19,7 +19,8 @@ class VoiceLibraryTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.projects = Path(temporary.name) / "projects"
+        # Resolved, as studio_worker.main resolves the root it hands generate_sample (an 8.3 TEMP differs from it).
+        self.projects = Path(temporary.name).resolve() / "projects"
         self.root = self.projects / "first"
         self.root.mkdir(parents=True)
 

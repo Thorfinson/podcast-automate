@@ -2010,7 +2010,7 @@ test('the research card names the audit round and the job names the next step',(
 });
 
 // Stops as the user meets them: the page that owns the job says what happened, whether "Fortsetzen"
-// can help and which control leads on (docs/studio.md, "Anhalten und Fortsetzen").
+// can help and which control leads on (docs/STUDIO.md, "Stopping and resuming").
 test('a dead end names its exit instead of a futile resume, and accepted gaps alone make no decision card',()=>{
   const app=studio();
   const ledger={closed:16,total:18,accepted:2,phase:'audit',questions:[
@@ -2668,7 +2668,8 @@ test('every stop code the backend raises has its own card instead of the generic
   }
   for(const code of ['missing_executable','unsupported_codex_launcher','unsupported_claude_launcher'])assert.ok(info(code).actions.includes('check'),code);
   assert.ok(info('openrouter_forbidden').actions.includes('key'));
-  for(const code of ['openrouter_search_unsupported','invalid_backend'])assert.ok(info(code).actions.includes('open_brief'),code);
+  // The text model is chosen on the settings page since 2026-10-03; these cards lead there, not to the brief.
+  for(const code of ['openrouter_search_unsupported','invalid_backend'])assert.ok(info(code).actions.includes('open_settings'),code);
   assert.ok(info('audio_approval_required','episode_audio').actions.includes('audio_again'));
   assert.ok(info('research_questions_open').text.includes('„Fortsetzen“ recherchiert sie weiter'));
   assert.ok(info('question_scope_unresolved').text.includes('„Fortsetzen“ kommt jetzt daran vorbei'));

@@ -22,7 +22,8 @@ class StudioProgressTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
+        # Resolved, as watch() resolves its root (an 8.3 TEMP differs from its long form).
+        self.root = Path(temp.name).resolve()
         self.work = self.root / "runs/run_test"
         self.run = {"run_id": "run_test", "kind": "script", "status": "running",
                     "stages": {"planning": {"status": "completed"}, "teaching": {"status": "running"}}}

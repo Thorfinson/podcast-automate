@@ -14,7 +14,7 @@ from podcast_automate.subscriptions import (choose_subscription, claude_quota, c
                                             normalize_codex_limits, quota_overview, record_claude_success,
                                             record_quota_failure)
 
-# A stand-in for the Codex app-server account RPCs observed on 2026-09-19 (docs/claude-backend-plan.md).
+# A stand-in for the Codex app-server account RPCs observed on 2026-09-19 (docs/specs/2026-09-19-claude-backend-plan.md).
 CODEX_SERVER = r'''
 import json, os, sys
 limits = json.loads(os.environ.get("PLA_CODEX_LIMITS", "{}"))

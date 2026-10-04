@@ -45,7 +45,9 @@ from tests.research_fixtures import composed_generation
 from tests.question_fixtures import answer_for, complete_fixture_response, decision, question_response, task_value
 from tests.test_codex_stream import SERVER, Result
 from tests.test_provider_pool import QuotaFakes
-from tests.test_question_research import QuestionResearchTests, failing_follow_up
+# The module, not the class: a TestCase imported by name would be collected and run a second time here.
+from tests import test_question_research
+from tests.test_question_research import failing_follow_up
 from podcast_automate.research_quality import FollowUpAssessment
 
 INPUT_HASH = "a" * 64
@@ -55,7 +57,7 @@ class WorkflowCase(unittest.TestCase):
     """The question-workflow harness plus a run manifest, so run-bound approvals can be written."""
 
     def setUp(self):
-        self.fixture = QuestionResearchTests()
+        self.fixture = test_question_research.QuestionResearchTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.root, self.work = self.fixture.root, self.fixture.work

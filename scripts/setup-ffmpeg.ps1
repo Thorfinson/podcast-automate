@@ -1,9 +1,10 @@
-# Download the Windows x64 build linked from https://ffmpeg.org/download.html.
+# Download the Windows x64 build linked from https://ffmpeg.org/download.html (gyan.dev), from its GitHub mirror:
+# gyan.dev drops a release's versioned package once the next one is out, the mirror keeps every release.
 # Run from any directory; only this checkout's tools/ffmpeg folder is changed.
 $ErrorActionPreference = 'Stop'
 $ffmpegVersion = '9.0.1'
 $archiveSha256 = 'fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9'
-$downloadUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-$ffmpegVersion-essentials_build.zip"
+$downloadUrl = "https://github.com/GyanD/codexffmpeg/releases/download/$ffmpegVersion/ffmpeg-$ffmpegVersion-essentials_build.zip"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $installRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'tools\ffmpeg'))
 $metadataPath = Join-Path $installRoot 'download-info.json'
@@ -30,7 +31,7 @@ $stagingRoot = Join-Path $installRoot ('.setup-' + [guid]::NewGuid().ToString('N
 New-Item -ItemType Directory -Path $stagingRoot | Out-Null
 try {
     $archivePath = Join-Path $stagingRoot 'ffmpeg.zip'
-    Write-Output "Downloading FFmpeg $ffmpegVersion from gyan.dev..."
+    Write-Output "Downloading FFmpeg $ffmpegVersion (gyan.dev build, GitHub mirror)..."
     $previousProgressPreference = $ProgressPreference
     try {
         $ProgressPreference = 'SilentlyContinue'

@@ -73,9 +73,10 @@ def status(root: Path, run_id: str | None = None) -> dict:
     path = manifest_path(root, run_id)
     manifest = RunManifest.model_validate(read_yaml(path))
     snapshot = path.parent / "project_snapshot.yaml"
-    # A research run is bound to its brief without the operational fields, as its resume checks it.
-    bound = (bound_brief(config, read_yaml(snapshot), "research")
-             if manifest.kind == "research" and snapshot.is_file() else config)
+    # Research and script runs are bound to their brief without the operational fields, as their resume checks it
+    # (research.py, scripting.py); a raised limit or time limit must not report a resumable run as changed.
+    bound = (bound_brief(config, read_yaml(snapshot), manifest.kind)
+             if manifest.kind in {"research", "script"} and snapshot.is_file() else config)
     return {
         "topic": config.topic, "status": manifest.status,
         "project_changed": manifest.project_hash != project_hash(bound),

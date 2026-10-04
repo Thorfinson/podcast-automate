@@ -449,7 +449,7 @@ def run_gemini_tts(config, script, root, work, choice, api_key=None, *, table=No
         except AppError as exc:
             if exc.code != "invalid_speech":
                 raise
-            # Named by segment, so the listener knows which passage to check (SPEC.md §12).
+            # Named by segment, so the listener knows which passage to check (docs/AUDIO.md).
             raise AppError(f"Abschnitt {segment.segment_id}: {exc}", code=exc.code, status=exc.status,
                            details={**exc.details, "segment_id": segment.segment_id}) from exc
         paths.append(path)

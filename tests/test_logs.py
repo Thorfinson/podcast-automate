@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from podcast_automate.logs import LOGGER, configure_logging, failure_records, log_target, logger, record_failure, release_logging
+from podcast_automate.logs import (LOGGER, _SECRETS, add_secret, configure_logging, failure_records, log_target, logger,
+                                   record_failure, release_logging)
 from podcast_automate.models import RunManifest, StageRecord
 from podcast_automate.runner import execute_stages, status
 from podcast_automate.storage import init_project
@@ -81,6 +82,30 @@ class ConfigureLoggingTests(unittest.TestCase):
                 for handler in handlers:
                     root.removeHandler(handler)
                     handler.close()
+
+    def test_log_file_redacts_credentials_in_message_and_traceback(self):
+        """2026-10-04 docs review: worker.log, studio.log and pla.log got full tracebacks unredacted; only the failure
+        records were cleaned. A registered key, an OpenRouter key pattern and a bearer token must not reach the file,
+        and a line that merely ends like the start of a key keeps its last character."""
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / "worker.log"
+            add_secret("custom-secret-42")
+            configure_logging(log)
+            try:
+                try:
+                    raise RuntimeError("upstream said Bearer hunter2 for sk-or-abcdefghijklmnopqrstu")
+                except RuntimeError as exc:
+                    logger("worker").error("Auftrag fehlgeschlagen mit custom-secret-42", exc_info=exc)
+                logger("worker").info("Ende des Laufs c")
+            finally:
+                release_logging(log)
+                _SECRETS.discard("custom-secret-42")
+            text = log.read_text(encoding="utf-8")
+        self.assertIn("RuntimeError", text)
+        self.assertIn("test_logs.py", text)
+        for leaked in ("custom-secret-42", "hunter2", "sk-or-abcdefghijklmnopqrstu"):
+            self.assertNotIn(leaked, text)
+        self.assertIn("Ende des Laufs c", text)
 
 
 if __name__ == "__main__":

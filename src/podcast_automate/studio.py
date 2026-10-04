@@ -29,7 +29,7 @@ from . import attachments
 from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_probe_enabled, jev_probe_state,
                         selected_execution, set_jev_probe,
                         settings_execution)
-from .logs import configure_logging, logger
+from .logs import add_secret, configure_logging, logger, scrub
 from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManifest, RuntimeSettings, SeriesGoal,
                      TopicBrief, host_labels, now)
 from .episode_audio import saved_approval, saved_expression
@@ -178,7 +178,7 @@ def worker_stderr(root, job):
         lines = [line for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
     except OSError:
         return None
-    return "\n".join(lines[-12:])[-1500:] or None
+    return scrub("\n".join(lines[-12:])[-1500:]) or None
 
 
 def worker_record(root, job_id):
@@ -1616,7 +1616,7 @@ class Studio:
         if action == "research" and data.get("seed_corpus") is True:
             payload["seed_corpus"] = True
         if (self.key and self.key in payload["message"]) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}", payload["message"]):
-            raise AppError("Den OpenRouter-Key bitte über den geschützten Key-Eingang hinterlegen, nicht im Chat.", code="credential_in_prompt")
+            raise AppError("Den OpenRouter-Key bitte in den Einstellungen unter „OpenRouter-Key“ hinterlegen, nicht im Chat.", code="credential_in_prompt")
         remote_episode = None
         if action == "audio_sample":
             if data.get("voice") not in GEMINI_VOICES or data.get("language") not in {"de-DE", "en-US"}:
@@ -1970,6 +1970,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                         if not isinstance(value, str) or len(value) > 512 or any(ord(c) < 33 or ord(c) > 126 for c in value):
                             raise AppError("Ungültiger API-Key.", code="invalid_key")
                         app.key = value
+                        add_secret(value)
                         result = {"key_available": bool(value or os.environ.get("OPENROUTER_API_KEY"))}
                     elif path == "/api/projects":
                         result = app.create(data)

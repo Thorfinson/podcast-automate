@@ -825,10 +825,13 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             self.config.runtime = self.config.runtime.model_copy(
                 update={"text_timeout_seconds": self.config.runtime.text_timeout_seconds + 600})
             write_yaml(self.root / "project.yaml", self.config.model_dump())
+            # `pla status` agrees with resume (2026-10-04: it bound only research runs and called this one changed).
+            self.assertFalse(status(self.root, first.run_id)["project_changed"])
             resumed = run_script(self.root, resume=True, run_id=first.run_id)
             self.assertEqual((resumed.run_id, resumed.status), (first.run_id, "completed"))
             self.config.depth_request = "A changed explanation approach"
             write_yaml(self.root / "project.yaml", self.config.model_dump())
+            self.assertTrue(status(self.root, first.run_id)["project_changed"])
             with self.assertRaises(AppError) as raised:
                 run_script(self.root, resume=True, run_id=first.run_id)
         self.assertEqual(raised.exception.code, "inputs_changed")

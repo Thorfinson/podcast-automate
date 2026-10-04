@@ -52,7 +52,8 @@ class QuestionResearchTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name) / "Projekt mit Leerzeichen"
+        # Resolved, as run_research() resolves the root it hands the engine (an 8.3 TEMP differs from its long form).
+        self.root = Path(temp.name).resolve() / "Projekt mit Leerzeichen"
         self.config = TopicBrief(topic="Test topic")
         init_project(self.root, self.config)
         self.work = self.root / "runs/run_test"

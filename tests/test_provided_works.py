@@ -13,7 +13,8 @@ class ProvidedWorksTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
+        # Resolved, as Studio.root() hands it to add() (an 8.3 TEMP differs from its long form).
+        self.root = Path(temp.name).resolve()
 
     def test_a_work_is_stored_whole_with_its_citation_and_questions(self):
         pdf = b"%PDF-1.4 a scanned book"

@@ -22,7 +22,7 @@ from .expression import TAG
 from .errors import AppError
 from .execution import selected_execution
 from .editorial import terminology
-from .logs import configure_logging, logger, record_failure
+from .logs import add_secret, configure_logging, logger, record_failure
 from .models import now
 from .provider_pool import AdapterPool, text_generation_settings
 from .research import reserve_call, run_research, latest_research_run
@@ -290,6 +290,7 @@ def process_started_at() -> str:
 def main():
     root = Path(sys.argv[1]).resolve()
     request = json.loads(sys.stdin.read())
+    add_secret(request.get("api_key"))
     configure_logging(root / "studio/worker.log")
     job_path = audio_job_path(root, request["audio_job_id"]) if request.get("audio_job_id") else root / "studio/job.json"
     job = read_json(job_path)

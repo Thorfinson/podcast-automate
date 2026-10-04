@@ -166,7 +166,8 @@ class StudioHttpTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.workspace = Path(self.temp.name)
+        # Resolved as Studio() resolves it: its workers and jobs are keyed by that form (an 8.3 TEMP differs).
+        self.workspace = Path(self.temp.name).resolve()
         self.root = self.workspace / "projects" / "example"
         self.config = TopicBrief(topic="A test project", voice_profile={"host_a":"Aiden", "host_b":"Vivian"})
         init_project(self.root, self.config)

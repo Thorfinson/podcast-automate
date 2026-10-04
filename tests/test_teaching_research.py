@@ -56,7 +56,8 @@ def script_for(episode):
 class FoundationResearchTests(unittest.TestCase):
     def setUp(self):
         fixture = self.fixture = fixtures.script_project(self)
-        self.root, self.config = fixture.root, fixture.config
+        # Resolved, as run_script() resolves the root it hands research_foundations (an 8.3 TEMP differs).
+        self.root, self.config = fixture.root.resolve(), fixture.config
         _, self.dossier, _, self.sources, self.context = load_research(self.root, self.config)
         self.entry = fixtures.example_plan().episodes[0]
         self.work = self.root / "runs/run_foundations"

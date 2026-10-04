@@ -1,254 +1,543 @@
-# Podcast Studio im Browser
+---
+title: Studio
+doc_type: frontend
+status: current
+last_reviewed: 2026-10-04
+covers:
+  - src/podcast_automate/studio.py
+  - src/podcast_automate/studio_worker.py
+  - src/podcast_automate/studio_settings.py
+  - src/podcast_automate/studio_progress.py
+  - src/podcast_automate/studio_messages.py
+  - src/podcast_automate/studio_allowances.py
+  - src/podcast_automate/studio_scripts.py
+  - src/podcast_automate/studio_trash.py
+  - src/podcast_automate/status_summary.py
+  - src/podcast_automate/production_report.py
+  - src/podcast_automate/model_trace.py
+  - src/podcast_automate/execution.py
+  - src/podcast_automate/attachments.py
+  - src/podcast_automate/provided_works.py
+  - src/podcast_automate/web/app.js
+  - src/podcast_automate/web/index.html
+---
 
-Im Repository unter **Windows `Podcast-Studio.cmd`**, unter **macOS `Podcast-Studio.command` doppelklicken**; unter **Linux `sh Podcast-Studio.sh`** ausführen. Das startet den lokalen Server und öffnet `http://127.0.0.1:8765`. Das Serverfenster bleibt während der Arbeit geöffnet. Die installierte Controller-Umgebung `.venv` wird verwendet; FFmpeg unter `tools/ffmpeg/bin` oder im PATH wird gefunden. Nach einem frischen Checkout zuerst die [Windows-Einrichtung](windows-quickstart.md) oder die [macOS-/Linux-Einrichtung](macos-linux.md) durchführen.
+# Studio
 
-Alternativ ein einzelner Startbefehl:
+The Studio is the local browser interface of podcast-automate. It guides one project from the brief through research,
+table of contents, script work and reading to the recording, and shows what each job is doing and why it stopped. Its
+rules live in [Business logic](BUSINESS_LOGIC.md) and the stage docs [Research](RESEARCH.md), [Scripts](SCRIPTS.md),
+[Teaching](TEACHING.md) and [Audio](AUDIO.md). The UI is German; labels are quoted in German with an English gloss on
+first use.
+
+## Starting the Studio
+
+In the repository, double-click **`Podcast-Studio.cmd`** on Windows or **`Podcast-Studio.command`** on macOS; on Linux
+run `sh Podcast-Studio.sh`. This starts the local server and opens `http://127.0.0.1:8765`; keep the server window open
+while you work. It uses the installed controller environment `.venv` and finds FFmpeg under `tools/ffmpeg/bin` or on the
+`PATH`. After a fresh checkout, first complete [Install on Windows 11](OPERATIONS.md#install-on-windows-11) or
+[Install on macOS and Linux](OPERATIONS.md#install-on-macos-and-linux).
+
+Or start it with one command:
 
 ```powershell
 .\.venv\Scripts\pla.exe studio
 ```
 
-Mit `--port 8766` lässt sich ein anderer Port wählen, mit `--no-browser` das automatische Öffnen unterdrücken. Ein erneuter Doppelklick öffnet das bereits laufende Studio. „Studio beenden“ links unten beendet den lokalen Server und hält seinen aktiven Auftrag an. Der Server ist ausschließlich auf diesem Computer erreichbar. Es gibt keinen externen Webhost, keine Anmeldung am Studio und keine Übertragung der Projektdateien an einen Hostingdienst.
-
-### Vom Handy im WLAN
-
-Unter Windows startet **`Podcast-Studio-WLAN.cmd`** (oder `pla studio --lan`) das Studio so, dass es auch aus dem eigenen Heimnetz erreichbar ist, etwa vom Handy im WLAN. Das Serverfenster und links unten das Studio nennen die Adresse, etwa `http://192.168.178.75:8765`; sie wird am Handy im Browser geöffnet. Ein Gerät im Heimnetz kann dort alles, was es am Rechner kann, ohne Anmeldung. Anfragen von Adressen außerhalb des Heimnetzes weist das Studio ab, und wie am Rechner steuert keine fremde Webseite das Studio: Es antwortet nur unter der Adresse, unter der das Gerät es erreicht hat, und jede Änderung braucht den Sitzungsschlüssel der geöffneten Seite. Die Verbindung ist unverschlüsselt (HTTP) und für das eigene WLAN gedacht, nicht für ein öffentliches. Von unterwegs ist das Studio damit nicht erreichbar; das bräuchte ein VPN ins Heimnetz.
-
-Beim ersten Start fragt die Windows-Firewall, ob Python im Netzwerk erreichbar sein darf: nur **Private Netzwerke** erlauben. Läuft das Studio schon nur auf diesem Computer, öffnet die WLAN-Startdatei es nicht erneut, sondern bittet, es zuerst mit „Studio beenden“ zu schließen, sobald kein Auftrag läuft; ein laufender Auftrag würde dabei angehalten.
-
-Unter Windows findet das Studio Codex zunächst im `PATH`. Fehlt dieser Eintrag beim Start per Doppelklick, sucht es zusätzlich nach `~/.local/bin/codex.exe` und dem passenden Windows-Programm der installierten OpenAI-Erweiterung in VS Code bzw. VS Code Insiders. Bei mehreren Erweiterungsversionen wird die neueste vorhandene verwendet. Ein ausdrücklich eingetragener Pfad unter `runtime.codex_executable` bleibt maßgeblich. Eine vorhandene Installation muss deshalb nicht allein wegen eines fehlenden `PATH`-Eintrags neu installiert werden. Die ChatGPT-Anmeldung wird anschließend separat mit `codex login status` geprüft. Nach einem behobenen Erkennungsfehler setzt **„Fortsetzen“** den gespeicherten Auftrag fort; ein Entwurf des Inhaltsverzeichnisses bleibt weiterhin vor dem Schreiben der Skripte zur Durchsicht stehen. [Offizielle Codex-Anmeldung](https://learn.chatgpt.com/docs/auth).
-
-## Der geführte Ablauf
-
-### Eigene Dateien als Projektidee und Recherchematerial
-
-Bei **Neues Projekt → Auftrag & Stimmen** kannst du unter dem Nachrichtenfeld mehrere **.md**, **.txt** oder **.docx** anhängen. Beschreibe bei Bedarf, wie sie verwendet werden sollen, und klicke **Senden**. Ohne Begleittext schlägt der Partner anhand der Dateien ein Projekt vor. Er berücksichtigt bereits enthaltene Wünsche und fragt fehlende Angaben nach. Die Zusammenfassung prüfst du weiterhin vor **Diese Auswahl übernehmen**.
-
-Die aktiven Anhänge sind nach dem Neuladen sowie unter **Recherche** sichtbar. **Entfernen** nimmt eine Datei aus den aktiven Eingaben; frühere Modellaufrufe und Recherche-Snapshots bleiben nachvollziehbar. Nach veränderten Anhängen muss der Partner seine Zusammenfassung vor der Übernahme aktualisieren. Ein erneuter Upload derselben Datei erzeugt keine zweite aktive Kopie. Änderungen sind während laufender Aufträge gesperrt.
-
-**Fehlende Werke.** Auf der Seite **Recherche** listet der Bereich „Fehlende Werke“ die Bücher und Aufsätze, die blockierte Teilfragen (oder Teilfragen im neuen Versuch nach einer Blockade) als Originalwerk brauchen und die keine freie Quelle hergab. Zu jedem Eintrag stehen die Fragen, die es brauchen. Besorge das Werk über Bibliothek, Fernleihe, subito oder Kauf und lade es dort als PDF, gespeicherte Webseite oder Textdatei hoch (bis 150 MB; Bücher bis 2000 Seiten). Unter „Anderes Werk hochladen“ gibst du Autor, Titel und Jahr selbst an. Ein hochgeladenes Werk liegt unter `inputs/works/` mit seiner Literaturangabe in `inputs/works.json`, neben dem Auftrag, sodass ein laufender Lauf fortsetzbar bleibt. Anders als Anhänge zählt es als **Beleg**, nicht als Notiz: Die Recherche liest es beim nächsten Schritt als Primärwerk ein (Herkunft: „vom Herausgeber bereitgestellte Kopie“) und versucht die Fragen, für die es hochgeladen wurde, damit neu; ein angehaltener Lauf beim Fortsetzen. Zitate werden wie immer wörtlich gegen die Datei geprüft. Schattenbibliotheken sind keine zulässige Quelle.
-
-Bis zu **10 Anhänge pro Projekt**, Textdateien jeweils bis **256 KiB**, DOCX bis **2 MiB**, insgesamt bis **1 MiB eingelesener Text**. Eine Sendung darf bis 4 MiB Dateien enthalten. TXT/MD benötigen UTF-8 (mit oder ohne BOM) oder UTF-16 mit BOM. DOCX wird lokal ohne Word-Installation als Haupttext einschließlich Tabellen ausgelesen; Bilder, Layout, Kopf-/Fußzeilen und Fußnoten werden nicht übernommen. Passwortgeschützte Dateien bitte vorher als normale DOCX oder TXT speichern.
-
-Der Server legt UTF-8-Textkopien unter `inputs/uploads/` mit kurzen, selbst erzeugten Namen ab, behält die Originalnamen im Verzeichnis `inputs/attachments.json` und registriert die Kopien in `local_sources`. Die Originaldateien auf deinem Rechner bleiben unverändert. Seit dem 02.10.2026 nimmt das Studio vom Browser in `local_sources` nur Dateien unter `inputs/` des Projekts an; andere Einträge kommen ausschließlich aus der `project.yaml` auf der Platte und bleiben beim Speichern unverändert. Eine Recherche liest nur lokale Quellen innerhalb des Projektordners und hält bei einem Pfad außerhalb an (`local_source_outside`). Alle Anhänge fließen in den Setup-Kontext ein; bei zusammen mehr als 60.000 Zeichen verwendet der Partner ausdrücklich gekennzeichnete Auszüge. Die Recherche liest die vollständigen Textkopien ein und wählt daraus wie bei anderen Quellen relevante Abschnitte für die Auswertung. Sehr kurze Notizen eignen sich für den Auftrag, können aber unter der Mindestlänge der Quellenextraktion liegen. Behauptungen aus Notizen oder gewünschten Ergebnissen müssen durch unabhängige Quellen gestützt oder als offen behandelt werden.
-
-**Senden** übermittelt den Text an das ausgewählte Textmodell (Codex oder OpenRouter). Ein Upload allein startet weder Web-Recherche noch Vertonung. Zugangsdaten gehören nicht in Dateien; erkannte OpenRouter-Keys und der hinterlegte Sitzungs-Key werden abgewiesen. Nach diesem Update den Studio-Server neu starten, sobald keine Arbeit läuft; Browser-Neuladen allein lädt das neue Backend nicht.
-
-### Einstellungen für alle Projekte
-
-Textmodell, Audio (Anbieter, Sprachmodell, beide Stimmen und Pausen), Ausführung (sequenziell oder parallel), Vorab-Erlaubnisse, Limits (Modellaufrufe, Quellen, Suchrunden), das Zeitlimit eines Modellaufrufs, Claudes Zusatzkontingent und der OpenRouter-Key stehen seit dem 03.10.2026 auf der Seite **Einstellungen** (oben neben „Übersicht“) und gelten für alle Projekte. Gespeichert werden sie in `projects/.studio-settings.json` (`studio_settings`); solange es diese Datei nicht gibt, behält jedes Projekt seine eigenen Dateien wie zuvor (`studio/text.json`, `audio.json`, `execution.json`, `allowances.json` und `research_limits` sowie `runtime.text_timeout_seconds` in `project.yaml`), und die Seite zeigt die Werte des zuletzt geänderten Projekts, die das erste Speichern für alle übernimmt. Die CLI liest Limits und Zeitlimit über `load_project` ebenfalls aus dieser Datei. Laufende und angehaltene Aufträge behalten ihr Textmodell, ihren Ausführungsmodus und freigegebene Vertonungen; Limits und Zeitlimit gelten beim nächsten Fortsetzen. Die Projektseite zeigt die Einstellungen nur an. Der Gesprächspartner schlägt sie nicht mehr vor: ein Vorschlag trägt nur den Auftrag, auch wenn die Modellantwort anderes enthält.
-
-**Zusatzkontingent für Claude.** Hast du Claude-Nutzung über die Abo-Fenster hinaus gekauft, übergeht das Studio mit diesem Schalter gespeicherte Claude-Sperren (`subscriptions.claude_extra_usage`, im Abo-Speicher `~/.podcast-automate/subscriptions.json`) und versucht Claude bei jedem Aufruf. Lehnt Claude trotzdem ab, kostet das einen Fehlversuch, und der Lauf weicht wie bisher auf Codex aus oder pausiert. Vorher meldete das Studio „Kein Abo hat gerade Kontingent“, obwohl Claude geantwortet hätte.
-
-| Auswahl | Anbieter | Modell-ID | Denkstufe der Vorauswahl |
-| --- | --- | --- | --- |
-| Automatisch | Claude-Abo, sonst Codex-Abo | `claude-sonnet-5-5` und `gpt-6-astra` | `high` (Claude), `xhigh` (Astra) |
-| Automatisch · high | Claude-Abo, sonst Codex-Abo | `claude-sonnet-5-5` und `gpt-6-astra` | `high` (beide) |
-| Sonnet 5.5 · high | Claude-Abo | `claude-sonnet-5-5` | `high` |
-| Opus 5.5 | Claude-Abo | `claude-opus-5-5` | `xhigh` |
-| Astra | Codex-Abo | `gpt-6-astra` | `xhigh` |
-| [Astra · xhigh](https://openrouter.ai/openai/gpt-6-astra) | OpenRouter | `openai/gpt-6-astra` | `xhigh` |
-| [Opus 5.5 · medium](https://openrouter.ai/anthropic/claude-opus-5.5) | OpenRouter | `anthropic/claude-opus-5.5` | `medium` |
-| [Sonnet 5.5 · high](https://openrouter.ai/anthropic/claude-sonnet-5.5) | OpenRouter | `anthropic/claude-sonnet-5.5` | `high` |
-| [DeepSeek V4.1 Flash · max](https://openrouter.ai/deepseek/deepseek-v4.1-flash) | OpenRouter | `deepseek/deepseek-v4.1-flash` | `max` |
-
-Seit dem 03.10.2026 bietet das Studio über OpenRouter genau diese vier Textmodelle an (`text_settings.OPENROUTER_MODELS`); Astra Pro und Claude Fable 5.1 sind entfallen. Andere Wünsche kannst du weiterhin im Chat äußern. DeepSeek verwendet `reasoning.effort=max`, keinen erfundenen Modellzusatz. Laut [öffentlichem API-Katalog](https://openrouter.ai/api/v1/models), geprüft am 03.10.2026, unterstützt dieses DeepSeek-Modell `low`, `high`, `max`; die drei anderen OpenRouter-Vorauswahlen außerdem `medium` und `xhigh`. Die API meldet für alle vier Modelle `structured_outputs` und `response_format`; das Studio verlangt passende Anbieter und prüft jede Antwort weiterhin lokal gegen das erwartete Datenformat. Abweichende nicht unterstützte Einstellungen werden nicht still ersetzt.
-
-**Automatisch** ist die Vorauswahl neuer Projekte: Vor jedem Modellaufruf schreibt Claude Sonnet 5.5 über das Claude-Max-Abo, solange für Claude keine Sperre vermerkt ist; danach übernimmt Codex mit GPT-6 Astra, dessen Kontingent das Studio über den lokalen App Server liest; sind beide leer, pausiert der Auftrag mit dem frühesten Reset-Zeitpunkt. Aufträge, die vor dem 26.09.2026 mit Codex als erster Wahl gespeichert wurden, behalten diese Reihenfolge beim Fortsetzen. Ein Auftrag kann so zwischen zwei Modellen wechseln; welche Abo den einzelnen Aufruf bedient hat, steht in `runs/<run_id>/calls/call_NNN/provider_choice.json`, ein Wechsel innerhalb eines Aufrufs in `provider_switch.json`. Feste Auswahlen (Sonnet 5.5, Opus 5.5, Astra, OpenRouter) wechseln nie. Claude meldet sein Kontingent nicht vorab; ein erreichtes Limit kostet einen fehlgeschlagenen Aufruf und wird danach bis zum genannten Reset in `~/.podcast-automate/subscriptions.json` vermerkt. Ein erfolgreicher Claude-Aufruf löscht seit dem 03.10.2026 nur eine Sperre, die vor seinem Start vermerkt wurde: Vorher löschte ein paralleler Aufruf, der vor der Sperre begonnen hatte, die gerade vermerkte Wochensperre, und der Auftrag wartete auf den Codex-Reset eine Woche später statt auf Claude am nächsten Tag. Als erreicht gilt seit dem 02.10.2026 nur ein Rate-Limit-Ereignis, mit dem die CLI die Anfrage abgelehnt hat (`rejected`), nicht die Warnung `allowed_warning` eines knapp werdenden Fensters; Fehler beider Abos ordnet das Studio zuerst nach den strukturierten Feldern der CLI ein und liest ihren Text nur noch nach ganzen Wörtern. Ist ein Abo bei Automatisch gerade nicht nutzbar (abgelaufene Anmeldung, keine Abo-Anmeldung, zu alte Claude-CLI, fehlende oder nicht startbare CLI; `provider_pool.UNAVAILABLE_CODES`), hält der Auftrag nicht mehr an: der Aufruf wechselt wie nach einem Kontingentfehler zum anderen Abo, und die Regel übergeht das ausgefallene zehn Minuten lang (`subscriptions.UNAVAILABLE_SECONDS`), bevor sie es erneut prüft. Eine feste Auswahl hält bei diesen Fehlern weiterhin an. Modell und Stufe kommen bei Automatisch aus dem Katalog: Claude Sonnet 5.5 auf `high`, Astra auf `xhigh`; `max` bleibt bei Claude eine ausdrückliche Wahl. Seit dem 29.09.2026 ist Sonnet 5.5 auf `high` der Claude-Standard (`text_settings.DEFAULT_CLAUDE_MODEL`, `DEFAULT_CLAUDE_EFFORT`), statt Opus 5.5; Sonnet 5.5 braucht Claude Code ab 2.1.284 (`claude_code.MODEL_MINIMUM_CLI`, `claude update`), Opus 5.5 bleibt wählbar. Zwei Stufen fragen höchstens auf `medium`, auch wenn der Lauf höher eingestellt ist: der Erstleser, der nur aufnehmen soll, was der Dialog selbst erklärt, und das Setzen der Ausdrucksmarken für die Vertonung (`text_settings.STAGE_EFFORT_CAPS`). Belegprüfung, Lehrprüfung, Schreiben und jede Korrektur behalten die Stufe des Laufs; `provider_choice.json` nennt bei den begrenzten Aufrufen die Stufe des Laufs als `run_effort`.
-
-Live-Recherche und zusätzliche Web-Recherche laufen über das gewählte Abo, bei OpenRouter-Text und bei Automatisch nach derselben Regel (Claude, sonst Codex). OpenRouter-Text nutzt dein API-Guthaben; der Key kommt in den geschützten Eingang. Qwen/Gemini und Stimmen werden getrennt gewählt. Bestehende Aufträge behalten ihre gespeicherte Modellauswahl beim Fortsetzen.
-
-Die Seite **Vertonung** bietet unter **Alle fertigen Folgen anhören** den Link **Gesamten Podcast herunterladen** als ZIP mit einzelnen MP3s in Folgenreihenfolge. Es enthält die zuletzt veröffentlichten Aufnahmen einschließlich aller Teile, ohne erneute Spracherzeugung oder Umwandlung. Das ZIP trägt einen gekürzten Podcasttitel. Darin heißen Dateien `Folge 01 - Episodentitel.mp3`, bei mehreren Teilen ergänzt um `Teil 01 von 02`. Der Podcasttitel wird darin nicht wiederholt, damit ZIP-Ordner und Dateiname zusammen beim Entpacken unter Windows kurz bleiben. Einzeldownloads erhalten zusätzlich einen kurzen Podcasttitel. Dasselbe ZIP bietet jede Projektkarte der Übersicht als **Podcast herunterladen** an, sobald eine Folge vertont ist. Lange Titel werden möglichst an Wortgrenzen gekürzt; Umlaute bleiben erhalten, Auslassungszeichen werden nicht angehängt.
-
-Bei einer unvollständigen Serie zeigt der Link **Fertige Folgen herunterladen · ZIP · 2 von 6 Folgen**. Ältere Skript-/Stimmenstände bleiben als solche gekennzeichnet. Fehlt eine Datei innerhalb einer veröffentlichten Folge, bricht der ZIP-Download mit einer verständlichen Meldung ab, statt Teile still auszulassen. Das ZIP entsteht nur für den Download und wird danach wieder aus dem temporären Speicher entfernt; währenddessen steht oben „Das ZIP wird zusammengestellt“, und eine Ablehnung erscheint als Meldung. Recherche und Skriptarbeit schreiben keine Aufnahmen, deshalb bleiben ZIP und Einzeldownloads auch während eines solchen Studio-Auftrags verfügbar; nur während einer Qwen-Vertonung oder eines Kommandozeilenlaufs wartet der Download. Nach einem Studio-Update benötigt ein bereits laufender Server einen Neustart, bevor der neue Gesamtdownload verfügbar ist.
-
-1. **Auftrag & Stimmen:** Ein einzelner redaktioneller Partner fragt im Chat nach den benötigten Angaben und schlägt konkrete Einstellungen vor. Er fragt früh, wofür die Serie da ist (**Ziel der Serie**: Verstehen, Bewerten, Anwenden, je 0–3), und bei schnelllebigen Feldern wie KI-Praxis, wie aktuell die Quellen sein müssen (**Aktualität der Quellen**: die letzten N Monate). Beides steht in der Zusammenfassung. Anhänge und Posts behandelt er als Wegweiser zu Namen, Werken und Werkzeugen, nicht als Behauptungen, die die Folgen prüfen müssten. Du kannst Thema, Vorwissen, Tiefe, Sprache, Stimmen, Textmodell und sequenzielle oder parallele Ausführung in eigenen Worten wählen. **Diese Auswahl übernehmen** speichert die überprüfte Zusammenfassung. Der Chat erteilt keine Plan- oder Audiofreigabe. Gespeicherte Hörproben bleiben über die aufklappbare Stimmenbibliothek erreichbar; Zugangsdaten gehören ausschließlich in den geschützten Key-Eingang.
-2. **Recherche:** Quellen suchen, herunterladen, auswerten und das Dossier prüfen läuft nach dem Start automatisch. Das Ergebnis ist hier lesbar. Danach entsteht das Inhaltsverzeichnis; ein vorhandener Plan lässt sich direkt öffnen. Eine neue Recherche ist als eigener Neustart gekennzeichnet.
-3. **Inhaltsverzeichnis:** Folgen, Kapitel, Leitfragen und Erklärungsschritte prüfen und bei Bedarf überarbeiten lassen. „Plan freigeben & Skripte schreiben“ gibt genau diesen Planstand frei und startet die Ausarbeitung. Ein bereits freigegebener Plan führt zur laufenden Ausarbeitung, statt erneut eine Freigabe zu verlangen. Ein Inhaltsverzeichnis erscheint erst, wenn sein Entwurf fertig ist: Während ein neuer Entwurf oder eine Überarbeitung läuft, ist der bisherige Plan ausgeblendet, und ein angehaltener Entwurf zeigt nur seine Haltekarte. Überarbeiten oder freigeben lässt sich nur ein fertiger Entwurf; nach einem angehaltenen Entwurf geht es mit **Neues Inhaltsverzeichnis entwerfen** weiter. Bis 02.10.2026 blieb der ersetzte Plan stehen, und sein Überarbeiten-Knopf hielt sofort mit `invalid_plan` an.
-4. **Ausarbeitung:** Lehrkonzept, Skriptentwurf, Dialog-Polishing, Qualitätsprüfung und Bereitstellen sind automatische Phasen eines Auftrags. Diese Seite zeigt die aktuelle Folge, fertige Ergebnisse und konkrete offene Punkte. Geprüfte Lehrkonzepte lassen sich schon während der Arbeit lesen. Nachrecherche und interne Korrekturen gehören hierher. Ein zusätzlicher Klick zwischen diesen Phasen ist nicht erforderlich.
-5. **Skripte lesen:** Jede Folge wird lesbar, sobald ihr vollständiger Entwurf gespeichert ist. Der Prüfstand lautet „Entwurf“, „Dialog überarbeitet“ oder „Prüfungen bestanden“; nach Bereitstellung steht „Fertig zur Durchsicht“. Weitere Folgen erscheinen automatisch in der Auswahl. Eine geöffnete Fassung bleibt beim Lesen stehen; bei einem neueren Text- oder Prüfstand kannst du „Aktuellen Stand laden“ wählen. Vorschauen erhalten keine Audio-Freigabe. Nach der Ausarbeitung lassen sich die bereitgestellten Fassungen kommentieren und anschließend ausdrücklich für Audio freigeben.
-6. **Vertonung:** Das Kontrollkästchen bestätigt den gelesenen Skriptstand mit dem angezeigten Anbieter und den Stimmen. Bei Gemini nennen Freigabekarte, Sammelfreigabe und Warteschlange vorher den Umfang: geschätzte Minuten (130 Wörter je Minute) und Zeichen des Sprechtexts, ohne Preis. Erst „Audio erzeugen“ startet die Vertonung. Fortschritt, Anhalten und Fortsetzen sind bei Gemini pro Folge getrennt. Alle fertigen Aufnahmen stehen auf derselben Seite unter **Alle fertigen Folgen anhören** mit Player und MP3-Download, während weitere Folgen entstehen; die Übersicht führt mit **Podcast anhören** direkt dorthin. Frühere Aufnahmen werden gekennzeichnet, wenn Text, Anbieter oder Stimmen inzwischen abweichen.
-
-Die Übersicht beginnt mit **Wartet auf dich** (Freigaben und angehaltene Aufträge) und **Läuft gerade**; darunter steht je Projekt eine Zeile mit der Leiste der sechs Schritte, **Projekt öffnen** und bei fertigen Aufnahmen **Podcast anhören** und **Podcast herunterladen** (ZIP). Die Navigation zeigt den Status jedes Bereichs: vorhanden, freizugeben (▲), in Arbeit oder noch ausstehend; beim laufenden Schritt steht die Laufzeit, bei einem Rechercheplan, der auf Freigabe wartet, die Hochrechnung in Stunden. Die Kopfzeile nennt den Auftrag oder seinen Haltegrund in einer Zeile mit Anhalten, Fortsetzen (nur wo es helfen kann) und dem Sprung zu der Seite, auf der etwas zu entscheiden ist; laufende Vertonungen stehen daneben. Der Browser-Tab zeigt ● für einen laufenden Auftrag, ▲ für eine Entscheidung und ! für einen Halt, die Übersicht die Zahl der wartenden Projekte. Der **Maschinenraum** am unteren Rand ist eingeklappt und hält nur Telemetrie: Kurzbericht, Live-Ausgabe, Zeiten, Budget, Modellwahl und bei Recherche- und Skriptläufen den **Produktionsbericht** (Aufrufe, Modellzeit und Anteil je Stufe, dieselben Zahlen je Prompt-Version, Anbieter, Stopps je Stufe und Freigaben, `production_report.py`); er verdrängt keine Seite und enthält keine Handlung, die nicht auch auf der Seite steht. Jeder Schritt zeigt seine eigenen Auftragsdetails: die Recherche den Fragenstand mit der Planfreigabe, die Ausarbeitung Fortschritt und Lehrkonzepte, die Vertonung die Aufträge je Folge. Das Öffnen eines bestehenden Projekts führt zum tatsächlichen Arbeitsschritt, auch bei einem fortgesetzten Auftrag. Nach dem Start eines Schritts folgt die Ansicht dem Ablauf. Wenn du selbst eine andere Seite öffnest, bleibt sie beim Abschluss der Hintergrundarbeit geöffnet. Projekt und Seite werden in der Adresse gespeichert; Vor/Zurück im Browser wechselt zwischen den besuchten Seiten. Navigation und Neuladen starten keine Modellaufrufe und erteilen keine Freigaben.
-
-Während der Ausarbeitung zeigt der Maschinenraum die gesamte Laufzeit seit Start oder Fortsetzung, die Dauer des aktuellen Modellaufrufs und das Alter des letzten gespeicherten Modellergebnisses getrennt an. „Letzte Änderung im Lauf“ nennt, wann der Lauf selbst zuletzt etwas gespeichert hat. Antwortet der Studio-Server länger als 30 Sekunden nicht, kennzeichnet das Studio die Anzeige als Stand einer bestimmten Uhrzeit, die Kopfzeile zeigt „Keine Verbindung“ und die Laufanzeige pulsiert nicht mehr; daraus lässt sich kein Modellabsturz ableiten. Lehnt der laufende Server eine Abfrage ab, erscheint seine Meldung statt eines Verbindungshinweises. Jede Antwort nennt die laufende Serverinstanz: Nach einem Neustart des Servers liest die Seite beim nächsten Abruf oder Klick Sitzung und Key-Stand selbst neu ein und sagt, wenn ein zuvor hinterlegter OpenRouter-Key mit dem alten Server verloren ging. Die Seite fragt nie zweimal gleichzeitig ab: eine Projektseite alle 2,5 Sekunden, die Übersicht alle 10 Sekunden, ein verborgener Tab einmal in der Minute (`POLL_MS` in `web/app.js`); wird der Tab wieder sichtbar, fragt sie sofort. Die Übersicht baut jede Projektkarte seit dem 02.10.2026 aus wenigen, zwischengespeicherten Dateizugriffen statt aus der vollständigen Projektseite. Kurze Dateizugriffsfehler werden beim nächsten Abruf erneut versucht. Während einer Recherche steht auf ihrer Seite **Nächster Schritt**: dass nichts zu tun ist, mit dem aktuellen Schritt und der üblichen Dauer. Hält ein Auftrag an, erklärt die Haltekarte auf seiner Seite, was zu tun ist (siehe **Haltegründe**). Die Prüfschleife meldet jeden Schritt in die Aktivitätszeile (Prüfteil, Bewertung, Zuordnungsteil, Einarbeitungsblock, Belegkorrektur, wiederholter Anlauf), und die Recherchekarte nennt ab der Gesamtprüfung die Prüfrunde und die Zahl der wieder geöffneten Teilfragen.
-
-### Haltegründe
-
-Hält ein Auftrag an, steht auf der Seite, zu der er gehört, eine **Haltekarte**: was passiert ist, ob „Fortsetzen“ helfen kann und welche Schaltfläche weiterführt. Die Recherche zeigt sie über dem Fragenstand, das Inhaltsverzeichnis und die Ausarbeitung oben auf ihrer Seite, die Vertonung in der Karte der Folge und das Gespräch als Antwort im Chat. Fünf Arten:
-
-- **Angehalten:** „Fortsetzen“ wiederholt den Schritt, alles Fertige bleibt gespeichert (Zeitlimit, Verbindungsfehler, eigenes Anhalten). Vorübergehende technische Halte eines Recherche- oder Skriptlaufs setzt das Studio nach einer Pause selbst fort (siehe **Anhalten und Fortsetzen**). Hat ein Schritt seine automatischen Korrekturen verbraucht, auch die Korrektur der Serienprüfung (`series_review_failed`), bietet die Karte **Mit neuen Anläufen fortsetzen** an, seit dem 02.10.2026 aber nur, wenn der Lauf die neuen Anläufe annehmen würde (`run_budget.fresh_attempts_available`).
-- **Wartet auf Kontingent:** nach dem Reset „Fortsetzen“ oder die automatische Fortsetzung.
-- **Braucht Einrichtung:** zuerst außerhalb des Studios etwas beheben (Anmeldung, FFmpeg, OpenRouter-Guthaben), dann „Fortsetzen“. Fehlt ein OpenRouter-Key, steht das Eingabefeld direkt in der Karte und setzt nach dem Hinterlegen fort. Bei **Automatisch** hält eine abgelaufene Anmeldung oder eine zu alte Claude-CLI nur an, wenn auch das andere Abo nicht weiterkann.
-- **Deine Entscheidung:** Rechercheplan, blockierte Teilfragen oder ein höheres Aufruflimit, für Recherche- wie für Skriptläufe; „… erhöhen und fortsetzen“ genehmigt und setzt in einem Klick fort.
-- **Neustart nötig:** dieser Lauf kann nicht weiter, etwa bei einem unbelegten Prüfeinwand, einem nicht mehr passenden Zwischenstand, veränderten Eingaben, einem dauerhaft widersprüchlichen Inhaltsverzeichnis oder einem Lehrkonzept, das nach den automatischen Korrekturen unvollständig bleibt. Die Karte bietet dann keinen „Fortsetzen“-Knopf, sondern den Weg weiter (neu recherchieren, neues Inhaltsverzeichnis, mit Hinweis neu entwerfen, erneut freigeben) und sagt, was lesbar bleibt. Beim Lehrkonzept heißt der Weg **Lehrkonzept mit Hinweis neu entwerfen**: Dein Hinweis geht in einen neuen Entwurf dieser einen Folge mit neuen Korrekturrunden, und der Lauf setzt gleich fort; das freigegebene Inhaltsverzeichnis bleibt.
-
-Meldungen erscheinen auf Deutsch: Prüftexte der Pipeline, die dem Modell englisch vorgelegt werden, übersetzt das Studio; Kommandozeilenhinweise, lokale Pfade und interne Kennungen ersetzt es. Der ursprüngliche Wortlaut und der Haltecode stehen unter **Technische Details**; ein Code ohne eigene Karte erscheint als „Angehalten“ mit seinem Code. Ein angehaltener Lauf bleibt sichtbar, auch wenn danach ein Gespräch, eine Verbindungsprüfung, eine Hörprobe oder ein Lauf einer anderen Art läuft; erst ein neuer Lauf derselben Art ersetzt ihn. Seit dem 02.10.2026 legt das Studio dafür jede Art (Recherche, Skript, Vertonung) in einer eigenen Datei beiseite, `studio/paused_<art>.json` mit `research`, `script` oder `audio`; die einzelne `studio/paused_job.json` älterer Studios wird weiter gelesen. Automatische Fortsetzungen und Vorab-Erlaubnisse gelten auch für beiseitegelegte Läufe. Läuft ein Fortsetzen ins Leere, bleibt der angehaltene Lauf samt Entscheidungen auf der Seite.
-
-Ein Lauf ist an seine Eingaben gebunden. Wer Hostnamen, Auftrag, Stimmen, redaktionelle Notizen, Pausen oder Sprechformen ändert, während ein dazu gehörender Lauf ruht (auch ein Inhaltsverzeichnis, das auf Freigabe wartet), sieht vorher einen Hinweis und eine Rückfrage: danach lässt sich dieser Lauf nicht mehr fortsetzen.
-
-Kommt keine Antwort im Gespräch an, nennt der Chat den Grund und bietet **Erneut senden**; die unbeantwortete Nachricht wird dabei ersetzt, nicht wiederholt. Hat das Gespräch sein Aufruflimit verbraucht, erhöht **Gesprächslimit erhöhen** es für dieses Projekt, ohne den Auftrag zu ändern.
-
-## Anbieter und Schlüssel
-
-**Text und Audio sind unabhängig wählbar.** Beispielsweise schreibt Codex das Skript und Gemini vertont es über OpenRouter. Bei der Auswahl im Gespräch bedeutet **Codex** die lokal installierte CLI mit bestehender ChatGPT-Abo-Anmeldung und **Claude** die Claude Code CLI mit bestehender claude.ai-Anmeldung (Claude-Max-Abo); die Textmodelle laufen nicht offline auf dem PC, und keines der beiden Abos rechnet einzelne Aufrufe ab. Die dort zusätzlich mögliche OpenRouter-Auswahl gilt für Textmodelle mit strukturierten JSON-Antworten. Das Gemini-TTS-Modell wird stattdessen beim Audioanbieter ausgewählt und benötigt keine manuelle Modell-ID. Die belegte Web-Recherche nutzt das gewählte Abo, bei Automatisch Claude und sonst Codex. ElevenLabs ist nicht angebunden. **Verbindungen prüfen** zeigt beide Anmeldungen und den Kontingentstand; ein Auftrag ist startbereit, sobald eines der Abos nutzbar ist.
-
-Für Gemini-Audio ist `google/gemini-3.8-flash-tts` voreingestellt (`speech.GEMINI_MODEL`); auf Wunsch im Gespräch steht außerdem `google/gemini-3.8-flash-lite-tts` zur Wahl (`speech.GEMINI_MODELS`). Alle 30 Stimmen stammen aus dem überprüften OpenRouter-Modellkatalog und gelten für beide Modelle. Die bestehende GPU-Installation ist bei dieser Audioauswahl nicht erforderlich. Die Verbindungskontrolle prüft dann den hinterlegten OpenRouter-Key und überspringt die lokale Qwen-Prüfung. Ein hinterlegter Key ist noch kein erfolgreicher API-Hörtest. [Gemini-Anbindung, Stimmen und Grenzen](gemini-audio.md).
-
-Der API-Key bleibt im Speicher des lokalen Servers und gelangt über die Standardeingabe an den jeweiligen Arbeitsprozess, nicht über Prozessargumente. Er steht weder in Projektdateien noch in Browser-Speichern. Nach einem Neustart neu eingeben; alternativ übernimmt der Server `OPENROUTER_API_KEY` aus seiner Umgebung. „Sitzungs-Key entfernen“ entfernt nur den über den geschützten Key-Eingang eingegebenen Key. Bei vorhandener Umgebungsvariable bleibt deren Key verfügbar.
-
-Eine Textanbieterauswahl wird beim Start eines Skriptlaufs festgehalten. Audioläufe speichern separat Audioanbieter und beide Stimmen. Fortsetzen verwendet jeweils diese gespeicherte Auswahl; Änderungen gelten für neue Läufe. Der API-Key kann ausgetauscht werden. Bezahlte Aufträge starten durch deine Aktionen auf der Seite. Öffnen, Navigieren und Abspielen gespeicherter Qwen- oder Gemini-Proben verbrauchen keine Modellaufrufe; neue Gemini-Proben und Gemini-Vertonungen nutzen dein API-Guthaben. Redaktionelle Gespräche besitzen ein eigenes, dauerhaft gespeichertes Modellaufruflimit aus der Projektkonfiguration.
-
-### Textmodell und Denkaufwand auswählen
-
-Unter **Auftrag & Stimmen** nennst du dem redaktionellen Partner das gewünschte Textmodell und den Denkaufwand, zum Beispiel „Claude Opus 5.5 mit xhigh“ oder „Codex mit GPT-6 Astra und xhigh“. Eigene Modell-IDs sind ebenfalls möglich. Die vorgeschlagene Auswahl erscheint in der Zusammenfassung und wird erst mit **Diese Auswahl übernehmen** gespeichert. Diese Vorschläge und die angebotenen Reasoning-Stufen wurden mit Codex CLI 0.157.1 (26.09.2026) und Claude Code 2.1.284 abgeglichen, der Katalog zuletzt am 29.09.2026 (`text_settings.CATALOG_VERIFIED_ON`; `pla doctor` meldet sein Alter); die Verfügbarkeit hängt von der lokalen Installation und dem Konto ab. Neue Studio-Projekte verwenden als Vorauswahl **Automatisch · Claude, sonst Codex**; bestehende Projekte behalten ihre gespeicherte Auswahl. Bei Codex steuern die Stufen `low`, `medium`, `high` und `xhigh` den Denkaufwand, bei Claude `low`, `medium`, `high`, `xhigh` und `max`. Jeder Claude-Aufruf verlangt Claude Code ab 2.1.280 (`claude_code.MINIMUM_CLI_VERSION`, wegen Opus 5.5 und `xhigh`), Sonnet 5.5 ab 2.1.284 (`claude_code.MODEL_MINIMUM_CLI`); eine ältere CLI hält einen festen Claude-Auftrag mit der Karte „Claude Code zu alt“ an. Bei OpenRouter bleibt die Modell-ID frei eingebbar; ohne ausgewählte Reasoning-Stufe gilt der Modellstandard. Eine ausdrücklich ausgewählte Stufe muss vom Anbieter unterstützt werden. Bei Automatisch lässt sich das Modell nicht setzen und die Stufe nur gemeinsam für beide Abos (`low` bis `xhigh`, `text_settings.SHARED_EFFORTS`; etwa „Automatisch · high“); wer sie einzeln festlegen will, wählt einen festen Anbieter.
-
-Die Auswahl gilt für Redaktion, Inhaltsverzeichnis, Lehrkonzept, Skript, Dialog-Polishing, Qualitätsprüfungen und die Statusberichte (dort mit dem günstigen Modell des jeweiligen Abos: GPT-5.6 Luna oder Claude Haiku 4.5). Bei Codex und Claude übernehmen auch neue Rechercheläufe und automatische Nachrecherchen Modell und Stufe; Claude sucht dabei mit seinen Werkzeugen WebSearch und WebFetch, und ein Rechercheaufruf ohne beobachtete Suchereignisse wird wie bei Codex abgewiesen. Bei OpenRouter-Text läuft die Web-Recherche über die Abos nach der automatischen Regel. Audioanbieter und Stimmen bleiben unabhängig davon wählbar. Im Auftragsstatus steht unter der gespeicherten Auswahl eine Zeile **Aktueller Anbieter** mit Kontingentstand und Reset beider Abos aus dem letzten Modellaufruf.
-
-Studio speichert die Auswahl unter `studio/text.json`, Skriptläufe unter `script_request.json`, neue Rechercheläufe mit ausdrücklicher Modellauswahl unter `research_request.json`. Die Auswahl ist an die Eingaben des jeweiligen Laufs gebunden. Im Status steht dessen gespeicherte Auswahl, auch wenn inzwischen andere Einstellungen für neue Aufträge gespeichert wurden. Ältere Aufträge ohne explizite Auswahl erscheinen als „nicht festgelegt“ und bekommen beim Fortsetzen keine neuen Standardwerte untergeschoben. Die Metadaten jedes neuen Modellaufrufs enthalten `requested_model` und `requested_reasoning_effort`; diese Felder dokumentieren die angeforderten Werte, keine zusätzliche Bestätigung durch den Anbieter.
-
-Claude Code läuft je Aufruf als `claude -p --output-format stream-json --json-schema …` mit dem Modell und der Effort-Stufe als Argument, ohne Werkzeuge (bei Recherche nur WebSearch und WebFetch), ohne Sitzungsspeicherung, ohne Skills, MCP-Server oder Einstellungsdateien (`--setting-sources ""`) und mit einem kurzen festen Systemprompt statt des Codierassistenten-Prompts der CLI. `ANTHROPIC_API_KEY` und `ANTHROPIC_AUTH_TOKEN` werden aus der Umgebung entfernt; nur die claude.ai-Anmeldung wird akzeptiert. Die strukturierte Antwort kommt aus dem Ergebnisumschlag der CLI und wird lokal gegen das Datenformat geprüft. Die Live-Ausgabe zeigt die eintreffende strukturierte Antwort; sichtbare Reasoning-Zusammenfassungen liefert die CLI nicht. Eine Kostenobergrenze je Aufruf (`--max-budget-usd`) begrenzt Ausreißer; der gemeldete Betrag ist ein Gegenwert, keine Rechnung.
-
-Codex erhält Modell und Reasoning-Stufe ausdrücklich über `thread/start` und `turn/start` seines lokalen App Servers. Der Aufruf nutzt weiterhin das ChatGPT-Abo, einen flüchtigen Thread und den schreibgeschützten Sandbox-Modus. Die ausgewählte Modell-ID wird geprüft; es gibt keinen stillen Modellwechsel. Anders als `exec --ignore-user-config` lädt der App Server seine Grundkonfiguration: das Studio überschreibt deshalb Modellvorgaben, deaktiviert konfigurierte MCP-Server sowie Shell-, App- und Hook-Funktionen für den Aufruf und lädt keine Projektanweisungen. [OpenAI-Docs zum App Server](https://learn.chatgpt.com/docs/app-server). OpenRouter erhält bei einer ausgewählten Stufe `reasoning.effort`. [OpenRouter-Reasoning](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
-
-Ein bereits laufender Studio-Server muss die neue Backend-Version erst laden. Die Oberfläche zeigt dafür einen Hinweis und deaktiviert die neue Modellauswahl. Nach Abschluss des laufenden Auftrags **Studio beenden**, anschließend `Podcast-Studio.cmd` erneut öffnen. Ein Neuladen der Browserseite allein reicht für diese Backend-Änderung nicht. Ein nur im Serverspeicher hinterlegter API-Key muss danach erneut eingegeben werden.
-
-## Anhalten und Fortsetzen
-
-Neue Projekte haben standardmäßig **750 Modellaufrufe je Recherche- oder Skriptlauf**. Gespeicherte Projekte behalten ihr ausdrücklich gesetztes Limit. Eine genehmigte Erhöhung für einen bestehenden Skriptlauf erhält den Verbrauch, die Zwischenergebnisse und die Freigaben. Bei einem Skriptlauf nennt die Anzeige der Modellaufrufe neben der Untergrenze der Pflichtaufrufe ohne Korrekturen seit dem 02.10.2026 auch die erwarteten Aufrufe, hochgerechnet aus dem, was der letzte abgeschlossene Skriptlauf des Projekts je Folge gebraucht hat (`runs/<run_id>/budget_projection.json`). Nur die Untergrenze hält einen Lauf an; die Erwartung ist ein Hinweis und bestimmt den Vorschlag für ein höheres Limit.
-
-Die Recherche prüft jede ursprüngliche Leitfrage auf vollständige Antwort, nachvollziehbare Erklärung, gelesene Quellenbelege, unabhängige Gegenprüfung und Grenzen. Offene Punkte lösen automatisch weitere Suche und Prüfung aus. Auf der Seite **Recherche** lassen sich erfüllte und offene Leitfragen mit Begründung aufklappen. Eine nicht erfüllte Leitfrage, deren Mangel an einer Grenze der Quellen liegt oder deren Einwand schon vermerkt, entschieden oder als Lücke akzeptiert ist, während sich ihre Teilfragen seither nicht geändert haben, steht dort als „als Grenze vermerkt“ und wird nicht in jeder Prüfrunde neu bewertet. Besteht die Prüfung mit solchen Grenzen, lautet die Gesamtbewertung „bestanden mit vermerkten Grenzen“: die Grenzen stehen im Qualitätsbericht, eine akzeptierte Lücke ist das nicht. Jede Teilfrage nennt außerdem, wie oft sie mit Einwand wieder geöffnet und wie oft sie erneut geprüft wurde. Erst die bestandene Prüfung gibt die Planung frei. Bei einem erreichten Limit bleibt der Rechercheauftrag mit konkreten Lücken gespeichert; der Themenumfang wird nicht automatisch gekürzt. Die Standardgrenzen sind 48 Suchrunden und 150 Quellenkandidaten innerhalb der 750 Aufrufe. Reicht das Limit nicht, bietet die Seite Recherche die Erhöhung als Schaltfläche an; eine blockierte Teilfrage lässt sich dort ausdrücklich als Lücke akzeptieren, ein erschöpftes Suchrunden- oder Quellenlimit erhöhen. Jede blockierte Teilfrage nennt beim Aufklappen ihren Grund, die tatsächlich ausgeführten Websuchen und ein erreichtes Limit des Laufs. Bevor der Lauf für blockierte Teilfragen anhält, berät ein eigener Aufruf (Opus 5.5 auf xhigh, wenn der Lauf das Claude-Abo nutzt) jede davon: Die Karte **Wartet auf dich** zeigt seine Diagnose, seine Empfehlung und die gefundenen Quellen als Links, und sein Hinweis steht schon im Feld für den neuen Versuch. Empfiehlt er einen neuen Versuch, startet der Lauf ihn selbst, einmal je Teilfrage. Gesperrte Verlagsabrufe ersetzt der Import automatisch durch freie Kopien, die OpenAlex kennt ([Recherche](research.md)); als gesperrt gilt auch eine Bot-Abwehrseite wie Springers „Client Challenge“, die sonst als Quelle mit leerem Inhalt eingelesen würde. Ab der ersten Gesamtprüfung beendet **Nach der nächsten Gesamtprüfung mit Resteinwänden abschließen** die Prüfschleife: keine weitere Nachbesserungsrunde, verbliebene Einwände stehen als offene Grenzen im Qualitätsbericht. Widerspricht die Gesamtprüfung einem früheren Einwand, zeigt die Karte **Streitfall in der Gesamtprüfung** beide Positionen; **Dem Prüfer folgen** schließt den Einwand (der Streit steht im Qualitätsbericht), **Einwand aufrechterhalten** lässt die Teilfrage nachbessern, und der Auftrag läuft danach sofort weiter. Hängt eine Teilfrage nur an einem Kriterium, dessen Quelle nachweislich gesperrt war, bietet die Karte **Kriterium als Zugangslücke akzeptieren** mit Auswahl von Kriterium und gesperrter Quelle an; die Frage behält ihre geprüften Teile, und war das die letzte offene Entscheidung, läuft der Auftrag sofort weiter. Mit **Noch einmal versuchen** bekommt eine blockierte Teilfrage beim nächsten Fortsetzen den Spielraum einer neuen Frage, zehn Schritte und zwei Websuchen zusätzlich zu den verbrauchten, dazu deinen optionalen Hinweis als Rückmeldung an das Modell; Teilfragen, die nur auf sie gewartet haben, laufen danach wieder an. Jede Anfrage gilt für genau einen neuen Versuch: blockiert die Frage erneut, entscheidest du erneut. In der Kommandozeile: `pla approve <projekt> --retry <task_id> [--hint "…"]`; `--accept-gap <task_id> [--reason "…"]` akzeptiert die Lücke, die Begründung ist optional und steht im Qualitätsbericht neben der Lücke. Das Dossier wird dann ohne die akzeptierte Teilfrage abgeschlossen und nennt die Lücke in Qualitätsbericht und offenen Fragen.
-
-**Rechercheplan freigeben.** Nach Quellensuche, Planung und Umfangsprüfung hält jeder Studio-Rechercheauftrag an, bevor die erste Teilfrage bearbeitet wird, und zeigt in der Kopfzeile und oben auf der Seite **Recherche** „Wartet auf Freigabe des Rechercheplans“ mit der Hochrechnung: Zahl der Teilfragen, voraussichtliche Aufrufe, geschätzte Stunden und Minuten je Aufruf sowie Herkunft der Erfahrungswerte (in diesem Lauf gemessen, Erfahrungswert des Projekts oder Standardwert). Bis dahin wird kein weiterer Modellaufruf verbraucht. Die Schaltfläche **Rechercheplan freigeben und starten** schreibt eine an genau diesen Plan gebundene Quittung (`runs/<run_id>/plan_approval.json`) und setzt den Auftrag mit den Teilfragen fort. Reicht das Limit laut Hochrechnung nicht, bietet die Karte daneben die Erhöhung an. Das Zahlenfeld **Höchstens N Teilfragen** lässt den Plan einmal auf N Teilfragen neu zuschneiden (weitere Planungsaufrufe); der neue Plan erscheint mit eigener Hochrechnung erneut zur Freigabe. Keine automatische Fortsetzung umgeht diesen Stopp, weder nach einem Abo-Reset noch nach einem technischen Halt. In der Kommandozeile gibt `pla approve <projekt> --research-plan [<run_id>] [--max-tasks N]` frei; `pla research <projekt> --approve-plan` startet einen Lauf ohne diesen Stopp. [Details zur Hochrechnung](research.md#planfreigabe-und-hochrechnung).
-
-Bei einem widersprüchlichen Inhaltsverzeichnis korrigiert Studio den vorhandenen Entwurf automatisch bis zu dreimal. Die Korrektur erhält konkrete Angaben zu vertauschten Grundlagen und Szenen; Quellenprüfung und Reihenfolge bleiben verbindlich. Entwurf und Korrekturstand werden gespeichert, sodass Fortsetzen nach einer Unterbrechung daran anknüpft und die Korrekturgrenze nicht zurücksetzt.
-
-„Auftrag anhalten“ stoppt den vom Studio gestarteten Arbeitsprozess einschließlich seiner Unterprozesse auf Windows, macOS und Linux. Auch parallel gestartete Modellprozesse gehören dazu; andere Aufträge werden nicht beendet. Ein Arbeitsprozess, den ein früheres Studio gestartet hat und der dessen Neustart überlebt hat, erscheint als „läuft außerhalb dieses Studios“ statt als unterbrochen; seit dem 02.10.2026 erkennt das Studio ihn an Prozessnummer und Prozess-Startzeit und kann ihn ebenfalls anhalten. Fehlt dieser Vermerk, sagt die Seite, dass er von selbst endet. Solange ein Arbeitsprozess läuft, hält er den Rechner wach: unter Windows über `SetThreadExecutionState` (der Bildschirm darf ausgehen), unter macOS über `caffeinate`; `PLA_KEEP_AWAKE=0` schaltet das ab. Fertige Stufen und Qwen-Abschnitte bleiben gespeichert; der gerade laufende Modellaufruf oder Abschnitt muss möglicherweise wiederholt werden. „Fortsetzen“ verwendet die gespeicherten Eingaben. Eine unterbrochene Planung erteilt dadurch keine Skriptfreigabe. Ein unterbrochener Audiolauf benötigt weiterhin seine bereits erteilte passende Freigabe.
-
-Nach dem Ende des Arbeitsprozesses wird auch die laufende Stufe als unterbrochen und fortsetzbar gespeichert. Vollständige Skriptentwürfe und Polishing-Fassungen bleiben unter **Skripte lesen** verfügbar. Die Anzeige behauptet dann keinen weiterlaufenden Modellaufruf. Budgetzähler, Freigaben und abgeschlossene Zwischenergebnisse bleiben erhalten; das Öffnen des Studios startet den Auftrag nicht erneut. Ausnahmen setzt der geöffnete Studio-Server selbst fort, höchstens dreimal hintereinander (`studio.MAX_AUTO_RESUMES`; ein eigenes „Fortsetzen“ beginnt die Zählung neu). Pausiert ein Recherche-, Skript- oder Qwen-Auftrag wegen eines Abo-Limits, geschieht das zum Reset des Abos, das ausgefallen ist; nennen weder der Fehler noch der Kontingentvermerk einen Reset, wartet das Studio 30, 60 und 120 Minuten (`subscriptions.RETRY_BACKOFF_SECONDS`, mit jeder Fortsetzung verdoppelt). Seit dem 02.10.2026 setzt es außerdem Recherche- und Skriptläufe fort, die an einem vorübergehenden technischen Fehler anhielten (Zeitlimit, Aufruf ohne Ausgabe, fehlgeschlagener Claude- oder Codex-Aufruf, Claude-Antwort im falschen Format, OpenRouter nicht erreichbar oder nicht verfügbar; `studio.TRANSIENT_STOPS`), 10, 30 und 90 Minuten nach dem Halt (`TRANSIENT_BACKOFF_MINUTES`). Die Haltekarte nennt Zeitpunkt und Versuch und sagt, wenn die Versuche aufgebraucht sind. Eine abgelaufene Anmeldung und erschöpftes OpenRouter-Guthaben kommen durch Warten nicht zurück (`studio.NO_AUTO_RESUME`); sie, Entscheidungen und Limits setzt das Studio nie von selbst fort, neue Anläufe und ein höheres Aufruflimit gibt es ohne Rückfrage nur über die **Vorab-Erlaubnisse**. Gespräche, Hörproben und Gemini-Folgen setzt das Studio nicht automatisch fort und kündigt es dort auch nicht an. Ein beendeter Aufruf ohne Modellantwort wird nicht auf das Budget angerechnet. Meldet ein laufender Arbeitsprozess länger als fünf Minuten nichts Neues, weist die Seite des Auftrags darauf hin; Qwen zählt dabei jeden gesprochenen Abschnitt, und das Laden des Sprachmodells darf 15 Minuten dauern. Endet ein Arbeitsprozess ohne Ergebnis, etwa nach einem Absturz, setzt das Studio seinen Lauf auf fortsetzbar zurück und zeigt die letzten Zeilen seiner Fehlerausgabe (`<projekt>/studio/stderr/<auftrag>.log`) unter **Technische Details**.
-
-**Lückenprobe mit Jev.** In der Auftragsübersicht steht unter „Lückenprobe“ **Jev dazunehmen**. Neue deutschsprachige Projekte haben Jev von Anfang an eingeschaltet, weil ihre Lücken deutsch formuliert sind und die Quellen meist englisch; fehlt dann der Key, läuft die Lückenprobe nur mit der Wortsuche (`jev_probe.json`: `skipped`), statt den Lauf anzuhalten. Wer Jev selbst einschaltet, bekommt ohne Key weiter einen Stopp. Neue Skriptläufe suchen gemeldete Lücken dann zusätzlich mit Jev (TypeSafe über OpenRouter). Jev findet die passenden Stellen auch, wenn Lücke und Quelle verschiedene Sprachen sprechen. Gelesen und bestätigt werden sie weiterhin vom Textmodell. Das kostet etwa 0,60 USD je Lauf und braucht den OpenRouter-Key; das Studio gibt ihn nur an Läufe weiter, die die Probe nutzen. Der Schalter ändert keine übernommene Auswahl, und laufende Aufträge behalten ihre Lückenproben ([Recherche](research.md#korpusprobe-der-lücken)).
-
-Jeder Skript- und Rechercheauftrag kann jederzeit mit einem anderen Textanbieter weiterarbeiten. Unter der gespeicherten Textwahl des Auftrags steht **Weiter mit …**. Zur Wahl stehen „Claude, sonst Astra (xhigh)“, „Astra (xhigh), sonst Claude“, „Nur Claude“, „Nur Astra (xhigh)“ und „OpenRouter · bezahlt pro Aufruf“, mit Modellauswahl und Key. Die Wahl gilt ab dem nächsten Start des Auftrags; fertige Arbeit bleibt gültig, denn Zwischenstände hängen am Prompttext, nicht am Anbieter. Hält ein fest gestellter Auftrag an, weil sein Abo erschöpft ist, bietet die Haltekarte das andere an: **Mit Astra (xhigh) fortsetzen** bei Claude, **Mit Claude fortsetzen** bei Codex. Den OpenRouter-Key bekommt ein Auftrag nur, solange er mit OpenRouter arbeitet ([Skripte](scripts.md)).
-
-**Neu recherchieren mit Startbibliothek.** Unter „Recherche neu beginnen“ ist „Quellen der bisherigen Recherche als Startbibliothek anbieten“ vorausgewählt: Die neue Recherche sieht die gespeicherten Quellen der letzten Recherche, übernimmt gewählte ohne neuen Download und sucht trotzdem neu und aktuell ([Recherche](research.md)).
-
-**Vorab-Erlaubnisse.** Unter „Ohne Rückfrage“ in der Auftragsübersicht legst du je Projekt fest, was das Studio einem angehaltenen Lauf selbst geben darf: **Neue Anläufe** bis zu dreimal je Lauf, wenn ein Schritt seine automatischen Korrekturen verbraucht hat (dieselben Stopps, deren Karte „Mit neuen Anläufen fortsetzen“ anbietet), und **Aufruflimit erhöhen** um bis zu 100, 250, 500 oder 1000 Aufrufe je Lauf, wenn das genehmigte Limit nicht reicht, jeweils um den Bedarf der Hochrechnung (beim Skriptlauf die Erwartung aus dem letzten abgeschlossenen Skriptlauf, ohne einen solchen die Untergrenze plus ein Viertel für Korrekturen), höchstens um den noch erlaubten Rest. Der Planer des Studios schreibt dann dieselbe Freigabe wie der Knopf und setzt den Lauf innerhalb einer halben Minute fort, auch einen beiseitegelegten; die Haltekarte kündigt das an, der Maschinenraum zählt, was schon gegeben ist, und `studio/allowance_log.json` hält jede Nutzung fest. Seit dem 02.10.2026 wendet er eine Erlaubnis erst an, wenn der Lauf tatsächlich starten kann (Projekt frei, ein Platz frei); scheitert das Fortsetzen nach der Freigabe trotzdem, setzt er später fort, ohne die Erlaubnis ein zweites Mal zu verbrauchen. Redaktionelle Entscheidungen, also eine Lücke akzeptieren, einen Streitfall entscheiden, mit Resteinwänden abschließen oder ein neues Lehrkonzept anfordern, bleiben immer bei dir, ebenso ein erschöpftes Suchrunden- oder Quellenlimit. Ohne Einstellung wartet jeder Stopp wie bisher.
-
-**Neustart nach einem Update.** Die Seite lädt `app.js` bei jedem Aufruf neu, der Server und sein Planer behalten aber den Code, mit dem sie gestartet sind. Hat sich der Code seither geändert, steht oben „Das Studio hat neuen Code“ mit **Neu starten, sobald nichts läuft**. Das Studio wartet dann, bis kein Auftrag und keine Vertonung mehr läuft, nimmt in dieser Zeit keine neuen an, beendet sich und startet im Hintergrund mit demselben Arbeitsordner und Port neu, ohne Browserfenster. Eingereihte Vertonungen und geplante Fortsetzungen übernimmt der neue Server; die Seite verbindet sich von selbst wieder. Ein im Studio hinterlegter OpenRouter-Key lag nur im Speicher des alten Servers: die Seite sagt dann, dass er erneut eingegeben werden muss, und eingereihte Gemini-Folgen stehen bis dahin auf „wartet auf den OpenRouter-Key“ statt auf einem freien Platz. Scheitert der neue Server, bevor sein eigenes Protokoll beginnt, steht der Grund in `.studio/relaunch.log`. Das Konsolenfenster des alten Servers kann danach geschlossen werden.
-
-Die Stimmenbibliothek wird über „Fehlende Hörproben erzeugen · API“ fortgesetzt. Der Button überspringt alle vollständigen Aufnahmen. Nach einem Anbieterfehler werden keine weiteren Stimmen automatisch angefragt.
-
-Gemini-Audio startet bei gewähltem Parallelmodus jede freigegebene Folge sofort als eigenen Auftrag, höchstens 30 gleichzeitig (`execution.MAX_PARALLEL`); pro Folge bleibt eine eigene Skriptfreigabe nötig. Innerhalb einer Folge gehen die Sprachabschnitte nacheinander an OpenRouter. Meldet der Anbieter ein Anfragelimit (HTTP 429), warten alle laufenden Vertonungen gemeinsam, seit dem 02.10.2026 auch über Projekte hinweg (`projects/.gemini_throttle.json`), so lange wie der Anbieter mit `Retry-After` verlangt, sonst 5, 10, 20, 40 und zweimal 60 Sekunden, und versuchen es dann erneut; erst nach etwa drei Minuten ohne Erfolg hält die Folge wie bisher an. Eine Gateway- oder Überlastantwort (502, 503, 504) oder eine abgebrochene Übertragung fragt die Vertonung nach 3 und 6 Sekunden noch zweimal an (`speech.TRANSIENT_RETRIES`), bevor die Folge anhält. Eine Freigabe, für die gerade kein Platz frei ist (alle Plätze belegt oder ein Textauftrag des Projekts läuft), wird nicht abgelehnt, sondern eingereiht (`studio/audio_queue.json`). Der Planer des Studios startet eingereihte Folgen in der Reihenfolge der Freigaben, sobald ein Platz frei und der OpenRouter-Key vorhanden ist (nach einem Neustart steht die Folge sonst auf „wartet auf den OpenRouter-Key“), und prüft vorher Skript, Leseansicht, Stimmen und Ausdruck erneut; hat sich etwas geändert, bleibt die Folge mit dem Grund in der Warteschlange stehen. Auf der Seite Vertonung stehen die Warteschlange mit **Entfernen** und **Alle gelesenen Folgen freigeben**: Ein Häkchen bestätigt, dass alle aufgeführten Skripte samt Ausdruck gelesen sind, und gibt sie in einem Schritt frei; so viele starten sofort, wie Plätze frei sind, der Rest reiht sich ein. Das Studio muss dafür geöffnet bleiben. Qwen läuft einzeln; Text-Aufträge laufen je Projekt einzeln, über Projekte hinweg höchstens drei gleichzeitig (`studio.MAX_PROJECT_JOBS`). Die Projektsperre verhindert Änderungen durch andere CLI-Aufträge während der Vertonung; zusätzlich ist dieselbe Folge gegen Doppelstarts gesperrt. Der Stoppknopf einer Folge beendet nur ihren eigenen Prozess. Browser schließen beendet keinen Auftrag. Server beenden hält alle eigenen aktiven Aufträge an; beim nächsten Start bleiben sie fortsetzbar. Projekt- und Jobzustände sind unter dem jeweiligen Projekt gespeichert. Für ältere Projekte erscheinen vorhandene Recherche, Skripte und veröffentlichte Audiodateien; ein separat zu prüfender Plan entsteht mit „Inhaltsverzeichnis entwerfen“.
-
-## Stand der Prüfung
-
-Während Recherche und Ausarbeitung erstellt der Lauf unter `runs/<run_id>/status_reports/` kurze Zusammenfassungen der protokollierten Aktivitäten und gespeicherten Ergebnisse; das Studio zeigt die neueste als **Kurzbericht** im Maschinenraum. Alle drei Minuten wird auf Änderungen geprüft; ohne neue Daten erscheint ein entsprechender Hinweis statt eines weiteren Modellaufrufs. Codex-Aufträge nutzen dafür `gpt-5.6-luna` mit `low`, Claude-Aufträge `claude-haiku-4-5` mit `low`, OpenRouter-Aufträge `deepseek/deepseek-v4.1-flash` mit `low` (`status_summary.STATUS_MODELS`). Das Hauptmodell bleibt unverändert. Die Zusammenfassung nennt keine erfundenen Restzeiten und behandelt Entwürfe ausdrücklich als ungeprüft.
-
-Diese kleinen Zusatzaufrufe nutzen das jeweilige Abo beziehungsweise OpenRouter-Guthaben. Sie haben einen eigenen sichtbaren Zähler (höchstens 100 je Lauf), ein Zeitlimit von 90 Sekunden und pausieren nach drei aufeinanderfolgenden Fehlern. Das Produktionsbudget bleibt unverändert. Ein Fehler des Statusmodells stoppt den eigentlichen Auftrag nicht. Beim Anhalten oder Beenden endet auch der zugehörige Statusprozess; ältere Berichte bleiben lesbar.
-
-Neben der Zusammenfassung zeigt **Aktueller Rechercheauftrag** die konkrete Frage, den Arbeitsauftrag an das Modell, das letzte gespeicherte Leseergebnis und vorhandene Prüfeinwände. Unter **Material und Prüfpunkte** stehen die bereitgestellten Textstellen mit Quellentiteln und Seiten sowie die Abschlusskriterien. Suchtreffer werden getrennt ausgewiesen, weil ein Treffer noch kein gelesener Beleg ist. Neue Aufrufe speichern dafür eine begrenzte Auswahl ihrer tatsächlichen Eingaben in `calls/call_*/work_context.json`, ohne vollständige Prompts oder Quellentexte. Bei bereits laufenden Aufrufen wird dieser Blick aus dem gespeicherten Fragenstand rekonstruiert und entsprechend gekennzeichnet.
-
-Die Anzeige unterscheidet das Alter der letzten inhaltlichen Modellmeldung, des letzten Ereignisses der Anbindung und der letzten gespeicherten Antwort. Ein erneutes Laden der Fortschrittsdaten gilt nicht als Modellaktivität. Ab drei Minuten ohne inhaltliche Meldung wird die Wartezeit hervorgehoben, ohne einen Absturz zu behaupten. Protokollierte Verbindungsprobleme und Wiederholungsversuche sowie abgeschlossene Arbeitsschritte ohne neue Belege werden separat benannt. Diese lokale Auswertung erzeugt keine zusätzlichen Modellaufrufe und verändert keine Rechercheergebnisse oder Budgets.
-
-Unter **Live-Ausgabe · letzte 20 Meldungen** erscheinen im Maschinenraum bis zu 20 lesbare Meldungen, zunächst aufgeklappt. Strukturierte Antworten werden schon während des Empfangs auf ihre Inhalte reduziert: etwa „Vorhandene Quellen durchsuchen“, „Suchbegriff: …“ oder „Einordnung: …“. Leere Felder, Klammern, interne IDs und technische Parameter werden ausgeblendet. Codex-Aufrufe nutzen die Ereignisse `item/agentMessage/delta` und `item/reasoning/summaryTextDelta` des [App Servers](https://learn.chatgpt.com/docs/app-server); OpenRouter-Textaufrufe nutzen [Streaming](https://openrouter.ai/docs/api/reference/streaming). Nur öffentliche Reasoning-Zusammenfassungen werden von Codex übernommen, keine rohen oder verschlüsselten internen Reasoning-Inhalte. Die Anzeige folgt beim nächsten Studio-Statusabruf, normalerweise innerhalb weniger Sekunden. Streaming garantiert keine sofortige Ausgabe: solange das Modell keinen sichtbaren Text sendet, bleibt der letzte belegte Stand angezeigt. Die vollständige Antwort wird erst nach dem Abschlussereignis validiert und gespeichert. Ein Verbindungsabbruch übernimmt keine Teilantwort und startet keine versteckte Wiederholung. Der nächste gestartete oder fortgesetzte Worker verwendet die neue Anbindung; ein bereits laufender Aufruf kann seinen Transport nicht wechseln.
-
-Der gemeinsame Ringpuffer `runs/<run_id>/model_trace.json` enthält auch bei parallelen Aufrufen insgesamt höchstens 20 Zeilen. Ältere Zeilen werden ersetzt, lange Zeilen gekürzt; Zugangsdaten werden vor der Speicherung entfernt. Fertige, validierte Recherche- und Skriptergebnisse bleiben regulär gespeichert. Zwischenstände im Live-Fenster sind ungeprüft und erteilen keine Freigabe.
-
-Empfang und lesbarer Fortschritt werden getrennt angezeigt. Wenn Fragmente weiter eintreffen, aber seit mindestens einer Minute kein neuer lesbarer Text erscheint, weist das Studio ausdrücklich darauf hin. Ausgeblendete JSON-Felder und Formatdaten zählen nicht als neue inhaltliche Aussage. Das kann eine Ausgabe-Schleife verdecken; eine aktive Verbindung allein ist kein Nachweis, dass die Recherche vorankommt. Neue Aufrufe protokollieren zusätzlich Zeichen- und Leerraumzähler, ohne die Rohfragmente zu speichern.
-
-`calls/call_*/diagnostics.json` bewahrt getrennt davon bereinigte technische Diagnosen auch nach Timeout oder Abbruch: Zeitpunkte, Umfang des Auftrags, empfangene Ereignisse und Fehlerkategorien wie Verbindungsproblem, Rate Limit oder Antwortformat. Rohe Fehlermeldungen, Prompts, Werkzeugausgaben und Zugangsdaten werden dort nicht gespeichert. Weist der Antwortvertrag eine lesbare Modellantwort ab (`rejected_output`), liegen daneben `failure.json` mit den beanstandeten Feldern und `rejected_output.json` mit der abgewiesenen Antwort selbst; sie ist Modellausgabe wie eine angenommene Antwort in `response.json`, der Aufruf bleibt angerechnet, und die Recherche fordert die Aufgabe mit dem benannten Mangel erneut an. Eine fehlende oder unlesbare Antwort ist `invalid_model_output`. Der bisherige öffentliche Aktivitätsbeleg bleibt in `activity.json`; Statusberichte und deren Aufrufmetadaten bleiben unter `status_reports/`. Die neue Erfassung beginnt beim nächsten neu gestarteten Modellaufruf, frühere Traces lassen sich nicht rekonstruieren.
-
-Automatisierte Tests prüfen Planfreigaben, veraltete Text-/Stimmenstände, Assistentenvorschläge ohne automatische Projektänderung, Wiederaufnahme, lokale HTTP-Zugriffsschranken, Key-Übergabe, Audio-Downloads mit Suchpositionen sowie UI-Zustände. Vorhandene Pipeline-Tests bleiben aktiv. Die optionalen WebMCP-Lese- und Navigationsfunktionen wurden mit einem Testkontext geprüft, nicht in einem unterstützten Live-Browser. Sie können keine Audio- oder Planfreigabe erteilen.
-
-Am 13.09.2026 wurde die deutsche Gemini-Bibliothek mit allen 30 Stimmen über den lokalen Studio-Server erstellt. Die vorhandene Sadaltager-Aufnahme wurde aus ihrem geprüften Cache übernommen; die übrigen 29 Stimmen wurden auf Nutzerauftrag über OpenRouter erzeugt. Alle 30 MP3-Dateien wurden technisch dekodiert und auf gültige Laufzeiten geprüft. Automatisierte Tests prüfen zusätzlich die Wiederverwendung ohne API-Key, die Fortsetzung nach einem Fehler und Play ohne Generierungsauftrag. Ein vollständiger Durchlauf mit einem neuen Thema und eine Hörprüfung bleiben die praktische Abnahme. Automatisierte Inhaltsreviews garantieren keine hervorragende Erzählung; deine Durchsicht bleibt bewusst Teil des Ablaufs.
-
-## Sprechformen, Pausen, Hostnamen und redaktionelle Notizen
-
-Auf der Audioseite steht **Aussprache prüfen** direkt über dem Kontrollkästchen der Freigabe;
-die beiden einklappbaren Einstellungsbereiche stehen daneben in der Randspalte.
-
-**Aussprache prüfen** listet die Wörter, die eine Stimme nach eigener Regel liest: mehrstellige
-Zahlen, Abkürzungen, Versions- und Modellnamen wie `V3.2` oder `H800` und Wörter mit fremden
-Zeichen. Der Server berechnet die Liste ohne Modellaufruf aus dem veröffentlichten Text, der
-Sprechformtabelle und den Abschnitts-Sprechformen, deshalb steht sie schon vor der ersten
-Vertonung bereit und soll vor der Freigabe gelesen werden. Die Liste beschreibt den tatsächlich
-gesprochenen Text: ein Eintrag in der Tabelle lässt das Wort aus der Liste verschwinden. Nach einer
-Vertonung liegt derselbe Bericht zusätzlich in `reports/<folge>_audio.json`.
-
-**Sprechformen, Pausen und Hostnamen** speichert eine Tabelle je Projekt, eine Zeile pro Eintrag in
-der Form `geschrieben = gesprochen`. Jede Vertonung erhält dann zwei Felder: `text` bleibt der
-geprüfte Skripttext für Transkript, Hash und Freigabe, `spoken_text` ist das, was die Stimme hört,
-und steht nur dort, wo es vom Text abweicht. Ein Abschnitt ohne Sprechform wird deshalb genauso
-gespeichert und im Cache gefunden wie vor der Einführung der Sprechformen; keine bereits erzeugte
-Aufnahme wird ein zweites Mal bezahlt. Eine Sprechform ändert nie das Skript und nie einen
-Skript-Hash.
-
-Die Ersetzung ist schreibungsgenau und arbeitet mit ganzen Wörtern. Ein Bindestrich, ein
-Gedankenstrich und ein Schrägstrich trennen Wörter: der Eintrag `KL` erreicht „KL-Abweichung“, der
-Eintrag `H800` auch „H800-GPUs“. Ein Punkt zwischen Zeichen trennt nicht: der Eintrag `V3` lässt
-„V3.2-Exp“ unverändert, der Eintrag `1.000` lässt „1.000.000“ unverändert; dafür gibt es die
-Einträge `V3.2` und `1.000.000`. Der Bericht zerlegt den Text nach derselben Regel, jedes gemeldete
-Wort lässt sich also mit genau einem Eintrag beheben. Bei mehreren passenden Einträgen gewinnt der
-längste, und keine Ersetzung wird ein zweites Mal ersetzt.
-
-Die drei Pausenwerte sind Mindestpausen bei gleicher Stimme, bei einem Stimmwechsel und an einer
-Kapitelgrenze; eine längere geplante Pause bleibt erhalten. Die Montage und die Aufteilung einer zu
-langen Folge in Teile rechnen mit denselben angewendeten Pausen, sodass eine Folge nahe der
-30-Minuten-Grenze je Teil vor der Montage geteilt wird und nicht erst nach der bezahlten Vertonung scheitert. Folgen dürfen seit dem 30.09.2026 bis zu 60 Minuten lang geplant werden; sie werden dann in Teile von höchstens 30 Minuten vertont.
-Geänderte Pausen sind hörbar und verlangen deshalb eine neue Audio-Freigabe. Die Standardwerte werden
-in Freigaben und Laufeingaben nicht mitgespeichert; nur eine abweichende Pausenregel steht dort und
-ändert den Eingabe-Hash.
-
-Die **Hostnamen** sind zwei Felder im selben Bereich: beide Namen oder keinen. Mit Namen dürfen sich
-die Hosts im Skript so ansprechen, Transkript, Shownotes und Leseseite zeigen die Namen; ohne Namen
-bleiben es „Host A“ und „Host B“. Ein Stimmenname ist nie ein Hostname. Die Namen stehen in
-`project.yaml` und gehören zum Projekt-Hash: geänderte Namen gelten für neue Skriptläufe, bestehende
-Audio-Freigaben bleiben gültig, weil sie an Skript-Hash und Stimmen gebunden sind. Ein Projekt ohne
-Namen behält den Projekt-Hash, den seine bisherigen Läufe tragen.
-
-**Redaktionelle Notizen** stehen in `projects/<id>/style_notes.md` und gehen in die Eingaben eines
-Skriptlaufs ein. Sie erreichen das Schreiben, das Dialog-Polishing und beide Prüfungen; die
-Belegregeln haben Vorrang. Eine Änderung führt zu einem neuen Lauf, weil sie den Eingabe-Hash ändert.
-
-Auf der Leseseite hat jede Sprechpassage einer veröffentlichten Folge mit Audio eine eigene
-**Sprechform**. Das Feld beginnt mit dem Text, den die Tabelle für diesen Abschnitt ergibt; wer es
-unverändert speichert, legt keine Abschnitts-Sprechform an, und die Tabelle gilt weiter. Ein
-abweichender Text gilt nur für diesen Abschnitt und geht der Tabelle vor. „Nur diesen Abschnitt neu
-rendern“ sendet den Auftrag mit dem Kennzeichen `rerender` statt einer neuen Freigabe: Das Studio
-prüft nach derselben Regel wie die Vertonung, ob für genau diesen Skript-Hash mit dem gewählten
-Anbieter und den Stimmen eine gespeicherte Freigabe vorliegt, und lehnt den Auftrag sonst mit dem
-Hinweis auf die Audioseite ab. Skript-Hash, Leseansicht, Auftrag und Audioauswahl werden dabei wie
-bei jeder Vertonung gegen den angezeigten Stand geprüft; bei Gemini mit Ausdruck seit dem 02.10.2026 auch die
-gelesenen Ausdrucksmarken (Hash von `expression.json`). Wurde der Ausdruck seit dem Lesen neu gesetzt, lehnt das
-Studio das Neu-Rendern ab und verlangt erneutes Lesen und Freigeben. Der Lauf erzeugt nur den geänderten
-Abschnitt neu, alle anderen kommen aus dem Cache; die Freigabequittung des Laufs nennt die
-gespeicherte Freigabe, nicht eine neue Entscheidung. Die Abweichungen stehen anschließend im
-Exportbericht und in den Shownotes.
-
-Nach dem Hören trägst du die **Hörprüfung** ein. Der Prüfbogen `listening_sheet.md` liegt im Export
-neben der MP3 und hat Spalten für Unklarheiten, verlorene Aufmerksamkeit und Aussprache. Diese
-Angabe setzt ausschließlich ein Mensch; kein Programmschritt setzt sie.
-
-Hörprüfung und Abschnitts-Sprechform lassen sich seit dem 02.10.2026 auch eintragen, während andere
-Folgen vertont werden. Nur solange dieselbe Folge vertont wird, lehnt das Studio die Eingabe ab
-(`episode_busy`); sie geht, sobald deren Vertonung fertig ist oder angehalten wurde.
-
-## Hinweise der Prüfungen
-
-Auf der Leseseite einer veröffentlichten Folge steht ein einklappbares Feld **Hinweise der
-Prüfungen**. Es zeigt, was die Prüfungen gesagt, aber nicht blockiert haben: die Grenzen, die jede
-Prüfung ihrem eigenen Urteil gibt, die Erklärlücken, die die Prüfer als nicht notwendig eingeordnet
-haben, mit ihrer Begründung, und die deterministischen Hinweise über wiederholte Definitionen,
-wiederholte Hinweise auf erfundene Beispiele, einen langen Kaltstart und eine Überlänge. Nichts davon
-verhindert eine Veröffentlichung; es ist Lesestoff für deine Durchsicht.
-
-## Ausführung und Projektübersicht
-
-**Sequenziell oder parallel wählst du pro Projekt im Gespräch**, getrennt für Text und Audio. Zum Beispiel: „Text parallel, Vertonung sequenziell“. Parallel bedeutet beim Text höchstens fünf Folgen gleichzeitig innerhalb von Skripterstellung, Dialog-Polishing oder Qualitätsprüfung – auch über die Abos – und in der Recherche höchstens fünf voneinander unabhängige Teilfragen gleichzeitig; bei Gemini-Audio alle freigegebenen Folgen, höchstens 30. Innerhalb der Prüfung einer Folge fragen Erstleser und redaktionelle Prüfung dann gleichzeitig, und die Korrektur der Serienprüfung überarbeitet alle betroffenen Folgen einer Runde zugleich. Eine Teilfrage, die eine andere voraussetzt, wartet, bis diese geprüft abgeschlossen ist; bleibt die Voraussetzung ohne geprüfte Antwort, wird sie wie bisher als `prerequisite_block` markiert. Das Lehrkonzept bleibt in Reihenfolge, damit vorausgesetzte Beispiele konsistent bleiben. Der Modus wird beim Start eines Text- oder Rechercheauftrags gespeichert; Fortsetzen behält ihn bei. Bestehende Projekte und ältere Aufträge bleiben zunächst sequenziell. Anbieterlimits und das genehmigte Modellaufrufbudget gelten weiter. Der Auftragsstatus nennt bei mehreren laufenden Teilfragen alle (etwa „5 Teilfragen in Arbeit: …“) und markiert sie in der Fragenliste. Laufen mehrere Modellaufrufe gleichzeitig, nennt die Seite jeden mit seiner Teilfrage und seiner Dauer, und jede Zeile der Live-Ausgabe trägt die Teilfrage oder Folge, zu der sie gehört. Die Ausarbeitung zeigt alle Folgen, die gerade in Arbeit sind, mit ihrer Zeit. Hält eine Teilfrage oder Folge an, beenden die anderen noch ihren laufenden Schritt; das steht während dieser Zeit auf der Seite, und erst danach hält der Auftrag an. Nach dem Anhalten gilt keine Teilfrage mehr als in Arbeit; begonnene gehen beim Fortsetzen weiter.
-
-Bei Gemini über OpenRouter können bis zu 30 ausdrücklich freigegebene Folgen gleichzeitig vertont werden. Jede hat ihren eigenen Fortschritt sowie Anhalten/Fortsetzen. Eine angehaltene Folge bleibt in Kopfzeile, Navigation und Übersicht sichtbar, auch während die anderen weiter vertont werden, und lässt sich in einem freien Platz neben ihnen fortsetzen. Ein angehaltener Text-Auftrag wartet dagegen, bis die Vertonung fertig ist; die Seite sagt das, statt einen Knopf anzubieten, der scheitern würde. Qwen bleibt wegen der lokalen GPU einzeln. Die Übersicht aktualisiert Arbeitsstände alle 10 Sekunden; die Seite Vertonung ergänzt fertige Aufnahmen, ohne einen laufenden Player neu aufzubauen. Löschen verschiebt ein ruhendes Projekt nach `.studio/trash/`; dort ist es über die Übersicht wiederherstellbar. Laufende Projekte können nicht gelöscht werden.
-
-## Protokolle und Fehlerdiagnose
-
-Der Studio-Server schreibt nach `.studio/studio.log`, jeder Auftrags-Prozess nach `<projekt>/studio/worker.log`; Einzelbefehle protokollieren nach `<projekt>/logs/pla.log`. Die Dateien rotieren bei 2 MB. Schlägt eine Stufe mit einem unerwarteten Programmfehler fehl, bleibt die Meldung im Studio kurz; die Haltekarte öffnet den bereinigten Traceback unter `runs/<run_id>/failures/<stufe>_<versuch>_<zeit>.txt` über **Technische Details** als Text; `pla status` listet diese Dateien ebenfalls. Bekannte Zugangsdaten werden vor dem Schreiben entfernt. Angehaltene Aufträge mit fachlichem Grund (Kontingent, fehlende Belege, Prüfeinwände) erzeugen nur einen Protokolleintrag, keinen Traceback.
+`--port 8766` chooses another port, `--no-browser` keeps the browser closed. A second double-click opens the running
+Studio. **„Studio beenden“** (stop the Studio) at the bottom left stops the local server and pauses its active jobs,
+which stay resumable at the next start. By default only this computer can reach the server (see
+[Studio access](SECURITY.md#studio-access)).
+
+If the Studio started by double-click on Windows does not find Codex, see
+[Check the subscriptions](OPERATIONS.md#check-the-subscriptions). Once that is fixed, **„Fortsetzen“** (resume)
+continues the saved job; a table-of-contents draft still waits for your review before the scripts are written.
+
+## Using it from a phone
+
+On Windows, **`Podcast-Studio-WLAN.cmd`** (or `pla studio --lan`) makes the Studio reachable from your home network,
+for example from a phone on the Wi-Fi. The server window and the bottom left of the Studio show the address, for
+example `http://192.168.178.75:8765`; open it in the phone's browser. Who can connect and what the Studio checks:
+[Studio access](SECURITY.md#studio-access).
+
+On the first start, Windows Firewall asks whether Python may be reachable on the network; allow only private networks.
+If the Studio already runs for this computer only, the Wi-Fi launch file does not open it again but asks you to close it
+first with „Studio beenden“ once no job is running, because a running job would be paused.
+
+## The guided flow
+
+A project runs through six steps, each a page in the navigation:
+
+1. **„Auftrag & Stimmen“** (brief & voices): a single editorial partner asks in the chat for what it needs and proposes
+   a brief. It asks early what the series is for (**„Ziel der Serie“** (series goal): „Verstehen“, „Bewerten“,
+   „Anwenden“ (understand, evaluate, apply), each weighted 0–3) and, for fast-moving fields such as AI practice, how
+   current the sources must be (**„Aktualität der Quellen“** (source recency): the last N months); both appear in the
+   summary. It treats attachments and posts as pointers to names, works and tools, not as claims the episodes must
+   check. You state topic, prior knowledge, depth and language in your own words; text model, audio provider, voices
+   and execution are set on the [Settings page](#settings-page), not in the chat. **„Diese Auswahl übernehmen“**
+   (apply this selection) saves the reviewed summary. The chat grants no plan or audio approval. Stored voice samples
+   stay reachable through the collapsible voice library. Credentials belong only in the key field of the settings page.
+2. **„Recherche“** (research): searching, downloading and evaluating sources and checking the dossier run automatically
+   after the start; the result is readable here. Then the table of contents is drafted; an existing plan can be opened
+   directly. A new research is marked as a restart of its own.
+3. **„Inhaltsverzeichnis“** (table of contents): review episodes, chapters, guiding questions and explanation steps and
+   have them revised if needed. **„Plan freigeben & Skripte schreiben“** (approve plan & write scripts) approves exactly
+   this plan state and starts the script work; an already approved plan leads to the running script work instead. A
+   table of contents appears only when its draft is finished: while a new draft or a revision runs, the previous plan is
+   hidden, and a stopped draft shows only its hold card (why: D-100). Only a finished draft can be revised or approved;
+   after a stopped draft, continue with **„Neues Inhaltsverzeichnis entwerfen“** (draft a new table of contents).
+4. **„Ausarbeitung“** (script work): teaching plan, script draft, dialogue polishing, quality review and publishing are
+   automatic phases of one job, with no extra click between them. The page shows the current episode, finished results
+   and concrete open points; reviewed teaching plans can be read while work continues. Supplementary research and
+   internal corrections belong here.
+5. **„Skripte lesen“** (read scripts): each episode becomes readable once its complete draft is saved. Its review state
+   reads „Entwurf“ (draft), „Dialog überarbeitet“ (dialogue revised) or „Prüfungen bestanden“ (reviews passed), after
+   publishing „Fertig zur Durchsicht“ (ready for review). Further episodes appear in the selection automatically. An
+   opened version stays in place while you read; when a newer text or review state exists, **„Aktuellen Stand laden“**
+   (load current state) loads it. Previews get no audio approval. After the script work, the published versions can be
+   commented on and then explicitly approved for audio.
+6. **„Vertonung“** (recording): the checkbox confirms the script state you read, with the provider and voices shown,
+   and **„Audio erzeugen“** (generate audio) starts the recording. Finished takes are listed under **„Alle fertigen
+   Folgen anhören“** (listen to all finished episodes), which **„Podcast anhören“** (listen to the podcast) on the
+   overview leads to. The page, including the size estimate for Gemini: [Recording flow](AUDIO.md#recording-flow).
+
+The pronunciation check, the panels for spoken forms, host names and editorial notes, re-rendering one segment and the
+listening review are described in [Spoken forms and pronunciation](AUDIO.md#spoken-forms-and-pronunciation),
+[Re-rendering one segment](AUDIO.md#re-rendering-one-segment) and
+[Exports and listening sheet](AUDIO.md#exports-and-listening-sheet).
+
+Which approval each step needs and what it is bound to: [Human approvals](BUSINESS_LOGIC.md#human-approvals). Older
+projects show their existing research, scripts and published audio files; **„Inhaltsverzeichnis entwerfen“** (draft
+table of contents) creates a separate plan to review.
+
+Automated tests cover plan approvals, stale text and voice states, assistant proposals without automatic project
+changes, resume, the local HTTP access barriers, key handover, audio downloads with seek positions and the UI states
+(see [Automated checks and early audio test](QUALITY.md#automated-checks-and-early-audio-test)). Automated content reviews
+do not guarantee excellent narration; your reading stays deliberately part of the flow. A full run with a new topic and
+a listening test remain the practical acceptance (see V-18).
+
+## Attachments and provided works
+
+### Attachments
+
+At **„Neues Projekt“** (new project) → „Auftrag & Stimmen“ you can attach several **.md**, **.txt** or **.docx** files
+below the message box (**„Dateien anhängen“** (attach files)), describe how to use them if needed, and click
+**„Senden“** (send). Without accompanying text, the partner proposes a project from the files, takes the wishes they
+contain into account and asks for what is missing. You still review the summary before „Diese Auswahl übernehmen“.
+
+Active attachments are visible after reloading and under „Recherche“. **„Entfernen“** (remove) takes a file out of the
+active inputs; earlier model calls and research snapshots stay traceable. After attachments change, the partner must
+update its summary before you can apply it. Uploading the same file again creates no second active copy. Changes are
+locked while jobs run.
+
+Limits (`attachments.py`): up to **10 attachments per project** (`MAX_FILES`), text files up to **256 KiB** each
+(`MAX_FILE_BYTES`), DOCX up to **2 MiB** (`MAX_DOCX_BYTES`), up to **1 MiB of extracted text** in total
+(`MAX_TOTAL_BYTES`), and up to 4 MiB of files per send (`MAX_TRANSFER_BYTES`). TXT and MD must be UTF-8 (with or without
+BOM) or UTF-16 with BOM. DOCX is read locally without Word, as main text including tables; images, layout, headers,
+footers and footnotes are dropped. Save password-protected files as a normal DOCX or TXT first.
+
+The server stores UTF-8 text copies under `inputs/uploads/` with short, self-generated names, keeps the original names
+in the index `inputs/attachments.json` and registers the copies in `local_sources`; the original files stay unchanged.
+Which `local_sources` entries the Studio accepts and which files a research run reads:
+[Local files](SECURITY.md#local-files).
+
+All attachments flow into the setup context; above 60,000 characters together (`attachments.CONTEXT_CHARS`) the partner
+uses explicitly marked excerpts. The research reads the full text copies and, as with other sources, selects the
+relevant sections for evaluation. Very short notes suit the brief but may fall below the minimum length of source
+extraction. Claims from notes or desired results must be supported by independent sources or treated as open.
+
+„Senden“ sends the text to the selected text model. An upload alone starts neither web research nor recording.
+Credentials do not belong in files; detected keys are rejected ([Secrets and keys](SECURITY.md#secrets-and-keys)).
+
+### Missing works
+
+On the „Recherche“ page, **„Fehlende Werke“** (missing works) lists the books and articles that blocked sub-questions
+(or sub-questions in a new attempt after a block) need as the original work and that no free source provided, each
+with the questions that need it. Obtain the work through a library, interlibrary loan, subito or purchase and upload it
+there as PDF, saved web page or text file (up to 150 MiB, `provided_works.MAX_WORK_BYTES`; books up to 2000 pages,
+`pdf_text.BOOK_PAGES`). Under **„Anderes Werk hochladen“** (upload another work) you enter author, title and year
+yourself.
+
+An uploaded work is stored under `inputs/works/` with its reference in `inputs/works.json`, next to the brief, so a
+running run stays resumable. Unlike an attachment it counts as **evidence**, not as a note: the research reads it at
+the next step as a primary work (provenance: „vom Herausgeber bereitgestellte Kopie“ (copy provided by the editor)) and
+retries the questions it was uploaded for; a paused run does so when resumed. Quotes are checked verbatim against the
+file as always. Shadow libraries are not an admissible source.
+
+## Settings page
+
+The **„Einstellungen“** (settings) page sits at the top next to **„Übersicht“** (overview). Its values apply to all
+projects:
+
+| Section | What you set there |
+| --- | --- |
+| **„Textmodell“** (text model) | One of the presets; see [Choosing the text model](#choosing-the-text-model). |
+| **„Audio“** | Provider, speech model (Gemini), the voices of host A and host B, the three pauses ([Pause minimums](AUDIO.md#pause-minimums)); for Gemini whether expression tags are set before recording. |
+| **„Ausführung“** (execution) | See [Sequential or parallel](#sequential-or-parallel). |
+| **„Ohne Rückfrage“** (without asking) | See [Pre-approvals](#pre-approvals). |
+| **„Limits“** | Model calls per run, sources and search rounds per research, the time limit of one model call. |
+| **„Claude“** | The switch for bought extra usage ([Studio settings](CONFIGURATION.md#studio-settings)). |
+| **„OpenRouter-Key“** | The key for OpenRouter text, Gemini audio and Jev: **„Key hinterlegen“** (store key), **„Sitzungs-Key entfernen“** (remove session key); handling in [Secrets and keys](SECURITY.md#secrets-and-keys). |
+
+**„Einstellungen für alle Projekte speichern“** (save settings for all projects) saves the page. The chip at the top
+reads **„Gilt für alle Projekte“** (applies to all projects) once the workspace settings are saved, **„Noch je
+Projekt“** (still per project) before. Storage, the values shown before the first save, and when running jobs pick up a
+change: [Studio settings](CONFIGURATION.md#studio-settings) (why: D-108). The project page only shows the settings,
+with **„Einstellungen öffnen“** (open settings).
+
+## Choosing the text model
+
+Text and audio providers are chosen independently; asked about them, the editorial partner points to „Einstellungen“.
+
+The „Textmodell“ section offers the presets of `text_settings.TEXT_PRESETS`;
+[Providers and models](PRODUCT.md#providers-and-models) lists them with their models, reasoning levels and the
+minimum Claude Code versions. New Studio projects start with **„Automatisch · Claude, sonst
+Codex“** (automatic · Claude, otherwise Codex). A saved choice that matches no preset stays selectable as „Bisher: …“
+(so far: …). For OpenRouter presets, **„Höchstens Ausgabe-Tokens je Aufruf (nur OpenRouter)“** (at most output tokens
+per call, OpenRouter only) caps the answer length. Other model IDs can be given on the command line
+([Choosing the provider on the command line](SCRIPTS.md#choosing-the-provider-on-the-command-line)).
+
+With „Automatisch“ the model cannot be set, and the reasoning level only jointly for both subscriptions (`low` to
+`xhigh`, `text_settings.SHARED_EFFORTS`; for example „Automatisch · Claude, sonst Codex · high“); to set them
+individually, choose a fixed provider. How the automatic choice picks a subscription per call, when it switches and
+which provider runs the web research:
+[Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection). An older Claude Code stops
+a job with a fixed Claude choice with the hold card **„Claude Code zu alt“** (Claude Code too old).
+
+The choice applies to the editorial chat, table of contents, teaching plan, script, dialogue polishing, quality
+reviews and the [status briefs](#status-briefs). How each provider is called: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
+
+**„Verbindungen prüfen“** (check connections) on „Auftrag & Stimmen“ shows both subscription logins and the quota
+state; a job is ready to start as soon as one subscription is usable. What it checks with Gemini audio:
+[Providers and models](PRODUCT.md#providers-and-models).
+
+The job status shows the choice the run saved, even if other settings were saved for new jobs since; below it,
+**„Aktueller Anbieter“** (current provider) shows the quota state and reset of both subscriptions from the last model
+call. Older jobs without an explicit choice appear as „nicht festgelegt“ (not set) and get no new defaults when resumed.
+Where a run stores its choice: [Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest).
+
+### Continuing with another provider
+
+Every script and research job can continue with another text provider at any time: below the job's saved text choice,
+**„Weiter mit …“** (continue with …) offers „Claude, sonst Astra (xhigh)“, „Astra (xhigh), sonst Claude“, „Nur
+Claude“, „Nur Astra (xhigh)“ and „OpenRouter · bezahlt pro Aufruf“ (OpenRouter · paid per call), the last with a model
+selection; **„Übernehmen“** (apply) saves the choice. If a job with a fixed provider stops because its subscription is
+exhausted, the hold card offers the other one: **„Mit Astra (xhigh) fortsetzen“** (continue with Astra) for Claude,
+**„Mit Claude fortsetzen“** (continue with Claude) for Codex. When the switch applies and what it keeps: [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
+
+## Overview, navigation and hold cards
+
+The overview starts with **„Wartet auf dich“** (waiting for you: approvals and paused jobs) and **„Läuft gerade“**
+(running now). Below, each project has a row with the bar of the six steps, **„Projekt öffnen“** (open project) and,
+once takes are finished, „Podcast anhören“ and **„Podcast herunterladen“** (download podcast, ZIP).
+
+The navigation shows each area's state: present, to approve (▲), in progress or pending. The running step shows its
+elapsed time; a research plan waiting for approval shows the projection in hours. The header names the job or its stop
+reason in one line, with stop, resume (only where it can help) and the jump to the page where something is to be
+decided; running recordings are listed beside it. The browser tab shows ● for a running job, ▲ for a decision and ! for
+a stop; the overview shows the number of waiting projects.
+
+The collapsed **„Maschinenraum“** (engine room) at the bottom holds only telemetry: **„Kurzbericht“** (status brief),
+live output, times, budget, model choice and, for research and script runs, the **„Produktionsbericht“** (production
+report: calls, model time and share per stage, the same numbers per prompt version, providers, stops per stage and
+approvals; `production_report.py`). It displaces no page and holds no action that is not also on the page. Each step
+shows its own job details: the research its question status with the plan approval, the script work its progress and
+teaching plans, the recording the jobs per episode.
+
+Opening an existing project leads to the actual work step, also for a resumed job. After a step starts, the view
+follows the flow; a page you open yourself stays open when the background work finishes. Project and page are kept in
+the address, so back and forward in the browser switch between visited pages.
+Navigation and reloading start no model calls and grant no approvals.
+
+### Stop reasons
+
+When a job stops, its page shows a **hold card**: what happened, whether „Fortsetzen“ can help and which button leads
+on. The research shows it above the question status, the table of contents and the script work at the top of their
+page, the recording in the episode's card, and the conversation as a chat reply. There are five kinds:
+
+- **„Angehalten“** (stopped): „Fortsetzen“ repeats the step and everything finished stays saved (time limit,
+  connection error, your own stop; transient stops of research and script runs resume by themselves, see
+  [Automatic resume](#automatic-resume)). When a step has used up its automatic corrections, including the series
+  review's correction (`series_review_failed`), the card offers **„Mit neuen Anläufen fortsetzen“** (continue with
+  fresh attempts), but only when the run would accept them (`run_budget.fresh_attempts_available`) (why: D-101).
+- **„Wartet auf Kontingent“** (waiting for quota): after the reset, „Fortsetzen“ or the automatic resume.
+- **„Braucht Einrichtung“** (needs setup): first fix something outside the Studio (login, FFmpeg, OpenRouter credit),
+  then „Fortsetzen“. If an OpenRouter key is missing, the card holds the input field and resumes once the key is
+  stored. With „Automatisch“, an expired login or a too old Claude CLI stops the job only when the other subscription
+  cannot continue either. Where the fix is another text model or audio provider, the card offers
+  **„Einstellungen öffnen“** (open settings).
+- **„Deine Entscheidung“** (your decision): research plan, blocked sub-questions or a higher call limit, for research
+  and script runs alike; „… erhöhen und fortsetzen“ (raise … and resume) approves and resumes in one click.
+- **„Neustart nötig“** (restart needed): this run cannot continue, for example after an unsupported review objection, a
+  checkpoint that no longer fits, changed inputs, a permanently contradictory table of contents or a teaching plan
+  still incomplete after the automatic corrections. The card offers no „Fortsetzen“ but the way forward (research anew,
+  new table of contents, redraft with a note, approve again) and says what stays readable. For the teaching plan this
+  is **„Lehrkonzept mit Hinweis neu entwerfen“** (redraft teaching plan with a note): your note goes into a new draft of
+  this one episode with new repair rounds, the run resumes right away, and the approved table of contents stays.
+
+Messages appear in German: the Studio translates the pipeline's review texts, which the model gets in English, and
+replaces command-line hints, local paths and internal identifiers. The original wording and the stop code are under
+**„Technische Details“** (technical details); a code without its own card appears as „Angehalten“ with its code. For
+unexpected program errors and the log files see [Logs and diagnosis](OPERATIONS.md#logs-and-diagnosis).
+
+A paused run stays visible when a conversation, a connection check, a voice sample or a run of another kind runs
+afterwards; only a new run of the same kind replaces it. The Studio sets each kind aside in its own file,
+`studio/paused_<kind>.json` with `research`, `script` or `audio` (why: D-102); the single `studio/paused_job.json` of
+older Studios is still read. Automatic resumes and pre-approvals also apply to runs set aside. If a resume comes to
+nothing, the paused run stays on the page with its decisions.
+
+Saving the brief, host names, editorial notes or spoken forms while a run that depends on them rests (also a table of
+contents awaiting approval) first shows a warning and a confirmation question, because that run cannot be resumed
+afterwards ([Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
+
+If no answer arrives in the conversation, the chat names the reason and offers **„Erneut senden“** (send again); the
+unanswered message is replaced, not repeated. When the conversation has used up its own call limit
+([Budgets](BUSINESS_LOGIC.md#budgets)), **„Gesprächslimit auf … erhöhen“** (raise the chat limit to …) raises it.
+
+### Deleting projects
+
+**„Projekt löschen“** (delete project) on an overview card moves a resting project to `.studio/trash/`; the overview's
+**„Papierkorb“** (trash) restores it with **„Wiederherstellen“** (restore). Running projects cannot be deleted.
+
+### WebMCP
+
+When the browser offers WebMCP (`document.modelContext`), the page registers two optional tools:
+`read_podcast_workspace` reads the selected project's topic, current step and job status, and `navigate_podcast_step`
+shows one of the six steps. They cannot grant an audio or plan approval. They were checked in a test context, not in a
+supported live browser (see V-23).
+
+## Stopping and resuming
+
+### Stopping a job
+
+**„Auftrag anhalten“** (stop job) stops the worker process the Studio started, with its child processes and any model
+processes started in parallel, on Windows, macOS and Linux; other jobs keep running. A worker that an earlier Studio
+started and that survived its restart appears as „läuft außerhalb dieses Studios“ (running outside this Studio) instead
+of interrupted; the Studio recognises it by process ID and process start time and can stop it too (why: D-103).
+Without this record, the page says that it ends by itself.
+
+While a worker runs, it keeps the computer awake: on Windows through `SetThreadExecutionState` (the display may turn
+off), on macOS through `caffeinate` (why: D-104); `PLA_KEEP_AWAKE=0` switches this off (see
+[Environment variables](CONFIGURATION.md#environment-variables)).
+
+What a stop keeps and what „Fortsetzen“ reuses is in
+[Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding). Closing the browser ends no job.
+After the worker ends, the running stage is saved as interrupted and resumable too. Complete script drafts and polished
+versions stay available under „Skripte lesen“, and the display claims no model call still running. Budget counters,
+approvals and completed intermediate results are kept; opening the Studio does not restart the job.
+
+If a worker reports nothing new for more than five minutes, the job's page says so; Qwen counts each spoken segment,
+and loading its speech model may take 15 minutes. If a worker ends without a result, for example after a crash, the
+Studio sets its run back to resumable and shows the last lines of its error output (`<project>/studio/stderr/<job>.log`)
+under „Technische Details“, filtered for credentials (see
+[Credentials in traces, diagnostics and logs](SECURITY.md#credentials-in-traces-diagnostics-and-logs)).
+
+### Automatic resume
+
+The open Studio server resumes some stops by itself, at most three times in a row (`studio.MAX_AUTO_RESUMES`; your own
+„Fortsetzen“ starts the count again):
+
+- **Quota.** A research, script or Qwen job paused by a subscription limit resumes at the reset of the subscription
+  that ran out; without a known reset, after the waiting times in [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
+- **Transient technical stops.** Research and script runs stopped by a transient technical error (time limit, call
+  without output, failed Claude or Codex call, Claude answer in the wrong format, OpenRouter unreachable or
+  unavailable; `studio.TRANSIENT_STOPS`) resume 10, 30 and 90 minutes after the stop
+  (`studio.TRANSIENT_BACKOFF_MINUTES`) (why: D-105).
+
+The hold card names the time and the attempt and says when the attempts are used up. An expired login and exhausted
+OpenRouter credit do not come back by waiting (`studio.NO_AUTO_RESUME`); the Studio never resumes these, decisions or
+limits by itself. Fresh attempts and a higher call limit without asking come only through the
+[pre-approvals](#pre-approvals). No automatic resume passes the research plan approval
+([Human approvals](BUSINESS_LOGIC.md#human-approvals)). Conversations, voice samples and Gemini episodes are not
+resumed automatically, and the Studio announces nothing there; for missing voice samples see
+[Gemini via OpenRouter](AUDIO.md#gemini-via-openrouter).
+
+### Pre-approvals
+
+Under „Ohne Rückfrage“ on the settings page, **„Neue Anläufe je Lauf“** (fresh attempts per run) and **„Aufruflimit
+erhöhen je Lauf“** (raise the call limit per run) set what the Studio may give a stopped run by itself. The job summary
+on „Auftrag & Stimmen“ shows them; a hold card announces when one is about to be used. The choices, when the scheduler
+applies them and which decisions always stay yours: [Budgets](BUSINESS_LOGIC.md#budgets).
+
+### Research decisions and limits
+
+- **Research plan.** Every Studio research job waits before the first sub-question until you click
+  **„Rechercheplan freigeben und starten“** (approve research plan and start); see
+  [Scope check and plan approval](RESEARCH.md#scope-check-and-plan-approval) and, for the gate rule,
+  [Human approvals](BUSINESS_LOGIC.md#human-approvals).
+- **Blocked sub-questions.** The „Recherche“ page shows each guiding question's review state and offers the decisions a
+  blocked sub-question needs (the advisor's recommendation, **„Noch einmal versuchen“** (try again), accepting a gap,
+  raising an exhausted limit, disputes in the overall review, access gaps, finishing with remaining objections); see
+  [Blocked sub-questions and decisions](RESEARCH.md#blocked-sub-questions-and-decisions).
+- **Jev.** Under „Lückenprobe“ (gap probe) in the job summary on „Auftrag & Stimmen“, **„Jev dazunehmen“** (add Jev)
+  and **„Jev ausschalten“** (switch Jev off) switch Jev in this project's gap probe on and off; see
+  [Gap probe](RESEARCH.md#gap-probe).
+- **Starting library.** „Recherche neu beginnen“ (start research anew) preselects offering the previous research's
+  sources as a starting library; see [Starting and resuming](RESEARCH.md#starting-and-resuming).
+
+### Table-of-contents corrections
+
+The Studio corrects a contradictory table of contents automatically up to three times
+(`script_checks.MAX_PLAN_REPAIRS`), working on the existing draft. The correction gets concrete details about swapped
+foundations and scenes; the source check and the order stay binding. Draft and correction state are saved, so a resume
+after an interruption picks up from there without resetting the correction limit.
+
+### Restart after an update
+
+The page reloads `app.js` on every visit, but the server and its scheduler keep the code they started with. If the code
+has changed since, the top of the page shows „Das Studio hat neuen Code“ (the Studio has new code) with **„Neu starten,
+sobald nichts läuft“** (restart as soon as nothing is running). The Studio then waits until no job and no recording
+runs, accepts no new ones meanwhile, ends itself and restarts in the background with the same working folder and port,
+without a browser window. The new server takes over queued recordings and scheduled resumes; the page reconnects by
+itself.
+
+An OpenRouter key stored in the Studio lived only in the old server's memory and must be entered again
+([Times and connection](#times-and-connection)); until then queued Gemini episodes show „wartet auf den
+OpenRouter-Key“ (waiting for the OpenRouter key) instead of waiting for a free slot. If the new server fails before its
+own log starts, the reason is in `.studio/relaunch.log` (why: D-117). The old server's console window can then be
+closed. See also [Update the Studio](OPERATIONS.md#update-the-studio).
+
+## Progress and telemetry
+
+### Times and connection
+
+During the script work the engine room shows separately the total run time since the start or resume, the duration of
+the current model call and the age of the last saved model result. „Letzte Änderung im Lauf“ (last change in the run)
+says when the run itself last saved something.
+
+If the Studio server does not answer for more than 30 seconds, the Studio marks the display as the state of a given
+time, the header shows „Keine Verbindung“ (no connection) and the run indicator stops pulsing; this does not mean the
+model crashed. If the running server rejects a request, its message appears instead of a connection notice. Every
+answer names the running server instance: after a server restart the page reads session and key state again at the
+next poll or click and says when an OpenRouter key stored earlier was lost with the old server.
+
+The page never polls twice at the same time: a project page every 2.5 seconds, the overview every 10 seconds and a
+hidden tab once a minute (the last two are `POLL_MS` in `web/app.js`); a tab that becomes visible again polls at once
+(why: D-106). The overview builds each project card from a few cached file reads instead of the full project page
+(why: D-107). Short file access errors are retried at the next poll.
+
+During a research, its page shows **„Nächster Schritt“** (next step): that there is nothing to do, with the current
+step and its usual duration. The review loop reports each step in the activity line (review part, verdict,
+assignment part, incorporation block, evidence correction, repeated attempt), and from the overall review on, the
+research card names the review round and the number of reopened sub-questions.
+
+### Status briefs
+
+During research and script work the run writes short summaries of the logged activities and saved results under
+`runs/<run_id>/status_reports/`; the engine room shows the newest as „Kurzbericht“. The run checks for changes every
+three minutes (`status_summary.INTERVAL_SECONDS`); without new data a notice appears instead of another model call.
+Each provider writes the brief with its own cheaper model at `low` (`status_summary.STATUS_MODELS`, listed under
+[Providers and models](PRODUCT.md#providers-and-models)); the main model stays unchanged. The brief names no invented
+remaining times and treats drafts explicitly as unreviewed.
+
+These small extra calls use the subscription or the OpenRouter credit. They have their own visible counter (at most 100
+per run, `status_summary.MAX_CALLS`), a time limit of 90 seconds (`status_summary.SUMMARY_TIMEOUT`), and pause after
+three consecutive failures; the production budget stays unchanged. A failure of the status model does not stop the
+job. When the job is stopped or ended, its status process ends too; older reports stay readable.
+
+### Current research task
+
+Next to the brief, **„Aktueller Rechercheauftrag“** (current research task) shows the concrete question, the work order
+given to the model, the last saved reading result and existing review objections. **„Material und Prüfpunkte“**
+(material and checkpoints) lists the text passages provided, with source titles and pages, and the completion criteria.
+Search hits are listed separately, because a hit is not yet read evidence. The view comes from each call's
+`calls/call_*/work_context.json`; for calls started without one, it is reconstructed from the saved question status
+and marked as such.
+
+### Activity ages
+
+The display distinguishes the age of the last content message from the model, of the last connection event and of the
+last saved answer; reloading the progress data does not count as model activity. After three minutes without a content
+message the waiting time is highlighted, without claiming a crash. Logged connection problems and retries, and
+completed work steps without new evidence, are named separately. This local evaluation makes no extra model calls and
+changes no research results or budgets.
+
+### Live output
+
+Under **„Live-Ausgabe · letzte 20 Meldungen“** (live output · last 20 messages) the engine room shows up to 20 readable
+messages, expanded at first. Structured answers are reduced to their content as they arrive, for example „Vorhandene
+Quellen durchsuchen“ (search existing sources), „Suchbegriff: …“ (search term: …) or „Einordnung: …“
+(classification: …); empty fields, brackets, internal IDs and technical parameters are hidden. From Codex only public
+reasoning summaries are shown, no raw or encrypted internal reasoning; which stream events each adapter delivers:
+see [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
+
+The display follows at the next Studio status poll, normally within a few seconds. Streaming does not guarantee
+immediate output: while the model sends no visible text, the last confirmed state stays on display. The complete
+answer is validated and saved only after the final event. A dropped connection takes over no partial answer and starts
+no hidden retry.
+
+The shared ring buffer `runs/<run_id>/model_trace.json` holds at most 20 lines in total, also with parallel calls
+(`model_trace.MAX_LINES`). Older lines are replaced and long ones shortened; credentials are removed before saving
+([Secrets and keys](SECURITY.md#secrets-and-keys)). Finished, validated research and script results are saved as
+usual. Intermediate states in the live window are unreviewed and grant no approval.
+
+Receiving and readable progress are shown separately. When fragments keep arriving but no new readable text has
+appeared for at least a minute, the Studio says so explicitly. Hidden JSON fields and format data do not count as new
+content. This can hide an output loop; an active connection alone does not prove that the research progresses. New
+calls also log character and whitespace counts, without saving the raw fragments.
+
+### Diagnostics
+
+Each call keeps cleaned technical diagnostics that survive a timeout or abort, and an answer the response contract
+rejected next to its failure record ([Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest)). Calls started
+before this recording existed have none of these records; earlier traces cannot be reconstructed. Log files and
+failure tracebacks: [Logs and diagnosis](OPERATIONS.md#logs-and-diagnosis).
+
+## Sequential or parallel
+
+Under „Ausführung“ on the settings page, text work („Textausarbeitung“) and recording („Vertonung“) are set to
+sequential or parallel separately. Parallel text means at most five episodes at a time in script writing, dialogue
+polishing or quality review (also across the subscriptions) and at most five independent research sub-questions at a
+time (`execution.MAX_PARALLEL_TEXT`); within one episode's review, the first-time reader and the editorial review ask
+at the same time, and the series review's correction revises all affected episodes of a round at once.
+
+How sub-questions wait for their prerequisites: [Independent sub-questions in
+parallel](RESEARCH.md#independent-sub-questions-in-parallel). The teaching plan stays in order, so presupposed examples
+stay consistent. The mode is stored when a job starts, and resuming keeps it; the default is sequential. Provider limits
+and the approved model-call budget still apply.
+
+The job status names all running sub-questions (for example „5 Teilfragen in Arbeit: …“ (5 sub-questions in
+progress: …)) and marks them in the question list. When several model calls run at once, the page names each with its
+sub-question and duration, and every line of the live output carries its sub-question or episode. The script work
+page shows all episodes in progress with their time. If one sub-question or episode stops, the others still finish
+their running step; the page says so meanwhile, and only then does the job stop. After the stop no sub-question counts
+as in progress; started ones continue on resume.
+
+Parallel Gemini recording, its limits and the audio queue:
+[Parallel recording and queue](AUDIO.md#parallel-recording-and-queue). A stopped episode stays visible in header,
+navigation and overview while the others keep recording, and can be resumed in a free slot beside them. A stopped text
+job instead waits until the recording is finished; the page says so instead of offering a button that would fail. The
+recording page adds finished takes without rebuilding a running player.
+
+Text jobs run one at a time per project, and at most three projects work at the same time
+(`studio.MAX_PROJECT_JOBS`). Qwen records one episode at a time, and only in one project at a time, because it needs
+the local graphics card. The locks that protect a recording and what an episode's stop button ends:
+[Parallel recording and queue](AUDIO.md#parallel-recording-and-queue). Project and job states are stored under the
+respective project.
+
+## Review notes on the reading page
+
+The reading page of a published episode has a collapsible field **„Hinweise der Prüfungen“** (review notes). It shows
+what the reviews said but did not block: the limitations each review gives its own verdict, the explanation gaps the
+reviewers classified as not necessary, with their reasoning, and the deterministic notes about repeated definitions,
+repeated references to invented examples, a long cold open and excess length. None of this prevents publishing; it is
+reading material for your review.
+
+## Downloads
+
+On the „Vertonung“ page, under „Alle fertigen Folgen anhören“, **„Gesamten Podcast herunterladen“** (download the
+whole podcast) offers a ZIP with the individual MP3s in episode order: the most recently published takes including all
+parts, without new speech generation or conversion. The ZIP carries a shortened podcast title; inside, files are named
+`Folge 01 - Episodentitel.mp3`, with several parts extended by `Teil 01 von 02`. The podcast title is not repeated
+inside, so ZIP folder and file name together stay short when unpacking on Windows. Single downloads also get a short
+podcast title. Every overview project card offers the same ZIP as „Podcast herunterladen“ once one episode is
+recorded. Long titles are shortened at word boundaries where possible; umlauts are kept, and no ellipsis is appended.
+
+For an incomplete series the link reads **„Fertige Folgen herunterladen · ZIP · 2 von 6 Folgen“** (download finished
+episodes · ZIP · 2 of 6 episodes). Older script or voice states stay marked as such. If a file of a published episode
+is missing, the ZIP download aborts with an understandable message instead of silently leaving parts out.
+
+The ZIP is built only for the download and then removed from temporary storage; meanwhile the top of the page shows
+„Das ZIP wird zusammengestellt“ (the ZIP is being assembled), and a refusal appears as a message. Research and script
+work write no takes, so the ZIP and single downloads stay available during such a Studio job; only during a Qwen
+recording or a command-line run does the download wait.

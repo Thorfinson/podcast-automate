@@ -53,7 +53,8 @@ class SpeechTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.cache = Path(self.temp.name)
+        # Resolved, as the paths storage.inside() returns are (an 8.3 TEMP differs from its long form).
+        self.cache = Path(self.temp.name).resolve()
         self.engine = GeminiSpeech("test-key")
 
     def test_uses_binary_speech_endpoint_and_caches_voice_specific_wav_without_key(self):
@@ -466,7 +467,8 @@ class SpeechTests(unittest.TestCase):
 class GeminiEpisodeTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.script_project(self)
-        self.root = self.fixture.root
+        # Resolved, as the entry points resolve the root before calling generate_sample and the episode functions.
+        self.root = self.fixture.root.resolve()
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
             run_script(self.root)
         self.choice = {"provider":"openrouter_gemini_tts", "voices":{"host_a":"Sadaltager","host_b":"Aoede"}}

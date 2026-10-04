@@ -1,4 +1,4 @@
-"""Process-wide logging and persisted failure tracebacks; credentials are redacted before writing.
+"""Process-wide logging and persisted failure tracebacks; credentials are redacted before writing, in both.
 
 Stage failures keep their user-facing German message in the run manifest. The technical cause goes
 to ``runs/<run_id>/failures/<stage>_<timestamp>.txt`` and to the log file of the running process.
@@ -6,6 +6,7 @@ to ``runs/<run_id>/failures/<stage>_<timestamp>.txt`` and to the log file of the
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -18,9 +19,37 @@ LOGGER = "podcast_automate"
 FILE_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 MAX_BYTES = 2_000_000
 BACKUPS = 3
+REDACTED = "[Zugangsdaten entfernt]"
+# Credentials this process holds (a key typed into the Studio or passed to a worker); see ``add_secret``.
+_SECRETS: set[str] = set()
 
 
-class OneLine(logging.Formatter):
+def add_secret(value: str | None) -> None:
+    """Register a credential this process knows, so no log line ever contains it."""
+    if value:
+        _SECRETS.add(value)
+
+
+def scrub(text: str) -> str:
+    """Finished text without the process's known credentials and without key patterns.
+
+    Known credentials are replaced whole; ``redact`` then removes key patterns. Its trimming of a credential's prefix at
+    the end of the text is for streamed chunks and is not used here, as it would cut ordinary line endings.
+    """
+    for secret in _SECRETS | {os.environ.get("OPENROUTER_API_KEY") or ""}:
+        if secret:
+            text = text.replace(secret, REDACTED)
+    return redact(text)
+
+
+class Redacting(logging.Formatter):
+    """Log files and the terminal (a worker's stderr is a file too) get the redaction of the failure records."""
+
+    def format(self, record):
+        return scrub(super().format(record))
+
+
+class OneLine(Redacting):
     """Terminal output stays a single line; tracebacks belong in the log file."""
 
     def format(self, record):
@@ -62,7 +91,7 @@ def configure_logging(path: Path | None = None, *, level=logging.INFO, stderr_le
             root.warning("Protokolldatei nicht beschreibbar: %s", path)
             return root
         handler.setLevel(level)
-        handler.setFormatter(logging.Formatter(FILE_FORMAT))
+        handler.setFormatter(Redacting(FILE_FORMAT))
         handler.pla_target = log_target(path)
         root.addHandler(handler)
     return root

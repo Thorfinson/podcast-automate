@@ -446,7 +446,7 @@ class RevalidationTests(AuditCase):
 
 class CorrectionLoopTests(AuditCase):
     def test_spent_validator_rejections_stop_as_a_correction_loop_not_as_an_unreadable_answer(self):
-        """docs/research.md: only a missing or unreadable answer keeps invalid_model_output, and a resume asks again
+        """docs/RESEARCH.md: only a missing or unreadable answer keeps invalid_model_output, and a resume asks again
         for it. Spent rejections are replayed without a call, so they stop with a correction-loop code."""
         folder = self.work / "receipts"
         folder.mkdir(parents=True)

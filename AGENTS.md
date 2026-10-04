@@ -1,13 +1,74 @@
-# Testing rules for podcast-automate
+# Agent instructions for podcast-automate
 
-Which tests to run when, for agents and contributors. Claude Code loads this file through `CLAUDE.md`.
+Commands, layout and conventions for coding agents and contributors, then the testing rules: which tests to run
+when. Claude Code loads this file through `CLAUDE.md`. What the product does and how the docs are organised is in the
+[README](README.md).
+
+## Commands
+
+Windows (PowerShell); macOS and Linux use `.venv/bin/…` and `sh scripts/setup.sh`.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .        # install or update the controller (no pla process may be running)
+.\scripts\setup-ffmpeg.ps1                             # once: FFmpeg into tools/ffmpeg/bin
+.\.venv\Scripts\pla.exe studio                         # run the Studio on http://127.0.0.1:8765
+.\.venv\Scripts\pla.exe doctor --skip-tts              # check the installation without local Qwen
+.\.venv\Scripts\python.exe scripts\test_map.py         # regenerate the raw source-to-test map
+```
+
+The test commands are under [The two suites](#the-two-suites). Installing and updating in detail:
+[OPERATIONS](docs/OPERATIONS.md).
+
+## Layout
+
+| Path | Content |
+| --- | --- |
+| `src/podcast_automate/cli.py` | `pla` entry point; one subcommand per run kind |
+| `src/podcast_automate/research*.py`, `question_*.py`, `sources.py`, `jev.py` | Research run: sub-questions, reading, answer review, dossier |
+| `src/podcast_automate/scripting.py`, `script_*.py`, `polishing.py`, `teaching*.py`, `series_review.py` | Script run: plan, teaching plans, writing, polishing, reviews |
+| `src/podcast_automate/episode_audio.py`, `audio.py`, `speech.py`, `parallel_speech.py`, `qwen_worker.py` | Audio run: synthesis, assembly, export |
+| `src/podcast_automate/claude_code.py`, `codex*.py`, `openrouter.py`, `provider_pool.py`, `subscriptions.py` | Text provider adapters and the per-call provider choice |
+| `src/podcast_automate/studio*.py`, `web/` | Local Studio server, worker processes and the browser UI |
+| `src/podcast_automate/models.py`, `storage.py`, `errors.py`, `runner.py` | Shared contracts, file I/O, errors and the run manifest |
+| `src/podcast_automate/prompts/` | Every model instruction as a text file ([prompts README](src/podcast_automate/prompts/README.md)) |
+| `tests/` | Python suite (`test_*.py`, fixtures in `*_fixtures.py`) and the browser suite `studio_ui.test.cjs` |
+
+The other top-level folders are in the [README](README.md#layout). `projects/`, `runs/`, `.studio/`, `tools/ffmpeg/`,
+`.venv/` and `.venv-tts/` are local and git-ignored.
+
+## Conventions
+
+- Raise `errors.AppError` with a stable `code`; the Studio and the manifest show the code, so renaming one is a
+  behaviour change.
+- Write project files through `storage` (`atomic_text`, `write_json`, `write_yaml`); read files that another worker
+  may be writing through `storage.read_text`.
+- A model call carries a `prompt_version` tag. Bump it when the meaning of its prompt changes; checkpoints are bound
+  to the prompt hash, so a changed prompt re-runs only the calls it affects.
+- Code, comments and docs are English. Text the Studio shows (`web/app.js`, `studio_messages.py`) is German.
+- Docs: every fact has one home; the doc index is in the [README](README.md#docs). When you change a documented fact,
+  update its owner doc in the same change and bump its `last_reviewed`. Unverified items go into the verification
+  list of the active plan in `docs/specs/`; decisions into [DECISIONS](docs/DECISIONS.md); traps into
+  [GOTCHAS](docs/GOTCHAS.md); user-visible changes into [CHANGELOG](CHANGELOG.md).
+
+## Before you change…
+
+| If you touch | Read first |
+| --- | --- |
+| Provider choice, quotas, budgets, approvals, resume | [BUSINESS_LOGIC](docs/BUSINESS_LOGIC.md) |
+| Research modules | [RESEARCH](docs/RESEARCH.md) |
+| Script, polishing, teaching or series review modules | [SCRIPTS](docs/SCRIPTS.md), [TEACHING](docs/TEACHING.md) |
+| Audio, speech, spoken forms | [AUDIO](docs/AUDIO.md) |
+| Studio server or `web/` | [STUDIO](docs/STUDIO.md) |
+| Text provider adapters | [ARCHITECTURE](docs/ARCHITECTURE.md#text-provider-adapters), [SECURITY](docs/SECURITY.md) |
+| Keys, local file access, the Studio's network access | [SECURITY](docs/SECURITY.md) |
+| Prompts | [prompts README](src/podcast_automate/prompts/README.md) and the prompt row under [When to run what](#when-to-run-what) |
 
 ## The two suites
 
 | Suite | Command | Size | Needs |
 | --- | --- | --- | --- |
-| Python | `python -m unittest discover -s tests` | about 1,040 tests, about 350 s | `ffmpeg` and `ffprobe` on PATH |
-| Browser logic | `node --test tests/studio_ui.test.cjs` | 164 tests, under 1 s | Node 22 |
+| Python | `python -m unittest discover -s tests` | about 1,070 tests, 6 to 8 minutes | `ffmpeg` and `ffprobe` on PATH |
+| Browser logic | `node --test tests/studio_ui.test.cjs` | 165 tests, under 1 s | Node 22 |
 
 Model calls, downloads and speech synthesis are simulated in both suites; FFmpeg assembly is real.
 No account, API key, GPU or network is needed. Never add a test that performs a real model call.
@@ -140,6 +201,10 @@ tests reached through them. The fixture modules are not read; editing one alread
   `script_pipeline.research_foundations`.
 - Tests that call `configure_logging` must call `release_logging` or close the handlers before their
   temporary directory is removed.
+- Every entry point resolves the project root once (`run_script`, `run_research`, `Studio`, `studio_worker.main`),
+  and inner functions rely on it. A test that calls an inner function directly, or looks up Studio workers and jobs,
+  resolves its temporary root in `setUp` (`Path(...).resolve()`); an 8.3 short `TEMP` on Windows otherwise breaks
+  `relative_to` and the Studio's lookups.
 - No sleeps, no network, no real model or speech calls, no GPU. Retrieval is patched at
   `podcast_automate.sources.download`.
 - No real `codex` or `claude` process and nothing under `~/.podcast-automate`. Tests that reach the

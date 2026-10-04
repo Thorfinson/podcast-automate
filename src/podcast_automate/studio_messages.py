@@ -56,7 +56,7 @@ CLI = [
     (re.compile(r"mit ['„\"]?pla resume['“\"]? fortsetzen", re.IGNORECASE), "mit „Fortsetzen“ weitermachen"),
     (re.compile(r"pla resume( verwenden)?"), "„Fortsetzen“"),
     (re.compile(r"--api-key für verdeckte Eingabe oder OPENROUTER_API_KEY setzen"),
-     "im Studio unter „Geschützter OpenRouter-Key-Eingang“ hinterlegen"),
+     "im Studio in den Einstellungen unter „OpenRouter-Key“ hinterlegen"),
     (re.compile(r"höherem --max-output-tokens oder geeignetem Modell"), "höherem Ausgabelimit oder einem geeigneten Modell"),
     (re.compile(r"Zuerst mit pla research ein"), "Zuerst auf der Seite Recherche ein"),
     (re.compile(r"mit --approve-audio"), "mit deiner Audio-Freigabe"),

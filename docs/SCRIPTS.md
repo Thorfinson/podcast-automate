@@ -1,205 +1,590 @@
-# Vom Dossier zum lesbaren Dialog
+---
+title: Scripts
+doc_type: business-logic
+status: current
+last_reviewed: 2026-10-04
+covers:
+  - src/podcast_automate/scripting.py
+  - src/podcast_automate/script_pipeline.py
+  - src/podcast_automate/script_checks.py
+  - src/podcast_automate/script_evidence.py
+  - src/podcast_automate/script_artifacts.py
+  - src/podcast_automate/script_checkpoints.py
+  - src/podcast_automate/script_models.py
+  - src/podcast_automate/polishing.py
+  - src/podcast_automate/series_review.py
+  - src/podcast_automate/cli.py
+  - src/podcast_automate/prompts/series_plan.txt
+  - src/podcast_automate/prompts/episode_framing.txt
+---
 
-Im Studio lassen sich Textmodell und Reasoning-Stufe unter **Auftrag & Stimmen** wählen. Für einen neuen Codex-Skriptlauf per Einzelbefehl entsprechen dem `--model gpt-6-astra --reasoning-effort xhigh`; angeboten werden `low`, `medium`, `high` und `xhigh`. Für das Claude-Abo gilt `--backend claude_code` mit `--model claude-sonnet-5-5` (Standard seit 29.09.2026, ab Claude Code 2.1.284) oder `--model claude-opus-5-5` (ab 2.1.280) und `--reasoning-effort low|medium|high|xhigh|max` (Standard `high`); `--backend auto` wählt vor jedem Aufruf zwischen beiden Abos nach Kontingent und verwendet die Katalogstandards. Alle Werte werden gespeichert und beim Fortsetzen übernommen. Eine abweichende Auswahl benötigt einen neuen Lauf. Bei OpenRouter ist die Reasoning-Stufe optional und muss vom gewählten Modell unterstützt werden. [Modellauswahl im Studio](studio.md#textmodell-und-denkaufwand-auswählen).
+# Scripts
 
-`pla script` erstellt aus einem abgeschlossenen Recherchelauf einen Serienentwurf, quellengeprüfte Lehrpläne und Dialogskripte. Die Stufen sind `planning`, `teaching`, `writing`, `polishing`, `review` und `publish`. Der Befehl endet beim lesbaren Text. Audio wird nicht erzeugt. [Lehrplanung und verbindliche Qualitätsprüfungen](teaching-design.md).
+`pla script` turns a finished research run into a series draft (table of contents), source-checked teaching plans
+and reviewed, readable dialogue scripts, in the stages `planning`, `teaching`, `writing`, `polishing`, `review` and
+`publish`. It produces no audio. Teaching plans and the binding editorial reviews: [Teaching design](TEACHING.md).
+
+## Running a script job
 
 ```powershell
-# Zuerst eine vollständige Recherche, sofern noch nicht vorhanden:
+# First a complete research run, if there is none yet:
 .\.venv\Scripts\pla.exe research .\projects\windows-pilot
 
-# Die erste Folge für die Leseprüfung vorziehen:
+# Write the first episode early for the reading review:
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --episode ep_001
 
-# Fortschritt und Wiederaufnahme desselben Auftrags:
+# Progress, and resuming the same job:
 .\.venv\Scripts\pla.exe status .\projects\windows-pilot
 .\.venv\Scripts\pla.exe resume .\projects\windows-pilot
 ```
 
-Ohne `--episode` werden die Skripte aller Folgen des neu erstellten Entwurfs geschrieben. Die Folgenzahl ergibt sich aus dem Inhalt; eine einzelne Folge bleibt in der Planungsschätzung bei 130 Wörtern pro Minute einschließlich Pausen unter 60 Minuten (seit 30.09.2026; vorher 30). Die Vertonung teilt eine längere Folge in Teile von höchstens 30 Minuten. Ein neuer `script`-Aufruf plant neu. `resume` verwendet dagegen den gespeicherten Plan und gültige Entwürfe weiter.
+- Without `--episode`, the run writes every episode of the new draft; their number follows from the content
+  ([Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)).
+- A new `script` call plans anew; `resume` reuses the saved plan and every valid draft.
+- The research run must be complete and its stored files must match their checksums. Sources are not downloaded
+  again.
+- Local sources (`local_sources`) must lie inside the project folder ([Local files](SECURITY.md#local-files)).
+- Every model call counts against the run's call limit (`research_limits.model_calls`). Lower bound per episode
+  (`script_budget.STAGE_CALLS`), projection (`runs/<run_id>/budget_projection.json`), expected calls and the stop
+  `script_budget_insufficient`: [Budgets](BUSINESS_LOGIC.md#budgets). Input binding: [Runs, resume and input
+  binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding).
 
-## Claude-Abo und automatische Abo-Wahl
+## Choosing the provider on the command line
+
+The Studio sets text model and reasoning level on the Settings page
+([Choosing the text model](STUDIO.md#choosing-the-text-model)). `pla script` and `pla resume` take:
+
+| Option | Meaning |
+| --- | --- |
+| `--backend codex_cli\|claude_code\|auto\|openrouter` | Text provider for scripts and reviews; default `codex_cli`. |
+| `--model` | Model ID, for example `gpt-6-astra` (Codex), `claude-sonnet-5-5` or `claude-opus-5-5` (Claude). Required for OpenRouter. |
+| `--reasoning-effort` | `low`, `medium`, `high` or `xhigh` (`text_settings.REASONING_EFFORTS`); Claude also `max` (`text_settings.CLAUDE_EFFORTS`). Optional for OpenRouter, where the model must support the level. |
+| `--api-key` | OpenRouter key; without a value it is asked for hidden. |
+| `--max-output-tokens` | Output limit per OpenRouter call. |
+
+A new Codex run with `--model gpt-6-astra --reasoning-effort xhigh` matches the Studio's Codex choice. Defaults per
+provider, presets and minimum Claude Code versions: [Providers and models](PRODUCT.md#providers-and-models). All
+values are stored with the run and reused on resume; a different selection needs a new run, unless the job is
+explicitly switched to another provider.
 
 ```powershell
-# Fest über Claude Code (Claude-Max-Abo, claude.ai-Anmeldung):
+# Fixed on Claude Code (Claude Max subscription, claude.ai sign-in):
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --episode ep_001 --backend claude_code
 
-# Je Aufruf Claude, solange Kontingent besteht, sonst Codex; Pause erst, wenn beide leer sind:
+# Per call Claude while it has quota, otherwise Codex; pauses only when both are empty:
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --backend auto
 .\.venv\Scripts\pla.exe research .\projects\windows-pilot --backend auto
 
-# Kontingentstand beider Abos ohne Modellaufruf:
+# Quota of both subscriptions, without a model call:
 .\.venv\Scripts\pla.exe quota
 ```
 
-Bei `auto` speichert `script_request.json` beide Kandidaten (`claude-sonnet-5-5`/`high` und `gpt-6-astra`/`xhigh`) und die erste Wahl (`prefer: claude_code`); die Entscheidung je Aufruf steht in `runs/<run_id>/calls/call_NNN/provider_choice.json`, ein Wechsel innerhalb eines Aufrufs nach einem Kontingentfehler in `provider_switch.json`. Das Codex-Kontingent kommt aus `account/rateLimits/read` des App Servers und wird höchstens alle zwei Minuten neu gelesen, nach einem Kontingentfehler sofort. Claude meldet sein Kontingent nicht vorab: der erste Limitfehler kostet einen Aufruf und vermerkt danach eine Sperre bis zum gemeldeten Reset (sonst konservativ fünf Stunden, bei Wochenlimit bis Montag) in `~/.podcast-automate/subscriptions.json`. Zwischenstände bleiben beim Wechsel gültig, weil sie am Prompttext hängen, nicht am Anbieter; ein Entwurf und seine Prüfung können daher von verschiedenen Modellen stammen, `reports/script_quality.yaml` nennt die Auswahl und jeder Aufruf seinen Anbieter. `resume` behält die gespeicherte Form; ein anderer `--backend` oder eine veränderte Kandidatenliste wird als geänderte Eingabe abgewiesen. Die Ausnahme ist eine ausdrückliche Umstellung. Jeder Skript- und Rechercheauftrag kann mit einem anderen Anbieter weiterarbeiten, im Studio über **Weiter mit …** unter der Textwahl des Auftrags, in der Kommandozeile mit `pla approve <projekt> --run-id <run_id> --text-switch claude|astra|claude-only|astra-only|openrouter [--switch-model MODELL]`. Es gibt fünf Wege:
+`--backend auto` picks a subscription by quota before each call and uses the catalog defaults. Its records
+(`script_request.json`, `provider_choice.json`, `provider_switch.json`), quota pauses and switching a job to another
+provider (**„Weiter mit …“** (continue with …), `pla approve --text-switch`, `text_switch.json`): see [Text providers
+and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
 
-- **Claude, sonst Astra** und **Astra, sonst Claude:** Das zuerst gefragte Abo antwortet, bis sein Kontingent erschöpft ist, dann übernimmt das andere.
-- **Nur Claude** und **Nur Astra:** Der Auftrag bleibt bei einem Abo.
-- **OpenRouter:** Ein Modell aus der Liste, bezahlt pro Aufruf, mit Key. Websuchen laufen weiter über die Abos, weil OpenRouter keine Suchwerkzeuge hat.
+### OpenRouter for a script run
 
-Astra arbeitet dabei über das Codex-Abo auf xhigh, Claude mit dem Katalogstandard Sonnet 5.5 auf high, auch wenn der Auftrag mit Opus begonnen hat. Die Quittung `runs/<run_id>/text_switch.json` gilt ab dem nächsten Start des Auftrags. Eine spätere Wahl ersetzt sie; die Wahl der ursprünglichen Auswahl entfernt sie. Eingaben, Hash, Zwischenstände und Freigaben bleiben unverändert, und `script_request.json` bzw. `research_request.json` behält die ursprüngliche Auswahl. Kurzbericht, Qualitätsbericht, die Ausdrucksstufe einer späteren Vertonung und die Weitergabe des OpenRouter-Keys folgen der aktuellen Wahl. Anlass war der 29.09.2026: Claudes Wochenfenster wurde während der Skriptprüfung beider Projekte knapp.
-
-## OpenRouter für einen Skriptlauf
-
-Standard bleibt die Codex-Abo-Verbindung. Optional können Planung, Lehrplanung, Schreiben, Dialog-Polishing und sämtliche Modellreviews dieses Skriptlaufs über OpenRouter laufen. Der Key wird nur für den aktuellen Prozess verwendet. Recherche und automatische Nachrecherche laufen über die Abos nach der automatischen Regel; Spracherzeugung erfolgt weiterhin separat mit Qwen.
+The Codex subscription stays the default. Optionally, planning, teaching, writing, dialogue polishing and every model
+review of one script run go through OpenRouter, paid per call from its API credit. Research and the automatic
+supplementary research stay on the subscriptions; speech is generated separately ([Recording flow](AUDIO.md#recording-flow)).
 
 ```powershell
-# anbieter/modell-id durch eine OpenRouter-Modell-ID mit JSON-Schema-Unterstützung ersetzen.
-# --api-key ohne Wert fragt den Key verdeckt im Terminal ab.
+# Replace provider/model-id with an OpenRouter model ID that supports JSON schemas.
+# --api-key without a value asks for the key hidden in the terminal.
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --episode ep_001 --backend openrouter --model "anbieter/modell-id" --api-key
 
-# Gleichen Lauf fortsetzen: Anbieter, Modell und Tokenlimit werden wiederverwendet.
+# Resume the same run: provider, model and token limit are reused.
 .\.venv\Scripts\pla.exe resume .\projects\windows-pilot --run-id "RUN_ID" --api-key
 ```
 
-Ein Key als Wert (`--api-key "DEIN_KEY"`) wird seit 02.10.2026 ungelesen abgewiesen (`invalid_request`), weil er in Prozessliste und Shell-Verlauf stünde. Es bleiben die verdeckte Eingabe (`--api-key` ohne Wert) und die Umgebungsvariable `OPENROUTER_API_KEY`, die der OpenRouter-Adapter liest; ein verdeckt eingegebener Key hat Vorrang. Keys gehören nicht in `project.yaml`; sie werden weder in Prompts noch Projekt-, Antwort- oder Protokolldateien geschrieben. Auch beim Start von Codex wird `OPENROUTER_API_KEY` aus dessen Umgebung entfernt. Ohne sichere Terminaleingabe bricht die verdeckte Abfrage ab, statt den Key sichtbar einzulesen.
+- The key serves the current process only and can also come from `OPENROUTER_API_KEY`. Key handling, and why a key
+  given as a value is refused: [Secrets and keys](SECURITY.md#secrets-and-keys).
+- Provider, model, token limit and adapter version are stored inputs: changing one needs a new `script` run,
+  optionally with `--revise` (same provider options); a rotated key does not.
+- `reports/script_quality.yaml` names the selection under `text_generation`.
+- Structured outputs, provider sorting, the `--max-output-tokens` default, truncated or rejected answers, per-call
+  costs, and pauses for missing credits, rate limits or network errors: [Text provider
+  adapters](ARCHITECTURE.md#text-provider-adapters).
 
-OpenRouter-Aufrufe werden über dessen API-Guthaben abgerechnet. Die Anwendung fordert [strukturierte JSON-Schema-Ausgaben](https://openrouter.ai/docs/guides/features/structured-outputs) und passende Anbieter an. Sie bevorzugt für längere Texte Anbieter mit hohem [Token-Durchsatz](https://openrouter.ai/docs/guides/routing/provider-selection#provider-sorting). Die tatsächliche Geschwindigkeit hängt vom gewählten Modell, Anbieter und der Auslastung ab; die Qualitätsprüfungen werden vollständig ausgeführt.
+## Series plan
 
-`--max-output-tokens 32768` ist der Standard pro OpenRouter-Aufruf. Bei einem Modell mit kleinerem Ausgabelimit einen passenden Wert wählen; zu knappe Limits können einen vollständigen Episodentext abschneiden. Abgeschnittene, abgewiesene oder ungültige Antworten werden nicht als fertiger Text übernommen. Anbieter, Modell, Tokenlimit und Adapterversion gehören zu den gespeicherten Eingaben. Änderungen daran benötigen einen neuen `script`-Lauf, optional mit `--revise`; ein rotierter Key benötigt keinen neuen Lauf. `--revise` akzeptiert dieselben Anbieteroptionen.
+### Planning principles
 
-`reports/script_quality.yaml` nennt die Auswahl unter `text_generation`. Erfolgreiche Aufrufe speichern angefordertes und gemeldetes Modell, Anbieter, Laufzeit, Tokenverbrauch und gemeldete USD-Kosten unter `runs/<run_id>/calls/call_*/metadata.json`. Fehlende Kostenangaben bedeuten unbekannte Kosten, nicht kostenlose Nutzung; diese Metadaten ersetzen keine OpenRouter-Abrechnung. Fehlende Credits und Anfragelimits pausieren den Lauf. Netzwerk- und andere API-Fehler werden mit einem handhabbaren Fehler gespeichert; `resume` verwendet bereits fertige Arbeit weiter. Es gibt keine automatischen erneuten kostenpflichtigen Anfragen nach einem Verbindungsabbruch.
+The series is the standard product. How its length follows from the content (no fixed length or episode count,
+episodes added as the content needs, content that does not fit moved to a further episode, a requested total duration
+weighed against the content) is in [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length). In
+addition:
 
-## Erklärweise und Leseprüfung
+- A series is complete when its prioritised questions are answered at the requested depth or their subject limits
+  are placed comprehensibly.
+- With insufficient material, the plan proposes a shorter series or targeted supplementary research; scripts are not
+  stretched.
 
-Die erste Folge baut ihre zentrale Frage ohne Vorwissen auf. Vertraute Situationen und zusammenhängende mentale Bilder führen durch ein ausgearbeitetes Beispiel. Die Erklärungen zeigen, was sich verändert, warum ein Schritt hilft und wo die Grenzen liegen. Beide Stimmen tragen sinnvoll zum Gespräch bei. Formeln, unerklärte Begriffe, Quellen-IDs und Regieanweisungen gehören nicht in den gesprochenen Text.
+### Coherence across episodes
 
-Der gewünschte Ton ist klar und erwachsen, ohne übermäßige Vereinfachung. Nötige Begriffe werden knapp eingeführt und danach selbstverständlich verwendet. Ein guter Vergleich darf stehenbleiben, ohne ihn ständig neu zu erklären oder als erfunden zu kennzeichnen. Wiederholungen und mehrfache Rückblicke werden zugunsten eines natürlichen Gesprächsflusses gekürzt.
+The plan orders episodes by required foundations and questions that build on each other. Suitable purposes are
+foundations, mechanism, deepening, counterposition, case study, application and synthesis; a series need not give
+each its own episode. Each episode briefly names what it presupposes and answers its own question substantially.
+Short recaps are allowed; explained foundations should not form the main part of every episode again.
 
-Längere Monologe sind ausdrücklich erlaubt, wenn sie einen Gedanken zusammenhängend entwickeln. Ein Wechsel braucht einen inhaltlichen Anlass: Einwand, Ergänzung, Prüfung einer Vermutung oder neue Perspektive. Satzlängen dürfen variieren; kurze Reaktionen oder Selbstkorrekturen sollen der Erklärung dienen. Erzwungenes Pingpong, künstliche Begeisterung und eingestreute Füllwörter sind kein Qualitätsziel. Es gibt keine feste Dauer von 30–90 Sekunden pro Beitrag.
+### What the planner reads
 
-Jede Folge bekommt ein gesprochenes Intro mit kurzer Begrüßung, Einordnung und Übergang zur Einstiegsfrage. Ihr Outro beantwortet diese Frage, setzt bei einer tatsächlich geplanten Nachfolgefolge einen passenden Ausblick und verabschiedet die Hörer. Ein fachliches Beispiel am Anfang und eine offene Frage am Ende allein reichen dafür nicht. Die erste Folge führt zusätzlich das **Gesamtthema, seine Bedeutung und den Weg durch die Reihe** ein. Die letzte Folge ist seit 02.10.2026 **als Ganze die Synthese der Reihe**, kein letztes Thema mit Rückblick am Ende: Von ihrem ersten Kapitel an setzt sie zusammen, was jede Folge beigetragen hat, beantwortet damit die gemeinsame Ausgangsfrage und nennt die wichtigen bleibenden Grenzen; ihr letztes Kapitel führt diese Antwort zusammen. Neues Material kommt nur hinzu, wo die Antwort es braucht. Bei einer einzelnen Folge werden diese Aufgaben zusammengeführt.
+- Only the project's editorial fields (`script_pipeline.PLANNING_BRIEF`: `topic`, `language`, `audience_level`,
+  `prior_knowledge`, `depth_request`, `focus_questions`, `excluded_topics`, `seed_people`, `target_total_minutes`,
+  `series_goal`), not the whole configuration (why: D-070); the audio part length `max_episode_minutes` stays hidden.
+- An [assembled dossier](RESEARCH.md#assembled-dossier) without quote excerpts and claim profiles
+  (`script_checks.planning_dossier`): the plan assigns findings by their statement, and each episode reads its
+  findings in full when written.
 
-Planung, Lehrkonzept, Schreiben und Polishing erhalten dafür die Position im vollständigen Serienplan, die zentrale Frage und den geplanten Themenweg mit Frage und `series_role` jeder Folge (`editorial.episode_series_context`) – auch wenn nur eine einzelne Folge erzeugt wird. Eine Folge, die auf frühere aufbaut, bekommt im Plan unter `recap_finding_ids` die Befunde dieser Folgen, die sie aufgreift; die Schlussfolge für jede Folge, die sie zusammenführt. Ohne solche Befunde nennt eine Folge nur die Frage einer früheren Folge und wiederholt nicht deren Inhalt. Die Rahmungsregeln stehen in einem gemeinsamen Baustein (`prompts/episode_framing.txt`), den Lehrplanung und ihre Prüfung, Schreiben, Polishing und Vergleich, Skriptprüfung sowie redaktionelle und Lehrprüfung gleichermaßen erhalten. Das Schreiben bekommt seit 02.10.2026 statt des ganzen Serienplans nur dessen Abgrenzung (`scope_note`) und die Abhängigkeiten zwischen den Befunden der Folge; Reihenfolge, Rollen und Fragen kommen aus dem Serienkontext (die Schreibanfrage des Asimov-Finales erreichte vorher etwa 780 000 Zeichen). Intro und Outro bleiben innerhalb der vorhandenen ersten und letzten Kapitel und des Wortbudgets. Es gibt keine feste Länge, erfundenen Sendungsnamen, automatisch aus TTS-Stimmen abgeleiteten Host-Identitäten oder Werbeformeln. Nichtfachliche Begrüßungen brauchen keine Quellen; fachliche Rückblicke schon.
+### Plan validity
 
-Technisch vertont der gewählte Anbieter – Qwen lokal oder Gemini über OpenRouter – jeden gespeicherten Sprecherabschnitt einzeln und verwendet unveränderte Audiodateien aus dem Cache wieder. Ein längerer Redebeitrag kann in mehrere Abschnitte desselben Sprechers geteilt werden. Die Montage ordnet diese Abschnitte an und setzt Pausen. Echte Sprecherüberlappungen, szenenweite Regieanweisungen und ElevenLabs-TTS sind nicht implementiert. Die gesamte Folge wird nicht in einem einzigen TTS-Aufruf erzeugt. [Gemini-Anbindung](gemini-audio.md).
+- The plan must not invent findings, and explanation dependencies must not form a cycle.
+- Later chapters may take up and build on findings already introduced; core findings not yet introduced stay
+  excluded. The source assignment should allow a coherent argument.
 
-Zugänglichkeit begrenzt die fachliche Tiefe nicht. Bei einem universitären Anspruch führt die erste Folge vom Ausgangsproblem bis zum eigentlichen Mechanismus und seinen weiterführenden Konsequenzen. Jeder Abschnitt beantwortet eine aus dem vorherigen entstandene Frage. Ein ausgearbeitetes Beispiel, begründete Zwischenschritte und Gegenbeispiele machen die Argumentation nachvollziehbar. Fachbegriffe wie Gradient oder Normierung sind erlaubt, sobald die Bedeutung erklärt wurde. Eine Liste von Definitionen oder eine lange Analogie ersetzt diese Entwicklung nicht.
+### Core and supporting findings
 
-Der Nutzer möchte **das Skript zuerst lesen und danach über Audio entscheiden**. `episodes/audio_review.yaml` hält deshalb den aktuellen Skriptstand mit `audio_approved: false` fest. Ein Modellreview erteilt keine Nutzerfreigabe. Stimmen im Windows-Pilot sind Aiden (`host_a`) und Vivian (`host_b`).
+The plan assigns findings at two levels (`EpisodePlan` in `script_models.py`) (why: D-071):
 
-## Ergebnisse
+- `finding_ids` are an episode's core, the findings its explanation needs. Its scenes cover exactly these and develop
+  them fully; the dialogue must cite each.
+- `supporting_finding_ids` are study details that can back a statement: citable in any scene, not required, part of
+  no scene, never core of the same episode.
+- Every finding gets a place, as core or support in at least one episode, or a reasoned omission, never both
+  (`script_checks.validate_plan`).
+- Where the series goal weights *understanding*, the core stays with what the theories explain in their own logic.
+- Teaching planning, writing and reviews see core, supporting and recapped findings; the show notes name the sources
+  of core and supporting findings.
+- A plan without these fields counts as before: every assigned finding is core, and stored form and hash stay
+  unchanged.
 
-| Datei | Inhalt |
-| --- | --- |
-| `models/knowledge_model.yaml` | Unverändert übernommene belegte Befunde, Begriff-/Mechanismus-/Beispiel-IDs, Erklärabhängigkeiten und offene Fragen |
-| `models/series_plan.yaml` | Begründeter Erklärweg, Folgen, Szenen, Voraussetzungen und vertagte Themen |
-| `research/series_outline.md` | Lesbarer Überblick; unterscheidet geplante Folgen von hier geprüften Skripten |
-| `episodes/ep_001/episode_plan.yaml` | Frage, Szenen, Kern- und Stützbefunde, aufgegriffene frühere Befunde und zugeordnete Recherchegrenzen der Folge |
-| `episodes/ep_001/teaching_plan.md` und `.yaml` | Lernziele, Voraussetzungen, ausgearbeitetes Beispiel und Synthese |
-| `episodes/ep_001/script.yaml` | Kanonische Sprechersegmente mit Wissensreferenzen |
-| `episodes/ep_001/script.md` | Derselbe Dialog als lesbarer Text mit den gewählten Stimmen |
-| `episodes/ep_001/show_notes.md` | Kapitel, Quellenlinks und offene Vertiefungen |
-| `reports/script_quality.yaml` | Quellen- und Strukturprüfung, Leserantworten, belegte Lehrprüfung, Wortzahl und geschätzte Sprechzeit je Folge; jeder Folgeneintrag nennt unter `run_id` den Lauf, der ihn geschrieben hat |
-| `episodes/audio_review.yaml` | Skripthashes und ausstehende Leseprüfung vor Audio |
+### Role, recap and theory first
 
-Die Dateien liegen im privaten Projektordner und sind von Git ausgeschlossen. `runs/<run_id>/` hält Eingaben, Modellantworten, Entwürfe und Reviews für die Wiederaufnahme fest. Quellen werden für diese Stufe nicht erneut heruntergeladen. Eine lesbare Modellantwort, die ihren Antwortvertrag verletzt (`rejected_output`), etwa ein Skript mit lückenhafter Kapitelfolge, wird mit den beanstandeten Feldern bis zu zweimal erneut angefordert. Jeder Versuch ist ein eigener angerechneter Aufruf mit `failure.json` und `rejected_output.json` in seinem Aufrufordner; erst die dritte Abweisung hält die Stufe an. Ein `resume` wiederholt diese Folge, weil sie keinen Zwischenstand hinterlässt.
+- Every episode gets a `series_role`, its contribution to answering the guiding question. It states this at the start
+  in its own words and says at the end what one now knows about the guiding question.
+- Length follows the need to explain, 15 to 60 minutes per episode (`prompts/series_plan.txt`). One connected
+  explanation stays in one episode, split only at a natural break: a large theory may get its own long episode, and
+  fewer, longer episodes are preferred to several short parts of one subject.
+- An episode that builds on earlier ones gets under `recap_finding_ids` the findings it takes up from them; the final
+  episode for every episode it brings together. Without them, an episode names only an earlier episode's question and
+  does not repeat its content.
+- The final episode is as a whole the synthesis of the series, not a last topic with a recap at the end. From its
+  first chapter on, its scenes are the steps of a reasoned answer to the guiding question, assembled from each
+  episode's contribution and naming the important remaining limits and open questions; its last chapter brings the
+  answer together, and new material comes only where the answer needs it. A synthesis scene that
+  follows a case through this answer can replace the worked example otherwise required per episode; a qualitative case
+  without numbers counts as an example everywhere. It may cite its `recap_finding_ids` without covering all of them
+  (why: D-067).
+- Where the series goal weights *understanding*, an episode first explains a theory in its own logic, attributed to
+  its originator, then its tests and critiques. Where it weights *applying*, it gives concrete recommendations,
+  introduced once as the series' own and based on the cited practice findings.
+- The origin of a statement stays audible (author's view, test, critique, our interpretation, our recommendation).
+  With a recency rule set, the script names the year of an older practice source.
+- Limit scenes are not required.
 
-Veröffentlicht ein Lauf die Skripte eines anderen Inhaltsverzeichnisses, verschiebt er vorher die Folgenordner der früheren Serie nach `episodes/archive/<Zeit>_<run_id>/` (mit `receipt.json`); gelöscht wird nichts. Ein Ordner gehört zum Inhaltsverzeichnis des Laufs, wenn sein `episode_plan.yaml` dem Planeintrag derselben Folge entspricht, so bei jedem Fortsetzen, jeder Überarbeitung und jedem Lauf für eine einzelne Folge. Die Aufnahmen bleiben unter `exports/<Folge>/<Audiolauf>/`, wo das archivierte `audio_latest.json` sie weiter findet. Ist eine Datei in einem solchen Ordner geöffnet, etwa während einer Vertonung, hält der Lauf mit `episodes_locked` an und lässt sich danach fortsetzen.
+### Research limits in the script
 
-Der Bericht spricht für alle veröffentlichten Folgen, nicht nur für den letzten Lauf. Ein Lauf für eine einzelne Folge (`--episode`, `--revise`) ersetzt unter `episodes` nur den Eintrag dieser Folge; die Einträge der übrigen Folgen bleiben erhalten, solange ihr `script_sha256` noch zum veröffentlichten `script.yaml` passt, und tragen weiter die `run_id` des Laufs, der sie geprüft hat. Ein Eintrag, dessen Text nicht mehr auf der Platte liegt, wird verworfen. Das oberste `run_id` nennt den jüngsten Lauf. So behalten das Studio und die Leseansicht die Hinweise der Prüfungen (Einschränkungen der Prüfer, verworfene Lücken, Advisories) auch für früher veröffentlichte Folgen. Unter `gap_probes_unowned` listet der Bericht auf Serienebene die gemeldeten Lücken, deren Korpustreffer nur in Quellen liegen, die keine Folge nutzt (`gap_id`, `text`, `status`, `references`); niemand in diesem Lauf kann diese Abschnitte lesen, deshalb blockieren sie nichts und werden nur ausgewiesen.
+The limits the research run noted for the script in `research_quality_gate.json` reach planning, writing and the
+script review as `research_limits` (`script_checks.research_limits`) (why: D-072), each with a `limit_id` and, where
+known, the affected findings: source limitations and guiding questions noted as limits, noted limits, objections
+noted after two revisions, and the „Hinweise fürs Skript“ (notes for the script) of the follow-up assessment
+(`script_notes`).
 
-`script.md` ist die erzeugte Leseansicht; `script.yaml` ist der kanonische Text. Manuelle Änderungen am kanonischen Skript werden bei `resume` erkannt und nicht überschrieben. Sie benötigen eine erneute fachliche Prüfung vor der Fortsetzung.
+- The plan enters each `limit_id` in the `research_limit_ids` of the one episode that first uses the affected
+  statement. An unplaced limit goes to the first episode whose core or supporting findings it concerns, else to the
+  final episode (`script_checks.episode_limits`).
+- The script names each limit there once, briefly and in its own words, in the segment with the affected statement:
+  no limits scene, no list of caveats at the end.
+- The script review counts a limit named this way as supported, as a gap probe supports a statement about something
+  missing. A missing limit goes under `limitations`, not as an objection; a repair keeps a named limit.
+- An older quality file without these details yields no limits.
 
-## Eigener Dialog-Polishing-Schritt
+## Writing and framing
 
-Nach `writing` verarbeitet ein neuer Modellaufruf den vollständigen Entwurf. Er erhält Text, Lehrplan, Publikum und Rollenverteilung. Seine Aufgabe ist die sprachliche und dramaturgische Ausarbeitung: verständliche Sätze, passende Reaktionen und Übergänge, die aus dem Gedankengang entstehen. Er darf keine zusätzlichen Fakten, Zahlen oder Beispiele erfinden und keine notwendige Herleitung oder Einschränkung streichen.
+### Intro and outro
 
-Die ursprünglichen Absatzgrenzen und Sprecherzuordnungen sind dabei veränderbar. Der Polishing-Aufruf soll zunächst den Gesprächsfluss eines ganzen Kapitels beurteilen und dichte Erklärungen bei Bedarf neu gruppieren. Viele umformulierte Sätze allein belegen keine gute Überarbeitung. Der Vergleich prüft auch schwierige Passagen und Übergänge auf unklare Bezüge, bloßes Nebeneinander von Erklärungen und inhaltsleere Wiederholungen. Es gibt weiterhin keine Quote für neue Segmente oder Sprecherwechsel.
+Every episode gets a spoken intro with a short greeting, an orientation and a transition to its opening question. Its
+outro answers this question, gives a fitting outlook when a follow-up episode is actually planned, and says goodbye.
+A subject example at the start and an open question at the end are not enough.
 
-Die Rollen werden unabhängig von der TTS-Stimme festgelegt:
+- The first episode also introduces **the overall topic, its significance and the path through the series**.
+- The final episode is **as a whole the synthesis of the series** ([Role, recap and theory first](#role-recap-and-theory-first)).
+- A series of one episode combines these tasks.
+- Intro and outro stay inside the existing first and last chapters and the word budget: no fixed length, no invented
+  show name, no host identity derived from the TTS voices, no advertising formula. Greetings outside the subject need
+  no sources; subject recaps do.
 
-- `host_a`: der ruhige, präzise Experte. Er entwickelt Mechanismen, liefert relevante Details und beantwortet den konkreten Einwand.
-- `host_b`: die neugierige, mitdenkende Gesprächspartnerin. Sie formuliert naheliegende Zweifel, prüft eine Annahme und fragt nach Bedeutung oder Konsequenzen. Sie darf selbst Schlüsse ziehen und muss keine künstliche Unwissenheit vorspielen.
+### What each step receives
 
-Für Aiden und Vivian gilt diese Aufteilung ebenso. Längere zusammenhängende Erklärungen sind erlaubt; Sprecher müssen sich weder ständig abwechseln noch gleich viel sprechen. Eine plausible Frage schafft einen Anlass für die folgende Erklärung. Ein allgemeines „Spannend, erzähl mehr“ erfüllt diese Rolle nicht.
+- Planning, teaching plan, writing and polishing get the episode's position in the complete series plan, the central
+  question and the planned topic path with each episode's question and `series_role`
+  (`editorial.episode_series_context`), also when only one episode is generated.
+- The framing rules are one shared prompt block (`prompts/episode_framing.txt`) for the teaching plan and its review,
+  writing, polishing and its comparison, the script review, and the editorial and teaching reviews.
+- Writing gets only the plan's `scope_note` and the dependencies between the episode's findings, not the whole series
+  plan; order, roles and questions come from the series context (why: D-073).
 
-Ein separater Vergleichsaufruf prüft `meaning`, `completeness`, `speaker_roles`, `spoken_language` und `episode_framing`. Das letzte Kriterium prüft Intro und Outro einschließlich Serieneinstieg beziehungsweise Gesamtabschluss. Jedes positive Urteil braucht tatsächliche Textbelege; für Bedeutung und Vollständigkeit aus beiden Fassungen, für die Rahmung aus dem ersten und letzten Kapitel. Ein Vergleich mit fehlenden Kriterien oder erfundenen Belegen wird mit den Mängeln neu angefragt; seine Einwände gehen in eine Reparatur. Bis zu zwei Reparaturen sind möglich; Wiederaufnahme erhält Kandidat, Vergleich, Umfang und Versuchszähler.
+### Reading before recording
 
-Seit 02.10.2026 ist jeder Vergleich nach einer Reparatur eingegrenzt: Er erhält die Punkte des vorigen Vergleichs mit ihrem Ausgang und die seither geänderten Segmente. Ein Punkt blockiert nur, wenn er ein Kriterium betrifft, das der vorige Vergleich zur Reparatur geschickt hat, ein geändertes Segment zitiert oder sich keinem Segment zuordnen lässt; ein neuer Punkt zu unverändertem Text ist ein Hinweis in `polishing/<folge>/accepted_notes.json` (vorher fand jede Runde neue Rollen- oder Rahmungspunkte im unveränderten Text und hielt den Lauf an). Nach beiden Reparaturen gilt: Bleiben nur Einwände zur gesprochenen Sprache, steht die Polishing-Fassung mit ihren Punkten in `accepted_notes.json`. Bei jedem anderen Rest, also Bedeutung, Vollständigkeit, Rollen, Rahmung oder einem deterministischen Mangel wie einer zu kurzen Fassung, bleibt der geprüfte Entwurf das Skript, sofern er die Strukturprüfung besteht (`kept_draft.json`, `result.json` mit `status: kept_draft`); erst wenn auch er sie nicht besteht, hält der Lauf mit `dialogue_polish_failed` an. Bis 02.10.2026 hielten Rollen, Rahmung und deterministische Mängel den Lauf hier an. Die Rahmung des beibehaltenen Entwurfs prüfen danach Skript-, redaktionelle und Lehrprüfung. Eine so beibehaltene Folge gilt für Studio-Fortschritt und Budgetprognose als fertig poliert (`script_checkpoints.finished`). Im Normalfall kommen pro Folge zwei Modellaufrufe hinzu. Sie zählen zum bestehenden Budget und laufen über den gewählten Textanbieter.
+The user wants **to read the script first and decide on audio afterwards**, so `episodes/audio_review.yaml` records
+the current script state with `audio_approved: false`; a model review grants no user approval
+([Human approvals](BUSINESS_LOGIC.md#human-approvals)). The voices in the Windows pilot are Aiden (`host_a`) and
+Vivian (`host_b`).
 
-Unter `runs/<run_id>/polishing/<episode_id>/` stehen `before.md`, `after.md`, `script.json`, `review.json`, `result.json` und `checkpoint.json`. Der ursprüngliche Entwurf bleibt unter `drafts/` erhalten. `reports/script_quality.yaml` übernimmt den Vergleich unter `episodes.<episode_id>.dialogue_polish` und benennt die Rollen. Die dortigen Belege gelten für die Fassung direkt nach dem Polishing. Anschließende fachliche Reparaturen können sie noch verändern; maßgeblich für Audio bleibt ausschließlich das abschließend geprüfte und vom Nutzer freigegebene `script.yaml`.
+## Dialogue polishing
 
-Danach prüfen Quellenreview, Leser und Lehrprüfer den tatsächlich überarbeiteten Text. Der Quellenreview sieht zusätzlich den ursprünglichen Entwurf und die Rollen, damit auch spätere Reparaturen die Erklärungen und Gesprächsführung erhalten. Ein bestandener Vorher-/Nachher-Vergleich behauptet keine fachliche Wahrheit des ursprünglichen Texts. Diese wird weiterhin gegen die Quellen geprüft. Der abschließende Export setzt die Audiofreigabe wieder auf ausstehend.
+After `writing`, a separate call processes the complete draft with the teaching plan, the audience and the role
+split. Its task is linguistic and dramaturgical: understandable sentences, fitting reactions, transitions that arise
+from the line of thought. It must not invent facts, numbers or examples, nor delete a necessary derivation or
+qualification.
 
-Die Intro-/Outro-Vorgaben gelten für neu ausgeführte Schritte. Ein bereits laufender Prozess verwendet seinen geladenen Code weiter; ein alter bestandener Vergleich gilt nicht nachträglich als Prüfung der Rahmung. Bestehende Texte benötigen dafür eine gezielte Überarbeitung mit erneuter Prüfung. `result.json` nennt die verwendete Promptversion. Die Eingaben und Freigaben laufender Aufträge werden durch diese Ergänzung nicht umgeschrieben.
+Paragraph boundaries and speaker assignments may change: the call first judges the flow of a whole chapter and
+regroups dense explanations. Many rephrased sentences alone do not show a good revision, and there is no quota for
+new segments or speaker changes. The roles (`polishing.HOST_ROLES`) are independent of the TTS voice and apply to
+Aiden and Vivian alike: [Two hosts and storytelling](TEACHING.md#two-hosts-and-storytelling).
 
-Nach einer Korrektur der redaktionellen Prüfversion wird ein gespeichertes Urteil beim Fortsetzen neu geprüft. Der zuletzt überarbeitete Text und die bereits verbrauchten Korrekturrunden bleiben erhalten. Die einzelnen Lese- und Lehrprüfungen sind an ihren jeweiligen Prompt gebunden; alte Urteile ohne diese Bindung werden nicht übernommen. Das erzeugt keine automatische Freigabe und setzt weder Versuchszähler noch Modellbudget zurück. Konkrete Einwände der Abschlussprüfung stehen im Studio unter **Ausarbeitung**.
+### Comparison
 
-Bestehende Skriptfassungen werden nicht automatisch umgeschrieben. Für die neue Stufe einen neuen `script`-Lauf oder `--revise` verwenden. Ältere Skriptläufe können nach dem Versionswechsel nicht durch `resume` nachträglich als poliert gelten. Bereits gestartete Audioaufträge bleiben an ihren gespeicherten Text gebunden.
+A separate comparison call checks `meaning`, `completeness`, `speaker_roles`, `spoken_language` and
+`episode_framing` (`polishing.POLISH_CRITERIA`); the last covers intro and outro, including the series opening or
+overall conclusion.
 
-## Einen vorhandenen Text überarbeiten
+- Every positive verdict needs actual text evidence: for meaning and completeness from both versions, for framing
+  from the first and last chapter.
+- It checks difficult passages and transitions for unclear references, explanations merely set side by side, and empty
+  repetition. It names the most demanding passages under `demanding_passages` (`polishing.DEMANDING_PASSAGES`, 3 where
+  the episode has them) and states how the new version resolves each unclear reference; one left open becomes a
+  `spoken_language` objection for the repair loop.
+- A comparison with missing criteria or invented evidence is asked again with its defects. Its objections go into a
+  repair, at most two; resume keeps candidate, comparison, scope and attempt counter.
+
+### Scoped comparison after a repair
+
+Every comparison after a repair is scoped (why: D-074): it gets the previous comparison's points with their outcome
+and the segments changed since. A `meaning` or `completeness` point blocks wherever it points
+(`polishing.FIDELITY_CRITERIA`), so a step the polish lost never passes as a note. Any other point blocks only if the
+previous comparison sent its criterion to repair, it cites a changed segment, or it cannot be placed in a segment; a
+new point on unchanged text is a note in `polishing/<episode>/accepted_notes.json`.
+
+### After both repairs
+
+- If only spoken-language objections remain, the polished version stands, its points in `accepted_notes.json`.
+- For any other remainder (meaning, completeness, roles, framing, or a deterministic defect such as a too-short
+  version), the reviewed draft stays the script if it passes the structure check (`kept_draft.json`, `result.json`
+  with `status: kept_draft`) (why: D-075), so the polished version's defect never reaches publication. Only if the
+  draft fails it too does the run stop with `dialogue_polish_failed`.
+- Script, editorial and teaching review then check the kept draft's framing.
+- An episode kept this way counts as polished for Studio progress and budget projection
+  (`script_checkpoints.finished`).
+
+### Files
+
+`runs/<run_id>/polishing/<episode_id>/` holds `before.md`, `after.md`, `script.json`, `review.json`, `result.json`
+and `checkpoint.json`; the original draft stays under `drafts/`. `reports/script_quality.yaml` takes the comparison
+into `episodes.<episode_id>.dialogue_polish` and names the roles. Its evidence applies to the version right after
+polishing, which later subject repairs can still change; for audio, only the finally reviewed `script.yaml` the user
+approved counts.
+
+### Reviews after polishing
+
+Source review, reader and teaching reviewer then check the actually revised text. The source review also sees the
+original draft and the roles, so later repairs keep the explanations and the conversation. A passed before/after
+comparison claims no subject truth of the original text; that is still checked against the sources. The final export
+sets the audio approval back to pending.
+
+### Version changes
+
+- The intro and outro requirements apply to newly executed steps; a running process keeps the code it loaded
+  ([GOTCHAS](GOTCHAS.md)). An old passed comparison does not count as a framing check: existing texts need a targeted
+  revision with a new review. `result.json` names the prompt version. Inputs and approvals of running jobs are not
+  rewritten.
+- After a correction of the editorial review version, a saved verdict is checked again on resume; the latest revised
+  text and the correction rounds used are kept. Reading and teaching reviews are each bound to their own prompt; old
+  verdicts without this binding are not taken over. None of this grants an approval or resets attempt counters or the
+  model budget. Concrete objections of the final review show in the Studio under **„Ausarbeitung“** (drafting).
+
+## Script review
+
+### Structure and quotation checks
+
+- A script must reference its episode's core findings and assign chapters and speakers correctly.
+- With an [assembled dossier](RESEARCH.md#assembled-dossier), an episode quotes each source verbatim for at most 25
+  words (`script_checks.QUOTED_WORDS_PER_SOURCE`, `script_checks.quotation_errors`): words matching a section the
+  episode received as a source in runs of at least six words (`script_checks.QUOTE_RUN`), ignoring case and
+  punctuation. Shorter matches are common phrases; a translation is no verbatim quote. A draft above the limit goes
+  back to the writer with source, word count and an example passage, at first writing and after polishing and review.
+- At writing, a draft that breaks these checks or falls short of its planned duration (the 85 % rule in
+  [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)) is corrected up to three times, each
+  correction reworking the latest attempt against its own defects; a short script is told how many words it has and
+  needs at `script_artifacts.SPOKEN_WORDS_PER_MINUTE`. Then writing stops with `invalid_script`.
+
+### Evidence review
+
+A separate call checks what is said against the assigned findings and source sections, and also the required depth,
+the worked-out explanation steps, how start and end connect, understandability, the example, the limits of metaphors
+and the dialogue.
+
+- Up to three revisions (`script_pipeline.MAX_REVIEW_REPAIRS`).
+- If then only objections about understandability, depth or dialogue remain (`script_checkpoints.NOTED_CATEGORIES`:
+  `clarity`, `depth`, `dialogue`), the script is adopted; the points stay in the review report and
+  `reviews/<episode>_accepted_notes.json`, visible when reading before the audio approval.
+- Evidence errors and objections about scope or structure keep blocking; otherwise remaining objections block
+  adoption, and drafts and objections stay saved. **„Mit neuen Anläufen fortsetzen“** (resume with fresh attempts) or
+  `pla approve <project> --fresh-attempts` gives a review stopped this way three new revisions against the same
+  review report.
+- After a subscription pause too, a text already corrected need not be written again.
+
+### Scoped follow-up review
+
+Every review after a revision is scoped (why: D-066): it gets the previous review's objections and the segments the
+revision changed. Only three kinds of objections may block:
+
+1. a previous objection still open,
+2. an objection about a changed segment,
+3. a factual error or source contradiction anywhere (`script_pipeline.CRITICAL_BASIS`).
+
+An objection about the whole episode, without a segment, blocks only if the previous review raised one of the same
+category about the whole episode, or as a factual or source error. Everything else, for example a missing reference
+or a statement about something missing without a gap probe in a segment the previous review passed unchanged, is an
+advisory (`advisories`) in the report and notes. Code sets the scope by comparing the versions; the verdict only
+marks what is critical. So the review converges instead of finding new details in the same text every round.
+
+If a version had no blocking objections and a later revision (say, for understandability) breaks its evidence, the
+evidenced version stands with its notes; the discarded version and its review are kept in
+`reviews/<episode>_kept_draft.json`. The same scoping applies to the evidence review after a
+[series review](#series-review) correction.
+
+### Spot check against the source
+
+The review compares each segment that cites findings with the cited source sections themselves and names them in
+`source_refs`; without them, or with unknown sections, it is asked again (why: D-069).
+
+- If a finding deviates from its source and the segment repeats the error, that is a deviation in the field `source`,
+  and the repair follows the section.
+- If the segment already follows the section, the verdict is `source_corrected` (`script_checks.SCRIPT_REVIEW_VERSION`
+  = `script_review.v12-source-corrected`): no objection, but a note in the review limitations that the dossier
+  finding is inaccurate, shown in the Studio when reading (why: D-085). A deviation therefore does not enter the
+  follow-up review as a previous objection; that review judges each segment afresh.
+- A `script_review.v11-core-limits` verdict that blocked nothing stays valid on resume
+  (`script_checks.RELAXED_REVIEW_VERSIONS`); a blocking one is reviewed again before the next correction.
+
+### Reader, editorial and teaching reviews
+
+A fresh reader call, a separate editorial review and a teaching review also check each episode; what each sees:
+[What the application enforces](TEACHING.md#what-the-application-enforces); their perspectives:
+[Three editorial reviews](TEACHING.md#three-editorial-reviews).
+
+- In parallel text mode, reader call and editorial review ask at the same time.
+- An episode's evidence review is saved before its teaching review starts, so a stop during the teaching review does
+  not ask it again (`teaching_pending` in the checkpoint).
+- The application checks the evidence and completeness of the reviews. A missing required explanation step or a
+  negative verdict leads to a revision and, if problems persist, to a block.
+
+### Limits of the review
+
+A passed model review replaces neither the reading nor the listening review. The series draft is editorial
+planning; the overall review rates the final scripts, not how the produced series sounds. Human reading and listening
+acceptance stay a separate step ([Acceptance procedure](QUALITY.md#acceptance-procedure)). Nothing is published
+publicly.
+
+## Series review
+
+New runs store `series_review_version` in their inputs. Once all planned episodes are reviewed in the same run, one
+more call checks the complete final texts against (`series_review.series_criteria`):
+
+- `coverage`: the guiding question and each episode's core findings (supporting findings may be missing);
+- `prerequisites`, `progression` and `deferred_questions`;
+- `synthesis`: the final episode assembles all episodes' contributions into one answer;
+- `arc`: each episode says what it contributes and what one now knows;
+- `exposition` or `guidance` when the series goal weights *understanding* or *applying* with 2 or 3
+  (`series_review.GOAL_CRITERIA`).
+
+Rules for the verdict:
+
+- Each criterion is judged exactly once. Positive verdicts need verbatim segment evidence; a passed series overall
+  needs evidence from every episode.
+- Every failed check names under `episode_ids` the episodes whose script must change (otherwise the answer is asked
+  again) and says with `source_limit` whether only the research lacks the material.
+- No script correction can fix a source limit, so it does not block but is an advisory (`criterion`, `reason`,
+  `episode_ids`, `basis: source_limit`) under `report.advisories` in `runs/<run_id>/series_review.json` and
+  `series_review.advisories` in `reports/script_quality.yaml`.
+- Non-blocking repetitions are stored as `warnings`.
+- Every other substantial objection blocks providing the series, and with it its new audio approval.
+- The report version stays `series_review.v1` (`series_review.SERIES_REVIEW_VERSION`), so saved verdicts and the
+  audio approvals bound to them stay valid; new calls carry the prompt tag `series_review.SERIES_REVIEW_PROMPT`,
+  currently `series_review.v4-core`.
+
+### Saved verdicts
+
+- The report records the criteria it asked for (`criteria`); a saved verdict is checked on load against exactly these
+  (why: D-076). An older report without them is judged by the checks it contains, if the five base criteria
+  `coverage` to `synthesis` are among them (`series_review.LEGACY_CRITERIA`).
+- `runs/<run_id>/series_review.json` is bound by checksum to the plan, the inputs and all texts. Interruptions reuse
+  a valid report; a negative verdict stays saved too, so merely resuming buys no new verdict.
+
+### Correction round
+
+A negative verdict is followed by exactly one bound correction across the episodes: the evidenced segments of each
+affected episode are revised once, the result gets its own evidence review, and the series review checks again;
+three calls per affected episode. If a corrected episode fails its evidence review, a second attempt answers those
+objections and still the series review's original objection (why: D-077); only then is the correction rejected
+(`script_pipeline.SERIES_REPAIR_ATTEMPTS` = 2, up to five calls per episode).
+
+- **Scoped re-review.** The renewed series review gets the corrected verdict's checks with their outcome
+  (`previous_checks`) and the changed episodes (`changed_episodes`). Only an earlier objection the scripts still have
+  (the same criterion on an episode it named) or an error in a changed episode may block; a new point on an unchanged
+  episode is an advisory with `basis: unchanged`. This scope is saved in `series_repair.json` before the call, so a
+  resume asks the same question. A second negative verdict in this scope blocks (`series_review.MAX_SERIES_REPAIRS`,
+  one round).
+- **Fresh attempts.** **„Mit neuen Anläufen fortsetzen“** (or `--fresh-attempts`) sets a failed correction round
+  aside, and likewise the spent round after a negative series verdict
+  (`series_repair_superseded_NN.json`). The next start corrects against the saved verdict if it belongs to today's
+  text, else first judges the series anew; either way it has one round again.
+- **Stopped rounds.** A round stopped before its final series review, for example by **„Auftrag anhalten“** (stop
+  job), is not spent; resuming picks it up (`finished` in the record).
+- Polishing and teaching review are not repeated: the change is limited to named segments and the learning objectives
+  are unchanged.
+- In parallel text mode, all affected episodes of a round are corrected at once. Passed corrections are adopted even
+  if another episode is rejected; the message names each rejected report.
+- Each correction answer is stored per round under `reviews/series_corrections/`, so a stop during its evidence review
+  does not pay for it again.
+
+### Correction files
+
+- `reviews/<episode>_series_adopted.json` binds an adopted correction to the draft the episode review passed, so
+  resuming the review stage publishes the correction instead of writing back the uncorrected text from that review's
+  checkpoint (why: D-065).
+- An adopted correction replaces `reviewed/<episode>.json` and `reviews/<episode>.json`, so
+  `reports/script_quality.yaml` shows under `model_review` the review of exactly the published text next to its
+  `script_sha256`; the review before the correction stays as `reviews/<episode>_before_series_repair.json`.
+- A rejected correction (for example an evidence deviation in the revised segments) changes neither file; draft and
+  objections are in `reviews/<episode>_series_repair_rejected.json`.
+- `runs/<run_id>/series_repair.json` records the round, bound to plan and inputs instead of the texts it changes. It
+  stores only a verdict on the correction itself: its evidence review rejected it (`script_review_failed`), or it
+  still broke source mapping or structure after its repeated attempts (`invalid_script`)
+  (`series_review.CORRECTION_VERDICTS`). A `resume` then buys neither a new series verdict nor a second round but
+  reports this error again.
+- No other failure is recorded (`series_review.resumable`): a timeout, a stall, a quota pause, **„Auftrag
+  anhalten“**, a missing sign-in or key, a spent call limit, a busy project, a malformed answer, or a provider error
+  (`codex_failed`, `claude_failed`, `claude_structured_output`, `openrouter_unavailable`, `openrouter_connection`).
+  Resuming continues the round for the episodes whose correction is not yet adopted (why: D-078).
+- A corrected episode's audio approval lapses, because it hangs on the old script hash. Changed or missing reports
+  prevent audio from an affected new run.
+
+### Scope and limits of the series review
+
+- For a partial job, the report names the missing episodes and claims no overall review; separately generated
+  episodes are not merged into a reviewed collection. A one-episode series can be reviewed fully.
+- The call counts against the normal production budget and uses the selected text model. Texts are passed in full,
+  without silent truncation; for large series a provider's context limit can block the review.
+- Older runs already started keep their original inputs and approvals and are not marked series-reviewed on resume.
+
+### Standalone `pla series-review`
+
+`pla series-review <project> [--run <run_id>]` reviews a finished run's scripts afterwards as a series; without
+`--run`, the most recently published run. It also takes `--backend codex_cli|claude_code|auto`, `--model` and
+`--reasoning-effort`.
+
+- Its one call counts against the new run's budget (`runs/<run_id>/budget.json`); the verdict lands in a run of its
+  own, of kind `series_review`.
+- The verdict is mirrored into `reports/script_quality.yaml` only if the reviewed run is the published state (the
+  report's `run_id`). A verdict on an older run stays in its review run under `series_review.json`, and the output
+  says so (`report_mirrored`, `script_run_id`).
+- The reviewed run's files stay byte-identical, so a later report does not change the evidence it judges.
+- `runs/latest.json` keeps pointing at the last pipeline run, so `pla resume` and `pla status` without a run argument
+  still reach the script run. A review run cannot be resumed (`pla resume --run-id <review run>` fails with
+  `invalid_run`); `pla status <project> --run-id <id>` shows it.
+
+## Revising a script
 
 ```powershell
+# Feedback: "Phrase more directly and cut repetition."
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --revise ep_001 --feedback "Direkter formulieren und Wiederholungen kürzen."
 ```
 
-Die Überarbeitung beginnt einen neuen Lauf mit dem bisherigen Serienplan und dem vorhandenen kanonischen Skript. Der alte Text und die Rückmeldung werden als Eingaben gespeichert; die Recherche bleibt erhalten. Neue Planungs- oder Suchaufrufe sind dafür nicht nötig. Stiländerungen in `project.yaml` werden angewendet. Das überarbeitete Skript muss erneut Quellen-, Struktur- und Erklärprüfung bestehen. Danach warten der neue Text und sein eigener Hash wieder auf die Leseprüfung vor Audio. Bei einem geänderten Rechercheauftrag oder beschädigten Plan ist stattdessen ein neuer regulärer Skriptlauf nötig.
+- A revision starts a new run with the previous series plan and the existing canonical script. Old text and feedback
+  are stored as inputs and the research is kept, so no new planning or search calls are needed.
+- Style changes in `project.yaml` are applied; the teaching plan is created and reviewed anew.
+- The revised script must pass the source, structure and explanation reviews again; then the new text, with its own
+  hash, waits again for the reading review before audio, which none of these reviews replaces.
+- If the previous order itself is unsuitable, the research job changed or the plan is damaged, start a regular
+  `script` run instead.
+- Existing script versions are not rewritten automatically. For a newer stage (such as polishing or `teaching`) on an
+  existing text, use a new `script` run or `--revise`; older runs on `resume`: [Existing projects](TEACHING.md#existing-projects).
 
-Der Lehrplan wird auch bei `--revise` neu erstellt und geprüft. Wenn die bisherige Reihenfolge selbst ungeeignet ist, einen regulären `script`-Aufruf für eine neue Planung verwenden. Alte Skriptläufe aus der Zeit vor der Stufe `teaching` werden durch `resume` nicht als nachträglich lehrgeprüft ausgegeben; sie benötigen einen neuen Skriptlauf.
+## Host names and style notes
 
-## Prüfungen und Grenzen
+### Host names
 
-Neue Läufe speichern `series_review_version` in ihren Eingaben. Sobald alle geplanten Folgen im selben Lauf geprüft sind, prüft ein weiterer Aufruf die vollständigen finalen Texte nach `coverage` (Leitfrage und Kernbefunde jeder Folge; Stützbefunde dürfen fehlen), `prerequisites`, `progression`, `deferred_questions`, `synthesis` (die Schlussfolge setzt die Beiträge aller Folgen zu einer Antwort zusammen) und `arc`, dazu `exposition` und `guidance`, wenn das Ziel der Serie *Verstehen* beziehungsweise *Anwenden* mit 2 oder 3 gewichtet (`series_review.series_criteria`). Jedes Kriterium muss genau einmal beurteilt sein; positive Urteile benötigen wörtliche Segmentbelege, eine bestandene Serie insgesamt aus jeder Folge. Seit 02.10.2026 nennt jede nicht bestandene Prüfung unter `episode_ids` die Folgen, deren Skript sich ändern muss (sonst wird die Antwort neu angefragt), und sagt mit `source_limit`, ob nur die Recherche das Material nicht hergibt. Eine solche Quellengrenze kann keine Korrektur der Skripte beheben: Sie blockiert nicht, sondern steht als Hinweis unter `advisories` im Bericht (`criterion`, `reason`, `episode_ids`, `basis: source_limit`), also in `runs/<run_id>/series_review.json` unter `report.advisories` und in `reports/script_quality.yaml` unter `series_review.advisories`. Nichtblockierende Wiederholungen werden als `warnings` gespeichert. Jeder andere substanzielle Einwand blockiert die Bereitstellung der Serie und damit ihre neue Audiofreigabe.
+The host names are two optional fields in the Studio panel **„Sprechformen und Hostnamen“** (spoken forms and host
+names) on the audio page: both or none (`TopicBrief.host_names`).
 
-Der Bericht hält seit 02.10.2026 die Kriterien fest, nach denen gefragt wurde (`criteria`), und ein gespeichertes Urteil wird beim Laden nach genau diesen geprüft. Ein älterer Bericht ohne diese Angabe wird nach den Prüfungen beurteilt, die er enthält, sofern die fünf Grundkriterien von `coverage` bis `synthesis` dabei sind. Vorher wurde jedes gespeicherte Urteil gegen die heutigen Standardkriterien geprüft: Urteile aus der Zeit vor `arc` (Asimov und Ontologies vom 29.09.2026) und solche mit `exposition` oder `guidance` hielten Veröffentlichung, Fortsetzen und Audiofreigabe mit `invalid_series_review` an.
+- With names, the hosts may address each other by them, and transcript, show notes and reading page show them;
+  without, they stay "Host A" and "Host B".
+- A voice name is never a host name, and no model invents host names.
+- The names are stored in `project.yaml` and are part of the project hash. Changed names apply to new script runs;
+  existing audio approvals stay valid, being bound to script hash and voices.
+- A project without names keeps the project hash its earlier runs carry.
 
-Der Bericht unter `runs/<run_id>/series_review.json` ist mit Prüfsumme an Plan, Eingaben und alle Texte gebunden. Unterbrechungen verwenden einen gültigen Bericht erneut. Auch ein negatives Urteil bleibt gespeichert: bloßes Fortsetzen kauft kein neues Urteil. Nach einem negativen Urteil folgt genau eine gebundene Korrektur über die Folgen hinweg: Die belegten Segmente jeder betroffenen Folge werden einmal überarbeitet, das Ergebnis erhält eine eigene Belegprüfung, danach prüft die Serienprüfung erneut. Das kostet drei Aufrufe je betroffener Folge. Besteht die korrigierte Folge ihre Belegprüfung nicht, bekommt sie einen zweiten Versuch gegen deren Einwände und weiterhin gegen den ursprünglichen Einwand der Serienprüfung (seit 02.10.2026; vorher sah der zweite Versuch nur die Einwände der Belegprüfung und verlor den Serienpunkt); erst danach wird die Korrektur abgelehnt (`SERIES_REPAIR_ATTEMPTS`, bis zu fünf Aufrufe je Folge). Die erneute Serienprüfung nach einer Korrekturrunde ist seit 02.10.2026 eingegrenzt: Sie erhält die Prüfungen des korrigierten Urteils mit ihrem Ausgang (`previous_checks`) und die geänderten Folgen (`changed_episodes`). Blockieren darf nur ein früherer Einwand, den die Skripte noch haben (dasselbe Kriterium an einer Folge, die er nannte), oder ein Fehler in einer geänderten Folge; ein neuer Punkt zu einer unveränderten Folge steht als Hinweis mit `basis: unchanged` im Bericht. Dieser Umfang wird vor dem Aufruf in `series_repair.json` gespeichert, sodass ein Fortsetzen dieselbe Frage stellt. Ein zweites negatives Urteil in diesem Umfang blockiert (`MAX_SERIES_REPAIRS`, eine Runde). **Mit neuen Anläufen fortsetzen** (oder `pla approve <projekt> --fresh-attempts`) legt eine gescheiterte Korrekturrunde beiseite, ebenso nach einem negativen Serienurteil die verbrauchte Runde (`series_repair_superseded_NN.json`); der nächste Start korrigiert gegen das gespeicherte Urteil, sofern es zum heutigen Text gehört, sonst beurteilt er die Serie zuerst neu, und hat wieder eine Runde. Eine Runde, die vor ihrer abschließenden Serienprüfung angehalten wurde, etwa durch „Auftrag anhalten“, gilt nicht als verbraucht; das Fortsetzen nimmt sie wieder auf (`finished` im Beleg). Polishing und Lehrprüfung werden nicht wiederholt, weil die Änderung auf benannte Segmente begrenzt bleibt und die Lernziele unverändert sind. Im parallelen Textmodus werden alle betroffenen Folgen einer Runde gleichzeitig korrigiert; bestandene Korrekturen werden übernommen, auch wenn eine andere Folge abgelehnt wird, und die Meldung nennt jeden abgelehnten Bericht. Jede Korrekturantwort bleibt je Runde unter `reviews/series_corrections/` gespeichert, sodass ein Stopp während ihrer Belegprüfung sie nicht erneut kostet. `reviews/<folge>_series_adopted.json` bindet eine übernommene Korrektur an den Entwurf, den die Folgenprüfung bestanden hatte: Ein Fortsetzen der Prüfstufe veröffentlicht deshalb die Korrektur, statt aus dem Zwischenstand der Folgenprüfung den unkorrigierten Text zurückzuschreiben (29.09.2026: danach korrigierte die Serienprüfung dieselben Folgen ein zweites Mal). Eine übernommene Korrektur ersetzt `reviewed/<folge>.json` und `reviews/<folge>.json`, damit `reports/script_quality.yaml` unter `model_review` die Prüfung genau des veröffentlichten Textes neben dessen `script_sha256` ausweist; die Prüfung des Textes vor der Korrektur bleibt als `reviews/<folge>_before_series_repair.json` erhalten. Eine abgelehnte Korrektur, etwa wegen einer Belegabweichung in den überarbeiteten Segmenten, ändert keine der beiden Dateien; Entwurf und Einwände stehen in `reviews/<folge>_series_repair_rejected.json`. Die Korrekturrunde selbst hält `runs/<run_id>/series_repair.json` fest, gebunden an Plan und Eingaben statt an die Texte, die sie verändert. Gespeichert wird dort nur ein Fehler, der über die Korrektur entscheidet, etwa eine abgelehnte Korrektur oder ein dauerhaft verletzter Antwortvertrag: Ein `resume` danach kauft weder ein neues Serienurteil noch eine zweite Runde, sondern meldet diesen Fehler erneut. Zeitüberschreitung, Kontingentpause, „Auftrag anhalten“, fehlende Anmeldung oder ein Anbieterfehler (`codex_failed`, `claude_failed`, `claude_structured_output`, `openrouter_unavailable`, `openrouter_connection`) werden seit 02.10.2026 nicht festgehalten (`series_review.resumable`); das Fortsetzen setzt die Runde für die Folgen fort, deren Korrektur noch nicht übernommen ist. Die Audiofreigabe einer korrigierten Folge gilt nicht weiter, weil sie am alten Skripthash hängt. Veränderte oder fehlende Berichte verhindern Audio aus einem betroffenen neuen Lauf. Bei einem Teilauftrag nennt der Bericht fehlende Folgen und behauptet keine Gesamtprüfung; getrennt erzeugte Folgen werden nicht automatisch zu einer geprüften Gesamtsammlung zusammengeführt. Eine Ein-Folgen-Serie kann vollständig geprüft werden.
+### Style notes
 
-Der Aufruf zählt zum normalen Produktionsbudget und verwendet das gewählte Textmodell. Die Texte werden vollständig übergeben, ohne stillschweigende Kürzung; ein Anbieter-Kontextlimit kann bei umfangreichen Serien die Prüfung blockieren. Bereits gestartete ältere Läufe behalten ihre ursprünglichen Eingaben und Freigaben. Sie werden beim Fortsetzen nicht nachträglich als seriengeprüft markiert. Menschliche Text- und Hörabnahme bleiben davon getrennt.
+`projects/<id>/style_notes.md` holds the operator's standing editorial corrections, edited in the Studio panel
+**„Redaktionelle Notizen“** (editorial notes). It enters a script run's inputs as `style_notes` and reaches writing,
+dialogue polishing, the polishing comparison and the script review; the evidence rules take precedence. A change
+changes the input hash and so leads to a new run.
 
-Der Quellenlauf muss vollständig sein; seine gespeicherten Dateien müssen zu den Prüfsummen passen. Lokale Quellen (`local_sources`) müssen im Projektordner liegen: Seit 02.10.2026 weist ein Skriptlauf einen absoluten Pfad oder einen Pfad mit `..` nach außerhalb mit `invalid_request` ab (`scripting.local_source_paths`; vorher ließ sich so jede lesbare Datei des Rechners einbinden), die Recherche mit `local_source_outside`. Der Plan darf keine Befunde erfinden, jeder Befund erhält einen Platz oder eine begründete Auslassung, und Erklärabhängigkeiten dürfen keinen Kreis bilden. Ein Skript muss die Kernbefunde seiner Folge referenzieren und Kapitel sowie Sprecher korrekt zuordnen. Bei einem zusammengesetzten Dossier (seit 1. Oktober 2026, siehe [Recherche](research.md#zusammengesetztes-dossier)) zitiert eine Folge jede Quelle höchstens 25 Wörter wörtlich (`script_checks.quotation_errors`): Gezählt werden Wörter, die in Folgen von mindestens sechs Wörtern mit einem Abschnitt übereinstimmen, den die Folge als Quelle erhalten hat, ohne Groß- und Kleinschreibung und Satzzeichen; kürzere Übereinstimmungen sind gängige Wendungen, eine Übersetzung ist kein wörtliches Zitat. Ein Entwurf darüber geht mit Quelle, Wortzahl und Beispielstelle an den Schreiber zurück, beim ersten Schreiben wie nach Polishing und Prüfung. Der Serienplan liest ein zusammengesetztes Dossier ohne Zitatauszüge und Aussageprofile (`script_checks.planning_dossier`); er ordnet Befunde nach ihrer Aussage zu, und jede Folge liest ihre Befunde beim Schreiben vollständig. Spätere Kapitel dürfen bereits eingeführte Befunde wieder aufgreifen und darauf aufbauen; noch nicht eingeführte Kernbefunde bleiben ausgeschlossen. Die Quellenzuordnung soll eine zusammenhängende Argumentation ermöglichen.
+## Outputs
 
-**Kern- und Stützbefunde (seit 02.10.2026).** Der Plan ordnet Befunde in zwei Stufen zu. Die `finding_ids` einer Folge sind ihr Kern: die Befunde, die ihre Erklärung braucht. Die Szenen decken genau diese ab, und der Dialog muss jeden davon zitieren. `supporting_finding_ids` sind Studiendetails, die eine Aussage stützen können: Sie dürfen in jeder Szene zitiert werden, müssen es aber nicht, gehören zu keiner Szene und sind nie zugleich Kern derselben Folge. Jeder Befund steht in mindestens einer Folge als Kern oder Stütze oder wird mit Grund ausgelassen, nie beides (`script_checks.validate_plan`). Wo das Ziel der Serie *Verstehen* gewichtet, bleibt der Kern bei dem, was die Theorien in ihrer eigenen Logik erklärt. Anlass: Ein zusammengesetztes Dossier enthält jede geprüfte Antwort (Transformer: 327 Befunde, etwa 55 je Folge), und sie alle abzudecken zog die Folgen ins Detail statt in die gewünschte Erklärung der Theorie. Lehrplanung, Schreiben und Prüfungen sehen Kern-, Stütz- und aufgegriffene Befunde; die Shownotes nennen die Quellen von Kern- und Stützbefunden. Ein Plan ohne diese Felder gilt wie bisher: Alle zugeordneten Befunde sind Kern, und seine gespeicherte Form und ihr Hash bleiben unverändert.
+| File | Content |
+| --- | --- |
+| `models/knowledge_model.yaml` | Evidenced findings taken over unchanged, concept, mechanism and example IDs, explanation dependencies and open questions |
+| `models/series_plan.yaml` | Justified explanation path, episodes, scenes, prerequisites and deferred topics |
+| `research/series_outline.md` | Readable overview; distinguishes planned episodes from the scripts reviewed here |
+| `episodes/ep_001/episode_plan.yaml` | The episode's question, scenes, core and supporting findings, earlier findings taken up, and its assigned research limits |
+| `episodes/ep_001/teaching_plan.md` and `.yaml` | Learning objectives, prerequisites, worked example and synthesis |
+| `episodes/ep_001/script.yaml` | Canonical speaker segments with knowledge references |
+| `episodes/ep_001/script.md` | The same dialogue as readable text, labelled with the host names or roles, never the voice |
+| `episodes/ep_001/show_notes.md` | Chapters, source links and open topics for further study |
+| `reports/script_quality.yaml` | Source and structure check, reader answers, evidenced teaching review, word count and estimated speaking time per episode; each episode entry names under `run_id` the run that wrote it |
+| `episodes/audio_review.yaml` | Script hashes and the pending reading review before audio |
 
-**Recherchegrenzen im Skript (seit 02.10.2026).** Die Grenzen, die der Recherchelauf in `research_quality_gate.json` für das Skript vermerkt hat, erreichen Planung, Schreiben und Skriptprüfung als `research_limits`, jede mit einer `limit_id` und, wo bekannt, den betroffenen Befunden (`script_checks.research_limits`): Quellengrenzen und als Grenze vermerkte Leitfragen, vermerkte Grenzen, nach zwei Überarbeitungen vermerkte Einwände und die „Hinweise fürs Skript“ der Folgebewertung (`script_notes`). Vorher las die Skriptstrecke aus dieser Datei nur `passed` und die Prüfsummen, obwohl der Recherchebericht ankündigt, dass das Skript die Grenzen benennt. Der Plan trägt jede `limit_id` in die `research_limit_ids` der einen Folge ein, die die betroffene Aussage zuerst verwendet; eine nicht platzierte Grenze geht an die erste Folge, deren Kern- oder Stützbefunde sie betrifft, sonst an die Schlussfolge (`script_checks.episode_limits`). Das Skript nennt jede Grenze dort einmal, kurz und in eigenen Worten, im Segment mit der betroffenen Aussage, ohne eigene Grenzen-Szene und ohne Liste von Vorbehalten am Ende. Die Skriptprüfung wertet eine so genannte Grenze als belegt, wie eine Lückenprobe eine Aussage über Fehlendes stützt; eine fehlende Grenze vermerkt sie unter `limitations`, nicht als Einwand, und ihre Reparatur behält eine genannte Grenze. Eine ältere Qualitätsdatei ohne diese Angaben liefert keine Grenzen.
+The files lie in the private project folder and are excluded from Git. `runs/<run_id>/` keeps inputs, model answers,
+drafts and reviews for resuming; per-call records: [Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest).
 
-Ein separater Modellaufruf prüft das tatsächliche Gesagte gegen die zugeordneten Befunde und Quellenabschnitte. Er prüft außerdem den verlangten Anspruch, die ausgearbeiteten Erklärungsschritte, den Zusammenhang von Anfang und Schluss, Verständlichkeit, Beispiel, Metapherngrenzen und Dialog. Bis zu drei Überarbeitungen sind möglich. Bleiben danach nur Einwände zu Verständlichkeit, Tiefe oder Dialog, wird das Skript übernommen; die Punkte stehen im Reviewbericht und in `reviews/<folge>_accepted_notes.json` und sind beim Lesen vor der Audiofreigabe sichtbar. Jede Prüfung nach einer Überarbeitung ist eingegrenzt. Sie erhält die Einwände der vorigen Prüfung und die Segmente, die die Überarbeitung geändert hat. Blockieren dürfen nur drei Arten von Einwänden: ein noch offener früherer Einwand, ein Einwand zu einem geänderten Segment und ein Sachfehler oder Quellenwiderspruch an beliebiger Stelle. Ein Einwand zur ganzen Folge, ohne Segment, blockiert seit 02.10.2026 nur noch, wenn schon die vorige Prüfung einen Einwand derselben Kategorie zur ganzen Folge erhoben hatte, oder als Sach- oder Quellenfehler; vorher blockierte auch ein neuer solcher Strukturpunkt. Alles andere betrifft Segmente, die die vorige Prüfung unverändert bestanden haben, zum Beispiel eine fehlende Referenz oder eine Aussage über Fehlendes ohne Lückenprobe. Diese Punkte stehen als `advisories` im Bericht und in den Hinweisen. Den Umfang bestimmt der Code aus dem Vergleich der Fassungen; das Urteil der Prüfung markiert nur, was kritisch ist. So konvergiert die Prüfung, statt im selben Text jede Runde neue Details zu finden (Ontologies, 29.09.2026: Folge 5 durchlief rund fünfzehn Prüfungen). Hatte eine Fassung keine blockierenden Einwände und bricht eine spätere Überarbeitung, etwa für Verständlichkeit, ihre Belege, gilt die belegte Fassung mit ihren Hinweisen. Die verworfene Fassung und ihre Prüfung stehen in `reviews/<folge>_kept_draft.json`. Dieselbe Eingrenzung gilt für die Belegprüfung nach einer Korrektur der Serienprüfung. Belegfehler, Einwände zum Umfang oder zur Struktur blockieren weiter; **Mit neuen Anläufen fortsetzen** (oder `pla approve <projekt> --fresh-attempts`) gibt einer so angehaltenen Prüfung drei neue Überarbeitungen gegen denselben Reviewbericht. Sonst gilt: Verbleibende Einwände blockieren die Übernahme; Entwürfe und Einwände bleiben gespeichert. Auch nach einer Abo-Pause muss ein bereits korrigierter Text nicht erneut geschrieben werden. Alle Modellaufrufe zählen gegen das konfigurierte `research_limits.model_calls`-Budget dieses Skriptlaufs.
+### Rejected answers
 
-**Rolle, Rückblick und Theorie zuerst (seit 30.09.2026).** Der Plan gibt jeder Folge eine `series_role`: was sie zur Antwort auf die Leitfrage beiträgt. Die Folge nennt das zu Beginn mit eigenen Worten und sagt am Ende, was man jetzt über die Leitfrage weiß. Die Länge richtet sich nach dem Erklärbedarf, 15 bis 60 Minuten; eine große Theorie darf eine eigene lange Folge bekommen. Seit 02.10.2026 sieht die Planung nur die redaktionellen Angaben des Projekts (Thema, Leitfrage, Publikum, Tiefe, Schwerpunkte, Ausschlüsse, Personen, gewünschte Gesamtdauer, Ziel der Serie). Vorher stand dort auch `max_episode_minutes: 30`, die Länge eines Audioteils; das Modell hielt sie für eine Obergrenze je Folge und teilte eine lange Erklärung in mehrere 30-Minuten-Folgen. Das Finale ist die Synthese, seit 02.10.2026 als ganze Folge: Seine Szenen sind die Schritte einer begründeten Antwort auf die Leitfrage, zusammengesetzt aus dem, was jede Folge beigetragen hat ([Erklärweise](#erklärweise-und-leseprüfung)). Eine Synthese-Szene, die einen Fall durch diese Antwort verfolgt, kann dort das sonst je Folge verlangte ausgearbeitete Beispiel ersetzen; ein qualitativer Fall ohne Zahlen zählt überall als Beispiel. Frühere Befunde ruft das Finale über `recap_finding_ids` ab; es darf sie zitieren, muss aber nicht alle abdecken (vorher musste es alle ihm zugeteilten Befunde zitieren, was es über 30 Minuten trieb). Wo das Ziel der Serie *Verstehen* gewichtet, erklärt eine Folge eine Theorie zuerst in ihrer eigenen Logik, dem Urheber zugeschrieben, und erst danach ihre Tests und Kritiken; wo es *Anwenden* gewichtet, gibt sie konkrete Empfehlungen, einmal als eigene Empfehlung eingeführt und auf die zitierten Praxisbefunde gestützt. Die Herkunft einer Aussage bleibt hörbar (Sicht des Autors, Test, Kritik, unsere Deutung, unsere Empfehlung), und bei gesetzter Aktualitätsregel nennt das Skript das Jahr einer älteren Praxisquelle. Grenzen-Szenen sind kein Muss mehr.
+A readable model answer that violates its answer contract (`rejected_output`), for example a script with a gap in its
+chapter sequence, is requested again up to twice with the fields objected to. Each attempt is a counted call with
+`failure.json` and `rejected_output.json` in its call folder; only the third rejection stops the stage. A `resume`
+repeats this episode's call, because it leaves no checkpoint.
 
-**Stichprobe gegen die Quelle.** Die Skriptprüfung vergleicht jedes Segment, das Befunde zitiert, mit den zitierten Quellabschnitten selbst und nennt diese in `source_refs`; ohne sie oder mit unbekannten Abschnitten wird die Prüfung neu angefragt. Weicht ein Befund von seiner Quelle ab und übernimmt das Segment diesen Fehler, ist das eine Abweichung im Feld `source`, und die Reparatur folgt dem Abschnitt (Anlass: ein Befund behauptete, Dalios Definition nenne keine Zyklusdauer; sein Text sagt „typically 50 to 75 years“). Folgt das Segment dem Abschnitt bereits, lautet das Urteil seit dem 03.10.2026 `source_corrected` (`script_review.v12-source-corrected`): kein Einwand gegen das Skript, sondern ein Hinweis in den Einschränkungen der Prüfung, dass der Befund im Dossier ungenau ist; das Studio zeigt ihn beim Lesen. Vorher galt auch das als Abweichung, und weil die Folgeprüfung die Abweichungen als frühere Einwände wiederholte, blieben korrekte Segmente Runde um Runde blockiert (Ontologies Folge 1: dieselben sechs Segmente, sechs Korrekturen ohne Änderung). Eine Abweichung geht deshalb nicht mehr als früherer Einwand in die Folgeprüfung; deren Prüfung jedes Segments urteilt neu. Ein Urteil von `script_review.v11-core-limits`, das nichts blockierte, gilt beim Fortsetzen weiter (`RELAXED_REVIEW_VERSIONS`); ein blockierendes wird vor der nächsten Korrektur neu geprüft. Die Serienprüfung prüft zusätzlich `arc` (jede Folge sagt, was sie beiträgt und was man jetzt weiß) und je nach Ziel `exposition` und `guidance`. Ihre Berichtsversion bleibt `series_review.v1` (`SERIES_REVIEW_VERSION`), damit gespeicherte Urteile und die daran gebundenen Audiofreigaben gültig bleiben; neue Aufrufe tragen die Promptkennung `SERIES_REVIEW_PROMPT`, derzeit `series_review.v4-core`.
+### Earlier series
 
-Zusätzlich beantwortet ein frischer Leseraufruf die Lernfragen nur aus dem Dialog, ohne Musterlösungen. Eine getrennte redaktionelle Prüfung erhält nur Publikum, Vorwissen, Anspruch, das Ziel der Serie, den Serienkontext und den Text; sie sieht weder Lehrplan noch Urteile der anderen Prüfer ([Lehrplanung](teaching-design.md#was-die-anwendung-erzwingt)). Im parallelen Textmodus fragen beide gleichzeitig. Die Belegprüfung einer Folge wird gespeichert, bevor diese Lehrprüfung beginnt; ein Stopp während der Lehrprüfung fragt sie beim Fortsetzen nicht erneut (`teaching_pending` im Zwischenstand). Ein Test hält einen Lauf mit Serienkorrektur an jedem seiner Modellaufrufe an und verlangt, dass das Fortsetzen dieselben Skripte veröffentlicht und keine gespeicherte Antwort erneut fragt. Ein weiterer Prüfer bewertet alle sieben Lehrkriterien und jedes Lernziel anhand tatsächlicher Textbelege und ordnet jede vom Leser gemeldete Lücke ausdrücklich ein. Die Anwendung kontrolliert die Belege und die Vollständigkeit der Prüfungen. Ein fehlender erforderlicher Erklärungsschritt oder negatives Urteil führt zur Überarbeitung und bei fortbestehenden Problemen zur Blockierung. Fehlende Quellen für notwendige Grundlagen werden bereits vor dem Schreiben als konkrete Recherchefragen gespeichert.
+A run that publishes the scripts of a different table of contents first moves the earlier series' episode folders to
+`episodes/archive/<time>_<run_id>/` (with `receipt.json`); nothing is deleted.
 
-Die Sprechzeit ist eine Schätzung aus Wortzahl und geplanten Pausen: Planungswert 130 Wörter pro Minute, zusätzlich eine langsame Vergleichsschätzung mit 100. Ein Skript unter 85 Prozent seiner geplanten Dauer wird zur inhaltlichen Überarbeitung zurückgegeben. Diese Prüfung erkennt ein grobes Verfehlen des Umfangs; sie beweist keine Erklärungstiefe. Die tatsächliche Länge steht erst nach der Spracherzeugung fest und muss vor einem späteren Audioexport separat gegen die 30-Minuten-Grenze je Audioteil geprüft werden. Die langsame Vergleichsschätzung ist keine gemessene Dauer und begrenzt den Text nicht zusätzlich. Ein bestandener Modellreview ersetzt weder die Leseprüfung noch die Hörprüfung. Der Serienentwurf ist eine redaktionelle Planung; die zusätzliche Gesamtprüfung bewertet die finalen Skripte, nicht die Hörwirkung der produzierten Serie. Die menschliche Abnahme bleibt ein weiterer Arbeitsschritt. Ein öffentliches Veröffentlichen findet nicht statt.
+- A folder belongs to the run's table of contents when its `episode_plan.yaml` equals the plan entry of the same
+  episode, as on every resume, revision and single-episode run.
+- Recordings stay under `exports/<episode>/<audio run>/`, where the archived `audio_latest.json` still finds them.
+- If a file in such a folder is open, for example during a recording, the run stops with `episodes_locked` and can be
+  resumed afterwards.
 
-## Serienprüfung eines veröffentlichten Laufs
+### The quality report
 
-`pla series-review <projekt> [--run <run_id>]` prüft die Skripte eines abgeschlossenen Laufs
-nachträglich als Serie, mit einem Aufruf, der wie jeder andere gegen das Budget des neuen Laufs
-(`runs/<run_id>/budget.json`) zählt. Das Urteil landet in einem eigenen Lauf der Art
-`series_review`. In `reports/script_quality.yaml` wird es nur gespiegelt, wenn der geprüfte Lauf
-der veröffentlichte Stand ist, also das `run_id` des Berichts; das Urteil über einen älteren Lauf
-bleibt in dessen Prüflauf unter `series_review.json`, und die Ausgabe des Befehls sagt das
-(`report_mirrored`, `script_run_id`). Der geprüfte Lauf wird nicht angefasst: Seine Dateien
-bleiben byteweise gleich, damit ein späterer Bericht die Belege nicht verändert, über die er
-urteilt. `runs/latest.json` zeigt weiter auf den letzten Pipeline-Lauf; `pla resume` und
-`pla status` ohne Laufangabe treffen deshalb weiterhin den Skriptlauf, denn ein Prüflauf ist
-nicht fortsetzbar; `pla resume --run-id <prüflauf>` wird mit `invalid_run` abgewiesen. Mit
-`pla status <projekt> --run-id <id>` lässt sich der Prüflauf anzeigen.
+The report speaks for all published episodes, not only the latest run.
 
-## Redaktionelle Notizen
+- A single-episode run (`--episode`, `--revise`) replaces only that episode's entry under `episodes`. Other entries
+  stay while their `script_sha256` matches the published `script.yaml` and keep the `run_id` of the run that reviewed
+  them; an entry whose text is no longer on disk is dropped. The top-level `run_id` names the latest run. So the
+  Studio and the reading view keep the review notes (review limitations, dismissed gaps, advisories) of earlier
+  episodes.
+- Under `gap_probes_unowned`, the report lists at series level the reported gaps whose corpus hits lie only in sources
+  no episode uses (`gap_id`, `text`, `status`, `references`). Nobody in this run can read those sections, so they
+  block nothing and are only reported ([Gap probe](RESEARCH.md#gap-probe)).
 
-`projects/<id>/style_notes.md` enthält stehende Korrekturen des Betreibers. Die Datei geht als
-`style_notes` in die Eingaben eines Skriptlaufs ein und erreicht das Schreiben, das
-Dialog-Polishing sowie die Skript- und Dialogprüfung. Die Belegregeln haben Vorrang. Eine Änderung
-ändert den Eingabe-Hash und führt daher zu einem neuen Lauf.
+### Canonical script
 
-## Modellaufrufe je Folge
-
-Ein Skriptlauf benötigt ohne Reparaturen mindestens einen Aufruf für das Inhaltsverzeichnis, neun Aufrufe je Folge (`script_budget.STAGE_CALLS`) und bei vollständigen Serien einen Aufruf für die Serienprüfung:
-
-| Stufe | Aufrufe je Folge | Zweck |
-| --- | --- | --- |
-| `teaching` | 2 | Lehrkonzept und unabhängige Prüfung des Konzepts |
-| `writing` | 1 | Dialogentwurf |
-| `polishing` | 2 | Sprachliche Überarbeitung und Vorher-/Nachher-Vergleich |
-| `review` | 4 | Quellenprüfung, Leseprüfung, redaktionelle Prüfung, Lehrprüfung |
-
-Jede zurückgewiesene Fassung kostet weitere Aufrufe: bis zu drei Skriptreparaturen mit erneuter Prüfung, zwei Polishing-Korrekturen, zwei Lehrplan-Überarbeitungen und eine gezielte Korrekturrunde sowie bis zu drei Nachrecherchen je Folge. Vor jeder kostenpflichtigen Stufe berechnet der Lauf die Mindestzahl verbleibender Aufrufe aus den noch nicht fertigen Folgen und speichert sie unter `runs/<run_id>/budget_projection.json`; eine Folge, deren Polishing den geprüften Entwurf behalten hat, zählt dabei als fertig poliert. Reicht das genehmigte Limit nicht einmal für diese Untergrenze, stoppt der Lauf mit `script_budget_insufficient`, bevor Geld ausgegeben wird; fertige Zwischenstände bleiben erhalten, und nach einer ausdrücklichen Erhöhung des Aufruflimits setzt `resume` fort. Seit 02.10.2026 steht daneben eine Erwartung (`expected_remaining_calls`): Hat das Projekt einen abgeschlossenen Skriptlauf, rechnet die Prognose die Folgenstufen mit dessen tatsächlichen Aufrufen je Folge hoch (Lauf, Aufrufe und Folgen unter `calibration`); sonst ist die Erwartung die Untergrenze. Nur die Untergrenze hält an. Das Studio zeigt neben dem Zähler der Modellaufrufe die Untergrenze und, sobald ein abgeschlossener Lauf sie kalibriert, die Erwartung; eine Haltekarte schlägt ein neues Limit nach der Erwartung vor, ohne Kalibrierung nach der Untergrenze plus ein Viertel.
-
-Der Standard für neue Projekte ist `ResearchLimits.model_calls`, derzeit 750 Aufrufe je Lauf; ein gespeichertes Projekt behält den Wert aus seiner `project.yaml`. Rechnerisch reichen 750 Aufrufe ohne Reparaturen für 83 Folgen (1 + 83 × 9 + 1 = 749). Die abgeschlossenen Läufe Asimov und Ontologies brauchten tatsächlich 31 beziehungsweise 42,5 Aufrufe je Folge (gemessen am 02.10.2026), weil Reparaturen, erneute Prüfungen, Nachrecherchen und Serienkorrekturen hinzukommen; in diesem Maß reichen 750 Aufrufe für etwa 17 bis 24 Folgen. Längere Serien oder viele Korrekturen benötigen ein höheres Limit.
-
-„Auftrag anhalten“ beendet den Arbeitsprozess hart, und die Aufrufe, die er gerade offen hatte, behielten ihre Reservierung. Seit 02.10.2026 gibt `resume` sie auch bei Skriptläufen vor dem Weiterarbeiten zurück (`research.reconcile_budget`), sofern ein Aufruf weder eine Antwort noch einen angerechneten Fehler hinterlassen hat. Ein angehaltener Lauf bleibt außerdem fortsetzbar, wenn inzwischen nur `runtime` (etwa Fristen und Programmpfade) oder `research_limits` in `project.yaml` geändert wurden: Diese Betriebsfelder gehen so in den Eingabe-Hash ein, wie sie beim Start im `project_snapshot.yaml` des Laufs standen (`storage.bound_brief`). Eine inhaltliche Änderung gilt weiter als geänderte Eingabe.
+`script.md` is the generated reading view; `script.yaml` is the canonical text. Manual changes to it are detected on
+`resume`, not overwritten, and need a new subject review before the run continues.
