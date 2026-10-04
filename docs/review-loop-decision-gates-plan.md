@@ -761,3 +761,221 @@ and:
 > A repair is checked for whether it solved the issue that justified the repair, not used as an invitation to restart open-ended criticism from scratch.
 
 This is the main mechanism expected to reduce loop-driven call growth.
+
+
+## 21. Mini eval podcast: review-loop control
+
+Add one deliberately small end-to-end regression case whose purpose is not to benchmark general podcast quality, but to test whether the new gate architecture stops unproductive review loops while still catching a real blocker.
+
+Recommended location:
+
+```text
+evals/review_loop_mini/
+  README.md
+  episode.json
+  teaching_plan.json
+  evidence.json
+  cases.json
+  run.py
+```
+
+### 21.1 Topic
+
+Use a short two-host episode:
+
+**Why do seasons happen?**
+
+Target length: about 6–8 spoken minutes.
+
+This topic is suitable because it has:
+
+- a clear causal explanation;
+- a famous factual misconception;
+- legitimate pedagogical repetition;
+- a useful analogy that reviewers may over-criticise;
+- a small evidence set;
+- no need for a large research corpus.
+
+It also overlaps conceptually with the existing teaching-quality seasons control, so the repository already has experience evaluating teaching quality on this subject. The new case serves a different purpose: review-loop termination and materiality.
+
+### 21.2 Learning objectives
+
+The clean reference episode should let a listener:
+
+1. explain that Earth's axial tilt, not Earth-Sun distance, drives the seasons;
+2. connect tilt to sunlight angle and day length;
+3. explain why the Northern and Southern Hemispheres have opposite seasons;
+4. distinguish the main mechanism from secondary facts about Earth's slightly elliptical orbit.
+
+Use a small, explicit evidence bundle based on authoritative background already used by the teaching-quality eval, plus short original evidence summaries stored with the eval. The eval must not depend on live retrieval.
+
+### 21.3 Controlled issue classes
+
+Build the mini eval from one clean reference script plus deterministic mutations. Do not ask a model to invent the defects.
+
+At minimum include these cases:
+
+#### Clean control
+
+No publication-blocking defect.
+
+It should intentionally contain a few things an open-ended reviewer may be tempted to criticise:
+
+- one deliberate pedagogical repetition of the core mechanism;
+- a simple flashlight/sunlight-angle analogy;
+- a conversational transition that is acceptable but not maximally concise;
+- one explicit recap before the conclusion.
+
+Expected materiality:
+
+```text
+replication_for_learning -> NOT_AN_ISSUE or NOTE_ONLY
+simple_analogy           -> NOT_AN_ISSUE
+wordy_transition         -> NOTE_ONLY
+recap                     -> NOT_AN_ISSUE
+```
+
+The clean control is critical. If it enters a repair loop merely because a reviewer can imagine improvements, the new architecture has failed its main purpose.
+
+#### Seeded factual blocker
+
+Mutate exactly one segment to state the classic false mechanism, for example by making Earth-Sun distance the cause of summer.
+
+Expected disposition:
+
+```text
+BLOCKING
+```
+
+The issue must reach expert evidence authority if the cheap gate is uncertain. It must never be downgraded to a note merely to terminate the loop.
+
+#### Seeded reasoning blocker
+
+Mutate one segment so that the relation between tilt and hemisphere/day length is reversed while the surrounding explanation remains plausible.
+
+Expected disposition:
+
+```text
+BLOCKING
+```
+
+This case prevents the gate from learning only one memorised misconception.
+
+#### Ambiguous improvement
+
+Include one point that is genuinely debatable but not obviously publication-blocking, such as how much detail the episode should give about orbital eccentricity for the target audience.
+
+Expected disposition:
+
+```text
+UNCERTAIN or NOTE_ONLY
+```
+
+If uncertain, the case should exercise A2 adjudication without automatically causing a repair.
+
+### 21.4 Repair-scope case
+
+The most important mutation should run through an actual repair.
+
+Start from the factual-blocker version:
+
+```text
+A1 review
+  -> candidate factual issue
+Jev gate
+  -> BLOCKING
+A2 confirms
+  -> repair exactly the affected segment
+A0 validates
+  -> scoped follow-up
+```
+
+The repaired version then contains no blocker.
+
+The scoped follow-up must answer only whether the original issue is fixed and whether the changed material introduced a direct regression.
+
+It must not create a new issue about an unchanged introduction, analogy, recap or transition.
+
+This is the direct regression test for the current loop failure mode.
+
+### 21.5 Expected outcomes
+
+The eval should treat these as hard expectations:
+
+| Case | Repairs expected | A2 expected | A3 expected | Publish outcome |
+| --- | ---: | ---: | ---: | --- |
+| clean | 0 | 0 unless gate uncertain | 0 | pass |
+| factual blocker | 1 | yes | normally no | pass after repair |
+| reasoning blocker | 1 | yes | normally no | pass after repair |
+| ambiguous improvement | 0 | optional | 0 | pass or pass with note |
+
+A3 should be exercised by a separate synthetic adjudication fixture rather than forcing the normal mini podcast into A3. The normal path should demonstrate that terminal escalation is exceptional.
+
+### 21.6 Metrics
+
+Record for every case:
+
+```text
+candidate_issues
+blocking_issues
+notes
+dismissals
+decision_calls
+A1_calls
+A2_calls
+A3_calls
+repair_calls
+scoped_followup_calls
+out_of_scope_new_issues
+terminal_status
+```
+
+Primary assertions:
+
+1. **zero missed seeded blockers**;
+2. **zero repairs on the clean control**;
+3. **zero out-of-scope new issues after the scoped repair**;
+4. the repaired blocker terminates without returning to an unrestricted review;
+5. A3 is not used on the normal clean or single-blocker paths.
+
+Secondary metric:
+
+```text
+calls from first review to terminal decision
+```
+
+This gives a small, stable measure of whether the architecture actually reduces loop amplification.
+
+### 21.7 Shadow comparison
+
+During early implementation, run both paths against the same mini cases:
+
+```text
+legacy loop
+decision-gated loop
+```
+
+Report:
+
+- total calls;
+- repair calls;
+- number of unique issues created;
+- number of issues created only after an earlier repair;
+- final blocker status;
+- final script digest.
+
+The expected result is not merely that the decision-gated path is cheaper. It must also end with the seeded factual/reasoning defects corrected and the clean control untouched.
+
+### 21.8 Why this eval should stay small
+
+Do not turn this into another general podcast benchmark.
+
+Its value comes from being:
+
+- fast enough to run manually during architecture work;
+- small enough that every expected issue is human-understandable;
+- deterministic in where defects are injected;
+- independent of live search;
+- sensitive specifically to review-loop behaviour.
+
+Larger real-project shadow data should validate external validity later. This mini podcast is the regression control for the state machine itself.
