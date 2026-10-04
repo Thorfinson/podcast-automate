@@ -8,6 +8,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-10-04 · „OpenRouter-Key fehlt“ at the top of every Studio page while no key is stored but Gemini audio, Jev or an OpenRouter text model needs one, with the projects concerned and a key field; also after a restart on a freshly loaded page.
 - 2026-10-03 · Settings page „Einstellungen“ next to „Übersicht“: text model, audio, execution, pre-approvals, limits, call time limit and OpenRouter key now apply to all projects (`projects/.studio-settings.json`).
 - 2026-10-03 · Settings switch „Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen“ for bought Claude extra usage: every call tries Claude despite stored blocks.
 - 2026-10-02 · The script budget shows the expected calls, calibrated on the project's last completed script run, next to the lower bound.
@@ -37,6 +38,8 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-10-04 · Stopped recordings with one shared reason name it in the job bar, with „Alle fortsetzen“ and, for a key stop, a button to the key; an OpenRouter refusal (403) names OpenRouter's own short reason, such as a key's credit limit.
+- 2026-10-04 · A script run checks the limits the research noted for the script against the stored sources (with Jev where switched on), and no longer states one the sources answer; with an assembled dossier the gap probe had searched nothing.
 - 2026-10-04 · Under „Automatisch“ a Codex call that fails for an unknown reason moves to Claude instead of stopping the run, and such a stop names Codex's own reason.
 - 2026-10-04 · One episode is one MP3: a recording is no longer split into parts of at most 30 minutes.
 - 2026-10-04 · The script review's own advisories stay notes unless they concern evidence or scope; a review that stopped on such a point is reviewed once more on resume.

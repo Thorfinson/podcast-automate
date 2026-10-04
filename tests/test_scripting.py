@@ -171,6 +171,38 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(seen[WRITE_EPISODE_VERSION], expected)
         self.assertEqual(seen[SCRIPT_REVIEW_VERSION], expected)
 
+    def test_every_noted_limit_is_probed_like_a_gap_and_one_the_sources_answer_is_not_stated(self):
+        """2026-10-04: an assembled dossier has no open questions and, with every task answered, no coverage gap, so
+        the script's gap probe searched nothing and Jev never ran (Asimov, Ontologies, Transformer). The limits the
+        script states are probed now; one a supplementary research resolves is no longer stated (D-131)."""
+        from podcast_automate import script_pipeline
+        self.note_research_limits(noted_limits=["Die Gegenposition stützt sich auf eine Studie."],
+                                  script_notes=["Das Werk liegt nur als Abstract vor."])
+        original, seen = script_pipeline.probe, {}
+
+        def probe(*args, **kwargs):
+            # As if a supplement had found the full text of the work: its row is resolved.
+            return [{**row, "status": "resolved"} if row["text"] == "Das Werk liegt nur als Abstract vor." else row
+                    for row in original(*args, **kwargs)]
+
+        def model(prompt, output_type, directory, **kwargs):
+            seen.setdefault(kwargs["prompt_version"], json.loads(prompt.splitlines()[-1]).get("research_limits"))
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
+                patch("podcast_automate.script_pipeline.probe", side_effect=probe):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.model_dump())
+        work = self.root / "runs" / run.run_id
+        limits = ["Die Gegenposition stützt sich auf eine Studie.", "Das Werk liegt nur als Abstract vor."]
+        knowledge = json.loads((work / "knowledge_model.json").read_text(encoding="utf-8"))
+        self.assertTrue(set(limits) <= set(knowledge["uncertainties"]))
+        rows = {row["text"]: row["status"] for row in json.loads((work / "gap_probes.json").read_text(encoding="utf-8"))}
+        self.assertEqual((limits[0] in rows, rows[limits[1]]), (True, "resolved"))
+        # The plan, made before the probe, places both; writing and the script review state only the one that stands.
+        self.assertEqual([limit["text"] for limit in seen[SERIES_PLAN_VERSION]], limits)
+        stated = [{"text": limits[0], "finding_ids": []}]
+        self.assertEqual((seen[WRITE_EPISODE_VERSION], seen[SCRIPT_REVIEW_VERSION]), (stated, stated))
+
     def test_the_writer_reads_its_episode_and_the_series_context_instead_of_the_whole_plan(self):
         """2026-10-02: the writing payload carried the whole series plan; the Asimov finale's prompt reached about
         780 000 characters. What the prompt uses is the episode entry and series_context."""

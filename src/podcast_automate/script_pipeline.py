@@ -192,6 +192,15 @@ class ScriptRun:
             self._research_limits = research_limits(saved if isinstance(saved, dict) else {}, self.base_dossier)
         return self._research_limits
 
+    def stated_limits(self):
+        """The research limits writing and the script review get: every one the research noted, except one whose gap
+        probe row a supplementary research resolved, since the sources answer it after all (D-131). The rows settle in
+        the teaching stage, before any episode is written."""
+        path = self.probe_path()
+        rows = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        resolved = {row["gap_id"] for row in rows if row.get("status") == "resolved"}
+        return [limit for limit in self.research_limits() if gap_id(limit["text"]) not in resolved]
+
     def invoke(self, prompt, output_type, version, *, search=False, research=False):
         """One validated answer; a parsed answer the contract rejects is re-asked with the defects named."""
         # The pool applies the saved choice per call; supplementary research follows the subscription rule.
@@ -266,7 +275,11 @@ class ScriptRun:
             synthesis=dossier.synthesis, source_assessments=dossier.source_assessments,
             dependencies=plan.dependencies, uncertainties=dossier.open_questions +
             [c.gap for c in dossier.coverage if c.gap] +
-            [r.explanation for r in dossier.synthesis if r.resolution == "unresolved"], editorial_priorities=plan.explanation_path)
+            [r.explanation for r in dossier.synthesis if r.resolution == "unresolved"] +
+            # The limits the script will state are probed like gaps, so an unread passage that answers one reaches the
+            # supplementary research first (D-131). An assembled dossier has no open questions and, with every task
+            # answered, no coverage gap: until 2026-10-04 its probe had nothing to search, and Jev never ran.
+            [limit["text"] for limit in limits], editorial_priorities=plan.explanation_path)
         write_json(self.work / "series_plan.json", plan.model_dump())
         write_json(self.work / "knowledge_model.json", knowledge.model_dump())
         # The corpus probe is computed here, once per run, but declared by the teaching stage:
@@ -568,7 +581,7 @@ class ScriptRun:
         advisories = " " + instructions("write_episode_advisories") if design_review.get("advisories") else ""
         length = " " + instructions("write_episode_length") if budget else ""
         cited = set(episode_findings(entry))
-        limits = episode_limits(plan, entry, self.research_limits())
+        limits = episode_limits(plan, entry, self.stated_limits())
         prompt = (instructions("write_episode_opening", language=config.language) + " "
                   + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
                   instructions("write_episode") + advisories + length + "\n" +
@@ -849,7 +862,7 @@ class ScriptRun:
                    "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                    "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
                    "sources": sources}
-        limits = episode_limits(plan, entry, self.research_limits())
+        limits = episode_limits(plan, entry, self.stated_limits())
         if limits:
             # The limits the writer was asked to state back such a statement, as a gap probe backs an absence claim.
             payload["research_limits"] = limits

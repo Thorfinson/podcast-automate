@@ -266,7 +266,8 @@ tests.
   `invalid_model_output`; truncated, refused or invalid answers are never taken as finished text. Provider, model,
   token limit and adapter version are bound inputs of the run
   ([Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
-- **Errors.** Raw provider messages are never exposed (`api_failure`). Missing credit (402 `openrouter_credits`) and
+- **Errors.** Raw provider messages are never exposed (`api_failure`); a refusal (403) keeps only OpenRouter's short
+  reason, redacted and at most 300 characters (`refusal_reason`, why: D-132). Missing credit (402 `openrouter_credits`) and
   rate limits (429 `openrouter_rate_limit`) pause the run with `waiting_for_quota`; 401 `openrouter_authentication`,
   403 `openrouter_forbidden`, 400/404/413/422 `openrouter_request`, other statuses `openrouter_unavailable` and a
   broken connection or timeout `openrouter_connection` are saved as handleable errors, and `resume` reuses finished

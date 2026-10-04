@@ -93,6 +93,23 @@ class OpenRouterTests(unittest.TestCase):
             self.assertNotIn(KEY, str(caught.exception))
         self.assertFalse((self.root / "call/response.json").exists())
 
+    def test_a_refusal_keeps_openrouters_short_reason_without_the_key(self):
+        """2026-10-04: fourteen recordings stopped on a key's credit limit, and the stop said only to check the key's
+        permissions and the provider rules. A 403 keeps OpenRouter's own reason now, redacted and short (D-132)."""
+        body = json.dumps({"error": {"code": 403, "message": f"Key limit exceeded for {KEY}; token=abc " + "x" * 400}})
+        with self.assertRaises(AppError) as caught:
+            self.call(HTTPError(ENDPOINT, 403, "Forbidden", {}, io.BytesIO(body.encode())))
+        reason = caught.exception.details["provider_message"]
+        self.assertEqual((caught.exception.code, caught.exception.status), ("openrouter_forbidden", "blocked"))
+        self.assertTrue(reason.startswith("Key limit exceeded for [Zugangsdaten entfernt]; token=[entfernt] x"), reason)
+        self.assertEqual(len(reason), 300)
+        self.assertIn(": Key limit exceeded for", str(caught.exception))
+        self.assertNotIn(KEY, str(caught.exception))
+        with self.assertRaises(AppError) as plain:
+            self.call(HTTPError(ENDPOINT, 403, "Forbidden", {}, io.BytesIO(b"")))
+        self.assertEqual((str(plain.exception), plain.exception.details),
+                         ("OpenRouter hat die Anfrage abgewiesen. Key-Limit, Key-Berechtigungen und Anbieterregeln prüfen.", {}))
+
     def test_reasoning_is_explicit_only_when_selected_and_is_recorded(self):
         self.call(envelope())
         self.assertNotIn("reasoning", json.loads(self.requests[-1][0].data))

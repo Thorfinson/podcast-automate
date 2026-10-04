@@ -199,6 +199,10 @@ noted after two revisions, and the „Hinweise fürs Skript“ (notes for the sc
   no limits scene, no list of caveats at the end.
 - The script review counts a limit named this way as supported, as a gap probe supports a statement about something
   missing. A missing limit goes under `limitations`, not as an objection; a repair keeps a named limit.
+- Every limit is probed against the stored sources like a gap ([Gap probe](RESEARCH.md#in-the-script-run)), with Jev
+  where it is switched on. Unread hits in an episode's sources go to its supplementary research before its teaching
+  plan. A limit whose row that research resolves is answered by the sources after all: writing and the script review
+  no longer get it (`ScriptRun.stated_limits`); the plan, made before the probe, still names it. (why: D-131)
 - An older quality file without these details yields no limits.
 
 ## Writing and framing

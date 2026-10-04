@@ -431,7 +431,7 @@ Only `hits_unread` blocks: the quality review then names the section, and `open_
 
 ### In the script run
 
-In the script run the same probe runs once per run during planning over the uncertainties of the knowledge model, with the dossier's `gap_terms`, and writes `runs/<run_id>/gap_probes.json`.
+In the script run the same probe runs once per run during planning over the uncertainties of the knowledge model, with the dossier's `gap_terms`, and writes `runs/<run_id>/gap_probes.json`. The uncertainties are the dossier's open questions and coverage gaps, its unresolved syntheses and, since 2026-10-04, the limits the research noted for the script ([Research limits in the script](SCRIPTS.md#research-limits-in-the-script)). An assembled dossier has no open questions and, with every sub-question answered, no coverage gap, so its limits are its only gaps; until then its probe searched nothing, and Jev never ran on it. (why: D-131)
 
 - Every row names in `owner_episodes` the episodes whose sources contain a hit.
 - Hits the research sub-questions have already read count as read, as in the research probe (`research_read`): if all are read, the row is `hits_read_confirmed` with `settled_by: research`; otherwise it keeps only the unread hits (`unread_references`) and the episodes whose sources contain them. A run file saved before this rule is reconciled the same way on resume; a second reconciliation changes nothing.

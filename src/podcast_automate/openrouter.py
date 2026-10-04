@@ -15,6 +15,7 @@ from pydantic import SecretStr, ValidationError
 
 from .call_activity import CallActivity, contract_rejection, parsed_json
 from .errors import AppError
+from .model_trace import redact
 from .models import now
 from .storage import write_json
 from .text_settings import validate_reasoning
@@ -58,7 +59,8 @@ def stream_response(response, activity, secret, deadline):
             error = chunk["error"]
             code = error.get("code", 502) if isinstance(error, dict) else 502
             activity.diagnostic("provider_error", str(code))
-            raise api_failure(int(code) if str(code).isdigit() else 502)
+            raise api_failure(int(code) if str(code).isdigit() else 502,
+                              refusal_reason(error, (secret,)) if str(code) == "403" else "")
         for key in ("id", "model", "provider", "usage"):
             if key in chunk:
                 envelope[key] = chunk[key]
@@ -143,8 +145,33 @@ def strict_schema(output_type):
     return schema
 
 
-def api_failure(code):
-    # Deliberately do not expose raw provider messages, which can echo request data.
+# The longest reason of OpenRouter's own a refusal keeps (refusal_reason).
+PROVIDER_MESSAGE_CHARS = 300
+
+
+def refusal_reason(body, secrets=()) -> str:
+    """OpenRouter's own short reason for a refused request (HTTP 403): the error's message, else the text, without
+    credentials (model_trace.redact, and the key itself) and at most PROVIDER_MESSAGE_CHARS long. A 403 alone told a
+    key's credit limit from a provider rule by nothing (2026-10-04: fourteen Transformer recordings stopped on a key's
+    limit as „Key-Berechtigungen und Anbieterregeln prüfen“). Every other refusal still keeps no provider text (D-132)."""
+    text = body
+    if isinstance(body, (str, bytes)):
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("error"), dict) and data["error"].get("message"):
+            text = data["error"]["message"]
+    elif isinstance(body, dict):
+        text = body.get("message") or ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    return " ".join(redact(str(text or ""), secrets).split())[:PROVIDER_MESSAGE_CHARS]
+
+
+def api_failure(code, reason=""):
+    # Deliberately do not expose raw provider messages, which can echo request data; a 403 keeps its short reason only
+    # (refusal_reason).
     if code == 401:
         return AppError("OpenRouter-Key fehlt, ist ungültig oder abgelaufen. Bei resume erneut übergeben.",
                         code="openrouter_authentication", status="blocked")
@@ -155,8 +182,9 @@ def api_failure(code):
         return AppError("OpenRouter-Anfragelimit erreicht. Später mit pla resume fortsetzen.",
                         code="openrouter_rate_limit", status="waiting_for_quota")
     if code == 403:
-        return AppError("OpenRouter hat die Anfrage abgewiesen. Key-Berechtigungen und Anbieterregeln prüfen.",
-                        code="openrouter_forbidden", status="blocked")
+        return AppError("OpenRouter hat die Anfrage abgewiesen" + (f": {reason}" if reason else "") +
+                        ". Key-Limit, Key-Berechtigungen und Anbieterregeln prüfen.", code="openrouter_forbidden",
+                        status="blocked", details={"provider_message": reason} if reason else {})
     if code in {400, 404, 413, 422}:
         return AppError("OpenRouter-Anfrage nicht unterstützt. Modell-ID, Reasoning-Stufe, JSON-Schema-Unterstützung und "
                         "Kontext-/Ausgabelimit prüfen; geänderte Modelleinstellungen benötigen einen neuen script-Lauf.",
@@ -247,8 +275,12 @@ class OpenRouterAdapter:
                 envelope = stream_response(response, activity, secret, start + self.settings.text_timeout_seconds)
         except HTTPError as exc:
             code = exc.code
+            try:
+                body = exc.read(8192) if code == 403 else b""
+            except OSError:
+                body = b""
             exc.close()
-            raise api_failure(code) from None
+            raise api_failure(code, refusal_reason(body, (secret,)) if code == 403 else "") from None
         except (TimeoutError, URLError, OSError, HTTPException):
             raise AppError("OpenRouter-Verbindung unterbrochen oder Zeitlimit erreicht. Mit pla resume fortsetzen.",
                            code="openrouter_connection", status="blocked") from None
@@ -260,7 +292,8 @@ class OpenRouterAdapter:
                 raise ValueError("Expected an object")
             if envelope.get("error"):
                 error = envelope["error"]
-                raise api_failure(int(error.get("code", 502)) if isinstance(error, dict) else 502)
+                code = int(error.get("code", 502)) if isinstance(error, dict) else 502
+                raise api_failure(code, refusal_reason(error, (secret,)) if code == 403 else "")
             # Check decoded data as well, so JSON unicode escapes cannot evade this guard.
             if secret in json.dumps(envelope, ensure_ascii=False):
                 raise AppError("OpenRouter-Antwort enthält Zugangsdaten und wird nicht gespeichert.",

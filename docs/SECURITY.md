@@ -132,8 +132,10 @@ What never leaves the computer, or never gets in:
 - `calls/call_*/diagnostics.json` keeps only sanitised technical diagnostics, no raw error messages, prompts, tool
   outputs or credentials. The one exception is a Codex failure the adapter cannot name (`codex_failed`): its
   `failure.json` and stop message carry Codex's own short reason, redacted by `model_trace.redact` and cut to 300
-  characters (`codex.provider_message`; why: D-129); `work_context.json` keeps a bounded selection of a call's inputs, without full prompts or
-  source texts.
+  characters (`codex.provider_message`; why: D-129). Likewise an OpenRouter refusal (HTTP 403, text and Gemini
+  speech) keeps OpenRouter's own short reason in its stop message, without the key and at most 300 characters
+  (`openrouter.refusal_reason`; why: D-132); `work_context.json` keeps a bounded selection of a call's inputs, without
+  full prompts or source texts.
 - The rotating log files `.studio/studio.log`, `<project>/studio/worker.log` and `<project>/logs/pla.log` (tracebacks
   included) and the terminal output of every `pla` process pass through `logs.scrub`: the keys the process knows (the
   Studio's stored key, a worker's key, a key typed after `--api-key`, `OPENROUTER_API_KEY`; `logs.add_secret`) are

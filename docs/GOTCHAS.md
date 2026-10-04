@@ -140,6 +140,11 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Audio
 
+- ⚠ **A stopped Gemini recording asks for a new approval after an update:** its inputs bind the file hash of
+  `speech.py` (`worker_sha256` in `episode_audio`), so any change to that file ends the resumability of every
+  recording not yet finished (`inputs_changed`; Transformer ep_010, 2026-10-04). Approve the episode again: the new
+  run takes every segment already spoken from `cache/audio/gemini`, whose key holds text, voice, language and model,
+  not the code. Change `speech.py` only while no Gemini recording is open.
 - ✓ **Every chapter of a Qwen recording fails as `invalid_audio` after the GPU work:** `runtime.tts_revision` was
   `main`, while the worker records the commit it actually loaded. `pla init` pins the known commit
   (`cli.pinned_revision`); when it knows none it says so, and you enter the commit in `project.yaml` before the first

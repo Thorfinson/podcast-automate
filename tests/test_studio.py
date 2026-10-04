@@ -190,6 +190,27 @@ class StudioHttpTests(unittest.TestCase):
         connection.close()
         return result
 
+    def test_every_page_names_what_needs_the_missing_openrouter_key(self):
+        """The user's wish of 2026-10-04: the Studio keeps the OpenRouter key in memory only, a fresh page after a
+        restart said nothing of it, and Jev in the gap probe went without it unseen. Every page carries what needs the
+        key, per project, until one is there."""
+        from podcast_automate.execution import set_jev_probe
+        other = self.workspace / "projects" / "second"
+        init_project(other, TopicBrief(topic="Second project", voice_profile={"host_a": "Aiden", "host_b": "Vivian"}))
+        write_json(self.root / "studio/audio.json",
+                   AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"}).model_dump())
+        set_jev_probe(self.root, True)
+        write_json(other / "studio/text.json", {"provider": "openrouter", "model": "anthropic/claude-sonnet-5.5"})
+        expected = [{"need": "gemini_audio", "projects": ["A test project"]}, {"need": "jev", "projects": ["A test project"]},
+                    {"need": "openrouter_text", "projects": ["Second project"]}]
+        with patch.dict(os.environ):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            for path in ("/api/bootstrap", "/api/projects", "/api/projects/example", "/api/settings"):
+                with self.subTest(path=path):
+                    self.assertEqual(json.loads(self.request(path)[1])["key_reminder"], expected)
+            self.app.key = "test-key"
+            self.assertEqual(json.loads(self.request("/api/projects")[1])["key_reminder"], [])
+
     def test_a_work_arrives_as_raw_bytes_and_only_as_octet_stream(self):
         # 2026-10-01: a book PDF from the library is far beyond the JSON upload's 4 MB.
         from urllib.parse import quote

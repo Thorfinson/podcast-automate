@@ -1178,7 +1178,9 @@ function attentionOf(p) {
   const halted=stoppedAudio(p).filter(a=>a.id!==j?.id);
   if(halted.length){
     const title=a=>(p.episodes||[]).find(e=>e.episode_id===a.episode)?.title||a.episode;
+    const shared=halted.every(a=>stopInfo(a).code===stopInfo(halted[0]).code);
     return {text:halted.length===1?`Vertonung von „${title(halted[0])}“ angehalten: ${stopInfo(halted[0]).title}`:
+      shared?`${halted.length} Folgen angehalten: ${stopInfo(halted[0]).title}`:
       `${halted.length} Folgen angehalten: ${halted.map(a=>`„${title(a)}“ (${stopInfo(a).title})`).join(", ")}`,button:"Vertonung ansehen",page:PAGE.audio};
   }
   if(!j||runningOf(p))return null;
@@ -1244,6 +1246,7 @@ async function showSettings(push=true) {
   $("project-select").value="";updatePageUrl(push);render();
 }
 function refreshOverview() {
+  renderKeyNote();
   const container=$("overview-projects");
   if(!container)return;
   const inbox=$("overview-inbox"),inboxContent=renderInbox();
@@ -1503,7 +1506,7 @@ const STOP_RULES={
   missing_executable:{kind:"fix",title:"Programm nicht startbar",text:"Ein benötigtes Programm (Codex, Claude Code oder ein Hilfsprogramm) ließ sich nicht starten. Installation prüfen, „Verbindungen prüfen“ zeigt den Stand; danach „Fortsetzen“.",actions:["check"]},
   unsupported_codex_launcher:{kind:"fix",title:"Codex-Start nicht unterstützt",text:"Das gefundene Codex-Programm lässt sich vom Studio nicht direkt starten. Codex CLI oder die VS-Code-Erweiterung neu installieren oder den Pfad unter runtime.codex_executable eintragen, „Verbindungen prüfen“, dann „Fortsetzen“.",actions:["check"]},
   unsupported_claude_launcher:{kind:"fix",title:"Claude-Start nicht unterstützt",text:"Das gefundene Claude-Code-Programm lässt sich vom Studio nicht direkt starten. Claude Code neu installieren, „Verbindungen prüfen“, dann „Fortsetzen“.",actions:["check"]},
-  openrouter_forbidden:{kind:"fix",title:"OpenRouter verweigert den Zugriff",text:"OpenRouter hat die Anfrage abgewiesen (HTTP 403). Die Berechtigungen des Keys und die Anbieterregeln im OpenRouter-Konto prüfen; bei Bedarf einen anderen Key hinterlegen, dann „Fortsetzen“.",actions:["key"]},
+  openrouter_forbidden:{kind:"fix",title:"OpenRouter verweigert den Zugriff",text:"OpenRouter hat die Anfrage abgewiesen (HTTP 403). Den Grund nennt die Meldung, oft das Kreditlimit des Keys. Limit, Berechtigungen des Keys und Anbieterregeln im OpenRouter-Konto prüfen; bei Bedarf einen anderen Key hinterlegen, dann „Fortsetzen“.",actions:["key"]},
   openrouter_search_unsupported:{kind:"fix",title:"OpenRouter kann hier nicht suchen",text:"Mit dem gewählten OpenRouter-Textmodell ist die belegte Websuche nicht möglich. Im Maschinenraum unter „Weiter mit …“ ein Abo für diesen Lauf wählen und „Fortsetzen“, oder in den Einstellungen die Auswahl für neue Läufe ändern.",actions:["open_settings"]},
   invalid_backend:{kind:"fix",title:"Textmodell-Auswahl ungültig",text:"Anbieter, Modell oder Ausgabelimit der gespeicherten Textauswahl werden nicht unterstützt. Im Maschinenraum unter „Weiter mit …“ einen anderen Anbieter für diesen Lauf wählen und „Fortsetzen“, oder in den Einstellungen eine gültige Auswahl treffen und den Schritt neu starten.",actions:["open_settings","restart"]},
   audio_approval_required:{kind:"decision",title:"Audio-Freigabe fehlt",text:"Für diesen Skriptstand liegt keine passende Audio-Freigabe vor. Auf der Seite Vertonung das gelesene Skript freigeben; dann startet die Vertonung.",actions:["audio_again"]},
@@ -2040,18 +2043,46 @@ function drawerMarkup(summary, body) {
   return `<div class="drawer-head"><button class="quiet small drawer-toggle" data-action="drawer-toggle" aria-expanded="${drawerOpen}">${drawerOpen?"▾":"▴"} Maschinenraum</button><span class="hint">${summary}</span></div><div class="drawer-body"${drawerOpen?"":" hidden"}>${body}</div>`;
 }
 function dock(show) { document.body?.classList?.toggle?.("has-dock",!!show); }
+// The reason stopped recordings share, or null when they stop for different ones. Until 2026-10-04 the bar said only
+// "14 angehalten": fourteen recordings refused by OpenRouter for a key's credit limit named the reason on the
+// recording page's job list alone.
+function sharedAudioStop(p=project) {
+  const infos=stoppedAudio(p).map(j=>stopInfo(j));
+  return infos.length&&infos.every(info=>info.code===infos[0].code)?infos[0]:null;
+}
+// A stopped recording "Alle fortsetzen" may resume: one whose card offers to resume it, or a key stop once a key is there.
+const resumableAudio=j=>canResume(j)||(!!stopInfo(j)?.actions.includes("key")&&boot.key_available!==false);
 function audioJobSummary() {
   const jobs=project?.audio_jobs||[], active=jobs.filter(j=>j.status==="running");
   const title=id=>project.episodes?.find(e=>e.script.episode_id===id)?.script.title||id;
-  const stopped=stoppedAudio().length, halted=stopped?` · ${stopped} angehalten`:"";
+  const stopped=stoppedAudio().length, reason=sharedAudioStop(), because=reason?`: ${escape(reason.title)}`:"";
+  const halted=stopped?` · ${stopped} angehalten${because}`:"";
   if(active.length===1){const p=active[0].progress;return `Folge wird vertont · ${escape(title(active[0].episode))}${p?.total_segments!==undefined?` · ${Number(p.completed_segments)} von ${Number(p.total_segments)} Sprechabschnitten`:""}${halted}`;}
   if(active.length)return `${active.length} Folgen werden vertont${halted}`;
   const done=jobs.filter(j=>j.status==="completed").length;
-  return done===jobs.length?`Vertonung abgeschlossen · ${done===1?escape(title(jobs[0].episode)):`${done} Aufträge`}`:`Vertonung: ${done} von ${jobs.length} Aufträgen fertig, ${jobs.length-done} angehalten`;
+  return done===jobs.length?`Vertonung abgeschlossen · ${done===1?escape(title(jobs[0].episode)):`${done} Aufträge`}`:`Vertonung: ${done} von ${jobs.length} Aufträgen fertig, ${jobs.length-done} angehalten${because}`;
 }
 function renderAudioJobBar() {
-  const active=(project?.audio_jobs||[]).some(j=>j.status==="running"), stopped=stoppedAudio().length;
-  return `<span class="job-dot ${active?"running":stopped?"blocked":"done"}" aria-hidden="true"></span><span class="job-text">${audioJobSummary()}</span>${step!==PAGE.audio?`<button class="secondary small status-link" data-step="${PAGE.audio}">Vertonung ansehen →</button>`:""}${drawerToggle()}`;
+  const active=(project?.audio_jobs||[]).some(j=>j.status==="running"), stopped=stoppedAudio(), reason=sharedAudioStop();
+  const resume=stopped.length>1&&stopped.every(resumableAudio)?`<button class="small" data-action="resume-stopped-audio">Alle ${stopped.length} fortsetzen</button>`:"";
+  const key=reason?.actions.includes("key")?`<button class="secondary small" data-action="open-settings">OpenRouter-Key</button>`:"";
+  return `<span class="job-dot ${active?"running":stopped.length?"blocked":"done"}" aria-hidden="true"></span><span class="job-text">${audioJobSummary()}</span>${key}${resume}${step!==PAGE.audio?`<button class="secondary small status-link" data-step="${PAGE.audio}">Vertonung ansehen →</button>`:""}${drawerToggle()}`;
+}
+// Resumes every stopped recording at once, each as its own card's „Fortsetzen“ would; a refusal is named, not hidden.
+async function resumeStoppedAudio() {
+  const jobs=stoppedAudio().filter(resumableAudio), id=project.id, refused=[];
+  if(!jobs.length)throw new Error("Keine angehaltene Vertonung lässt sich gerade fortsetzen.");
+  submitting=true;
+  try {
+    for(const job of jobs){
+      try{await api(`/api/projects/${id}/start`,{action:"resume",run_id:job.run.run_id,episode:job.episode});}
+      catch(error){refused.push(`${job.episode}: ${error.message}`);}
+    }
+    project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project);
+  } finally { submitting=false; }
+  lastJobView="";render();
+  notice(refused.length?`${jobs.length-refused.length} von ${jobs.length} Vertonungen fortgesetzt. Nicht fortgesetzt: ${refused.join("; ")}`
+    :`${jobs.length} Vertonungen fortgesetzt.`,refused.length?"warn":"ok");
 }
 // The connection check in German, with the fix next to every failed item.
 const CHECK_LABELS={
@@ -2142,6 +2173,37 @@ function renderServerNote() {
   if(!box)return;
   const html=serverNote();
   box.hidden=!html;redraw(box,html);
+  renderKeyNote();
+}
+// The reminder of a missing OpenRouter key on every page (studio.key_reminder): the Studio keeps the key in memory
+// only, so it is gone after every restart, and a fresh page said nothing of it (2026-10-04: Jev went without it unseen).
+// It names what needs the key, in which projects, and what happens without it.
+const KEY_NEED_TEXT={gemini_audio:["Gemini-Vertonung","warten Vertonungen mit Gemini"],
+  jev:["Jev in der Lückenprobe","suchen neue Skriptläufe Lücken nur per Wortsuche, und wo du Jev selbst eingeschaltet hast, halten sie an"],
+  openrouter_text:["OpenRouter-Textmodell","halten Aufträge mit einem OpenRouter-Modell an"]};
+function keyReminderRows() {
+  const data=overviewPage?overviewData:settingsPage?settingsData:project;
+  return ((data?.key_reminder??boot?.key_reminder)||[]).filter(row=>KEY_NEED_TEXT[row.need]);
+}
+function keyNote() {
+  const rows=keyReminderRows();
+  if(!rows.length)return "";
+  const where=row=>row.projects.length>2?` (${row.projects.length} Projekte)`
+    :` (${row.projects.map(topic=>"„"+escape(shortText(topic,48))+"“").join(", ")})`;
+  return `<p><strong>OpenRouter-Key fehlt.</strong> Gebraucht für ${rows.map(row=>escape(KEY_NEED_TEXT[row.need][0])+where(row)).join(" · ")}. `+
+    `Ohne Key ${rows.map(row=>KEY_NEED_TEXT[row.need][1]).join("; ")}.</p>`+
+    (settingsPage?`<p class="hint">Eingabe unten unter „OpenRouter-Key“. Das Studio hält den Key nur im Speicher; nach jedem Neustart muss er neu eingegeben werden.</p>`
+      :inlineKey("reminder-key"));
+}
+function renderKeyNote() {
+  const box=$("key-note");
+  if(!box)return;
+  const html=keyNote();
+  box.hidden=!html;redraw(box,html);
+}
+function clearKeyReminder() {
+  for(const data of [boot,overviewData,settingsData,project])if(data)data.key_reminder=[];
+  renderKeyNote();
 }
 function renderJob() {
   renderServerNote();
@@ -2313,7 +2375,8 @@ async function selectProject(id, loaded=null, requestedPage=null) {
 async function storeKey(fieldId="api-key") {
   const key=$(fieldId)?.value.trim();
   if(key){const value=await api("/api/key",{key});boot.key_available=value.key_available;$(fieldId).value="";
-    if($("key-status"))$("key-status").textContent=boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt.";}
+    if($("key-status"))$("key-status").textContent=boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt.";
+    if(boot.key_available)clearKeyReminder();}
   return !!key;
 }
 // The ZIP is built before its first byte; fetching it shows that wait and turns a refusal into a readable message.
@@ -2483,6 +2546,7 @@ document.addEventListener("click",event=>{
     }
     if(action==="apply-proposal"){await applySetupProposal();return;}
     if(action==="open-settings"){await showSettings();return;}
+    if(action==="resume-stopped-audio"){await resumeStoppedAudio();return;}
     if(action==="save-settings"){await saveSettings();return;}
     if(action==="store-key"){
       if(!await storeKey(button.dataset.keyField||"api-key"))throw new Error("Bitte zuerst den OpenRouter-Key eingeben.");
@@ -2498,7 +2562,7 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/approve`,{kind:"chat_calls",model_calls:Number(button.dataset.modelCalls)});
       project=await api(`/api/projects/${project.id}`);render();notice("Gesprächslimit erhöht. „Erneut senden“ schickt deine letzte Nachricht noch einmal.","ok");return;
     }
-    if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";if(settingsData)settingsData.key_available=boot.key_available;$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
+    if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";if(settingsData){settingsData.key_available=boot.key_available;settingsData.key_reminder=boot.key_reminder;}renderKeyNote();$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
     if(action==="apply-advice"){await applyAdvice(button);notice("Empfehlungen übernommen. Der Lauf versucht die Teilfragen mit den Hinweisen des Beraters erneut.","ok");return;}
     if(action==="upload-work"){await uploadWork(button);return;}

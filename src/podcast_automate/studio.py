@@ -451,6 +451,23 @@ def queue_view(rows, key_available=True):
             for number, row in enumerate(rows, 1)]
 
 
+# What of a project can need the OpenRouter key, in the order the reminder names them (web/app.js KEY_NEED_TEXT).
+KEY_NEEDS = ("gemini_audio", "jev", "openrouter_text")
+
+
+def key_needs(root, config):
+    """What of this project needs the OpenRouter key: Gemini as its audio provider, Jev in the gap probe of its new
+    script runs, an OpenRouter text model (Studio.key_reminder)."""
+    needs = []
+    if selected_audio(root, config).provider == "openrouter_gemini_tts":
+        needs.append("gemini_audio")
+    if jev_probe_enabled(root):
+        needs.append("jev")
+    if (studio_settings.text_data(root, TextChoice().model_dump()) or {}).get("provider") == "openrouter":
+        needs.append("openrouter_text")
+    return needs
+
+
 def kept_local_sources(root, saved, requested):
     """The project's local sources after a save from the browser. Paths outside the project come only from disk, as
     the runtime does; the browser may name files inside the project's inputs/, the Studio's own uploads. A device in
@@ -621,12 +638,30 @@ class Studio:
                 "audio_catalog": audio_catalog(),
                 "voice_samples": self.voice_samples(),
                 "key_available": self.key_available(),
-                "server": self.server_state(),
+                "server": self.server_state(), "key_reminder": self.key_reminder(),
                 "defaults": TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
                                       voice_profile={"host_a": "Aiden", "host_b": "Vivian"}).model_dump(mode="json")}
 
     def key_available(self):
         return bool(self.key or os.environ.get("OPENROUTER_API_KEY"))
+
+    def key_reminder(self):
+        """What needs the OpenRouter key while none is available, as ``[{"need", "projects"}]`` over every project
+        (key_needs); empty once a key is there. The Studio keeps the key in memory only, so after every restart the
+        pages remind of it until it is entered again (the user's wish, 2026-10-04: Jev had gone without a key unnoticed,
+        and a fresh page after a restart said nothing)."""
+        if self.key_available():
+            return []
+        needs = {}
+        for item in self.project_list():
+            try:
+                root = self.root(item["id"])
+                config = load_project(root)
+                for need in key_needs(root, config):
+                    needs.setdefault(need, []).append(config.topic)
+            except (AppError, ValueError, OSError, KeyError):
+                continue
+        return [{"need": need, "projects": needs[need]} for need in KEY_NEEDS if need in needs]
 
     def job(self, root, *, audio_job_id=None, path=None, light=False):
         """A job as the pages show it. ``light`` is the project card's view (overview): no live output, assignment,
@@ -1074,7 +1109,7 @@ class Studio:
             item = read_json(receipt, {})
             if (receipt.parent / "project/project.yaml").is_file():
                 trash.append({"id": receipt.parent.name, "topic": item.get("topic", "Projekt"), "deleted_at": item.get("deleted_at")})
-        return {"projects": projects, "trash": trash, "server": self.server_state()}
+        return {"projects": projects, "trash": trash, "server": self.server_state(), "key_reminder": self.key_reminder()}
 
     def card(self, project):
         """What the overview shows of a project: its job in the light view, its recordings and the step it reached.
@@ -1245,7 +1280,7 @@ class Studio:
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
                 "jev_probe": jev_probe_enabled(root), "jev_default": jev_probe_state(root)[1],
                 "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
-                "server": self.server_state(),
+                "server": self.server_state(), "key_reminder": self.key_reminder(),
                 "audio_queue": queue_view(read_queue(root), self.key_available()),
                 # When the tags a Gemini recording speaks are placed for reading (studio_worker.tag_episodes).
                 "expression_progress": read_json(root / "studio/expression/progress.json", None),
@@ -1429,6 +1464,7 @@ class Studio:
         return {"settings": values, "hash": digest(values), "global": saved is not None,
                 "source_project": source.name if source else None,
                 "claude_extra_usage": subscriptions.claude_extra_usage(), "key_available": self.key_available(),
+                "key_reminder": self.key_reminder(),
                 "allowance_choices": {"fresh_attempts": list(studio_allowances.FRESH_ATTEMPT_CHOICES),
                                       "extra_calls": list(studio_allowances.EXTRA_CALL_CHOICES)}}
 

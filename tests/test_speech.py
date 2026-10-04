@@ -104,6 +104,18 @@ class SpeechTests(unittest.TestCase):
                 self.assertNotIn("test-key", str(raised.exception))
         self.assertEqual(list(self.cache.glob("*.wav")), [])
 
+    def test_a_refused_recording_names_openrouters_reason(self):
+        """2026-10-04: the Transformer recordings stopped on the key's credit limit as „Key-Berechtigungen und
+        Anbieterregeln prüfen“. A 403 keeps OpenRouter's own short reason, without the key (D-132)."""
+        body = json.dumps({"error": {"code": 403, "message": "Key limit exceeded (test-key)"}}).encode()
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = HTTPError(SPEECH_ENDPOINT, 403, "Forbidden", {}, io.BytesIO(body))
+            with self.assertRaises(AppError) as raised:
+                self.engine.synthesize("Hallo", "Aoede", "de-DE", self.cache)
+        self.assertEqual(raised.exception.code, "openrouter_forbidden")
+        self.assertEqual(raised.exception.details["provider_message"], "Key limit exceeded ([Zugangsdaten entfernt])")
+        self.assertNotIn("test-key", str(raised.exception))
+
     def test_a_rate_limit_throttles_every_recording_and_is_asked_again(self):
         """The user's choice of 2026-09-29: start every approved episode at once and throttle on 429 instead of stopping.
         The pause is shared through the cache folder, so a second recording waits as well."""

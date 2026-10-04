@@ -20,7 +20,7 @@ from . import studio_settings
 from .audio import PAUSE_TAGS, silent_runs
 from .errors import AppError
 from .models import Contract, HostVoices
-from .openrouter import NoRedirect, api_failure
+from .openrouter import NoRedirect, api_failure, refusal_reason
 from .qwen_worker import spoken_settings
 from .spoken_forms import SpokenForms, spoken_text
 from .storage import digest, file_hash, file_lock, inside, read_text, write_json
@@ -401,11 +401,13 @@ class GeminiSpeech:
         if failure is not None:
             exc = failure
             code = exc.code
-            # Read only to classify, never echoed: a provider's message may carry anything.
+            # Read to classify; only a refusal's short reason is kept (openrouter.refusal_reason): a provider's message
+            # may carry anything.
             try:
-                detail = exc.read(8192).decode("utf-8", "replace").lower()
+                body = exc.read(8192).decode("utf-8", "replace")
             except (OSError, ValueError):
-                detail = ""
+                body = ""
+            detail = body.lower()
             exc.close()
             if code == 404 and ("zdr" in detail or "data policy" in detail):
                 # An account that allows only zero-data-retention endpoints excludes Google's speech endpoint
@@ -417,7 +419,7 @@ class GeminiSpeech:
             if code in {400, 404, 413, 422}:
                 raise AppError("Gemini-TTS-Anfrage abgewiesen. Verfügbarkeit des Modells, Stimme und Textlänge prüfen.",
                                code="openrouter_speech_request", status="blocked") from None
-            raise api_failure(code) from None
+            raise api_failure(code, refusal_reason(body, (secret,)) if code == 403 else "") from None
         if not pcm or len(pcm) % 2 or len(pcm) > maximum or not any(pcm):
             raise AppError("OpenRouter lieferte leeres oder ungültiges Audio.", code="invalid_audio", status="blocked")
         # Never persist an accidentally echoed credential, including a mislabeled error body.

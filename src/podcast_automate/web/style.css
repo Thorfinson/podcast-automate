@@ -392,6 +392,8 @@ dd{margin:0;overflow-wrap:anywhere}
 
 .server-note{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-bottom:12px}
 .server-note p{margin:0}
+.key-note{margin-bottom:12px;padding:10px 14px;border-radius:8px;background:var(--amber-soft)}
+.key-note>p{margin:0 0 8px}
 .production-report table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
 .production-report th,.production-report td{text-align:left;padding:3px 6px;border-bottom:1px solid var(--line,#ddd)}
 .production-report h3{font-size:15px;margin:8px 0 4px}

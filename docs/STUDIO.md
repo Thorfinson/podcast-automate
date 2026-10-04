@@ -234,7 +234,9 @@ once takes are finished, „Podcast anhören“ and **„Podcast herunterladen�
 The navigation shows each area's state: present, to approve (▲), in progress or pending. The running step shows its
 elapsed time; a research plan waiting for approval shows the projection in hours. The header names the job or its stop
 reason in one line, with stop, resume (only where it can help) and the jump to the page where something is to be
-decided; running recordings are listed beside it. The browser tab shows ● for a running job, ▲ for a decision and ! for
+decided; running recordings are listed beside it. Stopped recordings that share one reason name it there, as in
+„14 angehalten: OpenRouter verweigert den Zugriff“, with **„Alle 14 fortsetzen“** (resume all) and, for a key stop,
+a button to the „OpenRouter-Key“ panel; until 2026-10-04 only the job list on the recording page named the reason. The browser tab shows ● for a running job, ▲ for a decision and ! for
 a stop; the overview shows the number of waiting projects.
 
 The collapsed **„Maschinenraum“** (engine room) at the bottom holds only telemetry: **„Kurzbericht“** (status brief),
@@ -393,7 +395,14 @@ itself.
 
 An OpenRouter key stored in the Studio lived only in the old server's memory and must be entered again
 ([Times and connection](#times-and-connection)); until then queued Gemini episodes show „wartet auf den
-OpenRouter-Key“ (waiting for the OpenRouter key) instead of waiting for a free slot. If the new server fails before its
+OpenRouter-Key“ (waiting for the OpenRouter key) instead of waiting for a free slot.
+
+While no key is available but something needs one, every page shows **„OpenRouter-Key fehlt“** (OpenRouter key
+missing) at the top, also on a page loaded fresh after a restart (`Studio.key_reminder`, `studio.key_needs`): Gemini as
+the audio provider, Jev in the gap probe, or an OpenRouter text model, each with its projects and what happens without
+the key (Gemini recordings wait; new script runs search gaps by words only, or stop where Jev was switched on by hand;
+OpenRouter jobs stop). The note holds a key field; on the settings page it points to the „OpenRouter-Key“ panel. A
+stored key ends it at once. If the new server fails before its
 own log starts, the reason is in `.studio/relaunch.log` (why: D-117). The old server's console window can then be
 closed. See also [Update the Studio](OPERATIONS.md#update-the-studio).
 

@@ -2591,6 +2591,57 @@ test('the production report loads on request and shows stages, versions, stops a
   assert.ok(!html.includes('<x>'));
 });
 
+test('stopped recordings name their shared reason in the bar and resume all at once',async()=>{
+  // 2026-10-04: fourteen Transformer recordings stopped on a key's credit limit; the bar said only "14 angehalten".
+  const app=studio();
+  const stop={code:'openrouter_forbidden',stage:'synthesis',message:'OpenRouter hat die Anfrage abgewiesen: Key limit exceeded.'};
+  const job=(n,extra={})=>({id:'a'+n,action:'resume',status:'blocked',episode:'ep_00'+n,stop,run:{run_id:'run_'+n,kind:'episode_audio',stages:{}},...extra});
+  const jobs=[job(1),job(2),job(3)];
+  app.run(`boot.key_available=true;step=PAGE.brief;project={id:'p',episodes:[1,2,3].map(n=>({script:{episode_id:'ep_00'+n,title:'Folge '+n},audio:[]})),
+    audio_jobs:${JSON.stringify(jobs)},job:${JSON.stringify(jobs[0])}};`);
+  const bar=app.run('renderAudioJobBar()');
+  assert.ok(bar.includes('Vertonung: 0 von 3 Aufträgen fertig, 3 angehalten: OpenRouter verweigert den Zugriff'),bar);
+  assert.ok(bar.includes('data-action="resume-stopped-audio">Alle 3 fortsetzen'));
+  assert.ok(bar.includes('data-action="open-settings">OpenRouter-Key'),'a key stop leads to the key');
+  // Different reasons: the bar counts them without naming one; a single stop has its own card's button.
+  app.run(`project.audio_jobs[2].stop={code:'openrouter_connection',stage:'synthesis'};`);
+  assert.ok(app.run('audioJobSummary()').endsWith('3 angehalten'));
+  // Resume all asks once per stopped recording and names the one the server refused.
+  app.run(`project.audio_jobs[2].stop=project.audio_jobs[0].stop;`);
+  app.responses.set('/api/projects/p',{id:'p',episodes:[],audio_jobs:[],job:null});
+  app.run(`const original=api;api=async(path,data)=>{if(data?.episode==='ep_002')throw new Error('Kein Platz frei.');return original(path,data);};`);
+  await app.run('resumeStoppedAudio()');
+  const resumes=app.requests.filter(r=>r.path==='/api/projects/p/start').map(r=>JSON.parse(r.options.body));
+  assert.deepEqual(resumes.map(r=>[r.action,r.run_id,r.episode]),[['resume','run_1','ep_001'],['resume','run_3','ep_003']]);
+  assert.ok(app.elements.get('notice').textContent.includes('2 von 3 Vertonungen fortgesetzt. Nicht fortgesetzt: ep_002: Kein Platz frei.'));
+});
+
+test('a missing OpenRouter key is named on every page with what needs it until one is stored',async()=>{
+  const app=studio();
+  const rows=[{need:'gemini_audio',projects:['Asimov','Ontologien','Transformer']},{need:'jev',projects:['Asimov <alt>']},
+    {need:'unknown',projects:['x']}];
+  app.run(`overviewPage=true;overviewData={projects:[],trash:[],key_reminder:${JSON.stringify(rows)}};renderKeyNote();`);
+  const note=app.elements.get('key-note');
+  assert.equal(note.hidden,false);
+  assert.ok(note.innerHTML.includes('OpenRouter-Key fehlt.'));
+  assert.ok(note.innerHTML.includes('Gemini-Vertonung (3 Projekte) · Jev in der Lückenprobe („Asimov &lt;alt&gt;“)'));
+  assert.ok(note.innerHTML.includes('Ohne Key warten Vertonungen mit Gemini; suchen neue Skriptläufe Lücken nur per Wortsuche'));
+  assert.ok(note.innerHTML.includes('data-action="store-key" data-key-field="reminder-key"'),'the key goes in right there');
+  assert.ok(!note.innerHTML.includes('unknown'));
+  // A project page reads its own payload; the settings page points to its key field instead of a second one.
+  app.run(`overviewPage=false;project={id:'p',key_reminder:[{need:'openrouter_text',projects:['Asimov']}]};renderKeyNote();`);
+  assert.ok(note.innerHTML.includes('OpenRouter-Textmodell („Asimov“)'));
+  app.run(`project=null;settingsPage=true;settingsData={key_reminder:[{need:'jev',projects:['Asimov']}]};renderKeyNote();`);
+  assert.ok(note.innerHTML.includes('Eingabe unten unter „OpenRouter-Key“') && !note.innerHTML.includes('reminder-key'));
+  // A stored key ends the reminder at once, before the next poll brings an empty list.
+  app.run(`settingsPage=false;project={id:'p',key_reminder:[{need:'jev',projects:['Asimov']}]};renderKeyNote();`);
+  app.run(`$("reminder-key").value="sk-or-test"`);
+  app.responses.set('/api/key',{key_available:true});
+  await app.run('storeKey("reminder-key")');
+  assert.equal(note.hidden,true);
+  assert.equal(app.run('keyNote()'),'');
+});
+
 test('the server note offers a restart once the code changed and can take it back',()=>{
   const app=studio();
   app.run(`overviewPage=false;project={id:'p',server:{stale:false,restart_requested:false}}`);
