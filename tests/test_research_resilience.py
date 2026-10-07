@@ -769,6 +769,24 @@ class BudgetRefundTests(unittest.TestCase):
             self.assertEqual(reserve_call(work, ResearchLimits(model_calls=10)), 4)
             self.assertEqual(json.loads((work / "budget.json").read_text(encoding="utf-8"))["model_calls"], 3)
 
+    def test_a_spent_limit_names_itself_and_charges_nothing(self):
+        # D-152: the Studio told the two stops apart by "Rechercherunden" in the German message.
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp) / "runs/run_x"
+            write_json(work / "budget.json", {"model_calls": 2, "search_rounds": 1, "sequence": 2})
+            for limits, search, limit in ((ResearchLimits(model_calls=5, search_rounds=1), True, "search_rounds"),
+                                          (ResearchLimits(model_calls=2, search_rounds=1), True, "model_calls"),
+                                          (ResearchLimits(model_calls=2, search_rounds=4), False, "model_calls")):
+                with self.subTest(limit=limit, search=search, calls=limits.model_calls):
+                    with self.assertRaises(AppError) as spent:
+                        reserve_call(work, limits, search=search)
+                    self.assertEqual((spent.exception.code, spent.exception.status, spent.exception.details),
+                                     ("research_budget_exhausted", "blocked", {"limit": limit}))
+            self.assertEqual(json.loads((work / "budget.json").read_text(encoding="utf-8")),
+                             {"model_calls": 2, "search_rounds": 1, "sequence": 2})
+            # A call without search still has room when only the search rounds are spent.
+            self.assertEqual(reserve_call(work, ResearchLimits(model_calls=5, search_rounds=1)), 3)
+
 
 def text_pdf(text, title=None):
     """A one-page PDF whose text layer holds ``text``, built like the fixture in test_research."""

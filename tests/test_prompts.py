@@ -58,9 +58,47 @@ class PromptFileTests(unittest.TestCase):
         self.assertIn("note a missing attribution in limitations, never as an issue", prompts.text("script_review"))
         self.assertIn("use a comparison only where the sources support it", prompts.text("plain_language"))
 
+    def test_the_listenability_rules_replace_the_monologue_rules_and_name_their_measured_figures(self):
+        """2026-10-06: listeners found the episodes "Fakten, Fakten, Fakten". The rules that welcomed long monologues and
+        refused a target share between the hosts are reworded, not stacked against the new ones, and the prompts name
+        the figures script_advisories measures."""
+        from podcast_automate.script_advisories import LONG_TURN_LIMIT, LONG_TURN_WORDS, PARTNER_SHARE_FLOOR, TURN_WORDS
+        from podcast_automate.teaching import TeachingPlan
+        rules = prompts.text("listenability")
+        self.assertIn(f"about {TURN_WORDS} spoken words", rules)
+        self.assertIn("about a third of the words", rules)
+        self.assertIn("Empty repetition stays forbidden", rules)
+        self.assertIn("the evidence rules win", rules)
+        review = prompts.text("script_review")
+        self.assertIn(f"over {TURN_WORDS} words (long_turns)", review)
+        self.assertIn(f"partner_share below {PARTNER_SHARE_FLOOR}", review)
+        self.assertEqual(LONG_TURN_LIMIT, 2)
+        self.assertIn(f"more than two turns over {LONG_TURN_WORDS} words", review)
+        self.assertIn(f"every turn over {TURN_WORDS} words", prompts.text("dialogue_polish_review"))
+        for name in ("dialogue_polish", "dialogue_polish_review", "spoken_dialogue", "script_review", "write_episode"):
+            with self.subTest(prompt=name):
+                text = prompts.text(name).casefold()
+                self.assertNotIn("monologues are", text)
+                self.assertNotIn("monologues can work", text)
+                self.assertNotIn("target ratio", text)
+        # The design plans the arc in its own fields, and its review checks every one of them.
+        for name in ("teaching_design", "teaching_design_review"):
+            with self.subTest(prompt=name):
+                self.assertTrue(all(field in prompts.text(name) for field in TeachingPlan.LATER))
+
     def test_pilot_specific_examples_no_longer_live_in_the_general_rules(self):
         self.assertNotIn("tokenizer", prompts.text("continuity"))
         self.assertNotIn("map", prompts.text("plain_language").split())
+
+    def test_the_studio_prompts_take_the_interface_language_from_their_input(self):
+        """D-152: the chat partner and the status brief follow the Studio's interface language. The partner reads the
+        settings page's name from its payload instead of a German label in its text; the brief names its language."""
+        assistant = prompts.text("studio_assistant")
+        self.assertNotIn("Einstellungen", assistant)
+        for field in ("studio.language", "studio.settings_page", "brief.trial"):
+            self.assertIn(field, assistant)
+        self.assertEqual(placeholders("studio_status"), {"language"})
+        self.assertIn("in English", instructions("studio_status", language="English"))
 
     def test_shared_rules_compose_without_double_spaces(self):
         from podcast_automate.editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, TERMINOLOGY

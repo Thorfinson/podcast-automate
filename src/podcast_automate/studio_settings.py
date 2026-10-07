@@ -17,7 +17,15 @@ import json
 from pathlib import Path
 
 SETTINGS_NAME = ".studio-settings.json"
-SECTIONS = ("text", "audio", "execution", "allowances", "research_limits", "text_timeout_seconds")
+SECTIONS = ("text", "audio", "execution", "allowances", "research_limits", "text_timeout_seconds", "web_search")
+# How new research and script runs search the web (D-151): with the text model's own tools, or through Perplexity.
+WEB_SEARCH = ("model", "perplexity")
+
+
+def web_search(root: Path) -> str:
+    """The web search new runs of this project bind; the text model's own while the workspace sets none."""
+    chosen = section(root, "web_search")
+    return chosen if chosen in WEB_SEARCH else "model"
 
 
 def path_for(projects: Path) -> Path:

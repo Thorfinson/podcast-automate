@@ -87,6 +87,7 @@ class AttachmentTests(unittest.TestCase):
                    {"name": "bad.txt", "base64": "%%%"},
                    upload("large.txt", "x" * (attachments.MAX_FILE_BYTES + 1)),
                    upload("key.txt", "sk-or-test-credential-123456789"),
+                   upload("key.txt", "sk-ant-api03-test-credential-123456789"),
                    upload("key.txt", "a protected session value"),
                    upload("bad.txt", "ü", "cp1252")]
         before = (self.root / "project.yaml").read_bytes()

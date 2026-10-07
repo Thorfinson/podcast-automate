@@ -2,7 +2,7 @@
 title: Gotchas
 doc_type: gotchas
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-07
 ---
 
 # Gotchas
@@ -37,6 +37,11 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Subscriptions and providers
 
+- ⚠ **A field typed `dict[...]` in a contract a model answers with breaks `test_setup_schema`:** the strict schema
+  (`openrouter.strict_schema`, [Strict schema](ARCHITECTURE.md#text-provider-adapters)) needs named properties on
+  every object, and a free-keyed dict gives `propertyNames` and an open object. `BriefProposal` carries a whole
+  `AudioChoice` and `TextChoice`, so their fields count too. Give such a field fixed keys with a `TypedDict`, as
+  `HostVoices` and `speech.LanguagePaces` do.
 - ✓ **The Studio, started by double-click, reports „Codex wurde nicht gefunden“ (`codex_missing`) although `codex`
   works in a terminal:** Explorer does not inherit the `PATH` of a shell or IDE. The Studio also looks in
   `~/.local/bin/codex.exe` and the newest OpenAI extension of VS Code or VS Code Insiders (`codex.py`); otherwise set
@@ -46,8 +51,18 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   or complete the npm install; the adapter runs a shim through `node`, never through `cmd.exe` (`claude_code.py`).
   ([Claude Code](OPERATIONS.md#claude-code))
 - ✓ **An `ANTHROPIC_API_KEY` or OpenAI key in your environment would bill an API account instead of the
-  subscription:** such variables take precedence over the subscription login. Nothing to do;
-  `codex.subscription_environment` removes them from every CLI call. ([Subscription logins](SECURITY.md#subscription-logins))
+  subscription:** such variables take precedence over the subscription login; in `claude -p` mode
+  `ANTHROPIC_API_KEY` outranks even an active claude.ai login (V-29). Nothing to do for subscription calls:
+  `codex.subscription_environment` removes them from every subscription CLI call. Only Claude on the API key
+  (`claude_api`) uses `ANTHROPIC_API_KEY`, and only when you chose it. ([Subscription logins](SECURITY.md#subscription-logins))
+- ⚠ **The cost a `claude_api` run counts differs from the Anthropic Console bill:** the application counts Claude
+  Code's own `total_cost_usd`, an estimate at API prices, not the invoice; web-search fees, prompt caching and long
+  context may be priced differently (V-30). The Console is authoritative; leave headroom in the money limit.
+  ([Money limit](BUSINESS_LOGIC.md#money-limit))
+- ⚠ **A saved OpenRouter run now stops with `cost_limit_required` (Kostengrenze fehlt) at its next billed call:**
+  since 2026-10-07 every run billed to a key needs a money limit, and runs started before have none. Set one in the
+  stop card, with `pla approve <project> --run-id <run_id> --cost-usd N` or on the settings page; finished work stays.
+  ([Money limit](BUSINESS_LOGIC.md#money-limit))
 - ⚠ **The first Claude call after a window runs out fails and is charged:** Claude reports no quota in advance; the
   block is noted only after the first refusal. Under „Automatisch“ Codex takes over; a fixed Claude job pauses.
   ([Quota](BUSINESS_LOGIC.md#quota-what-counts-as-limit-reached))
@@ -56,7 +71,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   settings page (`subscriptions.claude_extra_usage`). ([Settings page](STUDIO.md#settings-page))
 - ⚠ **A call ends with `claude_budget_cap`, although `--max-budget-usd` did not stop its first model turn:** the CLI
   applies the cost cap (`claude_code.MAX_BUDGET_USD`, 12) only after the first model turn, so it is no hard per-call
-  cap. The answer is not accepted (`claude_code.py`); check the scope of the call.
+  cap. The answer is not accepted (`claude_code.py`); check the scope of the call. On the API key that money is spent.
 - ✓ **`invalid_output_schema`: „Das Antwortschema ist zu groß für die Claude-Code-Befehlszeile“:** Windows allows
   32,767 characters per command line, and the escaped schema is longer. A new login does not help; the adapter refuses
   the call before start (`claude_code.MAX_SCHEMA_CHARS`), and only a smaller schema in code fixes it.
@@ -74,7 +89,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 - ✓ **After a Studio restart OpenRouter jobs stop for a missing key, and queued Gemini episodes show „wartet auf den
   OpenRouter-Key“:** a key entered in the Studio lives only in the old server's memory. Enter it again on the settings
-  page, or start the server with `OPENROUTER_API_KEY` set; the page says so (`studio.py`).
+  page, or start the server with `OPENROUTER_API_KEY` set; the page says so (`studio.py`). The same holds for jobs
+  with Claude on the API key and the Anthropic key (`ANTHROPIC_API_KEY`), and for runs that search through Perplexity
+  and the Perplexity key (`PERPLEXITY_API_KEY`).
   ([OpenRouter key in the Studio](SECURITY.md#openrouter-key-in-the-studio))
 - ⚠ **After the first save on the settings page, a project's own text model, audio or limits seem ignored:** once
   `projects/.studio-settings.json` exists, its sections replace every project's `studio/*.json`, `research_limits` and
@@ -89,6 +106,15 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **A resting run can no longer be resumed after you edited host names, the brief, voices, editorial notes or
   spoken forms:** content inputs are bound to the run by hash. The Studio warns before saving; start a new run.
   ([Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding))
+- ⚠ **The Studio stays German although the browser asks for English:** a workspace that had projects before the
+  interface language existed keeps German until you choose (`.studio/ui.json`, `studio_text.setting`). Set the
+  interface language to English or automatic. ([Interface language](CONFIGURATION.md#interface-language))
+- ⚠ **An English Studio shows a stop reason, a review objection or a `pla status` line in German:** the pipeline's
+  messages are also model input, receipts or hashed, so they are never translated; the Studio marks their language.
+  ([Languages](ARCHITECTURE.md#languages))
+- ⚠ **Exports of an English project come out in English in a German Studio, and the other way round:** exports
+  follow the project's content language (`language` in `project.yaml`), not the interface language.
+  ([Languages](ARCHITECTURE.md#languages))
 
 ## Research
 
@@ -112,12 +138,20 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ⚠ **A source fails as unreadable with "pages without a text layer":** it is a scanned PDF, and OCR never starts
   automatically. Supply a readable version as a `seed_urls` entry of a new research run, or upload the work under
   „Fehlende Werke“. ([Download and import limits](RESEARCH.md#download-and-import-limits))
+- ⚠ **A trial project stops at 110 calls although the settings page allows more:** a trial keeps each limit at the
+  lower of the settings and its trial value (`storage.load_project`), so the settings page never lifts it. Raise the
+  limit for the one run in its stop card or with `pla approve`. ([Trial project](BUSINESS_LOGIC.md#trial-project))
 - ✓ **A research run stops on a text-call timeout:** the call time limit (`runtime.text_timeout_seconds`, default
   1800) is too low for the call. Raise it on the settings page, or in `project.yaml` without workspace settings, and
   resume the same run; it does not bind the run (`storage.bound_brief`). ([Time limits and stalls](RESEARCH.md#time-limits-and-stalls))
 
 ## Scripts
 
+- ⚠ **A resumed script run rewrites drafts it had already accepted (after 2026-10-06):** the teaching-design, writing
+  and polishing checkpoints are bound to their prompt text, and the listenability change rewrote those prompts. A stage
+  still open asks its calls again (more calls against `research_limits.model_calls`); finished stages and passed
+  script reviews stay. To give a published series the new style, start a new `pla script` run or `--revise`.
+  ([Existing projects](TEACHING.md#existing-projects))
 - ✓ **Publishing a new table of contents stops with `episodes_locked`:** a file in an earlier series' episode folder is
   open (for example during a recording), so the folder cannot move to `episodes/archive/`. Close or finish what holds
   it, then resume (`script_artifacts.py`). ([Earlier series](SCRIPTS.md#earlier-series))
@@ -126,7 +160,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   the changed text needs a new subject review. ([Canonical script](SCRIPTS.md#canonical-script))
 - ✓ **Resuming a stopped review or correction stops again at the same place:** verdicts and spent attempts are saved,
   and a resume buys no new attempts. Use „Mit neuen Anläufen fortsetzen“ or `pla approve <project> --fresh-attempts`
-  (`run_budget.py`). ([Stopping and resuming](STUDIO.md#stopping-and-resuming))
+  (`run_budget.py`). A correction loop that keeps no rejections, whose stop message ends with „die abgewiesenen
+  Antworten liegen bei den Aufrufen“, asks anew on every resume. ([Rejected answers](SCRIPTS.md#rejected-answers),
+  [Stopping and resuming](STUDIO.md#stopping-and-resuming))
 - ⚠ **The series review of a large series fails or blocks:** all final texts are passed in full, without truncation,
   and can exceed a provider's context limit. Choose a model with a larger context or review a smaller series.
   ([Scope and limits of the series review](SCRIPTS.md#scope-and-limits-of-the-series-review))
@@ -140,11 +176,35 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Audio
 
-- ⚠ **A stopped Gemini recording asks for a new approval after an update:** its inputs bind the file hash of
-  `speech.py` (`worker_sha256` in `episode_audio`), so any change to that file ends the resumability of every
-  recording not yet finished (`inputs_changed`; Transformer ep_010, 2026-10-04). Approve the episode again: the new
-  run takes every segment already spoken from `cache/audio/gemini`, whose key holds text, voice, language and model,
-  not the code. Change `speech.py` only while no Gemini recording is open.
+- ⚠ **A pace set for one language must not reach recordings of another:** `speech.selected_audio` returns the whole
+  workspace choice, the pace of every language included (`AudioChoice.pace`). Bind or compare a recording only through
+  `AudioChoice.for_language(config.language)`, as `episode_audio`, the Studio's „already recorded“ mark and the
+  re-render check do; the whole choice would ask every German episode for a new approval after an English setting. A
+  Studio still running the code from before the pace refuses a settings file with `pace` (unknown field): restart it
+  after the update, then set the pace. ([Speaking pace per language](AUDIO.md#speaking-pace-per-language))
+- ⚠ **A stopped Gemini recording asks for a new approval after an update:** its inputs bind the file hash of its
+  engine, `speech.py` for OpenRouter and `google_speech.py` for Google (`worker_sha256` in `episode_audio`), so any
+  change to that file ends the resumability of every recording of that route not yet finished (`inputs_changed`;
+  Transformer ep_010, 2026-10-04). Approve the episode again: the new run takes every segment or passage already
+  spoken from `cache/audio/gemini` or `cache/audio/google`, whose keys hold the text and the voices, not the code.
+  Change an engine file only while no recording of its route is open.
+- ✓ **Switching an episode from OpenRouter to Google records it completely again:** the two routes share no cache
+  (one segment against a passage of several) and an approval names its provider. The old recording stays until the
+  new one is published.
+- ✓ **An approval for Google is refused with „Der Ausdruck wurde seit dem Lesen neu gesetzt“ although nothing was set
+  again:** until 2026-10-07 the check compared the episode's old `expression.json` (placed without listener
+  reactions), which the reading page no longer shows for Google. Such a reading counts as none now
+  (`episode_audio.reading_hash`); restart the Studio after the update. To read the tags before recording, use
+  „Ausdruck neu setzen“. ([Tags are part of reading the script](AUDIO.md#tags-are-part-of-reading-the-script))
+- ✓ **A wrong Google key comes back as HTTP 400, not 401:** Google names it `API_KEY_INVALID`; the recording stops
+  with `google_authentication` and shows Google's message. Store the right key under „Google-Key“, then resume.
+  ([Keys, errors and limits](AUDIO.md#keys-errors-and-limits))
+- ✓ **Google stops a recording with `google_quota` at once instead of waiting:** the key's daily quota is used up,
+  which waiting minutes cannot lift. Resume after the quota resets, or raise the tier in Google AI Studio.
+  ([Keys, errors and limits](AUDIO.md#keys-errors-and-limits))
+- ⚠ **A literal pipe in a spoken text becomes a listener reaction in a Google recording:** Google reads text
+  between pipes (`|mhm|`) as the other host's reaction. The expression check admits only the listed reactions, but a
+  pipe in the script itself or a spoken form would be taken the same way; write it out instead.
 - ✓ **Every chapter of a Qwen recording fails as `invalid_audio` after the GPU work:** `runtime.tts_revision` was
   `main`, while the worker records the commit it actually loaded. `pla init` pins the known commit
   (`cli.pinned_revision`); when it knows none it says so, and you enter the commit in `project.yaml` before the first
@@ -163,8 +223,8 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   Data Retention providers, which excludes Google's speech model. Allow it at openrouter.ai/settings/privacy, then
   resume; the error names the setting (`speech.py`). ([Keys, errors and limits of the check](AUDIO.md#keys-errors-and-limits-of-the-check))
 - ✓ **Gemini reads a style direction such as „Sag es fröhlich:“ aloud:** written directions are part of the input
-  text, and OpenRouter does not pass `speech_metadata` through. Use only the allowed inline tags; the expression check
-  admits nothing else (`expression.py`). ([Style directions](AUDIO.md#style-directions))
+  text. A Google recording sends each role's style in its own field; for OpenRouter use only the allowed inline tags,
+  the expression check admits nothing else (`expression.py`). ([Style directions](AUDIO.md#style-directions))
 - ⚠ **Recordings in another project seem to stall without an error:** a 429 in any project makes all Gemini
   recordings wait through `projects/.gemini_throttle.json`, for up to about three minutes. Wait; only a persisting
   limit stops an episode. ([Rate limits and transient errors](AUDIO.md#rate-limits-and-transient-errors))
@@ -174,6 +234,14 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **An episode near the part length fails with `duration_exceeded` after paid synthesis:** parts were sized with the
   planned pause instead of the applied minimum. Partitioning and assembly now use the same `audio.applied_pause`
   (`episode_audio.segment_durations`). ([Pause minimums](AUDIO.md#pause-minimums))
+- ⚠ **A player shows no „KI-generiert“ (AI-generated) comment for an exported MP3:** FFmpeg 9 writes the `comment`
+  tag as a TXXX frame named "comment", not as a COMM frame, and a player that reads only COMM shows nothing. The tags
+  are there (`ai_marking_embedded` in `audio_report.json`, read back with ffprobe); a real COMM frame would need a
+  tagging library, a new dependency (V-42). ([Exports and listening sheet](AUDIO.md#exports-and-listening-sheet))
+- ✓ **After the update a companion kit is gone from the recording page and the podcast ZIP:** a kit of
+  `publish_kit.v1` has no transparency note (D-154), so it is no longer shown or zipped (`publish_kit.KIT_VERSION`).
+  Make the kit again („Begleitmaterial“ or `pla publish-kit`); its saved descriptions are reused without a model call.
+  ([Exports and listening sheet](AUDIO.md#exports-and-listening-sheet))
 
 ## Logs and security
 
@@ -184,8 +252,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **`pla script … --api-key "KEY"` stops with `invalid_request`:** a key given as a value is refused unread, because
   it would stand in the process list and the shell history. Use `--api-key` without a value or set
   `OPENROUTER_API_KEY` (`cli.py`). ([OpenRouter key on the command line](SECURITY.md#openrouter-key-on-the-command-line))
-- ✓ **„Keine verdeckte Key-Eingabe möglich“ in an IDE task or a pipe:** a non-interactive terminal cannot ask for the
-  key hidden, and the prompt aborts instead of reading it visibly. Set `OPENROUTER_API_KEY` (`cli.py`).
+- ✓ **"No hidden key input possible; use OPENROUTER_API_KEY." in an IDE task or a pipe:** a non-interactive terminal
+  cannot ask for the key hidden, and the prompt aborts instead of reading it visibly. Set `OPENROUTER_API_KEY`, or
+  `ANTHROPIC_API_KEY` for `claude_api` (`cli.hidden_key`).
   ([OpenRouter key on the command line](SECURITY.md#openrouter-key-on-the-command-line))
 - ✓ **A research run stops with `local_source_outside`, or a script run with `invalid_request`:** a `local_sources`
   entry is absolute or leaves the project folder. Copy the file into the project folder or upload it in the Studio,

@@ -16,7 +16,7 @@ from podcast_automate.models import Contract, RuntimeSettings, EpisodeScript
 from podcast_automate.openrouter import OpenRouterAdapter, NoRedirect, ENDPOINT
 from podcast_automate.script_models import ScriptReview
 from podcast_automate.scripting import run_script
-from podcast_automate.storage import file_hash, read_yaml
+from podcast_automate.storage import file_hash, read_yaml, write_yaml
 from tests import script_fixtures as fixtures
 
 
@@ -251,6 +251,10 @@ class OpenRouterScriptTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
+        # OpenRouter bills the key, so a run needs a money limit (D-146).
+        config = read_yaml(self.root / "project.yaml")
+        config.setdefault("research_limits", {})["cost_usd"] = 100.0
+        write_yaml(self.root / "project.yaml", config)
 
     def test_cli_hidden_key_runs_all_quality_stages_without_changing_project_or_spawning_codex(self):
         before = file_hash(self.root / "project.yaml")

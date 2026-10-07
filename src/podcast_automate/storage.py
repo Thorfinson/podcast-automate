@@ -13,6 +13,7 @@ import yaml
 from . import studio_settings
 from .errors import AppError
 from .models import ResearchLimits, RuntimeSettings, TopicBrief
+from .trial import capped_limits
 
 # Brief fields that steer how a run works, not what it says: deadlines, CLI paths and limits. A resumed run hashes
 # them as its saved snapshot recorded them (bound_brief).
@@ -157,15 +158,21 @@ def read_yaml(path: Path) -> dict:
     return data
 
 
-def load_project(root: Path) -> TopicBrief:
+def load_project(root: Path, *, trial_caps: bool = True) -> TopicBrief:
     """The project's brief, with the research limits and the time limit of one model call from the workspace settings
-    where they set them (studio_settings): those hold for every project of the Studio."""
+    where they set them (studio_settings): those hold for every project of the Studio.
+
+    A trial project (``trial: true``, D-157) keeps each limit at the lower of these and ``trial.TRIAL_LIMITS``, so the
+    workspace settings never lift it. ``trial_caps=False`` reads the limits without that cap, for a view that offers
+    a project's limits as every project's (the settings page before its first save)."""
     config = TopicBrief.model_validate(read_yaml(root / "project.yaml"))
     settings = studio_settings.load(root) or {}
     if isinstance(settings.get("research_limits"), dict):
         config.research_limits = ResearchLimits.model_validate(settings["research_limits"])
     if type(settings.get("text_timeout_seconds")) is int and settings["text_timeout_seconds"] > 0:
         config.runtime = config.runtime.model_copy(update={"text_timeout_seconds": settings["text_timeout_seconds"]})
+    if config.trial and trial_caps:
+        config.research_limits = capped_limits(config.research_limits)
     return config
 
 

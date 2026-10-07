@@ -9,9 +9,10 @@ from pydantic import Field
 
 from .prompts import instructions
 from .errors import AppError
-from .editorial import CONTINUITY, TERMINOLOGY, EPISODE_FRAMING, terminology
+from .editorial import CONTINUITY, LISTENABILITY, TERMINOLOGY, EPISODE_FRAMING, terminology
 from .models import Contract, EpisodeScript, Identifier, NonEmpty
 from .research_patches import corrected_call
+from .script_advisories import dialogue_shape
 from .storage import digest, write_json
 from .teaching import Passage
 
@@ -19,10 +20,18 @@ POLISH_VERSION = "dialogue_polish.v1"
 # Keep the run input contract stable; the prompt version and full prompt bind new
 # checkpoints. Existing runs retain their approved inputs and historical verdicts.
 # v4 (2026-10-02): the composed framing fragment names the final episode as the series' synthesis, and the terminology
-# rule is the project's own (editorial.terminology).
-POLISH_PROMPT_VERSION = "dialogue_polish.v4-framing"
+# rule is the project's own (editorial.terminology). v5 (2026-10-06): the listenability rules (editorial.LISTENABILITY)
+# replace "long coherent monologues are welcome" and "no target ratio of speech between hosts". v6: the design's
+# storytelling devices are kept instead of one standard pattern (D-143).
+# v7 (2026-10-07): the breathers of the listenability rules.
+POLISH_PROMPT_VERSION = "dialogue_polish.v7-breathers"
 # v4 (2026-10-02): a comparison after a repair is told the previous round's failing points and the changed segments.
-POLISH_REVIEW_VERSION = "dialogue_polish_review.v4-follow-up"
+# v5 (2026-10-06): it judges spoken_language by the listenability rules, with the candidate's measured dialogue_shape,
+# and a recap or reflection beat that restates the original is no new fact. v6: chapter endings that differ as the
+# design planned them are no defect.
+POLISH_REVIEW_VERSION = "dialogue_polish_review.v7-breathers"
+# The repair repeats the polishing prompt, so its meaning changed with v5 and v6.
+POLISH_REPAIR_VERSION = "dialogue_polish_repair.v4-breathers"
 DEMANDING_PASSAGES = 3
 HOST_ROLES = {
     "host_a": "The expert: calm, precise and analytical. Develop mechanisms and relevant details, "
@@ -137,12 +146,13 @@ def compare_dialogue(brief, entry, original, candidate, invoke, *, series_contex
     with what became of each, and the candidate segments changed since that round. ``rule`` is the project's
     terminology rule (``editorial.terminology``); the eval keeps the general one."""
     return invoke(
-        rule + CONTINUITY + EPISODE_FRAMING +
+        rule + CONTINUITY + EPISODE_FRAMING + LISTENABILITY +
         instructions("dialogue_polish_review") + "\n" +
         json.dumps({"brief": brief, "host_roles": HOST_ROLES,
                     "episode": entry.model_dump(), "series_context": series_context,
                     "prerequisite_context": prerequisite_context or [], **(follow_up or {}),
-                    "original": original.model_dump(), "candidate": candidate.model_dump()}, ensure_ascii=False),
+                    "original": original.model_dump(), "candidate": candidate.model_dump(),
+                    "dialogue_shape": dialogue_shape(candidate)}, ensure_ascii=False),
         DialoguePolishReview, POLISH_REVIEW_VERSION)
 
 
@@ -209,7 +219,7 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
     # Topic-neutral terminology, with the machine-learning names only for such a topic (2026-10-02).
     rule = terminology(config.language, getattr(config, "topic", ""), getattr(config, "central_question", ""))
     prompt = (
-        rule + CONTINUITY + EPISODE_FRAMING +
+        rule + CONTINUITY + EPISODE_FRAMING + LISTENABILITY +
         instructions("dialogue_polish") + "\n" +
         json.dumps(payload, ensure_ascii=False))
     signature = digest({"version": POLISH_PROMPT_VERSION, "prompt": prompt})
@@ -286,7 +296,7 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
                            code="dialogue_polish_failed", status="blocked")
         repaired = invoke(prompt + "\n" + instructions("dialogue_polish_repair") + "\n" + json.dumps({
                               "candidate": candidate.model_dump(), "issues": issues}, ensure_ascii=False),
-                          EpisodeScript, "dialogue_polish_repair.v1")
+                          EpisodeScript, POLISH_REPAIR_VERSION)
         changed = changed_segments(candidate, repaired)
         if review is not None:
             scope = {"previous": [{**point, "blocking": True} for point in blocking] +

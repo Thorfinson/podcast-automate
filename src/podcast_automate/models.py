@@ -75,13 +75,19 @@ class LaterFields(Contract):
         return data
 
 
-class ResearchLimits(Contract):
+class ResearchLimits(LaterFields):
     # Defaults for new projects since 2026-09-27; a saved project keeps the limits in its project.yaml.
     # Measured on the two 18-question runs of 2026-09-26/27 with Opus 5.5: 600 to 750 calls up to the
     # third audit round, 31 and 46 search rounds, 82 and 114 fetched sources.
     search_rounds: int = Field(default=48, gt=0)
     sources: int = Field(default=150, gt=0)
     model_calls: int = Field(default=750, gt=0)
+    # The money a run may spend on billed calls (API key, OpenRouter, Perplexity search), in USD (D-146). It has
+    # no default: a billed call without it stops with cost_limit_required. Unset, it is left out of every dump, so
+    # the briefs and run snapshots written before it keep their hashes.
+    cost_usd: float | None = Field(default=None, gt=0, le=100_000)
+
+    LATER = {"cost_usd": None}
 
 
 class RuntimeSettings(Contract):
@@ -144,6 +150,10 @@ class TopicBrief(Contract):
     # published within this many months; standards and foundations may be older and are named with their year.
     recency_months: int | None = Field(default=None, ge=1, le=120,
         description="Prefer practice, tool and benchmark sources from the last N months; unset means no rule.")
+    # A trial project (D-157, 2026-10-07): storage.load_project caps its limits at trial.TRIAL_LIMITS. Left out of
+    # every dump while false, so every other brief keeps its hash.
+    trial: bool = Field(default=False, strict=True,
+        description="Trial project: small limits per run, one short episode (trial.py); false for every other project.")
 
     @model_serializer(mode="wrap")
     def omit_unset_later_fields(self, handler):
@@ -151,6 +161,8 @@ class TopicBrief(Contract):
         for key in LATER_BRIEF_FIELDS:
             if data.get(key) is None:
                 data.pop(key, None)
+        if data.get("trial") is False:
+            data.pop("trial")
         return data
 
     @model_validator(mode="after")

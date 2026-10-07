@@ -18,7 +18,8 @@ from .execution import ExecutionChoice, selected_execution
 from .models import EpisodeScript, RunManifest, StageRecord
 from .polishing import HOST_ROLES, POLISH_VERSION
 from .provider_pool import AdapterPool, check_adapter_versions, text_generation_settings  # noqa: F401  (re-exported)
-from .research import reconcile_budget, refund_call, reserve_call, unanswered, validate_dossier
+from .research import reconcile_budget, refund_call, reserve_call, settle_call, unanswered, validate_dossier
+from .text_settings import BILLED_TEXT_PROVIDERS
 from .research_patches import re_asked
 from .research_models import ResearchDossier
 from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
@@ -154,12 +155,16 @@ def new_run(root, research_id, dossier, *, episode, revise, feedback):
             "inherited_knowledge": inherited_knowledge}
 
 
-def build_adapter(config, text_generation, api_key):
-    """The adapter pool of this run: a fixed provider as before, ``auto`` chooses a subscription per call."""
+def build_adapter(config, text_generation, api_key, perplexity_key=None):
+    """The adapter pool of this run: a fixed provider as before, ``auto`` chooses a subscription per call. ``api_key``
+    is the key of a billed provider: OpenRouter's, or the Anthropic key of ``claude_api`` (D-145)."""
     check_adapter_versions(text_generation)
-    if text_generation["provider"] != "openrouter" and api_key is not None:
-        raise AppError("--api-key nur mit --backend openrouter verwenden.", code="invalid_backend", status="blocked")
-    return AdapterPool(config.runtime, text_generation, api_key=api_key)
+    if text_generation["provider"] not in BILLED_TEXT_PROVIDERS and api_key is not None:
+        raise AppError("--api-key nur mit --backend openrouter oder claude_api verwenden.", code="invalid_backend",
+                       status="blocked")
+    claude_api = text_generation["provider"] == "claude_api"
+    return AdapterPool(config.runtime, text_generation, api_key=None if claude_api else api_key,
+                       anthropic_key=api_key if claude_api else None, perplexity_key=perplexity_key)
 
 
 def style_notes(root: Path) -> str:
@@ -265,9 +270,10 @@ def require_plan_approval(root, work, manifest, plan_only, approved_plan_hash):
 def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=None,
                revise: str | None = None, feedback="", backend=None, model=None, api_key=None,
                max_output_tokens=None, reasoning_effort=None, plan_only=False, outline_feedback="", approved_plan_hash=None,
-               jev_probe=False, probe_key=None):
+               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None):
     """``jev_probe`` asks Jev in the gap probe of a new run (jev.py); ``probe_key`` is the OpenRouter key for it,
-    otherwise OPENROUTER_API_KEY. A resumed run keeps the choice it started with."""
+    otherwise OPENROUTER_API_KEY. ``web_search`` "perplexity" sends a new run's supplementary searches through
+    Perplexity (D-151), with ``perplexity_key`` or PERPLEXITY_API_KEY. A resumed run keeps the choices it started with."""
     root = root.resolve()
     with project_lock(root):
         config = load_project(root)
@@ -284,7 +290,8 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
         if jev_probe:
             state["execution"] = state["execution"].model_copy(update={"jev_probe": True})
         text_generation = text_generation_settings(config, backend=backend, model=model, max_output_tokens=max_output_tokens,
-                                                   reasoning_effort=reasoning_effort, saved=state["saved_backend"])
+                                                   reasoning_effort=reasoning_effort, saved=state["saved_backend"],
+                                                   web_search=web_search)
         check_adapter_versions(text_generation)
         notes = style_notes(root)
         # A resumed run binds its operational fields (runtime, research_limits) as it started (storage.bound_brief):
@@ -304,7 +311,7 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             reconcile_budget(work)
         # The inputs keep the selection the run started with; an approved switch only changes who answers.
         text_generation = text_switch(work, manifest.input_hash, text_generation)
-        adapter = build_adapter(config, text_generation, api_key)
+        adapter = build_adapter(config, text_generation, api_key, perplexity_key)
         previous_outline, outline_feedback = outline_revision(root, work, manifest, outline_feedback)
         require_plan_approval(root, work, manifest, plan_only, approved_plan_hash)
         write_json(root / "runs/latest.json", {"run_id": manifest.run_id})
@@ -378,7 +385,7 @@ def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reas
                 adapter.require_key()
 
                 def once(attempt):
-                    number = reserve_call(work, limits)
+                    number = reserve_call(work, limits, billed=adapter.billed())
                     try:
                         return adapter.structured(attempt, output_type, work / "calls" / f"call_{number:03d}",
                                                   prompt_version=version, search=False)[0]
@@ -389,6 +396,8 @@ def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reas
                     except BaseException:
                         refund_call(work, number)
                         raise
+                    finally:
+                        settle_call(work, number)
                 return re_asked(once, prompt)
 
             report = series_report(config, plan, scripts, manifest.input_hash, invoke)

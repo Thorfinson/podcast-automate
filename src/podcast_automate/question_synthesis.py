@@ -562,7 +562,7 @@ class SynthesisMixin:
 
     def write_gate(self, report):
         write_json(self.work / "research_quality_gate.json", report)
-        atomic_text(self.work / "research_quality.md", render_quality(report))
+        atomic_text(self.work / "research_quality.md", render_quality(report, language=self.config.language))
 
     def audit(self, dossier, discovery, context):
         folder = self.folder / "synthesis" / f"audit_{self.state['audit_round']:02d}"

@@ -1,0 +1,108 @@
+name: Bug report
+description: The Studio or the pla command does not work as documented.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. A security problem belongs in a [private report](https://github.com/Thorfinson/podcast-automate/security/advisories/new), not here.
+
+        **Never paste a key.** Remove API keys, tokens, e-mail addresses and personal paths from everything below.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: From starting the Studio or the command to the problem. Name the step (research, table of contents, drafting, reading, recording) if it happened in the Studio.
+      placeholder: |
+        1. pla init projects/demo --topic "…" --trial
+        2. Start the research in the Studio
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: stop-code
+    attributes:
+      label: Stop code
+      description: The code the Studio shows in its hold card or under „Technische Details“, or that `pla status` prints, for example `cost_limit_required` or `invalid_speech`. Leave it empty if there was none.
+      placeholder: invalid_speech
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: "`python --version` of the environment that runs pla (Windows: `.\\.venv\\Scripts\\python.exe --version`)."
+      placeholder: "3.12.14"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "`pla --version`, and in a checkout `git rev-parse --short HEAD`."
+      placeholder: "0.2.0 / 9c6ee24"
+    validations:
+      required: true
+  - type: dropdown
+    id: text-access
+    attributes:
+      label: Text access in use
+      multiple: true
+      options:
+        - Claude subscription (Claude Code)
+        - Codex subscription (Codex CLI)
+        - Claude on the Anthropic API key (claude_api)
+        - OpenRouter
+        - Web search through Perplexity
+        - Not relevant
+  - type: dropdown
+    id: speech
+    attributes:
+      label: Speech provider in use
+      options:
+        - Gemini via Google
+        - Gemini via OpenRouter
+        - Local Qwen
+        - Not relevant
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `pla doctor --skip-tts --json`
+      description: "Run it in the repository folder (Windows: `.\\.venv\\Scripts\\pla.exe doctor --skip-tts --json`). It makes no model call. Remove any key and personal path before you paste it."
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From „Technische Details“ in the hold card, `.studio/studio.log` or `<project>/studio/worker.log` (see docs/OPERATIONS.md, Logs and diagnosis). The logs are filtered for known keys; check them anyway.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed every key, token and personal detail from this report.
+          required: true
+        - label: I searched the existing issues and docs/GOTCHAS.md for this problem.
+          required: false

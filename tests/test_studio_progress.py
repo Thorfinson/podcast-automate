@@ -404,3 +404,62 @@ class StudioProgressTests(unittest.TestCase):
             watch(self.root, "job_one")
         self.assertEqual(sleep.call_count, 1)
         self.assertTrue((self.work / "progress.json").exists())
+
+    def test_the_activity_line_follows_the_interface_language(self):
+        """D-152: the Studio's own activity lines come from the catalog; German stays as it was."""
+        from podcast_automate.studio_text import using
+        run = {**self.run, "stages": {"planning": {"status": "running"}}}
+        write_json(self.work / "calls/call_005/output_schema.json", {"title": "SeriesPlan"})
+        with using("en"):
+            self.assertEqual(script_progress(self.root, run)["activity"], "Drafting the table of contents")
+            write_json(self.work / "planning_checkpoint.json", {"input_hash": "x", "draft": {}, "repairs": 1})
+            write_json(self.work / "plan_errors.json", ["Grundlage fehlt"])
+            self.assertEqual(script_progress(self.root, run)["activity"],
+                             "Correcting the table of contents · correction round 2 of 3")
+        with using("de"):
+            self.assertEqual(script_progress(self.root, run)["activity"],
+                             "Inhaltsverzeichnis wird korrigiert · Korrekturrunde 2 von 3")
+        write_json(self.work / "calls/call_006/output_schema.json", {"title": "UnknownSchema"})
+        with using("en"):
+            self.assertEqual(script_progress(self.root, {**self.run, "stages": {"review": {"status": "running"}}})["activity"],
+                             "Processing saved results")
+
+    def test_the_research_pipelines_german_lines_read_in_english_in_the_english_interface(self):
+        """The research pipeline writes its activity in German (it feeds the status brief); the English interface shows
+        the catalog's English where a German template matches, a line it does not know as written, and German stays."""
+        from podcast_automate.studio_progress import activity_text
+        from podcast_automate.studio_text import using
+        write_json(self.work / "research_activity.json", {"activity": "Neue Originalquelle für diese Frage wird gesucht: Wie alt?"})
+        write_json(self.work / "research_questions.json", {"closed": 0, "total": 2, "phase": "questions", "questions": [
+            {"id": "q1", "question": "Wie alt?", "status": "researching", "activity": "Antwort wird unabhängig geprüft"},
+            {"id": "q2", "question": "Wer?", "status": "pending", "activity": "Ein ganz neuer Satz der Pipeline"}]})
+        run = {**self.run, "kind": "research"}
+        with using("en"):
+            progress = script_progress(self.root, run)
+        self.assertEqual(progress["activity"], "Searching for a new original source for this question: Wie alt?")
+        self.assertEqual([row["activity"] for row in progress["research_questions"]["questions"]],
+                         ["The answer is being reviewed independently", "Ein ganz neuer Satz der Pipeline"])
+        # The ledger is cached per language: the German page still reads German.
+        german = script_progress(self.root, run)
+        self.assertEqual(german["activity"], "Neue Originalquelle für diese Frage wird gesucht: Wie alt?")
+        self.assertEqual(german["research_questions"]["questions"][0]["activity"], "Antwort wird unabhängig geprüft")
+        with using("en"):
+            # A repeated attempt names the attempt after the line it repeats, not as part of a question.
+            self.assertEqual(activity_text("Neue Originalquelle für diese Frage wird gesucht: Wie alt? · Anlauf 2 nach Abweisung"),
+                             "Searching for a new original source for this question: Wie alt? · attempt 2 after a rejection")
+            self.assertEqual(activity_text("Modellaufruf · Anlauf 3 nach Abweisung"), "Model call · attempt 3 after a rejection")
+        self.assertEqual(activity_text("Modellaufruf · Anlauf 3 nach Abweisung"), "Modellaufruf · Anlauf 3 nach Abweisung")
+
+    def test_the_research_assignment_names_its_catalog_id_beside_the_german_text(self):
+        """research_status keeps its German assignment for the status brief; the page shows assignment.<id> (D-152)."""
+        write_json(self.work / "research_activity.json", {"activity": "Eine Frage wird geprüft"})
+        write_json(self.work / "question_research/state.json", {"value": {"tasks": {}, "phase": "audit"}, "sha256": "x"})
+        run = {**self.run, "kind": "research"}
+        insight = script_progress(self.root, run)["work_insight"]
+        self.assertEqual((insight["assignment_id"], insight["assignment"]),
+                         ("phase.audit", "Das zusammengesetzte Dossier wird abschließend geprüft."))
+        write_json(self.work / "calls/call_007/output_schema.json", {"title": "AnswerReview"})
+        self.assertEqual(script_progress(self.root, run)["work_insight"]["assignment_id"], "AnswerReview")
+        write_json(self.work / "question_research/state.json", {"value": {"tasks": {}, "phase": "questions"}, "sha256": "x"})
+        write_json(self.work / "calls/call_008/output_schema.json", {"title": "SomethingElse"})
+        self.assertEqual(script_progress(self.root, run)["work_insight"]["assignment_id"], "saved_results")

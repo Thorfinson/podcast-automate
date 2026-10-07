@@ -83,6 +83,13 @@ class ConfigureLoggingTests(unittest.TestCase):
                     root.removeHandler(handler)
                     handler.close()
 
+    def test_the_anthropic_key_of_the_environment_never_reaches_a_log_line(self):
+        import os
+        from unittest.mock import patch
+        from podcast_automate.logs import scrub
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "plain-anthropic-value-42"}):
+            self.assertNotIn("plain-anthropic-value-42", scrub("Aufruf mit plain-anthropic-value-42 fehlgeschlagen"))
+
     def test_log_file_redacts_credentials_in_message_and_traceback(self):
         """2026-10-04 docs review: worker.log, studio.log and pla.log got full tracebacks unredacted; only the failure
         records were cleaned. A registered key, an OpenRouter key pattern and a bearer token must not reach the file,

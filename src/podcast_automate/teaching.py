@@ -11,20 +11,28 @@ from typing import Literal
 from pydantic import Field
 
 from .prompts import instructions
+from .content_text import catalog_label, text as wording
+from .dramaturgy import (DRAMATURGIES, DRAMATURGY_DISTANCE, ENDINGS, OPENINGS, STANCES, catalog, label,
+                         variety_defects)
 from .errors import AppError
 from .editorial import TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING, terminology
-from .models import Contract, Identifier, NonEmpty
+from .models import Contract, Identifier, LaterFields, NonEmpty
 from .research_patches import corrected_call
 from .script_advisories import humanised
 from .script_models import ScriptIssue, episode_findings
-from .storage import atomic_text, digest, write_json
+from .storage import atomic_text, digest, read_yaml, write_json
 
 TEACHING_VERSION = "teaching.v3"
 DESIGN_VERSION = "teaching_design.v2"
 # v3-goal (2026-10-02): the brief's series_goal, theory first, an optional misconception and limit, the finale as
-# the series' synthesis, and the topic's own terminology instead of the machine-learning names.
-DESIGN_PROMPT_VERSION = "teaching_design.v3-goal"
-DESIGN_REVIEW_VERSION = "teaching_design_review.v6-goal"
+# the series' synthesis, and the topic's own terminology instead of the machine-learning names. v4-arc (2026-10-06):
+# the narrative arc (TeachingPlan.big_idea to callback), destination held back for the payoff, and entry questions
+# that each previous scene leaves open. The review checks the arc; both repairs repeat the design prompt. v5-dramaturgy
+# (2026-10-06): the storytelling devices (dramaturgy.py, D-143), chosen against the episodes just before.
+DESIGN_PROMPT_VERSION = "teaching_design.v5-dramaturgy"
+DESIGN_REVIEW_VERSION = "teaching_design_review.v8-dramaturgy"
+DESIGN_REPAIR_VERSION = "teaching_design_repair.v4-dramaturgy"
+DESIGN_FOCUSED_REPAIR_VERSION = "teaching_design_focused_repair.v4-dramaturgy"
 # Stored in every script-review checkpoint: bumping it makes a resumed in-flight run re-run the
 # editorial review of its saved draft (draft and repair count are kept). That is intended whenever
 # a composed fragment such as episode_framing.txt changes meaning.
@@ -54,12 +62,17 @@ class Concept(Contract):
     finding_ids: list[Identifier] = Field(min_length=1)
 
 
-class TeachingScene(Contract):
+class TeachingScene(LaterFields):
     scene_id: Identifier
     entry_question: NonEmpty
     builds_on: list[Identifier]
     reasoning_steps: list[NonEmpty] = Field(min_length=1)
     listener_can_now: NonEmpty
+    # How the chapter ends (dramaturgy.ENDINGS, D-143); unset in a plan saved before, which then dumps as it did.
+    ending: Literal[tuple(["", *ENDINGS])] = Field(default="", description=(
+        "How this chapter ends, from storytelling.chapter_endings; only the last scene ends with conclusion."))
+
+    LATER = {"ending": ""}
 
 
 class WorkedExample(Contract):
@@ -87,18 +100,49 @@ class ResearchGap(Contract):
     kind: Literal["evidence", "editorial_context"] = "evidence"
 
 
-class TeachingPlan(Contract):
+class TeachingPlan(LaterFields):
     episode_id: Identifier
     learner_start: NonEmpty
     opening_problem: NonEmpty
     relevance: NonEmpty
-    destination: NonEmpty
+    # Until 2026-10-06 "what the episode will establish", and the scripts announced it in their first minutes. The name
+    # stays: an earlier episode's destination reaches later designs and their reviews (prerequisite_context).
+    destination: NonEmpty = Field(description=(
+        "The answer the episode arrives at. The plan knows it; the dialogue holds it back and earns it at the payoff."))
+    # The narrative arc (2026-10-06: listeners of three finished series found the episodes "Fakten, Fakten, Fakten", a
+    # teaching order without tension). Optional in the contract and checked by the design review, so a plan saved
+    # before validates; at their defaults they are left out of every dump, so its checkpoint, its plan.json and every
+    # prompt and review hash built from it stay as they were.
+    big_idea: str = Field(default="", description="The one idea the whole episode serves, in one sentence.")
+    hook_question: str = Field(default="", description=(
+        "The episode's question as the listener first hears it: an open loop whose answer (destination) is held back."))
+    first_answer: str = Field(default="", description=(
+        "The plausible answer a listener would give before the episode, voiced as a guess, often by host_b; "
+        "never presented as a finding."))
+    turning_point: str = Field(default="", description=(
+        "Where and how the findings in turning_finding_ids overturn, narrow or deepen the first answer."))
+    turning_finding_ids: list[Identifier] = Field(default_factory=list, description=(
+        "The episode's findings that bring the turning point about; empty exactly when turning_point is empty."))
+    payoff: str = Field(default="", description="How the last scene answers hook_question with what the episode built.")
+    callback: str = Field(default="", description="The concrete detail from the opening that the payoff picks up again.")
+    # The storytelling devices (dramaturgy.py, D-143: the same arc in every episode would let a listener guess the
+    # structure after two). Optional and left out of the dump at their defaults, like the arc.
+    dramaturgy: Literal[tuple(["", *DRAMATURGIES])] = Field(default="", description=(
+        "How the episode is told, from storytelling.dramaturgies: the one that fits this material and differs from "
+        "the episodes just before (storytelling.previous_episodes)."))
+    opening: Literal[tuple(["", *OPENINGS])] = Field(default="", description=(
+        "How the first minute catches the listener, from storytelling.openings; not the one the episode before used."))
+    partner_stance: Literal[tuple(["", *STANCES])] = Field(default="", description=(
+        "How host_b takes part, from storytelling.stances; not the one the episode before used."))
     objectives: list[LearningObjective] = Field(min_length=1)
     concepts: list[Concept] = Field(min_length=2)
     scenes: list[TeachingScene] = Field(min_length=1)
     worked_example: WorkedExample
     synthesis: Synthesis
     research_gaps: list[ResearchGap]
+
+    LATER = {"big_idea": "", "hook_question": "", "first_answer": "", "turning_point": "", "turning_finding_ids": [],
+             "payoff": "", "callback": "", "dramaturgy": "", "opening": "", "partner_stance": ""}
 
 
 class GapAssessment(Contract):
@@ -183,8 +227,9 @@ TEACHING_SCHEMAS = {"teaching_plan": TeachingPlan, "teaching_plan_review": Teach
                     "teaching_review": TeachingReview, "editorial_review": EditorialReview}
 
 
-def validate_teaching_plan(design, entry):
-    errors = []
+def validate_teaching_plan(design, entry, previous=()):
+    """``previous`` are the storytelling devices of the episodes before this one (previous_devices), nearest last."""
+    errors = variety_defects(design, list(previous))
     scene_ids = [s.scene_id for s in entry.scenes]
     positions = {key: i for i, key in enumerate(scene_ids)}
     findings = set(episode_findings(entry))
@@ -213,6 +258,13 @@ def validate_teaching_plan(design, entry):
         errors.append("Worked example refers to an unknown scene.")
     if bool(design.worked_example.misconception) != bool(design.worked_example.correction):
         errors.append("Worked example: give a misconception together with its correction, or neither.")
+    # The arc stays optional here, so a plan saved before it still counts as reviewed (reviewed_design); the design
+    # review asks for it. Where a plan names its turn, the turn rests on the episode's own findings (2026-10-06).
+    if bool(design.turning_point) != bool(design.turning_finding_ids):
+        errors.append("Give the turning_point together with the findings that bring it about (turning_finding_ids), "
+                      "or neither.")
+    if not set(design.turning_finding_ids) <= findings:
+        errors.append("turning_finding_ids must name findings assigned to this episode.")
     premises = design.synthesis.premise_concept_ids
     if len(set(premises)) < 2 or not set(premises) <= set(concepts):
         errors.append("Synthesis must connect at least two distinct taught concepts.")
@@ -322,6 +374,36 @@ def reviewed_design(folder, earlier):
     return None
 
 
+def previous_devices(plan, entry, work, root=None):
+    """The storytelling devices of the two episodes before ``entry`` in the series plan, nearest last, as
+    dramaturgy.variety_defects reads them: from this run's reviewed designs, else from an episode's published teaching
+    plan under ``root``, so a revision of one episode still varies against its neighbours. An episode with no known
+    design is left out."""
+    earlier = []
+    for candidate in plan.episodes:
+        if candidate.episode_id == entry.episode_id:
+            break
+        earlier.append(candidate)
+    rows = []
+    for candidate in earlier[-DRAMATURGY_DISTANCE:]:
+        design = reviewed_design(work / "teaching" / candidate.episode_id, candidate)
+        if design is None and root is not None:
+            design = published_design(root, candidate)
+        if design is not None:
+            rows.append({"episode_id": candidate.episode_id, "dramaturgy": design.dramaturgy,
+                         "opening": design.opening, "partner_stance": design.partner_stance})
+    return rows
+
+
+def published_design(root, entry):
+    """The teaching plan an episode's last script run published (episodes/<episode>/teaching_plan.yaml), or None."""
+    try:
+        design = TeachingPlan.model_validate(read_yaml(root / "episodes" / entry.episode_id / "teaching_plan.yaml"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return design if design.episode_id == entry.episode_id else None
+
+
 def recorded_in_full(work, entry):
     """Whether the teaching stage recorded this episode's context with every prerequisite in full, as before
     2026-10-02. Such a run keeps that form: its script-review checkpoints bind the context
@@ -394,9 +476,16 @@ def series_goal_field(config):
     return {"series_goal": value} if value else {}
 
 
-def design_prompt(config, entry, dossier, sources, continuity=None, *, series_context=None, editor_note=None):
+def storytelling(devices):
+    """The storytelling catalogs and what the episodes just before chose (previous_devices), for design and review."""
+    return {**catalog(), "previous_episodes": list(devices)}
+
+
+def design_prompt(config, entry, dossier, sources, continuity=None, *, series_context=None, editor_note=None,
+                  devices=()):
     """``editor_note`` is the editor's instruction for a new design after the corrections failed
-    (run_budget.request_teaching_redesign); without it the prompt is exactly what it was before."""
+    (run_budget.request_teaching_redesign); without it the prompt is exactly what it was before. ``devices`` are the
+    storytelling devices of the episodes before (previous_devices)."""
     return (
         project_terminology(config) + TEACHING_SCOPE + (CONTINUITY if continuity else "") + EPISODE_FRAMING +
         instructions("teaching_design") + (" " + instructions("teaching_editor_note") if editor_note else "") + "\n" + json.dumps({
@@ -407,36 +496,67 @@ def design_prompt(config, entry, dossier, sources, continuity=None, *, series_co
             "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
             "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
             "sources": sources, **({"prerequisite_context": continuity} if continuity else {}),
+            "storytelling": storytelling(devices),
             **({"editor_note": editor_note} if editor_note else {})}, ensure_ascii=False))
 
 
-def render_teaching_plan(design):
-    lines = [f"# Lehrplan: {design.episode_id}", "", "## Ausgangspunkt", "", design.learner_start,
-             "", design.opening_problem, "", design.relevance, "", design.destination, "", "## Lernziele", ""]
+def render_teaching_plan(design, *, language):
+    """The readable plan.md, in the podcast's language (D-153); the plan's own text is the model's."""
+    say = lambda key, **values: wording(language, key, **values)
+    # A device in the reader's words: dramaturgy.py's German label, or content_text's for another language.
+    named = lambda table, catalog, key: catalog_label(language, catalog, key) or label(table, key)
+    lines = [f"# {say('plan_title', episode=design.episode_id)}", "", f"## {say('plan_start')}", "", design.learner_start,
+             "", design.opening_problem, "", design.relevance, "", design.destination, ""]
+    # The arc since 2026-10-06; a plan without it renders as before.
+    arc = [f"{say(key)}: {text}" for key, text in (
+        ("plan_big_idea", design.big_idea), ("plan_hook_question", design.hook_question),
+        ("plan_first_answer", design.first_answer), ("plan_turning_point", design.turning_point),
+        ("plan_payoff", design.payoff), ("plan_callback", design.callback)) if text]
+    # The storytelling devices since 2026-10-06 (D-143), in the reader's words.
+    devices = [f"{say(name)}: {named(table, catalog, key)}" for name, table, catalog, key in (
+        ("plan_dramaturgy", DRAMATURGIES, "dramaturgy", design.dramaturgy),
+        ("plan_opening", OPENINGS, "opening", design.opening),
+        ("plan_stance", STANCES, "partner_stance", design.partner_stance)) if key]
+    if arc or devices:
+        lines.extend([f"## {say('plan_arc')}", "", *(part for line in [*devices, *arc] for part in (line, ""))])
+    lines.extend([f"## {say('plan_objectives')}", ""])
     for goal in design.objectives:
         lines.extend([f"### {goal.objective_id}: {goal.ability}", "", goal.question, "",
                       *[f"- {step}" for step in goal.expected_reasoning], ""])
-    lines.extend(["## Gedankengang", ""])
+    lines.extend([f"## {say('plan_reasoning')}", ""])
     for scene in design.scenes:
         lines.extend([f"### {scene.scene_id}: {scene.entry_question}", "",
-                      *[f"- {step}" for step in scene.reasoning_steps], "", scene.listener_can_now, ""])
+                      *[f"- {step}" for step in scene.reasoning_steps], "", scene.listener_can_now, "",
+                      *([say("plan_ending", ending=named(ENDINGS, "ending", scene.ending)), ""] if scene.ending else [])])
     example = design.worked_example
     # A misconception and a limit are optional since 2026-10-02; a plan that has them reads as before.
-    lines.extend(["## Durchgearbeitetes Beispiel", "", example.setup, "",
+    lines.extend([f"## {say('plan_example')}", "", example.setup, "",
                   *[f"- {step}" for step in example.reasoning_steps], "",
-                  *(["Mögliche Fehlvorstellung: " + example.misconception, "", example.correction, ""]
+                  *([say("plan_misconception") + example.misconception, "", example.correction, ""]
                     if example.misconception else []),
-                  *(["Grenze: " + example.limits, ""] if example.limits else []),
-                  "## Synthese und Übertragung", "",
+                  *([say("plan_limit") + example.limits, ""] if example.limits else []),
+                  f"## {say('plan_synthesis')}", "",
                   *[f"- {step}" for step in design.synthesis.reasoning_steps], "",
                   design.synthesis.conclusion, "", design.synthesis.transfer_question, ""])
     return "\n".join(lines)
 
 
+def render_research_needed(gaps, *, language):
+    """research_needed.md while the plan waits for research: each question with why it is needed (D-153)."""
+    return (f"# {wording(language, 'needed_title')}\n\n" +
+            "\n\n".join(f"- {g.question}\n\n  {g.why_needed}" for g in gaps) + "\n")
+
+
+def render_research_resolved(questions, *, language):
+    """research_needed.md once the plan was accepted with the sources at hand (D-153)."""
+    return (f"# {wording(language, 'resolved_title')}\n\n{wording(language, 'resolved_note')}\n\n" +
+            "\n".join(f"- {question}" for question in questions) + "\n")
+
+
 def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, continuity=None, series_context=None,
-                        editor_note=None):
+                        editor_note=None, devices=()):
     prompt = design_prompt(config, entry, dossier, sources, continuity, series_context=series_context,
-                           editor_note=editor_note)
+                           editor_note=editor_note, devices=devices)
     noted = "+note" if editor_note else ""
     signature = digest({"version": DESIGN_VERSION, "prompt": prompt})
     checkpoint = work / "checkpoint.json"
@@ -471,7 +591,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
     elif reused_draft:
         save()
     while True:
-        errors = validate_teaching_plan(design, entry)
+        errors = validate_teaching_plan(design, entry, devices)
         if review is not None:
             try:
                 validate_design_review(review, design, review_previous)
@@ -494,6 +614,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                     "episode": entry.model_dump(), "design": design.model_dump(), "series_context": series_context,
                     "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                     "sources": sources, "prerequisite_context": continuity or [],
+                    "storytelling": storytelling(devices),
                     **({"editor_note": editor_note} if editor_note else {}),
                     **({"previous_issues": review_previous} if review_previous else {})}, ensure_ascii=False),
                 TeachingPlanReview, DESIGN_REVIEW_VERSION + noted + followup,
@@ -511,8 +632,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
         if gaps:
             write_json(work / "research_needed.json", {"episode_id": entry.episode_id,
                        "questions": [g.model_dump() for g in gaps]})
-            atomic_text(work / "research_needed.md", "# Recherche für die Erklärung ergänzen\n\n" +
-                        "\n\n".join(f"- {g.question}\n\n  {g.why_needed}" for g in gaps) + "\n")
+            atomic_text(work / "research_needed.md", render_research_needed(gaps, language=config.language))
             raise AppError(f"Erforderliche Erklärgrundlagen fehlen: {work / 'research_needed.md'}",
                            code="teaching_research_required", status="blocked")
         issues = errors + (review.issues if review else []) + [
@@ -526,7 +646,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                                " ".join(issues), code="teaching_design_failed", status="blocked")
             repaired = corrected_call(invoke, prompt + "\n" + instructions("teaching_design_focused_repair") + "\n" +
                 json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False),
-                TeachingPlanRepair, "teaching_design_focused_repair.v2-goal" + noted,
+                TeachingPlanRepair, DESIGN_FOCUSED_REPAIR_VERSION + noted,
                 lambda answer: validate_focused_repair(answer, issues))
             focused_repair = True
             save()
@@ -536,7 +656,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
             continue
         design = invoke(prompt + "\n" + instructions("teaching_design_repair") + "\n" +
                         json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False),
-                        TeachingPlan, "teaching_design_repair.v2-goal" + noted)
+                        TeachingPlan, DESIGN_REPAIR_VERSION + noted)
         repairs += 1
         review = None
         save()
@@ -544,16 +664,16 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
     write_json(work / "review.json", review.model_dump())
     write_json(work / "dismissed_gaps.json", dismissed_design_gaps(review))
     limits = [g.reason for g in review.gap_assessments if not g.required_for_objective]
-    atomic_text(work / "plan.md", render_teaching_plan(design) +
-                ("\n## Eingeordnete Forschungsgrenzen\n\n" + "\n".join(f"- {s}" for s in limits) + "\n" if limits else ""))
+    research_limits = f"\n## {wording(config.language, 'plan_research_limits')}\n\n"
+    atomic_text(work / "plan.md", render_teaching_plan(design, language=config.language) +
+                (research_limits + "\n".join(f"- {s}" for s in limits) + "\n" if limits else ""))
     gap_path = work / "research_needed.json"
     if gap_path.exists():
         gaps = json.loads(gap_path.read_text(encoding="utf-8"))
         gaps["resolved"] = True
         write_json(gap_path, gaps)
-        atomic_text(work / "research_needed.md", "# Recherchefragen geklärt\n\n"
-                    "Die Lehrplanung wurde mit den verfügbaren Quellen erneut geprüft und angenommen.\n\n" +
-                    "\n".join(f"- {g['question']}" for g in gaps["questions"]) + "\n")
+        atomic_text(work / "research_needed.md", render_research_resolved([g["question"] for g in gaps["questions"]],
+                                                                         language=config.language))
     files = [work / "plan.json", work / "review.json", work / "dismissed_gaps.json", work / "plan.md", checkpoint]
     if focused_repair:
         files.append(work / "focused_repair.json")

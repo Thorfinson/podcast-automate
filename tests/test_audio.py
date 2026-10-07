@@ -243,6 +243,35 @@ class AudioTests(unittest.TestCase):
             assemble(script, self.paths, self.root / "mismatch")
         self.assertFalse(json.loads((self.root / "mismatch/audio_report.json").read_text())["chapters_embedded"])
 
+    def test_every_mp3_carries_the_ai_marking_in_its_tags(self):
+        """D-154 (EU AI Act Art. 50(2), 2026-10-07): the exported MP3 says in machine-readable tags that it was made
+        with AI: the IPTC digital source type for media a trained model generated, AI_GENERATED and a comment in the
+        podcast's language. Read back from the file with ffprobe, next to the title and the chapters."""
+        iptc = "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+        self.assertEqual(self.script.purpose, "technical_probe")
+        assemble(self.script, self.paths, self.root / "marked")
+        tags = audio_info(self.root / "marked/audio.mp3")["format"]["tags"]
+        self.assertEqual((tags["title"], tags["DIGITAL_SOURCE_TYPE"], tags["AI_GENERATED"], tags["comment"]),
+                         (self.script.title, iptc, "true", "KI-generiert: Sprache mit synthetischen Stimmen erzeugt."))
+        report = json.loads((self.root / "marked/audio_report.json").read_text(encoding="utf-8"))
+        self.assertEqual((report["ai_marking_embedded"], report["chapters_embedded"]), (True, True))
+        # An English episode: the comment names the script a model wrote, in English.
+        episode = self.script.model_copy(update={"purpose": "deep_dive"})
+        assemble(episode, self.paths, self.root / "marked_en", language="en-US")
+        tags = audio_info(self.root / "marked_en/audio.mp3")["format"]["tags"]
+        self.assertEqual((tags["DIGITAL_SOURCE_TYPE"], tags["AI_GENERATED"], tags["comment"]),
+                         (iptc, "true", "AI-generated: script written by a language model, speech made with synthetic voices."))
+        self.assertIn("First audio version for listening review.",
+                      (self.root / "marked_en/transcript.md").read_text(encoding="utf-8"))
+        # The report says what the file carries, not what was asked for.
+        def untagged(path):
+            data = audio_info(path)
+            data["format"].pop("tags", None)
+            return data
+        with patch("podcast_automate.audio.audio_info", side_effect=untagged):
+            assemble(self.script, self.paths, self.root / "unmarked")
+        self.assertFalse(json.loads((self.root / "unmarked/audio_report.json").read_text())["ai_marking_embedded"])
+
     def test_the_transcript_names_roles_or_host_names_never_the_voice_preset(self):
         assemble(self.script, self.paths, self.root / "roles")
         transcript = (self.root / "roles/transcript.md").read_text(encoding="utf-8")

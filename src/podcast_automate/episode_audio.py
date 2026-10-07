@@ -8,11 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .audio import PAUSE_TAGS, assemble, run_tts, worker_path
+from .content_text import text as wording, transparency_lines
 from .errors import AppError
-from .expression import EXPRESSION_VERSION, plan_expression, untagged
+from .expression import BACKCHANNELS, EXPRESSION_VERSION, plan_expression, untagged
+from .google_speech import GOOGLE_SPEECH_VERSION, PASSAGE_RULE, check_google_rows, passage_units, run_google_tts
 from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels
 from .provider_pool import AdapterPool
-from .research import refund_call, reserve_call, unanswered
+from .research import refund_call, reserve_call, settle_call, unanswered
 from .research_patches import MAX_REJECTIONS
 from .run_budget import run_text_generation
 from .qwen_worker import spoken_settings
@@ -21,7 +23,7 @@ from .script_models import SeriesPlan
 from .series_review import load_series_review, require_passing_series, reviewed_scripts
 from .scripting import load_research, validate_script
 from .speech import (AudioChoice, SPEECH_VERSION, audio_generation_record, check_gemini_rows,
-                     run_gemini_tts, same_audio_generation)
+                     run_gemini_tts, same_audio_generation, selected_audio)
 from .spoken_forms import SpokenForms, load_forms, report as pronunciation_report, spoken_text
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash,
                       project_lock, read_yaml, write_json, write_yaml)
@@ -115,38 +117,58 @@ def episode_chapters(root, destination, parts):
     return rows
 
 
-def render_export_notes(script, chapters, choice, overrides, labels=None):
-    """Show notes the script stage cannot write: they need measured audio to carry timestamps."""
+def voices_line(voices, labels, language):
+    return wording(language, "export_voices", voice_a=voices["host_a"], host_a=labels["host_a"],
+                voice_b=voices["host_b"], host_b=labels["host_b"])
+
+
+def render_export_notes(script, chapters, choice, overrides, labels=None, *, language):
+    """Show notes the script stage cannot write: they need measured audio to carry timestamps. In the podcast's
+    language (D-153), ending with the transparency note (D-154)."""
     labels = labels or host_labels(None)
     lines = [f"# {script.title}", "",
-             f"Hörfassung mit {labels['host_a']} und {labels['host_b']}.",
-             f"Stimmen: {choice.voices['host_a']} ({labels['host_a']}) und {choice.voices['host_b']} ({labels['host_b']}).", "",
-             "## Kapitel", ""]
+             wording(language, "export_version", host_a=labels["host_a"], host_b=labels["host_b"]),
+             voices_line(choice.voices, labels, language), "",
+             f"## {wording(language, 'export_chapters')}", ""]
     if chapters:
         lines.extend(f"- {row['timestamp']} {row['title']}"
-                     + (f" (Teil {row['part']})" if row["part"] > 1 else "") for row in chapters)
+                     + (wording(language, "export_part", part=row["part"]) if row["part"] > 1 else "") for row in chapters)
     else:
-        lines.append("- Zeitmarken liegen für diese Fassung nicht vor.")
+        lines.append(f"- {wording(language, 'export_untimed')}")
     if overrides:
-        lines.extend(["", "## Aussprache-Hinweise", "",
-                      "Für diese Abschnitte wurde eine abweichende Sprechform vertont; der Text bleibt unverändert.", ""])
+        lines.extend(["", f"## {wording(language, 'export_pronunciation')}", "",
+                      wording(language, "export_pronunciation_note"), ""])
         lines.extend(f"- `{sid}`: {spoken}" for sid, spoken in sorted(overrides.items()))
-    lines.extend(["", "Zeitmarken stammen aus der gemessenen Montage, nicht aus einer Schätzung.", ""])
+    lines.extend(["", wording(language, "export_measured"), "", *transparency_lines(language)])
     return "\n".join(lines)
 
 
-def render_listening_sheet(script, chapters):
+def render_listening_sheet(script, chapters, *, language):
     """A sheet to fill in while listening; nothing here is filled in automatically. Each part's times start at 0:00,
-    so an episode in several parts names the part of every row, as the show notes do."""
+    so an episode in several parts names the part of every row, as the show notes do. In the podcast's language
+    (D-153), ending with the transparency note (D-154)."""
     rows = chapters or [{"timestamp": "0:00", "title": chapter.title} for chapter in script.chapters]
     parted = any(row.get("part", 1) > 1 for row in rows)
-    lines = [f"# Hörprüfung: {script.title}", "",
-             "Beim Hören ausfüllen. Diese Spalten kann keine Prüfung im Programm ersetzen.", "",
-             "| " + ("Teil | " if parted else "") + "Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |",
+    columns = [wording(language, key) for key in ("sheet_time", "sheet_chapter", "sheet_unclear", "sheet_attention",
+                                               "sheet_pronunciation")]
+    lines = [f"# {wording(language, 'sheet_title', title=script.title)}", "", wording(language, "sheet_intro"), "",
+             "| " + (f"{wording(language, 'sheet_part')} | " if parted else "") + " | ".join(columns) + " |",
              "| " + ("--- | " if parted else "") + "--- | --- | --- | --- | --- |"]
     lines.extend("| " + (f"{row.get('part', 1)} | " if parted else "") + f"{row['timestamp']} | {row['title']} | | | |"
                  for row in rows)
-    lines.extend(["", "Nach dem Hören im Studio ankreuzen, dass die Hörprüfung durchgeführt wurde.", ""])
+    lines.extend(["", wording(language, "sheet_done"), "", *transparency_lines(language)])
+    return "\n".join(lines)
+
+
+def render_export_readme(script, recordings, voices, labels, overrides, *, language):
+    """The export's README.md: each recording as (path relative to the export, duration in seconds), the voices and
+    any deviating spoken forms, in the podcast's language (D-153)."""
+    lines = [f"# {script.title}", "", wording(language, "first_version"), voices_line(voices, labels, language), ""]
+    lines.extend(f"- {wording(language, 'readme_listen', path=path, minutes=seconds / 60)}" for path, seconds in recordings)
+    if overrides:
+        lines.extend(["", f"## {wording(language, 'readme_spoken_forms')}", ""])
+        lines.extend(f"- `{sid}`: {spoken}" for sid, spoken in sorted(overrides.items()))
+    lines.extend(["", wording(language, "readme_complete"), wording(language, "readme_no_review"), ""])
     return "\n".join(lines)
 
 
@@ -206,7 +228,7 @@ def episode_spoken(root, episode, script):
 def expression_invoke(pool, work, limits):
     """One text-model call of the expression layer, charged against ``work``'s own small allowance."""
     def invoke(prompt, schema, version):
-        number = reserve_call(work, limits)
+        number = reserve_call(work, limits, billed=pool.billed())
         try:
             return pool.structured(prompt, schema, work / "calls" / f"call_{number:03d}", prompt_version=version)[0]
         except AppError as exc:
@@ -216,19 +238,40 @@ def expression_invoke(pool, work, limits):
         except BaseException:
             refund_call(work, number)
             raise
+        finally:
+            # A billed text model's money counts against the project's money limit (D-146, D-148).
+            settle_call(work, number)
     return invoke
 
 
-def saved_expression(root, episode, script_hash):
-    """The tags placed for an episode's published script while it is read (tag_episode), if they still belong to it."""
+def backchannels_for(choice, language):
+    """The listener reactions a recording with ``choice`` can speak: only Google's two-host passages (google_speech)."""
+    return BACKCHANNELS[language] if choice.provider == "google_gemini_tts" else ()
+
+
+def saved_expression(root, episode, script_hash, *, backchannels=False):
+    """The tags placed for an episode's published script while it is read (tag_episode), if they still belong to it
+    and were placed for the same kind of recording: with listener reactions or without (``backchannels``)."""
     path = root / "episodes" / episode / "expression.json"
     try:
         saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
     except (OSError, ValueError):
         return None
-    if isinstance(saved, dict) and saved.get("version") == EXPRESSION_VERSION and saved.get("script_sha256") == script_hash             and isinstance(saved.get("segments"), dict):
+    if (isinstance(saved, dict) and saved.get("version") == EXPRESSION_VERSION and saved.get("script_sha256") == script_hash
+            and isinstance(saved.get("segments"), dict) and bool(saved.get("backchannels")) == bool(backchannels)):
         return saved
     return None
+
+
+def reading_hash(root, episode, script_hash, *, backchannels=False):
+    """The hash of the tags the reader saw for this recording, which an approval carries: expression.json's while it
+    belongs to the current script and to this kind of recording (saved_expression), else none (""). A reading placed
+    for another route or an earlier script counts as none, as the reading page shows it; the recording then places its
+    own tags, unread, as the approval card says (2026-10-07: after the switch to Google every reading placed before
+    refused the approval as „Ausdruck neu gesetzt“)."""
+    path = root / "episodes" / episode / "expression.json"
+    saved = saved_expression(root, episode, script_hash, backchannels=backchannels)
+    return file_hash(path) if saved is not None and path.is_file() else ""
 
 
 def tag_episode(root, episode, *, api_key=None):
@@ -236,19 +279,22 @@ def tag_episode(root, episode, *, api_key=None):
     (the user's wish of 2026-09-29: the expression belongs in the script check). The text model of the episode's
     script run answers once, with at most two corrections, under a fresh allowance of its own in
     ``studio/expression/<episode>/<time>``. ``episodes/<episode>/expression.json`` binds the tags to the script
-    hash and records the spoken text they were placed on; a Gemini recording speaks exactly these."""
+    hash and records the spoken text they were placed on; a Gemini recording speaks exactly these. For a Google
+    recording they include the other host's reactions (backchannels_for)."""
     root = root.resolve()
     config = load_project(root)
     script_manifest, script, script_hash = reviewed_episode(root, config, episode)
     spoken = episode_spoken(root, episode, script)
     work = root / "studio" / "expression" / episode / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     pool = AdapterPool(config.runtime, script_text_generation(root, config, script_manifest.run_id), api_key=api_key)
-    limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1)
+    limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1,
+                            cost_usd=config.research_limits.cost_usd)
+    reactions = backchannels_for(selected_audio(root, config), config.language)
     tags, rejected = plan_expression(expression_invoke(pool, work, limits), script, spoken,
-                                     language=config.language, labels=host_labels(config))
+                                     language=config.language, labels=host_labels(config), backchannels=reactions)
     record = {"version": EXPRESSION_VERSION, "script_sha256": script_hash, "segments": tags,
               "spoken": {key: spoken[key] for key in tags}, "placed_at": datetime.now(timezone.utc).isoformat(),
-              **({"rejected": rejected} if rejected else {})}
+              **({"backchannels": True} if reactions else {}), **({"rejected": rejected} if rejected else {})}
     write_json(root / "episodes" / episode / "expression.json", record)
     return record
 
@@ -263,7 +309,9 @@ def script_text_generation(root, config, script_run_id):
 def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval_note="",
                       resume=False, run_id=None, expected_script_hash=None, expected_readable_hash=None,
                       expected_config_hash=None, audio_choice=None, api_key=None, expected_audio_hash=None,
-                      parallel_remote=False, expected_expression_hash=None):
+                      parallel_remote=False, expected_expression_hash=None, speech_key=None):
+    """``api_key`` is the OpenRouter key (OpenRouter speech, and the expression layer's text model when it is an
+    OpenRouter one); ``speech_key`` is the Google key a Google recording speaks with."""
     root = root.resolve()
     with project_lock(root, shared=parallel_remote), ExitStack() as locks:
         config = load_project(root)
@@ -274,7 +322,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             episode = request["episode_id"]
             saved_choice = request.get("audio_generation")
             if audio_choice is not None and not same_audio_generation(
-                    saved_choice, AudioChoice.model_validate(audio_choice).model_dump()):
+                    saved_choice, AudioChoice.model_validate(audio_choice).for_language(config.language).model_dump()):
                 raise AppError("Audioanbieter oder Stimmen geändert. Fortsetzen nutzt die gespeicherte Auswahl.", code="inputs_changed", status="blocked")
             audio_choice = saved_choice
         choice = AudioChoice.model_validate(audio_choice) if audio_choice is not None else AudioChoice(voices=config.voice_profile)
@@ -297,14 +345,16 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
 
         if expected_audio_hash is not None and expected_audio_hash != digest(choice.model_dump()):
             raise AppError("Audioauswahl seit der Freigabe geändert.", code="inputs_changed", status="blocked")
+        # From here on the choice as this project's language speaks it; the recording binds only that (D-147).
+        choice = choice.for_language(config.language)
         script_manifest, script, script_hash = reviewed_episode(root, config, episode)
         config_hash = project_hash(config)
         if ((expected_script_hash is not None and expected_script_hash != script_hash) or
                 (expected_readable_hash is not None and expected_readable_hash != file_hash(root / "episodes" / episode / "script.md")) or
                 (expected_config_hash is not None and expected_config_hash != config_hash)):
             raise AppError("Skript oder Stimmen seit der Freigabe geändert. Bitte erneut prüfen.", code="script_edited", status="blocked")
-        tags_file = episode_folder / "expression.json"
-        if expected_expression_hash is not None and expected_expression_hash != (file_hash(tags_file) if tags_file.is_file() else ""):
+        if expected_expression_hash is not None and expected_expression_hash != reading_hash(
+                root, episode, script_hash, backchannels=bool(backchannels_for(choice, config.language))):
             # The approval covers the tags the reader saw; tags placed anew afterwards need a new reading.
             raise AppError("Der Ausdruck wurde seit dem Lesen neu gesetzt. Bitte das Skript mit den aktuellen Tags lesen "
                            "und erneut freigeben.", code="script_edited", status="blocked")
@@ -320,13 +370,20 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             inputs["spoken_forms"] = {"table": table.model_dump(), "overrides": overrides}
         if audio_choice is not None:
             inputs["audio_generation"] = audio_generation_record(choice)
+        google = choice.provider == "google_gemini_tts"
         if choice.remote:
             inputs["speech_model"] = choice.model
-            inputs["speech_version"] = SPEECH_VERSION
-            inputs["worker_sha256"] = file_hash(Path(__file__).with_name("speech.py"))
+            inputs["speech_version"] = GOOGLE_SPEECH_VERSION if google else SPEECH_VERSION
+            # The engine's own file: a Google recording binds google_speech.py, an OpenRouter one speech.py.
+            inputs["worker_sha256"] = file_hash(Path(__file__).with_name("google_speech.py" if google else "speech.py"))
+            if google:
+                inputs["passages"] = PASSAGE_RULE
             if choice.expression:
                 inputs["expression_version"] = EXPRESSION_VERSION
-        audio_config = config.model_copy(update={"voice_profile": choice.voices})
+        # The voices this episode is spoken in: swapped in an even-numbered one when the roles alternate.
+        voiced = choice.for_episode(episode)
+        audio_config = config.model_copy(update={"voice_profile": voiced.voices})
+        reactions = backchannels_for(choice, config.language)
 
         def expression_tags():
             """The inline tags this run placed (expression stage), empty for a run without the layer."""
@@ -334,7 +391,10 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             return json.loads(saved.read_text(encoding="utf-8"))["segments"] if saved.exists() else {}
 
         def validate_audio(batch, report):
-            return (check_gemini_rows(root, batch, report, choice, config.language, table=table, overrides=overrides,
+            if google:
+                return check_google_rows(root, batch, report, voiced, config.language, table=table, overrides=overrides,
+                                         expression=expression_tags())
+            return (check_gemini_rows(root, batch, report, voiced, config.language, table=table, overrides=overrides,
                                       expression=expression_tags())
                     if choice.remote
                     else check_rows(root, batch, report, audio_config, table=table, overrides=overrides))
@@ -396,26 +456,30 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             """Inline audio tags for this recording, placed once by the script's text model and reused on a resume.
             Only tags are added; the check in expression.py keeps every word as it would be spoken anyway."""
             spoken = {s.segment_id: spoken_text(s, table, overrides) for s in script.segments}
-            saved = saved_expression(root, episode, script_hash)
+            saved = saved_expression(root, episode, script_hash, backchannels=bool(reactions))
+            mark = {"backchannels": True} if reactions else {}
             if saved is not None:
                 # The tags the reader saw with the script: a segment whose spoken form changed since goes without.
                 tags = {key: text for key, text in saved["segments"].items()
                         if key in spoken and untagged(text) == " ".join(spoken[key].split())}
                 write_json(work / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": script_hash,
-                                                      "segments": tags, "source": "reading",
+                                                      "segments": tags, "source": "reading", **mark,
                                                       **({"rejected": saved["rejected"]} if saved.get("rejected") else {})})
                 return [work / "expression.json"]
             pool = AdapterPool(config.runtime, script_text_generation(root, config, script_manifest.run_id), api_key=api_key)
-            limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1)
+            limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1,
+                                    cost_usd=config.research_limits.cost_usd)
             write_json(work / "progress.json", {"status": "expression", "total_segments": len(script.segments)})
             tags, rejected = plan_expression(expression_invoke(pool, work, limits), script, spoken,
-                                             language=config.language, labels=host_labels(config))
+                                             language=config.language, labels=host_labels(config),
+                                             backchannels=reactions)
             write_json(work / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": script_hash,
-                                                  "segments": tags, **({"rejected": rejected} if rejected else {})})
+                                                  "segments": tags, **mark,
+                                                  **({"rejected": rejected} if rejected else {})})
             return [work / "expression.json"]
 
         def synthesis():
-            outputs, rows = [], []
+            outputs, rows, unit = [], [], "passages" if google else "segments"
             for number, chapter in enumerate(script.chapters, 1):
                 batch = select_script(script, [s for s in script.segments if s.chapter_id == chapter.chapter_id])
                 folder = work / "synthesis" / chapter.chapter_id
@@ -435,22 +499,31 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                     except (OSError, ValueError, KeyError, AppError):
                         report = None
                 if report is None:
-                    if choice.remote:
+                    if google:
                         if parallel_remote:
-                            from .parallel_speech import run_parallel_gemini_tts
-                            run_parallel_gemini_tts(config, batch, root, folder, choice, api_key,
+                            from .parallel_speech import run_parallel_google_tts
+                            run_parallel_google_tts(config, batch, root, folder, voiced, speech_key,
                                                     table=table, overrides=overrides, expression=expression_tags())
                         else:
-                            run_gemini_tts(config, batch, root, folder, choice, api_key,
+                            run_google_tts(config, batch, root, folder, voiced, speech_key,
+                                           table=table, overrides=overrides, expression=expression_tags())
+                    elif choice.remote:
+                        if parallel_remote:
+                            from .parallel_speech import run_parallel_gemini_tts
+                            run_parallel_gemini_tts(config, batch, root, folder, voiced, api_key,
+                                                    table=table, overrides=overrides, expression=expression_tags())
+                        else:
+                            run_gemini_tts(config, batch, root, folder, voiced, api_key,
                                            table=table, overrides=overrides, expression=expression_tags())
                     else:
                         run_tts(audio_config, batch, root, folder, table=table, overrides=overrides)
                     report = json.loads(report_file.read_text(encoding="utf-8"))
                     validate_audio(batch, report)
                     write_json(stamp_file, {"input_hash": signature, "sha256": file_hash(report_file)})
-                rows.extend(report["segments"])
+                # A Google recording reports passages of several segments, the others one row per segment.
+                rows.extend(report[unit])
                 outputs.extend([report_file, stamp_file])
-            report = {"segments": rows, "script_sha256": script_hash, "voices": choice.voices}
+            report = {unit: rows, "script_sha256": script_hash, "voices": voiced.voices}
             paths = validate_audio(script, report)
             write_json(work / "tts_report.json", report)
             return [*outputs, *paths, work / "tts_report.json", work / "inputs.json",
@@ -474,7 +547,9 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             # an episode now, at script_models.MAX_EPISODE_MINUTES. parts.json keeps its form, with the one part.
             whole = select_script(script, list(script.segments), title=script.title)
             outputs = assemble(whole, paths, destination, language=config.language, labels=host_labels(config),
-                               pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused)
+                               pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused,
+                               units=passage_units(report) if google else None,
+                               tempo=choice.pace_for(config.language).tempo)
             audio_report = json.loads((destination / "audio_report.json").read_text(encoding="utf-8"))
             parts = [{"part": 1, "audio": (destination / "audio.mp3").relative_to(root).as_posix(),
                       "duration_seconds": audio_report["duration_seconds"],
@@ -486,29 +561,21 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             parts = json.loads((work / "parts.json").read_text(encoding="utf-8"))
             destination = root / "exports" / episode / manifest.run_id
             labels = host_labels(config)
-            lines = [f"# {script.title}", "",
-                     "Erste Audiofassung zur Hörprüfung.",
-                     f"Stimmen: {choice.voices['host_a']} ({labels['host_a']}) und {choice.voices['host_b']} ({labels['host_b']}).", ""]
-            playlist = ["#EXTM3U"]
-            for part in parts["parts"]:
-                audio = root / part["audio"]
-                relative = audio.relative_to(destination).as_posix()
-                lines.append(f"- [Folge anhören]({relative}) – {part['duration_seconds']/60:.2f} Minuten")
-                playlist.append(relative)
-            if overrides:
-                lines.extend(["", "## Abweichende Sprechformen", ""])
-                lines.extend(f"- `{sid}`: {spoken}" for sid, spoken in sorted(overrides.items()))
-            lines.extend(["", "Der gesamte freigegebene Text ist in Skriptreihenfolge enthalten.",
-                          "Die technische Montage ersetzt keine Hörprüfung von Aussprache und Natürlichkeit.", ""])
-            atomic_text(destination / "README.md", "\n".join(lines))
-            atomic_text(destination / "playlist.m3u", "\n".join(playlist) + "\n")
+            # The export's texts are in the podcast's content language, never the Studio's (D-153).
+            recordings = [((root / part["audio"]).relative_to(destination).as_posix(), part["duration_seconds"])
+                          for part in parts["parts"]]
+            atomic_text(destination / "README.md", render_export_readme(script, recordings, voiced.voices, labels,
+                                                                        overrides, language=config.language))
+            atomic_text(destination / "playlist.m3u", "\n".join(["#EXTM3U", *(path for path, _ in recordings)]) + "\n")
             chapters = episode_chapters(root, destination, parts)
-            atomic_text(destination / "show_notes.md", render_export_notes(script, chapters, choice, overrides, labels))
-            atomic_text(destination / "listening_sheet.md", render_listening_sheet(script, chapters))
+            atomic_text(destination / "show_notes.md", render_export_notes(script, chapters, voiced, overrides, labels,
+                                                                           language=config.language))
+            atomic_text(destination / "listening_sheet.md", render_listening_sheet(script, chapters,
+                                                                                   language=config.language))
             pronunciation = pronunciation_report(script, table, language=config.language, overrides=overrides)
             write_json(work / "pronunciation.json", pronunciation)
             report = {"run_id": manifest.run_id, "script_run_id": script_manifest.run_id,
-                "script_sha256": script_hash, "voices": choice.voices, "audio_generation": choice.model_dump(),
+                "script_sha256": script_hash, "voices": voiced.voices, "audio_generation": choice.model_dump(),
                 "audio_generated": True, "audio_approved": True, "human_listening_reviewed": False,
                 "pronunciation": pronunciation, "spoken_overrides": overrides, "chapters": chapters,
                 "status": "awaiting_listening_review", **parts}

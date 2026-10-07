@@ -38,7 +38,8 @@ REASON_LABELS = {
     "codex_missing": "Codex CLI nicht gefunden", "claude_missing": "Claude Code nicht gefunden",
     "missing_executable": "CLI nicht startbar", "authentication_required": "nicht angemeldet",
     "subscription_required": "keine Abo-Anmeldung", "timeout": "Kontingentabfrage ohne Antwort",
-    "codex_failed": "Codex-Aufruf oder Kontingentabfrage fehlgeschlagen", "rate_limit_reached": "Limit erreicht",
+    "codex_failed": "Codex-Aufruf oder Kontingentabfrage fehlgeschlagen", "claude_failed": "Claude-Aufruf fehlgeschlagen",
+    "rate_limit_reached": "Limit erreicht",
     "window_exhausted": "Fenster ausgeschöpft", "spend_control_reached": "Ausgabengrenze erreicht",
     "usage_not_allowed": "Nutzung derzeit nicht erlaubt", "weekly_limit": "Wochenlimit",
     "opus_limit": "Opus-Limit", "session_limit": "Sitzungslimit", "unclear_limit": "Limit",
@@ -242,6 +243,17 @@ def claude_quota(*, refresh=False, clock=time.time) -> dict:
             "resets_at": block.get("blocked_until") if block else None, "reason": reason,
             "last_rate_limit": (read_store().get("claude_code") or {}).get("last_rate_limit"),
             "checked_at": login.get("checked_at"), **({"extra_usage": True} if extra else {})}
+
+
+def logged_in(provider, settings=None, *, clock=time.time) -> bool:
+    """Whether a subscription's login works now, asked afresh and without a model call: Claude Code's ``auth status``
+    and version (claude_quota), Codex's account read (codex_quota, which needs the runtime ``settings``). A spent quota
+    still counts as logged in. The Studio resumes a run stopped for an expired login once this holds (D-155)."""
+    if provider == "claude_code":
+        return bool(claude_quota(refresh=True, clock=clock).get("usable"))
+    if provider == "codex_cli" and settings is not None:
+        return bool(codex_quota(settings, refresh=True, clock=clock).get("usable"))
+    return False
 
 
 def record_quota_failure(provider, error, *, settings=None, clock=time.time):

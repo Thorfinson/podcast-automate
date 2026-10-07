@@ -19,8 +19,15 @@ from .storage import read_optional_json as read
 
 FRESH_ATTEMPT_CHOICES = (0, 1, 2, 3)
 EXTRA_CALL_CHOICES = (0, 100, 250, 500, 1000)
+# What a new workspace allows ahead (D-155): written only for the first project of a workspace that has neither a
+# settings file nor a project (Studio.create) and shown on its settings page until then (Studio.settings_values).
+# Every existing workspace keeps its values, and one without them keeps the 0/0 of allowances(). These are the values
+# the user had tested: two fresh attempts per run covered every one granted in the three series of 2026-09-30, and 250
+# extra calls cover the research overshoot measured there for two of the three topics.
+NEW_WORKSPACE = {"fresh_attempts": 2, "extra_calls": 250}
 # Stops whose card offers "Mit neuen Anläufen fortsetzen" (web/app.js STOP_RULES); the card shows the button and the
-# scheduler grants an allowance only where run_budget.fresh_attempts_plan finds something to set aside. Since
+# scheduler grants an allowance only where run_budget.fresh_attempts_plan finds something to set aside, or, for a script
+# run's correction loop that keeps no rejection, where the resume asks anew (run_budget.reasked_stop, D-155). Since
 # 2026-10-02 every correction loop of a script run has the button, and spent rejections stop as rejected_output.
 CORRECTION_LOOP_CODES = {
     "rejected_output", "invalid_model_output", "invalid_evidence_review", "invalid_question_routing",

@@ -1,4 +1,8 @@
-"""Persistent, shared Gemini audition library. Playback never synthesizes speech."""
+"""Persistent, shared Gemini audition library. Playback never synthesizes speech.
+
+Two kinds of sample: one voice reading a short text (OpenRouter, the voice library), and a short conversation of two
+voices in their styles through Google (google_speech), as a Google recording would speak them; the settings page plays
+the conversation of the selection it shows (the user's wish of 2026-10-06: "man will ja immer mal was anderes")."""
 from __future__ import annotations
 
 import json
@@ -6,9 +10,12 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from .audio import ffmpeg
+from .audio import ffmpeg, marking_args
 from .errors import AppError
-from .speech import GEMINI_VOICES, GeminiSpeech, cached_audio, shared_throttle, speech_settings
+from .expression import untagged
+from .google_speech import GoogleSpeech, passage_settings
+from .models import Segment
+from .speech import AudioChoice, GEMINI_MODEL, GEMINI_VOICES, GeminiSpeech, cached_audio, shared_throttle, speech_settings
 from .storage import digest, file_hash, inside, project_lock, write_json
 
 SAMPLE_TEXTS = {
@@ -75,7 +82,9 @@ def generate_sample(root, voice, language, api_key=None):
             target.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=target.parent) as temporary:
                 encoded = Path(temporary) / "audio.mp3"
-                ffmpeg(["-i", str(wav), "-c:a", "libmp3lame", "-b:a", "192k", str(encoded)])
+                # A sample is synthetic speech of a fixed text: marked as such (D-154), in the sample's language.
+                ffmpeg(["-i", str(wav), "-c:a", "libmp3lame", "-b:a", "192k",
+                        *marking_args(language, "technical_probe"), str(encoded)])
                 encoded.replace(target)
             write_json(target.with_suffix(".json"), {"settings": settings, "sha256": file_hash(target)})
         # Keep the existing single-sample result and media URLs compatible.
@@ -84,6 +93,122 @@ def generate_sample(root, voice, language, api_key=None):
             alias.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(target, alias)
     return {"voice": voice, "language": language, "audio": alias.relative_to(root).as_posix()}
+
+
+# The conversation sample: the questioner opens, the expert answers with a pause tag and the questioner's reaction
+# inside the answer, the way a Google recording with its expression layer sounds.
+PAIR_TEXTS = {
+    "de-DE": [("host_b", "Eine Sache lässt mich nicht los. Warum bleibt eine gute Erklärung hängen, eine Liste von "
+                         "Fakten aber nicht?"),
+              ("host_a", "Weil eine gute Erklärung mit einer Frage beginnt, die einen wirklich interessiert. <short pause> "
+                         "Dann beantwortet jeder Schritt etwas, das man sich ohnehin gefragt hat, |mhm| und plötzlich "
+                         "haben die Fakten einen Platz."),
+              ("host_b", "Einen Platz für die Fakten. Das gefällt mir. Und was kommt als Nächstes?"),
+              ("host_a", "Als Nächstes probieren wir es an einem echten Beispiel aus, Schritt für Schritt.")],
+    "en-US": [("host_b", "Here's what I keep wondering. Why does a good explanation stick, while a list of facts just "
+                         "slips away?"),
+              ("host_a", "Because a good explanation starts with a question you actually care about. <short pause> Then "
+                         "every step answers something you were already wondering, |mhm| and suddenly the facts have a "
+                         "place to land."),
+              ("host_b", "A place to land. I like that. So what comes next?"),
+              ("host_a", "Next, we try it out on a real example, one step at a time.")],
+}
+
+
+def pair_script(language):
+    """The sample conversation as segments of one passage and the tagged text each is spoken as."""
+    if language not in PAIR_TEXTS:
+        raise AppError("Sprache für die Gesprächsprobe auswählen.", code="invalid_voice")
+    segments = [Segment(segment_id=f"probe_{number}", scene_id="probe", chapter_id="probe", speaker_id=speaker,
+                        text=untagged(text)) for number, (speaker, text) in enumerate(PAIR_TEXTS[language], 1)]
+    return segments, {segment.segment_id: text for segment, (_, text) in zip(segments, PAIR_TEXTS[language])}
+
+
+def pair_choice(voices, styles, language=None, pace=None):
+    """The two voices and styles, and ``language``'s pace, as a valid Google choice, or invalid_voice."""
+    try:
+        return AudioChoice(provider="google_gemini_tts", voices=voices, styles=styles if styles is not None else {},
+                           pace={language: pace} if pace else {})
+    except (ValueError, TypeError):
+        raise AppError("Zwei unterschiedliche Gemini-Stimmen, kurze Stilangaben und ein Sprechtempo zwischen 80 und "
+                       "100 Prozent wählen.", code="invalid_voice") from None
+
+
+def pair_settings(voices, styles, language, pace=None):
+    """The sample's fingerprint: the passage Google speaks, with the styles of ``language``'s pace, and the montage
+    tempo where it slows the sample (left out at full speed, so earlier samples keep their fingerprints)."""
+    choice = pair_choice(voices, styles, language, pace)
+    segments, spoken = pair_script(language)
+    settings = passage_settings(segments, spoken, choice.voices, language, GEMINI_MODEL, choice.spoken_styles(language))
+    tempo = choice.pace_for(language).tempo
+    return {**settings, "tempo": tempo} if tempo != 1.0 else settings
+
+
+def pair_path(projects, voices, styles, language, pace=None):
+    fingerprint = digest(pair_settings(voices, styles, language, pace))
+    return inside(projects, f"voice-samples/google/{language}/{fingerprint}/audio.mp3")
+
+
+def ready_pair(projects, voices, styles, language, pace=None):
+    """The finished conversation sample of this selection, or None."""
+    path = pair_path(projects, voices, styles, language, pace)
+    return ready_file(path, pair_settings(voices, styles, language, pace))
+
+
+def ready_pair_file(projects, language, fingerprint):
+    """A finished conversation sample by its fingerprint (the URL the settings page plays), or None."""
+    try:
+        path = inside(projects, f"voice-samples/google/{language}/{fingerprint}/audio.mp3")
+        metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        settings = metadata.get("settings")
+        return ready_file(path, settings) if digest(settings) == fingerprint else None
+    except (OSError, ValueError, AttributeError, AppError):
+        return None
+
+
+def ready_file(path, settings):
+    try:
+        metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        if (metadata.get("settings") == settings and path.stat().st_size > 0
+                and metadata.get("sha256") == file_hash(path)):
+            return path
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def pair_view(projects, voices, styles, language, pace=None):
+    """What the settings page needs for a selection: the sample's URL and whether it exists yet."""
+    path = pair_path(projects, voices, styles, language, pace)
+    return {"url": f"/samples/google/{language}/{path.parent.name}",
+            "ready": ready_pair(projects, voices, styles, language, pace) is not None}
+
+
+def generate_pair(projects, voices, styles, language, api_key=None, pace=None):
+    """Speak the sample conversation of this selection through Google, once; later requests play the saved file.
+    ``projects`` is the Studio's projects folder, where the library lives next to the projects. A slower tempo
+    re-encodes the same Google recording, as the montage of an episode would (audio.assemble)."""
+    settings = pair_settings(voices, styles, language, pace)
+    choice = pair_choice(voices, styles, language, pace)
+    tempo = choice.pace_for(language).tempo
+    shared = inside(projects, "voice-samples/google")
+    with project_lock(shared):
+        target = ready_pair(projects, voices, styles, language, pace)
+        if target is None:
+            segments, spoken = pair_script(language)
+            # The rate-limit file every recording of the workspace shares (speech.shared_throttle).
+            engine = GoogleSpeech(api_key, throttle_file=shared_throttle(shared.parent))
+            wav = engine.synthesize(segments, spoken, choice.voices, language, shared / "cache",
+                                    choice.spoken_styles(language))
+            target = pair_path(projects, voices, styles, language, pace)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=target.parent) as temporary:
+                encoded = Path(temporary) / "audio.mp3"
+                ffmpeg(["-i", str(wav), *(["-af", f"atempo={tempo:g}"] if tempo != 1.0 else []),
+                        "-c:a", "libmp3lame", "-b:a", "192k", *marking_args(language, "technical_probe"), str(encoded)])
+                encoded.replace(target)
+            write_json(target.with_suffix(".json"), {"settings": settings, "sha256": file_hash(target)})
+    return {"language": language, "voices": choice.voices, **pair_view(projects, voices, styles, language, pace)}
 
 
 def generate_samples(root, language, api_key=None, progress=None):

@@ -3,47 +3,55 @@ naturally into the dialogue. Work through one example in enough detail that list
 what changes, what stays fixed, why the next step helps, and what can go wrong. Keep the hosts
 curious and thoughtful. Both contribute; avoid praise, repetitive 'exactly', quiz questions to the
 audience and unexplained jargon. Follow the supplied host_roles. Explain the idea before its
-optional name. No equations, spoken citations, source IDs, URLs, stage directions or descriptions
-of this pipeline. Distinguish hypothetical teaching examples from reported experiments. Mark an
+optional name. No equations, spoken citations, source IDs, URLs, stage directions or descriptions of
+this pipeline. Distinguish hypothetical teaching examples from reported experiments. Mark an
 invented example as illustrative exactly once, where it is introduced. Later references to it name
 the example itself, as in 'in unserem Beispiel', and do not repeat that it is hypothetical or not
 measured. Preserve important limits. brief.style_notes holds the operator's standing editorial
 corrections; follow them unless they conflict with the evidence rules, which always win. For a
 finding listed in single_group_findings, attribute it audibly once in this episode: say whose
 measurement or report it is, in ordinary words and without a spoken citation. Use original wording,
-no direct quotations or close reproduction of source passages. Write full explanations rather than
-stretching a summary with banter. Execute the reviewed teaching_design: establish the starting
-problem and foundations, develop its reasoning and example, then earn the synthesis and transfer.
-Its objectives will be checked by a separate reader who receives only the script and questions. Do
-not recite the teaching plan, announce every micro-step, or turn the dialogue into a quiz. Use each
-scene as a chapter in order, chapter_id=scene_id. Use purpose=deep_dive. Segments have stable
-unique IDs and host_a or host_b. Let the reasoning determine turn length: a short objection can
-lead to a longer explanation. Split long turns at natural sentence boundaries into consecutive
-segments by the same host when needed. Attach finding IDs in knowledge_refs to every factual
-explanation and teaching illustration. Pure transitions and nonfactual intro/outro framing may have
-empty refs. The episode's finding_ids are its core: each scene must develop its assigned findings,
-and the dialogue covers every core finding. A scene may also reference findings introduced in
-earlier scenes to build on them or connect the conclusion to the opening; do not introduce later
-core findings prematurely. The episode's supporting_finding_ids are study detail: cite one in any
-scene where it backs a statement the explanation makes, leave out what the explanation does not
-need, and never turn them into a list of further points. Never reference an episode as already
-heard unless it is a listed prerequisite. Meet the planned teaching scope and duration with
-substantive reasoning, not padding. Aim for 95-100% of target_minutes at 130 spoken words/minute
-including short pauses, and never exceed 60 planned minutes. Derive the word budget from this
-episode's actual target. A summary of a few points is not a complete episode. Carry a motivating
-problem through the episode; work out concrete examples and counterexamples, explain why each
-mechanism is needed and why it helps. Build later reasoning explicitly on the foundations already
-established. Let the second host develop consequences and challenge assumptions, not merely restate
-or cue definitions. End by resolving the opening problem at a deeper level, and open and close the
-episode as the framing rules above say. Where brief.series_goal weights understand, explain each idea or theory first in its own logic,
-audibly attributed to its author, from the findings drawn from the author's own work, and only then
-its tests and critiques. Where it weights apply, give concrete recommendations the hosts stand behind,
-introduced once as their own recommendation and each built on the practice findings it cites. Keep
-sorting statements by origin where it helps listeners weigh them: the author's view, a test, a
-critique, our reading, our recommendation. When brief.recency_months is set, name the year of a
-practice, tool or benchmark source published before that window. Findings in the episode's
-recap_finding_ids were explained in earlier episodes: recall them briefly with their IDs in
-knowledge_refs, do not teach them again. research_limits lists limits the research noted for
-statements of this episode: state each once, briefly and in ordinary words, in the segment that
-uses the affected statement (finding_ids names it where known), with that statement's
-knowledge_refs; no separate limitation scene and no list of caveats at the end.
+no direct quotations or close reproduction of source passages. Write full explanations, not a
+summary stretched with banter. Execute the reviewed teaching_design: establish the starting problem
+and foundations, develop its reasoning and example, then earn the synthesis and transfer. Tell it
+along the design's arc and dramaturgy by the listenability rules above: open on hook_question with
+the design's opening, let a first_answer stand as a guess where the design gives one, bring the
+turning_point with its turning_finding_ids, end each chapter as its scene's ending says, let host_b
+take the design's partner_stance, and close on the payoff with its callback; keep destination for
+the end. A design without these fields gets an arc from opening_problem, the scenes'
+entry_questions and destination. Its objectives will be checked by a separate reader who
+receives only the script and questions. Do not recite the teaching plan, announce every micro-step,
+or turn the dialogue into a quiz. Use each scene as a chapter in order, chapter_id=scene_id. Use
+purpose=deep_dive. Segments have stable unique IDs and host_a or host_b. Keep each turn to the
+length the listenability rules set; split a turn at natural sentence boundaries into consecutive
+segments by the same host where a segment would be long, which still counts as one turn. Attach
+finding IDs in knowledge_refs to every factual explanation and teaching illustration, and to a recap
+or reflection beat that restates a claim. Pure transitions, reactions, questions and nonfactual
+intro/outro framing may have empty refs. The episode's finding_ids are its core: each scene must
+develop its assigned findings, and the dialogue covers every core finding. A scene may also
+reference findings introduced in earlier scenes to build on them or connect the conclusion to the
+opening; do not introduce later core findings prematurely. The episode's supporting_finding_ids are
+study detail: cite one in any scene where it backs a statement the explanation makes, leave out what
+the explanation does not need, and never turn them into a list of further points. Never reference an
+episode as already heard unless it is a listed prerequisite. Meet the planned teaching scope and
+duration with substantive reasoning, not padding: the recaps and reflection beats of the
+listenability rules belong to the explanation, empty repetition and banter do not. Aim for 95-100%
+of target_minutes at 130 spoken words/minute including short pauses, and never exceed 60 planned
+minutes. Derive the word budget from this episode's actual target. A summary of a few points is not
+a complete episode. Work out concrete examples and counterexamples, explain why each mechanism is
+needed and why it helps. Build later reasoning explicitly on the foundations already established.
+Let the second host react, sum up in their own words, develop consequences and challenge
+assumptions, never merely cue definitions. End by answering the opening question at a deeper level,
+and open and close the episode as the framing rules above say. Where brief.series_goal weights
+understand, explain each idea or theory first in its own logic, audibly attributed to its author,
+from the findings drawn from the author's own work, and only then its tests and critiques. Where it
+weights apply, give concrete recommendations the hosts stand behind, introduced once as their own
+recommendation and each built on the practice findings it cites. Keep sorting statements by origin
+where it helps listeners weigh them: the author's view, a test, a critique, our reading, our
+recommendation. When brief.recency_months is set, name the year of a practice, tool or benchmark
+source published before that window. Findings in the episode's recap_finding_ids were explained in
+earlier episodes: recall them briefly with their IDs in knowledge_refs, do not teach them again.
+research_limits lists limits the research noted for statements of this episode: state each once,
+briefly and in ordinary words, in the segment that uses the affected statement (finding_ids names it
+where known), with that statement's knowledge_refs; no separate limitation scene and no list of
+caveats at the end.

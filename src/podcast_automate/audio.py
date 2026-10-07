@@ -9,6 +9,7 @@ import wave
 from array import array
 from pathlib import Path
 
+from .content_text import mp3_comment, text as wording
 from .errors import AppError
 from .models import ROLE_LABELS, EpisodeScript, TopicBrief
 from .process import run_process
@@ -35,6 +36,21 @@ PAUSE_TAGS = ("<short pause>", "<long pause>")
 # catches the peaks between samples, with its ceiling 0.5 dB under the target for the MP3 encoder. A 40-minute mix
 # of Gemini takes came out at -16.0 LUFS and -1.9 dBTP, -2.1 dBTP after MP3 encoding, in 17 s (2026-10-02).
 LIMITER_CEILING_DB = -2.0
+# D-154 (EU AI Act Art. 50(2)): every exported MP3 says in its own tags that it was made with AI. DIGITAL_SOURCE_TYPE
+# is the IPTC digital source type for media a trained model generated. FFmpeg writes a key that has no ID3v2.3 frame
+# of its own as a TXXX frame named by the key; FFmpeg 9.0 writes "comment" so as well, not as a COMM frame.
+DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+
+
+def ai_marking(language, purpose):
+    """The tags that mark an exported MP3 as AI-generated, its comment in the podcast's language (D-154)."""
+    return {"comment": mp3_comment(language, purpose), "DIGITAL_SOURCE_TYPE": DIGITAL_SOURCE_TYPE,
+            "AI_GENERATED": "true"}
+
+
+def marking_args(language, purpose):
+    """The FFmpeg output options that write ai_marking into an MP3, for every encoder of synthetic speech."""
+    return [arg for key, value in ai_marking(language, purpose).items() for arg in ("-metadata", f"{key}={value}")]
 
 
 def silent_runs(samples, rate, channels=1):
@@ -208,19 +224,42 @@ def embedded_chapters(path: Path) -> list[dict]:
         return []
 
 
+def recording_units(script, units):
+    """The segment indices each recording covers: one segment each, or the passages ``units`` names by segment id
+    (google_speech), which must cover the script in order and never cross a chapter."""
+    if units is None:
+        return [[index] for index in range(len(script.segments))]
+    order = {segment.segment_id: index for index, segment in enumerate(script.segments)}
+    groups = [[order.get(segment_id, -1) for segment_id in unit] for unit in units]
+    if ([index for group in groups for index in group] != list(range(len(script.segments)))
+            or any(not group or len({script.segments[index].chapter_id for index in group}) != 1 for group in groups)):
+        raise AppError("Die Passagen passen nicht zum Skript.", code="invalid_audio")
+    return groups
+
+
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
              *, max_seconds: float | None = None, language: str = "de-DE", labels: dict | None = None,
-             pauses=None, progress=None, trim_pauses=()) -> list[Path]:
+             pauses=None, progress=None, trim_pauses=(), units=None, tempo=1.0) -> list[Path]:
     """Mix, measure and encode one episode into one MP3; ``progress(step, done, total)`` reports each step.
+
+    ``paths`` holds one recording per segment, or with ``units`` one per passage of several segments (a two-host
+    Google recording, google_speech). Pauses go between recordings only, by the rule of a passage's last segment:
+    inside a passage Gemini paces the turns itself. timeline.json then has one row per passage.
 
     ``max_seconds`` stops a montage longer than that; an episode has no such limit since 2026-10-04 (one episode is
     one MP3), as the script check bounds its length before the recording.
 
-    ``trim_pauses`` names the segments whose spoken text carries a pause tag: their silences over 1.5 s are cut
-    to 1.2 s, since a <long pause> left up to 7.3 s of dead air in the 29 Sep exports. Other segments stay as
-    recorded."""
+    ``trim_pauses`` names the segments whose spoken text carries a pause tag: their recording's silences over 1.5 s
+    are cut to 1.2 s, since a <long pause> left up to 7.3 s of dead air in the 29 Sep exports. Other recordings stay
+    as recorded.
+
+    ``tempo`` under 1 slows every recording with its pitch kept (FFmpeg atempo, LanguagePace) before the pauses go in,
+    so the pauses keep their length and the timeline and chapters are measured on the slowed audio."""
+    if not 0.8 <= tempo <= 1.0:
+        raise AppError("Das Sprechtempo liegt zwischen 80 und 100 Prozent.", code="invalid_audio")
     report = progress or (lambda step, done=0, total=0: None)
-    if len(paths) != len(script.segments):
+    groups = recording_units(script, units)
+    if len(paths) != len(groups):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
     output.mkdir(parents=True, exist_ok=True)
     timeline = []
@@ -230,18 +269,20 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         position = 0
         with wave.open(str(mixed), "wb") as target:
             target.setparams((2, 2, 44100, 0, "NONE", "not compressed"))
-            for index, (segment, source) in enumerate(zip(script.segments, paths, strict=True)):
+            for number, (group, source) in enumerate(zip(groups, paths, strict=True)):
+                members = [script.segments[index] for index in group]
+                name = members[0].segment_id + (f" bis {members[-1].segment_id}" if len(members) > 1 else "")
                 if not source.is_file():
-                    raise AppError(f"Segment fehlt: {segment.segment_id}", code="invalid_audio")
-                normalized = work / f"segment_{index}.wav"
-                report("normalize", index, len(paths))
-                ffmpeg(["-i", str(source), "-ar", "44100", "-ac", "2",
-                        "-c:a", "pcm_s16le", str(normalized)])
+                    raise AppError(f"Segment fehlt: {name}", code="invalid_audio")
+                normalized = work / f"segment_{number}.wav"
+                report("normalize", number, len(paths))
+                ffmpeg(["-i", str(source), *(["-af", f"atempo={tempo:g}"] if tempo != 1.0 else []),
+                        "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", str(normalized)])
                 with wave.open(str(normalized), "rb") as stream:
                     frames = stream.getnframes()
                     start = position
                     peak = trimmed = 0
-                    if segment.segment_id in trim_pauses:
+                    if any(member.segment_id in trim_pauses for member in members):
                         samples, trimmed = shortened_silences(array("h", stream.readframes(frames)), 44100, channels=2)
                         frames -= trimmed
                         peak = max(max(samples, default=0), -min(samples, default=0))
@@ -251,18 +292,22 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                         peak = max(peak, max(map(abs, samples), default=0))
                         target.writeframesraw(chunk)
                     if frames == 0 or peak == 0:
-                        raise AppError(f"Segment enthält nur Stille: {segment.segment_id}",
+                        raise AppError(f"Segment enthält nur Stille: {name}",
                                        code="invalid_audio")
-                pause_ms, reason = applied_pause(script, index, pauses)
+                pause_ms, reason = applied_pause(script, group[-1], pauses)
                 pause = round(pause_ms * 44100 / 1000)
                 position += frames + pause
                 if max_seconds is not None and position / 44100 > max_seconds:
                     raise AppError("Die Montage überschreitet die erlaubte Länge.", code="duration_exceeded",
                                    status="blocked")
                 target.writeframesraw(b"\0" * (pause * 4))
+                identity = ({"segment_id": members[0].segment_id, "chapter_id": members[0].chapter_id,
+                             "speaker_id": members[0].speaker_id} if units is None else
+                            {"segment_ids": [member.segment_id for member in members],
+                             "chapter_id": members[0].chapter_id,
+                             "speaker_ids": list(dict.fromkeys(member.speaker_id for member in members))})
                 timeline.append({
-                    "segment_id": segment.segment_id, "chapter_id": segment.chapter_id,
-                    "speaker_id": segment.speaker_id, "start_seconds": start / 44100,
+                    **identity, "start_seconds": start / 44100,
                     "speech_end_seconds": (start + frames) / 44100,
                     "end_seconds": position / 44100,
                     "pause_ms": pause_ms, "pause_reason": reason,
@@ -297,13 +342,17 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         atomic_text(metadata, chapter_metadata(script.title, chapters))
         encoded = work / "audio.mp3"
         report("encode", len(paths), len(paths))
+        marking = ai_marking(language, script.purpose)
         encoding = ffmpeg(["-i", str(mixed), "-i", str(metadata), "-map", "0:a", "-map_metadata", "1",
                 "-id3v2_version", "3", "-write_id3v1", "1",
                 "-af", loudness, "-ar", "44100", "-ac", "2",
                 "-c:a", "libmp3lame", "-b:a", "192k", "-metadata", f"title={script.title}",
+                *marking_args(language, script.purpose),
                 str(encoded)])
         info = audio_info(encoded)
         duration = float(info["format"]["duration"])
+        # Read back from the file, as the chapters are: the marking counts only where the MP3 carries it.
+        tags = info["format"].get("tags") or {}
         if max_seconds is not None and duration > max_seconds:
             raise AppError("Die gemessene MP3 überschreitet die erlaubte Länge.",
                            code="duration_exceeded", status="blocked")
@@ -312,7 +361,8 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
     write_json(output / "chapters.json", {"version": "1.0", "chapters": chapters,
                                           "embedded": written_chapters})
     write_json(output / "timeline.json", {
-        "schema_version": "1.0", "segments": timeline,
+        # 1.1: rows of passages (segment_ids, speaker_ids) instead of segments.
+        "schema_version": "1.0" if units is None else "1.1", "segments": timeline,
         "pcm_duration_seconds": position / 44100, "mp3_duration_seconds": duration,
     })
     write_json(output / "audio_report.json", {
@@ -323,16 +373,13 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         "loudness_mode": "linear_gain_limiter", "gain_db": gain, "limiter_ceiling_dbfs": LIMITER_CEILING_DB,
         "output_loudness": output_loudness(encoding),
         "pause_policy": pauses.model_dump() if pauses is not None else None,
+        **({"tempo": tempo} if tempo != 1.0 else {}),
         "applied_pause_seconds": round(sum(row["pause_ms"] for row in timeline) / 1000, 3),
         "trimmed_silence_seconds": round(sum(row.get("trimmed_silence_ms", 0) for row in timeline) / 1000, 3),
         "chapters_embedded": bool(chapters) and [c["title"] for c in written_chapters] == [c["title"] for c in chapters],
+        "ai_marking": marking, "ai_marking_embedded": all(tags.get(key) == value for key, value in marking.items()),
     })
-    if script.purpose == "technical_probe":
-        notice = ("Technical voice sample; not a researched podcast episode." if language == "en-US"
-                  else "Technische Hörprobe; keine recherchierte Podcastfolge.")
-    else:
-        notice = ("First audio version for listening review." if language == "en-US"
-                  else "Erste Audiofassung zur Hörprüfung.")
+    notice = wording(language, "probe_notice" if script.purpose == "technical_probe" else "first_version")
     lines = [f"# {script.title}", "", notice, ""]
     for segment in script.segments:
         lines.extend([f"**{(labels or ROLE_LABELS).get(segment.speaker_id, segment.speaker_id)}:** {segment.text}", ""])

@@ -37,7 +37,7 @@ def review_notes(episode):
         "editorial_review": _strings((teaching.get("editorial") or {}).get("limitations") or []),
         "dialogue_polish": _strings(((episode.get("dialogue_polish") or {}).get("review") or {}).get("limitations") or []),
         "dismissed_gaps": _rows(episode.get("dismissed_gaps") or [], ("stage", "objective_id", "gap", "reason")),
-        "advisories": _rows(episode.get("advisories") or [], ("code", "count", "detail", "segment_ids")),
+        "advisories": _rows(episode.get("advisories") or [], ("code", "count", "detail", "segment_ids", "params")),
     }
     return {name: rows for name, rows in groups.items() if rows}
 

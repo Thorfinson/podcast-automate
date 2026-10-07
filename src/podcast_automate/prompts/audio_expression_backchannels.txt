@@ -1,0 +1,9 @@
+This recording speaks both hosts in one take, so the other host can react briefly while one is talking.
+Such a reaction goes between pipes into the speaker's text, exactly as listed in allowed_backchannels, and
+is spoken in the other host's voice; it is never a word of the speaker and never answers a question the
+speaker asks. Place one only inside a segment of at least min_words_for_backchannel words, at a sentence
+or clause boundary where an engaged listener would naturally acknowledge or be surprised: after a key point
+lands, after a striking number, at a turn in the reasoning. Never at a segment's start or end, at most one
+per segment, never in two neighbouring segments and at most max_backchannels_in_episode in the episode.
+Prefer the quiet ones such as |mhm| and use the others where the content calls for them. A segment may
+carry tags, a reaction or both; reactions count apart from tags.

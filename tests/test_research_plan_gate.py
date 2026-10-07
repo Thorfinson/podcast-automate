@@ -10,8 +10,9 @@ from unittest.mock import patch
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.models import RunManifest
-from podcast_automate.question_budget import (DEFAULT_CALLS_PER_TASK, DEFAULT_SECONDS_PER_CALL, affordable_tasks,
-                                              expected_calls_per_task, plan_review_message, review_parts_per_round, seconds_per_call,
+from podcast_automate.question_budget import (DEFAULT_CALLS_PER_TASK, DEFAULT_SEARCH_ROUNDS_PER_TASK, DEFAULT_SECONDS_PER_CALL,
+                                              DEFAULT_SOURCES_PER_TASK, affordable_tasks, expected_calls_per_task,
+                                              plan_review_message, review_parts_per_round, search_rates, seconds_per_call,
                                               write_calibration)
 from podcast_automate.question_scope import QuestionScopeReview
 from podcast_automate.research import run_research
@@ -20,7 +21,8 @@ from podcast_automate.research_models import ResearchDiscovery, ResearchDossier
 from podcast_automate.research_quality import ResearchAssessment
 from podcast_automate.research_review import SourceReview
 from podcast_automate.research_tasks import AnswerReview, QuestionPlan, ResearchDecision
-from podcast_automate.run_budget import approve_research_plan, plan_approval_for, read_plan_approval
+from podcast_automate.run_budget import (approve_model_call_limit, approve_research_plan, effective_limits, plan_approval_for,
+                                         read_plan_approval)
 from podcast_automate.storage import digest, file_hash, write_json, write_yaml
 from podcast_automate.studio_progress import research_progress
 from podcast_automate.studio_worker import perform
@@ -377,6 +379,80 @@ class PlanGateTests(fixtures.ResearchProjectCase):
         self.assertIn("(6 je offener Teilfrage, Erfahrungswert des Projekts)", (work / "research_questions.md").read_text(encoding="utf-8"))
         self.assertEqual(read_value(work / "question_research/state.json")["budget_projection"]["expected_calls_per_task"], 6)
 
+    def test_the_gate_projects_sources_and_search_rounds_and_names_one_raise_that_carries_the_plan(self):
+        """D-155: 9 of the 20 stops the user met in the three series of 2026-09-30 came from the search-round and
+        source limits after the plan gate. The gate now projects both and names the limits that carry the plan; the
+        raise stays the user's explicit approval, written before the plan approval, and neither spends a call."""
+        from podcast_automate.storage import load_project
+        from podcast_automate.studio_messages import user_text
+        limits = self.config.research_limits.model_copy(update={"search_rounds": 2, "sources": 4})
+        write_yaml(self.root / "project.yaml", self.config.model_copy(update={"research_limits": limits}).model_dump(mode="json"))
+        model = self.planner(lambda cap: 3)
+        with patch(MODEL, side_effect=model):
+            first = run_research(self.root, plan_review="required")
+        projection = self.projection(first)
+        # Discovery fetched one source in one search round; three open sub-questions at the default rates follow.
+        self.assertEqual((projection["sources_used"], projection["search_rounds_used"]), (1, 1))
+        self.assertEqual((projection["sources_per_task"], projection["search_rounds_per_task"], projection["search_rates_source"]),
+                         (DEFAULT_SOURCES_PER_TASK, DEFAULT_SEARCH_ROUNDS_PER_TASK, "default"))
+        self.assertEqual((projection["projected_sources"], projection["projected_search_rounds"]),
+                         (1 + 3 * DEFAULT_SOURCES_PER_TASK, 1 + 3 * DEFAULT_SEARCH_ROUNDS_PER_TASK))
+        self.assertEqual((projection["sources_limit"], projection["search_rounds_limit"]), (4, 2))
+        self.assertEqual((projection["within_limit"], projection["sources_within_limit"], projection["search_rounds_within_limit"]),
+                         (True, False, False))
+        # The calls fit, so their limit stays; rounds and sources rise to what is used plus the expectation and a tenth
+        # more, as the plan card raised the calls: 1 + ceil(6 * 1.1) rounds and 1 + ceil(15 * 1.1) sources.
+        self.assertEqual(projection["raise_to"], {"model_calls": limits.model_calls, "search_rounds": 8, "sources": 18})
+        message = first.stages["dossier"].error.message
+        self.assertIn("etwa 16 Quellen und 7 Suchrunden (5 Quellen und 2 Suchrunden je Teilfrage, Standardwert; "
+                      "Limits 4 Quellen und 2 Suchrunden, davon 1 und 1 verbraucht)", message)
+        self.assertIn("Das Suchrundenlimit und das Quellenlimit reichen dafür voraussichtlich nicht.", message)
+        self.assertIn(f"--run-id {first.run_id} --model-calls {limits.model_calls} --search-rounds 8 --sources 18", message)
+        # Only the limits that rise are named; the Studio keeps that sentence and drops the command line.
+        shown = user_text(message)["message"]
+        self.assertIn("Dafür mit der Freigabe das Suchrundenlimit auf 8 und das Quellenlimit auf 18 anheben oder eine "
+                      "Obergrenze der Teilfragen setzen.", shown)
+        self.assertNotIn("Aufruflimit auf", shown)
+        self.assertNotIn("--sources", shown)
+        # The one click: the raise to exactly these limits, then the plan approval. The plan, its hash and the
+        # project's limits stay; no call is spent until the resume.
+        spent = list(self.calls)
+        approve_model_call_limit(self.root, first.run_id, **projection["raise_to"])
+        approval = approve_research_plan(self.root, first.run_id)
+        self.assertEqual(approval.plan_hash, projection["plan_hash"])
+        self.assertEqual(self.calls, spent)
+        self.assertEqual(load_project(self.root).research_limits, limits)
+        raised = effective_limits(self.work(first), limits, first.input_hash)
+        self.assertEqual((raised.model_calls, raised.search_rounds, raised.sources), (limits.model_calls, 8, 18))
+        with patch(MODEL, side_effect=model):
+            done = run_research(self.root, resume=True, plan_review="required")
+        self.assertEqual(done.status, "completed", done.model_dump())
+        # A plan that fits names no raise, and its message stays without one.
+        fitting = {**projection, "projected_sources": 3, "projected_search_rounds": 2, "sources_within_limit": True,
+                   "search_rounds_within_limit": True, "raise_to": None}
+        self.assertNotIn("reicht dafür voraussichtlich nicht", plan_review_message(fitting))
+        self.assertNotIn("Dafür mit der Freigabe", plan_review_message(fitting))
+        calls = plan_review_message({**projection, "within_limit": False,
+                                     "raise_to": {**projection["raise_to"], "model_calls": limits.model_calls + 150}})
+        self.assertIn(f"das Aufruflimit auf {limits.model_calls + 150}, das Suchrundenlimit auf 8 und das Quellenlimit "
+                      "auf 18 anheben", calls)
+
+    def test_a_call_limit_that_does_not_carry_the_plan_rises_with_a_tenth_more_and_the_others_stay(self):
+        import math
+        limits = self.config.research_limits.model_copy(update={"model_calls": 30})
+        write_yaml(self.root / "project.yaml", self.config.model_copy(update={"research_limits": limits}).model_dump(mode="json"))
+        with patch(MODEL, side_effect=self.planner(lambda cap: 3)):
+            first = run_research(self.root, plan_review="required")
+        projection = self.projection(first)
+        self.assertEqual((projection["tasks"], projection["within_limit"]), (3, False))
+        self.assertTrue(projection["sources_within_limit"] and projection["search_rounds_within_limit"])
+        # The same number the plan card's call raise showed: used plus the projection and a tenth more.
+        self.assertEqual(projection["raise_to"], {
+            "model_calls": projection["used"] + math.ceil(projection["projected_calls"] * 11 / 10),
+            "search_rounds": limits.search_rounds, "sources": limits.sources})
+        message = first.stages["dossier"].error.message
+        self.assertIn(f"Dafür mit der Freigabe das Aufruflimit auf {projection['raise_to']['model_calls']} anheben", message)
+
 
 class CalibrationTests(unittest.TestCase):
     def setUp(self):
@@ -451,6 +527,27 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual((data["run_id"], data["tasks"], data["verified_tasks"], data["calls_per_task"]), ("run_test", 3, 3, 7))
         self.assertEqual(data["measured_calls"], 22)
         self.assertIsNone(write_calibration(self.root, self.root / "runs/run_none", "run_none"))
+
+    def test_sources_and_search_rounds_per_task_count_what_the_run_used_after_its_plan(self):
+        self.assertEqual(search_rates(self.root), (DEFAULT_SOURCES_PER_TASK, DEFAULT_SEARCH_ROUNDS_PER_TASK, "default"))
+        # Discovery used 4 sources and 1 search round before the plan; the run ended at 22 and 9 over three tasks.
+        save_value(self.work / "question_research/source_attempts.json", [f"https://example.org/{n}" for n in range(22)])
+        write_json(self.work / "budget.json", {"model_calls": 40, "search_rounds": 9})
+        write_json(self.work / "question_research/plan_projection.json", {"sources_used": 4, "search_rounds_used": 1})
+        state = self.state({"a": 5, "b": 9, "c": 7}, verified={"a", "b", "c"})
+        data = json.loads(write_calibration(self.root, self.work, "run_test", state).read_text(encoding="utf-8"))
+        self.assertEqual((data["sources_per_task"], data["search_rounds_per_task"]), (6.0, 2.67))
+        self.assertEqual(search_rates(self.root), (6.0, 2.67, "project"))
+        # A run projected before these fields existed is measured over the whole run.
+        write_json(self.work / "question_research/plan_projection.json", {"tasks": 3})
+        data = json.loads(write_calibration(self.root, self.work, "run_test", state).read_text(encoding="utf-8"))
+        self.assertEqual((data["sources_per_task"], data["search_rounds_per_task"]), (7.33, 3.0))
+        # Corrupt or missing values fall back to the defaults instead of steering the plan.
+        for wrong in ({"sources_per_task": True, "search_rounds_per_task": 2}, {"sources_per_task": 4.5},
+                      {"sources_per_task": -1, "search_rounds_per_task": 2}):
+            with self.subTest(calibration=wrong):
+                write_json(self.root / "research/calibration.json", wrong)
+                self.assertEqual(search_rates(self.root), (DEFAULT_SOURCES_PER_TASK, DEFAULT_SEARCH_ROUNDS_PER_TASK, "default"))
 
 
 if __name__ == "__main__":

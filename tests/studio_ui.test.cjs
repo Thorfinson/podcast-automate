@@ -389,7 +389,8 @@ test('after the first audit the loop can be ended with residual objections, and 
     row('b',{status:'blocked',outcome:'audit_block',reason:'Wiederholte Gesamtprüfung widerspricht dem Abschluss: x'})]};
   app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'resume',stop:{code:'research_questions_blocked'},started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:{phase:'research',research_questions:${JSON.stringify(ledger)},search_round_limit:48}}};overviewPage=false;step=PAGE.research;render();`);
   let page=jobView(app);
-  assert.ok(page.includes('data-action="finish-residual" data-run-id="run_x">Nach der nächsten Gesamtprüfung mit Resteinwänden abschließen'));
+  // D-155: the finish is the highlighted choice of the card and carries the proposal's shorter label.
+  assert.ok(page.includes('<button class="small" data-action="finish-residual" data-run-id="run_x">Nach der nächsten Prüfung abschließen'));
   assert.ok(page.includes('Einwände nach zwei Nachbesserungen offen'));
   // Requested: the note replaces the button, and the question blocked only by spent reworks is decided.
   app.run(`project.job.progress.research_questions.residual_finish={note:'Reicht <so>',approved_at:'x'};lastJobView='';render();`);
@@ -663,6 +664,99 @@ test('the settings page sets text model, audio, modes, pre-approvals, limits and
   assert.equal(body.settings.text_timeout_seconds,5400);
 });
 
+test('the Google route offers styles, alternating roles, its key and a conversation sample of the selection',async()=>{
+  // The user's wish of 2026-10-06: switch to Google, keep OpenRouter, and listen to a style before choosing it.
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const styles={neugierig:{label:'Neugierig',host_a:'curious a',host_b:'curious b'},ohne:{label:'Ohne',host_a:'',host_b:''}};
+  const view={settings:{text:{provider:'auto',model:null,reasoning_effort:null,max_output_tokens:32768},
+      audio:{provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},alternate_roles:true,
+             pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900}},
+      execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},
+      research_limits:{model_calls:750,sources:150,search_rounds:48},text_timeout_seconds:1800},
+    hash:'h1',global:true,claude_extra_usage:false,key_available:true,google_key_available:true,
+    allowance_choices:{fresh_attempts:[0,1,2,3],extra_calls:[0,100,250,500,1000]}};
+  app.run(`boot.text_catalog={presets:[]};boot.google_key_available=true;boot.audio_catalog={
+    google_gemini_tts:{label:'Gemini TTS · Google',voices:['Erinome','Sadachbia','Puck'],defaults:{host_a:'Erinome',host_b:'Sadachbia'},
+      models:{'gemini-a':'Gemini A'},default_model:'gemini-a',alternate_roles:true,style_presets:${JSON.stringify(styles)},
+      default_styles:{host_a:'curious a',host_b:'curious b'},max_style_characters:80},
+    openrouter_gemini_tts:{label:'Gemini TTS · OpenRouter',voices:['Erinome','Sadachbia'],defaults:{host_a:'Sadaltager',host_b:'Aoede'}}};`);
+  app.responses.set('/api/settings',view);
+  await app.run('showSettings()');
+  const html=app.elements.get('content').innerHTML;
+  for(const id of ['settings-style-preset','settings-style-a','settings-style-b','settings-alternate','google-key'])
+    assert.ok(html.includes(`id="${id}"`),id);
+  assert.ok(html.includes('value="curious a"') && html.includes('<option value="neugierig" selected>'));
+  assert.ok(html.includes('data-action="pair-sample" data-swap="1"'),'alternating roles can be heard swapped');
+  // Both keys' state at the top and on their panels (the user's wish of 2026-10-06).
+  assert.ok(html.includes('<p class="key-states">Keys: ')&&(html.match(/✓ hinterlegt/g)||[]).length===4);
+  // The Anthropic key (Claude on the user's API key) and the Perplexity key (web search) have chips too (2026-10-07).
+  app.run(`settingsData.google_key_available=false;settingsData.anthropic_key_available=true;settingsData.perplexity_key_available=true;render();`);
+  const missing=app.elements.get('content').innerHTML;
+  assert.equal((missing.match(/✓ hinterlegt/g)||[]).length,6);
+  assert.equal((missing.match(/<span class="chip decision">fehlt<\/span>/g)||[]).length,2);
+  app.run(`$('settings-audio-provider').value='google_gemini_tts';$('settings-voice-a').value='Erinome';$('settings-voice-b').value='Sadachbia';
+    $('settings-style-a').value='calm';$('settings-style-b').value='';$('settings-alternate').checked=true;$('settings-pair-language').value='en-US';`);
+  assert.deepEqual(JSON.parse(app.run('JSON.stringify(settingsFromForm().audio.styles)')),{host_a:'calm',host_b:''});
+  // A sample not yet made asks once, then the Google request makes it; the player gets its URL.
+  app.responses.set('/api/pair-sample',{url:'/samples/google/en-US/abc',ready:true});
+  app.run('window.confirm=()=>true');
+  await app.run(`pairSample({dataset:{swap:'1'}})`);
+  const asked=JSON.parse(app.requests.filter(r=>r.path==='/api/pair-sample').at(-1).options.body);
+  assert.deepEqual(asked,{voices:{host_a:'Sadachbia',host_b:'Erinome'},styles:{host_a:'calm',host_b:''},language:'en-US'});
+  assert.equal(app.elements.get('sample-player').src,'/samples/google/en-US/abc');
+});
+
+test('each language has its own pace: a slower montage, for Google a calm delivery too, heard in the sample',async()=>{
+  // D-147, the user's choice of 2026-10-07: English at 93 % and unhurried, German as it is.
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const view={settings:{text:{provider:'auto',model:null,reasoning_effort:null,max_output_tokens:32768},
+      audio:{provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},
+             pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900},pace:{'en-US':{tempo:0.93,unhurried:true}}},
+      execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},
+      research_limits:{model_calls:750,sources:150,search_rounds:48},text_timeout_seconds:1800},
+    hash:'h1',global:true,claude_extra_usage:false,key_available:true,google_key_available:true,
+    allowance_choices:{fresh_attempts:[0,1,2,3],extra_calls:[0,100,250,500,1000]}};
+  app.run(`boot.text_catalog={presets:[]};boot.google_key_available=true;boot.audio_catalog={
+    google_gemini_tts:{label:'Gemini TTS · Google',voices:['Erinome','Sadachbia'],defaults:{host_a:'Erinome',host_b:'Sadachbia'},
+      models:{'gemini-a':'Gemini A'},default_model:'gemini-a',alternate_roles:true,style_presets:{},
+      default_styles:{host_a:'a',host_b:'b'},max_style_characters:80,unhurried:'unhurried'}};`);
+  app.responses.set('/api/settings',view);
+  await app.run('showSettings()');
+  const html=app.elements.get('content').innerHTML;
+  assert.ok(html.includes('id="settings-tempo-de-DE"')&&html.includes('<option value="1" selected>100 %</option>'));
+  assert.ok(html.includes('<option value="0.93" selected>93 %</option>'),'the saved English tempo is chosen');
+  assert.ok(html.includes('id="settings-unhurried-en-US" type="checkbox" checked'));
+  assert.ok(html.includes('id="settings-unhurried-de-DE" type="checkbox" >'));
+  assert.ok(html.includes('„unhurried“'));
+  const pace=values=>{app.run(`for(const [id,v] of Object.entries(${JSON.stringify(values)})){if(id.startsWith('settings-tempo'))$(id).value=v;else $(id).checked=v;}`);
+    return app.run('JSON.stringify(settingsFromForm().audio.pace)');};
+  const english={'settings-tempo-en-US':'0.93','settings-unhurried-en-US':true,'settings-tempo-de-DE':'1','settings-unhurried-de-DE':false};
+  assert.deepEqual(JSON.parse(pace(english)),{'en-US':{tempo:0.93,unhurried:true}});
+  assert.deepEqual(JSON.parse(pace({...english,'settings-tempo-de-DE':'0.95'})),
+    {'de-DE':{tempo:0.95,unhurried:false},'en-US':{tempo:0.93,unhurried:true}});
+  // Every language at full speed without a calm delivery saves as before the pace existed.
+  assert.equal(pace({...english,'settings-tempo-en-US':'1','settings-unhurried-en-US':false}),undefined);
+  // The conversation sample carries the pace of its language only.
+  pace(english);
+  app.responses.set('/api/pair-sample',{url:'/samples/google/en-US/abc',ready:true});
+  const asked=async language=>{app.run(`$('settings-pair-language').value='${language}'`);await app.run('pairSample({dataset:{}})');
+    return JSON.parse(app.requests.filter(r=>r.path==='/api/pair-sample').at(-1).options.body);};
+  assert.deepEqual((await asked('en-US')).pace,{tempo:0.93,unhurried:true});
+  assert.ok(!('pace' in await asked('de-DE')));
+});
+
+test('the approval card names the pace of the project language it records with',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.episodes=[publishedEpisode({})];
+  p.audio_settings={provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},pace:{'en-US':{tempo:0.93,unhurried:true}}};
+  const card=language=>{app.run(`project=${JSON.stringify({...p,config:{...p.config,language}})};boot.google_key_available=true;episodeIndex=0;`);
+    return app.run('renderApprovalCard(project.episodes[0],project.audio_settings,true)');};
+  assert.ok(card('en-US').includes('<dt>Tempo</dt><dd class="hint">93 % · ohne Eile · eingestellt für englische Folgen</dd>'));
+  assert.ok(!card('de-DE').includes('<dt>Tempo</dt>'),'a German project records as it did');
+});
+
 test('attachment picker supports text and DOCX with escaped names and no configuration forms',async()=>{
   const app=studio();
   await app.run(`selectProject('test',{id:'test',config:boot.defaults,chat:[],attachments:[{id:'abc',name:'<b>Notizen</b>.md',characters:150}]})`);
@@ -673,7 +767,7 @@ test('attachment picker supports text and DOCX with escaped names and no configu
   assert.ok(html.includes('multiple'));
   assert.ok(html.includes('&lt;b&gt;Notizen&lt;/b&gt;.md'));
   assert.ok(!html.includes('<b>Notizen</b>'));
-  assert.ok(html.includes('dein Textmodell den Inhalt'));
+  assert.ok(html.includes('liest dein Textmodell sie'));
   assert.ok(app.run('renderResearch()').includes('&lt;b&gt;Notizen'));
 });
 
@@ -783,7 +877,8 @@ test('job duration, pending call, saved result and stale progress are distinguis
     last_result_at:new Date(Date.now()-3*60000).toISOString()};
   app.run(`project=${JSON.stringify(p)};renderJob();`);
   let html=app.elements.get('job-status').innerHTML;
-  assert.ok(html.includes('Gesamte Laufzeit seit Start/Fortsetzung: 22 Min.'));
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('seit 22 Min.'));
+  assert.ok(!html.includes('Gesamte Laufzeit'),'the run time is not repeated in the engine room');
   assert.ok(html.includes('Aktueller Modellaufruf: seit 2 Min.'));
   assert.ok(html.includes('Letztes gespeichertes Modellergebnis: vor 3 Min.'));
   assert.ok(!html.includes('Keine Antwort vom Studio'));
@@ -922,7 +1017,10 @@ test('foundation research runs without a retry button, and its stop exposes real
   assert.ok(card.includes('Neues Inhaltsverzeichnis entwerfen'));
   assert.ok(!card.includes('C:/private'));
 });
-function studio() {
+// The page's catalogs as /locale.js serves them (studio_text.locale_script, D-152): English under the active language.
+const locales = Object.fromEntries(['de','en'].map(language=>[language,JSON.parse(fs.readFileSync(`src/podcast_automate/locales/${language}.json`,'utf8'))]));
+const localeScript = (language, setting='auto') => `const STUDIO_LOCALE=${JSON.stringify({setting,language,catalog:{...locales.en,...locales[language]}})};`;
+function studio({language='de', setting='auto'}={}) {
   const elements = new Map(), registered = new Map(), requests = [], responses = new Map(), events = new Map();
   const element = id => {
     if (!elements.has(id)) elements.set(id, {value:'',innerHTML:'',hidden:false,textContent:'',paused:true,focus(){},scrollIntoView(){},addEventListener(){},async play(){this.paused=false;},pause(){this.paused=true;}});
@@ -932,6 +1030,7 @@ function studio() {
   const context = vm.createContext({console,structuredClone,AbortController,encodeURIComponent,URL,URLSearchParams,btoa,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
     document:{getElementById:element,querySelectorAll(){return [];},addEventListener(){},modelContext:{registerTool(tool){registered.set(tool.name,tool);}}},
     fetch:async(path,options)=>{requests.push({path,options});const data=responses.get(path)??{token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults};return{ok:true,json:async()=>structuredClone(data)};}});
+  vm.runInContext(localeScript(language, setting), context);
   vm.runInContext(source, context);
   const run = code => vm.runInContext(code,context);
   run(`boot=${JSON.stringify({token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults})}`);
@@ -1279,7 +1378,7 @@ test('an existing active project opens its real workflow page, and explicit read
   await app.run(`selectProject('test',${JSON.stringify(p)})`);
   assert.equal(app.run('step'),3);
   assert.ok(app.elements.get('content').innerHTML.includes('id="production-progress"'));
-  assert.ok(app.elements.get('production-progress').innerHTML.includes('Dialog-Polishing'));
+  assert.ok(app.elements.get('production-progress').innerHTML.includes('Dialogschliff'));
   await app.run(`selectProject('test',${JSON.stringify(p)},PAGE.research)`);
   assert.equal(app.run('step'),1);
   assert.ok(jobBarView(app).includes('Ausarbeitung ansehen'));
@@ -1394,8 +1493,9 @@ test('audio starts disabled, names selected voices and marks an old recording',(
   assert.ok(html.includes('Aiden & Vivian'));
   assert.ok(html.includes('Alle fertigen Folgen anhören'));
   const player=app.run("podcastCard({id:'test'},{episode_id:'ep_001',title:'Episode',audio:['exports/ep_001/run_test/audio.mp3'],audio_current:false},0)");
-  assert.ok(player.includes('früheren Skript- oder Stimmenstands'));
-  assert.ok(player.includes('/media/test/exports/ep_001/run_test/audio.mp3'));
+  assert.ok(player.includes('früherer Stand'));
+  assert.ok(player.includes('data-play-episode="ep_001"'));
+  assert.ok(player.includes('/media/test/exports/ep_001/run_test/audio.mp3'),'the download link without the ZIP capability');
 });
 test('optional agent navigation uses visible state and cannot approve a job',async()=>{
   const app=studio();
@@ -1446,17 +1546,15 @@ test('polling an unchanged finished sample preserves its player, and leaving cle
   const app=studio();
   app.run(`project={id:'test',config:boot.defaults,job:{id:'sample-job',action:'audio_sample',status:'completed',sample:{voice:'Sadaltager',language:'de-DE',audio:'studio/samples/de-DE/Sadaltager/audio.mp3'}}};renderJob();`);
   const box=app.elements.get('job-status');
-  let markup=box.innerHTML,writes=0;
-  Object.defineProperty(box,'innerHTML',{get:()=>markup,set:value=>{writes++;markup=value;}});
-  app.run('project.job=structuredClone(project.job);renderJob();renderJob();');
-  assert.equal(writes,0,'An unchanged job must not replace a playing audio element');
-  assert.ok(markup.includes('Hörprobe separat öffnen'));
-  assert.ok(markup.includes('MP3 herunterladen'));
-  app.run("project.job.sample.voice='Aoede';project.job.sample.audio='studio/samples/de-DE/Aoede/audio.mp3';renderJob();");
-  assert.ok(writes>0);
-  assert.ok(markup.includes('Aoede'));
+  assert.equal(box.hidden,true,'a finished sample leaves the engine room closed');
+  assert.equal(box.innerHTML,'');
+  let brief=app.run('renderBrief()');
+  assert.ok(brief.includes('Neue Hörprobe')&&brief.includes('data-play-voice="Sadaltager" data-language="de-DE"'));
+  assert.ok(brief.includes('MP3 herunterladen'));
+  app.run("project.job.sample.voice='Aoede';project.job.sample.audio='studio/samples/de-DE/Aoede/audio.mp3';");
+  brief=app.run('renderBrief()');
+  assert.ok(brief.includes('data-play-voice="Aoede"'));
   app.run('project=null;renderJob();');
-  assert.equal(markup,'');
   assert.equal(box.hidden,true);
 });
 
@@ -1507,7 +1605,7 @@ test('remote audio enables a different reviewed episode, but blocks duplicates a
   assert.ok(!app.run('renderAudio()').includes('id="audio-approval" type="checkbox" disabled'));
   assert.ok(app.run('renderAudio()').includes('id="audio-start" data-action="audio" disabled'));
   app.run('project.audio_capacity.available=0');
-  assert.match(app.run('audioBlockReason("ep_002")'),/Plätze/);
+  assert.match(app.run('audioBlockReason("ep_002")'),/gleichzeitig wie erlaubt/);
   app.run('project.audio_settings.provider="qwen3_local";project.audio_capacity.available=2');
   assert.match(app.run('audioBlockReason("ep_002")'),/Auftrag läuft/);
 });
@@ -1517,12 +1615,13 @@ test('independent audio cards target their own stop or resume action',()=>{
   app.run(`boot.capabilities={parallel_audio:true};project={id:'test',config:boot.defaults,episodes:[],
     audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},audio_capacity:{available:2},
     audio_jobs:[{id:'one',episode:'ep_001',status:'running',progress:{completed_segments:2,total_segments:8}},
-      {id:'two',episode:'ep_002',status:'blocked',run:{run_id:'run_two'},message:'<blocked>'}],job:{id:'one',status:'running'}};renderJob();`);
-  const html=app.elements.get('job-status').innerHTML;
+      {id:'two',episode:'ep_002',status:'blocked',run:{run_id:'run_two'},message:'<blocked>'}],job:{id:'one',status:'running'}};step=PAGE.audio;renderJob();`);
+  const html=app.elements.get('audio-jobs').innerHTML, drawer=app.elements.get('job-status').innerHTML;
   assert.ok(html.includes('data-job-id="one"'));
   assert.ok(html.includes('data-run-id="run_two" data-episode="ep_002"'));
   assert.ok(html.includes('&lt;blocked&gt;'));
-  assert.ok(html.includes('2 von 8'));
+  assert.ok(drawer.includes('2 von 8'),'the engine room shows the running recording');
+  assert.ok(!drawer.includes('data-job-id')&&!drawer.includes('data-action="resume"'),'and no controls');
 });
 
 test('the overview lists projects as pipeline rows while the recordings list keeps every available episode',()=>{
@@ -1540,22 +1639,25 @@ test('the overview lists projects as pipeline rows while the recordings list kee
   assert.ok(html.includes('class="pipe"'));
   assert.ok(!html.includes('<audio '),'players belong to the audio page, not the overview');
   const recordings=app.run('renderRecordings(overviewData.projects[0])');
-  assert.equal((recordings.match(/<audio /g)||[]).length,3);
+  assert.equal((recordings.match(/data-play-episode=/g)||[]).length,2);
+  assert.ok(recordings.includes('2 Teile')&&recordings.includes('MP3 2'));
+  assert.ok(!recordings.includes('<audio '),'one player for all episodes, outside the list');
   assert.equal(app.run('steps.length'),6);
 });
 
-test('audio-page polling preserves an existing audio element and adds the next finished episode',()=>{
+test('audio-page polling adds the next finished episode while the one player keeps playing',()=>{
   const app=studio();
   app.run(`project={id:'test',config:boot.defaults,episodes:[
-    {script:{episode_id:'ep_001',title:'First'},audio:['one.mp3'],audio_current:true},
-    {script:{episode_id:'ep_002',title:'Second'},audio:['two.mp3'],audio_current:true}]};step=PAGE.audio;
-    $('podcast-test-ep_001').dataset={audioVersion:JSON.stringify(['one.mp3'])};
-    $('podcast-test-ep_001').innerHTML='playing at 123 seconds';
-    $('podcast-test-ep_002').dataset={audioVersion:JSON.stringify([])};
-    $('podcast-test-ep_002').querySelectorAll=()=>[];
+    {script:{episode_id:'ep_001',title:'First'},audio:['exports/one.mp3'],audio_current:true,audio_seconds:1800}]};step=PAGE.audio;
+    $('podcasts-test').querySelectorAll=()=>[];
+    $('episode-player').src='/media/test/exports/one.mp3';$('episode-player').paused=false;
     refreshRecordings();`);
-  assert.equal(app.elements.get('podcast-test-ep_001').innerHTML,'playing at 123 seconds');
-  assert.ok(app.elements.get('podcast-test-ep_002').outerHTML.includes('two.mp3'));
+  assert.ok(app.elements.get('podcasts-test').innerHTML.includes('data-play-episode="ep_001"'));
+  assert.ok(app.elements.get('podcasts-test').innerHTML.includes('30 Min.'),'each row names its length');
+  app.run(`project.episodes.push({script:{episode_id:'ep_002',title:'Second'},audio:['exports/two.mp3'],audio_current:true});refreshRecordings();`);
+  assert.ok(app.elements.get('podcasts-test').innerHTML.includes('data-play-episode="ep_002"'));
+  assert.equal(app.elements.get('episode-player').src,'/media/test/exports/one.mp3','the player is not touched');
+  assert.equal(app.elements.get('episode-player').paused,false);
   assert.ok(app.run('renderAudio()').includes('id="podcasts-test"'));
 });
 
@@ -1565,7 +1667,7 @@ test('credential-like chat text is rejected before project creation or model cal
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 
-test('complete podcast download is a single ZIP link while episode playback stays inline',()=>{
+test('complete podcast download is a single ZIP link while each episode plays in the one player',()=>{
   const app=studio();
   app.run('boot.capabilities={podcast_downloads:true}');
   const p={id:'test',topic:'Topic',episode_count:2,episodes:[
@@ -1575,7 +1677,7 @@ test('complete podcast download is a single ZIP link while episode playback stay
   assert.ok(html.includes('Gesamten Podcast herunterladen'));
   assert.ok(html.includes('href="/download/test/podcast.zip" download'));
   assert.ok(html.includes('href="/download/test/file/exports/ep_001/one.mp3"'));
-  assert.ok(html.includes('src="/media/test/exports/ep_001/one.mp3"'));
+  assert.ok(html.includes('data-play-episode="ep_001"'));
   assert.ok(html.includes('download="Topic - Folge 02 - Second.mp3"'));
 });
 
@@ -1706,8 +1808,10 @@ test('a blocked question shows its own mark, its cause and when it is decided, a
   html=app.run(`renderResearchQuestions(${JSON.stringify(full)},new Set(),false,'run_x',24,12,150)`);
   assert.ok(html.includes('Websuchen für diese Frage: 0 · Quellenlimit des Laufs erreicht (150 von 150 Quellen). Sie hat deshalb nur in den schon gelesenen Quellen gesucht; auch ein neuer Versuch sucht erst wieder im Web, wenn du das Quellenlimit erhöhst.'));
   const fullCard=app.run(`renderResearchDecisions({status:'blocked',progress:{research_questions:${JSON.stringify(full)},search_rounds:12,search_round_limit:24,source_limit:150}},{run_id:'run_x'},false,0,true,24)`);
-  assert.ok(fullCard.includes('Quellen: 150 von 150 abgerufen'));
-  assert.ok(fullCard.includes('data-action="approve-sources" data-run-id="run_x" data-sources="190"'));
+  // D-155: one plain sentence and one raise of both limits replace the source note and its own button. Without rates
+  // from the plan (a run planned before 2026-10-07) the raise keeps the fixed steps, +40 sources and +6 search rounds.
+  assert.ok(fullCard.includes('4 Teilfragen konnten nicht suchen, weil das Quellenlimit (150 von 150) erreicht ist; mit +40 Quellen und +6 Suchrunden kommen alle weiter.'));
+  assert.ok(fullCard.includes('data-action="approve-limits" data-run-id="run_x" data-sources="190" data-search-rounds="30"'));
   assert.ok(!fullCard.includes('data-action="approve-search"'));
 });
 
@@ -1827,11 +1931,11 @@ test('finished scripts stay visible on the production page and in the stepper af
   p.episodes=[{...publishedEpisode({}),audio:['exports/ep_001/run/audio.mp3'],audio_current:true}];
   app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
   const page=app.elements.get('production-progress').innerHTML;
-  assert.ok(page.includes('Dialog-Polishing'));
+  assert.ok(page.includes('Dialogschliff'));
   assert.ok(page.includes('Die Skripte sind bereit'));
   assert.ok(!page.includes('Folgt automatisch'));
   assert.ok(app.elements.get('steps').innerHTML.includes('Ausarbeitung<small>Abgeschlossen'));
-  assert.ok(app.elements.get('job-bar').innerHTML.includes('Vertonung abgeschlossen'));
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('Podcast verfügbar · 1 Folge'));
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 
@@ -1844,7 +1948,8 @@ test('the job bar names the decision and links to its page while the drawer keep
   const bar=app.elements.get('job-bar').innerHTML, drawer=app.elements.get('job-status').innerHTML, page=app.elements.get('research-progress').innerHTML;
   assert.ok(bar.includes('Wartet auf Freigabe des Rechercheplans'));
   assert.ok(bar.includes('data-step="1"'));
-  assert.ok(bar.includes('data-action="drawer-toggle"'));
+  assert.ok(!bar.includes('data-action="drawer-toggle"'));
+  assert.ok(drawer.includes('data-action="drawer-toggle"'));
   assert.ok(!bar.includes('data-action="resume"'));
   assert.ok(page.includes('data-action="approve-plan"'));
   assert.ok(!drawer.includes('data-action="approve-plan"'));
@@ -1855,7 +1960,7 @@ test('the job bar names the decision and links to its page while the drawer keep
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 
-test('the overview lists what waits for the user before the pipeline rows',()=>{
+test('the overview puts what waits for the user first, once, with its next action',()=>{
   const app=studio();
   app.run(`boot.capabilities={project_overview:true};overviewData={projects:[
     {id:'a',topic:'Blocked <one>',job:{status:'blocked',action:'research',message:'Beleg fehlt',run:{kind:'research'}},has_research:false,has_outline:false,script_count:0,episodes:[]},
@@ -1863,8 +1968,10 @@ test('the overview lists what waits for the user before the pipeline rows',()=>{
     {id:'c',topic:'Readable',job:{status:'completed',action:'script',run:{kind:'script',status:'completed'}},has_research:true,has_outline:true,script_count:3,episodes:[{episode_id:'ep_001',title:'One',audio:[]}]},
     {id:'d',topic:'Done',job:{status:'completed',action:'audio',run:{kind:'episode_audio',status:'completed'}},has_research:true,has_outline:true,script_count:1,episodes:[{episode_id:'ep_001',title:'One',audio:['one.mp3'],audio_current:true}]}],trash:[]};`);
   const html=app.run('renderOverview()');
-  const waiting=html.indexOf('Wartet auf dich'), running=html.indexOf('Läuft gerade'), rows=html.indexOf('id="overview-projects"');
-  assert.ok(waiting>-1&&running>waiting&&rows>running,'decisions first, then running work, then the rows');
+  const at=id=>html.indexOf(`id="project-card-${id}"`);
+  assert.ok(at('a')>-1&&at('a')<at('c')&&at('c')<at('b')&&at('b')<at('d'),'waiting projects first, then running ones, then the rest');
+  assert.equal((html.match(/data-project-card="a"/g)||[]).length,1,'each project stands once');
+  assert.ok(html.includes('class="pipeline waiting" id="project-card-a"')&&html.includes('class="pipeline running" id="project-card-b"'));
   assert.ok(html.includes('Blocked &lt;one&gt;'));
   assert.ok(html.includes('Beleg fehlt'));
   assert.ok(html.includes('data-open-project="a" data-open-step="1"'));
@@ -2272,7 +2379,8 @@ test('the plan approval starts the research in one click and offers a higher lim
   const projection={tasks:20,expected_calls_per_task:5,expected_calls_source:'default',closing_calls:3,projected_calls:180,used:7,approved_limit:150,within_limit:false,seconds_per_call:270,seconds_per_call_source:'default',projected_hours:13,plan_caps:[]};
   const html=app.run(`renderPlanReview({status:'blocked',progress:{plan_review:{awaiting:true,approved:false,projection:${JSON.stringify(projection)}}}},'run_x')`);
   assert.ok(html.includes('data-action="approve-plan" data-run-id="run_x" data-then-resume="1"'));
-  assert.ok(html.includes('Rechercheplan freigeben und starten'));
+  // D-155: the plan card's button says „Plan freigeben und starten“ (before: „Rechercheplan freigeben und starten“).
+  assert.ok(html.includes('Plan freigeben und starten'));
   assert.ok(html.includes('data-action="approve-calls" data-run-id="run_x" data-model-calls="205"'));
 });
 
@@ -2327,7 +2435,7 @@ test('a running parallel research run names every open call, labels its live lin
   assert.ok(page.includes('Eine Teilfrage ist angehalten: „Was ist Z?“'));
   assert.ok(page.includes('● Wie wirkt X?')&&page.includes('● Warum Y?'));
   const drawer=app.elements.get('job-status').innerHTML;
-  assert.ok(drawer.includes('Live-Text · Warum Y?'),'a live line names its sub-question');
+  assert.match(drawer,/<small>[^<]*· Warum Y\?<\/small>/,'a live line names its sub-question');
   assert.ok(drawer.includes('2 Modellaufrufe laufen gleichzeitig, der älteste seit 6 Min.'));
 });
 
@@ -2369,7 +2477,7 @@ test('a stopped Gemini episode stays visible while the others are voiced and res
   assert.ok(card.includes('data-action="resume" data-run-id="x2" data-episode="ep_002" >'),'a free slot lets it resume beside the running ones');
   app.run(`project.audio_capacity={limit:3,active:3,available:0};lastJobView='';renderJob();`);
   const full=app.elements.get('audio-jobs').innerHTML;
-  assert.ok(full.includes('Alle Plätze sind belegt'));
+  assert.ok(full.includes('gleichzeitig wie erlaubt'));
   const overview={id:'p',topic:'Serie',episodes:[{episode_id:'ep_001',title:'F1',audio:[]},{episode_id:'ep_002',title:'F2',audio:[]},{episode_id:'ep_003',title:'F3',audio:[]}],
     job:{id:'a1',status:'running',action:'audio'},audio_jobs:[{id:'a2',episode:'ep_002',status:'failed',error_code:'openrouter_speech_request',run:{run_id:'x2'}},{id:'a3',episode:'ep_003',status:'failed',error_code:'openrouter_credits',run:{run_id:'x3'}}]};
   const attention=app.run(`attentionOf(${JSON.stringify(overview)})`);
@@ -2491,6 +2599,11 @@ test('the reader sees the tags a Gemini recording will speak, marked in the scri
   const panel=app.run(`renderExpressionPanel({script:{episode_id:'ep_001'},expression:${JSON.stringify(expression)}})`);
   assert.ok(panel.includes('1 Tags in 1 Abschnitten')&&panel.includes('data-action="expression" data-episode="ep_001"'));
   assert.ok(panel.includes('im Text markiert: 1× Schmunzeln.'),panel);
+  // A Google recording's listener reaction (2026-10-06) is marked like a tag, counted, and keeps the text in place.
+  const reacted={tags:0,segments:[{segment_id:'s1',text:'Das hätte ich |mhm| jetzt nicht erwartet.'}]};
+  assert.equal(app.run(`expressiveText(${JSON.stringify(segment)},${JSON.stringify(reacted)})`),
+    '<p>Das hätte ich <mark class="expression-tag" title="Einwurf der anderen Stimme">|mhm|</mark> jetzt nicht erwartet.</p>');
+  assert.equal(app.run(`expressionKinds(${JSON.stringify(reacted)})`),'1× Einwurf');
   assert.ok(app.run(`renderExpressionPanel({script:{episode_id:'ep_001'},expression:null})`).includes('Ausdruck setzen'));
   // Qwen speaks no tags: nothing is shown.
   app.run(`project.audio_settings={provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}};`);
@@ -2509,7 +2622,7 @@ test('the production steps name when the expression is placed, and a tagging job
   app.run(`project.episodes=[${JSON.stringify(ep('ep_001',true))},${JSON.stringify(ep('ep_002',false))}];project.job={status:'running'};project.expression_progress={status:'running',done:1,total:2};`);
   assert.ok(app.run('renderExpressionStage(true)').includes('In Arbeit · 1 von 2 Folgen'));
   app.run(`project.job={status:'completed'};project.expression_progress={status:'completed',done:2,total:2};`);
-  assert.ok(app.run('renderExpressionStage(true)').includes('1 von 2 Folgen · auf „Skripte lesen“ setzen'));
+  assert.ok(app.run('renderExpressionStage(true)').includes('1 Folge noch ohne · auf „Skripte lesen“'));
   app.run(`project.episodes=[${JSON.stringify(ep('ep_001',true))},${JSON.stringify(ep('ep_002',true))}];`);
   assert.ok(app.run('renderExpressionStage(true)').includes('Fertig · 2 von 2 Folgen'));
   assert.equal(app.run(`project.job={action:'expression'};jobPage()`),app.run('PAGE.scripts'));
@@ -2532,13 +2645,14 @@ test('all read episodes can be approved at once, and a full studio queues instea
   // Without the key (it lives only in the server's memory) the button says why and offers the key field.
   app.run('boot.key_available=false;');
   const keyless=app.run('renderApproveAll(true)');
-  assert.ok(keyless.includes('data-action="audio-all" disabled')&&keyless.includes('Zuerst den OpenRouter-Key hinterlegen.')&&keyless.includes('data-key-field="audio-all-key"'));
+  assert.ok(keyless.includes('data-action="audio-all" disabled')&&keyless.includes('Zuerst den OpenRouter-Key hinterlegen.')&&keyless.includes('Das Feld dafür steht oben in der Freigabe.'));
+  assert.ok(!keyless.includes('data-key-field'),'no second key field on the page');
   app.run('boot.key_available=true;');
   // A full studio blocks nothing for a new approval, only the episode already recording.
   app.run(`project.audio_jobs=[{id:'a',status:'running',episode:'ep_002'}];`);
   assert.equal(app.run('audioBlockReason("ep_004",true)'),'');
   assert.equal(app.run('audioBlockReason("ep_002",true)'),'Diese Folge wird bereits vertont.');
-  assert.ok(app.run('audioBlockReason("ep_004")').includes('Alle Plätze sind belegt'));
+  assert.ok(app.run('audioBlockReason("ep_004")').includes('gleichzeitig wie erlaubt'));
   app.run(`project.audio_queue=[{episode:'ep_003',position:1},{episode:'ep_004',position:2,error:'Skript inzwischen geändert.'}];`);
   const queue=app.run('renderAudioQueue()');
   assert.ok(queue.includes('Warteschlange der Vertonung · 2')&&queue.includes('startet nicht: Skript inzwischen geändert.'));
@@ -2585,7 +2699,7 @@ test('the production report loads on request and shows stages, versions, stops a
     stops:{total:13,by_stage:{review:6,teaching:5}},approvals:{fresh_attempts:2,model_calls:443,allowances:[{}],text_switch:null}};
   app.run(`productionReports.run_s=${JSON.stringify({report})}`);
   const html=app.run(`renderProductionReport(${JSON.stringify(job)})`);
-  for(const text of ['442 Aufrufe · 20.7 h Modellzeit','Belegprüfung &lt;x&gt;','111 · 14 abgebrochen','7.2 h','35 %','3.9 Min.',
+  for(const text of ['442 Aufrufe · 20,7 Std. Modellzeit','Belegprüfung &lt;x&gt;','111 · 14 abgebrochen','7,2 Std.','35 %','3,9 Min.',
     'script_review.v9-gaps-notes+followup','Claude · Abo: 372 Aufrufe','1.25 USD abgerechnet','Qualitätsprüfung 6×, Lehrkonzept 5×',
     '2× neue Anläufe · Aufruflimit 443 · 1× per Vorab-Erlaubnis'])assert.ok(html.includes(text),text);
   assert.ok(!html.includes('<x>'));
@@ -2624,8 +2738,9 @@ test('a missing OpenRouter key is named on every page with what needs it until o
   const note=app.elements.get('key-note');
   assert.equal(note.hidden,false);
   assert.ok(note.innerHTML.includes('OpenRouter-Key fehlt.'));
-  assert.ok(note.innerHTML.includes('Gemini-Vertonung (3 Projekte) · Jev in der Lückenprobe („Asimov &lt;alt&gt;“)'));
-  assert.ok(note.innerHTML.includes('Ohne Key warten Vertonungen mit Gemini; suchen neue Skriptläufe Lücken nur per Wortsuche'));
+  // Since 2026-10-06 Gemini speaks through Google or OpenRouter; the reminder names the route whose key is missing.
+  assert.ok(note.innerHTML.includes('Gemini-Vertonung über OpenRouter (3 Projekte) · Jev in der Lückenprobe („Asimov &lt;alt&gt;“)'));
+  assert.ok(note.innerHTML.includes('Ohne Key warten Vertonungen mit Gemini über OpenRouter; suchen neue Skriptläufe Lücken nur per Wortsuche'));
   assert.ok(note.innerHTML.includes('data-action="store-key" data-key-field="reminder-key"'),'the key goes in right there');
   assert.ok(!note.innerHTML.includes('unknown'));
   // A project page reads its own payload; the settings page points to its key field instead of a second one.
@@ -2640,6 +2755,74 @@ test('a missing OpenRouter key is named on every page with what needs it until o
   await app.run('storeKey("reminder-key")');
   assert.equal(note.hidden,true);
   assert.equal(app.run('keyNote()'),'');
+});
+
+test('a missing Google key has its own reminder and field, and storing it ends only that reminder',async()=>{
+  const app=studio();
+  const rows=[{need:'google_audio',projects:['Ontologien'],key:'google'},{need:'jev',projects:['Asimov'],key:'openrouter'}];
+  app.run(`overviewPage=false;settingsPage=false;project={id:'p',key_reminder:${JSON.stringify(rows)}};renderKeyNote();`);
+  const note=app.elements.get('key-note');
+  assert.ok(note.innerHTML.includes('Google-Key fehlt.') && note.innerHTML.includes('Gemini-Vertonung über Google („Ontologien“)'));
+  assert.ok(note.innerHTML.includes('OpenRouter-Key fehlt.') && note.innerHTML.includes('Jev in der Lückenprobe'));
+  assert.ok(note.innerHTML.includes('data-key-field="reminder-google-key" data-key-kind="google"'));
+  app.run(`$("reminder-google-key").value="AIza-test"`);
+  app.responses.set('/api/key',{key_available:false,google_key_available:true});
+  await app.run('storeKey("reminder-google-key","google")');
+  const sent=JSON.parse(app.requests.filter(r=>r.path==='/api/key').at(-1).options.body);
+  assert.deepEqual(sent,{key:'AIza-test',kind:'google'});
+  assert.ok(!note.innerHTML.includes('Google-Key fehlt.') && note.innerHTML.includes('OpenRouter-Key fehlt.'));
+});
+
+test('the companion kit is offered per episode and its texts are ready to copy',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:{language:'de-DE'},audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[]};`);
+  const none=app.run(`renderPublishKit({script:{episode_id:'ep_001',title:'T'},publish_kit:null})`);
+  assert.ok(none.includes('data-action="publish_kit" data-episode="ep_001"')&&none.includes('Begleitmaterial erstellen'));
+  const kit={short:'Kurz <b>',description:'Lang\n\nKapitel\n00:00 Start',characters:2400,limit:4000,sources_listed:9,sources_total:12,
+    chapter_problems:[{code:'too_few_chapters'}],recorded:false,folder:'episodes/ep_001/publish'};
+  const html=app.run(`renderPublishKit({script:{episode_id:'ep_001',title:'T'},publish_kit:${JSON.stringify(kit)}})`);
+  assert.ok(html.includes('Kurz &lt;b&gt;</textarea>'),'the text is escaped');
+  assert.ok(html.includes('(2.400 von 4.000 Zeichen)')&&html.includes('9 von 12 Quellen'));
+  assert.ok(html.includes('Noch nicht vertont')&&html.includes('ab drei Kapiteln'));
+  assert.ok(html.includes('data-action="copy-text" data-source="kit-long-ep_001"')&&html.includes('data-fresh="1"'));
+});
+
+test('the whole podcast gets its own companion kit with the transcript of every episode (D-165)',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:{language:'de-DE'},audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[],podcast_kit:null};`);
+  const none=app.run(`renderPodcastKit()`);
+  assert.ok(none.includes('data-action="publish_kit" data-podcast="1"')&&none.includes('Begleitmaterial für den Podcast erstellen'));
+  assert.ok(none.includes('Transkript aller Folgen')&&!none.includes('data-fresh'),'nothing to reword yet');
+  // A kit that no longer covers the latest recordings offers the rebuild, not its old texts.
+  app.run(`project.podcast_kit={outdated:true};`);
+  const old=app.run(`renderPodcastKit()`);
+  assert.ok(old.includes('Neu zusammenstellen')&&old.includes('neu vertont')&&!old.includes('textarea')&&!old.includes('data-fresh'));
+  const kit={folder:'publish',short:'Kurz <b>',description:'Lang',characters:1800,limit:4000,episodes:6,recorded:4,sources_total:37};
+  app.run(`project.podcast_kit=${JSON.stringify(kit)};`);
+  const html=app.run(`renderPodcastKit()`);
+  assert.ok(html.includes('Kurz &lt;b&gt;</textarea>'),'the text is escaped');
+  assert.ok(html.includes('(1.800 von 4.000 Zeichen)')&&html.includes('4 von 6 Folgen vertont'));
+  assert.ok(html.includes('Transkript aller 6 Folgen')&&html.includes('<code>publish/</code>')&&html.includes('nennt 37 Quellen'));
+  assert.ok(html.includes('data-source="podcast-kit-short"')&&html.includes('data-source="podcast-kit-long"'));
+  assert.ok(html.includes('data-podcast="1" data-fresh="1"'));
+  app.run(`project.podcast_kit=${JSON.stringify({...kit,recorded:6})};`);
+  assert.ok(!app.run(`renderPodcastKit()`).includes('Folgen vertont'),'a fully recorded series needs no note');
+  const en=studio({language:'en'});
+  en.run(`project={id:'p',config:{language:'en-US'},audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[],podcast_kit:${JSON.stringify({...kit,episodes:1,recorded:0,sources_total:1})}};`);
+  const english=en.run(`renderPodcastKit()`);
+  assert.ok(english.includes('Companion kit for the podcast')&&english.includes('The episode is not recorded yet'));
+  assert.ok(english.includes("The episode's transcript")&&english.includes('names 1 source.'));
+});
+
+test('the Google route shows who explains in this episode and the key it needs',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:{language:'de-DE'},audio_settings:{provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},alternate_roles:true},episodes:[]};boot.google_key_available=false;`);
+  const card=episode=>app.run(`renderApprovalCard({script:{episode_id:'${episode}',title:'T'},expression:{tags:2,backchannels:3}},currentAudio(),true)`);
+  assert.ok(card('ep_001').includes('Erinome erklärt, Sadachbia fragt'));
+  assert.ok(card('ep_002').includes('Sadachbia erklärt, Erinome fragt'));
+  assert.ok(card('ep_001').includes('3 Einwürfe'));
+  assert.ok(card('ep_001').includes('data-key-kind="google"'));
+  assert.equal(app.run('audioBlockReason("ep_001")'),'Zuerst den Google-Key hinterlegen.');
 });
 
 test('the server note offers a restart once the code changed and can take it back',()=>{
@@ -2711,7 +2894,10 @@ test('every stop code the backend raises has its own card instead of the generic
   const expected={missing_executable:'fix',unsupported_codex_launcher:'fix',unsupported_claude_launcher:'fix',openrouter_forbidden:'fix',
     openrouter_search_unsupported:'fix',invalid_backend:'fix',credential_in_prompt:'dead',credential_in_response:'dead',
     invalid_output_schema:'dead',unsupported_run:'dead',missing_outputs:'dead',worker_stop:'dead',research_context_incomplete:'dead',
-    research_questions_open:'retry',question_scope_unresolved:'retry',invalid_speech:'retry',audio_approval_required:'decision'};
+    research_questions_open:'retry',question_scope_unresolved:'retry',invalid_speech:'retry',audio_approval_required:'decision',
+    // Gemini through Google (google_speech, 2026-10-06).
+    google_key_required:'fix',invalid_google_key:'fix',google_authentication:'fix',google_quota:'wait',
+    google_speech_request:'fix',google_unavailable:'retry',google_connection:'retry'};
   for(const [code,kind] of Object.entries(expected)){
     const stop=info(code);
     assert.equal(stop.kind,kind,code);
@@ -2719,6 +2905,7 @@ test('every stop code the backend raises has its own card instead of the generic
   }
   for(const code of ['missing_executable','unsupported_codex_launcher','unsupported_claude_launcher'])assert.ok(info(code).actions.includes('check'),code);
   assert.ok(info('openrouter_forbidden').actions.includes('key'));
+  for(const code of ['google_key_required','google_authentication'])assert.ok(info(code,'episode_audio').actions.includes('google_key'),code);
   // The text model is chosen on the settings page since 2026-10-03; these cards lead there, not to the brief.
   for(const code of ['openrouter_search_unsupported','invalid_backend'])assert.ok(info(code).actions.includes('open_settings'),code);
   assert.ok(info('audio_approval_required','episode_audio').actions.includes('audio_again'));
@@ -2828,7 +3015,7 @@ test('a new server instance reloads the session and says when the key is gone an
   app.run(`project.episodes=[{script:{episode_id:'ep_001',title:'Eins'},speech:{characters:12000,minutes:14.6}}];project.audio_queue=[{episode:'ep_001',position:1,waiting:'key'}];`);
   const queue=app.run('renderAudioQueue()');
   assert.ok(queue.includes('wartet auf den OpenRouter-Key'));
-  assert.ok(queue.includes('id="queue-key"'));
+  assert.ok(queue.includes('oben in der Freigabe hinterlegt')&&!queue.includes('id="queue-key"'),'the queue points to the one key field');
   assert.ok(queue.includes('ca. 15 Min. Audio · 12.000 Zeichen Sprechtext'));
   app.run(`project.audio_queue=[{episode:'ep_001',position:1,waiting:'place'}];`);
   assert.ok(app.run('renderAudioQueue()').includes('wartet auf einen freien Platz'));
@@ -2868,4 +3055,832 @@ test('the research page names a pass with noted limits and how often an answer w
   const html=app.elements.get('research-progress').innerHTML;
   assert.ok(html.includes('bestanden mit vermerkten Grenzen'));
   assert.ok(html.includes('◇ Q2</strong> · als Grenze vermerkt'));
+});
+
+// Claude on the user's Anthropic key and the money limit of a billed run (D-145, D-146).
+test('a billed run shows its money, and a missing or spent limit is set or raised on its stop card',()=>{
+  const app=studio();
+  const running={id:'p',config:{},job:{id:'j1',status:'running',action:'research',started_at:new Date().toISOString(),
+    run:{run_id:'run_m',kind:'research',stages:{}},progress:{phase:'research',model_calls:12,model_call_limit:750,cost_spent_usd:3.2,cost_limit_usd:20}}};
+  app.run(`project=${JSON.stringify(running)};project.config=boot.defaults;step=PAGE.research;render();`);
+  assert.ok(jobBarView(app).includes('Aufrufe 12 von 750 · Kosten 3,20 USD von 20,00 USD'));
+  // A subscription run shows no money at all.
+  app.run(`delete project.job.progress.cost_spent_usd;delete project.job.progress.cost_limit_usd;lastJobView='';renderJob();`);
+  assert.ok(!jobBarView(app).includes('USD'));
+  const stopped=code=>`project.job.status='blocked';project.job.run={run_id:'run_m',kind:'research',stages:{dossier:{status:'blocked',error:{code:'${code}',message:'x'}}}};lastJobView='';renderJob();`;
+  app.run(`project.job.progress.cost_spent_usd=20.4;project.job.progress.cost_limit_usd=20;`+stopped('cost_limit_reached'));
+  let html=jobView(app);
+  assert.ok(html.includes('Kostengrenze erreicht'));
+  // At least half again the old limit: max(20 × 1.5, 20.4 × 1.25) = 30.
+  assert.ok(html.includes('id="stop-cost" type="number" inputmode="decimal" min="20" step="1" value="30"'));
+  assert.ok(html.includes('data-action="approve-cost" data-run-id="run_m" data-then-resume="1"'));
+  assert.ok(html.includes('Kostengrenze erhöhen und fortsetzen'));
+  assert.ok(html.includes('Bisher ausgegeben: 20,40 USD von 20,00 USD'));
+  app.run(`project.job.progress.cost_spent_usd=0;delete project.job.progress.cost_limit_usd;`+stopped('cost_limit_required'));
+  html=jobView(app);
+  assert.ok(html.includes('Kostengrenze fehlt') && html.includes('Kostengrenze festlegen und fortsetzen') && html.includes('value="10"'));
+  app.run(stopped('anthropic_key_required'));
+  assert.ok(jobView(app).includes('data-key-field="stop-anthropic-key" data-key-kind="anthropic"'));
+  // The plan approval names what the plan is expected to cost under the limit.
+  assert.ok(app.run(`planSummary({tasks:8,projected_calls:120,projected_hours:4,seconds_per_call:120,cost:{expected_total_usd:44.4,limit_usd:60}})`)
+    .endsWith('etwa 44,40 USD bei einer Grenze von 60,00 USD'));
+});
+
+test('the settings page holds the Anthropic key and a money limit, saved only when given',()=>{
+  const app=studio();
+  const view={settings:{text:{provider:'claude_api',model:'claude-sonnet-5-5',reasoning_effort:'high',max_output_tokens:32768},
+    audio:{provider:'qwen_local',voices:{host_a:'Aiden',host_b:'Vivian'},pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900}},
+    execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},
+    research_limits:{model_calls:750,sources:150,search_rounds:48,cost_usd:40},text_timeout_seconds:1800},
+    hash:'h',global:true,key_available:true,google_key_available:true,anthropic_key_available:false,claude_extra_usage:false};
+  app.responses.set('/api/settings',view);
+  return app.run('showSettings()').then(()=>{
+    const html=app.elements.get('content').innerHTML;
+    assert.ok(html.includes('id="key-panel-anthropic"') && html.includes('data-key-kind="anthropic"'));
+    assert.ok(html.includes('id="settings-cost" type="number"') && html.includes('value="40"'));
+    // What a call cost when measured, next to the money limit (cost_estimate).
+    app.run(`boot.text_catalog={billed_providers:['openrouter','claude_api'],claude_models:{'claude-sonnet-5-5':'Claude Sonnet 5.5'},
+      usd_per_call:[{kind:'research',model:'claude-sonnet-5-5',usd:0.37}],usd_per_call_measured_on:'2026-10-07'};`);
+    assert.ok(app.run('costHint()').includes('Claude Sonnet 5.5 Recherche 0,37 USD'));
+    app.run(`$('settings-cost').value='55';`);
+    assert.equal(app.run('settingsFromForm().research_limits.cost_usd'),55);
+    app.run(`$('settings-cost').value='';`);
+    assert.equal(app.run('"cost_usd" in settingsFromForm().research_limits'),false);
+    // The web search is a choice of its own; Perplexity has its key panel (D-151).
+    assert.ok(html.includes('name="settings-web-search" value="perplexity"') && html.includes('id="key-panel-perplexity"'));
+    assert.equal(app.run('settingsFromForm().web_search'),'model');
+  });
+});
+
+test('the drawer of a billed script run names its money and what the rest is expected to cost',()=>{
+  const app=studio();
+  const job={id:'j1',status:'running',action:'script',started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{}},
+    progress:{phase:'script',model_calls:40,model_call_limit:750,budget_projection:{minimum_remaining_calls:20,feasible:true,
+      cost:{spent_usd:33.2,limit_usd:100,expected_remaining_usd:80.5,feasible:false}}}};
+  app.run(`project={id:'p',config:boot.defaults,job:${JSON.stringify(job)}};step=PAGE.production;render();`);
+  assert.ok(jobView(app).includes('Kosten: 33,20 USD von 100,00 USD · für den Rest erwartet etwa 80,50 USD, mehr als die Grenze'));
+});
+
+// The design review of 2026-10-07 (D-159..D-164).
+const DOSSIER=['# Recherchedossier: Wissen','','Recherchelauf: `run_20260930_x`','','Assembled from 2 answers.','',
+  '## Befunde mit Quellenbezug','','### t01_blocks__f_chunks — mechanism','','Documents are split into chunks. Each chunk gets a vector.','',
+  'Aussagetyp: source_definition / description. Geltungsbereich: Standard RAG.','',
+  '- [Paper](https://example.org/p), Seite 2 (`src_0123abcd#sec_4567ef01`): „quote“','',
+  '### t02_onto__f1 — definition','','An ontology names classes and relations.','',
+  '## Abdeckung und Lücken','','- **What are the building blocks?** — answered; Befunde: t01_blocks__f_chunks.','',
+  '- **What is an ontology?** — answered; Befunde: t02_onto__f1.','',
+  '## Offene Fragen','','- Who maintains it?','','## Quellenverzeichnis','',
+  ...Array.from({length:12},(_,i)=>`- **Source ${i}** — Author, 2024. https://example.org/${i} — \`src_${i}abc\`. Metadaten und Extraktionsgrenzen: siehe \`models/source_index.yaml\`.`)].join('\n');
+
+test('a structured dossier opens with its questions, folds its findings under them and hides internal ids',()=>{
+  const app=studio();
+  // The page's own t() is a global since D-152, so the scratch list takes another name.
+  const toc=app.run(`const tocEntries=[];window.__toc=tocEntries;tocEntries`);
+  const html=app.run(`renderDossier(${JSON.stringify(DOSSIER)},window.__toc)`);
+  assert.ok(html.indexOf('Leitfragen und Abdeckung')<html.indexOf('Befunde nach Leitfrage'),'the questions come before the findings');
+  assert.ok(html.indexOf('Offene Fragen')<html.indexOf('Befunde nach Leitfrage'),'a short open-question list stands before the findings');
+  assert.ok(html.indexOf('Befunde nach Leitfrage')<html.indexOf('Quellenverzeichnis'),'the long source list folds at the end');
+  assert.ok(html.includes('<details class="dossier-section" id="dossier-section-3"><summary>Quellenverzeichnis · 12</summary>'));
+  assert.ok(html.includes('<details class="finding-group" id="dossier-group-0"><summary><span>What are the building blocks?</span><span class="tag">1 Befund</span>'));
+  assert.ok(html.includes('<span class="finding-kind">Mechanismus</span> Documents are split into chunks.'));
+  assert.ok(html.includes('<span class="finding-kind">Definition</span>'));
+  for(const internal of ['t01_blocks__f_chunks','src_0123abcd','Aussagetyp','source_index.yaml','— mechanism'])assert.ok(!html.includes(internal),internal);
+  assert.ok(html.includes('Geltungsbereich: Standard RAG.'),'the scope stays');
+  assert.ok(html.includes('Recherchelauf: run_20260930_x'),'the run id moves to the technical details');
+  assert.ok(html.includes('<strong>2</strong> Befunde zu <strong>2</strong> Leitfragen'));
+  const entries=JSON.parse(JSON.stringify(app.run('window.__toc')));
+  assert.ok(entries.length<10&&entries.some(e=>e.level===2&&e.html.includes('What is an ontology?')),'the contents list names questions, not finding ids');
+});
+
+test('older recordings are named once and ask for nothing; an episode without one asks, alike on the card, the steps and the header',()=>{
+  const app=studio();
+  const ep=(id,extra)=>({...publishedEpisode({}),script:{...publishedEpisode({}).script,episode_id:id,title:id},...extra});
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'a',action:'audio',status:'completed',run:{kind:'episode_audio',status:'completed'}},
+    audio_jobs:[{id:'a',episode:'ep_001',status:'completed'}],
+    episodes:[${JSON.stringify(ep('ep_001',{audio:['exports/a.mp3'],audio_current:false,audio_stale:['pace']}))},${JSON.stringify(ep('ep_002',{audio:['exports/b.mp3'],audio_current:false,audio_stale:['voices','provider']}))}]};step=PAGE.brief;`);
+  let states=JSON.parse(JSON.stringify(app.run('navigationStates()')));
+  assert.deepEqual(states[4],['2 Folgen lesbar','done']);
+  assert.deepEqual(states[5],['Aufnahmen vorhanden · 2 älter','done']);
+  app.run('renderJob()');
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('Podcast verfügbar · 2 Folgen · 2 von einem früheren Stand'));
+  app.run('step=PAGE.audio');
+  const page=app.run('renderAudio()');
+  assert.ok(page.includes('Alle Aufnahmen stammen von einem früheren Stand (geändert: Sprechtempo, Stimmen, Audioanbieter)'));
+  assert.ok(page.includes('Aufnahme eines früheren Stands vorhanden · geändert: Sprechtempo'));
+  const card={id:'p',topic:'T',script_count:2,has_research:true,has_outline:true,job:{status:'completed',action:'audio',run:{kind:'episode_audio',status:'completed'}},audio_jobs:[],
+    episodes:[{episode_id:'ep_001',audio:['a.mp3'],audio_current:false},{episode_id:'ep_002',audio:['b.mp3'],audio_current:false}]};
+  assert.equal(app.run(`attentionOf(${JSON.stringify(card)})`),null);
+  assert.deepEqual(JSON.parse(JSON.stringify(app.run(`pipelineStates(${JSON.stringify(card)})`))).slice(4),['done','done']);
+  card.script_count=3;card.episodes.push({episode_id:'ep_003',audio:[]});
+  assert.equal(app.run(`attentionOf(${JSON.stringify(card)})`).text,'1 Folge hat noch keine Aufnahme.');
+  assert.equal(JSON.parse(JSON.stringify(app.run(`pipelineStates(${JSON.stringify(card)})`)))[5],'decision');
+  assert.ok(app.run(`overviewStatus(${JSON.stringify(card)})`).includes('1 ohne Aufnahme'));
+});
+
+test('polling reads the light status and loads the whole project only when its content or a job changed',async()=>{
+  const app=studio(), p=workflowProject(app);
+  p.content_version='v1';p.job.status='completed';p.job.run.status='completed';
+  app.run(`boot.capabilities={light_status:true};project=${JSON.stringify(p)};lastJobSignature=projectJobSignature(project);`);
+  const light={...p,research:undefined,outline:undefined,episodes:undefined,script_previews:undefined};
+  app.responses.set('/api/projects/test/status',light);
+  app.responses.set('/api/projects/test',{...p,research:'Neues Dossier',content_version:'v2'});
+  let next=await app.run(`pollProject('test')`);
+  assert.equal(next.research,'Reviewed dossier','an unchanged content keeps what the page has');
+  assert.ok(!app.requests.some(r=>r.path==='/api/projects/test'),'and loads nothing more');
+  app.responses.set('/api/projects/test/status',{...light,content_version:'v2'});
+  next=await app.run(`pollProject('test')`);
+  assert.equal(next.research,'Neues Dossier');
+  assert.ok(app.requests.some(r=>r.path==='/api/projects/test'));
+});
+
+test('a stop that fresh attempts can move makes them the primary button, and the header leads to the card instead of resuming',()=>{
+  const app=studio(), p=workflowProject(app);
+  Object.assign(p.job,{status:'blocked',fresh_attempts:true,error_code:'script_review_failed',run:{...p.job.run,run_id:'r1',status:'blocked'}});
+  app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  const fresh=card.indexOf('<button data-action="fresh-attempts"'), resume=card.indexOf('<button class="secondary" data-action="resume"');
+  assert.ok(fresh>-1&&resume>fresh,'fresh attempts first and filled, "Fortsetzen" after them as a secondary button');
+  assert.ok(card.includes('<span class="chip paused">Angehalten</span>'),'a stop that can go on is paused, not broken');
+  assert.ok(!app.elements.get('job-bar').innerHTML.includes('data-action="resume"'));
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('job-dot paused'));
+});
+
+test('the settings group the text models by how they are paid, name a missing key and say when edits are unsaved',()=>{
+  const app=studio();
+  const presets=[{id:'auto',provider:'auto',label:'Automatisch'},{id:'api',provider:'claude_api',model:'claude-sonnet-5-5',label:'Sonnet · API-Key'},{id:'or',provider:'openrouter',model:'x',label:'OpenRouter X'}];
+  const settings={text:{provider:'auto',reasoning_effort:null,max_output_tokens:32768},audio:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},
+    execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},research_limits:{model_calls:100,sources:10,search_rounds:5},text_timeout_seconds:1800};
+  app.run(`boot.text_catalog={presets:${JSON.stringify(presets)}};settingsPage=true;settingsData={global:true,settings:${JSON.stringify(settings)},key_available:true,anthropic_key_available:false};settingsDraft=structuredClone(settingsData.settings);`);
+  const html=app.run('renderSettings()');
+  assert.ok(html.includes('<legend>Über deine Abos · keine API-Kosten</legend>'));
+  assert.ok(html.includes('Über deinen Anthropic-API-Key · pro Aufruf bezahlt <span class="chip decision">Anthropic-Key fehlt</span>'));
+  assert.ok(html.includes('<legend>Über OpenRouter · pro Aufruf bezahlt</legend>'),'a stored key is not flagged');
+  assert.ok(html.includes('data-scroll="settings-section-limits"')&&html.includes('id="settings-section-limits"'));
+  assert.ok(html.includes('<label class="sr-only" for="settings-pair-language">')||!html.includes('id="settings-pair-language"'));
+  assert.ok(html.includes('Alles gespeichert'));
+  app.run(`markSettingsDirty({id:'api-key'})`);
+  assert.equal(app.run('settingsDirty'),false,'typing a key is no settings edit');
+  app.run(`markSettingsDirty({id:'settings-calls'})`);
+  assert.equal(app.run('settingsDirty'),true);
+  assert.ok(app.run('renderSettings()').includes('Ungespeicherte Änderungen'));
+  app.run('window.confirm=()=>false');
+  assert.equal(app.run('leaveSettings()'),false,'leaving with unsaved edits asks first');
+  app.run('window.confirm=()=>true');
+  assert.equal(app.run('leaveSettings()'),true);
+  assert.ok(app.run('sidebarProjects()').includes('Neues Projekt'),'the sidebar lists projects instead of a new project\'s steps');
+});
+
+test('the reader names each speaker by voice, steps between episodes and keeps read marks in the project',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  const two={...publishedEpisode({}),hash:'h2',script:{...publishedEpisode({}).script,episode_id:'ep_002',title:'Second'}};
+  p.episodes=[publishedEpisode({}),two];p.reader_state={read:{ep_001:'final'}};
+  p.audio_settings={provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},alternate_roles:true};
+  app.run(`project=${JSON.stringify(p)};step=PAGE.scripts;scriptEpisodeId='ep_002';render();`);
+  const html=app.elements.get('content').innerHTML;
+  assert.ok(html.includes('<strong>Sadachbia · Host A</strong>'),'roles swap in an even episode');
+  assert.ok(html.includes('data-reader-episode="ep_001"')&&html.includes('‹ Vorherige'));
+  assert.ok(html.includes('Folge 2 von 2 · 1 gelesen'));
+  assert.ok(html.includes('1. ep_001 Dialogue · ✓ gelesen')&&!html.includes('· Fertig zur Durchsicht'),'a published state is not repeated on every option');
+  assert.ok(html.indexOf('Weiter zur Audio-Freigabe')<html.indexOf('Wörter'),'the decision stands first in the margin');
+  app.run(`project.reader_state={read:{ep_001:'older'}}`);
+  assert.ok(!app.run('renderReaderControls()').includes('✓ gelesen'),'a revised script reads as unread again');
+});
+
+test('the engine room shows only what helps: a finished side job closes it, a stopped run folds its last lines',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'k',action:'publish_kit',status:'completed',progress:{completed_segments:1,total_segments:1}},episodes:[]};step=PAGE.audio;renderJob();`);
+  assert.equal(app.elements.get('job-status').hidden,true,'nothing to show, no dock');
+  assert.ok(!app.elements.get('job-bar').innerHTML.includes('Arbeitsschritt abgeschlossen'));
+  app.run(`project.job={id:'r',action:'resume',status:'interrupted',run:{run_id:'r1',kind:'research',stages:{}},progress:{phase:'research',
+    status_summary:{status:'summarizing',summary:'Zuletzt wurde geprüft.',generated_at:new Date(Date.now()-3*86400000).toISOString(),model:'small-model'},
+    model_trace:{updated_at:new Date(Date.now()-5*86400000).toISOString(),lines:[{at:new Date().toISOString(),call:'c1',kind:'text',text:'Eins'},{at:new Date().toISOString(),call:'c1',kind:'text',text:'Zwei'}]},
+    call_labels:{c1:'Eine lange Teilfrage, deren Titel weit über achtundvierzig Zeichen hinausreicht'}}};lastJobView='';drawerOpen=true;renderJob();`);
+  const drawer=app.elements.get('job-status').innerHTML;
+  assert.ok(drawer.indexOf('Kurzbericht')<drawer.indexOf('Letzte Arbeitsschritte'),'the brief comes first');
+  assert.ok(!drawer.includes('wird gerade erstellt'),'a stopped run\'s brief is not being written');
+  assert.ok(drawer.includes('vor 3 Tagen')&&drawer.includes('vor 5 Tagen'));
+  assert.ok(!drawer.includes('small-model</span>'),'the brief\'s model only as a tooltip');
+  assert.ok(drawer.includes('<details class="trace-archive"><summary>Letzte Arbeitsschritte'));
+  assert.equal((drawer.match(/<small>/g)||[]).length,1,'lines of one call at one moment share one head');
+  assert.ok(!drawer.includes('Haltegrund')&&!drawer.includes('Textmodus:'));
+  assert.ok(!app.elements.get('job-bar').innerHTML.includes('drawer-toggle'));
+});
+
+test('the production report breaks a research run down by its steps in German numbers',()=>{
+  const app=studio();
+  const job={status:'completed',run:{run_id:'run_r',kind:'research'}};
+  const report={calls:30,model_minutes:90,stages:[{stage:'question_research',label:'question_research',calls:29,failed:1,minutes:87,share:0.97,minutes_per_call:3},
+    {stage:'research_discovery',label:'research_discovery',calls:1,failed:0,minutes:3,share:0.03,minutes_per_call:3}],
+    versions:[{version:'question_research.v3.view.reader',calls:20,minutes:30},{version:'question_research.v3.search',calls:5,minutes:45},
+      {version:'question_research.v3.review_002',calls:4,minutes:12}],providers:{},stops:{total:0,by_stage:{}},approvals:{}};
+  app.run(`productionReports.run_r=${JSON.stringify({report})}`);
+  const html=app.run(`renderProductionReport(${JSON.stringify(job)})`);
+  assert.ok(html.includes('<td>Websuche</td><td>5</td><td>45 Min.</td>'));
+  assert.ok(html.includes('<td>Quellen lesen</td><td>20</td>'));
+  assert.ok(html.includes('<td>Antworten prüfen</td>'));
+  assert.ok(!html.includes('<td>question_research</td>'),'the one stage is broken down');
+  assert.ok(html.includes('1,5 Std. Modellzeit'));
+});
+
+test('a settled brief leads with the saved brief, folds the conversation and renders the partner\'s Markdown',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';p.proposal_applied=true;
+  p.chat=[{role:'user',message:'**nicht fett**'},{role:'assistant',message:'**Ausführung**\n- parallel'}];
+  app.run(`boot.capabilities={conversational_setup:true,project_attachments:true};project=${JSON.stringify(p)};briefChatOpen=false;`);
+  let html=app.run('renderBrief()');
+  assert.ok(html.indexOf('Dein gespeicherter Auftrag')<html.indexOf('chat-archive'),'the saved brief leads');
+  assert.ok(html.includes('<details class="panel chat-archive" id="chat-archive"><summary>Gespräch mit der Redaktion · 2 Nachrichten</summary>'));
+  assert.ok(html.includes('<strong>Ausführung</strong>')&&html.includes('<li><p>parallel</p></li>'));
+  assert.ok(html.includes('<p>**nicht fett**</p>'),'the editor\'s own words stay plain');
+  assert.ok(html.includes('<details class="composer-menu"><summary>'),'saved attachments do not open the attachment panel');
+  app.run(`project.chat.push({role:'user',message:'Noch etwas'})`);
+  assert.ok(app.run('renderBrief()').includes('id="chat-archive" open'),'an unanswered message keeps the conversation open');
+});
+
+test('the key reminder is one folded line that names every missing key',()=>{
+  const app=studio();
+  app.run(`overviewPage=true;overviewData={projects:[],trash:[],key_reminder:[{need:'google_audio',projects:['A'],key:'google'},{need:'jev',projects:['B']}]};renderKeyNote();`);
+  const html=app.elements.get('key-note').innerHTML;
+  assert.ok(html.startsWith('<details class="key-details"><summary><strong>2 Keys fehlen</strong> · Google-Key (Gemini-Vertonung über Google) · OpenRouter-Key (Jev in der Lückenprobe)</summary>'));
+  assert.ok(!html.includes('<details class="key-details" open'),'folded by default');
+  assert.equal((html.match(/Der Key bleibt nur im Speicher/g)||[]).length,0,'one note for all keys, not one per field');
+});
+
+// The interface in German or English (D-152). The catalogs agree in keys, plural shapes and placeholders; every key the
+// page names exists; an English page shows no German text of its own; a German page keeps its exact wording.
+const PLACEHOLDER=/\{(\w+)\}/g;
+const catalogForms=value=>typeof value==='string'?[value]:Object.values(value);
+const placeholdersOf=value=>[...new Set(catalogForms(value).flatMap(text=>[...text.matchAll(PLACEHOLDER)].map(m=>m[1])))].sort();
+// German an English page must not show: umlauts or German quotation marks, two German function words in one text, or
+// a German name of a control. The language choice names each language in its own words and stays as it is.
+const GERMAN_MARK=/[äöüÄÖÜß„]/;
+const GERMAN_WORDS=/\b(?:und|oder|nicht|der|die|das|dem|des|ein|eine|einen|ist|sind|wird|werden|mit|für|auf|noch|zur|zum|bitte|keine|kein|sobald|danach|wurde|sonst)\b/g;
+const GERMAN_NAMES=/\b(?:Fortsetzen|Einstellungen|Teilfragen?|Skripte|Auftrag|Folgen?|Recherche|Vertonung|Stimmen|Lauf|Prüfung)\b/;
+const BILINGUAL=new Set(['Deutsch','Sprache / Language','Automatisch / Automatic']);
+function germanLeft(html) {
+  const visible=String(html).replace(/<(script|style|textarea)[^>]*>[\s\S]*?<\/\1>/g,' ');
+  const texts=[...visible.matchAll(/\s(?:aria-label|title|placeholder|data-confirm|alt)="([^"]*)"/g)].map(m=>m[1]);
+  texts.push(...visible.replace(/<[^>]*>/g,'\n').split('\n').map(text=>text.trim()).filter(Boolean));
+  return texts.filter(text=>!BILINGUAL.has(text)&&(GERMAN_MARK.test(text)||(text.match(GERMAN_WORDS)||[]).length>=2||GERMAN_NAMES.test(text)));
+}
+function watchWarnings(app) {
+  const warnings=[];
+  app.context.console={...console,warn:(...args)=>warnings.push(args.join(' '))};
+  return warnings;
+}
+
+test('the German and English catalogs have the same keys, plural shapes and placeholders and carry no markup',()=>{
+  assert.deepEqual(Object.keys(locales.en).sort(),Object.keys(locales.de).sort());
+  for(const [key,de] of Object.entries(locales.de)){
+    const en=locales.en[key];
+    assert.equal(typeof en,typeof de,`shape of ${key}`);
+    if(typeof de==='object')assert.deepEqual([Object.keys(de).sort(),Object.keys(en).sort()],[['one','other'],['one','other']],key);
+    assert.deepEqual(placeholdersOf(en),placeholdersOf(de),`placeholders of ${key}`);
+    for(const text of [...catalogForms(de),...catalogForms(en)]){
+      assert.ok(text.trim(),`empty text in ${key}`);
+      assert.ok(!/[<>"]|&[#A-Za-z]/.test(text),`markup in ${key}: ${text}`);
+    }
+  }
+});
+
+test('every catalog key the page script and its static HTML name exists',()=>{
+  const html=fs.readFileSync('src/podcast_automate/web/index.html','utf8');
+  const keys=new Set([
+    ...[...source.matchAll(/\b(?:t|tp|hasText|say)\("([a-z][\w.-]*)"/g)].map(m=>m[1]),
+    ...[...source.matchAll(/\brule\("([a-z_]+)"/g)].map(m=>`stop.${m[1]}.title`),
+    ...[...html.matchAll(/data-i18n(?:-label|-content)?="([^"]+)"/g)].map(m=>m[1])]);
+  assert.ok(keys.size>700,`only ${keys.size} keys found; the pattern no longer matches the page script`);
+  assert.deepEqual([...keys].filter(key=>!(key in locales.en)),[]);
+});
+
+test('the static page text follows the interface language and the German catalog keeps the file\'s wording',()=>{
+  const html=fs.readFileSync('src/podcast_automate/web/index.html','utf8');
+  // Every tag with a catalog key, with its attributes and the text up to its next tag.
+  const tags=[...html.matchAll(/<(\w+)([^>]*\sdata-i18n[^>]*)>([^<]*)/g)].map(([,tag,attributes,text])=>{
+    const attribute=name=>attributes.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
+    return {tag,text,key:attribute('data-i18n'),labelKey:attribute('data-i18n-label'),label:attribute('aria-label'),
+      contentKey:attribute('data-i18n-content'),content:attribute('content')};
+  });
+  assert.ok(tags.length>=15,`${tags.length} tags`);
+  for(const tag of tags){
+    if(tag.key)assert.equal(locales.de[tag.key],tag.text,tag.key);
+    if(tag.labelKey)assert.equal(locales.de[tag.labelKey],tag.label,tag.labelKey);
+    if(tag.contentKey)assert.equal(locales.de[tag.contentKey],tag.content,tag.contentKey);
+  }
+  assert.ok(html.indexOf('<script src="/locale.js" defer>')>-1&&html.indexOf('/locale.js')<html.indexOf('/app.js'),'the catalog loads before the page script');
+  for(const [language,setting] of [['en','auto'],['de','de']]){
+    const app=studio({language,setting});
+    const nodes=tags.map(tag=>({dataset:{...(tag.key?{i18n:tag.key}:{}),...(tag.labelKey?{i18nLabel:tag.labelKey}:{}),...(tag.contentKey?{i18nContent:tag.contentKey}:{})},
+      textContent:tag.text,attributes:{},setAttribute(name,value){this.attributes[name]=value;}}));
+    const select={value:'',dataset:{}}, root={lang:'de'};
+    app.context.document.documentElement=root;
+    app.context.document.querySelectorAll=selector=>selector==='select[data-ui-language]'?[select]:
+      nodes.filter(node=>({'[data-i18n]':'i18n','[data-i18n-label]':'i18nLabel','[data-i18n-content]':'i18nContent'})[selector] in node.dataset);
+    app.run('localizePage()');
+    assert.equal(root.lang,language);
+    assert.equal(select.value,setting,'the sidebar choice shows the saved setting');
+    for(const node of nodes){
+      if(node.dataset.i18n)assert.equal(node.textContent,locales[language][node.dataset.i18n]);
+      if(node.dataset.i18nLabel)assert.equal(node.attributes['aria-label'],locales[language][node.dataset.i18nLabel]);
+    }
+    if(language==='en'){
+      assert.ok(nodes.some(node=>node.textContent==='Settings'),'the English settings link says "Settings"');
+      assert.deepEqual(germanLeft(nodes.map(node=>`<p>${node.textContent}</p><p>${node.attributes['aria-label']||''}</p>`).join('')),[]);
+    }
+  }
+});
+
+test('an English page shows every step, the navigation, the settings and the overview without German text',()=>{
+  const app=studio({language:'en'}), warnings=watchWarnings(app), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[{...publishedEpisode({script_review:['A model review can miss errors.']}),audio:['exports/ep_001/run/audio.mp3'],audio_current:true,audio_seconds:1500}];
+  app.run(`boot.capabilities={conversational_setup:true,project_attachments:true,project_overview:true,podcast_downloads:true};project=${JSON.stringify(p)};episodeIndex=0;readingSnapshot=null;`);
+  for(const [name,code] of Object.entries({brief:'renderBrief()',research:'renderResearch()',outline:'renderOutline()',
+    production:'renderProduction()',scripts:'renderScript()',audio:'renderAudio()'}))assert.deepEqual(germanLeft(app.run(code)),[],name);
+  app.run('step=PAGE.audio;renderNavigation();');
+  assert.deepEqual(germanLeft(app.elements.get('steps').innerHTML),[],'navigation');
+  app.run(`project.job={id:'j2',action:'resume',status:'running',started_at:new Date().toISOString(),progress:{phase:'script',model_calls:3,model_call_limit:40},
+    run:{kind:'script',run_id:'r2',status:'running',stages:{planning:{status:'completed'},teaching:{status:'running'}}}};lastJobView='';drawerOpen=true;renderJob();`);
+  assert.deepEqual(germanLeft(jobView(app)),[],'job bar and engine room');
+  const presets=[{id:'auto_subscriptions',provider:'auto',label:'Automatisch über die Abos'},{id:'claude_sonnet_api',provider:'claude_api',model:'claude-sonnet-5-5',label:'Sonnet über den API-Key'}];
+  const settings={text:{provider:'auto',reasoning_effort:null,max_output_tokens:32768},audio:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},
+    execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},research_limits:{model_calls:100,sources:10,search_rounds:5},text_timeout_seconds:1800};
+  app.run(`boot.text_catalog={presets:${JSON.stringify(presets)}};settingsPage=true;settingsData={global:true,settings:${JSON.stringify(settings)},key_available:true,anthropic_key_available:false};settingsDraft=structuredClone(settingsData.settings);`);
+  const page=app.run('renderSettings()');
+  assert.deepEqual(germanLeft(page),[],'settings');
+  assert.ok(page.includes('<h1>Settings</h1>'),'the chat names the settings page "Settings"');
+  assert.ok(page.includes('id="ui-language-settings" data-ui-language'));
+  app.run('renderNavigation()');
+  assert.equal(app.elements.get('project-title').textContent,'Settings');
+  app.run(`settingsPage=false;overviewPage=true;overviewData={projects:[{id:'test',topic:'Topic one',job:{status:'running',action:'audio'},
+    episodes:[{episode_id:'ep_001',title:'First',audio:['exports/ep_001/one.mp3'],audio_current:true}]}],trash:[]};`);
+  assert.deepEqual(germanLeft(app.run('renderOverview()')),[],'overview');
+  assert.deepEqual(warnings,[],'no key is missing from the catalog');
+});
+
+test('every stop card reads in English for every run kind, a chat and a recording',()=>{
+  const app=studio({language:'en'}), warnings=watchWarnings(app), p=workflowProject(app);
+  app.run(`project=${JSON.stringify(p)};`);
+  const codes=app.run('Object.keys(STOP_RULES)');
+  assert.ok(codes.length>60,`${codes.length} stop rules`);
+  for(const code of codes)for(const kind of ['research','script','audio',null]){
+    const job={id:'j',status:['interrupted','failed'].includes(code)?code:'blocked',action:kind==='audio'?'audio':kind?'resume':'assistant',
+      error_code:code,run:kind?{kind,run_id:'r1',status:'blocked',stages:{}}:null,progress:{}};
+    const html=app.run(`(job=>{const info=stopInfo(job);return info?renderStopCard(job,info):""})(${JSON.stringify(job)})`);
+    assert.deepEqual(germanLeft(html),[],`${code} · ${kind}`);
+    assert.ok(!html.includes('{resume}'),`${code} · ${kind}`);
+  }
+  assert.deepEqual(warnings,[]);
+});
+
+test('stop texts name the resume button of the page language in its quotation marks',()=>{
+  for(const [language,verb,resend] of [['de','„Fortsetzen“','„Erneut senden“'],['en','“Resume”','“Send again”']]){
+    const app=studio({language});
+    const info=app.run(`stopInfo({status:'blocked',action:'resume',error_code:'timeout',run:{kind:'script',run_id:'r1',stages:{}},progress:{}})`);
+    assert.ok(info.text.includes(verb),info.text);
+    const chat=app.run(`stopInfo({status:'failed',action:'assistant',error_code:'timeout',progress:{}})`);
+    assert.ok(chat.text.includes(resend),chat.text);
+  }
+});
+
+test('an English page shows a German server message only in the technical details, an English one in the card',()=>{
+  const app=studio({language:'en'}), p=workflowProject(app);
+  app.run(`project=${JSON.stringify(p)};`);
+  const card=message_language=>app.run(`(job=>renderStopCard(job,stopInfo(job)))(${JSON.stringify({id:'j',status:'blocked',action:'resume',error_code:'timeout',
+    stop:{code:'timeout',message:message_language==='de'?'Der Aufruf hat zu lange gedauert.':'The call took too long.',message_language},
+    run:{kind:'script',run_id:'r1',stages:{}},progress:{}})})`);
+  const german=card('de'), [main,details]=german.split('<details class="tech-details">');
+  assert.ok(!main.includes('Der Aufruf hat zu lange gedauert.'));
+  assert.ok(details.includes('Der Aufruf hat zu lange gedauert.'),'the original stays reachable');
+  assert.ok(card('en').split('<details class="tech-details">')[0].includes('The call took too long.'));
+  assert.equal(app.run(`errorText({message:'Projekt nicht gefunden.',language:'de',code:'not_found'})`),'Refused (not_found). Original message (German): Projekt nicht gefunden.');
+  assert.equal(studio().run(`errorText({message:'Projekt nicht gefunden.',language:'de',code:'not_found'})`),'Projekt nicht gefunden.');
+});
+
+test('a budget stop and a blocked question read their limit from the server fields before the German wording',()=>{
+  const app=studio({language:'en'}), p=workflowProject(app);
+  app.run(`project=${JSON.stringify(p)};`);
+  const actions=(stop,message)=>[...app.run(`stopInfo(${JSON.stringify({status:'blocked',action:'resume',error_code:'research_budget_exhausted',
+    stop:{code:'research_budget_exhausted',...stop},message,run:{kind:'research',run_id:'r1',stages:{}},progress:{}})}).actions`)];
+  assert.deepEqual(actions({limit:'search_rounds'},''),['approve_search']);
+  assert.deepEqual(actions({limit:'model_calls'},'Die Suchrunden sind aufgebraucht.'),['approve_calls'],'the field wins over the wording');
+  assert.deepEqual(actions({},'Die Suchrunden sind aufgebraucht.'),['approve_search'],'older stops keep the wording fallback');
+  const gap=row=>app.run(`gapActionsFor(${JSON.stringify({id:'q1',outcome:'budget_block',...row})},'r1',5)`).includes('data-action="approve-search"');
+  assert.equal(gap({block_cause:'search_budget',reason:'Search budget used up.'}),true);
+  assert.equal(gap({block_cause:'source_limit',reason:'Das Suchbudget reicht nicht.'}),false);
+  assert.equal(gap({reason:'Das Suchbudget reicht nicht.'}),true,'older rows keep the wording fallback');
+});
+
+test('an English research run shows its plan review, decisions, disputes and recordings without German text',()=>{
+  const app=studio({language:'en'}), warnings=watchWarnings(app);
+  const projection={tasks:12,tasks_pending:12,expected_calls_per_task:5,expected_calls_source:'project',closing_reserve:4,closing_calls:3,
+    projected_calls:64,used:7,approved_limit:150,within_limit:true,seconds_per_call:270,seconds_per_call_source:'run',projected_hours:4.8,plan_hash:'h',plan_caps:[]};
+  const base=`project={id:'p',config:boot.defaults,audio_jobs:[],job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:`;
+  const show=progress=>{app.run(`${base}${JSON.stringify(progress)}}};overviewPage=false;step=PAGE.research;lastJobView='';drawerOpen=true;render();`);return jobView(app)+app.elements.get('content').innerHTML;};
+  let html=show({phase:'research',research_questions:{closed:0,total:12,accepted:0,phase:'awaiting_plan_approval',questions:[]},
+    plan_review:{awaiting:true,approved:false,approval:null,projection},model_call_limit:150,model_calls:7});
+  assert.ok(html.includes('data-action="approve-plan"'));
+  assert.deepEqual(germanLeft(html),[],'plan review');
+  html=show({phase:'research',search_round_limit:5,research_questions:{closed:1,total:3,accepted:0,phase:'blocked',questions:[
+    {id:'q1',question:'Definition',status:'verified',steps:2,read_sections:4,acceptance:['Describe the scope'],answer:'**Answer**',limits:['Limited scope'],findings:[]},
+    {id:'q2',question:'Independent test?',status:'blocked',outcome:'evidence_block',reason:'Missing original study',steps:3,read_sections:5,acceptance:['Find the test']},
+    {id:'q3',question:'Later sources?',status:'blocked',outcome:'budget_block',block_cause:'search_budget',reason:'Search budget used up',steps:1,read_sections:0,acceptance:['Find a source']}]},
+    research_quality:{closed:1,total:3,requirements:[],blocking_gaps:[]},model_call_limit:150,model_calls:40});
+  assert.ok(html.includes('data-action="accept-gap"')&&html.includes('data-action="approve-search"'));
+  assert.deepEqual(germanLeft(html),[],'decisions');
+  const dispute=id=>({objection_id:id,task_id:'t',question:`Question ${id}`,decision:null,
+    objection:{reason:`Objection ${id}`,correction:'Remove it.',closure_condition:'Cited'},review:{reason:`Review ${id}`,references:[]}});
+  app.run(`${base}${JSON.stringify({phase:'research',research_questions:{closed:3,total:3,accepted:0,phase:'audit',audit_round:1,questions:[]},
+    review_disagreements:[dispute('a'),dispute('b')],search_round_limit:40})},stop:{code:'review_disagreement'}}};step=PAGE.research;lastJobView='';render();`);
+  html=jobView(app);
+  assert.ok(html.includes('data-objection-id="a"'));
+  assert.deepEqual(germanLeft(html),[],'disputes');
+  app.run(`project.job={id:'a1',action:'audio',episode:'ep_001',status:'running',progress:{phase:'audio',completed_segments:2,total_segments:8}};
+    project.audio_jobs=[project.job,{id:'a2',action:'audio',episode:'ep_002',status:'blocked',error_code:'speech_failed',run:{run_id:'run_two',kind:'audio',stages:{}},progress:{}}];
+    project.audio_capacity={available:2};step=PAGE.audio;lastJobView='';renderJob();`);
+  assert.deepEqual(germanLeft(jobView(app)),[],'recordings');
+  assert.deepEqual(warnings,[]);
+});
+
+test('the language choice saves the setting, reloads the page and is no settings edit',async()=>{
+  const app=studio({language:'en',setting:'auto'});
+  let reloads=0;
+  app.context.window.location={reload(){reloads++;}};
+  app.run(`settingsPage=true;settingsData={global:true,settings:{}};`);
+  app.run(`markSettingsDirty({id:'ui-language-settings'})`);
+  assert.equal(app.run('settingsDirty'),false);
+  await app.run('chooseLanguage("auto")');
+  await app.run('chooseLanguage("fr")');
+  assert.equal(app.requests.filter(r=>r.path==='/api/ui-language').length,0,'the current or an unknown choice sends nothing');
+  await app.run('chooseLanguage("de")');
+  const request=app.requests.find(r=>r.path==='/api/ui-language');
+  assert.deepEqual(JSON.parse(request.options.body),{ui_language:'de'});
+  assert.equal(request.options.headers['X-Studio-Token'],'csrf');
+  assert.equal(reloads,1);
+  assert.ok(app.run('languageSelect("x")').includes('<option value="auto" selected>Automatisch / Automatic</option>'));
+});
+
+test('dates, numbers and plurals follow the page language',()=>{
+  const de=studio(), en=studio({language:'en'});
+  assert.equal(de.run('usd(1234.5)'),'1.234,50 USD');
+  assert.equal(en.run('usd(1234.5)'),'1,234.50 USD');
+  assert.equal(de.run('quoted("x")'),'„x“');
+  assert.equal(en.run('quoted("x")'),'“x”');
+  assert.equal(en.run('tp("job.decisions",{count:1})'),'1 sub-question awaits your decision');
+  assert.equal(en.run('tp("job.decisions",{count:2})'),'2 sub-questions await your decision');
+  assert.equal(de.run('tp("job.decisions",{count:1})'),'1 Teilfrage wartet auf deine Entscheidung');
+  assert.equal(de.run('tp("job.decisions",{count:3})'),'3 Teilfragen warten auf deine Entscheidung');
+  assert.equal(en.run('t("act.studio_reports",{message:"<b>"})'),'The Studio reports: &lt;b&gt;','parameters are escaped in markup');
+  const warnings=watchWarnings(en);
+  assert.equal(en.run('tp("missing.key.for.test")'),'missing.key.for.test','a missing text shows its key');
+  assert.deepEqual(warnings,['Missing Studio text: missing.key.for.test']);
+});
+
+// D-155, D-157, D-153 (2026-10-07): the plan card, the stop and decision cards in one plain sentence each, the trial
+// option, the server's download names and the advisories in the page language.
+const PLAN={tasks:12,tasks_pending:12,expected_calls_per_task:16,expected_calls_source:'default',closing_reserve:4,closing_calls:3,
+  projected_calls:195,used:5,approved_limit:250,within_limit:true,seconds_per_call:240,seconds_per_call_source:'default',projected_hours:13,
+  plan_hash:'h',plan_caps:[],sources_used:20,sources_limit:150,sources_per_task:4.5,projected_sources:74,sources_within_limit:true,
+  search_rounds_used:2,search_rounds_limit:48,search_rounds_per_task:1.7,projected_search_rounds:23,search_rounds_within_limit:true,
+  search_rates_source:'project',raise_to:null};
+const SHORT_PLAN={...PLAN,projected_calls:300,within_limit:false,projected_sources:180,sources_within_limit:false,
+  raise_to:{model_calls:336,search_rounds:48,sources:199}};
+const planCard=(app,projection)=>app.run(`renderPlanReview({status:'blocked',progress:{plan_review:{awaiting:true,approved:false,projection:${JSON.stringify(projection)}}}},'run_x')`);
+
+test('the plan card says in one sentence what the plan takes and whether it fits the limits',()=>{
+  const app=studio(), html=planCard(app,PLAN);
+  assert.ok(html.includes('<p>Die Recherche plant 12 Teilfragen: etwa 13 Stunden, 195 Aufrufe, 74 Quellen und 23 Suchrunden; das passt in deine Limits.</p>'));
+  // The rates' origin, the sources' and search rounds' included.
+  assert.ok(html.includes('4,5 Quellen und 1,7 Suchrunden je Teilfrage (Erfahrungswert des Projekts).'));
+  assert.ok(html.includes('<button data-action="approve-plan" data-run-id="run_x" data-then-resume="1" >Plan freigeben und starten</button>'));
+  assert.ok(!html.includes('data-raise-')&&!html.includes('data-action="approve-calls"'),'nothing to raise');
+  const en=studio({language:'en'}), english=planCard(en,PLAN);
+  assert.ok(english.includes('<p>The research plans 12 sub-questions: about 13 hours, 195 calls, 74 sources and 23 search rounds; this fits your limits.</p>'));
+  assert.ok(english.includes('>Approve plan and start</button>'));
+  assert.deepEqual(germanLeft(english),[]);
+});
+
+test('a plan over its limits raises only those that do not fit, then approves the plan and starts, in one click',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const html=planCard(app,SHORT_PLAN);
+  assert.ok(html.includes('<p>Die Recherche plant 12 Teilfragen: etwa 13 Stunden, 300 Aufrufe, 180 Quellen und 23 Suchrunden; dafür steigen die Limits auf 336 Aufrufe und 199 Quellen.</p>'));
+  assert.ok(html.includes('<button data-action="approve-plan" data-run-id="run_x" data-raise-calls="336" data-raise-sources="199" data-then-resume="1" >Plan freigeben und Limits anheben</button>'));
+  assert.ok(!html.includes('data-raise-rounds'),'a limit that fits stays as it is');
+  assert.ok(!html.includes('data-action="approve-calls"'),'the separate call-limit button gives way to the one click');
+  assert.ok(!html.includes('Das Limit reicht dafür voraussichtlich nicht'),'the sentence already says which limits rise');
+  assert.ok(html.includes('id="plan-max-tasks"'),'cutting the plan stays the alternative');
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',run:{run_id:'run_x',kind:'research',stages:{}},progress:{plan_review:{awaiting:true,approved:false,projection:${JSON.stringify(SHORT_PLAN)}}}}};`);
+  app.responses.set('/api/projects/p',app.run('structuredClone(project)'));
+  const button="{dataset:{runId:'run_x',raiseCalls:'336',raiseSources:'199',thenResume:'1'}}";
+  assert.equal(await app.run(`approvePlan(${button}).then(result=>result.raised)`),true);
+  const posts=()=>app.requests.filter(r=>r.options?.method==='POST').map(r=>[r.path,JSON.parse(r.options.body)]);
+  assert.deepEqual(posts(),[['/api/projects/p/approve',{kind:'model_calls',run_id:'run_x',model_calls:336,sources:199}],
+    ['/api/projects/p/approve',{kind:'plan',run_id:'run_x'}],['/api/projects/p/start',{action:'resume',run_id:'run_x'}]]);
+  // A cap asks for a shortened plan first, which names its own limits: nothing is raised for it.
+  app.requests.length=0;app.elements.get('plan-max-tasks').value='6';
+  await app.run(`approvePlan(${button})`);
+  assert.deepEqual(posts(),[['/api/projects/p/approve',{kind:'plan',run_id:'run_x',max_tasks:6}],['/api/projects/p/start',{action:'resume',run_id:'run_x'}]]);
+  const en=studio({language:'en'}), english=planCard(en,SHORT_PLAN);
+  assert.ok(english.includes('for this the limits rise to 336 calls and 199 sources.</p>')&&english.includes('>Approve plan and raise limits</button>'));
+  assert.deepEqual(germanLeft(english),[]);
+});
+
+test('a script correction loop that asks anew offers fresh attempts in one sentence, without a new table of contents',()=>{
+  const card=(app,code,extra={})=>{
+    const job={id:'j',status:'blocked',action:'resume',stop:{code},run:{run_id:'run_s',kind:'script',stages:{}},progress:{phase:'script'},fresh_attempts:true,...extra};
+    return app.run(`renderStopCard(${JSON.stringify(job)},stopInfo(${JSON.stringify(job)}))`);
+  };
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,research:'dossier'};`);
+  let html=card(app,'invalid_script');
+  assert.ok(html.includes('<p>Das Skript dieser Folge verletzt nach drei Korrekturen noch Länge oder Quellenzuordnung. „Fortsetzen“ schreibt die Folge mit neuen Versuchen neu; alles andere bleibt gespeichert.</p>'));
+  assert.ok(html.includes('<button data-action="fresh-attempts" data-run-id="run_s" data-then-resume="1" >Mit neuen Anläufen fortsetzen</button>'));
+  assert.ok(html.includes('<button class="secondary" data-action="resume"'),'plain resume stays beside it');
+  assert.ok(!html.includes('data-action="plan"'),'no pointer to a new table of contents');
+  for(const code of ['rejected_output','invalid_script_evidence_review','invalid_teaching_review','invalid_teaching_repair','invalid_polish_evidence',
+    'invalid_series_review','invalid_supplement','invalid_evidence_review','invalid_model_output']){
+    html=card(app,code);
+    assert.ok(html.includes('<p>Die Prüfung hat ihre Antworten dreimal als formal fehlerhaft abgewiesen. „Fortsetzen“ fragt diesen Schritt neu an; keine abgewiesene Antwort wird wiederholt.</p>'),code);
+    assert.ok(html.includes('data-action="fresh-attempts"')&&!html.includes('data-action="plan"'),code);
+  }
+  // Without fresh attempts to give, the earlier card and its way out stay.
+  html=card(app,'invalid_script',{fresh_attempts:false});
+  assert.ok(html.includes('Korrekturversuche dieses Schritts')&&html.includes('data-action="plan"'));
+  // An unreadable answer is a transient stop while the Studio resumes it by itself.
+  html=card(app,'invalid_model_output',{auto_resume_kind:'transient',auto_resume_at:new Date(Date.now()+600000).toISOString()});
+  assert.ok(html.includes('Unlesbare Modellantwort')&&html.includes('vorübergehender technischer Fehler'));
+  assert.ok(!html.includes('dreimal als formal fehlerhaft'));
+  const en=studio({language:'en'});
+  en.run(`project={id:'p',config:boot.defaults,research:'dossier'};`);
+  html=card(en,'invalid_script');
+  assert.ok(html.includes('script still breaks its length or source mapping. “Resume” writes the episode anew with fresh attempts; everything else stays saved.'));
+  assert.ok(html.includes('>Resume with fresh attempts</button>'));
+  assert.ok(card(en,'rejected_output').includes('The check rejected its answers three times as malformed. “Resume” asks this step anew; no rejected answer is replayed.'));
+  assert.deepEqual(germanLeft(html),[]);
+});
+
+test('a search without an observed web search, a stop newer code may pass and an expired login say what the Studio does itself',()=>{
+  for(const [language,search,update,login] of [
+    ['de','Ein Rechercheaufruf hat auch im zweiten Versuch keine beobachtbare Websuche ausgeführt. Das Studio setzt nach einer Pause selbst fort.',
+      'Das Studio hat seit diesem Halt neuen Code; es setzt den Lauf einmal von selbst fort.',
+      'Das Studio prüft die Anmeldung alle 5 Minuten, solange es geöffnet ist, und setzt fort, sobald sie gilt.'],
+    ['en','A research call ran no observable web search, twice. The Studio continues by itself after a pause.',
+      'The Studio has new code since this stop; it continues the run once by itself.',
+      'While the Studio is open it checks the login every 5 minutes and continues as soon as it is valid.']]){
+    const app=studio({language});
+    const stop=(code,kind='research',extra={})=>({id:'j',status:'blocked',action:'resume',stop:{code},run:{run_id:'r',kind,stages:{}},progress:{},...extra});
+    assert.equal(app.run(`stopInfo(${JSON.stringify(stop('search_not_observed'))}).text`),search);
+    const updated=stop('processing_failed','research',{auto_resume_kind:'code_update',auto_resume_at:'2026-10-07T08:00:00+00:00'});
+    assert.ok(app.run(`renderStopCard(${JSON.stringify(updated)},stopInfo(${JSON.stringify(updated)}))`).includes(`<p class="hint">${update}</p>`),language);
+    const text=(kind,count)=>app.run(`stopInfo(${JSON.stringify(stop('authentication_required',kind,{auto_resume_count:count}))}).text`);
+    assert.ok(text('script',1).endsWith(` ${login}`),language);
+    assert.ok(!text('research',3).includes(login),'once the automatic resumes are spent the Studio stops checking');
+    assert.ok(!text('episode_audio',0).includes(login),'a recording is not resumed by the login check');
+  }
+});
+
+test('the research decisions lead each advice with one sentence and highlight the recommended button beside its alternative',()=>{
+  const app=studio();
+  const advice=(recommendation,extra={})=>({key:'0.0',diagnosis:'Beraten.',recommendation,limit:'none',hint:'',sources:[],...extra});
+  const row=(id,extra)=>({id,question:id,status:'blocked',outcome:'evidence_block',web_attempts:1,reason:'Fehlt.',activity:'x',steps:4,read_sections:2,acceptance:['k'],reopened:0,...extra});
+  const ledger={closed:0,total:3,accepted:0,phase:'blocked',
+    budget_projection:{feasible:true,used:5,remaining:100,minimum_remaining_calls:3,closing_calls:2,expected_remaining_calls:40,expected_calls_per_task:16},
+    questions:[row('a',{advice:advice('retry',{sources:[{title:'Salganik 2020',url:'https://pmc.example/s',note:''}],hint:'Freie Fassung lesen'})}),
+      row('b',{advice:advice('accept_gap')}),row('c',{advice:advice('retry')})]};
+  const decisions=(target,data)=>target.run(`renderResearchDecisions({status:'blocked',progress:{research_questions:${JSON.stringify(data)},search_rounds:2,search_round_limit:24,source_limit:150}},{run_id:'run_x'},false,0,true,24)`);
+  const card=decisions(app,ledger);
+  assert.ok(card.includes('<p>Der Berater sieht einen Weg zu Belegen (Salganik 2020); ein neuer Versuch kostet etwa 16 Aufrufe.</p>'));
+  assert.ok(card.includes('<p>Der Berater sieht einen Weg zu Belegen; ein neuer Versuch kostet etwa 16 Aufrufe.</p>'),'a clause without its figure is left out');
+  assert.ok(card.includes('<p>Der Berater findet keine weiteren zugänglichen Belege; als Lücke nennt das Dossier diesen Punkt offen als unbelegt.</p>'));
+  // Retry advice: adopting it is the filled button, accepting the gap stays beside it.
+  assert.ok(card.includes('<button data-action="apply-advice" data-run-id="run_x">Empfehlungen übernehmen und fortsetzen</button>'));
+  assert.ok(card.includes('<button class="small" data-action="retry-task" data-run-id="run_x" data-task-id="a">'));
+  assert.ok(card.includes('<button class="secondary small" data-action="accept-gap" data-run-id="run_x" data-task-id="a">'));
+  // Gap advice: accepting the gap is highlighted, a new attempt stays beside it.
+  assert.ok(card.includes('<button class="small" data-action="accept-gap" data-run-id="run_x" data-task-id="b">'));
+  assert.ok(card.includes('<button class="secondary small" data-action="retry-task" data-run-id="run_x" data-task-id="b">'));
+  assert.ok(!/\schecked\b/.test(card),'nothing is ticked for the editor');
+  // Advice from before the current block is history: no sentence, no highlight.
+  const old=decisions(app,{...ledger,questions:[row('b',{advice:advice('accept_gap'),retries:1})]});
+  assert.ok(!old.includes('Der Berater findet keine weiteren')&&old.includes('<button class="secondary small" data-action="accept-gap"'));
+  const en=studio({language:'en'}), english=decisions(en,ledger);
+  assert.ok(english.includes('<p>The advisor sees a way to evidence (Salganik 2020); a new attempt costs about 16 calls.</p>'));
+  assert.ok(english.includes('<p>The advisor finds no further accessible evidence; as a gap, the dossier names this point openly as unsupported.</p>'));
+  assert.deepEqual(germanLeft(english.replace(/Beraten\.|Fehlt\./g,'')),[]);
+});
+
+test('an access gap names its criterion, recommends the upload where a library copy is plausible and waits for a chosen source',()=>{
+  const app=studio();
+  const row={id:'t03',question:'Benchmark',status:'blocked',outcome:'evidence_block',web_attempts:2,steps:5,read_sections:9,reopened:0,activity:'x',
+    reason:'Unerfüllt: Kriterium 2: Verifies the figures',acceptance:['A','B','Verifies the figures']};
+  const blocked=[{url:'https://publisher.example/b',evidence:'HTTP 403'}];
+  const form=()=>app.run(`accessGapForm(${JSON.stringify(row)},'run_x',${JSON.stringify(blocked)})`);
+  app.run(`project={id:'p',config:boot.defaults,works:{missing:[],provided:[]}};`);
+  let html=form();
+  assert.ok(html.includes('<p>Kriterium 2 braucht eine Quelle, die der Verlag sperrt; akzeptiert, wird der Rest der Antwort geprüft und die Lücke steht im Bericht.</p>'));
+  assert.ok(html.includes('<button class="small" id="access-accept-t03" data-action="accept-access-gap" data-run-id="run_x" data-task-id="t03" disabled>'),
+    'the highlighted way, enabled only once a source is chosen');
+  assert.ok(html.includes('<option value="" selected>Gesperrte Quelle wählen …</option>')&&!html.includes('data-scroll="works-panel"'));
+  // The editor's choice (the page's change handler keeps it) enables the button and survives a redraw.
+  app.run(`accessChoices.t03='https://publisher.example/b';`);
+  html=form();
+  assert.ok(html.includes('<option value="https://publisher.example/b" selected>')&&!html.includes('data-task-id="t03" disabled'));
+  // A missing work this question needs may exist as a library copy: uploading it is highlighted, the gap stays beside it.
+  app.run(`delete accessChoices.t03;project.works={missing:[{work:'Merton (1968)',state:'blocked',tasks:[{id:'t03',question:'Benchmark'}]}],provided:[]};`);
+  html=form();
+  assert.ok(html.includes('<p>Kriterium 2 braucht Merton (1968), die der Verlag sperrt;'));
+  assert.ok(html.includes('<button class="small" data-scroll="works-panel">Werk hochladen</button>'));
+  assert.ok(html.includes('<button class="secondary small" id="access-accept-t03" data-action="accept-access-gap"'));
+  const en=studio({language:'en'});
+  en.run(`project={id:'p',config:boot.defaults,works:{missing:[{work:'Merton (1968)',state:'blocked',tasks:[{id:'t03',question:'Benchmark'}]}],provided:[]}};`);
+  const english=en.run(`accessGapForm(${JSON.stringify(row)},'run_x',${JSON.stringify(blocked)})`);
+  assert.ok(english.includes('<p>Criterion 2 needs Merton (1968), which the publisher blocks; once accepted, the rest of the answer is checked and the gap stands in the report.</p>'));
+  assert.ok(english.includes('>Upload the work</button>'));
+});
+
+test('dispute, residual finish and teaching redesign lead with one sentence and highlight the recommended choice',()=>{
+  const app=studio();
+  const dispute={objection_id:'o1',task_id:'t',question:'Frage',decision:null,objection:{reason:'Einwand',correction:'',closure_condition:''},review:{reason:'Gestützt',references:[]}};
+  const disputeJob={status:'blocked',stop:{code:'review_disagreement'},run:{run_id:'run_x',kind:'research',stages:{}},progress:{review_disagreement:dispute,review_disagreements:[dispute]}};
+  const disputeCard=app.run(`renderDisputeCard(${JSON.stringify(disputeJob)},'run_x',false)`);
+  assert.ok(disputeCard.includes('<p>Die Gesamtprüfung hält ihren früheren Einwand für erledigt, weil eine inzwischen gelesene Stelle die Aussage stützt; beide Positionen stehen im Qualitätsbericht.</p>'));
+  assert.ok(disputeCard.includes('<button data-action="decide-dispute" data-decision="reviewer"')&&disputeCard.includes('<button class="secondary" data-action="decide-dispute" data-decision="objection"'));
+  // Residual finish: the objections the last round left, and the cost of another round while its rework runs.
+  const ledger={phase:'questions',audit_round:2,budget_projection:{expected_remaining_calls:48},questions:[
+    {id:'a',status:'verified',objections:[{reason:'x'},{reason:'y'}]},{id:'b',status:'researching',objections:[{reason:'z'}]},
+    {id:'c',status:'blocked',accepted_gap:true,objections:[{reason:'q'}]}]};
+  let residual=app.run(`residualFinish(${JSON.stringify(ledger)},'run_x')`);
+  assert.ok(residual.includes('<p>Runde 2 findet noch 3 Einwände, meist Details; abschließen heißt, sie stehen im Qualitätsbericht statt in einer weiteren Runde (etwa 48 Aufrufe).</p>'));
+  assert.ok(residual.includes('<button class="small" data-action="finish-residual" data-run-id="run_x">Nach der nächsten Prüfung abschließen</button>'));
+  assert.ok(residual.includes('<p class="hint">Ohne diese Wahl wird weiter nachgebessert: die nächste Gesamtprüfung öffnet ihre Einwände wieder.</p>'),'the alternative stays visible');
+  residual=app.run(`residualFinish(${JSON.stringify({...ledger,phase:'audit'})},'run_x')`);
+  assert.ok(residual.includes('statt in einer weiteren Runde.</p>'),'without a rework running no cost is named');
+  // Teaching redesign: the episode, what a redraft costs, and the note starting with the open points, editable.
+  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j1',status:'blocked',action:'resume',message:'Das Lehrkonzept hat auch nach der gezielten automatischen Korrektur noch offene Punkte: Beispiel fehlt. Szene 4 zu lang.',stop:{code:'teaching_design_failed',stage:'teaching',run_kind:'script'},teaching_failure:{episode_id:'ep_003',title:'Drei'},started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{teaching:{status:'blocked',error:{code:'teaching_design_failed'}}}}}};overviewPage=false;step=PAGE.production;render();`);
+  const redesign=app.elements.get('stop-card').innerHTML;
+  assert.ok(redesign.includes('<p>Das Lehrkonzept von Folge 3 hat nach drei Korrekturen noch offene Punkte; ein Neuentwurf mit diesen Punkten als Hinweis kostet etwa 4–6 Aufrufe, die übrigen Folgen bleiben.</p>'));
+  assert.ok(redesign.includes('<textarea id="redesign-note" rows="3">Beispiel fehlt. Szene 4 zu lang.</textarea>'));
+  assert.ok(redesign.includes('<button data-action="redesign-teaching" data-run-id="run_s" data-teaching-episode="ep_003" >Mit den offenen Punkten neu entwerfen</button>'));
+  assert.ok(redesign.includes('<button class="secondary" data-action="plan"'),'a new table of contents stays the alternative');
+  const en=studio({language:'en'});
+  assert.ok(en.run(`renderDisputeCard(${JSON.stringify(disputeJob)},'run_x',false)`).includes('<p>The overall review considers its earlier objection settled because a passage read since supports the statement; both positions stand in the quality report.</p>'));
+  const english=en.run(`residualFinish(${JSON.stringify(ledger)},'run_x')`);
+  assert.ok(english.includes('<p>Round 2 still finds 3 objections, mostly details; finishing means they stand in the quality report instead of another round (about 48 calls).</p>'));
+  assert.ok(english.includes('>Finish after the next review</button>'));
+  assert.deepEqual(germanLeft(english),[]);
+  const teaching=en.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'teaching_design_failed'},teaching_failure:{episode_id:'ep_003',title:'Drei'},run:{run_id:'run_s',kind:'script',stages:{}},progress:{}}).text`);
+  assert.equal(teaching,'The teaching plan of episode 3 still has open points after three corrections; a redraft with these points as a note costs about 4–6 calls; the other episodes stay.');
+});
+
+test('the table of contents and the audio approval say in one sentence what approving starts',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.outline.approval=null;p.outline.run_id='run_o';
+  p.outline.plan.episodes=[{episode_id:'ep_001',title:'Der Anfang',central_question:'?',target_minutes:24,scenes:[],deferred_questions:[]},
+    {episode_id:'ep_002',title:'Die Synthese',central_question:'?',target_minutes:26,scenes:[],deferred_questions:[]}];
+  p.job={id:'o',action:'plan',status:'review_ready',run:{run_id:'run_o',kind:'script',status:'pending',stages:{planning:{status:'completed',attempts:1}}},
+    progress:{phase:'script',budget_projection:{calibration:{run_id:'run_old'},expected_remaining_calls:88,minimum_remaining_calls:22}}};
+  app.run(`project=${JSON.stringify(p)};`);
+  let outline=app.run('renderOutline()');
+  assert.ok(outline.includes('2 Folgen zu je etwa 25 Minuten, von „Der Anfang“ bis zur Synthese; die Freigabe startet das Schreiben (etwa 88 Aufrufe).'));
+  assert.ok(outline.includes('<button class="secondary" data-action="replan"')&&outline.includes('<button data-action="script"'));
+  app.run('delete project.job.progress.budget_projection.calibration;');
+  assert.ok(app.run('renderOutline()').includes('bis zur Synthese; die Freigabe startet das Schreiben.'),'an uncalibrated minimum is no estimate');
+  // Audio: what the approval confirms, who speaks and who pays; the checkbox is never ticked for the editor.
+  const ep=id=>({script:{episode_id:id,title:`Folge ${id}`,segments:[],chapters:[]},hash:'h',readable_hash:'r',audio:[],audio_current:false});
+  app.run(`boot.key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},
+    episodes:[${JSON.stringify(ep('ep_001'))},${JSON.stringify(ep('ep_002'))}],audio_jobs:[],audio_capacity:{available:2},audio_queue:[]};`);
+  const all=app.run('renderApproveAll(true)');
+  assert.ok(all.includes('<p>Die Freigabe bestätigt, dass du die Skripte gelesen hast; danach spricht Gemini · OpenRouter sie mit Sadaltager und Aoede ein, abgerechnet über deinen Key.</p>'));
+  assert.ok(all.includes('<input id="audio-approve-all" type="checkbox">'));
+  assert.ok(all.includes('>2 gelesene Folgen freigeben</button><button class="secondary" data-step="4">Zuerst die Skripte lesen</button>'));
+  app.run(`project.audio_settings={provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}};`);
+  const single=app.run('renderApprovalCard(project.episodes[0],project.audio_settings,false)');
+  assert.ok(single.includes('<p>Die Freigabe bestätigt, dass du das Skript gelesen hast; danach spricht Qwen · lokal es mit Aiden und Vivian ein.</p>'),'Qwen bills no key');
+  assert.ok(single.includes('<input id="audio-approval" type="checkbox" >'));
+  const en=studio({language:'en'});
+  en.run(`project={id:'p',config:boot.defaults,audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[${JSON.stringify(ep('ep_001'))}],audio_jobs:[],audio_queue:[]};`);
+  assert.ok(en.run('renderApprovalCard(project.episodes[0],project.audio_settings,false)').includes('<p>Approving confirms that you have read the script; then Qwen · local records it with Aiden and Vivian.</p>'));
+  en.run(`project=${JSON.stringify(p)};`);
+  assert.ok(en.run('renderOutline()').includes('2 episodes of about 25 minutes each, from “Der Anfang” to the synthesis; approving starts the writing (about 88 calls).'));
+});
+
+test('a raise in the research decisions is sized to the open questions and adopts the advice in the same click',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const advice={key:'0.0',diagnosis:'Quellenlimit erreicht.',recommendation:'raise_limit',limit:'sources',hint:'Neue Quellen suchen',sources:[]};
+  const row=(id,status,extra={})=>({id,question:id,status,activity:'x',steps:3,read_sections:2,acceptance:['k'],reopened:0,...extra});
+  const blocked=id=>row(id,'blocked',{outcome:'budget_block',block_cause:'source_limit',reason:'Quellenlimit erreicht.',web_attempts:1,advice});
+  const ledger=verified=>({closed:verified,total:verified+3,accepted:0,phase:'blocked',source_attempt_count:150,
+    budget_projection:{feasible:true,used:90,remaining:60,minimum_remaining_calls:3,closing_calls:2,expected_remaining_calls:50,expected_calls_per_task:16},
+    questions:[...Array.from({length:verified},(_,i)=>row(`v${i}`,'verified')),blocked('b1'),blocked('b2'),row('p1','pending')]});
+  const progress=data=>({phase:'research',research_questions:data,search_rounds:20,search_round_limit:24,source_limit:150,
+    plan_review:{awaiting:false,approved:true,projection:{sources_per_task:5,sources_used:30,search_rounds_per_task:2,search_rounds_used:4}}});
+  const decisions=(target,data)=>target.run(`renderResearchDecisions({status:'blocked',progress:${JSON.stringify(progress(data))}},{run_id:'run_x'},false,0,true,24)`);
+  // Two verified answers: the plan's rates, 3 open questions × 5 sources and × 2 rounds, a quarter to spare.
+  let card=decisions(app,ledger(2));
+  assert.deepEqual([...app.run(`Object.values(sizedRaise({progress:${JSON.stringify(progress(ledger(2)))}}))`)],[169,28]);
+  assert.ok(card.includes('data-sources="169" data-search-rounds="28"'));
+  // From three verified answers on, the higher measured rate: (150 − 30) sources / 4 answers and (20 − 4) rounds / 4.
+  card=decisions(app,ledger(4));
+  assert.ok(card.includes('<p>2 Teilfragen konnten nicht suchen, weil das Quellenlimit (150 von 150) erreicht ist; mit +113 Quellen und +11 Suchrunden kommen alle weiter.</p>'));
+  assert.ok(card.includes('<button data-action="raise-adopt" data-run-id="run_x" data-sources="263" data-search-rounds="35">Limits anheben und Empfehlungen übernehmen</button>'));
+  assert.ok(!card.includes('data-action="apply-advice"')&&!card.includes('data-action="approve-sources"')&&!card.includes('data-action="approve-search"'),'one raise, not three');
+  assert.ok(card.includes('data-action="retry-task" data-run-id="run_x" data-task-id="b1"')&&card.includes('data-action="accept-gap" data-run-id="run_x" data-task-id="b2"'),
+    'deciding each question on its own stays the alternative');
+  // One click: both limits, every retry advice with its hint, then the run.
+  app.run(`project={id:'p',config:boot.defaults,job:{id:'j1',status:'blocked',action:'research',started_at:new Date().toISOString(),run:{run_id:'run_x',kind:'research',stages:{}},progress:${JSON.stringify(progress(ledger(4)))}}};`);
+  app.responses.set('/api/projects/p',app.run('structuredClone(project)'));
+  await app.run(`raiseAndAdopt({dataset:{runId:'run_x',sources:'263',searchRounds:'35'}})`);
+  assert.deepEqual(app.requests.filter(r=>r.options?.method==='POST').map(r=>[r.path,JSON.parse(r.options.body)]),[
+    ['/api/projects/p/approve',{kind:'model_calls',run_id:'run_x',sources:263,search_rounds:35}],
+    ['/api/projects/p/approve',{kind:'retry',run_id:'run_x',task_id:'b1',hint:'Neue Quellen suchen'}],
+    ['/api/projects/p/approve',{kind:'retry',run_id:'run_x',task_id:'b2',hint:'Neue Quellen suchen'}],
+    ['/api/projects/p/start',{action:'resume',run_id:'run_x'}]]);
+  const en=studio({language:'en'}), english=decisions(en,ledger(4));
+  assert.ok(english.includes('<p>2 sub-questions could not search because the source limit (150 of 150) is reached; with +113 sources and +11 search rounds all can go on.</p>'));
+  assert.ok(english.includes('>Raise limits and adopt recommendations</button>'));
+});
+
+test('a new project can start as a trial: never ticked by the page, it says what to expect and allows an empty topic',async()=>{
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const facts={sub_questions:3,target_total_minutes:20,limits:{model_calls:110,search_rounds:16,sources:40,cost_usd:45}};
+  app.run(`boot.capabilities={conversational_setup:true,project_attachments:true};project=null;`);
+  assert.ok(!app.run('renderBrief()').includes('trial-option'),'a server without the trial facts offers no trial');
+  app.run(`boot.trial=${JSON.stringify(facts)};`);
+  let page=app.run('renderBrief()');
+  assert.ok(page.includes('<label class="check trial-option"><input type="checkbox" id="trial-option"> Probelauf: kleines Thema, eine kurze Folge</label>'));
+  assert.ok(page.includes('Ein Probelauf recherchiert höchstens 3 Teilfragen und plant eine Folge von etwa 20 Minuten. Er dauert meist einige Stunden; mit einem Abo kostet er nichts extra, mit einem API-Key höchstens die Kostengrenze (bis 45 USD je Lauf).'));
+  // Without the trial an empty message sends nothing.
+  await app.run(`sendSetupMessage('')`);
+  assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
+  app.run('trialChecked=true;');
+  page=app.run('renderBrief()');
+  assert.ok(page.includes('id="trial-option" checked')&&page.includes('Ohne eigenes Thema genügt „Senden“; der Probelauf nimmt dann ein Beispielthema.'));
+  // Ticked, an empty message creates the project as a trial without a topic; the server takes the sample topic.
+  const created=workflowProject(app);
+  Object.assign(created,{id:'trial-1',job:null,research:null,outline:null,episodes:[]});created.config.trial=true;created.config.topic='Wie entsteht ein Regenbogen?';
+  app.responses.set('/api/projects',{id:'trial-1'});
+  app.responses.set('/api/projects/trial-1',created);
+  await app.run(`sendSetupMessage('')`);
+  const create=app.requests.find(r=>r.path==='/api/projects'&&r.options?.method==='POST');
+  const body=JSON.parse(create.options.body);
+  assert.equal(body.trial,true);
+  assert.equal(body.config.topic,'');
+  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/trial-1/start').options.body),
+    {action:'assistant',message:'Ich möchte einen Probelauf mit dem Beispielthema machen.'});
+  assert.equal(app.run('trialChecked'),false);
+  // The trial says so on its pages and its card.
+  assert.ok(app.run('heading(1)').includes('<span class="chip trial">Probelauf</span>'));
+  assert.ok(app.run(`overviewCardInner({id:'t',topic:'Regenbogen',trial:true,episodes:[]})`).includes('Regenbogen</button> <span class="chip trial">Probelauf</span></h2>'));
+  assert.ok(!app.run(`overviewCardInner({id:'u',topic:'Serie',episodes:[]})`).includes('chip trial'));
+  // A typed topic stays the topic of the trial.
+  const en=studio({language:'en'});
+  en.run(`boot.capabilities={conversational_setup:true,project_attachments:true};boot.trial=${JSON.stringify(facts)};project=null;trialChecked=true;`);
+  const english=en.run('renderBrief()');
+  assert.ok(english.includes('Trial: a narrow topic, one short episode</label>'));
+  assert.ok(english.includes('A trial researches at most 3 sub-questions and plans one episode of about 20 minutes. It usually takes a few hours; on a subscription it costs nothing extra, on an API key at most the money limit (up to 45 USD per run).'));
+  assert.deepEqual(germanLeft(english),[]);
+});
+
+test('download links carry the names the server sends in the content language, the page\'s own only as a fallback',()=>{
+  const app=studio();
+  app.run('boot.capabilities={podcast_downloads:true}');
+  const p={id:'test',topic:'Topic',episode_count:2,download_zip:'Topic - All episodes.zip',episodes:[
+    {episode_id:'ep_001',title:'First',audio:['exports/ep_001/one.mp3'],audio_current:true,download_names:['Topic - Episode 01 - First.mp3']},
+    {episode_id:'ep_002',title:'Second',audio:['exports/ep_002/two.mp3'],audio_current:true,download_names:[null]}]};
+  const html=app.run(`renderRecordings(${JSON.stringify(p)})`);
+  assert.ok(html.includes('href="/download/test/podcast.zip" download="Topic - All episodes.zip"'));
+  assert.ok(html.includes('download="Topic - Episode 01 - First.mp3"'));
+  assert.ok(html.includes('download="Topic - Folge 02 - Second.mp3"'),'a recording without a server name keeps the fallback');
+  assert.ok(app.run(`overviewDownload(${JSON.stringify(p)})`).includes('href="/download/test/podcast.zip" download="Topic - All episodes.zip"'));
+  // The project page passes them on from its detail; a server without them leaves the bare attribute.
+  app.run(`project={id:'test',config:{...boot.defaults,topic:'Topic'},download_zip:'Topic - Alle Folgen.zip',episodes:[{script:{episode_id:'ep_001',title:'First'},audio:['one.mp3'],audio_current:true,download_names:['Topic - Folge 01 - First.mp3']}]};`);
+  const own=app.run('recordingsProject()');
+  assert.equal(own.download_zip,'Topic - Alle Folgen.zip');
+  assert.deepEqual([...own.episodes[0].download_names],['Topic - Folge 01 - First.mp3']);
+  assert.ok(app.run(`podcastDownload(${JSON.stringify({...p,download_zip:null})})`).includes('href="/download/test/podcast.zip" download>'));
+});
+
+test('deterministic advisories read in the page language from their values, older rows keep their German sentence',()=>{
+  const rows=[{code:'long_cold_open',count:157,detail:'Der erste gesprochene Abschnitt hat 157 Wörter; über 100 beginnt die Folge ohne Atempause.',params:{words:157,limit:100},segment_ids:['seg_001']},
+    {code:'over_target_duration',count:130,detail:'Geschätzte 27.5 Minuten …',params:{estimated_minutes:27.5,target_minutes:21,percent:130,limit_percent:120},segment_ids:[]},
+    {code:'redefined_term',count:3,detail:'«Token <x>» …',params:{term:'Token <x>',definitions:3},segment_ids:['seg_002']},
+    {code:'repeated_hedging',count:4,detail:'4 Hinweise darauf, dass ein Beispiel erfunden ist (gespeichert vor dem 7. Oktober).',segment_ids:['seg_003']}];
+  for(const [language,texts] of [['de',['Der erste gesprochene Abschnitt hat 157 Wörter; über 100 beginnt die Folge ohne Atempause. (seg_001)',
+      'Geschätzte 27,5 Minuten gegenüber geplanten 21, also 130 Prozent des Ziels; über 120 Prozent gilt die Folge als zu lang.',
+      '«Token &lt;x&gt;» wird in dieser Folge 3-mal neu definiert, obwohl der Begriff aus einer früheren Folge bekannt ist.']],
+    ['en',['The first spoken passage has 157 words; above 100 the episode starts without a breather. (seg_001)',
+      'An estimated 27.5 minutes against 21 planned, that is 130 percent of the target; above 120 percent the episode counts as too long.',
+      '“Token &lt;x&gt;” is defined anew 3 times in this episode although the term is known from an earlier episode.']]]){
+    const app=studio({language}), p=workflowProject(app);
+    p.job.status='completed';p.job.run.status='completed';
+    p.episodes=[publishedEpisode({advisories:rows})];
+    app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+    const html=app.run('renderScript()');
+    for(const text of texts)assert.ok(html.includes(text),`${language}: ${text}`);
+    assert.ok(html.includes('4 Hinweise darauf, dass ein Beispiel erfunden ist (gespeichert vor dem 7. Oktober).'),`${language}: a row without values keeps its German sentence`);
+  }
 });

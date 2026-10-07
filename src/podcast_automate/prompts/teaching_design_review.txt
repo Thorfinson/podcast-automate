@@ -3,7 +3,17 @@ actual reasoning against the source sections and the audience's starting knowled
 reference alone is not support. Are prerequisites taught before use? Do examples preserve the
 supported mechanism? Do the objectives cover the episode question at the requested depth? Are there
 concrete inferential steps, a useful opening, progression and a synthesis rather than a contents
-list? Could this plan produce a fluent but unteachable essay? A qualitative case traced through an
+list? Could this plan produce a fluent but unteachable essay, or a wall of facts the listener has no
+reason to follow? Check the narrative arc: one big_idea the scenes serve, a hook_question that opens
+a loop without giving away the destination, a plausible first_answer where the dramaturgy uses one,
+a turning_point that the findings in turning_finding_ids actually bring about, scene
+entry_questions that each follow from what the scene before leaves open, and a payoff that answers
+the hook and picks up the callback. Check the storytelling devices: the dramaturgy fits this
+material and the series_goal, and the scenes actually tell the episode that way; the opening,
+partner_stance and each scene's ending work as storytelling describes them. Code checks that they
+differ from the episodes before; do not raise repetition yourself. An empty arc or device field, an
+arc that announces its answer up front, or a turn no assigned finding supports is a design issue the
+design can fix, never a research gap. A qualitative case traced through an
 idea's reasoning is a complete worked example; do not demand a measured result, a calculation, a
 misconception or a limit the episode does not need. Where brief.series_goal weights understand at 2
 or 3, check that the design explains the episode's idea or theory in its own logic, attributed to

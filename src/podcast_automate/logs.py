@@ -36,7 +36,8 @@ def scrub(text: str) -> str:
     Known credentials are replaced whole; ``redact`` then removes key patterns. Its trimming of a credential's prefix at
     the end of the text is for streamed chunks and is not used here, as it would cut ordinary line endings.
     """
-    for secret in _SECRETS | {os.environ.get("OPENROUTER_API_KEY") or ""}:
+    for secret in _SECRETS | {os.environ.get(name) or "" for name in ("OPENROUTER_API_KEY", "GEMINI_API_KEY",
+                                                                             "ANTHROPIC_API_KEY", "PERPLEXITY_API_KEY")}:
         if secret:
             text = text.replace(secret, REDACTED)
     return redact(text)

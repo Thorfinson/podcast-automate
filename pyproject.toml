@@ -5,11 +5,51 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "podcast-automate"
 version = "0.1.0"
-description = "Local tools for researched deep-dive podcast series"
-readme = "README.md"
+description = "Turns a topic into a researched, reviewed dialogue podcast series and records it as MP3, on your own computer"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.12"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Thomas Gründer" }]
+keywords = [
+    "podcast",
+    "text-to-speech",
+    "research",
+    "llm",
+    "claude",
+    "codex",
+    "openrouter",
+    "gemini",
+    "dialogue",
+    "audio",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Education",
+    "Natural Language :: English",
+    "Natural Language :: German",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Education",
+]
 dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7", "psutil>=7,<8"]
+
+[project.urls]
+Homepage = "https://github.com/Thorfinson/podcast-automate"
+Repository = "https://github.com/Thorfinson/podcast-automate"
+Documentation = "https://github.com/Thorfinson/podcast-automate/tree/main/docs"
+Issues = "https://github.com/Thorfinson/podcast-automate/issues"
+Changelog = "https://github.com/Thorfinson/podcast-automate/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pla = "podcast_automate.cli:main"
@@ -18,4 +58,4 @@ pla = "podcast_automate.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-podcast_automate = ["data/*.json", "prompts/*.txt", "web/*.html", "web/*.css", "web/*.js"]
+podcast_automate = ["data/*.json", "locales/*.json", "prompts/*.txt", "web/*.html", "web/*.css", "web/*.js"]

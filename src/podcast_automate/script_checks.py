@@ -218,7 +218,10 @@ def word_budget(episode: EpisodePlan, factor=1.0) -> dict:
     minutes, Sonnet's target for a one-hour episode would have left a draft at 71 % of it below the floor.
 
     Until 2026-10-04 the writer derived the budget from target_minutes itself, and every first draft of the Transformer
-    series came in at 58 to 75 % of it. Shown the plan itself as the target, ep_012's first draft reached 71 %."""
+    series came in at 58 to 75 % of it. Shown the plan itself as the target, ep_012's first draft reached 71 %.
+
+    The chapter-end recaps and reflection beats of the listenability rules (2026-10-06) share this budget: the planned
+    minutes stay, so the same time carries fewer facts, which is the point. The factors are not measured under them."""
     def words(minutes):
         return math.ceil(minutes * SPOKEN_WORDS_PER_MINUTE)
     target = words(episode.target_minutes * factor)
@@ -431,10 +434,20 @@ def outline_hash(work: Path) -> str:
 # v12: a segment that follows its section where the finding misstates it is source_corrected, not drift.
 # v13: a point the review files as an advisory stays one unless it concerns evidence or scope
 # (script_pipeline.STRICT_CATEGORIES); the prompt is unchanged.
-SCRIPT_REVIEW_VERSION = "script_review.v13-reviewer-advisories"
+# v14 (2026-10-06): the listenability rules, and a wall of facts (no arc, no breathing beats, the expert holding the
+# floor, measured in dialogue_shape) goes back as a dialogue point.
+# v15 (2026-10-06): chapter endings vary by the teaching design's storytelling devices (D-143); a chapter may end on
+# another handover than a recap.
+# v16 (2026-10-07): the breathers of the listenability rules; a dialogue point only, like v14 and v15.
+SCRIPT_REVIEW_VERSION = "script_review.v16-breathers"
 # Versions whose saved verdict still stands when it blocked nothing: v12 and v13 only stop blocking, so an episode an
-# earlier version passed is not reviewed again; one it blocked is, under today's version, before the next repair.
-RELAXED_REVIEW_VERSIONS = frozenset({"script_review.v11-core-limits", "script_review.v12-source-corrected"})
+# earlier version passed is not reviewed again; one it blocked is, under today's version, before the next repair. v14
+# adds only a dialogue point, which stops nothing once the repairs are spent (NOTED_CATEGORIES), so a v13 pass stands
+# too: an episode in flight is not reworked for it, while every draft written from now on is held to it. v15 only
+# loosens that point, so a v14 pass stands as well.
+RELAXED_REVIEW_VERSIONS = frozenset({"script_review.v11-core-limits", "script_review.v12-source-corrected",
+                                     "script_review.v13-reviewer-advisories", "script_review.v14-listenability",
+                                     "script_review.v15-dramaturgy"})
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.

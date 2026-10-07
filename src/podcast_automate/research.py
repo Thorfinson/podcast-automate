@@ -23,7 +23,9 @@ from .run_budget import (accepted_gaps, approve_research_plan, criterion_gaps, d
                          plan_approval_for, residual_finish, retry_requests, text_switch)
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .models import RunManifest, StageRecord
-from .provider_pool import AdapterPool, check_adapter_versions, subscription_selection
+from .cost_estimate import fallback_usd, spent_usd
+from .provider_pool import (AdapterPool, api_selection, check_adapter_versions, read_billing, subscription_selection,
+                            text_generation_settings, with_web_search)
 from .research_models import ResearchDiscovery, ResearchDossier, SourceCandidate, SourceDocument, SourceIndex
 from .research_dates import run_date
 from .research_reader import source_facts
@@ -46,7 +48,8 @@ PLAIN_LANGUAGE = TERMINOLOGY + TEACHING_SCOPE + fragment("plain_language")
 UNANSWERED_CALL_CODES = frozenset({
     "timeout", "stall", "interrupted", "missing_executable", "codex_missing", "claude_missing",
     "authentication_required", "subscription_required", "claude_version", "prompt_too_large",
-    "invalid_output_schema", "unsupported_codex_launcher", "unsupported_claude_launcher"})
+    "invalid_output_schema", "unsupported_codex_launcher", "unsupported_claude_launcher",
+    "anthropic_key_required", "anthropic_authentication"})
 
 
 def inherit_sources(root, work, manifest, config, local_files, parent_id):
@@ -106,21 +109,29 @@ def inherit_sources(root, work, manifest, config, local_files, parent_id):
             p.relative_to(root).as_posix(): file_hash(p) for p in files})
 
 
-def reserve_call(work: Path, limits, *, search=False) -> int:
+def reserve_call(work: Path, limits, *, search=False, billed=False) -> int:
     """Charge one call against the run budget and return its call number.
 
     Call numbers come from a separate sequence, so a refunded reservation never reuses a
-    directory that already holds receipts of an earlier attempt.
+    directory that already holds receipts of an earlier attempt. A ``billed`` call (an API key, OpenRouter, a billed
+    web search) also needs the run's money limit and room under it (D-146); a billed call already in flight may
+    overshoot it by its own cost, never by a further call.
+
+    A stop names the limit that ran out in ``details["limit"]`` (``model_calls`` or ``search_rounds``, the
+    ``ResearchLimits`` field); the run manifest keeps it (runner.failure_details), so the Studio need not read the
+    German message.
     """
     with file_lock(work / ".budget.lock", timeout=30):
         path = work / "budget.json"
         budget = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"model_calls": 0, "search_rounds": 0}
         if budget["model_calls"] >= limits.model_calls:
             raise AppError(f"Limit von {limits.model_calls} Modellaufrufen erreicht. Der bisherige Stand bleibt gespeichert.",
-                           code="research_budget_exhausted", status="blocked")
+                           code="research_budget_exhausted", status="blocked", details={"limit": "model_calls"})
         if search and budget["search_rounds"] >= limits.search_rounds:
             raise AppError(f"Limit von {limits.search_rounds} Rechercherunden erreicht. Der bisherige Stand bleibt gespeichert.",
-                           code="research_budget_exhausted", status="blocked")
+                           code="research_budget_exhausted", status="blocked", details={"limit": "search_rounds"})
+        if billed:
+            check_money(budget, getattr(limits, "cost_usd", None))
         budget["model_calls"] += 1
         budget["search_rounds"] += int(search)
         budget["sequence"] = budget.get("sequence", budget["model_calls"] - 1) + 1
@@ -146,6 +157,69 @@ def refund_call(work: Path, number: int, *, search=False) -> bool:
         return True
 
 
+def check_money(budget, limit):
+    """Refuse a billed call without a money limit or with the limit reached (D-146)."""
+    if limit is None:
+        raise AppError("Dieser Lauf rechnet Aufrufe über einen API-Key ab und braucht eine Kostengrenze in USD. Die "
+                       "Grenze in den Einstellungen setzen oder mit pla approve --cost-usd festlegen.",
+                       code="cost_limit_required", status="blocked")
+    spent = spent_usd(budget)
+    if spent >= limit:
+        raise AppError(f"Kostengrenze von {limit:g} USD erreicht ({spent:.2f} USD ausgegeben). Der bisherige Stand "
+                       "bleibt gespeichert.", code="cost_limit_reached", status="blocked",
+                       details={"cost_limit_usd": limit, "spent_usd": spent})
+
+
+def add_money(budget, rows) -> None:
+    """Count one call's billing rows (provider_pool.read_billing): a priced attempt with its money, an attempt without
+    a reported cost (timeout, interrupted) at the run's mean so far or the table's value, a free one not at all."""
+    for row in rows:
+        usd = row.get("usd")
+        if row.get("state") == "priced" and isinstance(usd, (int, float)) and not isinstance(usd, bool) and usd >= 0:
+            budget["billed_usd"] = round(budget.get("billed_usd", 0.0) + usd, 6)
+            budget["priced_attempts"] = budget.get("priced_attempts", 0) + 1
+        elif row.get("state") in {"unpriced", "started"}:
+            priced = budget.get("priced_attempts", 0)
+            each = (budget.get("billed_usd", 0.0) / priced if priced else
+                    fallback_usd(row.get("model")) or 0.0)
+            budget["estimated_usd"] = round(budget.get("estimated_usd", 0.0) + each, 6)
+            budget["unpriced_attempts"] = budget.get("unpriced_attempts", 0) + 1
+
+
+def settle_call(work: Path, number: int, directory: Path | None = None) -> bool:
+    """Count the money of a finished call into the run budget, once per call (D-148). Writes only ``budget.json`` and
+    only for a call with billing rows, so the budget of a subscription run stays as it was."""
+    rows = read_billing(directory or work / "calls" / f"call_{number:03d}")
+    if not rows:
+        return False
+    with file_lock(work / ".budget.lock", timeout=30):
+        path = work / "budget.json"
+        budget = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"model_calls": 0, "search_rounds": 0}
+        settled = budget.setdefault("settled", [])
+        if number in settled:
+            return False
+        add_money(budget, rows)
+        settled.append(number)
+        write_json(path, budget)
+        return True
+
+
+def settle_external(work: Path, source: str, usd) -> bool:
+    """Count money spent outside a model call of this run, such as the Jev gap probe, once per ``source``."""
+    if not isinstance(usd, (int, float)) or isinstance(usd, bool) or usd <= 0:
+        return False
+    with file_lock(work / ".budget.lock", timeout=30):
+        path = work / "budget.json"
+        budget = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"model_calls": 0, "search_rounds": 0}
+        settled = budget.setdefault("settled_external", [])
+        if source in settled:
+            return False
+        budget["external_usd"] = round(budget.get("external_usd", 0.0) + usd, 6)
+        settled.append(source)
+        write_json(path, budget)
+        return True
+
+
 def unanswered(error: AppError) -> bool:
     return error.status == "waiting_for_quota" or error.code in UNANSWERED_CALL_CODES
 
@@ -161,6 +235,17 @@ def reconcile_budget(work: Path) -> list[int]:
         if not path.exists():
             return []
         budget = json.loads(path.read_text(encoding="utf-8"))
+        settled = budget.get("settled", [])
+        money = False
+        for directory in sorted((work / "calls").glob("call_*")):
+            # A billed call the worker never settled (killed after or during the call): its rows, where a killed
+            # attempt left one that only says it started, count now (D-148).
+            match = re.fullmatch(r"call_(\d+)", directory.name)
+            rows = read_billing(directory) if match and int(match[1]) not in settled else []
+            if rows:
+                add_money(budget, rows)
+                budget.setdefault("settled", []).append(int(match[1]))
+                money = True
         refunded = budget.setdefault("refunded", [])
         found = []
         for directory in sorted((work / "calls").glob("call_*")):
@@ -179,7 +264,7 @@ def reconcile_budget(work: Path) -> list[int]:
             budget["model_calls"] = max(0, budget.get("model_calls", 0) - 1)
             if choice.get("search"):
                 budget["search_rounds"] = max(0, budget.get("search_rounds", 0) - 1)
-        if found:
+        if found or money:
             write_json(path, budget)
         return found
 
@@ -254,53 +339,73 @@ def validate_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, con
 
 
 def render_dossier(dossier: ResearchDossier, discovery: ResearchDiscovery, index: SourceIndex,
-                   context: list[dict], run_id: str, *, local_prefix="../") -> str:
+                   context: list[dict], run_id: str, *, language: str, local_prefix="../") -> str:
+    """The readable research_briefing.md the Studio's dossier view shows, its fixed words in the podcast's content
+    language (D-153); the findings and sources keep their own words."""
+    from .content_text import text as wording
+    say = lambda key, **values: wording(language, key, **values)
     refs = {f"{source.id}#{section.id}": (source, section) for source in index.sources for section in source.sections}
-    lines = [f"# Recherchedossier: {dossier.topic}", "", f"Recherchelauf: `{run_id}`", "",
+    lines = [f"# {say('dossier_title', topic=dossier.topic)}", "", say("dossier_run", run_id=run_id), "",
              dossier.scope_note, "",
-             f"{len(index.sources)} Quellen eingelesen; {len(index.failures)} Abrufe/Importe fehlgeschlagen. "
-             f"Dem Modell wurden {sum(len(s['sections']) for s in context)} ausgewählte Textabschnitte vorgelegt. "
-             "Die Recherche wird gegen die vereinbarten Leitfragen geprüft; wissenschaftliche Unsicherheiten bleiben ausdrücklich erkennbar.", "",
-             "## Befunde mit Quellenbezug", ""]
+             say("dossier_read", sources=len(index.sources), failures=len(index.failures))
+             + say("dossier_context", sections=sum(len(s['sections']) for s in context))
+             + say("dossier_checked"), "",
+             f"## {say('dossier_findings')}", ""]
     for finding in dossier.findings:
         lines.extend([f"### {finding.id} — {finding.kind}", "", finding.statement, ""])
         if finding.claim_contract:
             contract = finding.claim_contract
-            lines.extend([f"Aussagetyp: {contract.basis} / {contract.relation}. "
-                          f"Geltungsbereich: {'; '.join(contract.scope)}.", ""])
-            lines.extend(f"- Einschränkung: {q}" for q in contract.qualifications)
+            lines.extend([say("dossier_contract", basis=contract.basis, relation=contract.relation,
+                              scope="; ".join(contract.scope)), ""])
+            lines.extend(f"- {say('dossier_qualification', text=q)}" for q in contract.qualifications)
         if finding.illustration:
-            lines.extend([f"**Bild zum Mitdenken:** {finding.illustration}", "",
-                          f"**Grenze des Bildes:** {finding.illustration_limit}", ""])
+            lines.extend([f"**{say('dossier_illustration')}** {finding.illustration}", "",
+                          f"**{say('dossier_illustration_limit')}** {finding.illustration_limit}", ""])
         for evidence in finding.evidence:
             source, section = refs[evidence.reference]
             url = source.final_url or local_prefix + source.raw_path
-            page = f", Seite {section.page}" if section.page else ""
+            page = say("dossier_page", page=section.page) if section.page else ""
             lines.append(f"- [{source.title.replace('[', '').replace(']', '')}]({url}){page} "
                          f"(`{evidence.reference}`): „{evidence.excerpt}“")
         lines.append("")
     questions = {q.id: q.question for q in discovery.questions}
     if dossier.evidence_version:
-        lines.extend(["Automatisierte inhaltliche Belegprüfung dokumentiert. Dies ist keine unabhängige empirische "
-                      "Bestätigung; deren Status steht je Befund im evidence_report.json.", ""])
+        lines.extend([say("dossier_evidence_check"), ""])
     if dossier.synthesis:
-        lines.extend(["## Quellenübergreifende Vergleiche", ""])
+        lines.extend([f"## {say('dossier_synthesis')}", ""])
         for relation in dossier.synthesis:
             lines.extend([f"- {relation.dimension} ({relation.relation}, {relation.resolution}): {relation.explanation} "
-                          f"Bedingungen: {relation.conditions}. Befunde: {', '.join(relation.finding_ids)}.", ""])
-    lines.extend(["## Abdeckung und Lücken", ""])
+                          + say("dossier_relation", conditions=relation.conditions,
+                                findings=", ".join(relation.finding_ids)), ""])
+    lines.extend([f"## {say('dossier_coverage')}", ""])
     for row in dossier.coverage:
-        lines.extend([f"- **{questions[row.question_id]}** — {row.status}; "
-                      f"Befunde: {', '.join(row.finding_ids) or 'keine'}. {row.gap}", ""])
-    lines.extend(["## Offene Fragen", "", *[f"- {q}" for q in dossier.open_questions], "",
-                  "## Zugriffsprobleme", ""])
-    lines.extend([f"- {failure['source']}: {failure['reason']}" for failure in index.failures] or ["Keine."])
-    lines.extend(["", "## Quellenverzeichnis", ""])
+        findings = say("dossier_coverage_findings", findings=", ".join(row.finding_ids) or say("dossier_none"))
+        lines.extend([f"- **{questions[row.question_id]}** — {row.status}; {findings} {row.gap}", ""])
+    lines.extend([f"## {say('dossier_open')}", "", *[f"- {q}" for q in dossier.open_questions], "",
+                  f"## {say('dossier_access')}", ""])
+    lines.extend([f"- {failure['source']}: {failure['reason']}" for failure in index.failures]
+                 or [say("dossier_no_access_problem")])
+    lines.extend(["", f"## {say('dossier_sources')}", ""])
     for source in index.sources:
-        lines.append(f"- **{source.title}** — {', '.join(source.authors) or 'Autor nicht verifiziert'}, "
-                     f"{source.published_date or 'Datum unbekannt'}. {source.final_url or source.raw_path} "
-                     f"— `{source.id}`. Metadaten und Extraktionsgrenzen: siehe `models/source_index.yaml`.")
+        lines.append(f"- **{source.title}** — {', '.join(source.authors) or say('dossier_no_author')}, "
+                     f"{source.published_date or say('dossier_no_date')}. {source.final_url or source.raw_path} "
+                     f"— `{source.id}`. {say('dossier_metadata')}")
     return "\n".join(lines) + "\n"
+
+
+def render_open_questions(dossier: ResearchDossier, accepted_rows, gap_probes, *, language: str) -> str:
+    """research/open_questions.md: the dossier's open questions and unanswered coverage gaps, then the accepted gaps,
+    its fixed words in the podcast's content language (D-153). Each open question carries what the corpus probe found
+    for it, so a reader sees whether the gap was checked against the stored sections or only asserted."""
+    from .content_text import text as wording
+    accepted_lines = [f"- {wording(language, 'open_accepted', gap=row.get('question') or row['task_id'])}"
+                      + (f" ({row['reason']})" if row.get("reason") else "") for row in accepted_rows]
+    probes = {row["text"]: probe_suffix(row, language=language) for row in gap_probes}
+    open_line = lambda text: f"- {text}" + (f" {probes[text]}" if text in probes else "")
+    return (f"# {wording(language, 'open_title')}\n\n" +
+            "\n".join(open_line(q) for q in dossier.open_questions) + "\n\n" +
+            "\n".join(open_line(c.gap) for c in dossier.coverage if c.status != "answered") + "\n" +
+            ("\n" + "\n".join(accepted_lines) + "\n" if accepted_lines else ""))
 
 
 PLAN_REVIEW_MODES = {None, "required", "auto"}
@@ -358,7 +463,10 @@ def latest_research_run(root: Path):
 
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
                  reuse_sources: str | None = None, model=None, reasoning_effort=None, backend=None,
-                 plan_review: str | None = None, api_key=None, seed_corpus: str | None = None) -> RunManifest:
+                 plan_review: str | None = None, api_key=None, seed_corpus: str | None = None,
+                 web_search: str | None = None, perplexity_key=None) -> RunManifest:
+    # ``api_key`` is the key of a billed text provider (OpenRouter, or Claude on the Anthropic key). ``web_search``
+    # "perplexity" binds a new run to the Perplexity search (D-151); a resume keeps what the run started with.
     """Run or resume the research lane.
 
     ``plan_review`` decides the plan gate before the first task call: ``"required"`` (the CLI and
@@ -384,13 +492,25 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         validate_model(model)
         if backend in {"claude_code", "auto"}:
             selection = subscription_selection(config, backend, model=model, reasoning_effort=reasoning_effort)
+        elif backend == "claude_api":
+            selection = api_selection(config, model=model, reasoning_effort=reasoning_effort)
+        elif backend == "openrouter":
+            # OpenRouter has no web tools; its research searches through Perplexity (D-151).
+            if web_search != "perplexity" and not resume:
+                raise AppError("Recherche mit einem OpenRouter-Modell braucht die Websuche über Perplexity.",
+                               code="invalid_backend", status="blocked")
+            selection = text_generation_settings(config, backend="openrouter", model=model,
+                                                 reasoning_effort=reasoning_effort)
         elif backend in {None, "codex_cli"}:
             validate_reasoning(reasoning_effort)
             selection = {"provider": "codex_cli", "model": model or config.runtime.codex_model,
                          "reasoning_effort": reasoning_effort} if model is not None or reasoning_effort is not None else None
         else:
-            raise AppError("Für die Recherche stehen codex_cli, claude_code und auto zur Verfügung.",
-                           code="invalid_backend", status="blocked")
+            raise AppError("Für die Recherche stehen codex_cli, claude_code, claude_api, auto und mit Perplexity "
+                           "openrouter zur Verfügung.", code="invalid_backend", status="blocked")
+        if web_search not in (None, "model") and not resume:
+            selection = with_web_search(selection or {"provider": "codex_cli", "model": config.runtime.codex_model,
+                                                      "reasoning_effort": None}, web_search)
         if resume:
             path = manifest_path(root, run_id)
             request_path = path.parent / "research_request.json"
@@ -488,11 +608,16 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         selection = text_switch(work, manifest.input_hash, selection)
         if selection:
             check_adapter_versions(selection)
-        using_openrouter = (selection or {}).get("provider") == "openrouter"
+        # The key goes only to the provider that bills it: OpenRouter, or Claude on the Anthropic key (D-145).
+        provider = (selection or {}).get("provider")
+        keys = {"api_key": api_key if provider == "openrouter" else None,
+                "anthropic_key": api_key if provider == "claude_api" else None}
         pool = AdapterPool(config.runtime, selection or {"provider": "codex_cli", "model": config.runtime.codex_model,
-                                                        "reasoning_effort": None}, api_key=api_key if using_openrouter else None)
-        # The advice on a blocked question asks the deepest setting of the run's subscription (research_advisor).
-        advisor_pool = AdapterPool(config.runtime, advisor_selection(pool.text_generation))
+                                                        "reasoning_effort": None}, **keys, perplexity_key=perplexity_key)
+        # The advice on a blocked question asks the deepest setting of the run's subscription (research_advisor); a
+        # billed run keeps its own model and key.
+        advisor_pool = AdapterPool(config.runtime, advisor_selection(pool.text_generation),
+                                   anthropic_key=keys["anthropic_key"], perplexity_key=perplexity_key)
 
         def limits():
             return effective_limits(work, config.research_limits, input_hash)
@@ -557,7 +682,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                     observer(manifest)
 
         def invoke(prompt, output_type, version, *, search=False, advisor=False):
-            number = reserve_call(work, limits(), search=search)
+            caller = advisor_pool if advisor else pool
+            number = reserve_call(work, limits(), search=search, billed=caller.billed(search))
             from .research_status import record_request
             directory = work / "calls" / f"call_{number:03d}"
             record_request(directory, output_type.__name__, prompt)
@@ -565,8 +691,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 progress("Quellen zu offenen Leitfragen werden gesucht")
             started_at, started = datetime.now(timezone.utc).isoformat(), time.monotonic()
             try:
-                result = (advisor_pool if advisor else pool).structured(prompt, output_type, directory,
-                                                                        prompt_version=version, search=search)
+                result = caller.structured(prompt, output_type, directory, prompt_version=version, search=search)
             except AppError as exc:
                 if unanswered(exc):
                     refund_call(work, number, search=search)
@@ -574,6 +699,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
             except BaseException:
                 refund_call(work, number, search=search)
                 raise
+            finally:
+                settle_call(work, number, directory)
             # Wall-clock of an answered call, the basis of the hours a plan projection names.
             write_json(directory / "timing.json", {"schema": output_type.__name__, "prompt_version": version,
                        "search": search, "seconds": round(time.monotonic() - started, 3),
@@ -793,9 +920,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 destination = root / relative
                 write_yaml(destination, data)
                 outputs.append(destination)
-            briefing = render_dossier(dossier, discovery, index, context, manifest.run_id)
+            briefing = render_dossier(dossier, discovery, index, context, manifest.run_id, language=config.language)
             atomic_text(work / "research_briefing.md", render_dossier(dossier, discovery, index, context,
-                        manifest.run_id, local_prefix="../../"))
+                        manifest.run_id, language=config.language, local_prefix="../../"))
             atomic_text(root / "research/research_briefing.md", briefing)
             atomic_text(root / "research/quality.md", (work / "research_quality.md").read_text(encoding="utf-8"))
             if (work / "research_questions.md").exists():
@@ -803,16 +930,9 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                     destination = root / "research" / destination_name
                     atomic_text(destination, (work / source_name).read_text(encoding="utf-8"))
                     outputs.append(destination)
-            accepted_lines = [f"- Akzeptierte Lücke: {row.get('question') or row['task_id']}"
-                              + (f" ({row['reason']})" if row.get("reason") else "") for row in accepted_rows]
-            # Each open question carries what the corpus probe found for it, so a reader sees
-            # whether the gap was checked against the stored sections or only asserted.
-            probes = {row["text"]: probe_suffix(row) for row in quality.get("gap_probes", [])}
-            open_line = lambda text: f"- {text}" + (f" {probes[text]}" if text in probes else "")
-            atomic_text(root / "research/open_questions.md", "# Offene Recherchefragen\n\n" +
-                        "\n".join(open_line(q) for q in dossier.open_questions) + "\n\n" +
-                        "\n".join(open_line(c.gap) for c in dossier.coverage if c.status != "answered") + "\n" +
-                        ("\n" + "\n".join(accepted_lines) + "\n" if accepted_lines else ""))
+            atomic_text(root / "research/open_questions.md",
+                        render_open_questions(dossier, accepted_rows, quality.get("gap_probes", []),
+                                              language=config.language))
             write_json(root / "research/latest.json", {"run_id": manifest.run_id})
             # What this run measured per task and per call sizes the next run's plan projection.
             calibration = write_calibration(root, work, manifest.run_id)

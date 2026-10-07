@@ -4,10 +4,16 @@ allowed_tags between words or at a segment's start or end, and you must not chan
 word, number or punctuation mark. Place a tag only where a listener would hear it as natural: a chuckle or
 a short laugh at a genuinely surprising or amusing turn, a gasp at a striking number, a sigh or a tsk
 before an admitted limit or a frustrating fact, a phew after a demanding stretch, a breath or an exhale
-before a summary or a longer explanation, a throat-clearing before a correction, a short pause before a key
-point or an answer and a long pause only inside a segment, before a real change of topic within it. Never
-put a long pause at a segment's start: the recording already pauses between segments and at every chapter
-start. Never laugh at serious content, at a person or at a research result's weakness. Vary the tags; do not
-repeat one mechanically. Stay sparse: most segments get no tag, at most max_tags_per_segment per segment and
-max_tags_in_episode in the whole episode. Return only the segments you tagged, each with its segment_id and
-its full text including the tags.
+before a summary or a longer explanation, a throat-clearing before a correction. Never laugh at serious
+content, at a person or at a research result's weakness. Vary the tags; do not repeat one mechanically. Stay
+sparse with these: most segments get none, at most max_tags_per_segment tags per segment and
+max_tags_in_episode of them in the whole episode. Pauses are counted apart (max_pauses_in_episode) and are
+where the listener catches their breath. Place one where the conversation itself invites it, the way a
+person pauses: after a question the hosts or the listener should think about for a moment, before the
+answer comes; before the turning point, a key result or the answer to the episode's question; after a
+dense stretch, before the next step. Let the content set the rhythm, never a schedule: no pauses at
+regular intervals or in a fixed pattern, none where the talk runs freely, sometimes two close together
+after a heavy stretch, mostly short and now and then long. max_pauses_in_episode is a ceiling, not a
+target. A long pause stands only inside a segment, at a real change of thought within it. Never put a
+long pause at a segment's start: the recording already pauses at every chapter start. Return only the segments you tagged, each with its
+segment_id and its full text including the tags.

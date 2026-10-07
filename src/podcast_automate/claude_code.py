@@ -1,4 +1,5 @@
-"""Structured text calls through the Claude Code CLI with an existing Claude subscription login.
+"""Structured text calls through the Claude Code CLI with an existing Claude subscription login, or with the
+user's own Anthropic API key as the separate, billed provider ``claude_api`` (D-145).
 
 Same contract as :class:`CodexAdapter`: ``structured(prompt, output_type, directory, ...)`` returns a
 validated object and public metadata. The CLI runs non-interactively with ``--output-format
@@ -9,6 +10,7 @@ stream-json``; the last ``result`` line carries ``structured_output``. Verified 
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import shutil
@@ -16,7 +18,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from .call_activity import (CallActivity, clean_status, contract_rejection, mentions, rate_limit_refused,
                             write_rejected_output)
@@ -30,6 +32,12 @@ from .storage import write_json
 from .text_settings import DEFAULT_CLAUDE_MODEL, validate_model, validate_reasoning
 
 ADAPTER_VERSION = "claude_code.v1"
+# The API-key path is bound on its own, so the subscription path's version and receipts stay as they were (D-145).
+API_ADAPTER_VERSION = "claude_api.v1"
+# Variables that outrank ANTHROPIC_API_KEY in non-interactive mode or send the call to another endpoint or account;
+# an API-key call runs without them, so the key is the only way the CLI can authenticate.
+API_ENV_DROPPED = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
+                   "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
 # Opus 5.5 and the level xhigh are refused by older CLIs (2.1.92 names 2.1.280 as the minimum).
 MINIMUM_CLI_VERSION = (2, 1, 280)
 # Models a newer CLI brings: 2.1.283 has no catalog entry for Sonnet 5.5, 2.1.284 has (2026-09-29).
@@ -39,7 +47,8 @@ MODEL_MINIMUM_CLI = {"claude-sonnet-5-5": (2, 1, 284)}
 # a schema's characters (review 2026-10-02: the raw length let a schema pass that the escaped line exceeded).
 MAX_SCHEMA_CHARS = 30_000
 MAX_COMMAND_LINE_CHARS = 32_766
-# Per call. The CLI reports an equivalent value; a subscription call is not billed individually.
+# Per call. The CLI reports an equivalent value; a subscription call is not billed individually, an API-key call is.
+# The CLI checks it only after a model turn, so it bounds a runaway call, not the run's remaining money.
 MAX_BUDGET_USD = 12.0
 # Output cap per answer. CLI 2.1.92 has no table entry for claude-opus-5 and falls back to 32 000
 # tokens; this is the ceiling it accepts for that model id. When input and cap together would exceed
@@ -79,6 +88,9 @@ OUTPUT_LIMIT_MARKERS = ("output token maximum", "max_output_tokens", "context wi
 # The CLI's category of a failed request (``error`` of its last assistant event) that names the cause by itself.
 QUOTA_API_ERRORS = frozenset({"rate_limit"})
 AUTH_API_ERRORS = frozenset({"authentication_failed"})
+# An API-key account out of credit: the CLI's category, or its text where no category is reported.
+CREDIT_API_ERRORS = frozenset({"billing_error"})
+CREDIT_MARKERS = ("credit balance", "billing")
 BLOCK_LABELS = {"weekly_limit": "Wochenlimit", "opus_limit": "Opus-Limit", "session_limit": "Sitzungslimit",
                 "five_hour": "5-Stunden-Fenster", "seven_day": "Wochenfenster", "unclear_limit": "Limit"}
 
@@ -111,6 +123,16 @@ def claude_environment(model=None) -> dict[str, str]:
     environment.update({"DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                         "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(MODEL_OUTPUT_TOKENS.get(model, MAX_OUTPUT_TOKENS))})
+    return environment
+
+
+def claude_api_environment(model, key) -> dict[str, str]:
+    """An API-key call: the subscription environment without the variables that would outrank or redirect the key,
+    and the key itself. Only a ``claude_api`` call ever receives it."""
+    environment = claude_environment(model)
+    for name in API_ENV_DROPPED:
+        environment.pop(name, None)
+    environment["ANTHROPIC_API_KEY"] = key
     return environment
 
 
@@ -191,7 +213,8 @@ def claude_block_window(message, *, rate_limit=None, now=None) -> tuple[datetime
     return now + timedelta(minutes=30), kind
 
 
-def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error=None) -> AppError:
+def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error=None,
+                            auth="subscription") -> AppError:
     """Map the CLI's error envelope to an actionable error without keeping its text.
 
     ``api_error`` is the CLI's category of a failed request from its last assistant event, such as
@@ -199,7 +222,11 @@ def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error
     the result subtype, a refused rate-limit event (never ``allowed_warning``) and that category. Only then is
     the text read, word by word (2026-10-02: substrings and a warning event turned a format failure, an expired
     login and a node warning into a quota block of every project until the weekly reset).
+
+    With ``auth="api_key"`` the same causes get the codes of the billed provider: a rate limit is the API's, never
+    a subscription block, and an account without credit or a refused key stops the run (D-145).
     """
+    api = auth == "api_key"
     text = str(message or "")
     lower = text.lower()
     sub = str(subtype or "").lower()
@@ -207,6 +234,10 @@ def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error
     refused = rate_limit_refused(rate_limit)
 
     def quota():
+        if api:
+            return AppError("Die Anthropic-API hat den Aufruf wegen ihres Ratenlimits abgelehnt. Der Lauf wartet und "
+                            "setzt später fort.", code="anthropic_rate_limit", status="waiting_for_quota",
+                            details={"provider": "claude_api", "reason": "rate_limit"})
         until, kind = claude_block_window(text, rate_limit=rate_limit if refused else None)
         return AppError(f"Claude-Abo-Kontingent erreicht ({BLOCK_LABELS.get(kind, kind)}). Voraussichtlich wieder "
                         f"verfügbar ab {format_local(until)}. Später mit 'pla resume' fortsetzen; bei automatischer "
@@ -227,9 +258,23 @@ def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error
                                  "output_limit_tokens": cap})
 
     def login():
+        if api:
+            return AppError("Der Anthropic-API-Key wurde abgelehnt. Den Key prüfen und neu eingeben.",
+                            code="anthropic_authentication", status="blocked")
         return AppError("Claude-Anmeldung muss erneuert werden: claude auth login",
                         code="authentication_required", status="blocked")
 
+    def credits():
+        return AppError("Das Anthropic-Konto hat kein Guthaben mehr. Guthaben in der Anthropic-Konsole aufladen und "
+                        "dann fortsetzen.", code="anthropic_credits", status="waiting_for_quota",
+                        details={"provider": "claude_api", "reason": "credits"})
+
+    if api and ("max_budget" in sub or mentions(lower, "maximum budget")):
+        return AppError(f"Der Claude-Aufruf hat die Kostenobergrenze von {MAX_BUDGET_USD:g} USD je Aufruf erreicht und "
+                        "wurde abgerechnet, die Antwort aber nicht übernommen. Den Umfang des Aufrufs prüfen.",
+                        code="claude_budget_cap", status="blocked")
+    if api and category in CREDIT_API_ERRORS:
+        return credits()
     if "max_budget" in sub or mentions(lower, "maximum budget"):
         return AppError("Der Claude-Aufruf hat die Kostenobergrenze je Aufruf erreicht (Gegenwert laut CLI, keine "
                         "Rechnung). Die Antwort wurde nicht übernommen; den Umfang des Aufrufs prüfen.",
@@ -245,6 +290,8 @@ def classify_claude_failure(message, *, subtype=None, rate_limit=None, api_error
         # pool repeats once (provider_pool, format_retry.json). Two of about 3000 calls on 2026-10-02.
         return AppError("Claude hat nach mehreren eigenen Anläufen keine Antwort im verlangten Format geliefert. "
                         "„Fortsetzen“ wiederholt den Aufruf.", code="claude_structured_output")
+    if api and mentions(lower, *CREDIT_MARKERS):
+        return credits()
     if mentions(lower, *QUOTA_MARKERS):
         return quota()
     if mentions(lower, *OUTPUT_LIMIT_MARKERS):
@@ -271,17 +318,40 @@ def search_items_from(tool_uses) -> list[dict]:
 
 
 class ClaudeCodeAdapter:
+    """``auth="subscription"`` (provider ``claude_code``) uses the CLI's claude.ai login and never a key;
+    ``auth="api_key"`` (provider ``claude_api``) uses the given key or ``ANTHROPIC_API_KEY`` and never the login."""
+
     def __init__(self, settings, *, model=None, reasoning_effort=None, cancel_check=None,
-                 max_budget_usd=MAX_BUDGET_USD):
+                 max_budget_usd=MAX_BUDGET_USD, auth="subscription", api_key=None):
+        if auth not in {"subscription", "api_key"}:
+            raise AppError("Unbekannte Claude-Anmeldung.", code="invalid_backend", status="blocked")
         self.settings = settings
+        self.auth = auth
+        self.provider = "claude_api" if auth == "api_key" else "claude_code"
         self.model = validate_model(model) or DEFAULT_CLAUDE_MODEL
-        self.reasoning_effort = validate_reasoning(reasoning_effort, provider="claude_code", model=self.model)
+        self.reasoning_effort = validate_reasoning(reasoning_effort, provider=self.provider, model=self.model)
         self.cancel_check = cancel_check
         self.max_budget_usd = max_budget_usd
+        key = "" if auth == "subscription" else (api_key if api_key is not None else
+                                                 os.environ.get("ANTHROPIC_API_KEY", "")).strip()
+        if key and any(not 33 <= ord(c) <= 126 for c in key):
+            raise AppError("Der Anthropic-API-Key ist ungültig.", code="invalid_backend", status="blocked")
+        self._key = SecretStr(key)
         self._version = None
 
     def command(self) -> list[str]:
         return claude_command()
+
+    def require_key(self):
+        if self.auth == "api_key" and not self._key.get_secret_value():
+            raise AppError("Claude über den API-Key braucht einen Anthropic-API-Key: in den Einstellungen eingeben, "
+                           "--api-key für verdeckte Eingabe oder ANTHROPIC_API_KEY setzen.",
+                           code="anthropic_key_required", status="blocked")
+
+    def environment(self, model=None) -> dict[str, str]:
+        if self.auth == "api_key":
+            return claude_api_environment(model, self._key.get_secret_value())
+        return claude_environment(model)
 
     def check_login(self) -> str:
         status = login_status(self.command())
@@ -330,7 +400,16 @@ class ClaudeCodeAdapter:
                            "Aufruf wurde nicht gestartet und nicht angerechnet. Bei automatischer Abo-Wahl übernimmt Codex "
                            "solche Aufrufe.", code="prompt_too_large", status="blocked",
                            details={"prompt_chars": len(prompt), "limit_chars": prompt_limit(self.model)})
-        self.check_login()
+        api = self.auth == "api_key"
+        secret = self._key.get_secret_value()
+        if api:
+            # The key, not the claude.ai login, authenticates this call; `claude auth status` describes the login.
+            self.require_key()
+            if secret in prompt:
+                raise AppError("Ein API-Key darf nicht Teil des Modellprompts sein.", code="credential_in_prompt",
+                               status="blocked")
+        else:
+            self.check_login()
         version = self.cli_version()
         directory.mkdir(parents=True, exist_ok=True)
         schema = strict_schema(output_type)
@@ -341,14 +420,14 @@ class ClaudeCodeAdapter:
                 len(subprocess.list2cmdline(args)) > MAX_COMMAND_LINE_CHARS):
             raise AppError("Das Antwortschema ist zu groß für die Claude-Code-Befehlszeile. Das ist ein Fehler der "
                            "Studio-Anbindung; eine neue Anmeldung behebt ihn nicht.", code="invalid_output_schema")
-        activity = CallActivity(directory, output_type.__name__, self.model)
+        activity = CallActivity(directory, output_type.__name__, self.model, secrets=(secret,) if api else ())
         activity.diagnostic("request", prompt_chars=len(prompt), prompt_bytes=len(prompt.encode("utf-8")),
                             timeout_seconds=self.settings.text_timeout_seconds, stall_timeout_seconds=STALL_TIMEOUT_SECONDS,
                             reasoning_effort=self.reasoning_effort, transport="claude_cli", cli_version=version)
         try:
             # Partial messages stream continuously, so a silent CLI is a hung one.
             result = run_process(args, input_text=prompt, cwd=directory,
-                                 timeout=self.settings.text_timeout_seconds, env=claude_environment(self.model),
+                                 timeout=self.settings.text_timeout_seconds, env=self.environment(self.model),
                                  on_stdout_line=activity.observe_claude, on_stderr_line=activity.observe_stderr,
                                  cancel_check=self.cancel_check, stall_timeout=STALL_TIMEOUT_SECONDS)
         except AppError as exc:
@@ -373,6 +452,10 @@ class ClaudeCodeAdapter:
         except BaseException:
             activity.finish("interrupted")
             raise
+        if api and (secret in result.stdout or secret in result.stderr):
+            activity.finish("credential_in_response")
+            raise AppError("Die Claude-Ausgabe enthält den API-Key und wird nicht gespeichert.",
+                           code="credential_in_response", status="blocked")
         events = []
         for line in result.stdout.splitlines():
             try:
@@ -382,6 +465,10 @@ class ClaudeCodeAdapter:
             if isinstance(event, dict):
                 events.append(event)
         final = next((e for e in reversed(events) if e.get("type") == "result"), None) or {}
+        cost = final.get("total_cost_usd")
+        cost = cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+        # What the call costs the key's owner, kept on failures too; a subscription call bills nothing (D-148).
+        billed = {"billed_usd": cost} if api and cost is not None and cost >= 0 else {}
         limits = [e["rate_limit_info"] for e in events
                   if e.get("type") == "rate_limit_event" and isinstance(e.get("rate_limit_info"), dict)]
         # The window and reset of a block come from the event that refused the request, never from a warning.
@@ -410,7 +497,8 @@ class ClaudeCodeAdapter:
             api_errors = [e["error"] for e in events if e.get("type") == "assistant" and isinstance(e.get("error"), str)]
             api_error = api_errors[-1][:40] if api_errors else None
             failure = classify_claude_failure(message, subtype=final.get("subtype"), rate_limit=limit_event,
-                                              api_error=api_error)
+                                              api_error=api_error, auth=self.auth)
+            failure.details.update(billed)
             # Keep a useful failure receipt without persisting raw provider output or prompts.
             receipt = {"code": failure.code, "message": str(failure), "exit_code": result.returncode,
                        "result_subtype": final.get("subtype") if isinstance(final.get("subtype"), str) else None,
@@ -420,16 +508,29 @@ class ClaudeCodeAdapter:
                 receipt.update(blocked_until=failure.details["blocked_until"], reason=failure.details.get("reason"))
             if failure.code == "claude_output_limit":
                 receipt.update(reason=failure.details["reason"], output_limit_tokens=failure.details["output_limit_tokens"])
+            receipt.update(billed)
             write_json(directory / "failure.json", receipt)
             raise failure
         receipt = {"exit_code": result.returncode,
                    "result_subtype": final.get("subtype") if isinstance(final.get("subtype"), str) else None,
                    "model": self.model, "reasoning_effort": self.reasoning_effort,
-                   "prompt_version": prompt_version, "cli_version": version}
+                   "prompt_version": prompt_version, "cli_version": version, **billed}
+        init = next((e for e in events if e.get("type") == "system" and e.get("subtype") == "init"), None) or {}
+        key_source = init.get("apiKeySource") if isinstance(init.get("apiKeySource"), str) else None
+        if api and key_source == "none":
+            # The CLI reports it used no API key, so the call ran on a login instead of the key (unverified field).
+            activity.finish("claude_api_auth_mismatch")
+            failure = AppError("Claude Code hat den Aufruf nicht über den API-Key ausgeführt. Der Aufruf wurde nicht "
+                               "übernommen.", code="claude_api_auth_mismatch", status="blocked")
+            # It ran on a login, so the key was not billed for it.
+            write_json(directory / "failure.json", {"code": failure.code, "message": str(failure),
+                                                    **{k: v for k, v in receipt.items() if k != "billed_usd"}})
+            raise failure
         payload = final.get("structured_output")
         if payload is None:
             activity.finish("invalid_model_output")
-            failure = AppError("Claude Code hat keine gültige strukturierte Antwort geliefert.", code="invalid_model_output")
+            failure = AppError("Claude Code hat keine gültige strukturierte Antwort geliefert.", code="invalid_model_output",
+                               details=dict(billed))
             write_rejected_output(directory, ValueError("structured_output missing"),
                                   {"code": failure.code, "message": str(failure), **receipt})
             raise failure
@@ -439,6 +540,7 @@ class ClaudeCodeAdapter:
             # A parsed answer the contract rejects is charged model work that a caller may re-ask.
             activity.finish("rejected_output")
             failure = contract_rejection(exc, payload, provider="Claude Code")
+            failure.details.update(billed)
             write_rejected_output(directory, exc, {"code": failure.code, "message": str(failure), **receipt}, payload=payload)
             raise failure from exc
         # An opened page is observed browsing too: a call that knows its URLs may fetch them without a query
@@ -447,9 +549,8 @@ class ClaudeCodeAdapter:
         if search and not research_performed:
             activity.finish("search_not_observed")
             raise AppError("Kein Websuch-Ereignis im Claude-Lauf nachgewiesen. Recherche nicht übernommen.",
-                           code="search_not_observed", status="blocked")
+                           code="search_not_observed", status="blocked", details=dict(billed))
         model_usage = final.get("modelUsage") if isinstance(final.get("modelUsage"), dict) else {}
-        cost = final.get("total_cost_usd")
         last_limit = limits[-1] if limits else None
         metadata = {
             "provider": "claude_code", "auth_mode": "claude.ai", "transport": "claude_cli",
@@ -463,7 +564,7 @@ class ClaudeCodeAdapter:
                                                      "cache_creation_input_tokens")
                          if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)},
                       "web_search_requests": server_searches},
-            "reported_cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+            "reported_cost_usd": cost,
             "cost_basis": "Gegenwert laut Claude Code; Abo-Aufruf ohne Einzelabrechnung",
             "separately_billed_cost": None,
             "num_turns": final.get("num_turns") if isinstance(final.get("num_turns"), int) else None,
@@ -482,6 +583,16 @@ class ClaudeCodeAdapter:
                               if isinstance(last_limit.get(key), (bool, str))}}
             if last_limit else None,
         }
+        if api:
+            # The same receipt for the billed provider; the subscription receipt above stays as it was (D-145).
+            metadata.update({"provider": "claude_api", "auth_mode": "api_key", "adapter_version": API_ADAPTER_VERSION,
+                             "cost_basis": "Claude Code's own estimate at API prices; the Anthropic Console bill is "
+                                           "authoritative",
+                             "separately_billed_cost": cost, "cost_currency": "USD", "api_key_source": key_source})
+            if secret in output.model_dump_json():
+                activity.finish("credential_in_response")
+                raise AppError("Modellantwort enthält Zugangsdaten und wird nicht gespeichert.",
+                               code="credential_in_response", status="blocked", details=dict(billed))
         write_json(directory / "metadata.json", metadata)
         write_json(directory / "response.json", output.model_dump(mode="json"))
         activity.finish("completed")

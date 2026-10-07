@@ -11,20 +11,22 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from .call_activity import CALL_SUBJECT
-from .editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, episode_series_context, terminology
+from .content_text import text as wording
+from .editorial import CONTINUITY, EPISODE_FRAMING, LISTENABILITY, TEACHING_SCOPE, episode_series_context, terminology
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .execution import run_episode_stage
 from .models import EpisodeScript, host_labels
 from .polishing import HOST_ROLES, polish_dialogue
 from .prompts import fragment, instructions
-from .research import refund_call, reserve_call, unanswered
+from .research import check_money, refund_call, reserve_call, settle_call, settle_external, unanswered
 from .research_evidence import single_group_findings
 from .research_gap_probe import coverage_terms, gap_id, hit_sources, probe, settle, statuses, unread
 from .research_ledger import read_value
 from .research_patches import MAX_REJECTIONS, corrected_call, re_asked
 from .run_budget import effective_limits, teaching_redesigns
 from .runner import manifest_path, run_observer
+from .script_advisories import dialogue_shape
 from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
@@ -36,9 +38,9 @@ from .script_evidence import (SCRIPT_EVIDENCE_INSTRUCTIONS, is_claim_drift, sett
                               validate_claim_checks)
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
-from .storage import atomic_text, digest, file_hash, write_json
+from .storage import atomic_text, digest, file_hash, read_optional_json, write_json
 from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, build_teaching_plan,
-                       prerequisite_context)
+                       prerequisite_context, previous_devices)
 from .teaching_research import apply_foundations, named_question, research_foundations
 
 SPOKEN_DIALOGUE = fragment("spoken_dialogue")
@@ -49,15 +51,21 @@ PLAIN_WORDING = fragment("plain_language")
 # the project's own terminology rule. The series plan, the script review and both repairs changed with it.
 # v10: the computed word budget (script_checks.word_budget) instead of a budget the writer derives itself. v11: for
 # Sonnet 5.5 alone its target set above the plan (script_checks.WRITER_TARGET_FACTORS), since Sonnet wrote 71 % of the
-# plan it was shown.
-WRITE_EPISODE_VERSION = "write_episode.v11-raised-target"
+# plan it was shown. v12 (2026-10-06): the listenability rules (editorial.LISTENABILITY) and the teaching design's arc;
+# chapter-end recaps and reflection beats count toward the length, empty repetition still does not. v13: the design's
+# storytelling devices (dramaturgy, opening, partner_stance, each chapter's ending) instead of one arc for all (D-143).
+# v14 (2026-10-07): breathers where new information has piled up, set by the content, never by a schedule.
+WRITE_EPISODE_VERSION = "write_episode.v14-breathers"
 # The correction of a draft that breaks its plan repeats the writing prompt. v3: each correction carries the latest
-# attempt and its own defects, a short script the words it has and needs (write_episode).
-WRITE_REPAIR_VERSION = "write_episode_repair.v3-latest-draft"
+# attempt and its own defects, a short script the words it has and needs (write_episode). v4: the writing prompt v12.
+# v5: the writing prompt v13.
+WRITE_REPAIR_VERSION = "write_episode_repair.v6-breathers"
 MAX_REVIEW_REPAIRS = 3
 # v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
 # repair restated such claims and the next review flagged them again). v4: a limit research_limits names is kept.
-REVIEW_REPAIR_VERSION = "script_review_repair.v4-limits"
+# v5 (2026-10-06): the writing prompt v12, and a listenability point is fixed in the segments it names. v6: the writing
+# prompt v13; a chapter ends as its scene's ending says.
+REVIEW_REPAIR_VERSION = "script_review_repair.v7-breathers"
 # Attempts one episode's correction of a series review gets before its evidence check rejects it (repair_series).
 SERIES_REPAIR_ATTEMPTS = 2
 # A new issue on a segment no repair touched blocks a follow-up review only as one of these.
@@ -151,6 +159,15 @@ def unread_references(row):
     return row.get("unread_references") or [hit["reference"] for hit in row["hits"]]
 
 
+def render_probe_research_needed(questions, *, language):
+    """research_needed.md for gaps with unread corpus hits, in the podcast's content language (D-153). The German
+    ``why_needed`` in research_needed.json stays as it is, since the supplementary research reads it; this file says
+    the same to the reader in the podcast's language."""
+    why = lambda q: wording(language, "probe_needed_why", references=", ".join(q["references"]))
+    return (f"# {wording(language, 'probe_needed_title')}\n\n" +
+            "\n\n".join(f"- {q['question']}\n\n  {why(q)}" for q in questions) + "\n")
+
+
 class ScriptRun:
     """State of one script run. ``dossier``, ``context`` and ``sources`` grow with foundation research."""
 
@@ -207,7 +224,8 @@ class ScriptRun:
         self.adapter.require_key()
 
         def once(attempt):
-            number = reserve_call(self.work, self.limits(), search=search)
+            number = reserve_call(self.work, self.limits(), search=search,
+                                  billed=self.adapter.billed(search or research))
             try:
                 return self.adapter.structured(attempt, output_type, self.work / "calls" / f"call_{number:03d}",
                                                prompt_version=version, search=search, research=research)[0]
@@ -219,6 +237,9 @@ class ScriptRun:
             except BaseException:
                 refund_call(self.work, number, search=search)
                 raise
+            finally:
+                # The money of a billed call counts whatever became of its answer (D-148).
+                settle_call(self.work, number)
         return re_asked(once, prompt)
 
     def selected(self):
@@ -298,6 +319,8 @@ class ScriptRun:
             directory = self.work / "teaching" / entry.episode_id
             continuity = prerequisite_context(plan, entry, self.work)
             write_json(directory / "continuity.json", continuity)
+            # What the episodes just before chose, so this one tells its story differently (D-143).
+            devices = previous_devices(plan, entry, self.work, self.root)
             while True:
                 teaching_sources = episode_sources(entry, self.dossier, self.context, self.sources)
                 write_json(directory / "source_context.json", teaching_sources)
@@ -305,7 +328,7 @@ class ScriptRun:
                     self.route_probe_gaps(entry)
                     _, files = build_teaching_plan(self.config, entry, self.dossier, teaching_sources, self.invoke, directory,
                                                    continuity=continuity, series_context=episode_series_context(plan, entry),
-                                                   editor_note=self.adopt_redesign(entry, directory))
+                                                   editor_note=self.adopt_redesign(entry, directory), devices=devices)
                     break
                 except AppError as exc:
                     if exc.code != "teaching_research_required":
@@ -364,6 +387,10 @@ class ScriptRun:
         ``jev_scan.jsonl``, so a stop mid-scan resumes where it was; ``jev_probe.json`` reports progress and cost."""
         from .jev import JevClient, scan
         report = self.work / "jev_probe.json"
+        limit = self.limits().cost_usd
+        if limit is not None:
+            # Jev bills the OpenRouter key; with a money limit set, a reached limit stops before the scan (D-146).
+            check_money(read_optional_json(self.work / "budget.json", {}) or {}, limit)
         state = {"status": "running", "done": 0, "total": 0}
         write_json(report, state)
 
@@ -378,6 +405,8 @@ class ScriptRun:
             raise
         write_json(report, {**summary, "status": "completed", "gaps": len(gaps),
                             "proposals": sum(len(rows) for rows in found.values())})
+        # The scan's money counts into the run's spending once it is complete (D-148).
+        settle_external(self.work, "jev_probe", summary.get("cost_usd"))
         return found
 
     def episode_source_ids(self, entry):
@@ -477,8 +506,8 @@ class ScriptRun:
                      for row in routed]
         write_json(directory / "research_needed.json", {"episode_id": entry.episode_id, "questions": questions,
                                                         "gap_ids": [row["gap_id"] for row in routed]})
-        atomic_text(directory / "research_needed.md", "# Gemeldete Lücken mit ungelesenen Korpustreffern\n\n" +
-                    "\n\n".join(f"- {q['question']}\n\n  {q['why_needed']}" for q in questions) + "\n")
+        atomic_text(directory / "research_needed.md",
+                    render_probe_research_needed(questions, language=self.config.language))
         raise AppError("Gemeldete Lücken haben ungelesene Abschnitte im Korpus: " +
                        f"{directory / 'research_needed.md'}",
                        code="teaching_research_required", status="blocked",
@@ -583,7 +612,8 @@ class ScriptRun:
         cited = set(episode_findings(entry))
         limits = episode_limits(plan, entry, self.stated_limits())
         prompt = (instructions("write_episode_opening", language=config.language) + " "
-                  + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
+                  + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + LISTENABILITY +
+                  SCRIPT_EVIDENCE_INSTRUCTIONS +
                   instructions("write_episode") + advisories + length + "\n" +
                   json.dumps({"brief": {"language": config.language, "voices": config.voice_profile,
                                         "host_names": config.host_names,
@@ -854,7 +884,8 @@ class ScriptRun:
         payload = {"brief": {"audience": config.audience_level, "depth": config.depth_request,
                              "style_notes": self.style_notes, **goal_and_recency(config)},
                    "host_roles": HOST_ROLES, "original_draft": original_draft,
-                   "metrics": script_metrics(draft), "episode": entry.model_dump(), "script": draft.model_dump(),
+                   "metrics": script_metrics(draft), "dialogue_shape": dialogue_shape(draft),
+                   "episode": entry.model_dump(), "script": draft.model_dump(),
                    "series_context": episode_series_context(plan, entry),
                    "prerequisite_context": prerequisite_context(plan, entry, work),
                    "gap_probes": statuses(probes),
@@ -875,7 +906,7 @@ class ScriptRun:
             task, version = task + " " + instructions("script_review_followup"), version + "+followup"
         # Two receipt slips are read as meant (settle_receipts) instead of re-asking the whole review.
         reviewed = corrected_call(lambda *args, **kwargs: settle_receipts(self.invoke(*args, **kwargs), draft, anchors),
-            self.terms() + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
+            self.terms() + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + LISTENABILITY + SCRIPT_EVIDENCE_INSTRUCTIONS +
             task + "\n" + json.dumps(payload, ensure_ascii=False),
             ScriptReview, version, well_formed)
         # The drift receipts become issues; well_formed accepted their shape, so this cannot raise.

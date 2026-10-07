@@ -22,6 +22,8 @@ from .storage import digest, load_project, read_yaml, write_json
 from .storage import read_optional_json as read
 from .studio_messages import clean
 from .studio_scripts import script_previews
+from . import studio_text
+from .studio_text import t
 
 # The publisher rewrites progress.json only when its content changed, and at least this often while the worker
 # lives: the file's age is the Studio's heartbeat (studio.Studio.job, app.js heartbeatNote warns after 300 s).
@@ -88,24 +90,68 @@ def state_facts(work):
     return memo(("state_facts", str(path)), [path], compute)
 
 
-ACTIVITIES = {
-    "SeriesPlan": "Inhaltsverzeichnis wird entworfen",
-    "TeachingPlan": "Lehrkonzept wird ausgearbeitet",
-    "TeachingPlanReview": "Lehrkonzept wird geprüft",
-    "TeachingPlanRepair": "Offene Erklärungsschritte werden gezielt ergänzt",
-    "ResearchDiscovery": "Zusätzliche Quellen werden gesucht",
-    "FoundationSupplement": "Zusätzliche Belege werden ausgewertet",
-    "FoundationReview": "Zusätzliche Belege werden geprüft",
-    "DialoguePolishReview": "Dialogüberarbeitung wird geprüft",
-    "ScriptReview": "Fakten und Erklärungen werden geprüft",
-    "SeriesReview": "Zusammenhang und Vollständigkeit der gesamten Skriptserie werden geprüft",
-    "ListenerReadback": "Verständlichkeit wird anhand des Skripts geprüft",
-    "EditorialReview": "Erzählung und Gespräch werden geprüft",
-    "TeachingReview": "Lernziele und Erklärungstiefe werden geprüft",
-}
+# The activity line of a script run's newest call, by its output schema; the text is progress.activity.<schema> in the
+# interface language (D-152).
+ACTIVITIES = ("SeriesPlan", "TeachingPlan", "TeachingPlanReview", "TeachingPlanRepair", "ResearchDiscovery",
+              "FoundationSupplement", "FoundationReview", "DialoguePolishReview", "ScriptReview", "SeriesReview",
+              "ListenerReadback", "EditorialReview", "TeachingReview")
+_PIPELINE = {"catalog": None, "patterns": []}
+
+
+def pipeline_patterns():
+    """The research pipeline's German activity lines (pipeline.activity.* in de.json) as patterns: the longest fixed
+    tail first, then the longest template, so "… · Anlauf 2 nach Abweisung" is not read as the tail of a question."""
+    german = studio_text.catalog("de")
+    if _PIPELINE["catalog"] is not german:
+        rows = []
+        for key, value in german.items():
+            if not key.startswith("pipeline.activity."):
+                continue
+            for template in (value.values() if isinstance(value, dict) else [value]):
+                parts = re.split(r"\{(\w+)\}", template)
+                pattern = "".join(re.escape(part) if index % 2 == 0 else f"(?P<{part}>.+?)"
+                                  for index, part in enumerate(parts))
+                rows.append(((len(parts[-1]), len(template)), key, re.compile(pattern + r"\Z", re.DOTALL)))
+        rows.sort(key=lambda row: row[0], reverse=True)
+        _PIPELINE.update(catalog=german, patterns=[row[1:] for row in rows])
+    return _PIPELINE["patterns"]
+
+
+def activity_text(text, depth=0):
+    """A research pipeline's activity line in the interface language. The pipeline writes it in German, and the
+    status brief reads it so; the English interface shows the catalog's English where a German template matches and
+    the German line otherwise (D-152)."""
+    if not isinstance(text, str) or studio_text.current_language() == "de" or depth > 2:
+        return text
+    for key, pattern in pipeline_patterns():
+        found = pattern.match(text)
+        if found:
+            params = found.groupdict()
+            if "activity" in params:
+                params["activity"] = activity_text(params["activity"], depth + 1)
+            return str(t(key, **params))
+    return text
 
 
 CALL_NAME = re.compile(r"call_\d+")
+
+
+def money_fields(work, budget, limits):
+    """What a run billed to a key has spent and may spend (D-146); nothing for a run no key pays for, so its view
+    stays as it was."""
+    from .cost_estimate import spent_usd
+    from .run_budget import run_text_generation
+    from .text_settings import BILLED_TEXT_PROVIDERS
+    spent = any(key in budget for key in ("billed_usd", "estimated_usd", "external_usd"))
+    try:
+        billed = (run_text_generation(work) or {}).get("provider") in BILLED_TEXT_PROVIDERS
+    except (AppError, ValueError, OSError):
+        billed = False
+    if not (spent or billed):
+        return {}
+    return {"cost_spent_usd": spent_usd(budget), "cost_estimated_usd": round(budget.get("estimated_usd", 0.0), 4),
+            "cost_unpriced_attempts": budget.get("unpriced_attempts", 0),
+            "cost_limit_usd": getattr(limits, "cost_usd", None) if limits is not None else None}
 
 
 def run_limits(root, work, input_hash, snapshot=None):
@@ -233,38 +279,36 @@ def script_progress(root, run, since=None, light=False):
                and (not since or (stage_rows[row["episode_id"]].get("finished_at") or "") >= since)]
     calls = sorted((work / "calls").glob("call_*/output_schema.json"))
     schema = read(calls[-1], {}).get("title") if calls else None
-    activity = ACTIVITIES.get(schema, "Gespeicherte Ergebnisse werden verarbeitet")
+    activity = t(f"progress.activity.{schema}" if schema in ACTIVITIES else "progress.activity.default")
     if schema == "TeachingPlan" and current and (work / "teaching" / current["episode_id"] / "checkpoint.json").exists():
-        activity = "Lehrkonzept wird überarbeitet"
+        activity = t("progress.activity.teaching_revision")
     if schema == "EpisodeScript":
-        activity = {"polishing": "Dialog wird sprachlich überarbeitet",
-                    "review": "Skript wird nach den Prüfeinwänden überarbeitet"}.get(stage, "Skript wird ausgearbeitet")
+        activity = t({"polishing": "progress.activity.script_polishing",
+                      "review": "progress.activity.script_review"}.get(stage, "progress.activity.script_writing"))
     plan_repair = None
     if stage == "planning" and schema == "SeriesPlan":
         # A saved draft with findings means the running outline call is one of the automatic corrections.
         checkpoint = read(work / "planning_checkpoint.json", {}) or {}
         if checkpoint and read(work / "plan_errors.json", []):
             plan_repair = {"round": min(MAX_PLAN_REPAIRS, int(checkpoint.get("repairs", 0)) + 1), "limit": MAX_PLAN_REPAIRS}
-            activity = f"Inhaltsverzeichnis wird korrigiert · Korrekturrunde {plan_repair['round']} von {MAX_PLAN_REPAIRS}"
+            activity = t("progress.activity.plan_repair", round=plan_repair["round"], limit=MAX_PLAN_REPAIRS)
     if stage == "publish":
-        activity = "Ergebnisse werden bereitgestellt" if run.get("status") == "running" else "Ergebnisse bereit zur Durchsicht"
+        activity = t("progress.activity.publishing" if run.get("status") == "running" else "progress.activity.published")
     if stage == "review" and rows and all(row["completed"] for row in rows) and run.get("status") == "running":
         # Every episode passed its own review: what runs now is the series review or its one bounded correction.
         repaired = ((read(work / "series_repair.json", {}) or {}).get("receipt") or {}).get("episodes") or []
         numbers = ", ".join(str(int(e.rsplit("_", 1)[-1])) for e in sorted(repaired) if e.rsplit("_", 1)[-1].isdigit())
         if schema == "SeriesReview":
-            activity = ("Serienprüfung nach der Korrektur: alle Folgen werden erneut im Zusammenhang geprüft" if repaired
-                        else "Serienprüfung: alle Folgen werden im Zusammenhang geprüft")
+            activity = t("progress.activity.series_review_again" if repaired else "progress.activity.series_review")
         elif repaired:
-            activity = f"Korrektur der Serienprüfung: Folgen {numbers} werden überarbeitet und nachgeprüft"
+            activity = t("progress.activity.series_repair", episodes=numbers)
     tagging = read(root / "studio" / "expression" / "progress.json", {}) or {}
     if tagging.get("status") == "running" and tagging.get("run_id") == run.get("run_id"):
         # After a finished script run, the tags a Gemini recording speaks are placed for reading (tag_episodes).
-        activity = (f"Ausdruck für die Vertonung wird gesetzt · {tagging.get('done', 0)} von {tagging.get('total', 0)} "
-                    "Folgen")
+        activity = t("progress.activity.expression", done=tagging.get("done", 0), total=tagging.get("total", 0))
     jev = read(work / "jev_probe.json", {}) or {}
     if jev.get("status") == "running" and run.get("status") == "running":
-        activity = f"Jev sucht die Lücken im Quellenbestand · {jev.get('done', 0)} von {jev.get('total', 0)} Anfragen"
+        activity = t("progress.activity.jev", done=jev.get("done", 0), total=jev.get("total", 0))
     started = datetime.fromtimestamp(calls[-1].stat().st_mtime, timezone.utc).isoformat() if calls else None
     responses = list((work / "calls").glob("call_*/response.json"))
     last_result = datetime.fromtimestamp(max(path.stat().st_mtime for path in responses), timezone.utc).isoformat() if responses else None
@@ -280,13 +324,15 @@ def script_progress(root, run, since=None, light=False):
         checkpoint = read(work / "reviews" / f"{focus['episode_id']}_checkpoint.json", {})
         review = checkpoint.get("review") or read(work / "reviews" / f"{focus['episode_id']}.json", {})
         issues = review.get("issues", [])
-    model_call_limit = None
+    model_call_limit = limits = None
     try:
-        model_call_limit = run_limits(root, work, run.get("input_hash")).model_calls
+        limits = run_limits(root, work, run.get("input_hash"))
+        model_call_limit = limits.model_calls
     except (AppError, ValueError, OSError):
         pass
+    money = money_fields(work, read(work / "budget.json", {}) or {}, limits)
     # Keep the existing progress envelope readable by Studio instances already running during an update.
-    return {"phase": "script", "unit": "episodes", "stage": stage, "activity": activity,
+    return {**money, "phase": "script", "unit": "episodes", "stage": stage, "activity": str(activity),
             "updated_at": datetime.now(timezone.utc).isoformat(), "last_result_at": last_result,
             # The time the run itself last changed, unlike updated_at, which only says when this view was read.
             "changed_at": max(filter(None, (started, last_result)), default=None),
@@ -327,11 +373,12 @@ def ledger_view(root, work, input_hash):
     while the ledger, the approval files and the state are unchanged; read-only for its callers."""
     files = ["research_questions.json", "gap_approvals.json", "retry_requests.json", "criterion_gaps.json",
              "residual_finish.json", "question_research/state.json"]
-    return memo(("ledger", str(work), input_hash, str(root)), [work / name for name in files],
-                lambda: _ledger_view(root, work, input_hash))
+    language = studio_text.current_language()
+    return memo(("ledger", str(work), input_hash, str(root), language), [work / name for name in files],
+                lambda: _ledger_view(root, work, input_hash, language))
 
 
-def _ledger_view(root, work, input_hash):
+def _ledger_view(root, work, input_hash, language="de"):
     questions = read(work / "research_questions.json")
     if not isinstance(questions, dict):
         return questions
@@ -399,7 +446,10 @@ def _ledger_view(root, work, input_hash):
         questions["residual_finish"] = None
     for row in questions.get("questions") or []:
         if isinstance(row, dict):
-            row.update({key: clean(row[key], root) for key in ("reason", "activity") if isinstance(row.get(key), str)})
+            if isinstance(row.get("activity"), str):
+                row["activity"] = activity_text(row["activity"])
+            row.update({key: clean(row[key], root, language) for key in ("reason", "activity")
+                        if isinstance(row.get(key), str)})
     return questions
 
 
@@ -441,13 +491,14 @@ def research_progress(root, run, since=None, light=False):
     awaiting = isinstance(questions, dict) and questions.get("phase") == "awaiting_plan_approval"
     request = read(work / "research_request.json", {})
     retrieval = retrieval_view(work, run, snapshot, effective)
-    activity = data.get("activity")
+    activity = activity_text(data.get("activity"))
     if retrieval and retrieval["running"]:
-        activity = (f"Originaltexte werden eingelesen: {retrieval['attempted']} von bis zu {retrieval['total']} Quellen "
-                    f"abgerufen, {retrieval['imported']} lesbar")
+        activity = str(t("progress.activity.retrieval", attempted=retrieval["attempted"], total=retrieval["total"],
+                         imported=retrieval["imported"]))
     insight = None if light else insight_view(work, run, responses)
+    language = studio_text.current_language()
     if isinstance(insight, dict) and isinstance(insight.get("feedback"), list):
-        insight["feedback"] = [clean(text, root) for text in insight["feedback"]]
+        insight["feedback"] = [clean(text, root, language) for text in insight["feedback"]]
     return {**data, "phase": "research", "unit": "questions", "research_quality": report, "activity": activity,
             # research_activity.json keeps the time of its last real change; updated_at below is the read time.
             "changed_at": data.get("updated_at"), "retrieval": retrieval,
@@ -460,7 +511,7 @@ def research_progress(root, run, since=None, light=False):
             "total_segments": counts.get("total", 0), "completed_segments": counts.get("closed", 0),
             "model_calls": budget.get("model_calls", 0), "search_rounds": budget.get("search_rounds", 0),
             "model_call_limit": effective.model_calls, "search_round_limit": effective.search_rounds,
-            "source_limit": effective.sources,
+            "source_limit": effective.sources, **money_fields(work, budget or {}, effective),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "model_call_started_at": pending[0]["started_at"] if pending else None, "open_calls": pending,
             "stopping": stopping,
@@ -476,7 +527,8 @@ def retrieval_view(work, run, snapshot, limits):
     offered = (len(discovery.get("candidates") or []) + len(snapshot.get("seed_urls") or [])
                + len(snapshot.get("local_sources") or []))
     stage = ((run.get("stages") or {}).get("retrieval") or {}).get("status")
-    failures = [{"source": str(row.get("source", ""))[:200], "reason": clean(row.get("reason", ""))}
+    failures = [{"source": str(row.get("source", ""))[:200],
+                 "reason": clean(row.get("reason", ""), None, studio_text.current_language())}
                 for row in saved.get("failures") or [] if isinstance(row, dict)]
     return {"running": stage == "running", "attempted": int(saved.get("attempted", 0)),
             "imported": int(saved.get("imported", 0)), "total": min(limits.sources, offered) or int(saved.get("attempted", 0)),

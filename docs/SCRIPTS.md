@@ -2,7 +2,7 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
@@ -56,11 +56,12 @@ The Studio sets text model and reasoning level on the Settings page
 
 | Option | Meaning |
 | --- | --- |
-| `--backend codex_cli\|claude_code\|auto\|openrouter` | Text provider for scripts and reviews; default `codex_cli`. |
+| `--backend codex_cli\|claude_code\|auto\|openrouter\|claude_api` | Text provider for scripts and reviews; default `codex_cli`. `claude_api` is Claude on your Anthropic API key, billed per call and only with a money limit ([Claude on your own API key](BUSINESS_LOGIC.md#claude-on-your-own-api-key)). |
 | `--model` | Model ID, for example `gpt-6-astra` (Codex), `claude-sonnet-5-5` or `claude-opus-5-5` (Claude). Required for OpenRouter. |
 | `--reasoning-effort` | `low`, `medium`, `high` or `xhigh` (`text_settings.REASONING_EFFORTS`); Claude also `max` (`text_settings.CLAUDE_EFFORTS`). Optional for OpenRouter, where the model must support the level. |
-| `--api-key` | OpenRouter key; without a value it is asked for hidden. |
+| `--api-key` | OpenRouter key, or the Anthropic key with `claude_api`; without a value it is asked for hidden. |
 | `--max-output-tokens` | Output limit per OpenRouter call. |
+| `--web-search` | `model` (default) or `perplexity`: how a new run's supplementary research searches the web; the Perplexity key comes from `PERPLEXITY_API_KEY` ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). |
 
 A new Codex run with `--model gpt-6-astra --reasoning-effort xhigh` matches the Studio's Codex choice. Defaults per
 provider, presets and minimum Claude Code versions: [Providers and models](PRODUCT.md#providers-and-models). All
@@ -88,7 +89,9 @@ and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
 
 The Codex subscription stays the default. Optionally, planning, teaching, writing, dialogue polishing and every model
 review of one script run go through OpenRouter, paid per call from its API credit. Research and the automatic
-supplementary research stay on the subscriptions; speech is generated separately ([Recording flow](AUDIO.md#recording-flow)).
+supplementary research stay on the subscriptions, unless the run searches through Perplexity (`--web-search
+perplexity`), which lets the OpenRouter model research too; speech is generated separately
+([Recording flow](AUDIO.md#recording-flow)).
 
 ```powershell
 # Replace provider/model-id with an OpenRouter model ID that supports JSON schemas.
@@ -104,6 +107,8 @@ supplementary research stay on the subscriptions; speech is generated separately
 - Provider, model, token limit and adapter version are stored inputs: changing one needs a new `script` run,
   optionally with `--revise` (same provider options); a rotated key does not.
 - `reports/script_quality.yaml` names the selection under `text_generation`.
+- The run needs a money limit in USD (`research_limits.cost_usd`, or `pla approve --cost-usd N` for this run); without
+  one it stops at its first OpenRouter call with `cost_limit_required` ([Money limit](BUSINESS_LOGIC.md#money-limit)).
 - Structured outputs, provider sorting, the `--max-output-tokens` default, truncated or rejected answers, per-call
   costs, and pauses for missing credits, rate limits or network errors: [Text provider
   adapters](ARCHITECTURE.md#text-provider-adapters).
@@ -211,7 +216,9 @@ noted after two revisions, and the „Hinweise fürs Skript“ (notes for the sc
 
 Every episode gets a spoken intro with a short greeting, an orientation and a transition to its opening question. Its
 outro answers this question, gives a fitting outlook when a follow-up episode is actually planned, and says goodbye.
-A subject example at the start and an open question at the end are not enough.
+A subject example at the start and an open question at the end are not enough. The intro names the question and what
+is at stake, not the answer, which the episode earns at its end
+([Listenability and narrative arc](TEACHING.md#listenability-and-narrative-arc)).
 
 - The first episode also introduces **the overall topic, its significance and the path through the series**.
 - The final episode is **as a whole the synthesis of the series** ([Role, recap and theory first](#role-recap-and-theory-first)).
@@ -227,12 +234,18 @@ A subject example at the start and an open question at the end are not enough.
   (`editorial.episode_series_context`), also when only one episode is generated.
 - The framing rules are one shared prompt block (`prompts/episode_framing.txt`) for the teaching plan and its review,
   writing, polishing and its comparison, the script review, and the editorial and teaching reviews.
+- The listenability rules are another (`prompts/listenability.txt`), for writing, polishing and its comparison and the
+  script review; the teaching plan plans the arc in its own fields
+  ([Listenability and narrative arc](TEACHING.md#listenability-and-narrative-arc)).
 - Writing gets only the plan's `scope_note` and the dependencies between the episode's findings, not the whole series
   plan; order, roles and questions come from the series context (why: D-073).
 - Writing gets its word budget computed, as `length` in the payload (`script_checks.word_budget`,
   `prompts/write_episode_length.txt`): at least the words of 85 % of `target_minutes` (the check below), a target, and
   that target spread over the scenes by the number of their explanation steps. Until 2026-10-04 the writer derived the
   budget itself, and every first draft of the Transformer series came in at 58 to 75 % of it. (why: D-127)
+- The chapter-end recaps and reflection beats of the listenability rules count toward this budget; empty repetition
+  does not. The planned minutes stay, so since 2026-10-06 the same time carries fewer facts. The floor, the hour and
+  the target factors are unchanged; the factors were measured before these rules.
 - **Only for Claude Sonnet 5.5** the target is set above the plan, at 1.3 times its words
   (`script_checks.WRITER_TARGET_FACTORS`): shown the plan itself, Sonnet wrote 71 % of it. Every other model is shown
   the plan until its own drafts are measured. The factor follows the run's first writer: its fixed model, or under
@@ -256,9 +269,12 @@ from the line of thought. It must not invent facts, numbers or examples, nor del
 qualification.
 
 Paragraph boundaries and speaker assignments may change: the call first judges the flow of a whole chapter and
-regroups dense explanations. Many rephrased sentences alone do not show a good revision, and there is no quota for
-new segments or speaker changes. The roles (`polishing.HOST_ROLES`) are independent of the TTS voice and apply to
-Aiden and Vivian alike: [Two hosts and storytelling](TEACHING.md#two-hosts-and-storytelling).
+regroups dense explanations. It applies the listenability rules: long expert turns broken where the thought allows,
+the partner's reactions, summaries and questions, a short recap and the next question at each chapter end, and an
+opening that announces the answer turned into the question. Many rephrased sentences alone do not show a good
+revision; turn length and partner share are aims, and there is no quota for new segments or speaker changes. The
+roles (`polishing.HOST_ROLES`) are independent of the TTS voice and apply to Aiden and Vivian alike: [Two hosts and
+storytelling](TEACHING.md#two-hosts-and-storytelling).
 
 ### Comparison
 
@@ -269,9 +285,11 @@ overall conclusion.
 - Every positive verdict needs actual text evidence: for meaning and completeness from both versions, for framing
   from the first and last chapter.
 - It checks difficult passages and transitions for unclear references, explanations merely set side by side, and empty
-  repetition. It names the most demanding passages under `demanding_passages` (`polishing.DEMANDING_PASSAGES`, 3 where
-  the episode has them) and states how the new version resolves each unclear reference; one left open becomes a
-  `spoken_language` objection for the repair loop.
+  repetition. It judges `spoken_language` by the listenability rules with the candidate's measured `dialogue_shape`
+  (`script_advisories.dialogue_shape`); a recap, reflection beat or question that restates the original is no new
+  fact for `meaning`. It names the most demanding passages under `demanding_passages`
+  (`polishing.DEMANDING_PASSAGES`, 3 where the episode has them) and states how the new version resolves each unclear
+  reference; one left open becomes a `spoken_language` objection for the repair loop.
 - A comparison with missing criteria or invented evidence is asked again with its defects. Its objections go into a
   repair, at most two; resume keeps candidate, comparison, scope and attempt counter.
 
@@ -355,6 +373,11 @@ and the dialogue.
   or scope point (`script_pipeline.STRICT_CATEGORIES`: `grounding`, `scope`) counts as an objection wherever the scope
   reaches it. Until 2026-10-04 every first-review advisory counted, and after a revision every one but clarity, depth
   and dialogue. (why: D-126)
+- A wall of facts goes back as a `dialogue` objection: findings strung together without a question the listener wants
+  answered, the answer announced before it is earned, dense blocks that end without a recap or reflection beat, or the
+  expert holding the floor. The review gets the measured `dialogue_shape`; a partner share under 25 % or more than two
+  turns over 120 words is such an objection, a long turn for one step of a worked example is not. Being a `dialogue`
+  point, it stops nothing once the three revisions are spent. (why: D-142)
 - After a subscription pause too, a text already corrected need not be written again.
 
 ### Scoped follow-up review
@@ -390,10 +413,12 @@ The review compares each segment that cites findings with the cited source secti
   `script_review.v12-source-corrected`): no objection, but a note in the review limitations that the dossier
   finding is inaccurate, shown in the Studio when reading (why: D-085). A deviation therefore does not enter the
   follow-up review as a previous objection; that review judges each segment afresh.
-- Today's version is `script_review.v13-reviewer-advisories` (`script_checks.SCRIPT_REVIEW_VERSION`). A
-  `script_review.v11-core-limits` or `script_review.v12-source-corrected` verdict that blocked nothing stays valid on
-  resume (`script_checks.RELAXED_REVIEW_VERSIONS`); a blocking one is reviewed again before the next correction, also
-  when its repairs are spent.
+- Today's version is `script_review.v14-listenability` (`script_checks.SCRIPT_REVIEW_VERSION`). A
+  `script_review.v11-core-limits`, `script_review.v12-source-corrected`, `script_review.v13-reviewer-advisories` or
+  `script_review.v14-listenability` (v15 only loosens its dialogue point: chapter endings vary by design, D-143)
+  verdict that blocked nothing stays valid on resume (`script_checks.RELAXED_REVIEW_VERSIONS`), so an episode in flight
+  is not reworked for the listenability point; a blocking one is reviewed again before the next correction, also when
+  its repairs are spent.
 
 ### Reader, editorial and teaching reviews
 
@@ -509,8 +534,8 @@ objections and still the series review's original objection (why: D-077); only t
 ### Standalone `pla series-review`
 
 `pla series-review <project> [--run <run_id>]` reviews a finished run's scripts afterwards as a series; without
-`--run`, the most recently published run. It also takes `--backend codex_cli|claude_code|auto`, `--model` and
-`--reasoning-effort`.
+`--run`, the most recently published run. It also takes `--backend codex_cli|claude_code|claude_api|auto` (`claude_api`
+reads its key from `ANTHROPIC_API_KEY`), `--model` and `--reasoning-effort`.
 
 - Its one call counts against the new run's budget (`runs/<run_id>/budget.json`); the verdict lands in a run of its
   own, of kind `series_review`.
@@ -577,6 +602,8 @@ changes the input hash and so leads to a new run.
 
 The files lie in the private project folder and are excluded from Git. `runs/<run_id>/` keeps inputs, model answers,
 drafts and reviews for resuming; per-call records: [Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest).
+`research/series_outline.md`, `teaching_plan.md` and `show_notes.md` use the fixed words of the project's language,
+German or English ([Languages](ARCHITECTURE.md#languages)).
 
 ### Rejected answers
 
@@ -584,6 +611,16 @@ A readable model answer that violates its answer contract (`rejected_output`), f
 chapter sequence, is requested again up to twice with the fields objected to. Each attempt is a counted call with
 `failure.json` and `rejected_output.json` in its call folder; only the third rejection stops the stage. A `resume`
 repeats this episode's call, because it leaves no checkpoint.
+
+The same holds for every correction loop of a script run that keeps no rejections: the draft and its repairs, the
+script review and its repair, the teaching design, its review and focused repair, the reader, editorial and teaching
+reviews, the polishing comparison, the series review and the supplementary research's own checks
+(`run_budget.REASKED_CODES`, for example `invalid_script` or `invalid_teaching_review`). Their stop message ends with
+„die abgewiesenen Antworten liegen bei den Aufrufen“ (the rejected answers are with the calls;
+`run_budget.REASKED_MARKER`). Since 2026-10-07 such a stop also takes **„Mit neuen Anläufen fortsetzen“** and a
+fresh-attempt [pre-approval](BUSINESS_LOGIC.md#pre-approvals): nothing is set aside, and the resume asks the stage anew
+(`run_budget.reasked_stop`). The same codes without this message replay a saved state, such as a changed checkpoint or a
+series correction's recorded failure, and take no fresh attempts this way. (why: D-155)
 
 ### Earlier series
 

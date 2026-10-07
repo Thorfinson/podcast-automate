@@ -7,7 +7,7 @@ from podcast_automate.errors import AppError
 from podcast_automate.models import Chapter, EpisodeScript
 from podcast_automate.polishing import (DEMANDING_PASSAGES, DemandingPassage, DialoguePolishReview,
                                        HOST_ROLES, Referent,
-                                       POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION, compare_dialogue,
+                                       POLISH_PROMPT_VERSION, POLISH_REPAIR_VERSION, POLISH_REVIEW_VERSION, compare_dialogue,
                                        polish_dialogue, validate_polish_review)
 from podcast_automate.script_checkpoints import finished
 from podcast_automate.script_models import ScriptReview
@@ -260,7 +260,7 @@ class PolishingTests(unittest.TestCase):
             return [] if script == original else [defect]
         candidate, _ = polish_dialogue(self.fixture.config, entry, original, None, invoke, folder, validate)
         self.assertEqual(candidate, original)
-        self.assertEqual(versions, [POLISH_PROMPT_VERSION] + ['dialogue_polish_repair.v1'] * 2)
+        self.assertEqual(versions, [POLISH_PROMPT_VERSION] + [POLISH_REPAIR_VERSION] * 2)
         result = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
         self.assertEqual((result['status'], result['repairs'], result['review']), ('kept_draft', 2, None))
         self.assertEqual(json.loads((folder / 'kept_draft.json').read_text(encoding='utf-8')), [defect])
@@ -290,7 +290,7 @@ class PolishingTests(unittest.TestCase):
         def invoke(prompt, output_type, version):
             if output_type is EpisodeScript:
                 candidate = original.model_copy(deep=True)
-                if version == 'dialogue_polish_repair.v1':
+                if version == POLISH_REPAIR_VERSION:
                     candidate.segments[2].text = 'Satz Nummer 3, nun genau wie im Entwurf.'
                 return candidate
             payloads.append(json.loads(prompt.splitlines()[-1]))
@@ -325,7 +325,7 @@ class PolishingTests(unittest.TestCase):
         def invoke(prompt, output_type, version):
             if output_type is EpisodeScript:
                 candidate = original.model_copy(deep=True)
-                if version == 'dialogue_polish_repair.v1':
+                if version == POLISH_REPAIR_VERSION:
                     candidate.segments[2].text = 'Satz Nummer 3, nun genau wie im Entwurf.'
                 return candidate
             payloads.append(json.loads(prompt.splitlines()[-1]))
@@ -350,7 +350,7 @@ class PolishingTests(unittest.TestCase):
         def invoke(prompt, output_type, version):
             if output_type is EpisodeScript:
                 candidate = original.model_copy(deep=True)
-                if version == 'dialogue_polish_repair.v1':
+                if version == POLISH_REPAIR_VERSION:
                     repairs.append(json.loads(prompt.splitlines()[-1])['issues'])
                     candidate.segments[2].text = f'Satz Nummer 3, Fassung {len(repairs)}.'
                 return candidate

@@ -10,11 +10,11 @@ import wave
 from array import array
 from http.client import HTTPException, IncompleteRead
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
-from pydantic import Field, SecretStr, model_serializer, model_validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator, model_serializer, model_validator, with_config
 
 from . import studio_settings
 from .audio import PAUSE_TAGS, silent_runs
@@ -50,14 +50,72 @@ class PausePolicy(Contract):
     chapter_break_ms: int = Field(default=900, ge=0, le=10000)
 
 
+# Gemini's two routes: Google's own API, which records two-host passages (google_speech.py, D-133), and OpenRouter,
+# which records every segment on its own and stays as the fallback.
+GEMINI_PROVIDERS = ("google_gemini_tts", "openrouter_gemini_tts")
+# A short style per role for a Google recording (speech_metadata.style; a long direction makes the voice drift). The
+# presets are the listening rounds of 2026-10-06; "neugierig" was the user's choice (round 3, sample 5).
+STYLE_PRESETS = {
+    "neugierig": {"label": "Neugierig, gespannt auf das, was kommt",
+                  "host_a": "curious and eager to share what comes next",
+                  "host_b": "curious, eager to hear what comes next"},
+    "sehr_neugierig": {"label": "Sehr neugierig",
+                       "host_a": "fascinated, can't wait to share what comes next",
+                       "host_b": "very curious, can't wait to hear what comes next"},
+    "warm": {"label": "Warm und gesprächig", "host_a": "warm, engaged and conversational",
+             "host_b": "curious, quick and lively"},
+    "energisch": {"label": "Energisch und begeistert", "host_a": "enthusiastic, energetic and fascinated",
+                  "host_b": "genuinely curious, eager and lively"},
+    "ohne": {"label": "Ohne Stilangabe", "host_a": "", "host_b": ""},
+}
+DEFAULT_STYLES = {role: STYLE_PRESETS["neugierig"][role] for role in ("host_a", "host_b")}
+MAX_STYLE_CHARACTERS = 80
+# The languages a project speaks (TopicBrief.language), each with a pace of its own (LanguagePace).
+SPEECH_LANGUAGES = ("de-DE", "en-US")
+# The word a calm pace adds to both roles' styles of a Google recording (AudioChoice.spoken_styles).
+UNHURRIED = "unhurried"
+
+
+class RoleStyles(Contract):
+    """The style each role speaks in, in English as Google recommends; empty means none."""
+    host_a: str = Field(default=DEFAULT_STYLES["host_a"], max_length=MAX_STYLE_CHARACTERS, pattern=r"^[^\n<>|]*$")
+    host_b: str = Field(default=DEFAULT_STYLES["host_b"], max_length=MAX_STYLE_CHARACTERS, pattern=r"^[^\n<>|]*$")
+
+
+class LanguagePace(Contract):
+    """How fast one language is spoken (D-147): ``tempo`` slows the montage of every recording in that language with
+    the pitch kept (audio.assemble), never speeds it up; ``unhurried`` asks Google's voices for a calm delivery."""
+    tempo: float = Field(default=1.0, ge=0.8, le=1.0)
+    unhurried: bool = False
+
+    @field_validator("tempo")
+    @classmethod
+    def two_decimals(cls, value):
+        return round(value, 2)
+
+
+# The pace of each language by its fixed key, either one optional: an object with named fields, as the strict schema of
+# a structured answer requires (openrouter.strict_schema; the studio's BriefProposal carries an AudioChoice).
+LanguagePaces = with_config(ConfigDict(extra="forbid"))(
+    TypedDict("LanguagePaces", {language: LanguagePace for language in SPEECH_LANGUAGES}, total=False))
+
+
 class AudioChoice(Contract):
-    provider: Literal["qwen3_local", "openrouter_gemini_tts"] = "qwen3_local"
+    provider: Literal["qwen3_local", "google_gemini_tts", "openrouter_gemini_tts"] = "qwen3_local"
     voices: HostVoices = Field(
         default_factory=lambda: {"host_a": "Aiden", "host_b": "Vivian"})
     pauses: PausePolicy = Field(default_factory=PausePolicy)
     model: Literal[tuple(GEMINI_MODELS)] = GEMINI_MODEL
     # Inline audio tags placed by the text model before a Gemini recording (expression.py); Gemini only.
     expression: bool = False
+    # The two voices swap roles in every even-numbered episode, so each host is the expert in turn (the user's wish of
+    # 2026-10-06); host_a's voice explains in episode 1 (for_episode).
+    alternate_roles: bool = False
+    # The style of each role; Google only (google_speech), the other routes have no style field.
+    styles: RoleStyles = Field(default_factory=RoleStyles)
+    # Each language's pace; a language without an entry is spoken as recorded. The user's choice of 2026-10-07:
+    # English slower, German as it is.
+    pace: LanguagePaces = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_voices(self):
@@ -68,6 +126,11 @@ class AudioChoice(Contract):
         if self.provider == "qwen3_local":
             self.model = GEMINI_MODEL  # The speech model applies to Gemini only.
             self.expression = False
+        if self.provider != "google_gemini_tts":
+            self.styles = RoleStyles()
+            # Only Google takes a style; the montage tempo holds for every route.
+            self.pace = {language: pace.model_copy(update={"unhurried": False}) for language, pace in self.pace.items()}
+        self.pace = {language: pace for language, pace in sorted(self.pace.items()) if pace != LanguagePace()}
         return self
 
     @model_serializer(mode="wrap")
@@ -79,11 +142,41 @@ class AudioChoice(Contract):
             del data["model"]
         if not data.get("expression"):
             data.pop("expression", None)  # Choices without the expression layer hash as before it existed.
+        if not data.get("alternate_roles"):
+            data.pop("alternate_roles", None)  # And without alternating roles as before they existed.
+        if data.get("styles") == DEFAULT_STYLES:
+            data.pop("styles", None)  # And the default styles as before they were selectable.
+        if not data.get("pace"):
+            data.pop("pace", None)  # And every language at its recorded pace as before the pace existed.
         return data
 
     @property
     def remote(self):
-        return self.provider == "openrouter_gemini_tts"
+        return self.provider in GEMINI_PROVIDERS
+
+    def for_language(self, language):
+        """The choice a recording in ``language`` binds and speaks: the other language's pace left out, so a pace
+        set for English never changes what a German recording was approved for, nor the reverse."""
+        return self.model_copy(update={"pace": {key: value for key, value in self.pace.items() if key == language}})
+
+    def pace_for(self, language):
+        return self.pace.get(language) or LanguagePace()
+
+    def spoken_styles(self, language):
+        """The style each role is asked for in ``language``: its own, with UNHURRIED added where that language's
+        pace asks for a calm delivery."""
+        styles = self.styles.model_dump()
+        if not self.pace_for(language).unhurried:
+            return styles
+        return {role: f"{style}, {UNHURRIED}" if style else UNHURRIED for role, style in styles.items()}
+
+    def for_episode(self, episode_id):
+        """The choice with the voices ``episode_id`` is spoken in: swapped in an even-numbered episode when the roles
+        alternate. The approval and the run's inputs keep the choice itself."""
+        number = re.fullmatch(r"ep_0*(\d+)", episode_id or "")
+        if not self.alternate_roles or not number or int(number[1]) % 2:
+            return self
+        return self.model_copy(update={"voices": {"host_a": self.voices["host_b"], "host_b": self.voices["host_a"]}})
 
 
 def selected_audio(root, config):
@@ -97,17 +190,25 @@ def selected_audio(root, config):
             return AudioChoice(voices=config.voice_profile)
         data = json.loads(path.read_text(encoding="utf-8"))
     data = dict(data) if isinstance(data, dict) else data
-    if isinstance(data, dict) and data.get("provider") == "openrouter_gemini_tts":
+    if isinstance(data, dict) and data.get("provider") in GEMINI_PROVIDERS:
         data.setdefault("expression", True)
     return AudioChoice.model_validate(data)
 
 
 def audio_catalog():
+    """The providers the settings page offers. Google's defaults are the user's choice of 2026-10-06 (listening round 3,
+    sample 5): Erinome explains and Sadachbia asks in episode 1, and the roles swap from episode to episode."""
     return {
         "qwen3_local": {"label": "Qwen · auf diesem Computer", "voices": QWEN_VOICES,
                         "defaults": {"host_a": "Aiden", "host_b": "Vivian"}},
-        "openrouter_gemini_tts": {"label": "Gemini TTS · OpenRouter", "models": GEMINI_MODELS, "default_model": GEMINI_MODEL,
-                        "voices": GEMINI_VOICES, "defaults": {"host_a": "Sadaltager", "host_b": "Aoede"}},
+        "google_gemini_tts": {"label": "Gemini TTS · Google", "models": GEMINI_MODELS, "default_model": GEMINI_MODEL,
+                              "voices": GEMINI_VOICES, "defaults": {"host_a": "Erinome", "host_b": "Sadachbia"},
+                              "alternate_roles": True, "style_presets": STYLE_PRESETS, "default_styles": DEFAULT_STYLES,
+                              "unhurried": UNHURRIED,
+                              "max_style_characters": MAX_STYLE_CHARACTERS},
+        "openrouter_gemini_tts": {"label": "Gemini TTS · OpenRouter (Abschnitt für Abschnitt)", "models": GEMINI_MODELS,
+                                  "default_model": GEMINI_MODEL, "voices": GEMINI_VOICES,
+                                  "defaults": {"host_a": "Sadaltager", "host_b": "Aoede"}},
     }
 
 
