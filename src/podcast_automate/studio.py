@@ -46,19 +46,20 @@ from .speech import (AudioChoice, GEMINI_PROVIDERS, GEMINI_VOICES, QWEN_VOICES, 
                      same_audio_generation)
 from .storage import (atomic_text, digest, file_hash, file_lock, init_project, inside, load_project, project_hash,
                       project_lock, read_text, read_yaml, write_json, write_yaml)
-from .publish_kit import PODCAST_FOLDER, saved_kit, saved_podcast_kit
+from .publish_kit import PODCAST_FILES, PODCAST_FOLDER, saved_kit, saved_podcast_kit
 from .voice_samples import (SAMPLE_TEXTS, generate_pair, pair_view, ready_pair_file, ready_sample, sample_inventory,
                             sample_path)
 from .spoken_forms import (SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report,
                            spoken_text)
 from .studio_progress import memo
 from .studio_messages import clean, language_of, paths_only, user_text
-from . import provided_works, studio_allowances, studio_settings, studio_text, subscriptions
+from . import project_versions, provided_works, studio_allowances, studio_settings, studio_text, subscriptions
 from .studio_text import Localized, t
+from .key_store import Vault
 from .sources import core_usage
 from .production_report import production_report
 from .studio_scripts import review_notes, script_previews
-from .downloads import disposition, download_names, podcast_download, podcast_zip
+from .downloads import disposition, download_names, name_part, podcast_download, podcast_zip
 from .trial import trial_brief, trial_facts
 from .studio_trash import has_artifacts, move_contents
 from .platforms import configure_path, venv_python
@@ -770,8 +771,20 @@ def episode_view(folder, table, table_key, language):
                 [script_file, folder / "script.md", decision_file], compute)
 
 
+# Each key's attribute on the Studio, and the environment variable a server may carry it in instead (D-167).
+KEY_ATTRIBUTES = {"openrouter": "key", "google": "google_key", "anthropic": "anthropic_key",
+                  "perplexity": "perplexity_key", "core": "core_key"}
+KEY_VARIABLES = {"openrouter": "OPENROUTER_API_KEY", "google": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
+                 "perplexity": "PERPLEXITY_API_KEY", "core": "PLA_CORE_API_KEY"}
+
+
+def valid_key(value) -> bool:
+    """A key the Studio takes: printable ASCII without spaces, at most 512 characters; empty removes one."""
+    return isinstance(value, str) and len(value) <= 512 and not any(ord(c) < 33 or ord(c) > 126 for c in value)
+
+
 class Studio:
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, vault=None):
         self.workspace = workspace.resolve()
         self.projects = self.workspace / "projects"
         self.token = secrets.token_urlsafe(32)
@@ -779,6 +792,11 @@ class Studio:
         self.google_key = ""  # The Google key: Gemini speech through Google (google_speech).
         self.anthropic_key = ""  # The Anthropic key: Claude on the user's API key (claude_api, D-145).
         self.perplexity_key = ""  # The Perplexity key: the web search through Perplexity (D-151).
+        self.core_key = ""  # CORE's free key: free copies of blocked sources (sources.core_copies, D-167).
+        # The credential store that keeps the keys across restarts (key_store.Vault, D-167): only ``pla studio`` opens
+        # it; without one, and on a system without a store, the keys stay in memory only.
+        self.vault, self.vault_ready = vault, False
+        self.vaulted = set()  # the kinds whose key in memory the store holds too
         self.mutex = threading.RLock()
         self.workers = {}  # project root -> (process, uses the GPU) of its main job
         self.audio_processes = {}
@@ -826,7 +844,8 @@ class Studio:
             try:
                 identifier(path.parent.name)
                 config = load_project(path.parent)
-                projects.append({"id": path.parent.name, "topic": config.topic})
+                projects.append({"id": path.parent.name, "topic": config.topic,
+                                 "version": project_versions.version_number(path.parent)})
             except (AppError, ValueError):
                 continue
         return projects
@@ -865,7 +884,7 @@ class Studio:
                 "capabilities": {"text_reasoning_selection": True, "parallel_audio": True,
                                  "project_execution": True, "conversational_setup": True, "project_overview": True,
                                  "podcast_downloads": True, "project_attachments": True, "subscription_auto": True,
-                                 "light_status": True},
+                                 "light_status": True, "podcast_kit_downloads": True, "project_versions": True},
                 "attachment_limits": {"files": attachments.MAX_FILES, "file_bytes": attachments.MAX_FILE_BYTES,
                                       "docx_bytes": attachments.MAX_DOCX_BYTES, "transfer_bytes": attachments.MAX_TRANSFER_BYTES,
                                       "total_bytes": attachments.MAX_TOTAL_BYTES},
@@ -887,9 +906,7 @@ class Studio:
                         "urls": [f"http://{address}:{self.port}" for address in lan_addresses()] if self.lan else []},
                 "audio_catalog": audio_catalog(),
                 "voice_samples": self.voice_samples(),
-                "key_available": self.key_available(), "google_key_available": self.google_key_available(),
-                "anthropic_key_available": self.anthropic_key_available(),
-                "perplexity_key_available": self.perplexity_key_available(),
+                **self.key_states(),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
                 "ui_language": {"setting": studio_text.setting(self.workspace),
                                 "language": studio_text.current_language()},
@@ -911,14 +928,47 @@ class Studio:
     def perplexity_key_available(self):
         return bool(self.perplexity_key or os.environ.get("PERPLEXITY_API_KEY"))
 
+    def core_key_available(self):
+        return bool(self.core_key or os.environ.get("PLA_CORE_API_KEY"))
+
     def stored_keys(self):
         """Every key this server holds, for redaction."""
-        return tuple(key for key in (self.key, self.google_key, self.anthropic_key, self.perplexity_key) if key)
+        return tuple(key for key in (self.key, self.google_key, self.anthropic_key, self.perplexity_key, self.core_key)
+                     if key)
+
+    def load_stored_keys(self):
+        """Take every key the credential store holds (D-167); a missing or refusing store gives none."""
+        if self.vault is None:
+            return
+        self.vault_ready = self.vault.available()
+        for kind, value in self.vault.load().items():
+            if kind in KEY_ATTRIBUTES and value and valid_key(value):
+                add_secret(value)
+                setattr(self, KEY_ATTRIBUTES[kind], value)
+                self.vaulted.add(kind)
+
+    def set_key(self, kind, value):
+        """Hold a key for this session and keep it in the credential store, or remove it from both when empty."""
+        add_secret(value)
+        setattr(self, KEY_ATTRIBUTES[kind], value)
+        stored = self.vault is not None and self.vault_ready and self.vault.save(kind, value)
+        if value and stored:
+            self.vaulted.add(kind)
+        else:
+            self.vaulted.discard(kind)
+
+    def key_source(self, kind):
+        """Where the key of ``kind`` comes from: ``vault``, ``session`` (memory only), ``environment`` or None."""
+        if getattr(self, KEY_ATTRIBUTES[kind]):
+            return "vault" if kind in self.vaulted else "session"
+        return "environment" if os.environ.get(KEY_VARIABLES[kind]) else None
 
     def key_states(self):
         return {"key_available": self.key_available(), "google_key_available": self.google_key_available(),
                 "anthropic_key_available": self.anthropic_key_available(),
-                "perplexity_key_available": self.perplexity_key_available()}
+                "perplexity_key_available": self.perplexity_key_available(),
+                "core_key_available": self.core_key_available(),
+                "key_sources": {kind: self.key_source(kind) for kind in KEY_ATTRIBUTES}, "key_vault": self.vault_ready}
 
     def audio_key_available(self, audio):
         """Whether the key a recording with ``audio`` needs is there; local Qwen needs none."""
@@ -1373,7 +1423,7 @@ class Studio:
         return {"instance": self.instance, "stale": code_fingerprint() != self.code_stamp,
                 "restart_requested": self.restart_requested, "code_updated_at": code_updated_at(),
                 # Today's calls against CORE's daily allowance, once the user has set a key (sources.core_usage).
-                "core": core_usage() if os.environ.get("PLA_CORE_API_KEY") else None}
+                "core": core_usage() if self.core_key_available() else None}
 
     def request_restart(self, data):
         """Restart once nothing runs, so the scheduler and every new job use the current code."""
@@ -1486,7 +1536,7 @@ class Studio:
         names = self.download_view(root)
         # A card needs the running and stopped recordings only; finished ones made a third of the overview's megabyte.
         return {"id": project, "topic": config.topic, "config_hash": project_hash(config),
-                "trial": config.trial, "download_zip": names["zip"],
+                "trial": config.trial, "version": project_versions.version_number(root), "download_zip": names["zip"],
                 "job": overview_job(slim_job(job)),
                 "audio_jobs": [slim_job(row) for row in jobs if row.get("status") != "completed"],
                 "has_research": self.has_research(root), "has_outline": planned is not None,
@@ -1639,6 +1689,13 @@ class Studio:
                 raise
         return {"deleted": True, "trash_id": trash_id}
 
+    def new_version(self, project, data):
+        """The next version of a project beside it (project_versions, D-168): its brief, inputs and choices without its
+        runs, with its newest completed research run's sources as a starting library. A job of the old version may
+        keep running; only completed runs are copied, and the old version stays as it was."""
+        target = project_versions.create_version(self.root(project), runtime=self.runtime())
+        return {"id": target.name, "version": project_versions.version_number(target)}
+
     def restore(self, data):
         trash_id = data.get("trash_id")
         if not isinstance(trash_id, str) or not re.fullmatch(r"[a-f0-9]{32}", trash_id):
@@ -1671,6 +1728,8 @@ class Studio:
         table = load_forms(root)
         data = {"id": project, "config": config.model_dump(mode="json"),
                 "config_hash": project_hash(config), "host_labels": host_labels(config),
+                # The version number and the starting library a new version brought along (project_versions).
+                "version": project_versions.view(root),
                 "text": studio_settings.text_data(root, TextChoice().model_dump()),
                 # The settings page's values hold for every project (studio_settings); the page links there.
                 "settings_global": studio_settings.load(root) is not None,
@@ -2130,6 +2189,8 @@ class Studio:
         if ((self.perplexity_key and self.perplexity_key in payload["message"]) or
                 re.search(r"pplx-[A-Za-z0-9_-]{12,}", payload["message"])):
             raise AppError(t("server.start.credential.perplexity"), code="credential_in_prompt")
+        if self.core_key and self.core_key in payload["message"]:
+            raise AppError(t("server.start.credential.core"), code="credential_in_prompt")
         text_provider = (studio_settings.text_data(root, TextChoice().model_dump()) or {}).get("provider")
         if (action in {"assistant", "research", "plan", "script", "revise", "expression", "publish_kit"}
                 and billed_text(text_provider, action, studio_settings.web_search(root))
@@ -2257,6 +2318,8 @@ class Studio:
         # The worker hands it only to Claude on the key (studio_worker.text_key, provider_pool.use_anthropic_key).
         payload["anthropic_key"] = self.anthropic_key or None
         payload["perplexity_key"] = self.perplexity_key or None
+        # The worker hands it only to the search for free copies (sources.use_core_key).
+        payload["core_key"] = self.core_key or None
         if action in {"audio", "resume", "check"}:
             # The Google key reaches only the steps that can speak through Google.
             payload["google_key"] = self.google_key or None
@@ -2511,19 +2574,9 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = app.pair_sample(data)
                     elif path == "/api/key":
                         value, kind = data.get("key", ""), data.get("kind", "openrouter")
-                        if (kind not in {"openrouter", "google", "anthropic", "perplexity"} or not isinstance(value, str)
-                                or len(value) > 512
-                                or any(ord(c) < 33 or ord(c) > 126 for c in value)):
+                        if kind not in KEY_ATTRIBUTES or not valid_key(value):
                             raise AppError(t("server.key.invalid"), code="invalid_key")
-                        add_secret(value)
-                        if kind == "google":
-                            app.google_key = value
-                        elif kind == "anthropic":
-                            app.anthropic_key = value
-                        elif kind == "perplexity":
-                            app.perplexity_key = value
-                        else:
-                            app.key = value
+                        app.set_key(kind, value)
                         result = app.key_states()
                     elif path == "/api/projects":
                         result = app.create(data)
@@ -2541,7 +2594,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
                                              r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
-                                             r"|audio_queue|allowances|reader_state)", path)
+                                             r"|audio_queue|allowances|reader_state|new_version)", path)
                         if not match:
                             raise AppError(t("server.not_found"), code="not_found")
                         project, action = match.groups()
@@ -2597,6 +2650,18 @@ class StudioHandler(BaseHTTPRequestHandler):
                     if recording is None:
                         raise AppError(t("server.download.missing"), code="missing_audio")
                     self.send_file(recording.path, "audio/mpeg", recording.filename)
+                return
+            elif (match := re.fullmatch(r"/download/([^/]+)/kit/([^/]+)", path)):
+                # One text file of the podcast's kit, the transcript above all, without the MP3s of the ZIP: only the
+                # files the ZIP carries and only while the kit covers the published episodes, as the ZIP has it.
+                root = app.root(match[1])
+                with project_lock(root, shared=True) if not app.own_text_job(root) else nullcontext():
+                    if match[2] not in PODCAST_FILES or saved_podcast_kit(root) is None:
+                        raise AppError(t("server.kit.missing"), code="missing_kit")
+                    source = inside(root, f"{PODCAST_FOLDER}/{match[2]}")
+                    kind = "text/markdown" if source.suffix == ".md" else "text/plain"
+                    self.send_file(source, f"{kind}; charset=utf-8",
+                                   f"{name_part(load_project(root).topic, 44)} - {match[2]}")
                 return
             elif (match := re.fullmatch(r"/samples/(de-DE|en-US)/([a-z_]+)", path)):
                 if match[2] not in {v.lower() for v in VOICES}:
@@ -2684,10 +2749,12 @@ class StudioHandler(BaseHTTPRequestHandler):
             self.dispatch(True)
 
 
-def make_server(workspace, port=8765, *, lan=False):
-    """``lan`` listens on every interface, so devices in the home network reach the Studio (client_scope)."""
+def make_server(workspace, port=8765, *, lan=False, vault=None):
+    """``lan`` listens on every interface, so devices in the home network reach the Studio (client_scope). ``vault``
+    keeps the keys across restarts (key_store.Vault, D-167); only ``serve`` passes one."""
     server = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), StudioHandler)
-    server.studio = Studio(Path(workspace))
+    server.studio = Studio(Path(workspace), vault=vault)
+    server.studio.load_stored_keys()
     server.studio.lan, server.studio.port = lan, server.server_port
     server.daemon_threads = True
     return server
@@ -2712,7 +2779,7 @@ def serve(workspace, port=8765, open_browser=True, *, lan=False):
         pass
     with project_lock(Path(workspace) / ".studio"):
         configure_logging(Path(workspace) / ".studio/studio.log")
-        server = make_server(workspace, port, lan=lan)
+        server = make_server(workspace, port, lan=lan, vault=Vault())
         # Called from the scheduler once nothing runs; shutdown returns serve_forever below.
         server.studio.restart_hook = server.shutdown
         server.studio.start_scheduler()

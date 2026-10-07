@@ -393,7 +393,8 @@ def open_access_copies(candidate, limit=3):
 
 # After OpenAlex, further free services are asked one after another until a copy reads (2026-10-01: for 26 of the
 # 34 addresses Asimov's run could not read, OpenAlex alone had no copy). Unpaywall wants a contact address and CORE
-# a free key; each is asked only when the user has set it (PLA_UNPAYWALL_EMAIL, PLA_CORE_API_KEY).
+# a free key; each is asked only when the user has set it (PLA_UNPAYWALL_EMAIL; CORE's key in the Studio's settings
+# or PLA_CORE_API_KEY).
 UNPAYWALL = "https://api.unpaywall.org/v2/"
 SEMANTIC_SCHOLAR = "https://api.semanticscholar.org/graph/v1/paper/"
 EUROPE_PMC = "https://www.ebi.ac.uk/europepmc/webservices/rest/"
@@ -478,8 +479,18 @@ def reserve_core_call() -> bool:
         return True
 
 
+_core_key = ""
+
+
+def use_core_key(key) -> None:
+    """The CORE key a Studio worker was handed from the Studio's settings (D-167); empty falls back to
+    PLA_CORE_API_KEY."""
+    global _core_key
+    _core_key = key or ""
+
+
 def core_copies(candidate, doi):
-    key = os.environ.get("PLA_CORE_API_KEY", "").strip()
+    key = (_core_key or os.environ.get("PLA_CORE_API_KEY", "")).strip()
     if not key or not (doi or searchable_title(candidate)) or not reserve_core_call():
         return []
     query = f'doi:"{doi}"' if doi else f'title:"{candidate.title}"'

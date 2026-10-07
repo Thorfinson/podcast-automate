@@ -25,7 +25,7 @@ from .models import Contract, NonEmpty
 ADVICE_VERSION = "block_advice.v2"
 MAX_AUTO_RETRIES = 5
 # The advisor's own setting: Opus 5.5 at its deepest level where the run already uses the Claude subscription.
-# It stays on Opus when the run writes with the default Sonnet 5.5: one call per blocked question, asked for depth.
+# It stays on Opus when the run writes with the default Haiku 5.5: one call per blocked question, asked for depth.
 ADVISOR_MODEL = "claude-opus-5-5"
 ADVISOR_EFFORT = "xhigh"
 

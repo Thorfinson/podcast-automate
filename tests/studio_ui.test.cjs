@@ -691,9 +691,10 @@ test('the Google route offers styles, alternating roles, its key and a conversat
   // Both keys' state at the top and on their panels (the user's wish of 2026-10-06).
   assert.ok(html.includes('<p class="key-states">Keys: ')&&(html.match(/✓ hinterlegt/g)||[]).length===4);
   // The Anthropic key (Claude on the user's API key) and the Perplexity key (web search) have chips too (2026-10-07).
-  app.run(`settingsData.google_key_available=false;settingsData.anthropic_key_available=true;settingsData.perplexity_key_available=true;render();`);
+  // CORE's key joined them with the credential store (D-167).
+  app.run(`settingsData.google_key_available=false;settingsData.anthropic_key_available=true;settingsData.perplexity_key_available=true;settingsData.core_key_available=true;render();`);
   const missing=app.elements.get('content').innerHTML;
-  assert.equal((missing.match(/✓ hinterlegt/g)||[]).length,6);
+  assert.equal((missing.match(/✓ hinterlegt/g)||[]).length,8);
   assert.equal((missing.match(/<span class="chip decision">fehlt<\/span>/g)||[]).length,2);
   app.run(`$('settings-audio-provider').value='google_gemini_tts';$('settings-voice-a').value='Erinome';$('settings-voice-b').value='Sadachbia';
     $('settings-style-a').value='calm';$('settings-style-b').value='';$('settings-alternate').checked=true;$('settings-pair-language').value='en-US';`);
@@ -2814,6 +2815,25 @@ test('the whole podcast gets its own companion kit with the transcript of every 
   assert.ok(english.includes("The episode's transcript")&&english.includes('names 1 source.'));
 });
 
+test('the podcast kit offers its transcript and sources on their own, without the MP3s of the ZIP',()=>{
+  // The user's report of 2026-10-07: the panel offered only the two descriptions, the transcript lay on disk and in the ZIP.
+  const app=studio();
+  const kit={folder:'publish',short:'Kurz',description:'Lang',characters:1800,limit:4000,episodes:2,recorded:2,sources_total:3};
+  app.run(`project={id:'mein projekt',config:{language:'de-DE'},audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[],podcast_kit:${JSON.stringify(kit)}};boot.capabilities={podcast_downloads:true};`);
+  assert.ok(!app.run(`renderPodcastKit()`).includes('/kit/'),'a server without the route offers no link that would fail');
+  app.run(`boot.capabilities={podcast_downloads:true,podcast_kit_downloads:true};`);
+  const html=app.run(`renderPodcastKit()`);
+  assert.ok(html.includes('<a href="/download/mein%20projekt/kit/transcript.md" download>Transkript herunterladen</a>'));
+  assert.ok(html.includes('<a href="/download/mein%20projekt/kit/sources.md" download>Quellen herunterladen</a>'));
+  assert.ok(!html.includes('download-all'),'a text file is not fetched like the ZIP');
+  app.run(`project.podcast_kit={outdated:true};`);
+  assert.ok(!app.run(`renderPodcastKit()`).includes('/kit/'),'an outdated kit is not offered, as the ZIP leaves it out');
+  const en=studio({language:'en'});
+  en.run(`project={id:'p',config:{language:'en-US'},audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[],podcast_kit:${JSON.stringify(kit)}};boot.capabilities={podcast_kit_downloads:true};`);
+  const english=en.run(`renderPodcastKit()`);
+  assert.ok(english.includes('>Download transcript</a>')&&english.includes('>Download sources</a>'));
+});
+
 test('the Google route shows who explains in this episode and the key it needs',()=>{
   const app=studio();
   app.run(`project={id:'p',config:{language:'de-DE'},audio_settings:{provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},alternate_roles:true},episodes:[]};boot.google_key_available=false;`);
@@ -3883,4 +3903,71 @@ test('deterministic advisories read in the page language from their values, olde
     for(const text of texts)assert.ok(html.includes(text),`${language}: ${text}`);
     assert.ok(html.includes('4 Hinweise darauf, dass ein Beispiel erfunden ist (gespeichert vor dem 7. Oktober).'),`${language}: a row without values keeps its German sentence`);
   }
+});
+
+test('the settings say where each key is kept, CORE included, and a stored key reports its new place (D-167)',async()=>{
+  const app=studio();
+  const view={settings:{text:{provider:'claude_code',model:'claude-haiku-5-5',reasoning_effort:'xhigh',max_output_tokens:32768},
+    audio:{provider:'qwen_local',voices:{host_a:'Aiden',host_b:'Vivian'},pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900}},
+    execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},
+    research_limits:{model_calls:750,sources:150,search_rounds:48},text_timeout_seconds:1800},
+    hash:'h',global:true,key_available:true,google_key_available:false,anthropic_key_available:true,perplexity_key_available:false,
+    core_key_available:true,key_vault:true,claude_extra_usage:false,
+    key_sources:{openrouter:'vault',google:null,anthropic:'session',perplexity:null,core:'environment'}};
+  app.responses.set('/api/settings',view);
+  await app.run('showSettings()');
+  const html=app.elements.get('content').innerHTML;
+  assert.ok(html.includes('id="key-panel-core"') && html.includes('data-key-field="core-key" data-key-kind="core"'));
+  assert.ok(html.includes('data-scroll="key-panel-core">CORE</button>'));
+  assert.ok(html.includes('id="key-storage">Jeder Key wird im Tresor deines Betriebssystems gespeichert'),'the store is named once');
+  assert.ok(html.includes('id="key-status" class="hint">Im Tresor gespeichert; nach einem Neustart wieder da.'));
+  assert.ok(html.includes('id="anthropic-key-status" class="hint">Nur für diese Sitzung hinterlegt'));
+  assert.ok(html.includes('id="core-key-status" class="hint">Kommt aus einer Umgebungsvariable des Servers.'));
+  assert.ok(html.includes('id="google-key-status" class="hint">Noch kein Key hinterlegt.'));
+  // A system without a store says the keys last until the next restart.
+  app.run('settingsData.key_vault=false;render();');
+  assert.ok(app.elements.get('content').innerHTML.includes('id="key-storage">Dieses System hat keinen Schlüsseltresor'));
+  // Storing the CORE key takes the server's answer, including where the key now lives.
+  app.run('settingsData.key_vault=true;render();$("core-key").value="core-test-key-123";');
+  app.responses.set('/api/key',{key_available:true,core_key_available:true,key_vault:true,
+    key_sources:{openrouter:'vault',google:null,anthropic:'session',perplexity:null,core:'vault'}});
+  await app.run('storeKey("core-key","core")');
+  const sent=app.requests.filter(r=>r.path==='/api/key').map(r=>JSON.parse(r.options.body));
+  assert.deepEqual(sent,[{key:'core-test-key-123',kind:'core'}]);
+  assert.equal(app.elements.get('core-key-status').textContent,'Im Tresor gespeichert; nach einem Neustart wieder da.');
+  assert.equal(app.run('boot.key_sources.core'),'vault');
+});
+
+test('a podcast gets a new version from its card menu, opens it, and offers the old sources to its first research',async()=>{
+  // D-168, the user's wish of 2026-10-07: make an old podcast again from its inputs with today's pipeline.
+  const app=studio();
+  app.run(`boot.capabilities={project_overview:true,project_versions:true};boot.projects=[{id:'a',topic:'Topic',version:1},{id:'b',topic:'Topic',version:2}];
+    overviewData={projects:[{id:'a',topic:'Topic',version:1,episodes:[]},{id:'b',topic:'Topic',version:2,episodes:[]}],trash:[]};`);
+  const html=app.run('renderOverview()');
+  assert.ok(html.includes('data-new-version="a"')&&html.includes('data-new-version="b"'));
+  assert.equal((html.match(/<span class="chip">Version \d<\/span>/g)||[]).join(),'<span class="chip">Version 2</span>','a first version carries no number');
+  assert.ok(app.run('sidebarProjects()').includes('Topic · Version 2'));
+  app.run('boot.capabilities={project_overview:true}');
+  assert.ok(!app.run('renderOverview()').includes('data-new-version'),'an older server offers no new version');
+  // Declined, nothing is sent; confirmed, the server makes it and the page opens it.
+  app.run('window.confirm=()=>false');
+  await app.run(`newVersion('a')`);
+  assert.equal(app.requests.filter(r=>r.path.endsWith('/new_version')).length,0);
+  app.run('window.confirm=message=>{window.lastConfirm=message;return true;}');
+  const made=workflowProject(app);
+  Object.assign(made,{id:'c',research:null,outline:null,job:null,version:{version:3,from:'a',library:{run_id:'run_x',documents:42,from_version:1}}});
+  app.responses.set('/api/projects/a/new_version',{id:'c',version:3});
+  app.responses.set('/api/projects/c',made);
+  app.responses.set('/api/bootstrap',{...JSON.parse(app.run('JSON.stringify(boot)')),projects:[{id:'a',topic:'Topic',version:1},{id:'c',topic:'Topic',version:3}],capabilities:{project_versions:true}});
+  await app.run(`newVersion('a')`);
+  assert.ok(app.run('window.lastConfirm').includes('keine Läufe'));
+  assert.equal(app.requests.filter(r=>r.path==='/api/projects/a/new_version'&&r.options?.method==='POST').length,1);
+  assert.equal(app.run('project.id'),'c');
+  assert.equal(app.elements.get('notice').textContent,'Version 3 angelegt. Sie beginnt mit dem Auftrag der bisherigen Version.');
+  assert.ok(app.elements.get('project-select').innerHTML.includes('Topic · Version 3'));
+  // The first research of the new version offers the old sources; the start sends that choice like a restart does.
+  const page=app.run('renderResearch()');
+  assert.ok(page.includes('id="seed-corpus" checked')&&page.includes('Die 42 Quellen aus Version 1 als Startbibliothek anbieten'));
+  app.run('project.version.library=null');
+  assert.ok(!app.run('renderResearch()').includes('seed-corpus'),'without a library there is nothing to offer');
 });

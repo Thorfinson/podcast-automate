@@ -65,8 +65,8 @@ hours of script work ([Money limit](docs/BUSINESS_LOGIC.md#money-limit)).
 | Linux | Install Python 3.12 or later and FFmpeg, then `sh scripts/setup.sh` | `sh Podcast-Studio.sh` |
 
 The Studio opens `http://127.0.0.1:8765` and is reachable only from this computer
-([Studio access](docs/SECURITY.md#studio-access)). Keys go into the settings page; the Studio keeps them in memory
-only, never in project files. Set up your text access: [Codex](docs/OPERATIONS.md#codex),
+([Studio access](docs/SECURITY.md#studio-access)). Keys go into the settings page; the Studio keeps them in your
+operating system's credential store, never in project files. Set up your text access: [Codex](docs/OPERATIONS.md#codex),
 [Claude Code](docs/OPERATIONS.md#claude-code), [Claude on your Anthropic API key](docs/OPERATIONS.md#claude-on-your-anthropic-api-key)
 or [OpenRouter with Perplexity](docs/OPERATIONS.md#research-with-openrouter-and-perplexity); speech:
 [Gemini via Google](docs/AUDIO.md#gemini-via-google). `pla doctor --skip-tts` checks the installation without local

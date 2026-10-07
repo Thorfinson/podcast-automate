@@ -172,7 +172,8 @@ holds a Studio worker's key, `provider_pool.text_key` picks the key a choice nee
 ### Claude Code
 
 `claude_code.ClaudeCodeAdapter`, verified against Claude Code 2.1.92 on 2026-09-19, 2.1.283 with Opus 5.5 on
-2026-09-26 and 2.1.284 with Sonnet 5.5 on 2026-09-29; the measurements are in the
+2026-09-26 and 2.1.284 with Sonnet 5.5 on 2026-09-29; Haiku 5.5's entries come from the model catalog of 2.1.293
+(2026-10-07), without a real call. The measurements are in the
 [Claude backend plan](specs/2026-09-19-claude-backend-plan.md).
 
 - **Finding the CLI.** The adapter looks on `PATH`, then for `~/.local/bin/claude` (`claude.exe` on Windows). An
@@ -182,7 +183,8 @@ holds a Studio worker's key, `provider_pool.text_key` picks the key a choice nee
 - **Login and version.** On the subscription, `claude auth status --json` must report `loggedIn` and
   `authMethod: "claude.ai"`, else the call stops with `authentication_required` or `subscription_required`; on the API
   key there is no login check. `claude --version` must reach
-  `MINIMUM_CLI_VERSION` (2.1.280) and the model's entry in `MODEL_MINIMUM_CLI` (`claude-sonnet-5-5`: 2.1.284), else
+  `MINIMUM_CLI_VERSION` (2.1.280) and the model's entry in `MODEL_MINIMUM_CLI` (`claude-sonnet-5-5`: 2.1.284,
+  `claude-haiku-5-5`: 2.1.293), else
   `claude_version` with the hint `claude update`.
 - **Invocation.** Per call:
 
@@ -203,7 +205,7 @@ holds a Studio worker's key, `provider_pool.text_key` picks the key a choice nee
   apply.
 - **Environment.** It starts from `codex.subscription_environment` and sets `DISABLE_TELEMETRY=1`,
   `DISABLE_ERROR_REPORTING=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: 128 000
-  for `claude-opus-5-5` and `claude-sonnet-5-5` (`MODEL_OUTPUT_TOKENS`), else `MAX_OUTPUT_TOKENS` (64 000)
+  for `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5` (`MODEL_OUTPUT_TOKENS`), else `MAX_OUTPUT_TOKENS` (64 000)
   (why: D-028). `CLAUDE_CONFIG_DIR` stays untouched because it holds the subscription login.
 - **On the API key.** `ClaudeCodeAdapter(auth="api_key", api_key=…)` is the provider `claude_api` (why: D-145). It
   uses the given key, else `ANTHROPIC_API_KEY`, and stops without one with `anthropic_key_required`. Its environment
@@ -217,7 +219,7 @@ holds a Studio worker's key, `provider_pool.text_key` picks the key a choice nee
   `credential_in_response`. The subscription path (`claude_code`, `claude_code.v1`) is unchanged.
 - **Checks before the start.** A prompt longer than `prompt_limit(model)` is refused with `prompt_too_large`, neither
   started nor charged: `PROMPT_LIMIT_CHARS` (300 000 characters) for a `BASE_WINDOW_TOKENS` (200 000-token) window,
-  scaled by `CONTEXT_WINDOW_TOKENS` (1 000 000 for Opus 5.5 and Sonnet 5.5, so 1 500 000 characters). The schema
+  scaled by `CONTEXT_WINDOW_TOKENS` (1 000 000 for Opus 5.5, Sonnet 5.5 and Haiku 5.5, so 1 500 000 characters). The schema
   travels as one command-line argument, and Windows accepts 32 767 characters per command line. Counting the line as
   Windows receives it (every `"` of the schema as `\"`), the adapter refuses a schema over `MAX_SCHEMA_CHARS` (30 000)
   or a line over `MAX_COMMAND_LINE_CHARS` (32 766) with `invalid_output_schema` (why: D-029).

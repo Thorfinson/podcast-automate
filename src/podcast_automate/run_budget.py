@@ -804,8 +804,8 @@ def approve_text_switch(root, run_id, choice="claude_first", *, model=None, cost
     ``claude`` and ``astra`` stay on one; ``openrouter`` bills ``model`` per token and needs the key, while web
     searches keep running on the subscriptions, since OpenRouter has no search tools, unless the run searches
     through Perplexity (D-151), which a switch keeps. Astra works at xhigh; Claude
-    works with the catalog's Claude default (Sonnet 5.5 at high since 2026-09-29, when the user replaced the
-    runs' Opus 5.5 at medium with it). ``claude_api`` bills Claude to the user's Anthropic key (D-145). A billed
+    works with the catalog's Claude default (Haiku 5.5 at xhigh since 2026-10-07, D-166; Sonnet 5.5 at high from
+    2026-09-29, when the user replaced the runs' Opus 5.5 at medium with it). ``claude_api`` bills Claude to the user's Anthropic key (D-145). A billed
     choice needs the run's money limit (D-146): ``cost_usd`` sets it with the switch. A later choice replaces the
     earlier one, and choosing what the run started with removes the receipt. It may be written while the worker
     runs; the next start reads it."""

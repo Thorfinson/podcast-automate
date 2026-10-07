@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
                            f"({TRIAL_LIMITS.model_calls} model calls, {TRIAL_LIMITS.search_rounds} search rounds, "
                            f"{TRIAL_LIMITS.sources} sources, a money limit of at most {TRIAL_LIMITS.cost_usd:g} USD "
                            "where one is set); without --topic a narrow sample topic")
+    # A new version (D-168): the same inputs, made again by the current pipeline; the old version stays as it was.
+    version = commands.add_parser("new-version", help="Start the next version of a project beside it: the same brief, "
+                                  "attachments, provided works and choices, no runs; the newest completed research "
+                                  "run's sources come along as a starting library")
+    version.add_argument("project_dir", type=Path)
+    version.add_argument("--to", type=Path, dest="target", help="Folder of the new version (default: beside the old one)")
     doctor = commands.add_parser("doctor", help="Check the installation, the subscription logins (Codex, Claude) and "
                                                 "their quota; no model call")
     doctor.add_argument("project_dir", type=Path, nargs="?")
@@ -208,8 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="With --research-plan: at most N sub-questions; the plan is cut once and presented again")
     schemas = commands.add_parser("schemas", help="Export the implemented JSON schemas")
     schemas.add_argument("output_dir", type=Path)
-    for command in (init, doctor, state, text_probe, audio_probe, research, script, series, audio, kit, resume, schemas,
-                    quota, approve):
+    for command in (init, version, doctor, state, text_probe, audio_probe, research, script, series, audio, kit, resume,
+                    schemas, quota, approve):
         command.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
@@ -366,6 +372,17 @@ def run_command(args) -> int:
             data = {"status": "created", "message": message, "project": config.model_dump(mode="json")}
             if args.trial:
                 data["trial"] = trial_facts()
+            code = 0
+        elif args.command == "new-version":
+            from .project_versions import create_version, view
+            target = create_version(args.project_dir, target=args.target)
+            info = view(target)
+            parts = [f"Version {info['version']} created: {target}"]
+            if info["library"]:
+                run_id = info["library"]["run_id"]
+                parts.append(f"Starting library: {info['library']['documents']} sources of research run {run_id}; "
+                             f"pla research {target} --seed-corpus {run_id} offers them to the search")
+            data = {"status": "created", "message": ". ".join(parts) + ".", "project_dir": str(target), "version": info}
             code = 0
         elif args.command == "doctor":
             runtime = load_project(args.project_dir).runtime if args.project_dir else RuntimeSettings()

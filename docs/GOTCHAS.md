@@ -88,8 +88,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 ## Studio
 
 - ✓ **After a Studio restart OpenRouter jobs stop for a missing key, and queued Gemini episodes show „wartet auf den
-  OpenRouter-Key“:** a key entered in the Studio lives only in the old server's memory. Enter it again on the settings
-  page, or start the server with `OPENROUTER_API_KEY` set; the page says so (`studio.py`). The same holds for jobs
+  OpenRouter-Key“:** the system has no credential store, or it refused the key, so a key entered in the Studio lived
+  only in the old server's memory (D-167). Enter it again on the settings page, or start the server with
+  `OPENROUTER_API_KEY` set; the page says so (`studio.py`). The same holds for jobs
   with Claude on the API key and the Anthropic key (`ANTHROPIC_API_KEY`), and for runs that search through Perplexity
   and the Perplexity key (`PERPLEXITY_API_KEY`).
   ([OpenRouter key in the Studio](SECURITY.md#openrouter-key-in-the-studio))
@@ -132,8 +133,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ⚠ **CORE stops finding copies during the day:** all runs share one daily allowance (`PLA_CORE_DAILY_LIMIT`, default
   1000, counted per UTC day in `~/.podcast-automate/core_usage.json`). Wait for the next UTC day or raise the limit.
   ([Environment variables](CONFIGURATION.md#environment-variables))
-- ⚠ **Unpaywall and CORE are never consulted:** `PLA_UNPAYWALL_EMAIL` or `PLA_CORE_API_KEY` is not set, or was set
-  without restarting the Studio. Set the variables and restart the Studio.
+- ⚠ **Unpaywall and CORE are never consulted:** `PLA_UNPAYWALL_EMAIL` is not set, or no CORE key is stored under
+  „CORE-Key“ on the settings page nor set as `PLA_CORE_API_KEY`, or a variable was set without restarting the Studio.
+  Store the key in the Studio, or set the variables and restart the Studio.
   ([Environment variables](CONFIGURATION.md#environment-variables))
 - ⚠ **A source fails as unreadable with "pages without a text layer":** it is a scanned PDF, and OCR never starts
   automatically. Supply a readable version as a `seed_urls` entry of a new research run, or upload the work under

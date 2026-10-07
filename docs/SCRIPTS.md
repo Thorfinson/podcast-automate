@@ -249,7 +249,8 @@ is at stake, not the answer, which the episode earns at its end
 - **Only for Claude Sonnet 5.5** the target is set above the plan, at 1.3 times its words
   (`script_checks.WRITER_TARGET_FACTORS`): shown the plan itself, Sonnet wrote 71 % of it. Every other model is shown
   the plan until its own drafts are measured. The factor follows the run's first writer: its fixed model, or under
-  `auto` the preferred candidate, so an `auto` call that falls to Codex gets Sonnet's target. The hour limit stays with
+  `auto` the preferred candidate, so an `auto` call that falls to Codex gets the Claude candidate's target (1.0 since Haiku 5.5 became the
+  default, D-166). The hour limit stays with
   the check below, not the target.
 - A draft accepted under another budget, or before there was one, stands on resume while it still passes every check,
   also after a text switch to a writer with another target; only the open episodes are written anew.

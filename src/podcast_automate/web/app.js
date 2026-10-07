@@ -103,12 +103,18 @@ const keyOf = provider => provider === "google_gemini_tts" ? "google" : "openrou
 const KEY_NAMES = Object.fromEntries(["openrouter","google","anthropic","perplexity"].map(key=>[key,tp(`key.name.${key}`)]));
 // The field of the bootstrap and the settings view that says whether a key is there.
 const KEY_FLAGS = {openrouter:"key_available", google:"google_key_available", anthropic:"anthropic_key_available",
-  perplexity:"perplexity_key_available"};
+  perplexity:"perplexity_key_available", core:"core_key_available"};
 const keyAvailable = (key="openrouter") => boot[KEY_FLAGS[key]||"key_available"] !== false;
 const KEY_STATUS = {openrouter:"key-status", google:"google-key-status", anthropic:"anthropic-key-status",
-  perplexity:"perplexity-key-status"};
-const KEY_FIELDS = {openrouter:"api-key", google:"google-key", anthropic:"anthropic-key", perplexity:"perplexity-key"};
-const copyKeyFlags = (from, to) => { for (const flag of Object.values(KEY_FLAGS)) if (from[flag] !== undefined) to[flag] = from[flag]; };
+  perplexity:"perplexity-key-status", core:"core-key-status"};
+const KEY_FIELDS = {openrouter:"api-key", google:"google-key", anthropic:"anthropic-key", perplexity:"perplexity-key",
+  core:"core-key"};
+// Besides the flags: where each key comes from and whether the system has a credential store (Studio.key_states, D-167).
+const copyKeyFlags = (from, to) => { for (const flag of [...Object.values(KEY_FLAGS),"key_sources","key_vault"])
+  if (from[flag] !== undefined) to[flag] = from[flag]; };
+// The status line of a key: the credential store, this session only or the server's environment (Studio.key_source).
+const keyStatusKey = (kind, data=boot) => { const source=data.key_sources?.[kind];
+  return source ? `key.source.${source}` : (data[KEY_FLAGS[kind]] ? "key.available" : "key.none"); };
 // Money: a run billed to a key (Claude on the Anthropic key, OpenRouter) has a limit in USD (D-146).
 const usd = value => `${fmt.number(value,{minimumFractionDigits:2,maximumFractionDigits:2})} USD`;
 const billedProvider = provider => (boot?.text_catalog?.billed_providers||["openrouter","claude_api"]).includes(provider);
@@ -176,6 +182,7 @@ async function api(path, data, renewed=false) {
         const lost=lostKeys(fresh);
         boot.token=fresh.token;boot.key_available=fresh.key_available;boot.google_key_available=fresh.google_key_available;
         boot.anthropic_key_available=fresh.anthropic_key_available;boot.perplexity_key_available=fresh.perplexity_key_available;
+        copyKeyFlags(fresh,boot);
         const value=await api(path,data,true);
         if(lost.length)notice(tp("notice.keys_lost",{keys:keyList(lost)}));
         return value;
@@ -196,6 +203,9 @@ function heading(n) {
 }
 // A trial project („Probelauf“, D-157) says so on its card and on every page of it.
 const trialChip=()=>`<span class="chip trial">${t("trial.chip")}</span>`;
+// A later version of a podcast (D-168) carries its number wherever the topic names the project; a first one none.
+const versionText=p=>p?.version>1?tp("version.label",{n:p.version}):"";
+const versionChip=p=>p?.version>1?` <span class="chip">${escape(versionText(p))}</span>`:"";
 // What a trial is limited to, from the server's facts (trial.trial_facts in /api/bootstrap); nothing without them.
 function trialNote() {
   const f=boot?.trial, values=[f?.sub_questions,f?.target_total_minutes,f?.limits?.cost_usd].map(Number);
@@ -328,7 +338,7 @@ const stopTone=info=>info?.kind==="decision"?"decision":["retry","wait"].include
 function sidebarProjects() {
   const rows=(overviewPage?overviewData.projects:boot?.projects)||[];
   const mark=p=>!overviewPage?"":runningOf(p)?"●":attentionOf(p)?"▲":"";
-  return `<p class="sidebar-label">${t("sidebar.projects")}</p>${rows.map(p=>`<button class="step project-link" data-open-project="${escape(p.id)}" title="${escape(p.topic)}"><span class="step-number" aria-hidden="true">${mark(p)}</span><span class="step-label">${escape(shortText(p.topic,70))}</span></button>`).join("")}
+  return `<p class="sidebar-label">${t("sidebar.projects")}</p>${rows.map(p=>`<button class="step project-link" data-open-project="${escape(p.id)}" title="${escape(p.topic)}"><span class="step-number" aria-hidden="true">${mark(p)}</span><span class="step-label">${escape(shortText(p.topic,70))}${p.version>1?` · ${escape(versionText(p))}`:""}</span></button>`).join("")}
     <button class="step project-link" data-new-project><span class="step-number" aria-hidden="true">＋</span><span class="step-label">${t("project.new")}</span></button>`;
 }
 // The project picker offers "Neues Projekt" only where it means one; on the overview and the settings it asks for a choice.
@@ -394,7 +404,7 @@ const providerLabels=Object.fromEntries(["codex_cli","claude_code","openrouter",
 const providerNames=Object.fromEntries(["codex_cli","claude_code","openrouter","claude_api"].map(id=>[id,tp(`provider.name.${id}`)]));
 // The automatic choice's two candidates; a shared level (e.g. high) replaces both catalog levels.
 function autoCandidates(effort=null) {
-  const catalog=boot.text_catalog?.auto_candidates||{codex_cli:{model:"gpt-6-astra",reasoning_effort:"xhigh"},claude_code:{model:"claude-sonnet-5-5",reasoning_effort:"high"}};
+  const catalog=boot.text_catalog?.auto_candidates||{codex_cli:{model:"gpt-6-astra",reasoning_effort:"xhigh"},claude_code:{model:"claude-haiku-5-5",reasoning_effort:"xhigh"}};
   return effort?{codex_cli:{...catalog.codex_cli,reasoning_effort:effort},claude_code:{...catalog.claude_code,reasoning_effort:effort}}:catalog;
 }
 // A preset matches a choice; the automatic ones differ only in their shared level, so that level must match exactly.
@@ -665,7 +675,7 @@ function renderSettings() {
     ["settings-section-language","language"]];
   return `<header class="page-head"><div class="page-title"><span class="eyebrow">Studio</span><h1>${t("settings.title")}</h1></div><span class="chip ${data.global?"done":"decision"}">${t(data.global?"settings.global":"settings.per_project")}</span></header>
     <nav class="settings-nav" aria-label="${t("settings.nav_label")}">${sections.map(([id,name])=>`<button class="quiet small" data-scroll="${id}">${t(`settings.section.${name}`)}</button>`).join("")}</nav>
-    <p class="key-states">Keys: <button class="quiet small" data-scroll="key-panel-openrouter">OpenRouter</button>${keyChip(data.key_available)} <button class="quiet small" data-scroll="key-panel-google">Google</button>${keyChip(data.google_key_available)} <button class="quiet small" data-scroll="key-panel-anthropic">Anthropic</button>${keyChip(data.anthropic_key_available)} <button class="quiet small" data-scroll="key-panel-perplexity">Perplexity</button>${keyChip(data.perplexity_key_available)}</p>
+    <p class="key-states">Keys: <button class="quiet small" data-scroll="key-panel-openrouter">OpenRouter</button>${keyChip(data.key_available)} <button class="quiet small" data-scroll="key-panel-google">Google</button>${keyChip(data.google_key_available)} <button class="quiet small" data-scroll="key-panel-anthropic">Anthropic</button>${keyChip(data.anthropic_key_available)} <button class="quiet small" data-scroll="key-panel-perplexity">Perplexity</button>${keyChip(data.perplexity_key_available)} <button class="quiet small" data-scroll="key-panel-core">CORE</button>${keyChip(data.core_key_available)}</p>
     ${data.global?"":`<p class="note">${data.source_project?t("settings.legacy.project",{project:quoted(data.source_project)}):t("settings.legacy.defaults")}</p>`}
     <p class="hint">${t("settings.running_hint")}</p>
     <section class="panel" id="settings-section-text"><h2>${t("settings.section.text")}</h2>${textOptions}
@@ -695,7 +705,8 @@ function renderSettings() {
       ${settingField("settings-timeout",tp("settings.limits.timeout"),settingNumber("settings-timeout",Math.round(d.text_timeout_seconds/60),5,240),t("settings.limits.timeout_hint"))}</section>
     <section class="panel" id="settings-section-claude"><h2>${t("settings.section.claude")}</h2><label class="approval"><input id="settings-claude-extra" type="checkbox" ${data.claude_extra_usage?"checked":""}><span>${t("settings.claude.extra")}</span></label>
       <p class="hint">${t("settings.claude.hint")}</p></section>
-    ${["openrouter","perplexity","anthropic","google"].map(key=>keyPanel(key,data)).join("\n    ")}
+    <p class="note" id="key-storage">${t(data.key_vault?"key.storage.vault":"key.storage.memory")}</p>
+    ${["openrouter","perplexity","anthropic","google","core"].map(key=>keyPanel(key,data)).join("\n    ")}
     <section class="panel" id="settings-section-language"><h2>${t("settings.section.language")}</h2><div class="field"><label for="ui-language-settings">${t("language.select.label")}</label>${languageSelect("ui-language-settings")}</div>
       <p class="hint">${t("settings.language.hint")}</p></section>
     <div class="action-bar settings-save"><p id="settings-dirty" class="hint${settingsDirty?" dirty":""}">${t(settingsDirty?"settings.dirty":"settings.clean")}</p><button data-action="save-settings">${t("settings.save")}</button></div>`;
@@ -705,7 +716,7 @@ function keyPanel(key,data) {
   const field=KEY_FIELDS[key], status=KEY_STATUS[key], available=data[KEY_FLAGS[key]];
   const own=key==="openrouter"?"":` data-key-field="${field}" data-key-kind="${key}"`, forget=key==="openrouter"?"":` data-key-kind="${key}"`;
   return `<section class="panel" id="key-panel-${key}"><div class="panel-title"><h2>${t(`key.name.${key}`)}</h2>${keyChip(available)}</div><p class="hint">${t(`key.panel.${key}`)}</p>
-      ${textInput(field,t(`key.name.${key}`),"","password")}<p id="${status}" class="hint">${t(available?"key.available":"key.none")}</p><div class="actions"><button class="secondary small" data-action="store-key"${own}>${t("key.store")}</button><button class="secondary small" data-action="forget-key"${forget}>${t("key.forget")}</button></div></section>`;
+      ${textInput(field,t(`key.name.${key}`),"","password")}<p id="${status}" class="hint">${t(keyStatusKey(key,data))}</p><div class="actions"><button class="secondary small" data-action="store-key"${own}>${t("key.store")}</button><button class="secondary small" data-action="forget-key"${forget}>${t("key.forget")}</button></div></section>`;
 }
 // Each language's pace (speech.LanguagePace, D-147): a slower montage on every route, with the pitch kept, and for Google
 // a calm delivery. A language without an entry is spoken as recorded.
@@ -1038,7 +1049,7 @@ function renderResearch() {
   html+='<div id="stop-card"></div>';
   const run=currentRun(), researching=run?.kind==="research"&&run.status!=="completed";
   const attachments=project.attachments?.length?`<section class="panel"><h2>${t("research.materials")}</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">${t("research.materials_hint")}</p></section>`:"";
-  const brief=`<section class="panel"><div class="panel-title"><h2>${t("research.sources")}</h2><span class="tag">${researchProviderTag()}</span></div><p>${t("research.saved_brief",{brief:asHtml(`<strong>${escape(project.config.central_question||project.config.topic)}</strong>`)})}</p><div class="actions">${researching?`<p>${t("research.running_hint")}</p>`:project.research?(project.outline?`<button data-step="2">${t("research.to_outline")}</button>`:`<button data-action="plan" ${disabled()}>${t("research.plan")}</button>`):`<button data-action="research" ${disabled()}>${t("research.start")}</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>${t("research.restart")}</summary><p>${t(researching?"research.restart_running":"research.restart_hint")}</p><label class="check"><input type="checkbox" id="seed-corpus" checked> ${t("research.seed_corpus")}</label><button class="secondary" data-action="research" ${disabled()}>${t("research.again")}</button></details>`:`<p class="hint">${t("research.automatic")}</p>`}</section>`;
+  const brief=`<section class="panel"><div class="panel-title"><h2>${t("research.sources")}</h2><span class="tag">${researchProviderTag()}</span></div><p>${t("research.saved_brief",{brief:asHtml(`<strong>${escape(project.config.central_question||project.config.topic)}</strong>`)})}</p><div class="actions">${researching?`<p>${t("research.running_hint")}</p>`:project.research?(project.outline?`<button data-step="2">${t("research.to_outline")}</button>`:`<button data-action="plan" ${disabled()}>${t("research.plan")}</button>`):`<button data-action="research" ${disabled()}>${t("research.start")}</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>${t("research.restart")}</summary><p>${t(researching?"research.restart_running":"research.restart_hint")}</p><label class="check"><input type="checkbox" id="seed-corpus" checked> ${t("research.seed_corpus")}</label><button class="secondary" data-action="research" ${disabled()}>${t("research.again")}</button></details>`:`${project.version?.library?`<label class="check"><input type="checkbox" id="seed-corpus" checked> ${t("version.seed_library",{count:project.version.library.documents,version:project.version.library.from_version})}</label>`:""}<p class="hint">${t("research.automatic")}</p>`}</section>`;
   // The missing works stand beside a run in progress, and afterwards as long as the list is not empty.
   const works=researching||project.works?.missing?.length||project.works?.provided?.length?worksPanel():"";
   if(researching||(!project.research&&project.job?.progress?.phase==="research"))
@@ -1557,11 +1568,14 @@ function renderPodcastKit() {
   const buttons=`<div class="actions"><button class="secondary" data-action="publish_kit" data-podcast="1" ${disabled()}>${t(k?"kit.rebuild":"podcast_kit.create")}</button>${current?`<button class="quiet" data-action="publish_kit" data-podcast="1" data-fresh="1" ${disabled()}>${t("kit.reword")}</button>`:""}</div>`;
   if(!current)return `<section class="panel"><h2>${t("podcast_kit.title")}</h2><p class="${k?"note":"hint"}">${t(k?"podcast_kit.outdated":"podcast_kit.hint")}</p>${buttons}</section>`;
   const episodes=Number(k.episodes),recorded=Number(k.recorded);
+  // The transcript and the sources on their own, without the MP3s of the ZIP; an older server has no route for them.
+  const file=(name,key)=>`<a href="/download/${encodeURIComponent(project.id)}/kit/${name}" download>${t(key)}</a>`;
+  const files=boot.capabilities?.podcast_kit_downloads?`<p>${file("transcript.md","podcast_kit.download_transcript")} · ${file("sources.md","podcast_kit.download_sources")}</p>`:"";
   return `<section class="panel"><h2>${t("podcast_kit.title")}</h2>
     ${recorded<episodes?`<p class="note">${t("podcast_kit.unrecorded",{count:episodes,recorded})}</p>`:""}
     <div class="field"><label for="podcast-kit-short">${t("podcast_kit.short")}</label><textarea id="podcast-kit-short" rows="3" readonly>${escape(k.short)}</textarea><button class="quiet small" data-action="copy-text" data-source="podcast-kit-short">${t("common.copy")}</button></div>
     <div class="field"><label for="podcast-kit-long">${t("podcast_kit.long",{characters:fmt.number(Number(k.characters)),limit:fmt.number(Number(k.limit))})}</label><textarea id="podcast-kit-long" rows="10" readonly>${escape(k.description)}</textarea><button class="quiet small" data-action="copy-text" data-source="podcast-kit-long">${t("common.copy")}</button></div>
-    <p class="hint">${t("podcast_kit.files",{count:episodes,folder:asHtml(`<code>${escape(k.folder)}/</code>`)})} ${t("podcast_kit.sources",{count:Number(k.sources_total)})}</p>${buttons}</section>`;
+    ${files}<p class="hint">${t("podcast_kit.files",{count:episodes,folder:asHtml(`<code>${escape(k.folder)}/</code>`)})} ${t("podcast_kit.sources",{count:Number(k.sources_total)})}</p>${buttons}</section>`;
 }
 function refreshAudioPanel() {
   const panel=$("audio-panel");
@@ -1772,11 +1786,11 @@ function overviewCardInner(p) {
   const a=attentionOf(p), busy=runningOf(p), hasAudio=(p.episodes||[]).some(e=>e.audio?.length), states=pipelineStates(p), id=escape(p.id);
   const open=a?`<button class="small" data-open-project="${id}" data-open-step="${a.page}">${escape(a.button)}</button>`
     :`<button class="secondary small" data-open-project="${id}">${t("overview.open")}</button>`;
-  return `<div class="pipeline-main"><h2><button type="button" class="card-title" data-open-project="${id}" title="${escape(p.topic)}">${escape(p.topic)}</button>${p.trial?` ${trialChip()}`:""}</h2>
+  return `<div class="pipeline-main"><h2><button type="button" class="card-title" data-open-project="${id}" title="${escape(p.topic)}">${escape(p.topic)}</button>${p.trial?` ${trialChip()}`:""}${versionChip(p)}</h2>
     <div class="pipe" id="pipe-${id}" role="img" aria-label="${escape(pipeLabel(states))}">${pipeMarkup(states)}</div>
     <p class="card-state" id="project-state-${id}">${a?`<strong>${escape(a.text)}</strong>`:escape(overviewStatus(p))}</p></div>
     <div class="actions">${open}${hasAudio?`<button class="secondary small" data-open-project="${id}" data-open-step="${PAGE.audio}">${t("overview.listen")}</button>`:""}<span id="overview-download-${id}">${overviewDownload(p)}</span>
-    <details class="card-menu"><summary aria-label="${t("overview.more_label",{topic:shortText(p.topic,40)})}">⋯</summary><div class="card-menu-list"><button class="quiet small danger-text" data-delete-project="${id}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>${t("overview.delete")}</button></div></details></div>`;
+    <details class="card-menu"><summary aria-label="${t("overview.more_label",{topic:shortText(p.topic,40)})}">⋯</summary><div class="card-menu-list">${boot.capabilities?.project_versions?`<button class="quiet small" data-new-version="${id}" ${p.unavailable?"disabled":""}>${t("version.new")}</button>`:""}<button class="quiet small danger-text" data-delete-project="${id}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>${t("overview.delete")}</button></div></details></div>`;
 }
 function overviewCard(p) {
   return `<article class="${cardClass(p)}" id="project-card-${escape(p.id)}" data-project-card="${escape(p.id)}">${overviewCardInner(p)}</article>`;
@@ -1792,6 +1806,13 @@ function overviewDownload(p) {
 function sortedProjects() {
   const rank=p=>attentionOf(p)?0:runningOf(p)?1:2;
   return overviewData.projects.map((p,i)=>[p,i]).sort((a,b)=>rank(a[0])-rank(b[0])||a[1]-b[1]).map(([p])=>p);
+}
+// A new version of a podcast (D-168): its inputs made again by today's pipeline, opened at once; the old one stays.
+async function newVersion(id) {
+  const p=overviewData.projects.find(p=>p.id===id);
+  if(!p||!window.confirm(tp("version.confirm",{topic:quoted(p.topic)})))return;
+  const made=await api(`/api/projects/${encodeURIComponent(p.id)}/new_version`,{});
+  await refreshProjects();notice(tp("version.created",{n:made.version}),"ok");await selectProject(made.id);
 }
 function trashMarkup() {
   return overviewData.trash?.length?`<details class="panel"><summary>${t("overview.trash",{count:overviewData.trash.length})}</summary>${overviewData.trash.map(p=>`<div class="sample-row"><span>${escape(p.topic)}</span><button class="secondary small" data-restore-project="${escape(p.id)}">${t("overview.restore")}</button></div>`).join("")}</details>`:"";
@@ -3179,7 +3200,7 @@ function studioPlace(b) {
 async function refreshProjects() {
   boot=await api("/api/bootstrap");
   $("studio-place").innerHTML=studioPlace(boot);
-  $("project-select").innerHTML=`<option value="">${t("project.new")}</option>`+boot.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.topic)}</option>`).join("");
+  $("project-select").innerHTML=`<option value="">${t("project.new")}</option>`+boot.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.topic)}${p.version>1?` · ${escape(versionText(p))}`:""}</option>`).join("");
   $("project-select").value=project?.id||"";
   syncProjectSelect();
 }
@@ -3206,7 +3227,7 @@ async function storeKey(fieldId="api-key",kind="openrouter") {
     copyKeyFlags(value,boot);$(fieldId).value="";
     if(settingsData)copyKeyFlags(boot,settingsData);
     const status=$(KEY_STATUS[kind]||"key-status");
-    if(status)status.textContent=tp(keyAvailable(kind)?"key.available":"key.none");
+    if(status)status.textContent=tp(keyStatusKey(kind));
     if(keyAvailable(kind))clearKeyReminder(kind);}
   return !!key;
 }
@@ -3421,6 +3442,7 @@ document.addEventListener("click",event=>{
         await refreshProjects();overviewData=await loadOverview();refreshOverview();notice(tp("act.deleted"),"ok");
       }return;
     }
+    if(button.dataset.newVersion){await newVersion(button.dataset.newVersion);return;}
     if(button.dataset.restoreProject){await api("/api/restore",{trash_id:button.dataset.restoreProject});await refreshProjects();overviewData=await loadOverview();refreshOverview();return;}
     if(button.dataset.setupReply){await sendSetupMessage(button.dataset.setupReply);return;}
     if(button.dataset.step!==undefined){navigatePage(Number(button.dataset.step));$("main").focus();window.scrollTo(0,0);return;}

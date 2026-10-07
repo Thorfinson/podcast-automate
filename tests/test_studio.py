@@ -185,6 +185,28 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
         self.assertEqual(script.episode_id, "ep_001")
 
 
+class MemoryVault:
+    """key_store.Vault's interface in memory, so no test reads or writes the system's credential store."""
+
+    def __init__(self, entries=None, ready=True):
+        self.entries, self.ready = dict(entries or {}), ready
+
+    def available(self):
+        return self.ready
+
+    def load(self):
+        return dict(self.entries) if self.ready else {}
+
+    def save(self, kind, value):
+        if not self.ready:
+            return False
+        if value:
+            self.entries[kind] = value
+        else:
+            self.entries.pop(kind, None)
+        return True
+
+
 class StudioHttpTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -244,15 +266,20 @@ class StudioHttpTests(unittest.TestCase):
         self.publish_episode()
         write_json(self.root / "studio/audio_queue.json", [{"episode": "ep_001", "queued_at": "2026-10-06T10:00:00+00:00",
                                                            "data": {}}])
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "GEMINI_API_KEY": ""}):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "GEMINI_API_KEY": "", "ANTHROPIC_API_KEY": "",
+                                     "PERPLEXITY_API_KEY": "", "PLA_CORE_API_KEY": ""}):
             self.app.key = "or-key"
             detail = json.loads(self.request("/api/projects/example")[1])
             self.assertEqual(detail["key_reminder"], [{"need": "google_audio", "projects": ["A test project"], "key": "google"}])
             self.assertEqual(detail["audio_queue"][0], {"episode": "ep_001", "position": 1,
                              "queued_at": "2026-10-06T10:00:00+00:00", "waiting": "key", "key": "google"})
             status, body, _ = self.request("/api/key", {"key": "AIza-google-test-key-0123", "kind": "google"})
+            # A server without a credential store keeps both keys for the session only (D-167).
             self.assertEqual(json.loads(body), {"key_available": True, "google_key_available": True,
-                                            "anthropic_key_available": False, "perplexity_key_available": False})
+                                                "anthropic_key_available": False, "perplexity_key_available": False,
+                                                "core_key_available": False, "key_vault": False,
+                                                "key_sources": {"openrouter": "session", "google": "session",
+                                                                "anthropic": None, "perplexity": None, "core": None}})
             self.assertEqual((self.app.key, self.app.google_key), ("or-key", "AIza-google-test-key-0123"))
             self.assertEqual(json.loads(self.request("/api/projects/example")[1])["audio_queue"][0]["waiting"], "place")
             # A key pasted into the chat never reaches a model.
@@ -267,6 +294,49 @@ class StudioHttpTests(unittest.TestCase):
                 self.assertEqual(status, 200, body)
                 self.assertEqual(json.loads(process.return_value.stdin.getvalue())["google_key"], "AIza-google-test-key-0123")
             self.app.stop_all()
+
+    def test_every_key_is_kept_in_the_credential_store_across_a_restart(self):
+        """D-167: a key entered once goes into the system's credential store, the next server loads it before any page
+        asks, and removing it removes the entry. Without a store the keys last for the session, and a Studio built
+        without one (every other test) never opens the system's own."""
+        self.assertIsNone(self.app.vault, "make_server opens no store unless serve() hands it one")
+        vault = MemoryVault()
+        self.app.vault = vault
+        self.app.load_stored_keys()
+        with patch.dict(os.environ, {"PLA_CORE_API_KEY": "", "OPENROUTER_API_KEY": ""}):
+            self.assertIsNone(self.app.server_state()["core"])
+            status, body, _ = self.request("/api/key", {"key": "core-test-key-0123", "kind": "core"})
+            states = json.loads(body)
+            self.assertEqual((status, states["core_key_available"], states["key_sources"]["core"], states["key_vault"]),
+                             (200, True, "vault", True))
+            self.request("/api/key", {"key": "sk-or-test-key-0123", "kind": "openrouter"})
+            self.assertEqual(vault.entries, {"core": "core-test-key-0123", "openrouter": "sk-or-test-key-0123"})
+            restarted = Studio(self.workspace, vault=vault)
+            restarted.load_stored_keys()
+            self.assertEqual((restarted.core_key, restarted.key, restarted.key_source("core")),
+                             ("core-test-key-0123", "sk-or-test-key-0123", "vault"))
+            self.assertEqual(restarted.server_state()["core"]["limit"], 1000)
+            self.assertIn("core-test-key-0123", restarted.stored_keys())
+            # The CORE key reaches a worker on standard input, never in its arguments, and never through the chat.
+            status, body, _ = self.request("/api/projects/example/start",
+                                           {"action": "assistant", "message": "Key: core-test-key-0123"})
+            self.assertEqual(json.loads(body)["code"], "credential_in_prompt")
+            with patch("podcast_automate.studio.subprocess.Popen") as process:
+                process.return_value.stdin = io.StringIO()
+                process.return_value.stdin.close = Mock()
+                process.return_value.poll.return_value = None
+                status, body, _ = self.request("/api/projects/example/start", {"action": "check"})
+                self.assertEqual(status, 200, body)
+                self.assertEqual(json.loads(process.return_value.stdin.getvalue())["core_key"], "core-test-key-0123")
+                self.assertNotIn("core-test-key-0123", " ".join(map(str, process.call_args.args[0])))
+            self.app.stop_all()
+            self.request("/api/key", {"key": "", "kind": "core"})
+            self.assertEqual(vault.entries, {"openrouter": "sk-or-test-key-0123"})
+            self.assertIsNone(self.app.key_source("core"))
+            bare = Studio(self.workspace, vault=MemoryVault(ready=False))
+            bare.load_stored_keys()
+            bare.set_key("core", "core-test-key-0123")
+            self.assertEqual((bare.key_source("core"), bare.key_states()["key_vault"]), ("session", False))
 
     def test_the_anthropic_key_stays_in_memory_and_a_billed_start_needs_a_money_limit(self):
         """D-145, D-146: Claude on the user's key is set up like the other keys, never pasted into the chat, and a

@@ -8,7 +8,7 @@ from datetime import date
 
 from .errors import AppError
 
-CATALOG_VERIFIED_ON = date(2026, 9, 29)
+CATALOG_VERIFIED_ON = date(2026, 10, 7)
 CATALOG_STALE_DAYS = 90
 DEFAULT_CODEX_MODEL = "gpt-6-astra"
 DEFAULT_REASONING_EFFORT = "xhigh"
@@ -21,14 +21,14 @@ CODEX_MODELS = {
     "gpt-5.6-luna": "GPT-5.6 Luna",
     "gpt-5.5": "GPT-5.5",
 }
-# Claude Code CLI 2.1.284 with a claude.ai subscription login, verified on 2026-09-29. Opus 5.5 and
-# the level xhigh need CLI 2.1.280 or newer, Sonnet 5.5 needs 2.1.284 (claude_code.MODEL_MINIMUM_CLI).
-# Sonnet 5.5 at high is the default since 2026-09-29: the Opus 5.5 runs before took 1.5 to 2.5 minutes per
-# script review at medium. Opus 5.5 and Opus 5 stay listed for runs that saved them.
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-5-5"
-DEFAULT_CLAUDE_EFFORT = "high"
-CLAUDE_MODELS = {"claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-opus-5-5": "Claude Opus 5.5",
-                 "claude-opus-5": "Claude Opus 5"}
+# Claude Code CLI 2.1.293 with a claude.ai subscription login, verified on 2026-10-07. Opus 5.5 and
+# the level xhigh need CLI 2.1.280 or newer, Sonnet 5.5 needs 2.1.284, Haiku 5.5 needs 2.1.293
+# (claude_code.MODEL_MINIMUM_CLI). Haiku 5.5 at xhigh is the default since 2026-10-07 (the user's choice, D-166);
+# Sonnet 5.5 at high was before. Sonnet 5.5, Opus 5.5 and Opus 5 stay listed for runs that saved them.
+DEFAULT_CLAUDE_MODEL = "claude-haiku-5-5"
+DEFAULT_CLAUDE_EFFORT = "xhigh"
+CLAUDE_MODELS = {"claude-haiku-5-5": "Claude Haiku 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5",
+                 "claude-opus-5-5": "Claude Opus 5.5", "claude-opus-5": "Claude Opus 5"}
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Stages whose task needs less thought than the run's level: a first-time listener who should only take in
 # what the dialogue itself explains, and the placing of expression tags for Gemini's reading. Each call of
@@ -68,13 +68,18 @@ TEXT_PRESETS = [
      "model": None, "reasoning_effort": None},
     {"id": "auto_subscriptions_high", "label": "Automatisch · Claude, sonst Codex · high", "provider": "auto",
      "model": None, "reasoning_effort": "high"},
+    {"id": "claude_haiku_sub", "label": "Haiku 5.5 · Claude-Abo · xhigh", "provider": "claude_code",
+     "model": "claude-haiku-5-5", "reasoning_effort": "xhigh"},
     {"id": "claude_sonnet_sub", "label": "Sonnet 5.5 · Claude-Abo · high", "provider": "claude_code",
      "model": "claude-sonnet-5-5", "reasoning_effort": "high"},
     {"id": "claude_opus_sub", "label": "Opus 5.5 · Claude-Abo", "provider": "claude_code",
      "model": "claude-opus-5-5", "reasoning_effort": "xhigh"},
     {"id": "codex_astra", "label": "Astra · Codex-Abo", "provider": "codex_cli",
      "model": "gpt-6-astra", "reasoning_effort": "xhigh"},
-    # Billed to the user's own Anthropic key (D-145); Opus at high, since xhigh roughly doubles a billed run.
+    # Billed to the user's own Anthropic key (D-145); Opus at high, since xhigh roughly doubles a billed run. Haiku 5.5
+    # keeps xhigh: CLI 2.1.293 prices it at a twentieth of Sonnet 5.5 per token.
+    {"id": "claude_haiku_api", "label": "Haiku 5.5 · xhigh · Anthropic-API-Key", "provider": "claude_api",
+     "model": "claude-haiku-5-5", "reasoning_effort": "xhigh"},
     {"id": "claude_sonnet_api", "label": "Sonnet 5.5 · high · Anthropic-API-Key", "provider": "claude_api",
      "model": "claude-sonnet-5-5", "reasoning_effort": "high"},
     {"id": "claude_opus_api", "label": "Opus 5.5 · high · Anthropic-API-Key", "provider": "claude_api",
@@ -96,7 +101,7 @@ PROVIDER_NOTES = {
     "openrouter": "OpenRouter-API mit eigenem Key und Guthaben.",
     "claude_api": "Claude Code CLI mit eigenem Anthropic-API-Key; jeder Aufruf wird über dein Anthropic-Konto "
                   "abgerechnet. Ein Lauf braucht eine Kostengrenze in USD.",
-    "auto": "Automatische Abo-Wahl je Modellaufruf: Claude (Sonnet 5.5) über das Claude-Max-Abo, bis dessen Kontingent erschöpft "
+    "auto": "Automatische Abo-Wahl je Modellaufruf: Claude (Haiku 5.5) über das Claude-Max-Abo, bis dessen Kontingent erschöpft "
             "ist, dann Codex über das ChatGPT-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Die Modelle "
             "kommen aus dem Katalog; die Stufe ist deren Standard oder eine gemeinsame Stufe wie high für beide.",
 }
@@ -145,6 +150,8 @@ def provider_model(provider, model):
             return "claude-opus-5-5"
         if model in {"sonnet", "claude-sonnet"}:
             return "claude-sonnet-5-5"
+        if model in {"haiku", "claude-haiku"}:
+            return "claude-haiku-5-5"
         if model == "anthropic/claude-opus-5":
             return "claude-opus-5"
         if model and "/" in model:

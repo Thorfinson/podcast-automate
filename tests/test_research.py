@@ -200,6 +200,14 @@ class SourceTests(unittest.TestCase):
         self.assertIs(refused, self.REFUSED)
         self.assertNotIn(core, skipped)
         self.assertEqual(json.loads(store.read_text(encoding="utf-8"))["calls"], 1)
+        # A Studio worker gets the key from the Studio's settings instead of the variable (D-167).
+        from podcast_automate.sources import use_core_key
+        use_core_key("core-studio-key")
+        self.addCleanup(use_core_key, None)
+        handed, _ = self.open_access_case(url, "Governing the commons", answers, headers=sent,
+                                          env={"PLA_CORE_USAGE_STORE": str(store)})
+        self.assertIn("found via CORE", handed.reliability_note)
+        self.assertEqual(sent[core], {"Authorization": "Bearer core-studio-key"})
 
     def test_a_scan_without_a_text_layer_brings_a_free_copy(self):
         url, doi = "https://example.org/max-neef-scan.pdf", None
@@ -370,6 +378,32 @@ class ResearchTests(fixtures.ResearchProjectCase):
             self.assertEqual(run_research(self.root, resume=True, run_id=second.run_id).status, "completed")
             with self.assertRaises(AppError):
                 run_research(self.root, resume=True, run_id=second.run_id, seed_corpus=first.run_id)
+
+    def test_a_new_version_researches_with_the_old_versions_sources_as_its_library(self):
+        """D-168: a new version brings the newest completed research run's sources along; its first run offers them."""
+        from podcast_automate.project_versions import create_version
+        from podcast_automate.research import latest_research_run
+        seen = []
+
+        def model(prompt, output_type, directory, **kwargs):
+            if output_type is ResearchDiscovery:
+                seen.append(json.loads(prompt.splitlines()[-1]))
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            first = run_research(self.root)
+        version = create_version(self.root)
+        downloads = self.download.call_count
+        self.assertEqual(latest_research_run(version), first.run_id)
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=model):
+            run = run_research(version, seed_corpus=latest_research_run(version))
+        self.assertEqual(run.status, "completed")
+        self.assertEqual([row["url"] for row in seen[-1]["library"]], ["https://example.org/paper0"])
+        self.assertEqual(self.download.call_count, downloads, "the old version's copy is reused, not fetched again")
+        index = json.loads((version / "runs" / run.run_id / "source_index.json").read_text(encoding="utf-8"))
+        self.assertTrue(index["sources"][0]["raw_path"].startswith(f"sources/raw/{run.run_id}/"))
+        # Another run id is still refused as a library when it is not a research run of this version.
+        with self.assertRaises(AppError):
+            run_research(version, seed_corpus="run_20200101_000000_000000_00000000")
 
     def test_a_first_search_over_its_limit_is_trimmed_and_a_paid_one_survives_a_stop(self):
         """Asimov, 2026-09-30: 27 candidates against a limit of 26 threw the whole paid search away."""

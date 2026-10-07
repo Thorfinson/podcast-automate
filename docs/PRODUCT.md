@@ -113,11 +113,13 @@ The presets the Studio offers (`text_settings.TEXT_PRESETS`):
 
 | Preset (label in the Studio) | Provider | Model ID | Level |
 | --- | --- | --- | --- |
-| „Automatisch · Claude, sonst Codex“ (`auto_subscriptions`) | Claude, else Codex subscription | `claude-sonnet-5-5` and `gpt-6-astra` | `high` (Claude), `xhigh` (Astra) |
-| „Automatisch · Claude, sonst Codex · high“ (`auto_subscriptions_high`) | Claude, else Codex subscription | `claude-sonnet-5-5` and `gpt-6-astra` | `high` (both) |
+| „Automatisch · Claude, sonst Codex“ (`auto_subscriptions`) | Claude, else Codex subscription | `claude-haiku-5-5` and `gpt-6-astra` | `xhigh` (both) |
+| „Automatisch · Claude, sonst Codex · high“ (`auto_subscriptions_high`) | Claude, else Codex subscription | `claude-haiku-5-5` and `gpt-6-astra` | `high` (both) |
+| „Haiku 5.5 · Claude-Abo · xhigh“ (`claude_haiku_sub`) | Claude subscription | `claude-haiku-5-5` | `xhigh` |
 | „Sonnet 5.5 · Claude-Abo · high“ (`claude_sonnet_sub`) | Claude subscription | `claude-sonnet-5-5` | `high` |
 | „Opus 5.5 · Claude-Abo“ (`claude_opus_sub`) | Claude subscription | `claude-opus-5-5` | `xhigh` |
 | „Astra · Codex-Abo“ (`codex_astra`) | Codex subscription | `gpt-6-astra` | `xhigh` |
+| „Haiku 5.5 · xhigh · Anthropic-API-Key“ (`claude_haiku_api`) | Claude on your Anthropic API key, billed | `claude-haiku-5-5` | `xhigh` |
 | „Sonnet 5.5 · high · Anthropic-API-Key“ (`claude_sonnet_api`) | Claude on your Anthropic API key, billed | `claude-sonnet-5-5` | `high` |
 | „Opus 5.5 · high · Anthropic-API-Key“ (`claude_opus_api`) | Claude on your Anthropic API key, billed | `claude-opus-5-5` | `high` (`xhigh` roughly doubles a billed run) |
 | [„Astra · xhigh · OpenRouter“](https://openrouter.ai/openai/gpt-6-astra) (`openrouter_astra`) | OpenRouter | `openai/gpt-6-astra` | `xhigh` |
@@ -132,14 +134,15 @@ through the CLI option `--model` ([Commands](#commands)).
 
 | Provider | Models | Default | Reasoning levels | Source |
 | --- | --- | --- | --- | --- |
-| Claude subscription or Claude on the API key (Claude Code, `text_settings.CLAUDE_PROVIDERS`) | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-opus-5` (kept for runs that saved it) | `claude-sonnet-5-5` at `high` (why: D-022); `max` stays an explicit choice | `low`, `medium`, `high`, `xhigh`, `max` | `text_settings.CLAUDE_MODELS`, `DEFAULT_CLAUDE_MODEL`, `DEFAULT_CLAUDE_EFFORT`, `CLAUDE_EFFORTS` |
+| Claude subscription or Claude on the API key (Claude Code, `text_settings.CLAUDE_PROVIDERS`) | `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-opus-5` (kept for runs that saved it) | `claude-haiku-5-5` at `xhigh` (why: D-166); `max` stays an explicit choice | `low`, `medium`, `high`, `xhigh`, `max` | `text_settings.CLAUDE_MODELS`, `DEFAULT_CLAUDE_MODEL`, `DEFAULT_CLAUDE_EFFORT`, `CLAUDE_EFFORTS` |
 | Codex subscription (Codex CLI) | `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` | `gpt-6-astra` at `xhigh` | `low`, `medium`, `high`, `xhigh` | `text_settings.CODEX_MODELS`, `DEFAULT_CODEX_MODEL`, `DEFAULT_REASONING_EFFORT`, `REASONING_EFFORTS` |
 | OpenRouter | `openai/gpt-6-astra`, `anthropic/claude-opus-5.5`, `anthropic/claude-sonnet-5.5`, `deepseek/deepseek-v4.1-flash` (why: D-032) | the model's own default when no level is selected | DeepSeek V4.1 Flash: `low`, `high`, `max`; the other three: `low`, `medium`, `high`, `xhigh`, `max` | `text_settings.OPENROUTER_MODELS`, `OPENROUTER_EFFORTS` |
 
 - **Claude Code versions.** Every Claude call needs Claude Code 2.1.280 or newer (`claude_code.MINIMUM_CLI_VERSION`,
-  for Opus 5.5 and `xhigh`), Sonnet 5.5 needs 2.1.284 (`claude_code.MODEL_MINIMUM_CLI`; update with `claude update`).
+  for Opus 5.5 and `xhigh`), Sonnet 5.5 needs 2.1.284 and Haiku 5.5 2.1.293 (`claude_code.MODEL_MINIMUM_CLI`; update with
+  `claude update`).
 - **Catalog verification.** Presets and levels were matched against Codex CLI 0.157.1 (2026-09-26) and Claude Code
-  2.1.284; the catalog was last verified on 2026-09-29 (`text_settings.CATALOG_VERIFIED_ON`). `pla doctor` reports its
+  2.1.293; the catalog was last verified on 2026-10-07 (`text_settings.CATALOG_VERIFIED_ON`). `pla doctor` reports its
   age and calls it stale after 90 days (`text_settings.CATALOG_STALE_DAYS`). Availability depends on the local
   installation and the account.
 - **OpenRouter catalog.** The DeepSeek preset uses `reasoning.effort=max`, not an invented model suffix. The
@@ -181,6 +184,7 @@ messages of the pipeline modules that `pla status`, `pla quota` and `pla approve
 | --- | --- | --- |
 | `pla studio [<workspace>]` | Open the guided Studio locally in the browser (`http://127.0.0.1:8765`) | `--port 8765`, `--no-browser`, `--lan` (on Windows `Podcast-Studio-WLAN.cmd`) for a phone in the home network; [Starting the Studio](STUDIO.md#starting-the-studio) |
 | `pla init <project> --topic "…"` | Create a project with a validated brief; records the Qwen revision this computer already uses | `--total-minutes <minutes>` (optional planning wish, see [Project brief](CONFIGURATION.md#project-brief)), `--tts-python` (Python of the separate Qwen environment), `--trial` (a [trial project](BUSINESS_LOGIC.md#trial-project): one episode of at most 20 minutes, a research plan of at most three sub-questions and small limits per run; only with it may `--topic` be left out, for a narrow sample topic; why: D-157) |
+| `pla new-version <project>` | Start the next version of a project beside it: the same brief, attachments, provided works and choices, none of its runs; the newest completed research run's sources come along as a starting library ([New versions](STUDIO.md#new-versions)) | `--to <folder>` (default: `<topic>-v<n>-<id>` beside the old version) |
 | `pla doctor [<project>]` | Check installation, Codex and Claude login, subscription quota, Claude on the API key (`ANTHROPIC_API_KEY` set and Claude Code recent enough), the Perplexity search (`PERPLEXITY_API_KEY` set; informational), TTS environment and catalog age; no model call | `--skip-tts` checks without local Qwen |
 | `pla quota` | Show the quota of both subscriptions without a model call | |
 | `pla research <project>` | Run kind `research`: live search, source import, dossier and source review up to the reviewed dossier | `--backend codex_cli\|claude_code\|claude_api\|auto`, or `openrouter` with `--web-search perplexity`, `--web-search model\|perplexity` (web search of a new run; the Perplexity key from `PERPLEXITY_API_KEY`), `--api-key` (hidden prompt for the Anthropic key of `claude_api` or the OpenRouter key, else `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`), `--model`, `--reasoning-effort`, `--approve-plan`, `--reuse-sources RUN_ID`, `--seed-corpus RUN_ID`; [Starting and resuming](RESEARCH.md#starting-and-resuming) |

@@ -29,8 +29,8 @@ class TextSelectionTests(unittest.TestCase):
         self.subscriptions_store()
         boot = json.loads(self.request("/api/bootstrap")[1])
         # Sonnet 5.5 at high joined as its own preset next to Opus 5.5 (2026-09-29); Sonnet and Opus on the user's
-        # Anthropic key followed (2026-10-07, D-145).
-        self.assertEqual(len(boot["text_catalog"]["presets"]), 11)
+        # Anthropic key followed (2026-10-07, D-145), then Haiku 5.5 at xhigh on both (2026-10-07, D-166).
+        self.assertEqual(len(boot["text_catalog"]["presets"]), 13)
         for preset in TEXT_PRESETS:
             with self.subTest(preset=preset["id"]):
                 view = json.loads(self.request("/api/settings")[1])

@@ -178,7 +178,7 @@ starts (Studio setting **„Websuche“** (web search), `--web-search model|perp
 ### The choice is bound to the run
 
 - The text provider choice is fixed when a script or research run starts (`script_request.json`,
-  `research_request.json`) and is part of its inputs; for `auto` both candidates (`claude-sonnet-5-5`/`high`,
+  `research_request.json`) and is part of its inputs; for `auto` both candidates (`claude-haiku-5-5`/`xhigh`,
   `gpt-6-astra`/`xhigh`) and the first choice (`prefer: claude_code`) are stored.
 - Resume uses the stored choice: a different `--backend` or candidate list is refused as a changed input. Changes
   apply to new runs; the only exception is an explicit switch (next section).
@@ -205,13 +205,13 @@ on the command line with
 - **Only Claude** (`claude-only`) and **only Astra** (`astra-only`): the job stays on one subscription.
 - **OpenRouter** (`openrouter`): one model from the list (`--switch-model`), paid per call, with the key; web searches
   stay on the subscriptions, because OpenRouter has no search tools, unless the run searches through Perplexity.
-- **Claude on the Anthropic API key** (`claude-api`): Claude on your key, Sonnet 5.5 or a Claude model given with
+- **Claude on the Anthropic API key** (`claude-api`): Claude on your key, Haiku 5.5 or a Claude model given with
   `--switch-model`, paid per call; web searches run on the key too.
 
 Rules of a switch (why: D-024):
 
-- Astra works over the Codex subscription at `xhigh`; Claude, on the subscription or the key, at `high` with the
-  catalog default Sonnet 5.5, even when the job started with Opus (on the key `--switch-model` may name another Claude
+- Astra works over the Codex subscription at `xhigh`; Claude, on the subscription or the key, at `xhigh` with the
+  catalog default Haiku 5.5 (D-166), even when the job started with Opus (on the key `--switch-model` may name another Claude
   model).
 - A switch to a billed provider (OpenRouter, `claude-api`) needs the run's [money limit](#money-limit): `--cost-usd`
   (Studio: the cost field next to the choice) sets it with the switch; without one the switch is refused with
