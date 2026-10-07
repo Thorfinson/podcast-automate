@@ -239,6 +239,17 @@ def saved_expression(root, episode, script_hash, *, backchannels=False):
     return None
 
 
+def reading_hash(root, episode, script_hash, *, backchannels=False):
+    """The hash of the tags the reader saw for this recording, which an approval carries: expression.json's while it
+    belongs to the current script and to this kind of recording (saved_expression), else none (""). A reading placed
+    for another route or an earlier script counts as none, as the reading page shows it; the recording then places its
+    own tags, unread, as the approval card says (2026-10-07: after the switch to Google every reading placed before
+    refused the approval as „Ausdruck neu gesetzt“)."""
+    path = root / "episodes" / episode / "expression.json"
+    saved = saved_expression(root, episode, script_hash, backchannels=backchannels)
+    return file_hash(path) if saved is not None and path.is_file() else ""
+
+
 def tag_episode(root, episode, *, api_key=None):
     """Place the inline audio tags of one published episode, so the reader sees them before approving audio
     (the user's wish of 2026-09-29: the expression belongs in the script check). The text model of the episode's
@@ -315,8 +326,8 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 (expected_readable_hash is not None and expected_readable_hash != file_hash(root / "episodes" / episode / "script.md")) or
                 (expected_config_hash is not None and expected_config_hash != config_hash)):
             raise AppError("Skript oder Stimmen seit der Freigabe geändert. Bitte erneut prüfen.", code="script_edited", status="blocked")
-        tags_file = episode_folder / "expression.json"
-        if expected_expression_hash is not None and expected_expression_hash != (file_hash(tags_file) if tags_file.is_file() else ""):
+        if expected_expression_hash is not None and expected_expression_hash != reading_hash(
+                root, episode, script_hash, backchannels=bool(backchannels_for(choice, config.language))):
             # The approval covers the tags the reader saw; tags placed anew afterwards need a new reading.
             raise AppError("Der Ausdruck wurde seit dem Lesen neu gesetzt. Bitte das Skript mit den aktuellen Tags lesen "
                            "und erneut freigeben.", code="script_edited", status="blocked")

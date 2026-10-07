@@ -282,8 +282,12 @@ turn, a breath before a summary or a short pause before a key statement.
 The check in `expression.py` keeps the layer strict:
 
 - Without its tags, every segment must be word for word the text that would be spoken anyway.
-- At most two tags per segment (`expression.MAX_TAGS_PER_SEGMENT`); per episode at most as many tags as a quarter of
-  its segments, but always at least three. No tag inside a word.
+- At most two tags per segment (`expression.MAX_TAGS_PER_SEGMENT`); per episode at most as many tags besides the
+  pauses as a quarter of its segments, but always at least three. No tag inside a word.
+- Pauses are counted apart from the other tags, at most a third of the segments (`expression.episode_pause_limit`),
+  a ceiling, not a target. They go where the conversation invites one: after a question to think about, before a
+  turn or a key result, after a dense stretch; the content sets the rhythm, never a schedule or a fixed pattern
+  (the user: „immer organisch bleiben“) (why: D-144, prompt version `audio_expression.v3-pauses`).
 - A `<long pause>` never opens a segment, because assembly pauses there anyway (why: D-094). The check removes it
   there without a correction call, and a segment left without a tag drops out of the layer
   (`expression.without_opening_pause`, prompt version `audio_expression.v2`).
@@ -304,7 +308,9 @@ The tags belong to the script reading (why: D-091).
 - **Placing again:** the side column offers **„Ausdruck setzen“** (set expression) or **„Ausdruck neu setzen“** (set
   expression again), also **„Für alle Folgen“** (for all episodes); this asks the text model again.
 - **Approval:** the approval on the page Vertonung carries the hash of the tags you read. If they were placed again
-  afterwards, the Studio rejects the approval until the episode has been read again.
+  afterwards, the Studio rejects the approval until the episode has been read again. A reading placed for the other
+  route (with or without listener reactions) or for an earlier script counts as none, on the reading page and in the
+  approval alike (`episode_audio.reading_hash`); the recording then places its own tags.
 - **Recording:** it speaks exactly these tags, without a new model call; a segment whose spoken form has changed
   since is recorded without a tag. If no tags are placed yet, the recording places them itself, and the card says
   that they are then unread.

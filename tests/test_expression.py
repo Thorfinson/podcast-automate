@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from podcast_automate.episode_audio import run_episode_audio, tag_episode
+from podcast_automate.episode_audio import run_episode_audio, saved_expression, tag_episode
 from podcast_automate.errors import AppError
 from podcast_automate.expression import (ALLOWED_TAGS, BACKCHANNEL_PROMPT_VERSION, EXPRESSION_PROMPT_VERSION,
                                          EXPRESSION_VERSION, ExpressionPlan, episode_tag_limit, expression_defects,
@@ -49,7 +49,20 @@ class ExpressionDefectsTests(unittest.TestCase):
         many = {f"s{n}": "Gut." for n in range(8)}
         rows = [(sid, "<breath> Gut.") for sid in many]
         self.assertEqual(episode_tag_limit(8), 3)
-        self.assertTrue(any("At most 3 tags in this episode" in error for error in expression_defects(plan(*rows), many)))
+        self.assertTrue(any("At most 3 tags besides pauses in this episode" in error
+                            for error in expression_defects(plan(*rows), many)))
+
+    def test_pauses_are_counted_apart_so_breathing_room_never_competes_with_the_other_tags(self):
+        """2026-10-07: „der stetige Strom von Information“ left no moment to catch one's breath; a Google recording had
+        3 pause tags in 34 minutes. Pauses have their own budget of about one for every three segments."""
+        from podcast_automate.expression import episode_pause_limit
+        many = {f"s{n}": "Gut. Und jetzt?" for n in range(12)}
+        paused = [(sid, "Gut. <short pause> Und jetzt?") for sid in list(many)[:4]]
+        tagged = [(sid, "<breath> Gut. Und jetzt?") for sid in list(many)[4:7]]
+        self.assertEqual((episode_tag_limit(12), episode_pause_limit(12)), (3, 4))
+        self.assertEqual(expression_defects(plan(*paused, *tagged), many), [])
+        extra = paused + [(list(many)[7], "Gut. <short pause> Und jetzt?")]
+        self.assertTrue(any("At most 4 pauses" in error for error in expression_defects(plan(*extra), many)))
 
     def test_a_long_pause_never_opens_a_segment(self):
         """All 44 <long pause> tags of the 29 Sep recordings opened their segment, on top of the assembly's pause, and
@@ -272,6 +285,31 @@ class ExpressionRecordingTests(unittest.TestCase):
         self.assertEqual((run.status, sent), ("completed", [tagged, second.text]))
         used = json.loads((manifest_path(self.root, run.run_id).parent / "expression.json").read_text(encoding="utf-8"))
         self.assertEqual((used["segments"], used["source"]), ({first.segment_id: tagged}, "reading"))
+
+    def test_a_reading_placed_for_another_route_counts_as_none_for_the_approval(self):
+        """2026-10-07: after the switch to Google every reading placed before (no listener reactions) refused the
+        approval, because the page shows no tags for it and so sent none, while the check compared the old file. Such a
+        reading now counts as none on both sides; the recording then places its own tags."""
+        from podcast_automate.episode_audio import reading_hash
+        self.gemini()
+        first, _ = example_script().segments
+        with patch("podcast_automate.episode_audio.AdapterPool", self.placing({first.segment_id: "<chuckle> " + first.text}, [])):
+            tag_episode(self.root, "ep_001")
+        path = self.root / "episodes/ep_001/expression.json"
+        script_hash = file_hash(self.root / "episodes/ep_001/script.yaml")
+        self.assertEqual(reading_hash(self.root, "ep_001", script_hash), file_hash(path))
+        self.assertEqual(reading_hash(self.root, "ep_001", script_hash, backchannels=True), "")
+        self.assertEqual(reading_hash(self.root, "ep_001", "0" * 64), "")
+        google = AudioChoice(provider="google_gemini_tts", voices={"host_a": "Erinome", "host_b": "Sadachbia"},
+                             expression=True)
+        with patch("podcast_automate.episode_audio.saved_expression", wraps=saved_expression) as checked, \
+                patch("podcast_automate.google_speech.build_opener", side_effect=AssertionError("stopped before speech")), \
+                patch("podcast_automate.episode_audio.AdapterPool", side_effect=AppError("stop here", code="test_stop")):
+            run = run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=google,
+                                    expected_expression_hash="", speech_key="AIza-test")
+        # The approval check let it start; the expression stage (no reading for Google) is where this test stops it.
+        self.assertTrue(checked.called)
+        self.assertEqual(run.model_dump(mode="json")["stages"]["expression"]["error"]["code"], "test_stop")
 
     def test_assembly_shortens_the_dead_air_of_segments_with_a_pause_tag_only(self):
         """2026-10-02: a <long pause> left up to 7.3 s of silence; assembly now cuts it to 1.2 s (audio.assemble)."""

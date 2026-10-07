@@ -21,8 +21,9 @@ more speaker switches are not quality goals. Remove tautological transition sent
 technical referents trackable on first hearing, without adding new teaching examples. Use the
 supplied host_roles consistently, without stating those roles in the spoken text. Apply the
 listenability rules above to the draft: break the expert's long turns where the thought allows, give
-host_b the reactions, summaries, reflection beats and questions that let the listener breathe, end
-each chapter on a short recap and the question the next chapter answers, and where the opening
+host_b the reactions, summaries, reflection beats and questions that let the listener breathe in the
+design's partner_stance, end each chapter as its scene's ending in the teaching design says, and
+keep the design's dramaturgy and opening instead of turning them into one standard pattern; where the opening
 announces the answer the episode later earns, turn it into the question. The conversation partner
 can think ahead, test an assumption and ask why the detail matters; host_b does not have to ask a
 question in every turn. Preserve or add the required episode-specific welcome and sign-off;

@@ -28,8 +28,10 @@ callback of the listenability rules are no such recaps. A compact explanation ma
 not demand laborious restatement of what is already clear. Check the order of prerequisites, natural
 contributions from both hosts, useful transitions and an honest answer to the episode question. Send
 a wall of facts back as a dialogue issue: findings strung together without a question the listener
-wants answered, the episode's answer announced before it is earned, dense blocks that end without a
-recap or reflection beat, or the expert holding the floor. dialogue_shape measures the script:
+wants answered, the episode's answer announced before it is earned, dense blocks that end with
+nothing to hold on to (no recap, reflection, open question or other handover), or the expert holding
+the floor. The chapter endings may differ by design; do not ask for a recap where a chapter ends on
+another handover. dialogue_shape measures the script:
 host_b's share of the spoken words (partner_share) and every turn of consecutive segments by one
 host over 80 words (long_turns). A partner_share below 0.25, more than two turns over 120 words, or
 a chapter told in long expert turns one after another without host_b reacting, summing up or asking

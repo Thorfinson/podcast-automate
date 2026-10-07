@@ -32,7 +32,7 @@ from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_pr
 from .logs import add_secret, configure_logging, logger, scrub
 from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManifest, RuntimeSettings, SeriesGoal,
                      TopicBrief, host_labels, now)
-from .episode_audio import saved_approval, saved_expression
+from .episode_audio import reading_hash, saved_approval, saved_expression
 from .expression import BACKCHANNEL, TAG
 from .runner import manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
@@ -1794,8 +1794,9 @@ class Studio:
                     # The approval covers the tags the reader saw with the script (tag_episode), or none. A re-render
                     # speaks them too, so it is bound to the tags on the reader's page as well (2026-10-02: after
                     # "Ausdruck neu setzen" a re-render spoke tags nobody had read).
-                    tags_file = root / "episodes" / episode / "expression.json"
-                    if data.get("expression_hash", "") != (file_hash(tags_file) if tags_file.is_file() else ""):
+                    # A reading placed for another route or an earlier script counts as none, as on the reader's page.
+                    if data.get("expression_hash", "") != reading_hash(root, episode, payload["script_hash"],
+                                                                       backchannels=audio.provider == "google_gemini_tts"):
                         raise AppError("Der Ausdruck wurde seit dem Lesen neu gesetzt. Bitte das Skript mit den aktuellen "
                                        "Tags lesen und erneut freigeben.", code="script_edited")
                     payload["expression_hash"] = data.get("expression_hash", "")

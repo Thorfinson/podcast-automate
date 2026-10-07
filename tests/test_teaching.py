@@ -8,7 +8,7 @@ from podcast_automate.editorial import (MACHINE_LEARNING_TERMS, TERMINOLOGY, TEA
                                         episode_series_context, terminology)
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.models import EpisodeScript
-from podcast_automate.storage import digest, read_yaml, write_json
+from podcast_automate.storage import digest, load_project, read_yaml, write_json, write_yaml
 from podcast_automate.scripting import run_script
 from podcast_automate.teaching import (TeachingPlan, TeachingPlanReview, TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview,
     ResearchGap, assess_teaching, build_teaching_plan, validate_readback, validate_teaching_plan)
@@ -476,7 +476,8 @@ class TeachingTests(unittest.TestCase):
                "first_answer": "A higher score sounds better.", "turning_point": "The energy convention turns it around.",
                "turning_finding_ids": ["f_energy"], "payoff": "Lower energy means a better fit.",
                "callback": "The two candidates from the opening."}
-        self.assertEqual(set(arc), set(TeachingPlan.LATER))
+        # The storytelling devices (D-143) are the other optional fields; the next test covers them.
+        self.assertEqual(set(arc) | {"dramaturgy", "opening", "partner_stance"}, set(TeachingPlan.LATER))
         planned = TeachingPlan.model_validate({**saved, **arc})
         self.assertEqual(validate_teaching_plan(planned, entry), [])
         self.assertEqual({key: planned.model_dump()[key] for key in arc}, arc)
@@ -490,6 +491,41 @@ class TeachingTests(unittest.TestCase):
             with self.subTest(broken=broken):
                 errors = validate_teaching_plan(planned.model_copy(update=broken), entry)
                 self.assertTrue(any(message in error for error in errors), errors)
+
+    def test_each_episode_tells_its_story_differently_from_the_episodes_just_before(self):
+        """The user (2026-10-06): after two episodes a listener should not be able to guess the structure. The design
+        chooses its devices from the catalogs, sees what the two episodes before chose (from this run, else from their
+        published plans for a revision), and code refuses a repeat; a plan saved before still dumps as it did."""
+        from podcast_automate.teaching import design_prompt, previous_devices, render_teaching_plan
+        plan = fixtures.example_plan()
+        entry = plan.episodes[0]
+        saved = self.design().model_dump()
+        self.assertTrue(all("ending" not in scene for scene in saved["scenes"]))
+        told = TeachingPlan.model_validate({**saved, "dramaturgy": "discovery", "opening": "anecdote",
+            "partner_stance": "skeptic", "scenes": [{**scene, "ending": "conclusion"} for scene in saved["scenes"]]})
+        self.assertEqual(validate_teaching_plan(told, entry), [])
+        before = [{"episode_id": "ep_000", "dramaturgy": "discovery", "opening": "scene", "partner_stance": "skeptic"}]
+        errors = validate_teaching_plan(told, entry, before)
+        self.assertTrue(any("dramaturgy discovery" in error for error in errors), errors)
+        self.assertTrue(any("partner_stance skeptic" in error for error in errors), errors)
+        rendered = render_teaching_plan(told)
+        self.assertIn("## Spannungsbogen\n\nDramaturgie: Entdeckungsgeschichte\n\nEinstieg: Anekdote\n\n"
+                      "Rolle der fragenden Stimme: Skeptisch\n\n", rendered)
+        self.assertIn("Kapitelende: Abschluss", rendered)
+        # The design prompt offers the catalogs and the choices of the episodes before.
+        from types import SimpleNamespace
+        payload = json.loads(design_prompt(load_project(self.root), entry, SimpleNamespace(findings=[], synthesis=[]), [],
+                                           devices=before).splitlines()[-1])
+        self.assertEqual(payload["storytelling"]["previous_episodes"], before)
+        self.assertIn("debate", payload["storytelling"]["dramaturgies"])
+        # A revision of the second episode reads the first one's published plan.
+        second = plan.episodes[0].model_copy(update={"episode_id": "ep_002"})
+        series = plan.model_copy(update={"episodes": [plan.episodes[0], second]})
+        write_yaml(self.root / "episodes" / entry.episode_id / "teaching_plan.yaml", told.model_dump())
+        self.assertEqual(previous_devices(series, second, self.root / "runs/run_none", self.root),
+                         [{"episode_id": entry.episode_id, "dramaturgy": "discovery", "opening": "anecdote",
+                           "partner_stance": "skeptic"}])
+        self.assertEqual(previous_devices(series, entry, self.root / "runs/run_none", self.root), [])
 
     def test_the_review_scope_starts_from_the_designs_a_redesign_set_aside(self):
         from podcast_automate.teaching import review_scope

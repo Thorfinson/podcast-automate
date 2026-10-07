@@ -17,6 +17,7 @@ import re
 
 from pydantic import Field
 
+from .audio import PAUSE_TAGS
 from .errors import AppError
 from .models import Contract, Identifier, NonEmpty
 from .prompts import instructions
@@ -26,9 +27,11 @@ from .research_patches import corrected_call
 # with listener reactions says so ("backchannels": true), so a reading is reused only for the route it was placed for.
 EXPRESSION_VERSION = "audio_expression.v1"
 # The prompt's own tag (prompts/audio_expression.txt). v2, 2026-10-02: never a <long pause> at a segment's start.
-EXPRESSION_PROMPT_VERSION = "audio_expression.v2"
-# With the reactions of the other host (prompts/audio_expression_backchannels.txt appended), 2026-10-06.
-BACKCHANNEL_PROMPT_VERSION = "audio_expression.v3-backchannels"
+# v3, 2026-10-07: pauses on purpose and counted apart (episode_pause_limit), where the listener catches their breath.
+EXPRESSION_PROMPT_VERSION = "audio_expression.v3-pauses"
+# With the reactions of the other host (prompts/audio_expression_backchannels.txt appended), 2026-10-06; v4 with the
+# pauses of v3.
+BACKCHANNEL_PROMPT_VERSION = "audio_expression.v4-pauses"
 # Google's documented vocal events for Gemini 3.8 Flash TTS (English names, also in German text), kept to those
 # that fit a factual two-host podcast; screams, sobs, growls, sneezes and the like are left out. The first four
 # passed the listen test of 2026-09-29, the others are documented and heard in scripts/gemini-tags-test.py.
@@ -61,8 +64,20 @@ def untagged(text):
 
 
 def episode_tag_limit(count):
-    """Tags one episode may carry: sparse, about one for every four segments."""
+    """Tags one episode may carry besides its pauses: sparse, about one for every four segments."""
     return max(3, count // 4)
+
+
+# The pause tags, counted apart from the other tags since 2026-10-07: listeners of the first series found „der stetige
+# Strom von Information“ left no moment to catch their breath, and a Google recording of Ontologies ep_001 had 0.3
+# pauses of a second or more per minute, its longest stretch without any pause 90 s, with 3 pause tags in 34 minutes.
+PAUSE_TAG_SET = frozenset(PAUSE_TAGS)
+
+
+def episode_pause_limit(count):
+    """Pause tags one episode may carry, a ceiling and never a target: a third of its segments. Where they go is the
+    content's call, never a schedule (the user: „immer organisch bleiben, nicht algorithmisch“)."""
+    return max(4, count // 3)
 
 
 def episode_backchannel_limit(count):
@@ -84,7 +99,7 @@ def without_opening_pause(plan):
 def expression_defects(plan, spoken, backchannels=()):
     """``spoken`` maps each segment id to the text that would be spoken without the layer; ``backchannels`` are the
     reactions this recording may use, none for one that records each segment on its own."""
-    errors, seen, total, reactions = [], set(), 0, 0
+    errors, seen, total, pauses, reactions = [], set(), 0, 0, 0
     for row in plan.segments:
         if row.segment_id not in spoken:
             errors.append(f"{row.segment_id}: unknown segment id.")
@@ -124,11 +139,14 @@ def expression_defects(plan, spoken, backchannels=()):
             if before.isalnum() or after.isalnum():
                 errors.append(f"{row.segment_id}: a tag stands between words, never inside one.")
                 break
-        total += len(tags)
+        total += sum(tag not in PAUSE_TAG_SET for tag in tags)
+        pauses += sum(tag in PAUSE_TAG_SET for tag in tags)
         reactions += len(heard)
     limit = episode_tag_limit(len(spoken))
     if total > limit:
-        errors.append(f"At most {limit} tags in this episode; use them only where they help most.")
+        errors.append(f"At most {limit} tags besides pauses in this episode; use them only where they help most.")
+    if pauses > episode_pause_limit(len(spoken)):
+        errors.append(f"At most {episode_pause_limit(len(spoken))} pauses in this episode.")
     if backchannels and reactions > episode_backchannel_limit(len(spoken)):
         errors.append(f"At most {episode_backchannel_limit(len(spoken))} reactions in this episode.")
     return errors
@@ -144,7 +162,8 @@ def plan_expression(invoke, script, spoken, *, language, labels, backchannels=()
     limit = episode_tag_limit(len(script.segments))
     text = instructions("audio_expression")
     data = {"language": language, "allowed_tags": list(ALLOWED_TAGS), "max_tags_per_segment": MAX_TAGS_PER_SEGMENT,
-            "max_tags_in_episode": limit, "hosts": labels}
+            "max_tags_in_episode": limit, "max_pauses_in_episode": episode_pause_limit(len(script.segments)),
+            "hosts": labels}
     if backchannels:
         text += "\n" + instructions("audio_expression_backchannels")
         data.update(allowed_backchannels=list(backchannels), min_words_for_backchannel=MIN_BACKCHANNEL_WORDS,

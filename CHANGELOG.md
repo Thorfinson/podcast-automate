@@ -43,6 +43,8 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-10-07 · Episodes leave room to breathe: scripts give the ear a breather where new information has piled up, and the expression layer sets pauses where the conversation invites them, with a budget of their own; the content sets the rhythm, not a schedule. Existing episodes get the pauses with „Ausdruck neu setzen“ before recording.
+- 2026-10-06 · Every episode is told its own way: the teaching plan chooses a dramaturgy (such as Rätsel, Entdeckungsgeschichte, Streitgespräch, Gedankenexperiment, Fallanalyse), an opening, the partner's stance and an ending for each chapter, different from the episodes just before; the readable plan names them under „Spannungsbogen“.
 - 2026-10-06 · Scripts are written to be heard: one big idea per episode, a question held open until the end, a short recap and the next question at each chapter end, reflection beats after dense passages, shorter turns and a partner who speaks about a third of the words. The teaching plan plans the arc („Spannungsbogen“), and the script review sends a wall of facts back.
 - 2026-10-04 · Stopped recordings with one shared reason name it in the job bar, with „Alle fortsetzen“ and, for a key stop, a button to the key; an OpenRouter refusal (403) names OpenRouter's own short reason, such as a key's credit limit.
 - 2026-10-04 · A script run checks the limits the research noted for the script against the stored sources (with Jev where switched on), and no longer states one the sources answer; with an assembled dossier the gap probe had searched nothing.
@@ -103,6 +105,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Fixed
 
+- 2026-10-07 · After the switch to Google an episode whose expression tags were placed before could not be approved for audio („Der Ausdruck wurde seit dem Lesen neu gesetzt“); such a reading now counts as none, and the recording places its own tags with listener reactions.
 - 2026-10-04 · `scripts/setup-ffmpeg.ps1` installs FFmpeg again: the pinned 9.0.1 build now comes from gyan.dev's GitHub mirror (the gyan.dev package link returned 404).
 - 2026-10-04 · `pla status` no longer reports a script run as changed after a raised limit or time limit; it now agrees with `pla resume`.
 - 2026-10-04 · Hold cards that need another text model, audio provider or the OpenRouter key point to the settings page and offer „Einstellungen öffnen“; the key messages name the settings page too.

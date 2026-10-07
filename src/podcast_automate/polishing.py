@@ -21,14 +21,17 @@ POLISH_VERSION = "dialogue_polish.v1"
 # checkpoints. Existing runs retain their approved inputs and historical verdicts.
 # v4 (2026-10-02): the composed framing fragment names the final episode as the series' synthesis, and the terminology
 # rule is the project's own (editorial.terminology). v5 (2026-10-06): the listenability rules (editorial.LISTENABILITY)
-# replace "long coherent monologues are welcome" and "no target ratio of speech between hosts".
-POLISH_PROMPT_VERSION = "dialogue_polish.v5-listenability"
+# replace "long coherent monologues are welcome" and "no target ratio of speech between hosts". v6: the design's
+# storytelling devices are kept instead of one standard pattern (D-143).
+# v7 (2026-10-07): the breathers of the listenability rules.
+POLISH_PROMPT_VERSION = "dialogue_polish.v7-breathers"
 # v4 (2026-10-02): a comparison after a repair is told the previous round's failing points and the changed segments.
 # v5 (2026-10-06): it judges spoken_language by the listenability rules, with the candidate's measured dialogue_shape,
-# and a recap or reflection beat that restates the original is no new fact.
-POLISH_REVIEW_VERSION = "dialogue_polish_review.v5-listenability"
-# The repair repeats the polishing prompt, so its meaning changed with v5.
-POLISH_REPAIR_VERSION = "dialogue_polish_repair.v2-listenability"
+# and a recap or reflection beat that restates the original is no new fact. v6: chapter endings that differ as the
+# design planned them are no defect.
+POLISH_REVIEW_VERSION = "dialogue_polish_review.v7-breathers"
+# The repair repeats the polishing prompt, so its meaning changed with v5 and v6.
+POLISH_REPAIR_VERSION = "dialogue_polish_repair.v4-breathers"
 DEMANDING_PASSAGES = 3
 HOST_ROLES = {
     "host_a": "The expert: calm, precise and analytical. Develop mechanisms and relevant details, "

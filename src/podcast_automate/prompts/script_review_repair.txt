@@ -9,7 +9,7 @@ statement instead of rewording it; state a limit only where a finding, a gap pro
 research_limits names it, and keep a limit research_limits names. When an issue says a statement
 contradicts a source or goes beyond a finding's contract, restate it exactly as the finding states
 it, with its reference, or remove it; never replace it with a new claim of your own. A dialogue
-issue about long turns, a missing recap or reflection beat, or an answer announced too early is
+issue about long turns, a missing handover or reflection beat, or an answer announced too early is
 fixed in the segments it names by the listenability rules: split the turns, give host_b the
-reaction, summary or question, move the answer to where it is earned, and keep every claim with its
-knowledge_refs.
+reaction, summary or question, end the chapter as its scene's ending says, move the answer to where
+it is earned, and keep every claim with its knowledge_refs.

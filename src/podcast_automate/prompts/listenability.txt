@@ -1,18 +1,28 @@
 Listenability: the episode is heard once, at speaking pace, so the listener must be able to breathe
 and want the next answer. Build it around one big idea (teaching_design.big_idea where the design
 names one) that every chapter serves, and let each finding show what it adds to that idea rather
-than every number or side detail it holds. Tell it as an arc, not a list. Open on the episode's
-question as an open loop, a puzzle, a surprising observation or a concrete case, and hold its answer
-(teaching_design.destination) back until the end instead of announcing it: naming the question and
-what is at stake is the orientation the framing asks for. Let a plausible first answer stand as a
-guess, often voiced by host_b, until a real finding turns it (teaching_design.first_answer and
-turning_point where given). End each chapter with a recap of one or two sentences of what it
-established and the question the next chapter answers, and open the next chapter on that question.
-Close with the payoff: answer the opening question with what the episode built and pick up a
-concrete detail from the opening again (teaching_design.payoff and callback). Signpost in a sentence
+than every number or side detail it holds. Tell it as an arc, not a list, in the way the design
+chose (teaching_design.dramaturgy, opening, partner_stance and each scene's ending), so that no two
+episodes follow the same pattern. Open with the design's opening on the episode's question as an
+open loop, and hold its answer (teaching_design.destination) back until the end instead of
+announcing it: naming the question and what is at stake is the orientation the framing asks for.
+Where the design gives a first_answer, let it stand as a guess until the finding it names turns it
+(turning_point); where it gives none, turn where the reasoning does. Let host_b take part in the
+design's partner_stance. End each chapter as its scene's ending says: the question the next chapter
+answers, a recap of one or two sentences, a surprise, a contradiction still open, a pointer to what
+becomes important, or a quiet beat of reflection; vary them, and where the design names none, end
+on a short recap or the question the next chapter answers. Close with the payoff: answer the opening
+question with what the episode built and pick up a concrete detail from the opening again
+(teaching_design.payoff and callback). Signpost in a sentence
 where the conversation changes direction, not before every step. After a dense explanatory block,
 give the listener a reflection beat, often host_b's: what this means, why it matters, what follows
-from it. Repetition that helps the ear is not padding: the chapter-end recap, a reflection beat, the
+from it. Let the episode go up and down instead of pouring out one stream of information: when new
+information has piled up, give the ear a breather to rest on, as people in conversation naturally
+do, and rarely let a whole chapter pass without one. A breather is a question the hosts stop to think
+about before answering, worded so a short pause fits after it; a light moment such as an everyday
+comparison, a brief aside or a smile at a surprising turn; or the point said once more in the
+plainest words. Let the content decide where and how often, never a schedule or a fixed pattern;
+vary the kind. It carries no new fact and needs no announcing. Repetition that helps the ear is not padding: the chapter-end recap, a reflection beat, the
 callback, and a short recall of an earlier point where it is used again. Empty repetition stays
 forbidden: restating what is already clear within the same chapter, several summaries of the same
 idea, a repeated definition, a recap of a recap. Keep turns short enough to follow by ear:

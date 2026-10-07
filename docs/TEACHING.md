@@ -152,6 +152,32 @@ asking „is that one anecdote, or has someone measured it?“. Since then:
 - **Length.** The recaps and beats share the episode's word budget
   ([Writing and framing](SCRIPTS.md#writing-and-framing)); the planned minutes stay, so the same time carries fewer
   facts.
+- **Breathers** (why: D-144). The user, about the first series: „Der stetige Strom von Information flutet meinen
+  Kopf“; human podcasts go up and down, with a question someone stops to think about, „und wenn es nur Sekunden
+  sind“. The listenability rules ask for a breather when new information has piled up, rarely a whole chapter
+  without one: a question the hosts stop to think about, worded so a short pause fits; a light moment (an everyday
+  comparison, a brief aside, a smile at a surprising turn); or the point said once more in the plainest words. The
+  content decides where and how often, never a schedule (the user: „immer organisch bleiben, nicht algorithmisch“).
+  The expression layer then sets the pauses there ([Expression tags](AUDIO.md#expression-tags)).
+- **Every episode told its own way** (why: D-143). One arc for all would let a listener guess the structure after two
+  episodes (the user, 2026-10-06), so each design chooses its devices from the catalogs in `dramaturgy.py`:
+  - a **dramaturgy** (`TeachingPlan.dramaturgy`): Rätsel, Entdeckungsgeschichte, Mitten hinein, Streitgespräch,
+    Gedankenexperiment, Mythos gegen Befund, Fallanalyse or Bauanleitung, fitting the material and the series goal;
+  - an **opening** (`opening`): scene, number, question, short quote, belief, anecdote or problem;
+  - a **stance of host_b** (`partner_stance`): skeptical, enthusiastic, the other side, thinking along, or practice;
+  - an **ending for every chapter** (`TeachingScene.ending`): open question, recap, surprise, contradiction,
+    foreshadowing, reflection, and the conclusion for the last chapter only.
+
+  The design prompt gets the catalogs and what the two episodes before chose (`teaching.previous_devices`: from this
+  run's reviewed designs, else from an episode's published `teaching_plan.yaml`, so a revision varies against its
+  neighbours too). Code refuses a dramaturgy of either of the two episodes before, an opening or stance of the episode
+  just before, chapter endings of only one kind before the last chapter, and a conclusion anywhere but at the end
+  (`dramaturgy.variety_defects`); the design review checks that the choice fits and is carried out. The dramaturgy
+  shapes the arc: a first answer that a finding overturns belongs to a puzzle or a myth check, not to every episode, so
+  the partner is not the one who guesses wrong each time. Writing, polishing and the script review follow the chosen
+  devices; a chapter may end on another handover than a recap. The readable plan names the devices under
+  „Spannungsbogen“ and each chapter's ending. Devices frame the findings and add no claims of their own; a plan saved
+  before has none and validates as before.
 
 ## What the application enforces
 

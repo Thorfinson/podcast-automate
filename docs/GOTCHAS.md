@@ -154,6 +154,11 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **Switching an episode from OpenRouter to Google records it completely again:** the two routes share no cache
   (one segment against a passage of several) and an approval names its provider. The old recording stays until the
   new one is published.
+- ✓ **An approval for Google is refused with „Der Ausdruck wurde seit dem Lesen neu gesetzt“ although nothing was set
+  again:** until 2026-10-07 the check compared the episode's old `expression.json` (placed without listener
+  reactions), which the reading page no longer shows for Google. Such a reading counts as none now
+  (`episode_audio.reading_hash`); restart the Studio after the update. To read the tags before recording, use
+  „Ausdruck neu setzen“. ([Tags are part of reading the script](AUDIO.md#tags-are-part-of-reading-the-script))
 - ✓ **A wrong Google key comes back as HTTP 400, not 401:** Google names it `API_KEY_INVALID`; the recording stops
   with `google_authentication` and shows Google's message. Store the right key under „Google-Key“, then resume.
   ([Keys, errors and limits](AUDIO.md#keys-errors-and-limits))

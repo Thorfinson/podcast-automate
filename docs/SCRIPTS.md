@@ -409,7 +409,8 @@ The review compares each segment that cites findings with the cited source secti
   finding is inaccurate, shown in the Studio when reading (why: D-085). A deviation therefore does not enter the
   follow-up review as a previous objection; that review judges each segment afresh.
 - Today's version is `script_review.v14-listenability` (`script_checks.SCRIPT_REVIEW_VERSION`). A
-  `script_review.v11-core-limits`, `script_review.v12-source-corrected` or `script_review.v13-reviewer-advisories`
+  `script_review.v11-core-limits`, `script_review.v12-source-corrected`, `script_review.v13-reviewer-advisories` or
+  `script_review.v14-listenability` (v15 only loosens its dialogue point: chapter endings vary by design, D-143)
   verdict that blocked nothing stays valid on resume (`script_checks.RELAXED_REVIEW_VERSIONS`), so an episode in flight
   is not reworked for the listenability point; a blocking one is reviewed again before the next correction, also when
   its repairs are spent.

@@ -39,7 +39,7 @@ from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_fin
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
 from .storage import atomic_text, digest, file_hash, write_json
 from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, build_teaching_plan,
-                       prerequisite_context)
+                       prerequisite_context, previous_devices)
 from .teaching_research import apply_foundations, named_question, research_foundations
 
 SPOKEN_DIALOGUE = fragment("spoken_dialogue")
@@ -51,16 +51,20 @@ PLAIN_WORDING = fragment("plain_language")
 # v10: the computed word budget (script_checks.word_budget) instead of a budget the writer derives itself. v11: for
 # Sonnet 5.5 alone its target set above the plan (script_checks.WRITER_TARGET_FACTORS), since Sonnet wrote 71 % of the
 # plan it was shown. v12 (2026-10-06): the listenability rules (editorial.LISTENABILITY) and the teaching design's arc;
-# chapter-end recaps and reflection beats count toward the length, empty repetition still does not.
-WRITE_EPISODE_VERSION = "write_episode.v12-listenability"
+# chapter-end recaps and reflection beats count toward the length, empty repetition still does not. v13: the design's
+# storytelling devices (dramaturgy, opening, partner_stance, each chapter's ending) instead of one arc for all (D-143).
+# v14 (2026-10-07): breathers where new information has piled up, set by the content, never by a schedule.
+WRITE_EPISODE_VERSION = "write_episode.v14-breathers"
 # The correction of a draft that breaks its plan repeats the writing prompt. v3: each correction carries the latest
 # attempt and its own defects, a short script the words it has and needs (write_episode). v4: the writing prompt v12.
-WRITE_REPAIR_VERSION = "write_episode_repair.v4-listenability"
+# v5: the writing prompt v13.
+WRITE_REPAIR_VERSION = "write_episode_repair.v6-breathers"
 MAX_REVIEW_REPAIRS = 3
 # v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
 # repair restated such claims and the next review flagged them again). v4: a limit research_limits names is kept.
-# v5 (2026-10-06): the writing prompt v12, and a listenability point is fixed in the segments it names.
-REVIEW_REPAIR_VERSION = "script_review_repair.v5-listenability"
+# v5 (2026-10-06): the writing prompt v12, and a listenability point is fixed in the segments it names. v6: the writing
+# prompt v13; a chapter ends as its scene's ending says.
+REVIEW_REPAIR_VERSION = "script_review_repair.v7-breathers"
 # Attempts one episode's correction of a series review gets before its evidence check rejects it (repair_series).
 SERIES_REPAIR_ATTEMPTS = 2
 # A new issue on a segment no repair touched blocks a follow-up review only as one of these.
@@ -301,6 +305,8 @@ class ScriptRun:
             directory = self.work / "teaching" / entry.episode_id
             continuity = prerequisite_context(plan, entry, self.work)
             write_json(directory / "continuity.json", continuity)
+            # What the episodes just before chose, so this one tells its story differently (D-143).
+            devices = previous_devices(plan, entry, self.work, self.root)
             while True:
                 teaching_sources = episode_sources(entry, self.dossier, self.context, self.sources)
                 write_json(directory / "source_context.json", teaching_sources)
@@ -308,7 +314,7 @@ class ScriptRun:
                     self.route_probe_gaps(entry)
                     _, files = build_teaching_plan(self.config, entry, self.dossier, teaching_sources, self.invoke, directory,
                                                    continuity=continuity, series_context=episode_series_context(plan, entry),
-                                                   editor_note=self.adopt_redesign(entry, directory))
+                                                   editor_note=self.adopt_redesign(entry, directory), devices=devices)
                     break
                 except AppError as exc:
                     if exc.code != "teaching_research_required":

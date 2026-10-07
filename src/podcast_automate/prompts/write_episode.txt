@@ -14,11 +14,12 @@ measurement or report it is, in ordinary words and without a spoken citation. Us
 no direct quotations or close reproduction of source passages. Write full explanations, not a
 summary stretched with banter. Execute the reviewed teaching_design: establish the starting problem
 and foundations, develop its reasoning and example, then earn the synthesis and transfer. Tell it
-along the design's arc by the listenability rules above: open on hook_question, let first_answer
-stand as a guess, bring the turning_point with its turning_finding_ids, end each chapter on its
-recap and the next scene's entry_question, and close on the payoff with its callback; keep
-destination for the end. A design without these fields gets the same arc from opening_problem, the
-scenes' entry_questions and destination. Its objectives will be checked by a separate reader who
+along the design's arc and dramaturgy by the listenability rules above: open on hook_question with
+the design's opening, let a first_answer stand as a guess where the design gives one, bring the
+turning_point with its turning_finding_ids, end each chapter as its scene's ending says, let host_b
+take the design's partner_stance, and close on the payoff with its callback; keep destination for
+the end. A design without these fields gets an arc from opening_problem, the scenes'
+entry_questions and destination. Its objectives will be checked by a separate reader who
 receives only the script and questions. Do not recite the teaching plan, announce every micro-step,
 or turn the dialogue into a quiz. Use each scene as a chapter in order, chapter_id=scene_id. Use
 purpose=deep_dive. Segments have stable unique IDs and host_a or host_b. Keep each turn to the

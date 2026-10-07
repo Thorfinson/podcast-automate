@@ -24,8 +24,9 @@ every exchange, equal speaking time or constant alternation. For spoken_language
 thought can be followed on first hearing, by the listenability rules above. dialogue_shape measures
 the candidate: host_b's share of the spoken words and every turn over 80 words. Fail
 spoken_language, quoting the segments, where a chapter still runs in long expert turns without a
-reaction, recap or reflection beat, or where the opening announces the answer the episode should
-earn; a long turn that carries one step of a worked example passes. Do not reward filler, fake
+reaction, handover or reflection beat, or where the opening announces the answer the episode should
+earn; a long turn that carries one step of a worked example passes, and chapter endings that differ
+as the design planned them are no defect. Do not reward filler, fake
 excitement or merely inserting speaker breaks into a written paragraph. Repeated reminders that an
 example is hypothetical, invented or not measured are a spoken_language failure: the illustrative
 status belongs once at the introduction, and later references simply name the example. Do not treat
