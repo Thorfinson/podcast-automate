@@ -26,7 +26,7 @@ small,.hint{font-size:14px;color:var(--muted)}
 label{display:block;font-size:14px;font-weight:600;margin:0 0 .4rem}
 input,textarea,select{width:100%;background:#fff;color:var(--ink);border:1px solid #9fb2ac;border-radius:6px;padding:.65rem .8rem}
 textarea{resize:vertical;min-height:96px;line-height:1.6}
-input[type=checkbox]{width:20px;height:20px;flex:none;accent-color:var(--green)}
+input[type=checkbox],input[type=radio]{width:20px;height:20px;flex:none;accent-color:var(--green)}
 input:focus,textarea:focus,select:focus,button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 fieldset{border:0;padding:0;margin:0}
 fieldset:disabled{opacity:.65}
@@ -290,6 +290,8 @@ dd{margin:0;overflow-wrap:anywhere}
 .approval{display:flex;align-items:flex-start;gap:12px;font-size:16px;font-weight:400;max-width:720px;margin-top:16px}
 .approval input{margin-top:4px}
 .setting-choices{display:flex;flex-direction:column;gap:8px;margin:8px 0 16px}
+.key-states{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.key-states button{margin-left:6px}
 .setting-choice{display:flex;align-items:center;gap:10px;font-weight:400}
 .pronunciation{margin:0;padding:0;border:0;background:transparent;max-width:none}
 .pronunciation[open]>summary{margin-bottom:10px}

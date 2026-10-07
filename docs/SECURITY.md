@@ -2,8 +2,9 @@
 title: Security
 doc_type: security
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
+  - src/podcast_automate/google_speech.py
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
   - src/podcast_automate/scripting.py
@@ -38,16 +39,17 @@ the processing you commissioned:
 | --- | --- | --- |
 | Prompts with the selected content: brief, chat messages, text of attachments and provided works, source sections, plans, scripts and reviews | OpenAI (Codex CLI, your ChatGPT subscription) or Anthropic (Claude Code CLI, your claude.ai login, Claude Max) | every text call the selection routes to that subscription, live web research included |
 | The same prompts, except web research | OpenRouter and the model provider it routes to, billed to your API credit | only with an OpenRouter text model |
-| The spoken text of approved scripts and of voice samples | OpenRouter (Gemini TTS) | only for a Gemini recording or a new Gemini voice sample |
+| The spoken text of approved scripts and of conversation samples | Google (Gemini API), billed to your Google key | only for a Gemini recording through Google or a new conversation sample |
+| The spoken text of approved scripts and of voice samples | OpenRouter (Gemini TTS) | only for a Gemini recording through OpenRouter or a new Gemini voice sample |
 | Reported gaps and corpus sections of the research | OpenRouter (Jev, TypeSafe) | only when the gap probe with Jev is on ([RESEARCH](RESEARCH.md#gap-probe)) |
 | Requests for source documents; title or DOI lookups for free copies | the public servers of the sources; OpenAlex, Semantic Scholar and Europe PMC, and Unpaywall or CORE only when you set their contact address or key | during research ([RESEARCH](RESEARCH.md#pipeline)) |
 | Quota and login queries | the Codex app server (`account/rateLimits/read`) and `claude auth status` | before model calls, `pla doctor`, `pla quota` |
 
 What never leaves the computer, or never gets in:
 
-- **Keys never go into prompts.** A chat message or upload (name or text) containing the stored session key or an
-  OpenRouter key (`sk-or-…`), and an OpenRouter prompt or Gemini text containing the key in use, are refused with
-  `credential_in_prompt`; the editorial partner never sees the key.
+- **Keys never go into prompts.** A chat message or upload (name or text) containing a stored session key, an
+  OpenRouter key (`sk-or-…`) or a Google key (`AIza…`), and an OpenRouter prompt or Gemini text containing the key in
+  use, are refused with `credential_in_prompt`; the editorial partner never sees a key.
 - **No browser credentials.** Source retrieval uses no browser cookies or credentials. Each source address and each
   redirect must resolve to a public server (`sources.public_url`); an address in a private network is refused with
   `invalid_source_url`.
@@ -87,8 +89,9 @@ What never leaves the computer, or never gets in:
   builds no access of its own from CLI session tokens.
 - API-key logins are refused, because they would bill per call (why: D-109): Codex must be logged in with ChatGPT,
   Claude Code must report `authMethod: "claude.ai"`; anything else stops as `subscription_required`.
-- The CLIs are started without `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` and
-  `ANTHROPIC_AUTH_TOKEN` (`codex.subscription_environment`), so they can only use the subscription login.
+- The CLIs are started without `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
+  `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` (`codex.subscription_environment`), so they can
+  only use the subscription login.
   `CLAUDE_CONFIG_DIR` stays untouched, because it holds the Claude login.
 - The quota store `~/.podcast-automate/subscriptions.json` never holds credentials. The login check keeps only whether
   you are logged in, the login method, the subscription type and the CLI version, no e-mail address or IDs.
@@ -96,7 +99,7 @@ What never leaves the computer, or never gets in:
 ### OpenRouter key in the Studio
 
 - The key is entered on the **„Einstellungen“** (settings) page ([STUDIO](STUDIO.md#settings-page)) or in a hold
-  card that asks for it, and serves OpenRouter text, Gemini audio and Jev.
+  card that asks for it, and serves OpenRouter text, Gemini audio through OpenRouter and Jev.
 - It stays in the local Studio server's memory and reaches a worker through its standard input, not through process
   arguments; it is stored neither in project files nor in browser storage.
 - After a Studio restart it must be entered again, unless the server has `OPENROUTER_API_KEY` in its environment.
@@ -104,6 +107,19 @@ What never leaves the computer, or never gets in:
 - The key can be exchanged at any time; a rotated key needs no new run.
 - A worker hands the key on only where OpenRouter is used: to a text job while it works with OpenRouter, to runs that
   use the Jev gap probe, to Gemini recordings and to new Gemini voice samples.
+
+### Google key in the Studio
+
+The Google key serves Gemini audio through Google and the conversation samples (why: D-138):
+
+- It is entered under **„Google-Key“** on the settings page or in a hold card that asks for it, kept in the Studio
+  server's memory only (or read from `GEMINI_API_KEY` in its environment), and handled like the OpenRouter key:
+  standard input to a worker, never in project files or browser storage, gone after a restart.
+- A worker receives it only for audio, resume and the connection check; the conversation sample is spoken by the
+  Studio server itself.
+- Google's Gemini API terms distinguish unpaid use, whose requests Google may use to improve its products, from paid
+  use, whose requests it does not (as known when this was written; not re-checked on 2026-10-06). The key's tier is
+  set in Google AI Studio, not here.
 
 ### OpenRouter key on the command line
 
@@ -117,7 +133,8 @@ What never leaves the computer, or never gets in:
 ### Keys on the wire
 
 - OpenRouter text, Gemini speech and Jev requests keep the key in memory and in the `Authorization` header only, and
-  follow no redirects (`openrouter.NoRedirect`).
+  follow no redirects (`openrouter.NoRedirect`). Gemini speech through Google sends its key only in the
+  `x-goog-api-key` header, never in the URL, and follows no redirects either.
 - A source fetch that carries a service key (CORE's free key, `PLA_CORE_API_KEY`) follows a redirect only on the same
   host and never from https to http (`sources.PublicRedirect`); otherwise it aborts with `source_download_failed`, so
   the key never reaches another server. (why: D-113)
@@ -125,7 +142,7 @@ What never leaves the computer, or never gets in:
 ### Credentials in traces, diagnostics and logs
 
 - Before anything is stored, `model_trace.redact` removes the known keys and anything that looks like a credential
-  (`sk-…`, `sess-…`, `Bearer …`, values after `api_key`, `access_token`, `token`, `password` or `secret`): in the live
+  (`sk-…`, `sess-…`, `AIza…`, `Bearer …`, values after `api_key`, `access_token`, `token`, `password` or `secret`): in the live
   trace `runs/<run_id>/model_trace.json` and in the tracebacks of failed stages and workers (`logs.record_failure`:
   `runs/<run_id>/failures/`, `<project>/studio/failures/`). Error messages and diagnostic files shown in the Studio
   replace its stored key with „[Key verborgen]“ (key hidden).
@@ -138,7 +155,8 @@ What never leaves the computer, or never gets in:
   full prompts or source texts.
 - The rotating log files `.studio/studio.log`, `<project>/studio/worker.log` and `<project>/logs/pla.log` (tracebacks
   included) and the terminal output of every `pla` process pass through `logs.scrub`: the keys the process knows (the
-  Studio's stored key, a worker's key, a key typed after `--api-key`, `OPENROUTER_API_KEY`; `logs.add_secret`) are
+  Studio's stored keys, a worker's keys, a key typed after `--api-key`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`;
+  `logs.add_secret`) are
   replaced whole, then the patterns of `model_trace.redact` apply. The tail of a crashed worker's error output, shown
   in the Studio under „Technische Details“ (technical details), passes the same filter.
 - Not filtered: a traceback that Python itself prints when a process dies outside its own error handling. A worker's
@@ -178,6 +196,9 @@ What version 0.1 implements:
     verbatim (`script_checks.QUOTED_WORDS_PER_SOURCE`, `script_checks.quotation_errors`; counting:
     [SCRIPTS](SCRIPTS.md#script-review)). (why: D-110)
   - These limits do not replace a check of every later spoken wording for usage rights.
+- **Companion kit.** The kit for podcast platforms (`publish_kit.py`, D-139) names sources only by title, authors,
+  year and web address; an idea source and a local file path never appear in it. It publishes nothing: uploading it
+  with an episode is your step, and so is the rights check above.
 - Transfers and credential handling: [Trust boundaries](#trust-boundaries), [Secrets and keys](#secrets-and-keys).
 - **No PII redaction.** A general detection and removal of personal data is not implemented.
 

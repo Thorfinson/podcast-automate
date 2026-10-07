@@ -2,10 +2,11 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
+  - src/podcast_automate/google_speech.py
   - src/podcast_automate/parallel_speech.py
   - src/podcast_automate/episode_audio.py
   - src/podcast_automate/expression.py
@@ -14,6 +15,7 @@ covers:
   - src/podcast_automate/voice_samples.py
   - src/podcast_automate/transcription_check.py
   - src/podcast_automate/prompts/audio_expression.txt
+  - src/podcast_automate/prompts/audio_expression_backchannels.txt
   - src/podcast_automate/execution.py
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -23,8 +25,9 @@ covers:
 
 # Audio
 
-How an approved script becomes an MP3 episode with chapters, transcript and show notes, recorded either locally
-with Qwen or with Gemini via OpenRouter.
+How an approved script becomes an MP3 episode with chapters, transcript and show notes, recorded locally with Qwen,
+with Gemini through Google's own API (two hosts per request, the default for Gemini since 2026-10-06), or with
+Gemini via OpenRouter (one segment per request).
 
 ## Recording flow
 
@@ -48,16 +51,18 @@ The guided flow ends on the page **„Vertonung“** (recording):
 - Earlier recordings stay available and are marked as an earlier version when text, provider or voices have changed
   since.
 
-The two hosts need two different voices. Switching the provider does not carry an earlier Qwen approval over to paid
-Gemini calls. A resumed audio run keeps the model, voices and text it started with; only the OpenRouter key may be
-renewed (see [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
+The two hosts need two different voices. Switching the provider does not carry an earlier approval over to another
+provider's calls. A resumed audio run keeps the model, voices, style and text it started with; only the OpenRouter or
+Google key may be renewed (see [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
 
 On the command line, `pla audio` records one reviewed episode with Qwen (see [Commands](PRODUCT.md#commands)).
 
 ### Segments, cache and assembly
 
-- The chosen provider renders each stored speaker segment separately; the whole episode is never produced in a
-  single TTS call. A longer turn can be split into several segments of the same speaker.
+- Qwen and Gemini via OpenRouter render each stored speaker segment separately; Gemini through Google renders a
+  passage of several consecutive segments of both hosts in one request (see [Passages](#passages)). The whole
+  episode is never produced in a single TTS call. A longer turn can be split into several segments of the same
+  speaker.
 - The structured direction controls speaker assignment, pauses and chapters; assembly orders the segments, sets the
   pauses and builds the episode automatically, so nobody has to operate an audio editor.
 - FFmpeg and ffprobe do the assembly and the measurement. Unintended silence at the edges may be corrected; speech
@@ -109,9 +114,83 @@ values reported by a CLI are not subscription costs that were actually charged.
 - The language is part of a Qwen segment's cache key, as are the worker and package versions. Run again with the same
   settings, valid segments come from the cache and only the assembly runs again.
 
+## Gemini via Google
+
+The listening rounds of 2026-10-06 (`.studio/hoerproben/make_hoerproben.py`, Ontologies episode 1) chose this route
+(why: D-133): two hosts speaking in one request sounded markedly more like a conversation than segments recorded one
+by one, and the user found the voices of the per-segment recordings too clean and the mood monotonous. In the Studio,
+choose **„Gemini TTS · Google“** in the **„Audio“** section of the [Settings page](STUDIO.md#settings-page) and store
+the **„Google-Key“** there; the OpenRouter key stays for OpenRouter text, Jev and the OpenRouter route.
+
+### The speech request
+
+- `POST https://generativelanguage.googleapis.com/v1beta/interactions` (`google_speech.GOOGLE_SPEECH_ENDPOINT`), the
+  key only in the `x-goog-api-key` header, never in the URL. The model is the chosen `speech.GEMINI_MODELS` entry
+  without OpenRouter's `google/` prefix (`gemini-3.8-flash-tts`).
+- One `text` item per turn (consecutive segments of one host joined), each with `speech_metadata` naming its
+  speaker and its role's style; `generation_config.speech_config` is `{"mode": "conversational", "speakers": [...]}`
+  with the two voices. A passage where only one host speaks uses the single voice (`[{"voice": ...}]`) and leaves out
+  the listener reactions, which need the other host.
+- The answer carries a base64 WAV (24 kHz, mono, 16 bit) in the audio item of its `model_output` step; another
+  format, a text-only answer or an empty one stops with `invalid_audio` and stores nothing.
+- The speaker names in the request are `Alex` and `Robin` (`google_speech.SPEAKER_NAMES`), gender-neutral and never
+  spoken, so no name hints at who explains.
+- Verified live on 2026-10-06 with `gemini-3.8-flash-tts`: single voice, two speakers, the style field (two styles
+  of the same sentence sound clearly different), listener reactions in pipes and a 3.7-minute passage of 20 turns in
+  one answer. German was not part of the listening rounds (see the verification list of the active plan).
+
+### Passages
+
+A passage is a run of consecutive segments of one chapter and scene (`google_speech.plan_passages`), at most 3,600
+characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAGE_TURNS`) (why: D-134):
+
+- A chapter is cut into as few passages as the bounds allow, at the segment boundaries nearest equal shares of its
+  text, so no short remnant is left; a single segment over the bounds is a passage of its own.
+- The cut is made on the script text only: a spoken form or newly placed tags never move a boundary, so a change
+  records again only the passage that contains it.
+- A passage never crosses a chapter, so chapter marks stay measured. Pauses ([Pause minimums](#pause-minimums)) go
+  between passages by the rule of a passage's last segment; inside a passage Gemini paces the turns itself.
+- The cache key (`google_speech.passage_settings`) holds each segment's script text and spoken form where it
+  differs, the voices, styles and speaker names of the hosts who speak in it, the model, the language and the
+  adapter version (`google_speech.GOOGLE_SPEECH_VERSION`). A run binds `google_speech.py` (`worker_sha256`) and the
+  passage rule (`passages`) in its inputs. The cache lies in `cache/audio/google/`.
+- The [plausibility check](#plausibility-check-of-gemini-takes) judges a passage as a whole; a failure names its
+  first and last segment.
+
+### Style and roles
+
+- Each role has a short style in English, as Google recommends (`speech.RoleStyles`, at most 80 characters; a long
+  direction makes the voice drift). The presets (`speech.STYLE_PRESETS`) are the listening rounds; **„Neugierig,
+  gespannt auf das, was kommt“** (curious and eager for what comes next) is the default, the user's choice of
+  2026-10-06 (why: D-135). The fields can also be overwritten with own words or left empty. Styles are Google's only.
+- **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode, `AudioChoice.alternate_roles`): in
+  every even-numbered episode the two voices swap, so each voice is the expert in turn; voice A explains in episode 1
+  (`AudioChoice.for_episode`). The roles in the script stay host_a explains and host_b asks; only the voices swap.
+  The approval and the run inputs hold the choice itself, the report and the show notes the episode's voices.
+- Default voices of the route: Erinome (explains in episode 1) and Sadachbia (asks).
+- **„▶ Gesprächsprobe“** (conversation sample) on the settings page plays a short conversation of four turns with
+  exactly the selected voices and styles, with a pause tag and a listener reaction, in German or English;
+  **„▶ Mit getauschten Rollen“** plays it with the roles swapped. A sample that does not exist yet is made after a
+  confirmation with one short request on the Google key (`voice_samples.generate_pair`) and is then played from
+  `projects/voice-samples/google/<language>/<fingerprint>/` without a further request.
+
+### Keys, errors and limits
+
+- Key handling: see [Secrets and keys](SECURITY.md#secrets-and-keys). Without a Google key the run stops before any
+  request with `google_key_required`.
+- Google answers a wrong key with 400 `API_KEY_INVALID`; it and 401/403 stop with `google_authentication`. Another
+  rejected request (400, 404, 413, 422) stops with `google_speech_request`. Google's own short message is kept in
+  both, without credentials: it names the voice, model or quota at fault.
+- A 429 waits Google's `retryDelay` (else 5, 10, 20, 40, 60 seconds), shared by every recording of the workspace,
+  up to eight times (`google_speech.RATE_LIMIT_RETRIES`); a per-day quota (`quotaId` with `PerDay`) does not wait
+  and stops at once with `google_quota` (status `waiting_for_quota`). 500, 502, 503, 504, a cut transfer and a reset
+  connection are requested twice more; a lasting connection error stops with `google_connection`.
+- A passage of 20 turns hides a single skipped turn better from the plausibility check than a segment does; the
+  listening review stays the acceptance.
+
 ## Gemini via OpenRouter
 
-In the Studio, choose **„Gemini TTS · OpenRouter“** and both voices in the **„Audio“** section of the
+In the Studio, choose **„Gemini TTS · OpenRouter (Abschnitt für Abschnitt)“** and both voices in the **„Audio“** section of the
 [Settings page](STUDIO.md#settings-page); the chat does not set them. The audio choice is a workspace setting
 ([Studio settings](CONFIGURATION.md#studio-settings)), saved separately from the text model (which can still be Codex
 or Claude), and changes neither the reviewed script nor its research. **„Stimmen anhören“** (listen to voices) on the
@@ -130,10 +209,8 @@ voices (`speech.GEMINI_MODELS`, `speech.GEMINI_VOICES`): see [Providers and mode
   ([OpenRouter TTS documentation](https://openrouter.ai/docs/guides/overview/multimodal/tts),
   [model description](https://openrouter.ai/google/gemini-3.8-flash-tts)).
 - The OpenRouter speech call takes one voice per request, so the recording renders the speaker segments, each with
-  its own Gemini voice, and assembles them in script order. **Native two-speaker requests within a single Gemini
-  call are not connected:** Google's own API supports them, but its separate request format is not carried over to
-  OpenRouter without verification
-  ([Google's multi-speaker documentation](https://ai.google.dev/gemini-api/docs/speech-generation#multi-speaker)).
+  its own Gemini voice, and assembles them in script order. Two hosts in one request are what the
+  [Google route](#gemini-via-google) does.
 - There is no editorial rule of 30 to 90 seconds and no forced change of speaker. Very large segments are split at
   sentence or word boundaries only to keep within the request size; every character and the speaker assignment are
   kept, and coherent monologues stay monologues.
@@ -236,10 +313,24 @@ The tags belong to the script reading (why: D-091).
   recording) in the audio panel of the settings page, or, in a project without workspace settings, set
   `"expression": false` in `studio/audio.json` (see [Studio settings](CONFIGURATION.md#studio-settings)).
 
+### Listener reactions
+
+A Google recording also gets the other host's short reactions (why: D-136): the expression stage places, from the
+language's list (`expression.BACKCHANNELS`: for example `|mhm|`, `|right|`, `|aha|`), at most one reaction between
+pipes inside a segment of at least 30 words (`expression.MIN_BACKCHANNEL_WORDS`), never at its start or end, and per
+episode at most a quarter of its segments, at least two, counted apart from the tags
+(`prompts/audio_expression_backchannels.txt`, prompt version `audio_expression.v3-backchannels`). Gemini speaks the
+reaction in the other voice. The check removes nothing silently: without tags and reactions the text must be word for
+word the spoken one. A reading placed with reactions says so in `expression.json` (`"backchannels": true`) and is
+used only for a Google recording, a reading without them only for the other routes. The approval card and the
+reading show the number of reactions. The OpenRouter route gets none: whether it passes pipes through is unverified.
+
 ### Style directions
 
-Gemini reads a written style direction in the text, such as „Sag es fröhlich:“ (say it cheerfully), aloud; the
-OpenRouter endpoint does not pass through a speaking style outside the text (`speech_metadata`).
+Gemini reads a written style direction in the text, such as „Sag es fröhlich:“ (say it cheerfully), aloud. The
+Google route sends each role's style in its own field (see [Style and roles](#style-and-roles)). That the OpenRouter
+endpoint does not pass a speaking style outside the text (`speech_metadata`) was observed on 2026-09-29; the re-test of
+2026-10-06 did not run (the test asked OpenRouter for MP3, which its Gemini speech refuses), so it stays unverified.
 `scripts/gemini-tags-test.py` makes short comparison recordings with and without tags for listening; with `--neu`
 only the further tags from line 07 on.
 
@@ -351,7 +442,8 @@ of a new approval:
 - Script hash, reading view, job and audio choice are checked against the displayed state, as with every recording;
   for Gemini with expression also the tags you read (the hash of `expression.json`). If the expression was placed
   again since you read it, the Studio rejects the re-render and asks you to read and approve again.
-- The run renders only the changed segment again; all others come from the cache.
+- The run renders only the changed segment again; all others come from the cache. With Gemini through Google that is
+  the whole passage containing the segment: its other turns are spoken anew too and may sound different.
 - The run's approval receipt names the stored approval, not a new decision.
 - The deviations then appear in the export report and in the show notes.
 
@@ -360,8 +452,9 @@ of a new approval:
 With the [parallel mode](STUDIO.md#sequential-or-parallel) selected, Gemini audio starts every approved episode at
 once as its own job, at most 30 at the same time across the Studio (`execution.MAX_PARALLEL`) (why: D-092); each
 episode still needs its own script approval. In sequential mode, one recording per project runs at a time; Qwen always
-records one at a time. Within an episode, the speech segments go to OpenRouter one after another. Parallel recordings
-share the Gemini cache with a lock per segment, so no cache entry is generated twice.
+records one at a time. Within an episode, the segments (OpenRouter) or passages (Google) are requested one after
+another. Parallel recordings share the Gemini cache with a lock per segment or passage, so no cache entry is generated
+twice. The rate-limit rules of the Google route: see [Keys, errors and limits](#keys-errors-and-limits).
 
 ### Rate limits and transient errors
 
@@ -381,8 +474,8 @@ share the Gemini cache with a lock per segment, so no cache entry is generated t
 - An approval for which no place is free (all places taken, or a text job of the project is running) is not refused
   but queued (`studio/audio_queue.json`).
 - The Studio's scheduler starts queued episodes in the order of their approvals as soon as a place is free and the
-  OpenRouter key is present; after a restart, an episode otherwise shows „wartet auf den OpenRouter-Key“ (waiting
-  for the OpenRouter key).
+  key of the project's route (Google or OpenRouter) is present; after a restart, an episode otherwise shows „wartet
+  auf den Google-Key“ or „wartet auf den OpenRouter-Key“ (waiting for the key).
 - Before starting, the scheduler checks script, reading view, voices and expression again; if something has
   changed, the episode stays in the queue with the reason.
 - The page Vertonung shows the queue with **„Entfernen“** (remove) and **„Alle gelesenen Folgen freigeben“**
@@ -405,13 +498,14 @@ Each recording run writes its export to `exports/<episode>/<run_id>/`:
 | --- | --- |
 | `audio.mp3` | The episode with embedded chapters (ID3v2.3) |
 | `chapters.json` | Chapters measured at assembly, and those read back from the MP3 (`embedded`) |
-| `timeline.json` | Start, speech end, end, pause and trimmed silence of every segment |
+| `timeline.json` | Start, speech end, end, pause and trimmed silence of every segment; for a Google recording of every passage, with its `segment_ids` and `speaker_ids` (`schema_version` 1.1) |
 | `audio_report.json` | Duration, format, loudness and pause data; `speech_quality_verified: false` |
 | `transcript.md` | The approved text with host labels, in script order |
 | `README.md` | Link to the MP3 with its duration, the voices and any deviating spoken forms |
 | `playlist.m3u` | The MP3 |
 | `show_notes.md` | Chapters with timestamps from the measured assembly, the voices, and pronunciation notes for segments with a deviating spoken form |
 | `listening_sheet.md` | The listening sheet, see below |
+| `publish/` | The companion kit, written later on request („Begleitmaterial“, `pla publish-kit`; why: D-139): `description_short.txt`, `description.txt` (at most 4,000 characters: the description, chapters as `00:00 Title`, as many sources as fit), `sources.md` with every source, and `kit.json` bound to the script hash and this recording. Without a recording the kit lies in `episodes/<episode>/publish/`, chapters without times. |
 
 An episode recorded in parts before 2026-10-04 has the first five files once per part in `part_01/`, `part_02/` and so
 on; the other four cover all parts. The run also writes `reports/<episode>_audio.json`,

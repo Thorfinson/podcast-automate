@@ -201,8 +201,10 @@ class StudioHttpTests(unittest.TestCase):
                    AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"}).model_dump())
         set_jev_probe(self.root, True)
         write_json(other / "studio/text.json", {"provider": "openrouter", "model": "anthropic/claude-sonnet-5.5"})
-        expected = [{"need": "gemini_audio", "projects": ["A test project"]}, {"need": "jev", "projects": ["A test project"]},
-                    {"need": "openrouter_text", "projects": ["Second project"]}]
+        # Each row names the key it waits for (2026-10-06: Gemini through Google needs the Google key instead).
+        expected = [{"need": "gemini_audio", "projects": ["A test project"], "key": "openrouter"},
+                    {"need": "jev", "projects": ["A test project"], "key": "openrouter"},
+                    {"need": "openrouter_text", "projects": ["Second project"], "key": "openrouter"}]
         with patch.dict(os.environ):
             os.environ.pop("OPENROUTER_API_KEY", None)
             for path in ("/api/bootstrap", "/api/projects", "/api/projects/example", "/api/settings"):
@@ -210,6 +212,37 @@ class StudioHttpTests(unittest.TestCase):
                     self.assertEqual(json.loads(self.request(path)[1])["key_reminder"], expected)
             self.app.key = "test-key"
             self.assertEqual(json.loads(self.request("/api/projects")[1])["key_reminder"], [])
+
+    def test_a_google_recording_waits_for_the_google_key_which_reaches_only_its_steps(self):
+        """Gemini through Google (2026-10-06) speaks with its own key: the reminder and the queue name it, /api/key
+        stores it apart from the OpenRouter key, and only audio, resume and the check receive it."""
+        write_json(self.root / "studio/audio.json", AudioChoice(provider="google_gemini_tts",
+                   voices={"host_a": "Erinome", "host_b": "Sadachbia"}, alternate_roles=True).model_dump())
+        self.publish_episode()
+        write_json(self.root / "studio/audio_queue.json", [{"episode": "ep_001", "queued_at": "2026-10-06T10:00:00+00:00",
+                                                           "data": {}}])
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "GEMINI_API_KEY": ""}):
+            self.app.key = "or-key"
+            detail = json.loads(self.request("/api/projects/example")[1])
+            self.assertEqual(detail["key_reminder"], [{"need": "google_audio", "projects": ["A test project"], "key": "google"}])
+            self.assertEqual(detail["audio_queue"][0], {"episode": "ep_001", "position": 1,
+                             "queued_at": "2026-10-06T10:00:00+00:00", "waiting": "key", "key": "google"})
+            status, body, _ = self.request("/api/key", {"key": "AIza-google-test-key-0123", "kind": "google"})
+            self.assertEqual(json.loads(body), {"key_available": True, "google_key_available": True})
+            self.assertEqual((self.app.key, self.app.google_key), ("or-key", "AIza-google-test-key-0123"))
+            self.assertEqual(json.loads(self.request("/api/projects/example")[1])["audio_queue"][0]["waiting"], "place")
+            # A key pasted into the chat never reaches a model.
+            status, body, _ = self.request("/api/projects/example/start",
+                                           {"action": "assistant", "message": "Mein Key: AIzaSyA-1234567890abcdefghijklmnop"})
+            self.assertEqual(json.loads(body)["code"], "credential_in_prompt")
+            with patch("podcast_automate.studio.subprocess.Popen") as process:
+                process.return_value.stdin = io.StringIO()
+                process.return_value.stdin.close = Mock()
+                process.return_value.poll.return_value = None
+                status, body, _ = self.request("/api/projects/example/start", {"action": "check"})
+                self.assertEqual(status, 200, body)
+                self.assertEqual(json.loads(process.return_value.stdin.getvalue())["google_key"], "AIza-google-test-key-0123")
+            self.app.stop_all()
 
     def test_a_work_arrives_as_raw_bytes_and_only_as_octet_stream(self):
         # 2026-10-01: a book PDF from the library is far beyond the JSON upload's 4 MB.
@@ -745,6 +778,9 @@ class StudioHttpTests(unittest.TestCase):
                              file_hash(folder / "expression.json"))
 
     def test_the_queue_says_when_a_recording_waits_for_the_key_and_each_episode_names_its_speech_size(self):
+        # The queue waits for the key of the project's route (2026-10-06); a queued recording is a Gemini one.
+        write_json(self.root / "studio/audio.json",
+                   AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"}).model_dump())
         self.publish_episode()
         write_json(self.root / "studio/audio_queue.json", [{"episode": "ep_001", "queued_at": "2026-10-01T10:00:00+00:00",
                                                            "data": {}}])
@@ -965,6 +1001,28 @@ class StudioHttpTests(unittest.TestCase):
             self.assertEqual(self.request("/samples/gemini/de-DE/Aiden")[0], 400)
             build.assert_not_called()
         self.assertEqual(Studio(self.workspace).bootstrap()["voice_samples"], first["voice_samples"])
+
+    def test_a_conversation_sample_is_made_only_when_asked_with_the_google_key_and_then_played_from_the_library(self):
+        from tests.test_google_speech import spoken_answer
+        request = {"voices": {"host_a": "Erinome", "host_b": "Sadachbia"}, "styles": None, "language": "en-US"}
+        with patch("podcast_automate.google_speech.build_opener") as build, patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            build.return_value.open.side_effect = spoken_answer
+            status, body, _ = self.request("/api/pair-sample", request)
+            view = json.loads(body)
+            self.assertEqual((status, view["ready"]), (200, False))
+            self.assertEqual(self.request(view["url"])[0], 404)
+            status, body, _ = self.request("/api/pair-sample", {**request, "generate": True})
+            self.assertEqual(json.loads(body)["code"], "google_key_required")
+            build.return_value.open.assert_not_called()
+            self.app.google_key = "AIza-google-test-key-0123"
+            status, body, _ = self.request("/api/pair-sample", {**request, "generate": True})
+            self.assertEqual((status, json.loads(body)["ready"]), (200, True), body)
+            status, body, _ = self.request("/api/pair-sample", {**request, "generate": True})
+            self.assertEqual(build.return_value.open.call_count, 1)
+        status, audio, headers = self.request(json.loads(body)["url"])
+        self.assertEqual((status, headers["Content-Type"]), (200, "audio/mpeg"))
+        self.assertGreater(len(audio), 1000)
+        self.assertEqual(self.request("/api/pair-sample", {**request, "voices": {"host_a": "Erinome", "host_b": "Erinome"}})[0], 400)
 
     def test_finished_audio_comes_from_exports_and_supports_seeking(self):
         folder = self.root / "episodes/ep_001"

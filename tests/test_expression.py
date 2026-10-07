@@ -4,8 +4,9 @@ from unittest.mock import patch
 
 from podcast_automate.episode_audio import run_episode_audio, tag_episode
 from podcast_automate.errors import AppError
-from podcast_automate.expression import (ALLOWED_TAGS, EXPRESSION_PROMPT_VERSION, EXPRESSION_VERSION, ExpressionPlan,
-                                         episode_tag_limit, expression_defects, plan_expression, untagged)
+from podcast_automate.expression import (ALLOWED_TAGS, BACKCHANNEL_PROMPT_VERSION, EXPRESSION_PROMPT_VERSION,
+                                         EXPRESSION_VERSION, ExpressionPlan, episode_tag_limit, expression_defects,
+                                         plan_expression, untagged)
 from podcast_automate.runner import manifest_path
 from podcast_automate.scripting import run_script
 from podcast_automate.speech import AudioChoice, same_audio_generation, selected_audio
@@ -57,6 +58,29 @@ class ExpressionDefectsTests(unittest.TestCase):
         self.assertTrue(any("never opens a segment" in error for error in errors), errors)
         self.assertEqual(expression_defects(plan(("s2", "Das ist ja <long pause> fast schon unheimlich.")), self.spoken), [])
 
+    def test_listener_reactions_only_for_a_google_recording_inside_a_long_turn(self):
+        """The other host's |mhm| (Google's two-host passages, 2026-10-06): one per long turn, inside it, from the
+        language's list; a recording that speaks each segment alone has none."""
+        long = ("Und genau hier wird es spannend, denn die Suche gewichtet jedes Wort danach, wie selten es in der "
+                "ganzen Sammlung vorkommt, und ein seltenes Wort sagt viel mehr über den passenden Abschnitt aus als "
+                "ein häufiges, das in jedem zweiten Bericht steht.")
+        spoken = {**self.spoken, "s4": long}
+        reacted = long.replace("vorkommt, und", "vorkommt, |mhm| und")
+        reactions = ("|mhm|", "|aha|")
+        self.assertEqual(expression_defects(plan(("s4", reacted)), spoken, reactions), [])
+        self.assertEqual(untagged(reacted), long)
+        cases = {
+            "no listener reactions": (plan(("s4", reacted)), ()),
+            "allowed as reactions": (plan(("s4", long.replace("vorkommt, und", "vorkommt, |wow| und"))), reactions),
+            "at most one reaction": (plan(("s4", reacted.replace("ganzen Sammlung", "|aha| ganzen Sammlung"))), reactions),
+            "30 words or more": (plan(("s1", "Und genau hier |mhm| wird es spannend.")), reactions),
+            "never at its start": (plan(("s4", "|mhm| " + long)), reactions),
+        }
+        for expected, (answer, allowed) in cases.items():
+            with self.subTest(expected):
+                errors = expression_defects(answer, spoken, allowed)
+                self.assertTrue(any(expected in error for error in errors), errors)
+
     def test_the_studio_names_exactly_the_allowed_tags(self):
         from pathlib import Path
         import re
@@ -91,6 +115,23 @@ class PlanExpressionTests(unittest.TestCase):
         payload = json.loads(prompts[0].splitlines()[-1])
         self.assertEqual(payload["allowed_tags"], list(ALLOWED_TAGS))
         self.assertEqual([s["text"] for s in payload["segments"]], list(self.spoken.values()))
+
+    def test_reactions_are_asked_for_only_with_a_list_and_under_their_own_prompt_version(self):
+        seen = []
+
+        def invoke(prompt, schema, version):
+            seen.append((version, json.loads(prompt.splitlines()[-1]), prompt))
+            return plan()
+        plan_expression(invoke, self.script, self.spoken, language="de-DE", labels=self.labels)
+        plan_expression(invoke, self.script, self.spoken, language="de-DE", labels=self.labels,
+                        backchannels=("|mhm|", "|aha|"))
+        (plain_version, plain, plain_prompt), (version, data, prompt) = seen
+        self.assertEqual(plain_version, EXPRESSION_PROMPT_VERSION)
+        self.assertNotIn("allowed_backchannels", plain)
+        self.assertNotIn("between pipes", plain_prompt)
+        self.assertEqual(version, BACKCHANNEL_PROMPT_VERSION)
+        self.assertEqual(data["allowed_backchannels"], ["|mhm|", "|aha|"])
+        self.assertIn("between pipes", prompt)
 
     def test_an_answer_still_invalid_after_its_corrections_leaves_the_episode_without_tags(self):
         calls = []

@@ -208,19 +208,37 @@ def embedded_chapters(path: Path) -> list[dict]:
         return []
 
 
+def recording_units(script, units):
+    """The segment indices each recording covers: one segment each, or the passages ``units`` names by segment id
+    (google_speech), which must cover the script in order and never cross a chapter."""
+    if units is None:
+        return [[index] for index in range(len(script.segments))]
+    order = {segment.segment_id: index for index, segment in enumerate(script.segments)}
+    groups = [[order.get(segment_id, -1) for segment_id in unit] for unit in units]
+    if ([index for group in groups for index in group] != list(range(len(script.segments)))
+            or any(not group or len({script.segments[index].chapter_id for index in group}) != 1 for group in groups)):
+        raise AppError("Die Passagen passen nicht zum Skript.", code="invalid_audio")
+    return groups
+
+
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
              *, max_seconds: float | None = None, language: str = "de-DE", labels: dict | None = None,
-             pauses=None, progress=None, trim_pauses=()) -> list[Path]:
+             pauses=None, progress=None, trim_pauses=(), units=None) -> list[Path]:
     """Mix, measure and encode one episode into one MP3; ``progress(step, done, total)`` reports each step.
+
+    ``paths`` holds one recording per segment, or with ``units`` one per passage of several segments (a two-host
+    Google recording, google_speech). Pauses go between recordings only, by the rule of a passage's last segment:
+    inside a passage Gemini paces the turns itself. timeline.json then has one row per passage.
 
     ``max_seconds`` stops a montage longer than that; an episode has no such limit since 2026-10-04 (one episode is
     one MP3), as the script check bounds its length before the recording.
 
-    ``trim_pauses`` names the segments whose spoken text carries a pause tag: their silences over 1.5 s are cut
-    to 1.2 s, since a <long pause> left up to 7.3 s of dead air in the 29 Sep exports. Other segments stay as
-    recorded."""
+    ``trim_pauses`` names the segments whose spoken text carries a pause tag: their recording's silences over 1.5 s
+    are cut to 1.2 s, since a <long pause> left up to 7.3 s of dead air in the 29 Sep exports. Other recordings stay
+    as recorded."""
     report = progress or (lambda step, done=0, total=0: None)
-    if len(paths) != len(script.segments):
+    groups = recording_units(script, units)
+    if len(paths) != len(groups):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
     output.mkdir(parents=True, exist_ok=True)
     timeline = []
@@ -230,18 +248,20 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         position = 0
         with wave.open(str(mixed), "wb") as target:
             target.setparams((2, 2, 44100, 0, "NONE", "not compressed"))
-            for index, (segment, source) in enumerate(zip(script.segments, paths, strict=True)):
+            for number, (group, source) in enumerate(zip(groups, paths, strict=True)):
+                members = [script.segments[index] for index in group]
+                name = members[0].segment_id + (f" bis {members[-1].segment_id}" if len(members) > 1 else "")
                 if not source.is_file():
-                    raise AppError(f"Segment fehlt: {segment.segment_id}", code="invalid_audio")
-                normalized = work / f"segment_{index}.wav"
-                report("normalize", index, len(paths))
+                    raise AppError(f"Segment fehlt: {name}", code="invalid_audio")
+                normalized = work / f"segment_{number}.wav"
+                report("normalize", number, len(paths))
                 ffmpeg(["-i", str(source), "-ar", "44100", "-ac", "2",
                         "-c:a", "pcm_s16le", str(normalized)])
                 with wave.open(str(normalized), "rb") as stream:
                     frames = stream.getnframes()
                     start = position
                     peak = trimmed = 0
-                    if segment.segment_id in trim_pauses:
+                    if any(member.segment_id in trim_pauses for member in members):
                         samples, trimmed = shortened_silences(array("h", stream.readframes(frames)), 44100, channels=2)
                         frames -= trimmed
                         peak = max(max(samples, default=0), -min(samples, default=0))
@@ -251,18 +271,22 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                         peak = max(peak, max(map(abs, samples), default=0))
                         target.writeframesraw(chunk)
                     if frames == 0 or peak == 0:
-                        raise AppError(f"Segment enthält nur Stille: {segment.segment_id}",
+                        raise AppError(f"Segment enthält nur Stille: {name}",
                                        code="invalid_audio")
-                pause_ms, reason = applied_pause(script, index, pauses)
+                pause_ms, reason = applied_pause(script, group[-1], pauses)
                 pause = round(pause_ms * 44100 / 1000)
                 position += frames + pause
                 if max_seconds is not None and position / 44100 > max_seconds:
                     raise AppError("Die Montage überschreitet die erlaubte Länge.", code="duration_exceeded",
                                    status="blocked")
                 target.writeframesraw(b"\0" * (pause * 4))
+                identity = ({"segment_id": members[0].segment_id, "chapter_id": members[0].chapter_id,
+                             "speaker_id": members[0].speaker_id} if units is None else
+                            {"segment_ids": [member.segment_id for member in members],
+                             "chapter_id": members[0].chapter_id,
+                             "speaker_ids": list(dict.fromkeys(member.speaker_id for member in members))})
                 timeline.append({
-                    "segment_id": segment.segment_id, "chapter_id": segment.chapter_id,
-                    "speaker_id": segment.speaker_id, "start_seconds": start / 44100,
+                    **identity, "start_seconds": start / 44100,
                     "speech_end_seconds": (start + frames) / 44100,
                     "end_seconds": position / 44100,
                     "pause_ms": pause_ms, "pause_reason": reason,
@@ -312,7 +336,8 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
     write_json(output / "chapters.json", {"version": "1.0", "chapters": chapters,
                                           "embedded": written_chapters})
     write_json(output / "timeline.json", {
-        "schema_version": "1.0", "segments": timeline,
+        # 1.1: rows of passages (segment_ids, speaker_ids) instead of segments.
+        "schema_version": "1.0" if units is None else "1.1", "segments": timeline,
         "pcm_duration_seconds": position / 44100, "mp3_duration_seconds": duration,
     })
     write_json(output / "audio_report.json", {

@@ -28,6 +28,7 @@ const actionNames = {
   plan: "Inhaltsverzeichnis entsteht",
   replan: "Inhaltsverzeichnis wird überarbeitet",
   expression: "Ausdruck wird gesetzt",
+  publish_kit: "Begleitmaterial wird geschrieben",
   script: "Skripte entstehen",
   revise: "Skript wird überarbeitet",
   audio: "Audio entsteht",
@@ -43,7 +44,7 @@ let followWorkflow = true;
 let scriptEpisodeId=null, readingSnapshot=null;
 let overviewPage=false, overviewData={projects:[],trash:[]};
 // The settings page (studio_settings): what holds for every project, edited as a draft and saved in one go.
-let settingsPage=false, settingsData=null, settingsDraft=null;
+let settingsPage=false, settingsData=null, settingsDraft=null, pairLanguage="de-DE";
 let navigationEpoch=0;
 let setupSending=false;
 let pendingAttachments=[], readingAttachments=false;
@@ -51,8 +52,22 @@ let drawerOpen=false, connectionLost=false, lastSyncAt=Date.now(), stopHtml="";
 const scriptStateLabels={draft:"Entwurf",polished:"Dialog überarbeitet",reviewed:"Prüfungen bestanden",published:"Fertig zur Durchsicht"};
 const voiceSamples = () => project?.voice_samples || boot.voice_samples || {};
 const savedSample = (voice, language) => voiceSamples()[language]?.[voice];
+// Gemini speaks through Google's own API (two hosts per request, the Google key) or through OpenRouter (each segment on
+// its own, the OpenRouter key); both use the same thirty voices and the same voice library.
+const isGemini = provider => provider === "google_gemini_tts" || provider === "openrouter_gemini_tts";
+// The voices an episode is spoken in: swapped in an even-numbered one when the roles alternate (AudioChoice.for_episode).
+const episodeVoices = (a, id) => {
+  const number=/^ep_0*(\d+)$/.exec(id||"");
+  return a.alternate_roles&&number&&Number(number[1])%2===0?{host_a:a.voices.host_b,host_b:a.voices.host_a}:a.voices;
+};
+const keyOf = provider => provider === "google_gemini_tts" ? "google" : "openrouter";
+const KEY_NAMES = {openrouter:"OpenRouter-Key", google:"Google-Key"};
+const keyAvailable = (key="openrouter") => key === "google" ? boot.google_key_available !== false : boot.key_available !== false;
+// The keys a restarted server lost (it keeps them in memory only), as the notice names them; empty when none.
+const lostKeys = fresh => [boot.key_available&&!fresh.key_available?KEY_NAMES.openrouter:"",
+  boot.google_key_available&&fresh.google_key_available===false?KEY_NAMES.google:""].filter(Boolean).join(" und der ");
 const sampleButtonLabel = (provider, voice, language) =>
-  provider === "openrouter_gemini_tts" && !savedSample(voice, language)
+  isGemini(provider) && !savedSample(voice, language)
     ? "Hörprobe erzeugen · API"
     : "▶ Anhören";
 const currentAudio = () => project?.audio_settings || {provider:"qwen3_local",voices:(project?.config||boot.defaults).voice_profile};
@@ -60,8 +75,8 @@ const audioCatalog = () => boot.audio_catalog || {qwen3_local:{label:"Qwen · au
 // A Gemini choice saved without a model uses the default one; the label names the model an approval binds.
 const audioLabel = a => {
   if(a.provider==="qwen3_local")return "Qwen · lokal";
-  const gemini=audioCatalog().openrouter_gemini_tts;
-  return `${gemini?.models?.[a.model||gemini.default_model]||"Gemini"} · OpenRouter`;
+  const gemini=audioCatalog()[a.provider]||audioCatalog().openrouter_gemini_tts;
+  return `${gemini?.models?.[a.model||gemini.default_model]||"Gemini"} · ${a.provider==="google_gemini_tts"?"Google":"OpenRouter"}`;
 };
 const mediaUrl = path => "/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
 const running = () => submitting || project?.job?.status === "running" || (project?.audio_jobs||[]).some(j=>j.status==="running");
@@ -69,8 +84,9 @@ const disabled = () => running() ? "disabled" : "";
 function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.episode_id, queueable=false) {
   if(submitting)return "Der Auftrag wird gestartet.";
   // Gemini fails at its first request without a key; the approval card offers the key field instead.
-  if(currentAudio().provider==="openrouter_gemini_tts"&&boot.key_available===false)return "Zuerst den OpenRouter-Key hinterlegen.";
-  if(!boot.capabilities?.parallel_audio||currentAudio().provider!=="openrouter_gemini_tts")
+  const provider=currentAudio().provider;
+  if(isGemini(provider)&&!keyAvailable(keyOf(provider)))return `Zuerst den ${KEY_NAMES[keyOf(provider)]} hinterlegen.`;
+  if(!boot.capabilities?.parallel_audio||!isGemini(provider))
     return running()?"Ein Auftrag läuft bereits.":"";
   const active=(project.audio_jobs||[]).filter(j=>j.status==="running");
   if(active.some(j=>j.episode===episode))return "Diese Folge wird bereits vertont.";
@@ -93,10 +109,10 @@ async function api(path, data, renewed=false) {
     if(response.status===403&&result.code==="forbidden"&&data!==undefined&&!renewed){
       const fresh=await fetch("/api/bootstrap").then(r=>r.ok?r.json():null).catch(()=>null);
       if(fresh?.token&&fresh.token!==boot.token){
-        const keyLost=boot.key_available&&!fresh.key_available;
-        boot.token=fresh.token;boot.key_available=fresh.key_available;
+        const lost=lostKeys(fresh);
+        boot.token=fresh.token;boot.key_available=fresh.key_available;boot.google_key_available=fresh.google_key_available;
         const value=await api(path,data,true);
-        if(keyLost)notice("Das Studio wurde neu gestartet. Ein zuvor hinterlegter OpenRouter-Key muss erneut eingegeben werden.");
+        if(lost)notice(`Das Studio wurde neu gestartet. Ein zuvor hinterlegter ${lost} muss erneut eingegeben werden.`);
         return value;
       }
     }
@@ -259,12 +275,12 @@ function syncPlayButtons() {
 function refreshVoiceLibrary() {
   if(step!==PAGE.brief)return;
   const {config,audio}=setupSelection();
-  if($("voice-library-panel")&&audio.provider==="openrouter_gemini_tts")
+  if($("voice-library-panel")&&isGemini(audio.provider))
     $("voice-library-panel").innerHTML=renderVoiceLibrary(config.language);
   syncPlayButtons();
 }
 async function playSample(voice, language, provider="openrouter_gemini_tts") {
-  const url=provider==="openrouter_gemini_tts"?savedSample(voice,language)?.url:`/samples/${language}/${voice.toLowerCase()}`;
+  const url=isGemini(provider)?savedSample(voice,language)?.url:`/samples/${language}/${voice.toLowerCase()}`;
   if(!url)throw new Error("Für diese Stimme ist noch keine gespeicherte Hörprobe verfügbar.");
   const player=$("sample-player");
   if(playingSample?.url===url&&!player.paused){player.pause();syncPlayButtons();return;}
@@ -453,7 +469,7 @@ function renderBrief() {
     </div><aside class="split-rail">
     ${setupSummary()}${proposalChangesBrief()?pausedHint(["config"]):""}
     <details class="panel"><summary>Stimmen anhören</summary><p class="hint">${a.provider==="qwen3_local"?"Qwen":"Gemini"} · ${c.language==="en-US"?"English":"Deutsch"}. Die beiden Stimmen wählst du in den Einstellungen. Neue Gemini-Proben nutzen dein API-Guthaben.</p><div class="voice-library">${voices.map(v=>`<div class="sample-row"><strong>${escape(v)}</strong><button class="secondary small" data-preview-voice="${escape(v)}" data-preview-provider="${a.provider}" data-language="${c.language}" ${a.provider!=="qwen3_local"&&!savedSample(v,c.language)&&running()?"disabled":""}>${sampleButtonLabel(a.provider,v,c.language)}</button></div>`).join("")}</div>
-    ${a.provider==="openrouter_gemini_tts"?`<div id="voice-library-panel">${renderVoiceLibrary(c.language)}</div>`:""}</details>
+    ${isGemini(a.provider)?`<div id="voice-library-panel">${renderVoiceLibrary(c.language)}</div>`:""}</details>
     ${project?`<div class="actions"><button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button><button data-step="${nextPage}" ${proposal&&!project.proposal_applied?"disabled":""}>Weiter: ${steps[nextPage]} →</button></div>`:""}
     </aside></div>`;
 }
@@ -461,6 +477,8 @@ function renderBrief() {
 // project (studio_settings). Running and paused jobs keep what they bound; limits and the time limit of one call
 // apply when a job resumes.
 const EXECUTION_MODES=[["sequential","Sequenziell"],["parallel","Parallel"]];
+// Whether a key is there, in the server's memory or its environment; the key itself never reaches the page.
+const keyChip=available=>`<span class="chip ${available?"done":"decision"}">${available?"✓ hinterlegt":"fehlt"}</span>`;
 function settingField(id,label,control,hint="") {
   return `<div class="field"><label for="${id}">${escape(label)}</label>${control}${hint?`<p class="hint">${hint}</p>`:""}</div>`;
 }
@@ -472,7 +490,7 @@ function settingNumber(id,value,min,max,step=1) {
 }
 function renderSettings() {
   const d=settingsDraft, data=settingsData, catalog=audioCatalog(), presets=boot.text_catalog?.presets||[];
-  const a=d.audio, voices=(catalog[a.provider]?.voices||[]).map(v=>[v,v]), gemini=catalog.openrouter_gemini_tts;
+  const a=d.audio, voices=(catalog[a.provider]?.voices||[]).map(v=>[v,v]), gemini=catalog[a.provider];
   const chosen=presets.find(p=>presetMatches(p,d.text));
   const choices=data.allowance_choices||{fresh_attempts:[0,1,2,3],extra_calls:[0,100,250,500,1000]};
   const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
@@ -480,6 +498,7 @@ function renderSettings() {
   const textOptions=presets.map(p=>`<label class="setting-choice"><input type="radio" name="settings-text" value="${escape(p.id)}" ${p===chosen?"checked":""}><span>${escape(p.label)}</span></label>`).join("")+
     (chosen?"":`<label class="setting-choice"><input type="radio" name="settings-text" value="" checked><span>Bisher: ${textChoiceSummary(d.text)}</span></label>`);
   return `<header class="page-head"><div class="page-title"><span class="eyebrow">Studio</span><h1>Einstellungen</h1></div><span class="chip ${data.global?"done":"decision"}">${data.global?"Gilt für alle Projekte":"Noch je Projekt"}</span></header>
+    <p class="key-states">Keys: <button class="quiet small" data-scroll="key-panel-openrouter">OpenRouter</button>${keyChip(data.key_available)} <button class="quiet small" data-scroll="key-panel-google">Google</button>${keyChip(data.google_key_available)}</p>
     ${data.global?"":`<p class="note">Bisher hatte jedes Projekt eigene Werte. Angezeigt sind die ${data.source_project?`von „${escape(data.source_project)}“`:"Standardwerte"}; mit dem Speichern gelten sie für alle Projekte.</p>`}
     <p class="hint">Laufende und angehaltene Aufträge behalten Textmodell, Ausführung und freigegebene Vertonungen; Limits und Zeitlimit gelten beim nächsten Fortsetzen.</p>
     <section class="panel"><h2>Textmodell</h2><div class="setting-choices">${textOptions}</div>
@@ -487,11 +506,13 @@ function renderSettings() {
       <p class="hint">Codex- und Claude-Abo verursachen keine API-Kosten; die automatische Wahl nimmt Claude und springt bei leerem Kontingent auf Codex um. OpenRouter rechnet pro Aufruf ab; Live-Recherche läuft weiter über die Abos.</p></section>
     <section class="panel"><h2>Audio</h2>
       <div class="row">${settingField("settings-audio-provider","Anbieter",settingSelect("settings-audio-provider",Object.entries(catalog).map(([id,row])=>[id,row.label||id]),a.provider))}
-      ${a.provider==="openrouter_gemini_tts"&&gemini?.models?settingField("settings-audio-model","Sprachmodell",settingSelect("settings-audio-model",Object.entries(gemini.models),a.model||gemini.default_model)):""}</div>
-      <div class="row">${settingField("settings-voice-a","Stimme Host A",settingSelect("settings-voice-a",voices,a.voices.host_a))}${settingField("settings-voice-b","Stimme Host B",settingSelect("settings-voice-b",voices,a.voices.host_b))}</div>
+      ${isGemini(a.provider)&&gemini?.models?settingField("settings-audio-model","Sprachmodell",settingSelect("settings-audio-model",Object.entries(gemini.models),a.model||gemini.default_model)):""}</div>
+      <div class="row">${settingField("settings-voice-a",a.provider==="google_gemini_tts"?"Stimme Host A (erklärt in Folge 1)":"Stimme Host A",settingSelect("settings-voice-a",voices,a.voices.host_a))}${settingField("settings-voice-b",a.provider==="google_gemini_tts"?"Stimme Host B (fragt in Folge 1)":"Stimme Host B",settingSelect("settings-voice-b",voices,a.voices.host_b))}</div>
+      ${a.provider==="google_gemini_tts"?renderGoogleAudio(a,gemini):""}
       <div class="row">${settingField("settings-pause-same","Pause gleiche Stimme (ms)",settingNumber("settings-pause-same",pauses.same_speaker_ms,0,10000,50))}${settingField("settings-pause-change","Pause Stimmwechsel (ms)",settingNumber("settings-pause-change",pauses.speaker_change_ms,0,10000,50))}${settingField("settings-pause-chapter","Pause Kapitelwechsel (ms)",settingNumber("settings-pause-chapter",pauses.chapter_break_ms,0,10000,50))}</div>
-      ${a.provider==="openrouter_gemini_tts"?`<label class="approval"><input id="settings-expression" type="checkbox" ${a.expression!==false?"checked":""}><span>Ausdrucksmarken vor der Vertonung setzen</span></label>`:""}
-      <p class="hint">Eine Änderung von Stimmen, Pausen oder Sprachmodell verlangt für noch nicht vertonte Folgen eine neue Audio-Freigabe.</p></section>
+      ${a.provider==="google_gemini_tts"?'<p class="hint">Mit Google gelten die Pausen zwischen Gesprächsabschnitten; innerhalb eines Abschnitts setzt Gemini die Übergänge selbst.</p>':""}
+      ${isGemini(a.provider)?`<label class="approval"><input id="settings-expression" type="checkbox" ${a.expression!==false?"checked":""}><span>Ausdrucksmarken vor der Vertonung setzen${a.provider==="google_gemini_tts"?" (mit kurzen Einwürfen der anderen Stimme)":""}</span></label>`:""}
+      <p class="hint">Eine Änderung von Stimmen, Stil, Pausen oder Sprachmodell verlangt für noch nicht vertonte Folgen eine neue Audio-Freigabe.</p></section>
     <section class="panel"><h2>Ausführung</h2><div class="row">${settingField("settings-exec-text","Textausarbeitung",settingSelect("settings-exec-text",EXECUTION_MODES,d.execution.text),"Parallel: bis zu 5 Folgen je Skript-, Polishing- und Prüfstufe; das Lehrkonzept bleibt in Reihenfolge.")}
       ${settingField("settings-exec-audio","Vertonung",settingSelect("settings-exec-audio",EXECUTION_MODES,d.execution.audio),"Parallel nur mit Gemini; Qwen vertont lokal nacheinander.")}</div></section>
     <section class="panel"><h2>Ohne Rückfrage</h2><div class="row">${settingField("settings-fresh","Neue Anläufe je Lauf",settingSelect("settings-fresh",choices.fresh_attempts.map(n=>[n,n?`bis ${n}×`:"keine"]),d.allowances.fresh_attempts))}
@@ -501,9 +522,43 @@ function renderSettings() {
       ${settingField("settings-timeout","Zeitlimit eines Modellaufrufs (Minuten)",settingNumber("settings-timeout",Math.round(d.text_timeout_seconds/60),5,240),"Ein Aufruf, der länger braucht, wird beendet und beim Fortsetzen wiederholt. Große Inhaltsverzeichnisse brauchen mit Codex mehr als 30 Minuten.")}</section>
     <section class="panel"><h2>Claude</h2><label class="approval"><input id="settings-claude-extra" type="checkbox" ${data.claude_extra_usage?"checked":""}><span>Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen</span></label>
       <p class="hint">Solange eingeschaltet, versucht jeder Aufruf Claude, auch wenn ein Wochen- oder 5-Stunden-Limit gemeldet ist. Lehnt Claude trotzdem ab, kostet das einen Fehlversuch, und der Lauf weicht auf Codex aus oder pausiert wie bisher.</p></section>
-    <section class="panel"><h2>OpenRouter-Key</h2><p class="hint">Für OpenRouter-Text, Gemini-Audio und Jev. Er bleibt nur im Speicher dieses Studios und wird nach einem Neustart neu eingegeben; der redaktionelle Partner sieht ihn nie.</p>
+    <section class="panel" id="key-panel-openrouter"><div class="panel-title"><h2>OpenRouter-Key</h2>${keyChip(data.key_available)}</div><p class="hint">Für OpenRouter-Text, Jev und Gemini-Audio über OpenRouter. Er bleibt nur im Speicher dieses Studios und wird nach einem Neustart neu eingegeben; der redaktionelle Partner sieht ihn nie.</p>
       ${textInput("api-key","OpenRouter-Key","","password")}<p id="key-status" class="hint">${data.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt."}</p><div class="actions"><button class="secondary small" data-action="store-key">Key hinterlegen</button><button class="secondary small" data-action="forget-key">Sitzungs-Key entfernen</button></div></section>
+    <section class="panel" id="key-panel-google"><div class="panel-title"><h2>Google-Key</h2>${keyChip(data.google_key_available)}</div><p class="hint">Für Gemini-Audio über Google und die Gesprächsproben. Er bleibt nur im Speicher dieses Studios und wird nach einem Neustart neu eingegeben; der redaktionelle Partner sieht ihn nie.</p>
+      ${textInput("google-key","Google-Key","","password")}<p id="google-key-status" class="hint">${data.google_key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt."}</p><div class="actions"><button class="secondary small" data-action="store-key" data-key-field="google-key" data-key-kind="google">Key hinterlegen</button><button class="secondary small" data-action="forget-key" data-key-kind="google">Sitzungs-Key entfernen</button></div></section>
     <div class="actions"><button data-action="save-settings">Einstellungen für alle Projekte speichern</button></div>`;
+}
+// Google's own choices: the style of each role (a preset or own words), the roles swapping from episode to episode, and
+// a short conversation of exactly this selection to listen to (voice_samples.generate_pair).
+function renderGoogleAudio(a,gemini) {
+  const presets=Object.entries(gemini?.style_presets||{}), styles=a.styles||gemini?.default_styles||{host_a:"",host_b:""};
+  const preset=presets.find(([,p])=>p.host_a===styles.host_a&&p.host_b===styles.host_b)?.[0]||"";
+  const limit=gemini?.max_style_characters||80, field=(id,value)=>`<input id="${id}" maxlength="${limit}" value="${escape(value)}">`;
+  return `<div class="row">${settingField("settings-style-preset","Stil",settingSelect("settings-style-preset",[...presets.map(([id,p])=>[id,p.label]),...(preset?[]:[["","Eigener Stil"]])],preset))}</div>
+    <div class="row">${settingField("settings-style-a","Stil der erklärenden Rolle",field("settings-style-a",styles.host_a))}${settingField("settings-style-b","Stil der fragenden Rolle",field("settings-style-b",styles.host_b))}</div>
+    <p class="hint">Kurz und auf Englisch, wie Google es empfiehlt, etwa „curious and eager to share what comes next“. Leer heißt: ohne Stilangabe.</p>
+    <label class="approval"><input id="settings-alternate" type="checkbox" ${a.alternate_roles?"checked":""}><span>Rollen von Folge zu Folge tauschen: In geraden Folgen erklärt Stimme B</span></label>
+    <div class="actions">${settingSelect("settings-pair-language",[["de-DE","Deutsch"],["en-US","English"]],pairLanguage)}<button type="button" class="secondary small" data-action="pair-sample">▶ Gesprächsprobe</button>${a.alternate_roles?'<button type="button" class="secondary small" data-action="pair-sample" data-swap="1">▶ Mit getauschten Rollen</button>':""}</div>
+    <p class="hint" id="pair-sample-status">Ein kurzes Gespräch mit genau diesen Stimmen und diesem Stil, mit Ausdrucksmarke und Einwurf. Eine neue Probe kostet eine kurze Anfrage mit dem Google-Key und bleibt danach gespeichert.</p>`;
+}
+async function pairSample(button) {
+  const a=settingsFromForm().audio, language=$("settings-pair-language")?.value||"de-DE";
+  pairLanguage=language;
+  const voices=button.dataset.swap?{host_a:a.voices.host_b,host_b:a.voices.host_a}:a.voices;
+  const request={voices,styles:a.styles||null,language};
+  let view=await api("/api/pair-sample",request);
+  if(!view.ready){
+    if(!keyAvailable("google"))throw new Error("Für die Gesprächsprobe zuerst unten den Google-Key hinterlegen.");
+    if(typeof window.confirm==="function"&&!window.confirm("Diese Gesprächsprobe gibt es noch nicht. Jetzt mit einer kurzen Google-Anfrage erzeugen?"))return;
+    if($("pair-sample-status"))$("pair-sample-status").textContent="Gesprächsprobe wird erzeugt …";
+    view=await api("/api/pair-sample",{...request,generate:true});
+  }
+  const player=$("sample-player");
+  player.src=view.url;playingSample={voice:`${voices.host_a}+${voices.host_b}`,language,url:view.url};
+  $("sample-playback").hidden=false;
+  $("sample-playing-label").textContent=`Gesprächsprobe: ${voices.host_a} erklärt, ${voices.host_b} fragt · ${language==="de-DE"?"Deutsch":"English"}`;
+  if($("pair-sample-status"))$("pair-sample-status").textContent="Gespeichert; ein weiterer Klick spielt sie ohne neue Anfrage.";
+  try{await player.play();}catch{throw new Error("Die Gesprächsprobe konnte nicht abgespielt werden.");}
 }
 // The draft as the form holds it now; a preset sets provider, model and level together.
 function settingsFromForm() {
@@ -517,6 +572,9 @@ function settingsFromForm() {
     pauses:{same_speaker_ms:Number(value("settings-pause-same")),speaker_change_ms:Number(value("settings-pause-change")),chapter_break_ms:Number(value("settings-pause-chapter"))}};
   if($("settings-audio-model"))d.audio.model=value("settings-audio-model");
   if($("settings-expression"))d.audio.expression=!!$("settings-expression").checked;
+  // Styles and alternating roles are Google's only; the other routes keep their choice as before.
+  if(provider==="google_gemini_tts"&&$("settings-style-a"))d.audio.styles={host_a:value("settings-style-a")||"",host_b:value("settings-style-b")||""};
+  if(provider==="google_gemini_tts"&&$("settings-alternate"))d.audio.alternate_roles=!!$("settings-alternate").checked;
   d.execution={text:value("settings-exec-text"),audio:value("settings-exec-audio")};
   d.allowances={fresh_attempts:Number(value("settings-fresh")),extra_calls:Number(value("settings-extra"))};
   d.research_limits={model_calls:Number(value("settings-calls")),sources:Number(value("settings-sources")),search_rounds:Number(value("settings-rounds"))};
@@ -785,25 +843,31 @@ const reviewNoteLabels={script_review:"Quellen- und Skriptprüfung",teaching_rev
 // Inline audio tags a Gemini recording speaks (episode_audio.tag_episode), shown where the reader reads the script.
 function expressionActive() {
   const a=currentAudio();
-  return a.provider==="openrouter_gemini_tts"&&a.expression!==false;
+  return isGemini(a.provider)&&a.expression!==false;
 }
 const EXPRESSION_TAG=/<[^<>\n]{1,40}>/g;
 // The twelve kinds a recording may use (expression.ALLOWED_TAGS), in the reader's words.
 const EXPRESSION_KINDS={"<laugh>":"Lachen","<chuckle>":"Schmunzeln","<giggle>":"Kichern","<breath>":"Atmen","<exhales>":"Ausatmen",
   "<sigh>":"Seufzen","<phew>":"Aufatmen","<gasp>":"Staunen","<tsk>":"Schnalzen","<throat-clearing>":"Räuspern",
   "<short pause>":"kurze Pause","<long pause>":"lange Pause"};
+// The other host's short reaction in a Google recording (expression.BACKCHANNEL), spoken in the other voice.
+const BACKCHANNEL=/\|[^|<>\n]{1,20}\|/g;
 function expressionKinds(x) {
   const counts={};
-  for(const row of x.segments||[])for(const tag of row.text.match(EXPRESSION_TAG)||[])counts[tag]=(counts[tag]||0)+1;
-  return Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([tag,n])=>`${n}× ${escape(EXPRESSION_KINDS[tag]||tag)}`).join(", ");
+  for(const row of x.segments||[]){
+    for(const tag of row.text.match(EXPRESSION_TAG)||[])counts[tag]=(counts[tag]||0)+1;
+    for(const _ of row.text.match(BACKCHANNEL)||[])counts["|"]=(counts["|"]||0)+1;
+  }
+  return Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([tag,n])=>`${n}× ${escape(tag==="|"?"Einwurf":EXPRESSION_KINDS[tag]||tag)}`).join(", ");
 }
 function markTags(text) {
-  return escape(text).replace(/&lt;[^&<>]{1,40}&gt;/g,tag=>`<mark class="expression-tag">${tag}</mark>`);
+  return escape(text).replace(/&lt;[^&<>]{1,40}&gt;/g,tag=>`<mark class="expression-tag">${tag}</mark>`)
+    .replace(/\|[^|<>&\n]{1,20}\|/g,reaction=>`<mark class="expression-tag" title="Einwurf der anderen Stimme">${reaction}</mark>`);
 }
 function expressiveText(segment, expression) {
   const row=expression?.segments?.find(r=>r.segment_id===segment.segment_id);
   if(!row)return `<p>${escape(segment.text)}</p>`;
-  const words=text=>text.replace(EXPRESSION_TAG," ").split(/\s+/).filter(Boolean).join(" ");
+  const words=text=>text.replace(EXPRESSION_TAG," ").replace(BACKCHANNEL," ").split(/\s+/).filter(Boolean).join(" ");
   // A segment read with a spoken form shows the tags on what is spoken, below the written text.
   if(words(row.text)===words(segment.text))return `<p>${markTags(row.text)}</p>`;
   return `<p>${escape(segment.text)}</p><p class="hint">Gesprochen mit Ausdruck: ${markTags(row.text)}</p>`;
@@ -954,8 +1018,8 @@ function parseSpokenForms(text) {
     .map(parts=>({written:parts[0].trim(),spoken:parts.slice(1).join("=").trim()})).filter(row=>row.written&&row.spoken)};
 }
 // A key field wherever a key is missing, not only on the first page. The key stays in the server's memory.
-function inlineKey(id,resume=false,target="") {
-  return `<div class="inline-key">${textInput(id,"OpenRouter-Key","","password")}<button class="secondary small" data-action="store-key" data-key-field="${id}"${resume?` data-then-resume="1" ${target}`:""}>Key hinterlegen${resume?" und fortsetzen":""}</button><p class="hint">Der Key bleibt nur im Speicher dieses Studio-Servers und muss nach einem Neustart erneut eingegeben werden.</p></div>`;
+function inlineKey(id,resume=false,target="",kind="openrouter") {
+  return `<div class="inline-key">${textInput(id,KEY_NAMES[kind],"","password")}<button class="secondary small" data-action="store-key" data-key-field="${id}" data-key-kind="${kind}"${resume?` data-then-resume="1" ${target}`:""}>Key hinterlegen${resume?" und fortsetzen":""}</button><p class="hint">Der Key bleibt nur im Speicher dieses Studio-Servers und muss nach einem Neustart erneut eingegeben werden.</p></div>`;
 }
 // Runs are bound to their inputs: saving what a paused run depends on ends its resumability. The warning
 // names that before the save. config = brief and host names, notes = style notes, audio = pauses and spoken forms.
@@ -1027,12 +1091,13 @@ function audioWouldQueue() {
 function queuedEntry(episode) { return (project.audio_queue||[]).find(row=>row.episode===episode); }
 // A queued recording waits for a place, or for the key, which lives only in the server's memory (2026-10-02: after a
 // restart the queue still said it waited for a place while the scheduler stopped at the missing key).
-const queueWaitsForKey=row=>!row.error&&(row.waiting==="key"||(row.waiting===undefined&&boot.key_available===false));
+const queueKey=row=>row.key||keyOf(currentAudio().provider);
+const queueWaitsForKey=row=>!row.error&&(row.waiting==="key"||(row.waiting===undefined&&!keyAvailable(queueKey(row))));
 function renderQueueState(e) {
   const row=queuedEntry(e.script.episode_id);
   if(!row)return "";
   return row.error?`<p class="note">Freigabe wartete in der Warteschlange, startet aber nicht: ${escape(row.error)} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`:
-    queueWaitsForKey(row)?`<p class="note">Freigegeben · wartet auf den OpenRouter-Key (Platz ${Number(row.position)}). Nach einem Neustart des Studios muss der Key erneut eingegeben werden; dann startet die Folge von selbst. <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`:
+    queueWaitsForKey(row)?`<p class="note">Freigegeben · wartet auf den ${KEY_NAMES[queueKey(row)]} (Platz ${Number(row.position)}). Nach einem Neustart des Studios muss der Key erneut eingegeben werden; dann startet die Folge von selbst. <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`:
     `<p class="hint">Freigegeben · wartet in der Warteschlange auf Platz ${Number(row.position)}. <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Aus der Warteschlange nehmen</button></p>`;
 }
 // What a recording sends to speech, from the server's estimate per episode: no price, it cannot be checked offline.
@@ -1047,9 +1112,9 @@ function renderAudioQueue() {
   const rows=project?.audio_queue||[];
   if(!rows.length)return "";
   const title=id=>project.episodes.find(e=>e.script.episode_id===id)?.script.title||id;
-  const keyMissing=rows.some(queueWaitsForKey);
+  const waiting=rows.find(queueWaitsForKey), missing=waiting?queueKey(waiting):null;
   const size=speechSize(rows.filter(row=>!row.error).map(row=>project.episodes.find(e=>e.script.episode_id===row.episode)));
-  return `<section class="panel"><h2>Warteschlange der Vertonung · ${rows.length}</h2><ol>${rows.map(row=>`<li><strong>${escape(title(row.episode))}</strong> · ${row.error?`startet nicht: ${escape(row.error)}`:queueWaitsForKey(row)?"wartet auf den OpenRouter-Key":"wartet auf einen freien Platz"} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Entfernen</button></li>`).join("")}</ol>${keyMissing?`<p class="note">Key fehlt: Der OpenRouter-Key lag nur im Speicher des Studios und ist nach einem Neustart weg. Sobald er hinterlegt ist, starten die Folgen von selbst.</p>${inlineKey("queue-key")}`:""}${size?`<p class="hint">Umfang der wartenden Folgen: ${escape(size)}. ${SPEECH_SIZE_NOTE}</p>`:""}<p class="hint">Freigegebene Folgen starten in dieser Reihenfolge von selbst, sobald ein Platz frei ist; das Studio muss dafür geöffnet bleiben. Vor jedem Start wird geprüft, ob Skript, Stimmen und Ausdruck noch dem freigegebenen Stand entsprechen.</p></section>`;
+  return `<section class="panel"><h2>Warteschlange der Vertonung · ${rows.length}</h2><ol>${rows.map(row=>`<li><strong>${escape(title(row.episode))}</strong> · ${row.error?`startet nicht: ${escape(row.error)}`:queueWaitsForKey(row)?`wartet auf den ${KEY_NAMES[queueKey(row)]}`:"wartet auf einen freien Platz"} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">Entfernen</button></li>`).join("")}</ol>${missing?`<p class="note">Key fehlt: Der ${KEY_NAMES[missing]} lag nur im Speicher des Studios und ist nach einem Neustart weg. Sobald er hinterlegt ist, starten die Folgen von selbst.</p>${inlineKey("queue-key",false,"",missing)}`:""}${size?`<p class="hint">Umfang der wartenden Folgen: ${escape(size)}. ${SPEECH_SIZE_NOTE}</p>`:""}<p class="hint">Freigegebene Folgen starten in dieser Reihenfolge von selbst, sobald ein Platz frei ist; das Studio muss dafür geöffnet bleiben. Vor jedem Start wird geprüft, ob Skript, Stimmen und Ausdruck noch dem freigegebenen Stand entsprechen.</p></section>`;
 }
 // Every published episode without a current recording, not recording and not queued: what "approve all" covers.
 function pendingRecordings() {
@@ -1066,43 +1131,58 @@ function renderApproveAll(remote) {
     ${size?`<p><strong>Umfang zusammen:</strong> ${escape(size)}. <span class="hint">${SPEECH_SIZE_NOTE}</span></p>`:""}
     <label class="approval"><input id="audio-approve-all" type="checkbox"><span>Ich habe diese ${rows.length} Skripte gelesen, samt ihrem Ausdruck, und gebe sie mit dem angezeigten Audioanbieter und den Stimmen für Audio frei. Ich möchte die API-Vertonung starten.</span></label>
     <div class="actions"><button data-action="audio-all" ${blocked?"disabled":""}>Alle ${rows.length} freigeben</button></div>
-    ${blocked?`<p class="hint">${escape(blocked)}</p>${boot.key_available===false?inlineKey("audio-all-key"):""}`:""}
+    ${blocked?`<p class="hint">${escape(blocked)}</p>${!keyAvailable(keyOf(currentAudio().provider))?inlineKey("audio-all-key",false,"",keyOf(currentAudio().provider)):""}`:""}
     <p class="hint">So viele starten sofort, wie Plätze frei sind; die übrigen reihen sich ein und starten von selbst.</p></section>`;
 }
 function renderApprovalCard(e,a,remote) {
   const blocked=audioBlockReason();
   const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
   const pronunciation=renderPronunciation(e);
+  const google=a.provider==="google_gemini_tts", voiced=episodeVoices(a,e.script.episode_id), key=keyOf(a.provider);
+  const voices=google?`${escape(voiced.host_a)} erklärt, ${escape(voiced.host_b)} fragt${a.alternate_roles?" · die Rollen wechseln von Folge zu Folge":""}`:`${escape(a.voices.host_a)} & ${escape(a.voices.host_b)}`;
   return `<div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${escape(audioLabel(a))}</span></div>
     <dl>
     <dt>Text</dt><dd>${e.audio?.length?(e.audio_current?"Aufnahme vorhanden · dieser Stand ist bereits vertont":"Aufnahme eines früheren Skript- oder Stimmenstands vorhanden"):"Fertig zur Durchsicht · noch nicht vertont"} <button class="quiet small" data-step="4">Skript lesen</button></dd>
-    <dt>Stimmen</dt><dd>${escape(a.voices.host_a)} & ${escape(a.voices.host_b)} · ${project.config.language==="de-DE"?"Deutsch":"English"} <button class="quiet small" data-step="0">Audioanbieter oder Stimmen ändern</button></dd>
-    <dt>Anbieter</dt><dd class="hint">${remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</dd>
+    <dt>Stimmen</dt><dd>${voices} · ${project.config.language==="de-DE"?"Deutsch":"English"} <button class="quiet small" data-step="0">Audioanbieter oder Stimmen ändern</button></dd>
+    <dt>Anbieter</dt><dd class="hint">${google?"Gemini spricht über Google jeweils einen ganzen Gesprächsabschnitt mit beiden Stimmen und nutzt dafür deinen Google-Key. Deine Grafikkarte wird nicht benötigt.":remote?"Gemini erzeugt die Sprache über OpenRouter und nutzt dafür dein API-Guthaben. Deine Grafikkarte wird für die Vertonung nicht benötigt.":"Qwen erzeugt die Sprache auf deinem Computer und beansprucht deine Grafikkarte."} Das Browserfenster darf geschlossen werden; der Studio-Server muss geöffnet bleiben.</dd>
     ${remote&&speechSize([e])?`<dt>Umfang</dt><dd>${escape(speechSize([e]))} <span class="hint">${SPEECH_SIZE_NOTE}</span></dd>`:""}
-    ${remote&&boot.key_available===false?`<dt>Zugang</dt><dd>${inlineKey("audio-key")}</dd>`:""}
+    ${remote&&!keyAvailable(key)?`<dt>Zugang</dt><dd>${inlineKey("audio-key",false,"",key)}</dd>`:""}
     <dt>Aussprache</dt><dd>${pronunciation||'<span class="hint">Keine auffälligen Wörter im veröffentlichten Text.</span>'}</dd>
-    ${remote&&a.expression!==false?`<dt>Ausdruck</dt><dd>${e.expression?`${Number(e.expression.tags)} Tags · beim Lesen im Text markiert; die Freigabe gilt für genau diese.`:"Noch nicht gesetzt: die Vertonung setzt ihn selbst, ohne dass du ihn gelesen hast."} <button class="quiet small" data-step="${PAGE.scripts}">Im Skript ansehen</button></dd>`:""}
+    ${remote&&a.expression!==false?`<dt>Ausdruck</dt><dd>${e.expression?`${Number(e.expression.tags)} Tags${google?` · ${Number(e.expression.backchannels||0)} Einwürfe`:""} · beim Lesen im Text markiert; die Freigabe gilt für genau diese.`:"Noch nicht gesetzt: die Vertonung setzt ihn selbst, ohne dass du ihn gelesen hast."} <button class="quiet small" data-step="${PAGE.scripts}">Im Skript ansehen</button></dd>`:""}
     <dt>Pausen</dt><dd class="hint">${Number(pauses.same_speaker_ms)} / ${Number(pauses.speaker_change_ms)} / ${Number(pauses.chapter_break_ms)} ms · gleiche Stimme, Stimmwechsel, Kapitel</dd>
     </dl>
     <label class="approval"><input id="audio-approval" type="checkbox" ${blocked?"disabled":""}><span>Ich habe dieses Skript gelesen und gebe diesen Stand mit dem angezeigten Audioanbieter und den Stimmen für Audio frei.${remote?" Ich möchte die API-Vertonung starten.":""}</span></label>
     ${renderQueueState(e)}
     <div class="actions"><button id="audio-start" data-action="audio" disabled>${remote&&audioWouldQueue()?"Freigeben und einreihen":"Audio erzeugen"}</button><button class="secondary" data-step="${PAGE.scripts}">Skript nochmals lesen</button></div>${blocked?`<p class="hint">${escape(blocked)}</p>`:""}`;
 }
+// The companion kit for podcast platforms (publish_kit): the user's wish of 2026-10-06, a short description and the
+// episode text for Spotify and Apple Podcasts with chapters and sources, to copy; one text-model call per episode.
+function renderPublishKit(e) {
+  const id=escape(e.script.episode_id), k=e.publish_kit;
+  const buttons=`<div class="actions"><button class="secondary" data-action="publish_kit" data-episode="${id}" ${disabled()}>${k?"Neu zusammenstellen":"Begleitmaterial erstellen"}</button>${k?`<button class="quiet" data-action="publish_kit" data-episode="${id}" data-fresh="1" ${disabled()}>Neu formulieren</button>`:""}<button class="quiet" data-action="publish_kit" ${disabled()}>Für alle Folgen</button></div>`;
+  if(!k)return `<section class="panel"><h2>Begleitmaterial</h2><p class="hint">Kurzbeschreibung, Folgentext für Spotify und Apple Podcasts mit Kapiteln und Quellen. Das Textmodell schreibt die beiden Beschreibungen aus dem Skript; Kapitel und Quellen kommen ohne Modell aus Aufnahme und Recherche.</p>${buttons}</section>`;
+  return `<section class="panel"><h2>Begleitmaterial</h2>
+    ${k.recorded?"":'<p class="note">Noch nicht vertont: Die Kapitel stehen ohne Zeitmarken. Nach der Aufnahme neu zusammenstellen; die Beschreibungen bleiben erhalten.</p>'}
+    ${k.chapter_problems?.length?'<p class="hint">Spotify erkennt Kapitel erst ab drei Kapiteln mit mindestens 30 Sekunden Abstand.</p>':""}
+    <div class="field"><label for="kit-short-${id}">Kurzbeschreibung</label><textarea id="kit-short-${id}" rows="3" readonly>${escape(k.short)}</textarea><button class="quiet small" data-action="copy-text" data-source="kit-short-${id}">Kopieren</button></div>
+    <div class="field"><label for="kit-long-${id}">Folgenbeschreibung für Spotify und Apple Podcasts (${Number(k.characters).toLocaleString("de-DE")} von ${Number(k.limit).toLocaleString("de-DE")} Zeichen)</label><textarea id="kit-long-${id}" rows="10" readonly>${escape(k.description)}</textarea><button class="quiet small" data-action="copy-text" data-source="kit-long-${id}">Kopieren</button></div>
+    <p class="hint">${Number(k.sources_listed)} von ${Number(k.sources_total)} Quellen stehen im Text; alle in <code>${escape(k.folder)}/sources.md</code> und im ZIP-Download.</p>${buttons}</section>`;
+}
 function refreshAudioPanel() {
   const panel=$("audio-panel");
   if(!panel||!project?.episodes?.length)return;
   const a=currentAudio();
-  panel.innerHTML=renderApprovalCard(project.episodes[Math.min(episodeIndex,project.episodes.length-1)],a,a.provider==="openrouter_gemini_tts");
+  panel.innerHTML=renderApprovalCard(project.episodes[Math.min(episodeIndex,project.episodes.length-1)],a,isGemini(a.provider));
 }
 function renderAudio() {
   let html=heading(6);
   if(!project?.episodes?.length) return html+empty("Zuerst braucht es ein fertiges Skript.","Deine Freigabe gehört immer zu dem Text, den du tatsächlich gelesen hast.","Zu den Skripten",PAGE.scripts,pageIntros.audio);
   episodeIndex=Math.min(episodeIndex,project.episodes.length-1);
   const e=project.episodes[episodeIndex];
-  const a=currentAudio(),remote=a.provider==="openrouter_gemini_tts";
+  const a=currentAudio(),remote=isGemini(a.provider);
   const hasAudio=project.episodes.some(row=>row.audio?.length);
   const capacity=remote?(boot.capabilities?.parallel_audio?`<p class="hint">${project.execution?.audio==="parallel"?"Parallel":"Sequenziell"} · ${project.audio_capacity?.active||0} von ${project.audio_capacity?.limit||1} Plätzen belegt. Weitere gelesene Folgen kannst du oben auswählen und einzeln freigeben.</p>`:'<p class="note">Parallele Vertonung benötigt einen Studio-Neustart nach Ende des laufenden Auftrags.</p>'):"";
-  html+=`<div class="split"><div class="split-main">${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${e.audio?.length?renderListeningReview(e):""}${hasAudio?`<section class="panel recordings" id="recordings"><h2>Alle fertigen Folgen anhören</h2>${renderRecordings(recordingsProject())}</section>`:""}</div><aside class="split-rail">${capacity}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
+  html+=`<div class="split"><div class="split-main">${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${e.audio?.length?renderListeningReview(e):""}${renderPublishKit(e)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>Alle fertigen Folgen anhören</h2>${renderRecordings(recordingsProject())}</section>`:""}</div><aside class="split-rail">${capacity}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
   return html;
 }
 function overviewStatus(p) {
@@ -1461,6 +1541,7 @@ const codeUpdatedSince=job=>{const at=project?.server?.code_updated_at;return !!
 const STORED_STATE="Ein gespeicherter Zwischenstand oder eine Freigabe dieses Laufs passt nicht mehr zu seinen Eingaben, zum Beispiel nach einer Studio-Aktualisierung. „Fortsetzen“ würde an derselben Stelle wieder anhalten. Fertige Ergebnisse bleiben lesbar; weiter geht es mit einem neuen Lauf.";
 const FFMPEG_TEXT="FFmpeg einrichten: unter Windows einmal scripts\\setup-ffmpeg.ps1 ausführen, unter macOS und Linux sh scripts/setup.sh. Danach das Studio neu starten und „Fortsetzen“; die Sprachaufnahmen bleiben gespeichert.";
 const KEY_TEXT="Den OpenRouter-Key hier hinterlegen. Er bleibt nur im Speicher dieses Studio-Servers und muss nach jedem Neustart erneut eingegeben werden.";
+const GOOGLE_KEY_TEXT="Den Google-Key für Gemini-Audio hier hinterlegen. Er bleibt nur im Speicher dieses Studio-Servers und muss nach jedem Neustart erneut eingegeben werden.";
 const reviewAgain=name=>`${name} meldet nach den automatischen Korrekturen weiter Einwände; die offenen Punkte stehen auf dieser Seite. „Fortsetzen“ startet eine neue Prüfrunde, deren Urteil anders ausfallen kann. Hält sie erneut an, hilft ein neues Inhaltsverzeichnis.`;
 const searchCapped=c=>/Rechercherunden|Suchrunden/.test(c.job.message||"")||
   (Number(c.progress.search_round_limit)>0&&Number(c.progress.search_rounds)>=Number(c.progress.search_round_limit)&&
@@ -1543,6 +1624,14 @@ const STOP_RULES={
   openrouter_key_required:{kind:"fix",title:"OpenRouter-Key fehlt",text:KEY_TEXT,actions:["key"]},
   invalid_key:{kind:"fix",title:"OpenRouter-Key fehlt",text:KEY_TEXT,actions:["key"]},
   openrouter_authentication:{kind:"fix",title:"OpenRouter-Key abgewiesen",text:"OpenRouter hat den Key nicht angenommen. Einen gültigen Key hinterlegen; er bleibt nur im Speicher dieses Studio-Servers.",actions:["key"]},
+  // Gemini through Google (google_speech): its own key, and Google's own reasons.
+  google_key_required:{kind:"fix",title:"Google-Key fehlt",text:GOOGLE_KEY_TEXT,actions:["google_key"]},
+  invalid_google_key:{kind:"fix",title:"Google-Key ungültig",text:GOOGLE_KEY_TEXT,actions:["google_key"]},
+  google_authentication:{kind:"fix",title:"Google-Key abgewiesen",text:c=>`${c.job.message||"Google hat den Key nicht angenommen."} Fertige Passagen bleiben gespeichert.`,actions:["google_key"]},
+  google_quota:{kind:"wait",title:"Google-Kontingent erschöpft",text:c=>`${c.job.message||"Das Google-Kontingent für Gemini-Audio ist erschöpft."} Nach dem Reset des Kontingents oder einer Erhöhung in Google AI Studio „Fortsetzen“.`},
+  google_speech_request:{kind:"fix",title:"Google lehnt die Audioanfrage ab",text:c=>`${c.job.message||"Google hat die Anfrage abgewiesen."} Stimmen, Sprachmodell und Stil in den Einstellungen prüfen, dann „Fortsetzen“.`,actions:["open_settings"]},
+  google_unavailable:{kind:"retry",title:"Google nicht erreichbar",text:"Google war vorübergehend nicht erreichbar. „Fortsetzen“ macht an derselben Passage weiter; fertige Passagen bleiben gespeichert."},
+  google_connection:{kind:"retry",title:"Verbindung zu Google unterbrochen",text:"Die Verbindung brach ab. „Fortsetzen“ macht an derselben Passage weiter; fertige Passagen bleiben gespeichert."},
   ffmpeg_missing:{kind:"fix",title:"FFmpeg fehlt",text:FFMPEG_TEXT},
   ffprobe_missing:{kind:"fix",title:"FFprobe fehlt",text:FFMPEG_TEXT},
   research_plan_review:{kind:"decision",title:"Rechercheplan wartet auf Freigabe",text:"Prüfe die Hochrechnung auf der Seite Recherche und gib den Plan frei. Bis dahin wird kein weiterer Modellaufruf verbraucht.",card:true},
@@ -1729,6 +1818,7 @@ function stopButton(action,job,info,target) {
       return `<button data-action="text-switch" data-run-id="${runId}" data-choice="${codexOut?"claude_first":"astra_first"}" data-then-resume="1" ${running()?"disabled":""}>${codexOut?"Mit Claude fortsetzen":"Mit Astra (xhigh) fortsetzen"}</button>`;
     }
     case "key":return inlineKey("stop-key",!!job.run,target||`data-run-id="${runId}"`);
+    case "google_key":return inlineKey("stop-google-key",!!job.run,target||`data-run-id="${runId}"`,"google");
     case "check":return `<button class="secondary" data-action="check" ${disabled()}>Verbindungen prüfen</button>`;
     case "samples":return `<button class="secondary" data-action="audio_samples" ${disabled()}>Fehlende Hörproben erzeugen · API</button>`;
     case "new_research":return `<button class="secondary" data-action="research" data-confirm="Neu recherchieren startet einen neuen Recherchelauf mit neuem Plan. Der angehaltene Lauf bleibt gespeichert, wird aber nicht fortgesetzt. Fortfahren?" ${disabled()}>Neu recherchieren</button>`;
@@ -2051,7 +2141,8 @@ function sharedAudioStop(p=project) {
   return infos.length&&infos.every(info=>info.code===infos[0].code)?infos[0]:null;
 }
 // A stopped recording "Alle fortsetzen" may resume: one whose card offers to resume it, or a key stop once a key is there.
-const resumableAudio=j=>canResume(j)||(!!stopInfo(j)?.actions.includes("key")&&boot.key_available!==false);
+const resumableAudio=j=>canResume(j)||(!!stopInfo(j)?.actions.includes("key")&&keyAvailable("openrouter"))
+  ||(!!stopInfo(j)?.actions.includes("google_key")&&keyAvailable("google"));
 function audioJobSummary() {
   const jobs=project?.audio_jobs||[], active=jobs.filter(j=>j.status==="running");
   const title=id=>project.episodes?.find(e=>e.script.episode_id===id)?.script.title||id;
@@ -2094,6 +2185,7 @@ const CHECK_LABELS={
   subscription_quota:["Abo-Kontingent","Ohne Kontingent pausieren Aufträge bis zum genannten Reset."],
   tts_environment:["Lokale Sprachausgabe (Qwen)","Die Einrichtung laut docs/OPERATIONS.md prüfen oder Gemini als Audioanbieter wählen."],
   "Gemini-TTS-Key":["OpenRouter-Key für Gemini","Den Key in den Einstellungen unter „OpenRouter-Key“ hinterlegen."],
+  "Google-Key":["Google-Key für Gemini","Den Key in den Einstellungen unter „Google-Key“ hinterlegen."],
 };
 function renderChecks(checks) {
   return `<ul class="checks">${(checks.checks||[]).map(c=>{const [label,fix]=CHECK_LABELS[c.name]||[c.name,""];
@@ -2175,10 +2267,11 @@ function renderServerNote() {
   box.hidden=!html;redraw(box,html);
   renderKeyNote();
 }
-// The reminder of a missing OpenRouter key on every page (studio.key_reminder): the Studio keeps the key in memory
-// only, so it is gone after every restart, and a fresh page said nothing of it (2026-10-04: Jev went without it unseen).
-// It names what needs the key, in which projects, and what happens without it.
-const KEY_NEED_TEXT={gemini_audio:["Gemini-Vertonung","warten Vertonungen mit Gemini"],
+// The reminder of a missing key on every page (studio.key_reminder): the Studio keeps its keys in memory only, so they
+// are gone after every restart, and a fresh page said nothing of it (2026-10-04: Jev went without it unseen). It names
+// each missing key, what needs it, in which projects, and what happens without it.
+const KEY_NEED_TEXT={google_audio:["Gemini-Vertonung über Google","warten Vertonungen mit Gemini über Google"],
+  gemini_audio:["Gemini-Vertonung über OpenRouter","warten Vertonungen mit Gemini über OpenRouter"],
   jev:["Jev in der Lückenprobe","suchen neue Skriptläufe Lücken nur per Wortsuche, und wo du Jev selbst eingeschaltet hast, halten sie an"],
   openrouter_text:["OpenRouter-Textmodell","halten Aufträge mit einem OpenRouter-Modell an"]};
 function keyReminderRows() {
@@ -2190,10 +2283,14 @@ function keyNote() {
   if(!rows.length)return "";
   const where=row=>row.projects.length>2?` (${row.projects.length} Projekte)`
     :` (${row.projects.map(topic=>"„"+escape(shortText(topic,48))+"“").join(", ")})`;
-  return `<p><strong>OpenRouter-Key fehlt.</strong> Gebraucht für ${rows.map(row=>escape(KEY_NEED_TEXT[row.need][0])+where(row)).join(" · ")}. `+
-    `Ohne Key ${rows.map(row=>KEY_NEED_TEXT[row.need][1]).join("; ")}.</p>`+
-    (settingsPage?`<p class="hint">Eingabe unten unter „OpenRouter-Key“. Das Studio hält den Key nur im Speicher; nach jedem Neustart muss er neu eingegeben werden.</p>`
-      :inlineKey("reminder-key"));
+  return ["google","openrouter"].map(key=>{
+    const mine=rows.filter(row=>(row.key||"openrouter")===key);
+    if(!mine.length)return "";
+    return `<p><strong>${KEY_NAMES[key]} fehlt.</strong> Gebraucht für ${mine.map(row=>escape(KEY_NEED_TEXT[row.need][0])+where(row)).join(" · ")}. `+
+      `Ohne Key ${mine.map(row=>KEY_NEED_TEXT[row.need][1]).join("; ")}.</p>`+
+      (settingsPage?`<p class="hint">Eingabe unten unter „${KEY_NAMES[key]}“. Das Studio hält den Key nur im Speicher; nach jedem Neustart muss er neu eingegeben werden.</p>`
+        :inlineKey(key==="google"?"reminder-google-key":"reminder-key",false,"",key));
+  }).join("");
 }
 function renderKeyNote() {
   const box=$("key-note");
@@ -2201,8 +2298,9 @@ function renderKeyNote() {
   const html=keyNote();
   box.hidden=!html;redraw(box,html);
 }
-function clearKeyReminder() {
-  for(const data of [boot,overviewData,settingsData,project])if(data)data.key_reminder=[];
+function clearKeyReminder(key="openrouter") {
+  for(const data of [boot,overviewData,settingsData,project])
+    if(data)data.key_reminder=(data.key_reminder||[]).filter(row=>(row.key||"openrouter")!==key);
   renderKeyNote();
 }
 function renderJob() {
@@ -2299,6 +2397,7 @@ function renderJob() {
   if(r&&!isScript&&!job.progress?.research_questions)body+=`<div class="stage-strip">${Object.entries(r.stages||{}).map(([name,v])=>`<span class="${escape(v.status)}">${v.status==="completed"?"✓ ":""}${stageNames[name]||escape(name)}</span>`).join("")}</div>`;
   if(job.progress&&!["script","research"].includes(job.progress.phase)){
     if(job.action==="expression"&&job.progress?.total_segments!==undefined)body+=`<p>${Number(job.progress.completed_segments)} von ${Number(job.progress.total_segments)} Folgen mit Ausdruck versehen</p><progress value="${Number(job.progress.completed_segments)}" max="${Number(job.progress.total_segments)}" aria-label="Folgen mit Ausdruck"></progress>`;
+    if(job.action==="publish_kit"&&job.progress?.total_segments!==undefined)body+=`<p>${Number(job.progress.completed_segments)} von ${Number(job.progress.total_segments)} Folgen mit Begleitmaterial</p><progress value="${Number(job.progress.completed_segments)}" max="${Number(job.progress.total_segments)}" aria-label="Folgen mit Begleitmaterial"></progress>`;
     if(job.action==="audio_samples"&&job.progress.total_segments!==undefined)body+=`<p>${Number(job.progress.completed_segments)} von ${Number(job.progress.total_segments)} Hörproben fertig</p><progress value="${Number(job.progress.completed_segments)}" max="${Number(job.progress.total_segments)}" aria-label="Fortschritt"></progress>`;
     else if(active)body+=audioPhase(job.progress);
   }
@@ -2372,11 +2471,14 @@ async function selectProject(id, loaded=null, requestedPage=null) {
   lastJobSignature=projectJobSignature(project);updatePageUrl();render();
   if(step===PAGE.brief&&(project?.chat||[]).length)scrollChatToEnd();
 }
-async function storeKey(fieldId="api-key") {
+async function storeKey(fieldId="api-key",kind="openrouter") {
   const key=$(fieldId)?.value.trim();
-  if(key){const value=await api("/api/key",{key});boot.key_available=value.key_available;$(fieldId).value="";
-    if($("key-status"))$("key-status").textContent=boot.key_available?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt.";
-    if(boot.key_available)clearKeyReminder();}
+  if(key){const value=await api("/api/key",{key,kind});boot.key_available=value.key_available;
+    if(value.google_key_available!==undefined)boot.google_key_available=value.google_key_available;$(fieldId).value="";
+    if(settingsData){settingsData.key_available=boot.key_available;settingsData.google_key_available=boot.google_key_available;}
+    const status=$(kind==="google"?"google-key-status":"key-status");
+    if(status)status.textContent=keyAvailable(kind)?"Ein Key ist für diese Sitzung verfügbar.":"Noch kein Key hinterlegt.";
+    if(keyAvailable(kind))clearKeyReminder(kind);}
   return !!key;
 }
 // The ZIP is built before its first byte; fetching it shows that wait and turns a refusal into a readable message.
@@ -2497,11 +2599,19 @@ document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
   if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason();
   if(event.target.id==="settings-audio-provider"){
-    // Another provider has other voices: its defaults stand until the user picks two of them.
-    const provider=event.target.value, draft=settingsFromForm();
-    settingsDraft={...draft,audio:{...draft.audio,provider,voices:{...(audioCatalog()[provider]?.defaults||draft.audio.voices)}}};
+    // Another provider has other voices: its defaults stand until the user picks two of them. Google brings its own
+    // defaults for the styles and the alternating roles; the other routes have neither.
+    const provider=event.target.value, draft=settingsFromForm(), row=audioCatalog()[provider]||{};
+    const {styles,alternate_roles,...rest}=draft.audio;
+    settingsDraft={...draft,audio:{...rest,provider,voices:{...(row.defaults||draft.audio.voices)},
+      ...(provider==="google_gemini_tts"?{styles:{...(row.default_styles||styles)},alternate_roles:!!row.alternate_roles}:{})}};
     render();
   }
+  if(event.target.id==="settings-style-preset"&&event.target.value){
+    const preset=audioCatalog().google_gemini_tts?.style_presets?.[event.target.value], draft=settingsFromForm();
+    if(preset){settingsDraft={...draft,audio:{...draft.audio,styles:{host_a:preset.host_a,host_b:preset.host_b}}};render();}
+  }
+  if(event.target.id==="settings-alternate"){settingsDraft=settingsFromForm();render();}
 }));
 document.addEventListener("click",event=>{
   const zip=event.target.closest?.("a.download-all");
@@ -2528,7 +2638,7 @@ document.addEventListener("click",event=>{
     if(button.dataset.step!==undefined){navigatePage(Number(button.dataset.step));$("main").focus();window.scrollTo(0,0);return;}
     if(button.dataset.previewVoice){
       const voice=button.dataset.previewVoice,language=button.dataset.language,provider=button.dataset.previewProvider;
-      if(provider==="openrouter_gemini_tts"&&!savedSample(voice,language)){
+      if(isGemini(provider)&&!savedSample(voice,language)){
         await storeKey();await start("audio_sample",{voice,language,approve_sample:true});
       }else await playSample(voice,language,provider);
       return;
@@ -2548,9 +2658,13 @@ document.addEventListener("click",event=>{
     if(action==="open-settings"){await showSettings();return;}
     if(action==="resume-stopped-audio"){await resumeStoppedAudio();return;}
     if(action==="save-settings"){await saveSettings();return;}
+    if(action==="pair-sample"){await pairSample(button);return;}
     if(action==="store-key"){
-      if(!await storeKey(button.dataset.keyField||"api-key"))throw new Error("Bitte zuerst den OpenRouter-Key eingeben.");
+      const kind=button.dataset.keyKind||"openrouter";
+      if(!await storeKey(button.dataset.keyField||"api-key",kind))throw new Error(`Bitte zuerst den ${KEY_NAMES[kind]} eingeben.`);
       if(button.dataset.thenResume){await resumeFrom(button);return;}
+      // The settings page keeps what was typed but not saved yet when it shows the new key state.
+      if(settingsPage&&settingsDraft)settingsDraft=settingsFromForm();
       lastJobView="";stopHtml="";render();notice("Key im Sitzungsspeicher hinterlegt.","ok");return;
     }
     if(action==="resend-chat"){
@@ -2562,7 +2676,13 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/approve`,{kind:"chat_calls",model_calls:Number(button.dataset.modelCalls)});
       project=await api(`/api/projects/${project.id}`);render();notice("Gesprächslimit erhöht. „Erneut senden“ schickt deine letzte Nachricht noch einmal.","ok");return;
     }
-    if(action==="forget-key"){await api("/api/key",{key:""});await refreshProjects();$("api-key").value="";if(settingsData){settingsData.key_available=boot.key_available;settingsData.key_reminder=boot.key_reminder;}renderKeyNote();$("key-status").textContent=boot.key_available?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;}
+    if(action==="forget-key"){
+      const kind=button.dataset.keyKind||"openrouter", field=kind==="google"?"google-key":"api-key";
+      await api("/api/key",{key:"",kind});await refreshProjects();if($(field))$(field).value="";
+      if(settingsData){settingsData.key_available=boot.key_available;settingsData.google_key_available=boot.google_key_available;settingsData.key_reminder=boot.key_reminder;}
+      if(settingsPage&&settingsDraft){settingsDraft=settingsFromForm();render();}
+      renderKeyNote();$(kind==="google"?"google-key-status":"key-status").textContent=keyAvailable(kind)?"Key aus der Server-Umgebung verfügbar.":"Sitzungs-Key entfernt.";return;
+    }
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
     if(action==="apply-advice"){await applyAdvice(button);notice("Empfehlungen übernommen. Der Lauf versucht die Teilfragen mit den Hinweisen des Beraters erneut.","ok");return;}
     if(action==="upload-work"){await uploadWork(button);return;}
@@ -2677,7 +2797,9 @@ document.addEventListener("click",event=>{
     if(action==="revise"){extra.message=$("script-feedback").value;extra.episode=project.episodes[episodeIndex].script.episode_id;}
     if(action==="resume"){extra.run_id=button.dataset.runId||project.job?.run?.run_id||project.run?.run_id;if(button.dataset.episode)extra.episode=button.dataset.episode;}
     if(action==="audio")Object.assign(extra,audioRequest(button.dataset.episode));
-    if(action==="expression")extra.episodes=button.dataset.episode?[button.dataset.episode]:[];
+    if(action==="expression"||action==="publish_kit")extra.episodes=button.dataset.episode?[button.dataset.episode]:[];
+    if(action==="publish_kit"&&button.dataset.fresh)extra.fresh=true;
+    if(action==="copy-text"){await navigator.clipboard?.writeText($(button.dataset.source)?.value||"");notice("Kopiert.","ok");return;}
     await start(action,extra);
     // A sent request leaves no stale draft behind; unsent drafts survive re-renders elsewhere.
     if(action==="replan"&&$(button.dataset.feedback||"outline-feedback"))$(button.dataset.feedback||"outline-feedback").value="";
@@ -2705,9 +2827,9 @@ async function checkInstance(server) {
   if(!server?.instance||!known||server.instance===known)return;
   const fresh=await fetch("/api/bootstrap").then(r=>r.ok?r.json():null).catch(()=>null);
   if(!fresh?.token)return;
-  const keyLost=boot.key_available&&!fresh.key_available;
+  const lost=lostKeys(fresh);
   boot={...boot,...fresh};
-  if(keyLost){notice("Das Studio wurde neu gestartet. Der OpenRouter-Key lag nur im Speicher des alten Servers und muss erneut eingegeben werden; eingereihte Vertonungen warten bis dahin.");lastJobView="";if(!overviewPage&&project)render();}
+  if(lost){notice(`Das Studio wurde neu gestartet. Der ${lost} lag nur im Speicher des alten Servers und muss erneut eingegeben werden; eingereihte Vertonungen warten bis dahin.`);lastJobView="";if(!overviewPage&&project)render();}
 }
 async function pollOnce() {
   try {

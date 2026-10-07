@@ -45,6 +45,13 @@ class ModelTraceTests(unittest.TestCase):
         self.assertEqual(rows[-1]["text"], "Next line.")
         self.assertNotIn("private-split-key", json.dumps(rows))
 
+    def test_a_google_key_pattern_is_redacted_like_an_openrouter_one(self):
+        from podcast_automate.model_trace import redact
+        text = redact("Google said: key AIzaSyA-1234567890abcdefghijklmnop invalid; sk-or-v1-abcdef also")
+        self.assertNotIn("AIzaSy", text)
+        self.assertNotIn("sk-or-v1", text)
+        self.assertIn("Google said", text)
+
     def test_codex_public_snapshot_dedup_and_permanent_timeout_diagnostics(self):
         directory = self.work / "calls/call_001"
         activity = CallActivity(directory, "ResearchDecision", "gpt-6-astra")

@@ -2,7 +2,7 @@
 title: Configuration
 doc_type: configuration
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
   - src/podcast_automate/studio_settings.py
   - src/podcast_automate/models.py
@@ -89,7 +89,7 @@ OpenRouter key; they apply to all projects (why: D-108). How to use the page: [S
 | Section | Replaces in each project | Details |
 | --- | --- | --- |
 | `text` | `studio/text.json` | Preset, reasoning level and the OpenRouter output limit `max_output_tokens` (1 024 to 200 000, default 32 768); [Providers and models](PRODUCT.md#providers-and-models) |
-| `audio` | `studio/audio.json` | Provider, speech model, both voices, the pause minimums ([Pause minimums](AUDIO.md#pause-minimums)) and, for Gemini, whether [expression tags](AUDIO.md#expression-tags) are set |
+| `audio` | `studio/audio.json` | Provider, speech model, both voices, the pause minimums ([Pause minimums](AUDIO.md#pause-minimums)), for Gemini whether [expression tags](AUDIO.md#expression-tags) are set, and for Gemini through Google each role's style (`styles`) and whether the roles swap from episode to episode (`alternate_roles`; [Style and roles](AUDIO.md#style-and-roles)) |
 | `execution` | `studio/execution.json` | Sequential or parallel, separately for text work and recording ([Sequential or parallel](STUDIO.md#sequential-or-parallel)) |
 | `allowances` | `studio/allowances.json` | Pre-approvals ([Budgets](BUSINESS_LOGIC.md#budgets)) |
 | `research_limits` | `research_limits` in `project.yaml` | Model calls, sources, search rounds ([Budgets](BUSINESS_LOGIC.md#budgets)) |
@@ -97,8 +97,8 @@ OpenRouter key; they apply to all projects (why: D-108). How to use the page: [S
 
 The file also records `changed_at`. A save carries the hash of the values the page showed; if the settings changed in
 between, it is refused with „Einstellungen inzwischen geändert. Seite neu laden.“ (settings changed in the meantime,
-reload the page). Claude's extra usage is not part of this file (see below), and the OpenRouter key is held in memory
-only ([Secrets and keys](SECURITY.md#secrets-and-keys)).
+reload the page). Claude's extra usage is not part of this file (see below), and the OpenRouter and Google keys are
+held in memory only ([Secrets and keys](SECURITY.md#secrets-and-keys)).
 
 **Without the file.** As long as `projects/.studio-settings.json` does not exist, every project keeps its own files
 and fields from the table. The page then shows the values of the most recently changed project, and the first save
@@ -125,7 +125,8 @@ Variables you can set. What the adapters set or remove for the CLIs they start i
 
 | Variable | Effect | Read in |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | OpenRouter key for text, Gemini speech, Jev and the Studio server when no key was entered; handling rules: [Secrets and keys](SECURITY.md#secrets-and-keys) | `openrouter.OpenRouterAdapter`, `speech.py`, `jev.JevClient`, `studio.py`, `logs.scrub` |
+| `OPENROUTER_API_KEY` | OpenRouter key for text, Gemini speech through OpenRouter, Jev and the Studio server when no key was entered; handling rules: [Secrets and keys](SECURITY.md#secrets-and-keys) | `openrouter.OpenRouterAdapter`, `speech.py`, `jev.JevClient`, `studio.py`, `logs.scrub` |
+| `GEMINI_API_KEY` | Google key for Gemini speech through Google and the conversation samples, when none was entered in the Studio; handling rules: [Google key in the Studio](SECURITY.md#google-key-in-the-studio) | `google_speech.GoogleSpeech`, `studio.py`, `logs.scrub` |
 | `PLA_SUBSCRIPTIONS_STORE` | Path of the quota store instead of `~/.podcast-automate/subscriptions.json`; the tests set it so they never write to `~/.podcast-automate` | `subscriptions.store_path` |
 | `PLA_KEEP_AWAKE` | `0` stops worker processes from keeping the computer awake ([Stopping and resuming](STUDIO.md#stopping-and-resuming)) | `studio_worker.keep_awake` |
 | `PLA_UNPAYWALL_EMAIL` | Contact address that enables Unpaywall in the search for a free copy of a work whose own address refused the download | `sources.unpaywall_copies` |

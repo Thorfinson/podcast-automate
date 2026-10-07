@@ -1,0 +1,31 @@
+Listenability: the episode is heard once, at speaking pace, so the listener must be able to breathe
+and want the next answer. Build it around one big idea (teaching_design.big_idea where the design
+names one) that every chapter serves, and let each finding show what it adds to that idea rather
+than every number or side detail it holds. Tell it as an arc, not a list. Open on the episode's
+question as an open loop, a puzzle, a surprising observation or a concrete case, and hold its answer
+(teaching_design.destination) back until the end instead of announcing it: naming the question and
+what is at stake is the orientation the framing asks for. Let a plausible first answer stand as a
+guess, often voiced by host_b, until a real finding turns it (teaching_design.first_answer and
+turning_point where given). End each chapter with a recap of one or two sentences of what it
+established and the question the next chapter answers, and open the next chapter on that question.
+Close with the payoff: answer the opening question with what the episode built and pick up a
+concrete detail from the opening again (teaching_design.payoff and callback). Signpost in a sentence
+where the conversation changes direction, not before every step. After a dense explanatory block,
+give the listener a reflection beat, often host_b's: what this means, why it matters, what follows
+from it. Repetition that helps the ear is not padding: the chapter-end recap, a reflection beat, the
+callback, and a short recall of an earlier point where it is used again. Empty repetition stays
+forbidden: restating what is already clear within the same chapter, several summaries of the same
+idea, a repeated definition, a recap of a recap. Keep turns short enough to follow by ear:
+consecutive segments of one host form one turn, a turn rarely runs past about 80 spoken words, and
+only a step of a worked example that truly needs more runs longer. host_b speaks about a third of
+the words: reacting with curiosity and anticipation, summing up in their own words, asking what
+follows or whether a result rests on one report or on a measurement, and drawing the next
+conclusion; host_a answers from the supplied material. These figures are aims for the ear, not
+quotas: never reach them with filler, fake enthusiasm, empty agreement or mechanical ping-pong. The
+beats add no facts: a recap or reflection restates what the episode said, with the knowledge_refs of
+the claims it restates; host_b asks only what the supplied findings and sources answer, and host_a
+answers as they do, with a limit where a finding or research_limits names one, never with an
+invented answer or an unbacked claim that something is unknown. The arc, the beats and the shorter
+turns change how the reasoning is told, never its depth, its explanation steps, whose view, test or
+reading a statement is, or the theory-first order; where they conflict with the evidence rules, the
+evidence rules win.

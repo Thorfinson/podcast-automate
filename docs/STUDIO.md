@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -172,12 +172,17 @@ projects:
 | Section | What you set there |
 | --- | --- |
 | **„Textmodell“** (text model) | One of the presets; see [Choosing the text model](#choosing-the-text-model). |
-| **„Audio“** | Provider, speech model (Gemini), the voices of host A and host B, the three pauses ([Pause minimums](AUDIO.md#pause-minimums)); for Gemini whether expression tags are set before recording. |
+| **„Audio“** | Provider (Qwen, Gemini through Google, Gemini through OpenRouter), speech model (Gemini), the voices of host A and host B, the three pauses ([Pause minimums](AUDIO.md#pause-minimums)); for Gemini whether expression tags are set before recording. For Google also the style of each role with its presets, **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode) and **„▶ Gesprächsprobe“** (conversation sample) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles)). |
 | **„Ausführung“** (execution) | See [Sequential or parallel](#sequential-or-parallel). |
 | **„Ohne Rückfrage“** (without asking) | See [Pre-approvals](#pre-approvals). |
 | **„Limits“** | Model calls per run, sources and search rounds per research, the time limit of one model call. |
 | **„Claude“** | The switch for bought extra usage ([Studio settings](CONFIGURATION.md#studio-settings)). |
-| **„OpenRouter-Key“** | The key for OpenRouter text, Gemini audio and Jev: **„Key hinterlegen“** (store key), **„Sitzungs-Key entfernen“** (remove session key); handling in [Secrets and keys](SECURITY.md#secrets-and-keys). |
+| **„OpenRouter-Key“** | The key for OpenRouter text, Gemini audio through OpenRouter and Jev: **„Key hinterlegen“** (store key), **„Sitzungs-Key entfernen“** (remove session key); handling in [Secrets and keys](SECURITY.md#secrets-and-keys). |
+| **„Google-Key“** | The key for Gemini audio through Google and the conversation samples, with the same two buttons; handling in [Google key in the Studio](SECURITY.md#google-key-in-the-studio). |
+
+Below the title, **„Keys“** shows whether the OpenRouter and the Google key are there („✓ hinterlegt“ or „fehlt“),
+entered in the Studio or taken from the server's environment; the same mark stands on each key's panel. The key itself
+never reaches the page.
 
 **„Einstellungen für alle Projekte speichern“** (save settings for all projects) saves the page. The chip at the top
 reads **„Gilt für alle Projekte“** (applies to all projects) once the workspace settings are saved, **„Noch je
@@ -393,16 +398,17 @@ runs, accepts no new ones meanwhile, ends itself and restarts in the background 
 without a browser window. The new server takes over queued recordings and scheduled resumes; the page reconnects by
 itself.
 
-An OpenRouter key stored in the Studio lived only in the old server's memory and must be entered again
-([Times and connection](#times-and-connection)); until then queued Gemini episodes show „wartet auf den
-OpenRouter-Key“ (waiting for the OpenRouter key) instead of waiting for a free slot.
+An OpenRouter or Google key stored in the Studio lived only in the old server's memory and must be entered again
+([Times and connection](#times-and-connection)); until then queued Gemini episodes show „wartet auf den Google-Key“
+or „wartet auf den OpenRouter-Key“ (waiting for the key of their route) instead of waiting for a free slot.
 
-While no key is available but something needs one, every page shows **„OpenRouter-Key fehlt“** (OpenRouter key
-missing) at the top, also on a page loaded fresh after a restart (`Studio.key_reminder`, `studio.key_needs`): Gemini as
-the audio provider, Jev in the gap probe, or an OpenRouter text model, each with its projects and what happens without
-the key (Gemini recordings wait; new script runs search gaps by words only, or stop where Jev was switched on by hand;
-OpenRouter jobs stop). The note holds a key field; on the settings page it points to the „OpenRouter-Key“ panel. A
-stored key ends it at once. If the new server fails before its
+While a key is missing but something needs it, every page shows **„Google-Key fehlt“** or **„OpenRouter-Key fehlt“**
+(key missing) at the top, also on a page loaded fresh after a restart (`Studio.key_reminder`, `studio.key_needs`):
+Gemini through Google (Google key), Gemini through OpenRouter, Jev in the gap probe, or an OpenRouter text model
+(OpenRouter key), each with its projects and what happens without the key (Gemini recordings wait; new script runs
+search gaps by words only, or stop where Jev was switched on by hand; OpenRouter jobs stop). Each note holds a field
+for its key; on the settings page it points to the key's panel. A stored key ends its note at once. If the new server
+fails before its
 own log starts, the reason is in `.studio/relaunch.log` (why: D-117). The old server's console window can then be
 closed. See also [Update the Studio](OPERATIONS.md#update-the-studio).
 
@@ -541,6 +547,16 @@ parts, without new speech generation or conversion. The ZIP carries a shortened 
 inside, so ZIP folder and file name together stay short when unpacking on Windows. Single downloads also get a short
 podcast title. Every overview project card offers the same ZIP as „Podcast herunterladen“ once one episode is
 recorded. Long titles are shortened at word boundaries where possible; umlauts are kept, and no ellipsis is appended.
+
+An episode whose companion kit was made for exactly the recording in the ZIP also brings its kit as
+`Folge 01 - Begleitmaterial/` with `description_short.txt`, `description.txt` and `sources.md`.
+
+**„Begleitmaterial“** (companion kit) on the „Vertonung“ page shows, per episode, the short description and the
+episode description for Spotify and Apple Podcasts, each with **„Kopieren“** (copy), the character count against the
+4,000 allowed and how many sources fit into the text. **„Begleitmaterial erstellen“** (create) makes it, **„Neu
+zusammenstellen“** (rebuild) takes the newest recording's chapters without a new model call, **„Neu formulieren“**
+(reword) asks the text model again, **„Für alle Folgen“** does every episode. How the kit is made:
+[Exports and listening sheet](AUDIO.md#exports-and-listening-sheet) (why: D-139).
 
 For an incomplete series the link reads **„Fertige Folgen herunterladen · ZIP · 2 von 6 Folgen“** (download finished
 episodes · ZIP · 2 of 6 episodes). Older script or voice states stay marked as such. If a file of a published episode

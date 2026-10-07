@@ -47,3 +47,9 @@ def terminology(language, *subjects):
 TEACHING_SCOPE = fragment("teaching_scope")
 
 CONTINUITY = fragment("continuity")
+
+# How a dialogue lets the listener breathe and want the next answer: one big idea, an arc whose answer is held back,
+# chapter-end recaps, reflection beats, short turns and a partner who speaks about a third (2026-10-06: listeners of
+# three finished series found the episodes "Fakten, Fakten, Fakten"; the expert spoke 70 to 87 % of the words). For
+# writing, polishing, its comparison and the script review; the teaching design plans the arc in its own fields.
+LISTENABILITY = fragment("listenability")

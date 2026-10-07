@@ -461,6 +461,36 @@ class TeachingTests(unittest.TestCase):
         half = TeachingPlan.model_validate({**saved, "worked_example": {**example, "misconception": "Lower is worse."}})
         self.assertTrue(any("misconception together with its correction" in e for e in validate_teaching_plan(half, entry)))
 
+    def test_the_arc_is_optional_in_the_contract_and_a_plan_saved_before_it_reads_as_before(self):
+        """2026-10-06: the design plans a narrative arc (one big idea, a held-back answer, a first answer, a turning point
+        a finding brings about, payoff and callback). Its fields are optional, so a plan saved before validates, dumps,
+        hashes and renders exactly as before; where a plan names its turn, the turn rests on the episode's findings."""
+        from podcast_automate.teaching import render_teaching_plan
+        entry = fixtures.example_plan().episodes[0]
+        saved = self.design().model_dump()
+        old = TeachingPlan.model_validate(saved)
+        self.assertEqual((old.model_dump(), digest(old.model_dump())), (saved, digest(saved)))
+        self.assertFalse(set(TeachingPlan.LATER) & set(saved))
+        self.assertNotIn("Spannungsbogen", render_teaching_plan(old))
+        arc = {"big_idea": "A score decides between candidates.", "hook_question": "Why would lower be better?",
+               "first_answer": "A higher score sounds better.", "turning_point": "The energy convention turns it around.",
+               "turning_finding_ids": ["f_energy"], "payoff": "Lower energy means a better fit.",
+               "callback": "The two candidates from the opening."}
+        self.assertEqual(set(arc), set(TeachingPlan.LATER))
+        planned = TeachingPlan.model_validate({**saved, **arc})
+        self.assertEqual(validate_teaching_plan(planned, entry), [])
+        self.assertEqual({key: planned.model_dump()[key] for key in arc}, arc)
+        rendered = render_teaching_plan(planned)
+        self.assertIn("## Spannungsbogen\n\nGroße Idee: A score decides between candidates.\n\n"
+                      "Leitfrage: Why would lower be better?\n\n", rendered)
+        self.assertIn("Rückgriff auf den Anfang: The two candidates from the opening.\n\n## Lernziele", rendered)
+        for broken, message in (({"turning_finding_ids": []}, "together with the findings"),
+                                ({"turning_point": ""}, "together with the findings"),
+                                ({"turning_finding_ids": ["f_unknown"]}, "findings assigned to this episode")):
+            with self.subTest(broken=broken):
+                errors = validate_teaching_plan(planned.model_copy(update=broken), entry)
+                self.assertTrue(any(message in error for error in errors), errors)
+
     def test_the_review_scope_starts_from_the_designs_a_redesign_set_aside(self):
         from podcast_automate.teaching import review_scope
         folder = self.root / "scope"

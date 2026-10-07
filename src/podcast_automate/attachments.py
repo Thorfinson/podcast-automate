@@ -124,7 +124,8 @@ def decode_file(item: dict, secrets: tuple[str, ...]) -> tuple[dict, str]:
                        code="invalid_attachment") from exc
     if not text.strip() or any(unicodedata.category(c) == "Cc" and c not in "\n\t" for c in text):
         raise AppError("Der Anhang enthält keinen lesbaren Text oder enthält Binärdaten.", code="invalid_attachment")
-    if any(key and key in name + text for key in secrets) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}", name + text):
+    if any(key and key in name + text for key in secrets) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}|\bAIza[0-9A-Za-z_-]{20,}",
+                                                                       name + text):
         raise AppError("Der Anhang enthält einen API-Key. Bitte Zugangsdaten vor dem Hochladen entfernen.",
                        code="credential_in_prompt")
     identity = digest([name, text])

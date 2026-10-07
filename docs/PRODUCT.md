@@ -2,7 +2,7 @@
 title: Product
 doc_type: product
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
   - src/podcast_automate/text_settings.py
   - src/podcast_automate/speech.py
@@ -42,7 +42,7 @@ automatic audio assembly are part of the MVP. Additional paid APIs and manual au
 
 Version 0.1 implements project management, the browser Studio, question-driven research up to the reviewed dossier,
 series planning, teaching plans, dialogue scripts with polishing and reviews, and the recording of approved scripts
-with local Qwen or with Gemini via OpenRouter. The [Roadmap](#roadmap) lists what is not built yet, the
+with local Qwen or with Gemini through Google or OpenRouter. The [Roadmap](#roadmap) lists what is not built yet, the
 [MVP acceptance plan](specs/2026-09-10-mvp-acceptance-plan.md) the acceptance criteria.
 
 ### Main use cases
@@ -81,8 +81,8 @@ Every model answer must satisfy a strict JSON schema and is checked deterministi
 
 ## Providers and models
 
-**Text and audio are chosen independently**, for example Codex writes the script and Gemini records it via
-OpenRouter. **Codex** is the locally installed Codex CLI with a ChatGPT subscription login, **Claude** the Claude Code
+**Text and audio are chosen independently**, for example Codex writes the script and Gemini records it through
+Google. **Codex** is the locally installed Codex CLI with a ChatGPT subscription login, **Claude** the Claude Code
 CLI with a claude.ai login (Claude Max subscription). The text models do not run offline on the PC, and neither
 subscription bills individual calls. OpenRouter serves text models with structured JSON answers, paid from your
 OpenRouter credit. ElevenLabs is not connected.
@@ -143,12 +143,14 @@ through the CLI option `--model` ([Commands](#commands)).
 | Provider | Models | Voices | Source |
 | --- | --- | --- | --- |
 | Local Qwen3-TTS (tested on Windows with an AMD GPU) | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` (default of `runtime.tts_model`) | 9 voices: Aiden, Vivian, Ryan, Serena, Uncle_Fu, Ono_Anna, Sohee, Eric, Dylan; Studio default Aiden and Vivian | `models.RuntimeSettings.tts_model`, `speech.QWEN_VOICES`, `speech.audio_catalog` |
+| Gemini TTS via Google (the Gemini default since 2026-10-06, why: D-133) | `gemini-3.8-flash-tts` (Google's id of `speech.GEMINI_MODEL`); the Lite model as on OpenRouter, unverified on Google | the same 30 voices; Studio default Erinome and Sadachbia, swapping roles from episode to episode; a style per role (`speech.STYLE_PRESETS`) | `google_speech.py`, `speech.audio_catalog` |
 | Gemini TTS via OpenRouter | `google/gemini-3.8-flash-tts` (default, `speech.GEMINI_MODEL`); `google/gemini-3.8-flash-lite-tts` as the alternative on the settings page (`speech.GEMINI_MODELS`) | 30 voices valid for both models, checked against OpenRouter's models API on 2026-09-26 (`speech.VOICES_VERIFIED_ON`); Studio default Sadaltager and Aoede; shared [voice-sample library](OPERATIONS.md#voice-samples) | `speech.GEMINI_VOICES`, `speech.audio_catalog` |
 
 The Gemini speech model is chosen with the audio provider and needs no manual model ID. With Gemini the GPU
-installation is not needed: the connection check then checks the stored OpenRouter key and skips the local Qwen
-check. A stored key is not yet a successful API voice test. Recording with each provider: [Qwen](AUDIO.md#qwen),
-[Gemini via OpenRouter](AUDIO.md#gemini-via-openrouter).
+installation is not needed: the connection check then checks the stored key of the route (Google or OpenRouter) and
+skips the local Qwen check. A stored key is not yet a successful API voice test. Google's voice library has further
+voices (215 for English, 87 for German, read on 2026-10-06); they are not offered yet. Recording with each provider:
+[Qwen](AUDIO.md#qwen), [Gemini via Google](AUDIO.md#gemini-via-google), [Gemini via OpenRouter](AUDIO.md#gemini-via-openrouter).
 
 ## Commands
 
@@ -165,6 +167,7 @@ Linux as `.venv/bin/pla …`. Every command except `studio` accepts `--json`; `p
 | `pla script <project>` | Run kind `script`: compact knowledge model, series plan, teaching plans and reviewed dialogue scripts for reading | `--episode ep_001` (bring one episode forward; without it all planned scripts are written), `--revise EPISODE_ID` with `--feedback`, `--backend codex_cli\|openrouter\|claude_code\|auto`, `--model`, `--reasoning-effort`, `--api-key`, `--max-output-tokens`, `--jev-probe`; [Running a script job](SCRIPTS.md#running-a-script-job) |
 | `pla series-review <project>` | Run kind `series_review`: review the scripts of a published script run as a series, without changing that run | `--run <run_id>` (default: the last published), `--backend`, `--model`, `--reasoning-effort`; [Series review](SCRIPTS.md#series-review) |
 | `pla audio <project> --episode ep_001 --approve-audio` | Run kind `episode_audio`: record one read and approved episode with local Qwen, assemble it and export MP3, chapters, transcript and show notes. Gemini via OpenRouter is chosen in the Studio | `--approval-note` |
+| `pla publish-kit <project> --episode ep_001` | Companion kit of one published episode for uploading it to a podcast platform: a short description, an episode description of at most 4,000 characters with chapter marks (`00:00 Title`) and sources appended, and the source list. One call of the script run's text model writes the two descriptions and is reused while the script is unchanged; chapters and sources are built from the recording and the research without a model. Writes `publish/` next to the recording, or `episodes/<ep>/publish/` without one; publishes nothing | `--fresh` asks for new descriptions; an OpenRouter script run takes its key from `OPENROUTER_API_KEY` |
 | `pla status <project>` | Progress, finished episodes, concrete pause or failure reasons and failure logs | `--run-id` |
 | `pla resume <project>` | Continue the last interrupted run with unchanged valid results | `--run-id`, `--approve-audio`, `--approval-note`, and the text options of `script` |
 | `pla approve <project>` | Explicit approval for one run (options below) | `--run-id` (default: the project's last run) |

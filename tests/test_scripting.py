@@ -224,6 +224,33 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(writing["length"], word_budget(plan.episodes[0]))
         self.assertEqual(writing["series_context"]["episode_path"][0]["episode_id"], "ep_001")
 
+    def test_the_listenability_rules_reach_writing_polishing_and_both_reviews_with_the_measured_shape(self):
+        """2026-10-06: listeners of three finished series found the episodes "Fakten, Fakten, Fakten"; the expert spoke
+        70 to 87 % of the words. Writing, polishing, its comparison and the script review compose one rule block, and
+        the two reviews get the shape the code measured instead of counting words themselves."""
+        from podcast_automate.editorial import LISTENABILITY
+        from podcast_automate.polishing import POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION
+        from podcast_automate.script_advisories import dialogue_shape
+        from podcast_automate.teaching import DESIGN_PROMPT_VERSION
+        prompts = {}
+
+        def model(prompt, output_type, directory, **kwargs):
+            prompts.setdefault(kwargs["prompt_version"], prompt)
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed")
+        for version in (WRITE_EPISODE_VERSION, POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION, SCRIPT_REVIEW_VERSION):
+            with self.subTest(version=version):
+                self.assertIn(LISTENABILITY, prompts[version])
+        # The teaching design plans the arc in its own fields and does not get the dialogue rules.
+        self.assertNotIn(LISTENABILITY, prompts[DESIGN_PROMPT_VERSION])
+        shape = dialogue_shape(example_script())
+        self.assertEqual(shape, {"partner_share": 0.69, "turns": 2, "long_turns": []})
+        for version in (POLISH_REVIEW_VERSION, SCRIPT_REVIEW_VERSION):
+            with self.subTest(version=version):
+                self.assertEqual(json.loads(prompts[version].splitlines()[-1])["dialogue_shape"], shape)
+
     def test_the_writer_gets_its_word_budget_computed_per_episode_and_scene(self):
         """Transformer, 2026-10-04: told to derive the budget from target_minutes, Sonnet 5.5 wrote every first draft at
         58 to 75 % of it, and ep_012 stayed below the floor after three corrections. The floor is the one validate_script
@@ -626,7 +653,8 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             value, meta = self.model(prompt, output_type, directory, **kwargs)
             if output_type is SeriesPlan:
                 # 112 words are 0.86 estimated minutes: within 85 to 120 percent of 0.8, so the
-                # only advisory is the opening itself.
+                # only advisories are the opening itself and, since 2026-10-06, the partner's 11 of
+                # those 112 words (10 percent, under the 25 percent floor).
                 value.episodes[0].target_minutes = 0.8
             if output_type is EpisodeScript:
                 value.segments[0].text = opening
@@ -636,7 +664,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(run.status, "completed")
         rows = read_yaml(self.root / "reports/script_quality.yaml")["episodes"]["ep_001"]["advisories"]
         self.assertEqual([(r["code"], r["episode_id"], r["count"], r["segment_ids"]) for r in rows],
-                         [("long_cold_open", "ep_001", 101, ["seg_001"])])
+                         [("long_cold_open", "ep_001", 101, ["seg_001"]), ("low_partner_share", "ep_001", 10, [])])
         self.assertIn("101", rows[0]["detail"])
 
     def test_changed_research_is_blocked_before_model_calls(self):
@@ -915,7 +943,9 @@ class ScriptingTests(fixtures.ScriptProjectCase):
     def test_a_saved_verdict_stands_across_a_relaxing_review_version_only_when_it_blocked_nothing(self):
         from podcast_automate.script_checks import RELAXED_REVIEW_VERSIONS
         from podcast_automate.script_pipeline import saved_verdict_stands
-        self.assertEqual(RELAXED_REVIEW_VERSIONS, {"script_review.v11-core-limits", "script_review.v12-source-corrected"})
+        # v13 since 2026-10-06: v14 adds only a dialogue point (listenability), which stops nothing once repairs are spent.
+        self.assertEqual(RELAXED_REVIEW_VERSIONS, {"script_review.v11-core-limits", "script_review.v12-source-corrected",
+                                                   "script_review.v13-reviewer-advisories"})
         passed = ScriptReview(issues=[ScriptIssue(category="clarity", segment_ids=["seg_001"], reason="Noted.")], limitations=[])
         blocking = ScriptReview(issues=[ScriptIssue(category="grounding", segment_ids=["seg_001"], reason="Drift.")], limitations=[])
         self.assertTrue(saved_verdict_stands(SCRIPT_REVIEW_VERSION, blocking))

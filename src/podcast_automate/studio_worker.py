@@ -30,6 +30,8 @@ from .run_budget import run_text_generation
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
+from .google_speech import GoogleSpeech
+from .publish_kit import build_publish_kit
 from .speech import GeminiSpeech, selected_audio
 from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
@@ -78,6 +80,29 @@ def tag_episodes(root, episodes, api_key=None, *, run_id=None, progress=None):
     return {episode: results[episode] for episode in episodes}
 
 
+def publish_kits(root, episodes, api_key=None, *, fresh=False, progress=None):
+    """The companion kits of several published episodes, one after another (publish_kit.build_publish_kit, one model
+    call each unless its descriptions are saved). One that fails is reported with its reason and does not stop the
+    others; only when every one fails does the first reason stop."""
+    results, failures = {}, []
+    for done, episode in enumerate(episodes):
+        if progress:
+            progress({"phase": "publish_kit", "completed_segments": done, "total_segments": len(episodes),
+                      "current_episode": episode})
+        try:
+            kit = build_publish_kit(root, episode, api_key=api_key, fresh=fresh)
+            results[episode] = {"folder": kit["folder"], "characters": kit["description"]["characters"],
+                                "sources": kit["description"]["sources_total"], "reused": kit["descriptions_reused"]}
+        except AppError as exc:
+            failures.append(exc)
+            results[episode] = {"error": str(exc), "code": exc.code}
+    if progress:
+        progress({"phase": "publish_kit", "completed_segments": len(episodes), "total_segments": len(episodes)})
+    if episodes and len(failures) == len(episodes):
+        raise failures[0]
+    return results
+
+
 def express_published(root, run, api_key=None):
     """After a script run finished, place the tags of the episodes it published, when the project records with
     Gemini and its expression layer; the reader then sees them before approving audio. A failure here never
@@ -92,7 +117,8 @@ def express_published(root, run, api_key=None):
         pointer = read_json(folder / "latest.json", {})
         script = folder / "script.yaml"
         if (pointer.get("run_id") == run.run_id and script.is_file()
-                and saved_expression(root, folder.name, file_hash(script)) is None):
+                and saved_expression(root, folder.name, file_hash(script),
+                                     backchannels=audio.provider == "google_gemini_tts") is None):
             missing.append(folder.name)
     try:
         return tag_episodes(root, missing, api_key, run_id=run.run_id) if missing else None
@@ -123,16 +149,18 @@ def perform(root, request, sample_progress=None):
     kwargs["api_key"] = request.get("api_key") if choice.provider == "openrouter" else None
     saved_key = text_key(root, request, request["run_id"]) if action in {"script", "replan"} else None
     if action == "check":
-        remote = selected_audio(root, config).remote
-        checks = inspect(config.runtime, include_tts=not remote)
-        if remote:
+        audio = selected_audio(root, config)
+        checks = inspect(config.runtime, include_tts=not audio.remote)
+        if audio.remote:
+            google = audio.provider == "google_gemini_tts"
             try:
-                GeminiSpeech(request.get("api_key")).require_key()
+                (GoogleSpeech(request.get("google_key")) if google else GeminiSpeech(request.get("api_key"))).require_key()
                 available = True
             except AppError:
                 available = False
-            checks["checks"].append({"name": "Gemini-TTS-Key", "ok": available,
-                "detail": "Key hinterlegt; noch kein API-Hörtest durchgeführt." if available else "OpenRouter-Key fehlt."})
+            checks["checks"].append({"name": "Google-Key" if google else "Gemini-TTS-Key", "ok": available,
+                "detail": "Key hinterlegt; noch kein API-Hörtest durchgeführt." if available
+                          else "Google-Key fehlt." if google else "OpenRouter-Key fehlt."})
             checks["ready"] = checks["ready"] and available
         return {"checks": checks}
     if action == "audio_sample":
@@ -206,6 +234,11 @@ def perform(root, request, sample_progress=None):
         episodes = request.get("episodes") or sorted(folder.name for folder in (root / "episodes").glob("ep_*")
                                                      if (folder / "script.yaml").is_file())
         return {"expression": tag_episodes(root, episodes, request.get("api_key"), progress=sample_progress)}
+    elif action == "publish_kit":
+        episodes = request.get("episodes") or sorted(folder.name for folder in (root / "episodes").glob("ep_*")
+                                                     if (folder / "script.yaml").is_file())
+        return {"publish_kit": publish_kits(root, episodes, request.get("api_key"), fresh=request.get("fresh") is True,
+                                            progress=sample_progress)}
     elif action == "audio":
         rerender = request.get("rerender") is True
         run = run_episode_audio(root, episode=request["episode"], approve_audio=not rerender,
@@ -214,7 +247,8 @@ def perform(root, request, sample_progress=None):
             expected_script_hash=request["script_hash"], expected_readable_hash=request["readable_hash"],
             expected_config_hash=request["config_hash"], audio_choice=request.get("audio_settings"),
             expected_audio_hash=request.get("audio_hash"), api_key=request.get("api_key"),
-            parallel_remote=request.get("parallel_remote", False), expected_expression_hash=request.get("expression_hash"))
+            parallel_remote=request.get("parallel_remote", False), expected_expression_hash=request.get("expression_hash"),
+            speech_key=request.get("google_key"))
     elif action == "resume":
         run_id = request["run_id"]
         path = manifest_path(root, run_id)
@@ -234,7 +268,8 @@ def perform(root, request, sample_progress=None):
                                api_key=text_key(root, request, run_id))
         elif manifest["kind"] == "episode_audio":
             run = run_episode_audio(root, resume=True, run_id=run_id, api_key=request.get("api_key"),
-                                    parallel_remote=request.get("parallel_remote", False))
+                                    parallel_remote=request.get("parallel_remote", False),
+                                    speech_key=request.get("google_key"))
         else:
             raise AppError("Diesen älteren Probentyp über die vorhandenen Werkzeuge fortsetzen.", code="unsupported_run")
     else:
@@ -291,6 +326,7 @@ def main():
     root = Path(sys.argv[1]).resolve()
     request = json.loads(sys.stdin.read())
     add_secret(request.get("api_key"))
+    add_secret(request.get("google_key"))
     configure_logging(root / "studio/worker.log")
     job_path = audio_job_path(root, request["audio_job_id"]) if request.get("audio_job_id") else root / "studio/job.json"
     job = read_json(job_path)
@@ -356,12 +392,14 @@ def main():
             if exc.status == "waiting_for_quota":
                 job["retry_at"] = quota_retry_at(exc, attempt=job.get("auto_resume_count", 0))
         elif not isinstance(exc, KeyboardInterrupt):
-            receipt = record_failure(root / "studio", "worker", exc, secrets=(request.get("api_key") or "",))
+            receipt = record_failure(root / "studio", "worker", exc,
+                                     secrets=(request.get("api_key") or "", request.get("google_key") or ""))
             logger("worker").error("Auftrag %s fehlgeschlagen: %s", job.get("id"), type(exc).__name__, exc_info=exc)
             if receipt:
                 job["message"] += f" Technische Details: {receipt.relative_to(root).as_posix()}"
-        if request.get("api_key"):
-            job["message"] = job["message"].replace(request["api_key"], "[Key verborgen]")
+        for key in (request.get("api_key"), request.get("google_key")):
+            if key:
+                job["message"] = job["message"].replace(key, "[Key verborgen]")
     finally:
         if summary_process is not None:
             try:

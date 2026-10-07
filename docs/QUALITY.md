@@ -2,7 +2,7 @@
 title: Quality
 doc_type: quality
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_advisories.py
@@ -38,7 +38,7 @@ scripts), `series_review.py` and `script_advisories.py`.
 | `rights_check` | Planned gate | Individual rights states and export blocks are not implemented yet. Currently only private use and the deterministic quote limits apply; see [Source rights and privacy](SECURITY.md#source-rights-and-privacy). |
 | `audio_readiness_check` | Yes, before rendering | Speakers, spoken text, pauses and chapters are unambiguous. |
 | `audio_output_check` | Yes, before the final audio export | All segments are present and technically valid; assembly, measured duration and chapters match. |
-| `advisories` | No | Non-blocking review notes beside the gates: terms defined again, repeated reminders that an example is invented, a long cold open and a duration above the target (`script_advisories.py` with German and English patterns; other languages get only the cold-open and duration notes); series-review findings that only describe a source limitation or that, in the re-check of a repair round, newly concern an unchanged episode; and, in the research, findings from only one research group (`single_group_findings`). They are stored in `reports/script_quality.yaml` under `episodes.<ep>.advisories` and `series_review.advisories`, or in the research report, and the Studio shows them under **„Hinweise der Prüfungen“** (review notes, [on the reading page](STUDIO.md#review-notes-on-the-reading-page)). Nothing evaluates them automatically. |
+| `advisories` | No | Non-blocking review notes beside the gates: terms defined again, repeated reminders that an example is invented, a long cold open, a duration above the target, more than two turns over 120 words and a partner share under 25 % (`script_advisories.py` with German and English patterns; other languages get only the cold-open, duration, turn and share notes); series-review findings that only describe a source limitation or that, in the re-check of a repair round, newly concern an unchanged episode; and, in the research, findings from only one research group (`single_group_findings`). They are stored in `reports/script_quality.yaml` under `episodes.<ep>.advisories` and `series_review.advisories`, or in the research report, and the Studio shows them under **„Hinweise der Prüfungen“** (review notes, [on the reading page](STUDIO.md#review-notes-on-the-reading-page)). Nothing evaluates them automatically. |
 
 ID and schema checks are deterministic. Depth of content, fit of the evidence and naturalness need an editorial
 assessment; a source ID does not prove that a statement is factually correct. The report keeps automatic checks, model

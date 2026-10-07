@@ -33,7 +33,7 @@ from .logs import add_secret, configure_logging, logger, scrub
 from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManifest, RuntimeSettings, SeriesGoal,
                      TopicBrief, host_labels, now)
 from .episode_audio import saved_approval, saved_expression
-from .expression import TAG
+from .expression import BACKCHANNEL, TAG
 from .runner import manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
                          approve_fresh_attempts, approve_research_retry, approve_residual_finish, approve_text_switch,
@@ -42,11 +42,13 @@ from .run_budget import (approve_criterion_gap, approve_model_call_limit, approv
 from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics, style_notes
 from .script_pipeline import failed_teaching
-from .speech import (AudioChoice, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
+from .speech import (AudioChoice, GEMINI_PROVIDERS, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
                      same_audio_generation)
 from .storage import (atomic_text, digest, file_hash, file_lock, init_project, inside, load_project, project_hash,
                       project_lock, read_text, read_yaml, write_json, write_yaml)
-from .voice_samples import SAMPLE_TEXTS, ready_sample, sample_inventory, sample_path
+from .publish_kit import saved_kit
+from .voice_samples import (SAMPLE_TEXTS, generate_pair, pair_view, ready_pair_file, ready_sample, sample_inventory,
+                            sample_path)
 from .spoken_forms import (SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report,
                            spoken_text)
 from .studio_progress import memo
@@ -443,23 +445,34 @@ def write_queue(root, rows):
     write_json(root / "studio/audio_queue.json", rows)
 
 
-def queue_view(rows, key_available=True):
-    """The queue as the audio page shows it. A recording waits for a place, or for the OpenRouter key, which lives
-    only in the server's memory and is gone after a restart (2026-10-02: the queue still said it waited for a place)."""
+def queue_view(rows, key_available=True, key="openrouter"):
+    """The queue as the audio page shows it. A recording waits for a place, or for the key its route needs (``key``:
+    "openrouter" or "google"), which lives only in the server's memory and is gone after a restart (2026-10-02: the
+    queue still said it waited for a place)."""
     return [{"episode": row.get("episode"), "position": number, "queued_at": row.get("queued_at"),
-             **({"error": row["error"]} if row.get("error") else {"waiting": "place" if key_available else "key"})}
+             **({"error": row["error"]} if row.get("error") else
+                {"waiting": "place"} if key_available else {"waiting": "key", "key": key})}
             for number, row in enumerate(rows, 1)]
 
 
-# What of a project can need the OpenRouter key, in the order the reminder names them (web/app.js KEY_NEED_TEXT).
-KEY_NEEDS = ("gemini_audio", "jev", "openrouter_text")
+# What of a project can need a key, in the order the reminder names them (web/app.js KEY_NEED_TEXT), and which key.
+KEY_NEEDS = ("google_audio", "gemini_audio", "jev", "openrouter_text")
+NEED_KEYS = {"google_audio": "google", "gemini_audio": "openrouter", "jev": "openrouter", "openrouter_text": "openrouter"}
+
+
+def audio_key(audio):
+    """The key a recording with ``audio`` speaks with: "google", "openrouter", or None for local Qwen."""
+    return {"google_gemini_tts": "google", "openrouter_gemini_tts": "openrouter"}.get(audio.provider)
 
 
 def key_needs(root, config):
-    """What of this project needs the OpenRouter key: Gemini as its audio provider, Jev in the gap probe of its new
-    script runs, an OpenRouter text model (Studio.key_reminder)."""
+    """What of this project needs a key: Gemini through Google (the Google key) or through OpenRouter as its audio
+    route, Jev in the gap probe of its new script runs, an OpenRouter text model (Studio.key_reminder)."""
     needs = []
-    if selected_audio(root, config).provider == "openrouter_gemini_tts":
+    provider = selected_audio(root, config).provider
+    if provider == "google_gemini_tts":
+        needs.append("google_audio")
+    if provider == "openrouter_gemini_tts":
         needs.append("gemini_audio")
     if jev_probe_enabled(root):
         needs.append("jev")
@@ -488,16 +501,39 @@ def kept_local_sources(root, saved, requested):
     return list(dict.fromkeys(kept + [value for value in saved if value not in kept and not own(value)]))
 
 
-def reading_expression(root, episode, script_hash):
-    """The inline tags placed for an episode's current script (episode_audio.tag_episode), for reading and approval."""
-    saved = saved_expression(root, episode, script_hash)
+def reading_expression(root, episode, script_hash, *, backchannels=False):
+    """The inline tags placed for an episode's current script (episode_audio.tag_episode), for reading and approval;
+    with the listener reactions of a Google recording when ``backchannels``."""
+    saved = saved_expression(root, episode, script_hash, backchannels=backchannels)
     if saved is None:
         return None
     rows = [{"segment_id": key, "text": text, "spoken": (saved.get("spoken") or {}).get(key, "")}
             for key, text in saved["segments"].items() if isinstance(text, str)]
-    return {"tags": sum(len(TAG.findall(row["text"])) for row in rows), "segments": rows,
+    return {"tags": sum(len(TAG.findall(row["text"])) for row in rows),
+            "backchannels": sum(len(BACKCHANNEL.findall(row["text"])) for row in rows), "segments": rows,
             "rejected": saved.get("rejected", ""), "placed_at": saved.get("placed_at"),
             "hash": file_hash(root / "episodes" / episode / "expression.json")}
+
+
+def publish_view(root, folder):
+    """What the recording page shows of an episode's companion kit (publish_kit.saved_kit): the two descriptions to copy
+    and their notes, kept while the files it depends on are unchanged; None while there is no current kit."""
+    latest = read_json(folder / "audio_latest.json", {}) or {}
+    kits = [folder / "publish/kit.json"]
+    if isinstance(latest.get("run_id"), str) and re.fullmatch(r"[A-Za-z0-9_]+", latest["run_id"]):
+        kits.append(root / "exports" / folder.name / latest["run_id"] / "publish/kit.json")
+
+    def compute():
+        kit = saved_kit(root, folder.name)
+        if kit is None:
+            return None
+        text = read_text(root / kit["folder"] / "description.txt") if (root / kit["folder"] / "description.txt").is_file() else ""
+        return {"folder": kit["folder"], "short": kit["descriptions"]["short"], "description": text.rstrip("\n"),
+                "characters": kit["description"]["characters"], "limit": kit["description"]["limit"],
+                "sources_listed": kit["description"]["sources_listed"], "sources_total": kit["description"]["sources_total"],
+                "chapter_problems": kit.get("chapter_problems") or [], "recorded": kit.get("recording") is not None}
+    return memo(("publish_kit", str(folder)), [folder / "script.yaml", folder / "episode_plan.yaml",
+                                               folder / "audio_latest.json", folder / "latest.json", *kits], compute)
 
 
 def project_job(main, jobs, parked):
@@ -549,7 +585,8 @@ class Studio:
         self.workspace = workspace.resolve()
         self.projects = self.workspace / "projects"
         self.token = secrets.token_urlsafe(32)
-        self.key = ""
+        self.key = ""  # The OpenRouter key: text, Jev and OpenRouter speech.
+        self.google_key = ""  # The Google key: Gemini speech through Google (google_speech).
         self.mutex = threading.RLock()
         self.workers = {}  # project root -> (process, uses the GPU) of its main job
         self.audio_processes = {}
@@ -615,6 +652,19 @@ class Studio:
                 files += [path, path.with_suffix(".json")]
         return memo(("samples", str(self.projects)), files, lambda: sample_inventory(self.projects))
 
+    def pair_sample(self, data):
+        """The conversation sample of a Google selection on the settings page (voice_samples.pair_view): its URL and
+        whether it exists, made first when ``generate`` asks for it, with one short request on the Google key."""
+        voices, styles, language = data.get("voices"), data.get("styles"), data.get("language")
+        if language not in {"de-DE", "en-US"} or not isinstance(voices, dict) or not isinstance(styles, (dict, type(None))):
+            raise AppError("Stimmen, Stil und Sprache für die Gesprächsprobe angeben.", code="invalid_voice")
+        view = pair_view(self.projects, voices, styles, language)
+        if data.get("generate") is True and not view["ready"]:
+            if not self.google_key_available():
+                raise AppError("Für die Gesprächsprobe zuerst den Google-Key hinterlegen.", code="google_key_required")
+            view = generate_pair(self.projects, voices, styles, language, self.google_key or None)
+        return view
+
     def bootstrap(self):
         projects = self.project_list()
         return {"app": "podcast-studio", "workspace": str(self.workspace),
@@ -637,7 +687,7 @@ class Studio:
                         "urls": [f"http://{address}:{self.port}" for address in lan_addresses()] if self.lan else []},
                 "audio_catalog": audio_catalog(),
                 "voice_samples": self.voice_samples(),
-                "key_available": self.key_available(),
+                "key_available": self.key_available(), "google_key_available": self.google_key_available(),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
                 "defaults": TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
                                       voice_profile={"host_a": "Aiden", "host_b": "Vivian"}).model_dump(mode="json")}
@@ -645,12 +695,22 @@ class Studio:
     def key_available(self):
         return bool(self.key or os.environ.get("OPENROUTER_API_KEY"))
 
+    def google_key_available(self):
+        return bool(self.google_key or os.environ.get("GEMINI_API_KEY"))
+
+    def audio_key_available(self, audio):
+        """Whether the key a recording with ``audio`` needs is there; local Qwen needs none."""
+        key = audio_key(audio)
+        return key is None or (self.google_key_available() if key == "google" else self.key_available())
+
     def key_reminder(self):
-        """What needs the OpenRouter key while none is available, as ``[{"need", "projects"}]`` over every project
-        (key_needs); empty once a key is there. The Studio keeps the key in memory only, so after every restart the
-        pages remind of it until it is entered again (the user's wish, 2026-10-04: Jev had gone without a key unnoticed,
-        and a fresh page after a restart said nothing)."""
-        if self.key_available():
+        """What needs a key while that key is missing, as ``[{"need", "projects", "key"}]`` over every project
+        (key_needs); empty once the keys are there. The Studio keeps the keys in memory only, so after every restart
+        the pages remind of them until they are entered again (the user's wish, 2026-10-04: Jev had gone without a key
+        unnoticed, and a fresh page after a restart said nothing)."""
+        missing = {key for key, available in (("openrouter", self.key_available()),
+                                              ("google", self.google_key_available())) if not available}
+        if not missing:
             return []
         needs = {}
         for item in self.project_list():
@@ -658,10 +718,11 @@ class Studio:
                 root = self.root(item["id"])
                 config = load_project(root)
                 for need in key_needs(root, config):
-                    needs.setdefault(need, []).append(config.topic)
+                    if NEED_KEYS[need] in missing:
+                        needs.setdefault(need, []).append(config.topic)
             except (AppError, ValueError, OSError, KeyError):
                 continue
-        return [{"need": need, "projects": needs[need]} for need in KEY_NEEDS if need in needs]
+        return [{"need": need, "projects": needs[need], "key": NEED_KEYS[need]} for need in KEY_NEEDS if need in needs]
 
     def job(self, root, *, audio_job_id=None, path=None, light=False):
         """A job as the pages show it. ``light`` is the project card's view (overview): no live output, assignment,
@@ -909,7 +970,11 @@ class Studio:
             root, project = path.parents[1], path.parents[1].name
             with self.mutex:
                 for row in [row for row in read_queue(root) if not row.get("error")]:
-                    if not (self.key or os.environ.get("OPENROUTER_API_KEY")):
+                    try:
+                        ready = self.audio_key_available(selected_audio(root, load_project(root)))
+                    except (AppError, ValueError, OSError):
+                        ready = False
+                    if not ready:
                         break
                     try:
                         self.start(project, {**row["data"], "from_queue": True})
@@ -1085,7 +1150,10 @@ class Studio:
         if not path.is_file() or path.stat().st_size > 2_000_000:
             raise AppError("Datei nicht gefunden.", code="not_found")
         text = path.read_text(encoding="utf-8", errors="replace")
-        return text.replace(self.key, "[Key verborgen]") if self.key else text
+        for key in (self.key, self.google_key):
+            if key:
+                text = text.replace(key, "[Key verborgen]")
+        return text
 
     def audio_jobs(self, root):
         latest = {}
@@ -1201,12 +1269,16 @@ class Studio:
             row = dict(episode_view(folder, table, table_key, config.language))
             report = read_json(folder / "audio_latest.json", {})
             row["audio"] = [part["audio"] for part in report.get("parts", []) if inside(root, part["audio"]).is_file()]
-            row["audio_current"] = (report.get("script_sha256") == row["hash"] and report.get("voices") == audio.voices
+            # A recording reports the voices of its episode, swapped in an even one when the roles alternate.
+            row["audio_current"] = (report.get("script_sha256") == row["hash"]
+                and report.get("voices") == audio.for_episode(folder.name).voices
                 and same_audio_generation(report.get("audio_generation",
                     {"provider": "qwen3_local", "voices": report.get("voices")}), audio.model_dump()))
             if full:
                 row["review_notes"] = review_notes((reported or {}).get(folder.name))
-                row["expression"] = reading_expression(root, folder.name, row["hash"])
+                row["expression"] = reading_expression(root, folder.name, row["hash"],
+                                                       backchannels=audio.provider == "google_gemini_tts")
+                row["publish_kit"] = publish_view(root, folder)
             rows.append(row)
         return rows
 
@@ -1281,7 +1353,7 @@ class Studio:
                 "jev_probe": jev_probe_enabled(root), "jev_default": jev_probe_state(root)[1],
                 "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
-                "audio_queue": queue_view(read_queue(root), self.key_available()),
+                "audio_queue": queue_view(read_queue(root), self.audio_key_available(audio), audio_key(audio) or "openrouter"),
                 # When the tags a Gemini recording speaks are placed for reading (studio_worker.tag_episodes).
                 "expression_progress": read_json(root / "studio/expression/progress.json", None),
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
@@ -1464,7 +1536,7 @@ class Studio:
         return {"settings": values, "hash": digest(values), "global": saved is not None,
                 "source_project": source.name if source else None,
                 "claude_extra_usage": subscriptions.claude_extra_usage(), "key_available": self.key_available(),
-                "key_reminder": self.key_reminder(),
+                "google_key_available": self.google_key_available(), "key_reminder": self.key_reminder(),
                 "allowance_choices": {"fresh_attempts": list(studio_allowances.FRESH_ATTEMPT_CHOICES),
                                       "extra_calls": list(studio_allowances.EXTRA_CALL_CHOICES)}}
 
@@ -1618,7 +1690,8 @@ class Studio:
         self.idle(root)
         with project_lock(root):
             rows = attachments.add(root, data.get("files"),
-                                   secrets=(self.key, os.environ.get("OPENROUTER_API_KEY", "")))
+                                   secrets=(self.key, self.google_key, os.environ.get("OPENROUTER_API_KEY", ""),
+                                            os.environ.get("GEMINI_API_KEY", "")))
         return {"attachments": rows}
 
     def upload_work(self, project, raw, query):
@@ -1646,14 +1719,16 @@ class Studio:
                            code="studio_restarting")
         action = data.get("action")
         if action not in {"assistant", "research", "plan", "replan", "script", "revise", "audio", "audio_sample", "audio_samples",
-                          "resume", "check", "expression"}:
+                          "resume", "check", "expression", "publish_kit"}:
             raise AppError("Unbekannter Arbeitsschritt.", code="invalid_action")
         payload = {"action": action, "message": str(data.get("message", ""))[:12000]}
         if action == "research" and data.get("seed_corpus") is True:
             payload["seed_corpus"] = True
         if (self.key and self.key in payload["message"]) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}", payload["message"]):
             raise AppError("Den OpenRouter-Key bitte in den Einstellungen unter „OpenRouter-Key“ hinterlegen, nicht im Chat.", code="credential_in_prompt")
-        remote_episode = None
+        if (self.google_key and self.google_key in payload["message"]) or re.search(r"\bAIza[0-9A-Za-z_-]{20,}", payload["message"]):
+            raise AppError("Den Google-Key bitte in den Einstellungen unter „Google-Key“ hinterlegen, nicht im Chat.", code="credential_in_prompt")
+        remote_episode = remote_provider = None
         if action == "audio_sample":
             if data.get("voice") not in GEMINI_VOICES or data.get("language") not in {"de-DE", "en-US"}:
                 raise AppError("Gemini-Stimme und Sprache für die Hörprobe auswählen.", code="invalid_voice")
@@ -1666,8 +1741,11 @@ class Studio:
             if data.get("approve_samples") is not True:
                 raise AppError("Fehlende Gemini-Hörproben ausdrücklich erzeugen lassen.", code="audio_approval_required")
             payload["language"] = data["language"]
-        if action == "expression":
-            # Inline audio tags for reading before approval (episode_audio.tag_episode); none named means every episode.
+        if action in {"expression", "publish_kit"}:
+            # Inline audio tags for reading before approval (episode_audio.tag_episode), or the companion kit for podcast
+            # platforms (publish_kit); none named means every episode.
+            if action == "publish_kit":
+                payload["fresh"] = data.get("fresh") is True
             episodes = data.get("episodes") or []
             if not isinstance(episodes, list) or any(not isinstance(e, str) or not re.fullmatch(r"ep_[a-z0-9_]+", e)
                                                      or not (root / "episodes" / e / "script.yaml").is_file() for e in episodes):
@@ -1722,7 +1800,7 @@ class Studio:
                                        "Tags lesen und erneut freigeben.", code="script_edited")
                     payload["expression_hash"] = data.get("expression_hash", "")
                 if audio.remote:
-                    remote_episode = episode
+                    remote_episode, remote_provider = episode, audio.provider
         if action == "resume":
             job = self.job(root)
             run_id = data.get("run_id") or ((job or {}).get("run") or {}).get("run_id")
@@ -1732,8 +1810,9 @@ class Studio:
             saved_run = read_yaml(path) if path.is_file() else {}
             if saved_run.get("kind") == "episode_audio":
                 saved_inputs = read_json(path.parent / "inputs.json")
-                if saved_inputs.get("audio_generation", {}).get("provider") == "openrouter_gemini_tts":
+                if saved_inputs.get("audio_generation", {}).get("provider") in GEMINI_PROVIDERS:
                     remote_episode = saved_inputs["episode_id"]
+                    remote_provider = saved_inputs["audio_generation"]["provider"]
             payload["run_id"] = run_id
         if remote_episode:
             active = self.active_audio()
@@ -1765,6 +1844,9 @@ class Studio:
                                "zuerst fertigstellen oder anhalten.", code="gpu_busy")
         payload["text"] = studio_settings.text_data(root, TextChoice().model_dump())
         payload["api_key"] = self.key or None
+        if action in {"audio", "resume", "check"}:
+            # The Google key reaches only the steps that can speak through Google.
+            payload["google_key"] = self.google_key or None
         job = {"id": uuid.uuid4().hex, "action": action, "status": "running", "started_at": now(), "run": None}
         if action == "resume":
             # A resume refused before its first stage keeps showing the paused run and its decisions.
@@ -1772,7 +1854,7 @@ class Studio:
         if action == "resume" and type(data.get("auto_resume_count")) is int:
             job["auto_resume_count"] = data["auto_resume_count"]
         if remote_episode:
-            job.update(episode=remote_episode, provider="openrouter_gemini_tts")
+            job.update(episode=remote_episode, provider=remote_provider)
             payload["audio_job_id"] = job["id"]
             if action == "audio":
                 # Started now, whether from the queue or directly: it no longer waits.
@@ -1995,19 +2077,26 @@ class StudioHandler(BaseHTTPRequestHandler):
                 data = json.loads(raw)
                 if not isinstance(data, dict):
                     raise AppError("Ungültige Anfrage.", code="invalid_request")
-                with app.mutex:
+                # A conversation sample may speak through Google for some seconds; it never holds the Studio's lock.
+                with nullcontext() if path == "/api/pair-sample" else app.mutex:
                     if path == "/api/quit":
                         app.stop_all()
                         self.send_data(200, b'{"stopped":true}')
                         threading.Thread(target=self.server.shutdown, daemon=True).start()
                         return
+                    elif path == "/api/pair-sample":
+                        result = app.pair_sample(data)
                     elif path == "/api/key":
-                        value = data.get("key", "")
-                        if not isinstance(value, str) or len(value) > 512 or any(ord(c) < 33 or ord(c) > 126 for c in value):
+                        value, kind = data.get("key", ""), data.get("kind", "openrouter")
+                        if (kind not in {"openrouter", "google"} or not isinstance(value, str) or len(value) > 512
+                                or any(ord(c) < 33 or ord(c) > 126 for c in value)):
                             raise AppError("Ungültiger API-Key.", code="invalid_key")
-                        app.key = value
                         add_secret(value)
-                        result = {"key_available": bool(value or os.environ.get("OPENROUTER_API_KEY"))}
+                        if kind == "google":
+                            app.google_key = value
+                        else:
+                            app.key = value
+                        result = {"key_available": app.key_available(), "google_key_available": app.google_key_available()}
                     elif path == "/api/projects":
                         result = app.create(data)
                     elif path == "/api/settings":
@@ -2074,6 +2163,12 @@ class StudioHandler(BaseHTTPRequestHandler):
                 audio = ready_sample(app.projects, match[2], match[1])
                 if audio is None:
                     raise AppError("Diese Hörprobe wurde noch nicht erstellt.", code="not_found")
+                self.send_audio(audio)
+                return
+            elif (match := re.fullmatch(r"/samples/google/(de-DE|en-US)/([0-9a-f]{64})", path)):
+                audio = ready_pair_file(app.projects, match[1], match[2])
+                if audio is None:
+                    raise AppError("Diese Gesprächsprobe wurde noch nicht erstellt.", code="not_found")
                 self.send_audio(audio)
                 return
             else:

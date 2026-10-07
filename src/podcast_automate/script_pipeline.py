@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from .call_activity import CALL_SUBJECT
-from .editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, episode_series_context, terminology
+from .editorial import CONTINUITY, EPISODE_FRAMING, LISTENABILITY, TEACHING_SCOPE, episode_series_context, terminology
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .execution import run_episode_stage
@@ -25,6 +25,7 @@ from .research_ledger import read_value
 from .research_patches import MAX_REJECTIONS, corrected_call, re_asked
 from .run_budget import effective_limits, teaching_redesigns
 from .runner import manifest_path, run_observer
+from .script_advisories import dialogue_shape
 from .script_artifacts import publish_scripts, render_script, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
@@ -49,15 +50,17 @@ PLAIN_WORDING = fragment("plain_language")
 # the project's own terminology rule. The series plan, the script review and both repairs changed with it.
 # v10: the computed word budget (script_checks.word_budget) instead of a budget the writer derives itself. v11: for
 # Sonnet 5.5 alone its target set above the plan (script_checks.WRITER_TARGET_FACTORS), since Sonnet wrote 71 % of the
-# plan it was shown.
-WRITE_EPISODE_VERSION = "write_episode.v11-raised-target"
+# plan it was shown. v12 (2026-10-06): the listenability rules (editorial.LISTENABILITY) and the teaching design's arc;
+# chapter-end recaps and reflection beats count toward the length, empty repetition still does not.
+WRITE_EPISODE_VERSION = "write_episode.v12-listenability"
 # The correction of a draft that breaks its plan repeats the writing prompt. v3: each correction carries the latest
-# attempt and its own defects, a short script the words it has and needs (write_episode).
-WRITE_REPAIR_VERSION = "write_episode_repair.v3-latest-draft"
+# attempt and its own defects, a short script the words it has and needs (write_episode). v4: the writing prompt v12.
+WRITE_REPAIR_VERSION = "write_episode_repair.v4-listenability"
 MAX_REVIEW_REPAIRS = 3
 # v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
 # repair restated such claims and the next review flagged them again). v4: a limit research_limits names is kept.
-REVIEW_REPAIR_VERSION = "script_review_repair.v4-limits"
+# v5 (2026-10-06): the writing prompt v12, and a listenability point is fixed in the segments it names.
+REVIEW_REPAIR_VERSION = "script_review_repair.v5-listenability"
 # Attempts one episode's correction of a series review gets before its evidence check rejects it (repair_series).
 SERIES_REPAIR_ATTEMPTS = 2
 # A new issue on a segment no repair touched blocks a follow-up review only as one of these.
@@ -583,7 +586,8 @@ class ScriptRun:
         cited = set(episode_findings(entry))
         limits = episode_limits(plan, entry, self.stated_limits())
         prompt = (instructions("write_episode_opening", language=config.language) + " "
-                  + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
+                  + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + LISTENABILITY +
+                  SCRIPT_EVIDENCE_INSTRUCTIONS +
                   instructions("write_episode") + advisories + length + "\n" +
                   json.dumps({"brief": {"language": config.language, "voices": config.voice_profile,
                                         "host_names": config.host_names,
@@ -854,7 +858,8 @@ class ScriptRun:
         payload = {"brief": {"audience": config.audience_level, "depth": config.depth_request,
                              "style_notes": self.style_notes, **goal_and_recency(config)},
                    "host_roles": HOST_ROLES, "original_draft": original_draft,
-                   "metrics": script_metrics(draft), "episode": entry.model_dump(), "script": draft.model_dump(),
+                   "metrics": script_metrics(draft), "dialogue_shape": dialogue_shape(draft),
+                   "episode": entry.model_dump(), "script": draft.model_dump(),
                    "series_context": episode_series_context(plan, entry),
                    "prerequisite_context": prerequisite_context(plan, entry, work),
                    "gap_probes": statuses(probes),
@@ -875,7 +880,7 @@ class ScriptRun:
             task, version = task + " " + instructions("script_review_followup"), version + "+followup"
         # Two receipt slips are read as meant (settle_receipts) instead of re-asking the whole review.
         reviewed = corrected_call(lambda *args, **kwargs: settle_receipts(self.invoke(*args, **kwargs), draft, anchors),
-            self.terms() + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + SCRIPT_EVIDENCE_INSTRUCTIONS +
+            self.terms() + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING + LISTENABILITY + SCRIPT_EVIDENCE_INSTRUCTIONS +
             task + "\n" + json.dumps(payload, ensure_ascii=False),
             ScriptReview, version, well_formed)
         # The drift receipts become issues; well_formed accepted their shape, so this cannot raise.

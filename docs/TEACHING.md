@@ -2,7 +2,7 @@
 title: Teaching design
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
   - src/podcast_automate/teaching.py
   - src/podcast_automate/teaching_research.py
@@ -61,8 +61,10 @@ metaphors make listening harder.
 The tone is clear, adult and at eye level, without oversimplification; missing specialist knowledge is no reason to
 explain the obvious at length. Necessary terms are introduced once, briefly, then used as a matter of course.
 Repeated definitions, lecturing preambles, announcing every small step, several summaries of the same idea and
-multiple look-backs are cut in favour of a natural conversation. A good comparison may stand without being explained
-again and again or flagged as invented.
+multiple look-backs are cut in favour of a natural conversation. A recap of one or two sentences at a chapter end and
+a reflection beat after a dense block are not such summaries ([Listenability and narrative
+arc](#listenability-and-narrative-arc)). A good comparison may stand without being explained again and again or
+flagged as invented.
 
 Metaphors are explicitly illustrations that should open up a connection. The explanation names their important limit
 once, where it matters, and separates invented everyday situations from evidenced experiments. The dossier stores
@@ -95,9 +97,11 @@ speaking pace, little humour and two hosts. Their roles are independent of the T
 Rules for the conversation:
 
 - Speaker changes follow the line of thought and need a reason in the content: an objection, an addition, testing a
-  guess, or a new perspective. Speakers need neither alternate constantly nor speak equally much.
-- Longer monologues that develop a thought coherently are explicitly allowed. There is no fixed word count or
-  duration (30–90 seconds) per turn, and a technical cut into several audio files needs no speaker change.
+  guess, a summary in one's own words, or a new perspective. Speakers need not alternate constantly.
+- Turns stay short enough to follow by ear: about 80 spoken words, longer only for a step of a worked example that
+  needs it; consecutive segments of one host are one turn. The partner speaks about a third of the words. These are
+  aims, not quotas. Until 2026-10-06 long monologues were explicitly welcome and there was no target share between
+  the hosts; the expert then spoke 70 to 87 % of the words of three finished series.
 - Sentence length may vary; short reactions or self-corrections should serve the explanation. Forced ping-pong,
   mechanical alternation, forced interruptions, artificial enthusiasm and sprinkled filler words are not a quality
   goal.
@@ -108,12 +112,54 @@ to a synthesis. The opening names the episode question within the first 90 secon
 A foundations episode may have a different arc than a controversy episode; the dramaturgy should carry the content.
 Intro, outro and series framing: [Writing and framing](SCRIPTS.md#writing-and-framing).
 
+### Listenability and narrative arc
+
+After three finished series the user found the episodes so dense that one could hardly breathe, „Fakten, Fakten,
+Fakten“ (2026-10-06). The teaching plan had a teaching order and named up front what the episode would establish; the
+expert spoke 70 to 87 % of the words, with 9 to 25 turns over 120 words per episode. Rewrites the user liked kept the
+same facts and gave the partner about 35 % of the words, no turn over about 55, the partner reacting, summing up and
+asking „is that one anecdote, or has someone measured it?“. Since then:
+
+- **The arc in the teaching plan.** `TeachingPlan` names `big_idea` (the one idea the episode serves),
+  `hook_question` (its question as an open loop), `first_answer` (a plausible guess, often the partner's, never
+  presented as a finding), `turning_point` with `turning_finding_ids` (the findings that overturn, narrow or deepen
+  the first answer), `payoff` (how the end answers the hook) and `callback` (the opening detail the end picks up
+  again). `destination` is the answer the episode arrives at: the plan knows it, the dialogue earns it at the end
+  instead of announcing it. Each later scene's `entry_question` is the question the scene before leaves open. The
+  design review checks the arc; code checks only that a turning point and its findings come together and that they are
+  the episode's findings (`teaching.validate_teaching_plan`) (why: D-140).
+- **Saved plans.** The arc fields are optional in the contract and left out of every dump at their defaults
+  (`LaterFields`): a plan saved before validates, dumps and hashes as before, so earlier episodes still count as
+  reviewed for the context of later ones. The readable plan shows a section „Spannungsbogen“ only for a plan with an
+  arc.
+- **Listenability rules** (`prompts/listenability.txt`, `editorial.LISTENABILITY`) for writing, dialogue polishing,
+  its comparison and the script review: one big idea; the question held open, a first answer, a turn brought by a real
+  finding, a payoff with a callback; at each chapter end a recap of one or two sentences and the question the next
+  chapter answers; a signpost where the conversation changes direction; a reflection beat after a dense block (what it
+  means, why it matters), often the partner's; the turn length and share above (why: D-141).
+- **Repetition that helps the ear is not padding:** the chapter-end recap, a reflection beat, the callback and a short
+  recall where an earlier point is used again. Empty repetition stays forbidden: restating what is already clear in
+  the same chapter, several summaries of the same idea, a repeated definition, a recap of a recap. This is how the
+  brief's default „keine … mehrfachen Zusammenfassungen derselben Idee“ is read.
+- **No invented facts.** A recap or reflection restates what the episode said, with the references of the claims it
+  restates; the partner asks only what the supplied material answers, and the expert answers as it does, with a limit
+  where a finding or a research limit names one. Depth, explanation steps, the origin of a statement and theory first
+  stay; the evidence rules win.
+- **Measured, not guessed.** `script_advisories.dialogue_shape` counts the turns (consecutive segments of one host,
+  also across a chapter), the partner's share and every turn over `TURN_WORDS` = 80 words; the polishing comparison and
+  the script review read it. Two advisories report `long_turns` (more than `LONG_TURN_LIMIT` = 2 turns over
+  `LONG_TURN_WORDS` = 120 words) and `low_partner_share` (under `PARTNER_SHARE_FLOOR` = 25 %).
+- **Length.** The recaps and beats share the episode's word budget
+  ([Writing and framing](SCRIPTS.md#writing-and-framing)); the planned minutes stay, so the same time carries fewer
+  facts.
+
 ## What the application enforces
 
 1. The research also searches for the foundations the chosen audience needs before the subject sources.
 2. Source selection also uses the context around quoted passages and the stored full texts, so a short dossier
    excerpt does not create an artificial evidence gap. The `teaching` stage develops per episode learning objectives
-   with check questions, concept dependencies, scene transitions, a worked example and a justified synthesis. It must
+   with check questions, concept dependencies, scene transitions, a worked example, a justified synthesis and a
+   [narrative arc](#listenability-and-narrative-arc). It must
    teach the episode's core findings (`finding_ids`) and draws on supporting findings (`supporting_finding_ids`) only
    where the explanation gains ([Core and supporting findings](SCRIPTS.md#series-plan)). A further model call reviews
    this draft against the sources.
@@ -274,7 +320,8 @@ series ([what was built](specs/2026-09-19-quality-audit-plan.md#status)):
   again more than once), `repeated_hedging` (more than `HEDGING_LIMIT` = 2 reminders that an example is invented or
   not measured), `long_cold_open` (a first segment over `COLD_OPEN_WORDS` = 100 words) and `over_target_duration` (an
   estimate over `DURATION_FACTOR` = 1.2 times the planned minutes). The first two exist only for German and English
-  (why: D-081).
+  (why: D-081). Since 2026-10-06 it also counts `long_turns` and `low_partner_share`
+  ([Listenability and narrative arc](#listenability-and-narrative-arc)).
 
 ## From learning goal to research
 
@@ -386,3 +433,8 @@ to its stored inputs do not switch it to a new version.
   version change.
 - `--revise` keeps the series plan and creates teaching plan and text reviews anew; see
   [Revising a script](SCRIPTS.md#revising-a-script).
+- The [listenability change](#listenability-and-narrative-arc) of 2026-10-06 changes no run input, so a run resumes.
+  Its finished stages stay. A teaching, writing or polishing stage still open asks its calls again under the new
+  prompts, also for the episodes it had done: a saved teaching plan is reviewed again and gets its arc in a correction,
+  a draft is written and polished anew. A script review an earlier version passed stands. A published series gets the
+  new rules only through a new `pla script` run or `--revise`.

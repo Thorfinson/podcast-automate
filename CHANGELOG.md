@@ -8,6 +8,11 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-10-06 · Review notes `long_turns` and `low_partner_share`: more than two turns over 120 words, a partner share under 25 %.
+- 2026-10-06 · „Begleitmaterial“ per episode for Spotify and Apple Podcasts, on the recording page and with `pla publish-kit <project> --episode ep_001`: a short description, an episode description of at most 4,000 characters with chapter marks and sources, and the source list, in `publish/` next to the recording and in the podcast ZIP; „Kopieren“ next to each text.
+- 2026-10-06 · Gemini audio through Google's own API („Gemini TTS · Google“), the new default for Gemini: both hosts speak a passage of up to 20 turns in one request, each role in its own short style, with the other host's short reactions (`|mhm|`) placed by the expression stage. Gemini via OpenRouter stays selectable.
+- 2026-10-06 · Settings „Audio“ for Google: a style per role with presets („Neugierig, gespannt auf das, was kommt“ is the default) or own words, „Rollen von Folge zu Folge tauschen“ (on by default, Erinome explains in episode 1, Sadachbia in episode 2), and „▶ Gesprächsprobe“ of exactly the selected voices and styles, also with the roles swapped.
+- 2026-10-06 · „Google-Key“ on the settings page, in hold cards and in the queue, with its own „Google-Key fehlt“ note; Google's own reasons in the stop cards (`google_key_required`, `google_authentication`, `google_quota`, `google_speech_request`).
 - 2026-10-04 · „OpenRouter-Key fehlt“ at the top of every Studio page while no key is stored but Gemini audio, Jev or an OpenRouter text model needs one, with the projects concerned and a key field; also after a restart on a freshly loaded page.
 - 2026-10-03 · Settings page „Einstellungen“ next to „Übersicht“: text model, audio, execution, pre-approvals, limits, call time limit and OpenRouter key now apply to all projects (`projects/.studio-settings.json`).
 - 2026-10-03 · Settings switch „Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen“ for bought Claude extra usage: every call tries Claude despite stored blocks.
@@ -38,6 +43,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-10-06 · Scripts are written to be heard: one big idea per episode, a question held open until the end, a short recap and the next question at each chapter end, reflection beats after dense passages, shorter turns and a partner who speaks about a third of the words. The teaching plan plans the arc („Spannungsbogen“), and the script review sends a wall of facts back.
 - 2026-10-04 · Stopped recordings with one shared reason name it in the job bar, with „Alle fortsetzen“ and, for a key stop, a button to the key; an OpenRouter refusal (403) names OpenRouter's own short reason, such as a key's credit limit.
 - 2026-10-04 · A script run checks the limits the research noted for the script against the stored sources (with Jev where switched on), and no longer states one the sources answer; with an assembled dossier the gap probe had searched nothing.
 - 2026-10-04 · Under „Automatisch“ a Codex call that fails for an unknown reason moves to Claude instead of stopping the run, and such a stop names Codex's own reason.

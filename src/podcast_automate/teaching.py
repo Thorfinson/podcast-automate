@@ -13,7 +13,7 @@ from pydantic import Field
 from .prompts import instructions
 from .errors import AppError
 from .editorial import TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING, terminology
-from .models import Contract, Identifier, NonEmpty
+from .models import Contract, Identifier, LaterFields, NonEmpty
 from .research_patches import corrected_call
 from .script_advisories import humanised
 from .script_models import ScriptIssue, episode_findings
@@ -22,9 +22,13 @@ from .storage import atomic_text, digest, write_json
 TEACHING_VERSION = "teaching.v3"
 DESIGN_VERSION = "teaching_design.v2"
 # v3-goal (2026-10-02): the brief's series_goal, theory first, an optional misconception and limit, the finale as
-# the series' synthesis, and the topic's own terminology instead of the machine-learning names.
-DESIGN_PROMPT_VERSION = "teaching_design.v3-goal"
-DESIGN_REVIEW_VERSION = "teaching_design_review.v6-goal"
+# the series' synthesis, and the topic's own terminology instead of the machine-learning names. v4-arc (2026-10-06):
+# the narrative arc (TeachingPlan.big_idea to callback), destination held back for the payoff, and entry questions
+# that each previous scene leaves open. The review checks the arc; both repairs repeat the design prompt.
+DESIGN_PROMPT_VERSION = "teaching_design.v4-arc"
+DESIGN_REVIEW_VERSION = "teaching_design_review.v7-arc"
+DESIGN_REPAIR_VERSION = "teaching_design_repair.v3-arc"
+DESIGN_FOCUSED_REPAIR_VERSION = "teaching_design_focused_repair.v3-arc"
 # Stored in every script-review checkpoint: bumping it makes a resumed in-flight run re-run the
 # editorial review of its saved draft (draft and repair count are kept). That is intended whenever
 # a composed fragment such as episode_framing.txt changes meaning.
@@ -87,18 +91,40 @@ class ResearchGap(Contract):
     kind: Literal["evidence", "editorial_context"] = "evidence"
 
 
-class TeachingPlan(Contract):
+class TeachingPlan(LaterFields):
     episode_id: Identifier
     learner_start: NonEmpty
     opening_problem: NonEmpty
     relevance: NonEmpty
-    destination: NonEmpty
+    # Until 2026-10-06 "what the episode will establish", and the scripts announced it in their first minutes. The name
+    # stays: an earlier episode's destination reaches later designs and their reviews (prerequisite_context).
+    destination: NonEmpty = Field(description=(
+        "The answer the episode arrives at. The plan knows it; the dialogue holds it back and earns it at the payoff."))
+    # The narrative arc (2026-10-06: listeners of three finished series found the episodes "Fakten, Fakten, Fakten", a
+    # teaching order without tension). Optional in the contract and checked by the design review, so a plan saved
+    # before validates; at their defaults they are left out of every dump, so its checkpoint, its plan.json and every
+    # prompt and review hash built from it stay as they were.
+    big_idea: str = Field(default="", description="The one idea the whole episode serves, in one sentence.")
+    hook_question: str = Field(default="", description=(
+        "The episode's question as the listener first hears it: an open loop whose answer (destination) is held back."))
+    first_answer: str = Field(default="", description=(
+        "The plausible answer a listener would give before the episode, voiced as a guess, often by host_b; "
+        "never presented as a finding."))
+    turning_point: str = Field(default="", description=(
+        "Where and how the findings in turning_finding_ids overturn, narrow or deepen the first answer."))
+    turning_finding_ids: list[Identifier] = Field(default_factory=list, description=(
+        "The episode's findings that bring the turning point about; empty exactly when turning_point is empty."))
+    payoff: str = Field(default="", description="How the last scene answers hook_question with what the episode built.")
+    callback: str = Field(default="", description="The concrete detail from the opening that the payoff picks up again.")
     objectives: list[LearningObjective] = Field(min_length=1)
     concepts: list[Concept] = Field(min_length=2)
     scenes: list[TeachingScene] = Field(min_length=1)
     worked_example: WorkedExample
     synthesis: Synthesis
     research_gaps: list[ResearchGap]
+
+    LATER = {"big_idea": "", "hook_question": "", "first_answer": "", "turning_point": "", "turning_finding_ids": [],
+             "payoff": "", "callback": ""}
 
 
 class GapAssessment(Contract):
@@ -213,6 +239,13 @@ def validate_teaching_plan(design, entry):
         errors.append("Worked example refers to an unknown scene.")
     if bool(design.worked_example.misconception) != bool(design.worked_example.correction):
         errors.append("Worked example: give a misconception together with its correction, or neither.")
+    # The arc stays optional here, so a plan saved before it still counts as reviewed (reviewed_design); the design
+    # review asks for it. Where a plan names its turn, the turn rests on the episode's own findings (2026-10-06).
+    if bool(design.turning_point) != bool(design.turning_finding_ids):
+        errors.append("Give the turning_point together with the findings that bring it about (turning_finding_ids), "
+                      "or neither.")
+    if not set(design.turning_finding_ids) <= findings:
+        errors.append("turning_finding_ids must name findings assigned to this episode.")
     premises = design.synthesis.premise_concept_ids
     if len(set(premises)) < 2 or not set(premises) <= set(concepts):
         errors.append("Synthesis must connect at least two distinct taught concepts.")
@@ -412,7 +445,15 @@ def design_prompt(config, entry, dossier, sources, continuity=None, *, series_co
 
 def render_teaching_plan(design):
     lines = [f"# Lehrplan: {design.episode_id}", "", "## Ausgangspunkt", "", design.learner_start,
-             "", design.opening_problem, "", design.relevance, "", design.destination, "", "## Lernziele", ""]
+             "", design.opening_problem, "", design.relevance, "", design.destination, ""]
+    # The arc since 2026-10-06; a plan without it renders as before.
+    arc = [f"{label}: {text}" for label, text in (
+        ("Große Idee", design.big_idea), ("Leitfrage", design.hook_question),
+        ("Naheliegende erste Antwort", design.first_answer), ("Wendepunkt", design.turning_point),
+        ("Auflösung", design.payoff), ("Rückgriff auf den Anfang", design.callback)) if text]
+    if arc:
+        lines.extend(["## Spannungsbogen", "", *(part for line in arc for part in (line, ""))])
+    lines.extend(["## Lernziele", ""])
     for goal in design.objectives:
         lines.extend([f"### {goal.objective_id}: {goal.ability}", "", goal.question, "",
                       *[f"- {step}" for step in goal.expected_reasoning], ""])
@@ -526,7 +567,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                                " ".join(issues), code="teaching_design_failed", status="blocked")
             repaired = corrected_call(invoke, prompt + "\n" + instructions("teaching_design_focused_repair") + "\n" +
                 json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False),
-                TeachingPlanRepair, "teaching_design_focused_repair.v2-goal" + noted,
+                TeachingPlanRepair, DESIGN_FOCUSED_REPAIR_VERSION + noted,
                 lambda answer: validate_focused_repair(answer, issues))
             focused_repair = True
             save()
@@ -536,7 +577,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
             continue
         design = invoke(prompt + "\n" + instructions("teaching_design_repair") + "\n" +
                         json.dumps({"design": design.model_dump(), "issues": issues}, ensure_ascii=False),
-                        TeachingPlan, "teaching_design_repair.v2-goal" + noted)
+                        TeachingPlan, DESIGN_REPAIR_VERSION + noted)
         repairs += 1
         review = None
         save()

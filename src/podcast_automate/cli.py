@@ -96,6 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
     audio.add_argument("--episode", required=True)
     audio.add_argument("--approve-audio", action="store_true")
     audio.add_argument("--approval-note", default="", help="Rückmeldung zur Freigabe dieses Skriptstands")
+    kit = commands.add_parser("publish-kit", help="Begleitmaterial einer Folge für Spotify und andere Plattformen schreiben: "
+                                                  "Kurz- und Folgenbeschreibung, Kapitelmarken, Quellen; veröffentlicht nichts")
+    kit.add_argument("project_dir", type=Path)
+    kit.add_argument("--episode", required=True)
+    kit.add_argument("--fresh", action="store_true",
+                     help="Beschreibungen neu schreiben lassen, auch wenn sich das Skript nicht geändert hat")
     resume = commands.add_parser("resume", help="Unterbrochene Probe ohne fertige Arbeit zu wiederholen fortsetzen")
     resume.add_argument("project_dir", type=Path)
     resume.add_argument("--run-id")
@@ -164,7 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Mit --research-plan: höchstens N Teilfragen; der Plan wird einmal neu zugeschnitten und erneut vorgelegt")
     schemas = commands.add_parser("schemas", help="Implementierte JSON-Schemas exportieren")
     schemas.add_argument("output_dir", type=Path)
-    for command in (init, doctor, state, text_probe, audio_probe, research, script, series, audio, resume, schemas, quota, approve):
+    for command in (init, doctor, state, text_probe, audio_probe, research, script, series, audio, kit, resume, schemas,
+                    quota, approve):
         command.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
@@ -371,6 +378,17 @@ def run_command(args) -> int:
                         f"das Urteil steht nur unter runs/{manifest.run_id}/series_review.json.")
             data = {"status": manifest.status, "run_id": manifest.run_id, **target, "message": verdict + location}
             code = 0 if manifest.status == "completed" else 1
+        elif args.command == "publish-kit":
+            from .publish_kit import build_publish_kit
+            # The OpenRouter key of a script run that wrote with OpenRouter comes from OPENROUTER_API_KEY.
+            kit = build_publish_kit(args.project_dir, args.episode, fresh=args.fresh)
+            message = f"Begleitmaterial geschrieben: {kit['folder']}."
+            if kit["recording"] is None:
+                message += " Dieser Skriptstand ist noch nicht vertont; die Kapitel stehen ohne Zeitmarken."
+            if kit["descriptions_reused"]:
+                message += " Beschreibungen unverändert übernommen, ohne Modellaufruf."
+            data = {"status": "completed", "message": message, "kit": kit}
+            code = 0
         else:
             episode_audio_run = args.command == "audio" or (
                 args.command == "resume" and

@@ -663,6 +663,48 @@ test('the settings page sets text model, audio, modes, pre-approvals, limits and
   assert.equal(body.settings.text_timeout_seconds,5400);
 });
 
+test('the Google route offers styles, alternating roles, its key and a conversation sample of the selection',async()=>{
+  // The user's wish of 2026-10-06: switch to Google, keep OpenRouter, and listen to a style before choosing it.
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const styles={neugierig:{label:'Neugierig',host_a:'curious a',host_b:'curious b'},ohne:{label:'Ohne',host_a:'',host_b:''}};
+  const view={settings:{text:{provider:'auto',model:null,reasoning_effort:null,max_output_tokens:32768},
+      audio:{provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},alternate_roles:true,
+             pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900}},
+      execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},
+      research_limits:{model_calls:750,sources:150,search_rounds:48},text_timeout_seconds:1800},
+    hash:'h1',global:true,claude_extra_usage:false,key_available:true,google_key_available:true,
+    allowance_choices:{fresh_attempts:[0,1,2,3],extra_calls:[0,100,250,500,1000]}};
+  app.run(`boot.text_catalog={presets:[]};boot.google_key_available=true;boot.audio_catalog={
+    google_gemini_tts:{label:'Gemini TTS · Google',voices:['Erinome','Sadachbia','Puck'],defaults:{host_a:'Erinome',host_b:'Sadachbia'},
+      models:{'gemini-a':'Gemini A'},default_model:'gemini-a',alternate_roles:true,style_presets:${JSON.stringify(styles)},
+      default_styles:{host_a:'curious a',host_b:'curious b'},max_style_characters:80},
+    openrouter_gemini_tts:{label:'Gemini TTS · OpenRouter',voices:['Erinome','Sadachbia'],defaults:{host_a:'Sadaltager',host_b:'Aoede'}}};`);
+  app.responses.set('/api/settings',view);
+  await app.run('showSettings()');
+  const html=app.elements.get('content').innerHTML;
+  for(const id of ['settings-style-preset','settings-style-a','settings-style-b','settings-alternate','google-key'])
+    assert.ok(html.includes(`id="${id}"`),id);
+  assert.ok(html.includes('value="curious a"') && html.includes('<option value="neugierig" selected>'));
+  assert.ok(html.includes('data-action="pair-sample" data-swap="1"'),'alternating roles can be heard swapped');
+  // Both keys' state at the top and on their panels (the user's wish of 2026-10-06).
+  assert.ok(html.includes('<p class="key-states">Keys: ')&&(html.match(/✓ hinterlegt/g)||[]).length===4);
+  app.run(`settingsData.google_key_available=false;render();`);
+  const missing=app.elements.get('content').innerHTML;
+  assert.equal((missing.match(/✓ hinterlegt/g)||[]).length,2);
+  assert.equal((missing.match(/<span class="chip decision">fehlt<\/span>/g)||[]).length,2);
+  app.run(`$('settings-audio-provider').value='google_gemini_tts';$('settings-voice-a').value='Erinome';$('settings-voice-b').value='Sadachbia';
+    $('settings-style-a').value='calm';$('settings-style-b').value='';$('settings-alternate').checked=true;$('settings-pair-language').value='en-US';`);
+  assert.deepEqual(JSON.parse(app.run('JSON.stringify(settingsFromForm().audio.styles)')),{host_a:'calm',host_b:''});
+  // A sample not yet made asks once, then the Google request makes it; the player gets its URL.
+  app.responses.set('/api/pair-sample',{url:'/samples/google/en-US/abc',ready:true});
+  app.run('window.confirm=()=>true');
+  await app.run(`pairSample({dataset:{swap:'1'}})`);
+  const asked=JSON.parse(app.requests.filter(r=>r.path==='/api/pair-sample').at(-1).options.body);
+  assert.deepEqual(asked,{voices:{host_a:'Sadachbia',host_b:'Erinome'},styles:{host_a:'calm',host_b:''},language:'en-US'});
+  assert.equal(app.elements.get('sample-player').src,'/samples/google/en-US/abc');
+});
+
 test('attachment picker supports text and DOCX with escaped names and no configuration forms',async()=>{
   const app=studio();
   await app.run(`selectProject('test',{id:'test',config:boot.defaults,chat:[],attachments:[{id:'abc',name:'<b>Notizen</b>.md',characters:150}]})`);
@@ -2491,6 +2533,11 @@ test('the reader sees the tags a Gemini recording will speak, marked in the scri
   const panel=app.run(`renderExpressionPanel({script:{episode_id:'ep_001'},expression:${JSON.stringify(expression)}})`);
   assert.ok(panel.includes('1 Tags in 1 Abschnitten')&&panel.includes('data-action="expression" data-episode="ep_001"'));
   assert.ok(panel.includes('im Text markiert: 1× Schmunzeln.'),panel);
+  // A Google recording's listener reaction (2026-10-06) is marked like a tag, counted, and keeps the text in place.
+  const reacted={tags:0,segments:[{segment_id:'s1',text:'Das hätte ich |mhm| jetzt nicht erwartet.'}]};
+  assert.equal(app.run(`expressiveText(${JSON.stringify(segment)},${JSON.stringify(reacted)})`),
+    '<p>Das hätte ich <mark class="expression-tag" title="Einwurf der anderen Stimme">|mhm|</mark> jetzt nicht erwartet.</p>');
+  assert.equal(app.run(`expressionKinds(${JSON.stringify(reacted)})`),'1× Einwurf');
   assert.ok(app.run(`renderExpressionPanel({script:{episode_id:'ep_001'},expression:null})`).includes('Ausdruck setzen'));
   // Qwen speaks no tags: nothing is shown.
   app.run(`project.audio_settings={provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}};`);
@@ -2624,8 +2671,9 @@ test('a missing OpenRouter key is named on every page with what needs it until o
   const note=app.elements.get('key-note');
   assert.equal(note.hidden,false);
   assert.ok(note.innerHTML.includes('OpenRouter-Key fehlt.'));
-  assert.ok(note.innerHTML.includes('Gemini-Vertonung (3 Projekte) · Jev in der Lückenprobe („Asimov &lt;alt&gt;“)'));
-  assert.ok(note.innerHTML.includes('Ohne Key warten Vertonungen mit Gemini; suchen neue Skriptläufe Lücken nur per Wortsuche'));
+  // Since 2026-10-06 Gemini speaks through Google or OpenRouter; the reminder names the route whose key is missing.
+  assert.ok(note.innerHTML.includes('Gemini-Vertonung über OpenRouter (3 Projekte) · Jev in der Lückenprobe („Asimov &lt;alt&gt;“)'));
+  assert.ok(note.innerHTML.includes('Ohne Key warten Vertonungen mit Gemini über OpenRouter; suchen neue Skriptläufe Lücken nur per Wortsuche'));
   assert.ok(note.innerHTML.includes('data-action="store-key" data-key-field="reminder-key"'),'the key goes in right there');
   assert.ok(!note.innerHTML.includes('unknown'));
   // A project page reads its own payload; the settings page points to its key field instead of a second one.
@@ -2640,6 +2688,47 @@ test('a missing OpenRouter key is named on every page with what needs it until o
   await app.run('storeKey("reminder-key")');
   assert.equal(note.hidden,true);
   assert.equal(app.run('keyNote()'),'');
+});
+
+test('a missing Google key has its own reminder and field, and storing it ends only that reminder',async()=>{
+  const app=studio();
+  const rows=[{need:'google_audio',projects:['Ontologien'],key:'google'},{need:'jev',projects:['Asimov'],key:'openrouter'}];
+  app.run(`overviewPage=false;settingsPage=false;project={id:'p',key_reminder:${JSON.stringify(rows)}};renderKeyNote();`);
+  const note=app.elements.get('key-note');
+  assert.ok(note.innerHTML.includes('Google-Key fehlt.') && note.innerHTML.includes('Gemini-Vertonung über Google („Ontologien“)'));
+  assert.ok(note.innerHTML.includes('OpenRouter-Key fehlt.') && note.innerHTML.includes('Jev in der Lückenprobe'));
+  assert.ok(note.innerHTML.includes('data-key-field="reminder-google-key" data-key-kind="google"'));
+  app.run(`$("reminder-google-key").value="AIza-test"`);
+  app.responses.set('/api/key',{key_available:false,google_key_available:true});
+  await app.run('storeKey("reminder-google-key","google")');
+  const sent=JSON.parse(app.requests.filter(r=>r.path==='/api/key').at(-1).options.body);
+  assert.deepEqual(sent,{key:'AIza-test',kind:'google'});
+  assert.ok(!note.innerHTML.includes('Google-Key fehlt.') && note.innerHTML.includes('OpenRouter-Key fehlt.'));
+});
+
+test('the companion kit is offered per episode and its texts are ready to copy',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:{language:'de-DE'},audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[]};`);
+  const none=app.run(`renderPublishKit({script:{episode_id:'ep_001',title:'T'},publish_kit:null})`);
+  assert.ok(none.includes('data-action="publish_kit" data-episode="ep_001"')&&none.includes('Begleitmaterial erstellen'));
+  const kit={short:'Kurz <b>',description:'Lang\n\nKapitel\n00:00 Start',characters:2400,limit:4000,sources_listed:9,sources_total:12,
+    chapter_problems:[{code:'too_few_chapters'}],recorded:false,folder:'episodes/ep_001/publish'};
+  const html=app.run(`renderPublishKit({script:{episode_id:'ep_001',title:'T'},publish_kit:${JSON.stringify(kit)}})`);
+  assert.ok(html.includes('Kurz &lt;b&gt;</textarea>'),'the text is escaped');
+  assert.ok(html.includes('(2.400 von 4.000 Zeichen)')&&html.includes('9 von 12 Quellen'));
+  assert.ok(html.includes('Noch nicht vertont')&&html.includes('ab drei Kapiteln'));
+  assert.ok(html.includes('data-action="copy-text" data-source="kit-long-ep_001"')&&html.includes('data-fresh="1"'));
+});
+
+test('the Google route shows who explains in this episode and the key it needs',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:{language:'de-DE'},audio_settings:{provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Sadachbia'},alternate_roles:true},episodes:[]};boot.google_key_available=false;`);
+  const card=episode=>app.run(`renderApprovalCard({script:{episode_id:'${episode}',title:'T'},expression:{tags:2,backchannels:3}},currentAudio(),true)`);
+  assert.ok(card('ep_001').includes('Erinome erklärt, Sadachbia fragt'));
+  assert.ok(card('ep_002').includes('Sadachbia erklärt, Erinome fragt'));
+  assert.ok(card('ep_001').includes('3 Einwürfe'));
+  assert.ok(card('ep_001').includes('data-key-kind="google"'));
+  assert.equal(app.run('audioBlockReason("ep_001")'),'Zuerst den Google-Key hinterlegen.');
 });
 
 test('the server note offers a restart once the code changed and can take it back',()=>{
@@ -2711,7 +2800,10 @@ test('every stop code the backend raises has its own card instead of the generic
   const expected={missing_executable:'fix',unsupported_codex_launcher:'fix',unsupported_claude_launcher:'fix',openrouter_forbidden:'fix',
     openrouter_search_unsupported:'fix',invalid_backend:'fix',credential_in_prompt:'dead',credential_in_response:'dead',
     invalid_output_schema:'dead',unsupported_run:'dead',missing_outputs:'dead',worker_stop:'dead',research_context_incomplete:'dead',
-    research_questions_open:'retry',question_scope_unresolved:'retry',invalid_speech:'retry',audio_approval_required:'decision'};
+    research_questions_open:'retry',question_scope_unresolved:'retry',invalid_speech:'retry',audio_approval_required:'decision',
+    // Gemini through Google (google_speech, 2026-10-06).
+    google_key_required:'fix',invalid_google_key:'fix',google_authentication:'fix',google_quota:'wait',
+    google_speech_request:'fix',google_unavailable:'retry',google_connection:'retry'};
   for(const [code,kind] of Object.entries(expected)){
     const stop=info(code);
     assert.equal(stop.kind,kind,code);
@@ -2719,6 +2811,7 @@ test('every stop code the backend raises has its own card instead of the generic
   }
   for(const code of ['missing_executable','unsupported_codex_launcher','unsupported_claude_launcher'])assert.ok(info(code).actions.includes('check'),code);
   assert.ok(info('openrouter_forbidden').actions.includes('key'));
+  for(const code of ['google_key_required','google_authentication'])assert.ok(info(code,'episode_audio').actions.includes('google_key'),code);
   // The text model is chosen on the settings page since 2026-10-03; these cards lead there, not to the brief.
   for(const code of ['openrouter_search_unsupported','invalid_backend'])assert.ok(info(code).actions.includes('open_settings'),code);
   assert.ok(info('audio_approval_required','episode_audio').actions.includes('audio_again'));

@@ -2,7 +2,7 @@
 title: Architecture
 doc_type: architecture
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 covers:
   - src/podcast_automate/claude_code.py
   - src/podcast_automate/codex.py
@@ -39,8 +39,9 @@ Pipeline stages per run kind (runner.execute_stages)
    research → script → [series_review] → episode_audio
    │                                         │
    ▼                                         ▼
-Text adapters (provider_pool.AdapterPool)    Speech: Qwen worker (.venv-tts) or Gemini via OpenRouter,
-   claude_code · codex · openrouter            then FFmpeg/ffprobe assembly
+Text adapters (provider_pool.AdapterPool)    Speech: Qwen worker (.venv-tts), Gemini via Google
+   claude_code · codex · openrouter            (google_speech) or via OpenRouter (speech),
+                                               then FFmpeg/ffprobe assembly
    │                                         │
    ▼                                         ▼
 Project folder projects/<project>/  (project.yaml, studio/, research/, models/, episodes/, runs/, exports/, …)
@@ -282,7 +283,7 @@ last line), outputs (Pydantic contracts as strict JSON schema) and deterministic
 `prompts.py`. Shared rule blocks (terminology, teaching standard, continuity, episode framing, evidence rules) are
 placed before the task-specific instructions.
 
-Every call carries a version tag in code, for example `write_episode.v11-raised-target`
+Every call carries a version tag in code, for example `write_episode.v12-listenability`
 (`script_pipeline.WRITE_EPISODE_VERSION`). Checkpoints are bound to the hash of the complete composed prompt, so a
 text change repeats only the affected calls ([Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
 When the meaning of a prompt changes, the tag at the call site is bumped so receipts show which wording produced a
@@ -396,10 +397,10 @@ projects/<project>/
   inputs/                 attachments and provided works
   sources/raw/, sources/processed/
   research/, models/      dossier, source index, series plan, knowledge model
-  episodes/<ep>/          script.yaml, script.md, teaching plan, show notes, audio approval
+  episodes/<ep>/          script.yaml, script.md, teaching plan, show notes, audio approval, publish descriptions
   reports/                quality reports
   runs/<run_id>/          manifest, checkpoints, model calls, budget, failures/
-  exports/<ep>/<run_id>/  MP3, chapters, transcript, show notes, listening sheet
+  exports/<ep>/<run_id>/  MP3, chapters, transcript, show notes, listening sheet, publish/ (companion kit)
   cache/audio/            reusable audio segments
   probes/                 results of text-probe and audio-probe
   logs/                   log of single CLI commands

@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from .errors import AppError
 from .models import EpisodeScript
+from .publish_kit import TEXT_FILES, saved_kit
 from .runner import manifest_path
 from .storage import inside, load_project, project_lock, read_yaml
 
@@ -127,4 +128,12 @@ def podcast_zip(root: Path, *, locked: bool = True):
             with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
                 for recording in download.recordings:
                     archive.write(recording.path, recording.archive_filename)
+                    # The episode's companion kit (publish_kit), when it was made for exactly this recording; its
+                    # folder is named by the episode number only, to stay within the path budget of the names.
+                    kit = saved_kit(root, recording.episode_id)
+                    if kit and (kit.get("recording") or {}).get("audio") == recording.relative:
+                        for name in TEXT_FILES:
+                            source = inside(root, f"{kit['folder']}/{name}")
+                            if source.is_file():
+                                archive.write(source, f"{recording.archive_filename.split(' - ')[0]} - Begleitmaterial/{name}")
             yield path, download.filename

@@ -2,8 +2,10 @@
 import unittest
 
 from podcast_automate.models import Chapter, EpisodeScript, Segment
-from podcast_automate.script_advisories import (advisories, established_terms, hedging_hits, humanised, long_cold_open,
-                                                over_target_duration, redefined_terms, repeated_hedging)
+from podcast_automate.script_advisories import (LONG_TURN_LIMIT, LONG_TURN_WORDS, PARTNER_SHARE_FLOOR, TURN_WORDS,
+                                                advisories, dialogue_shape, established_terms, hedging_hits, humanised,
+                                                long_cold_open, long_turns, low_partner_share, over_target_duration,
+                                                redefined_terms, repeated_hedging, turns)
 from podcast_automate.script_artifacts import script_metrics
 from podcast_automate.script_models import EpisodePlan, ScenePlan
 
@@ -149,6 +151,46 @@ class OpeningAndDuration(unittest.TestCase):
         self.assertIsInstance(rows[0]["count"], int)
 
 
+def spoken(*turns_spec):
+    """A script of (chapter, speaker, words) segments, for counting what the ear gets."""
+    chapters = list(dict.fromkeys(chapter for chapter, _, _ in turns_spec))
+    return EpisodeScript(episode_id="ep_002", title="Eine Folge", purpose="deep_dive",
+        chapters=[Chapter(chapter_id=chapter, title=chapter) for chapter in chapters],
+        segments=[Segment(segment_id=f"seg_{i:03d}", scene_id=chapter, chapter_id=chapter, speaker_id=speaker,
+                          text=" ".join(["Wort"] * count))
+                  for i, (chapter, speaker, count) in enumerate(turns_spec, 1)])
+
+
+class DialogueShape(unittest.TestCase):
+    """2026-10-06: the expert spoke 70 to 87 % of the words of three finished series, with 9 to 25 turns over 120
+    words; the rewrites the user liked gave the partner about 35 % and no turn over about 55 words."""
+
+    def test_consecutive_segments_of_one_host_are_one_turn_also_across_a_chapter(self):
+        episode = spoken(("scene_a", "host_a", 30), ("scene_b", "host_a", 60), ("scene_b", "host_b", 10))
+        self.assertEqual(turns(episode), [("host_a", ["seg_001", "seg_002"], 90), ("host_b", ["seg_003"], 10)])
+        self.assertEqual(dialogue_shape(episode), {"partner_share": 0.1, "turns": 2, "long_turns": [
+            {"speaker_id": "host_a", "segment_ids": ["seg_001", "seg_002"], "words": 90}]})
+        self.assertEqual(TURN_WORDS, 80)
+
+    def test_more_long_turns_than_a_worked_example_needs_are_reported(self):
+        long = LONG_TURN_WORDS + 1
+        within = [("scene_a", "host_a", long), ("scene_a", "host_b", 60)] * LONG_TURN_LIMIT
+        self.assertEqual(long_turns(spoken(*within, ("scene_a", "host_a", LONG_TURN_WORDS))), [])
+        rows = long_turns(spoken(*within, ("scene_a", "host_a", 70), ("scene_a", "host_a", 90)))
+        self.assertEqual([(r["code"], r["count"], r["segment_ids"]) for r in rows],
+                         [("long_turns", 3, ["seg_001", "seg_003", "seg_005", "seg_006"])])
+        self.assertIn("160", rows[0]["detail"])
+
+    def test_a_partner_under_the_floor_is_reported_in_whole_percent(self):
+        self.assertEqual(PARTNER_SHARE_FLOOR, 0.25)
+        rows = low_partner_share(spoken(("scene_a", "host_a", 76), ("scene_a", "host_b", 24)))
+        self.assertEqual([(r["code"], r["count"], r["segment_ids"]) for r in rows], [("low_partner_share", 24, [])])
+        self.assertEqual(low_partner_share(spoken(("scene_a", "host_a", 75), ("scene_a", "host_b", 25))), [])
+        # The shape of the rewrite the user liked: no row at all.
+        liked = spoken(*[("scene_a", "host_a", 50), ("scene_a", "host_b", 27)] * 6)
+        self.assertEqual(advisories(liked, plan(minutes=3.5), script_metrics(liked), language="de-DE"), [])
+
+
 class EnglishPatterns(unittest.TestCase):
     """2026-10-02: the English Ontologies series got no measurement at all; English carries its own patterns."""
 
@@ -181,10 +223,12 @@ class EnglishPatterns(unittest.TestCase):
                                              "There is no real difference between them."), "en-US"), [])
 
     def test_an_english_episode_gets_every_advisory(self):
+        # The partner's 14 of 130 words are also under the share floor since 2026-10-06 (low_partner_share).
         episode = script("An ontology is a shared vocabulary. " + " ".join(["word"] * 110),
                          "An ontology is again a shared vocabulary. Hypothetical, a thought experiment, not measured.")
         rows = advisories(episode, plan(), script_metrics(episode), language="en-US", terms=["ontology"])
-        self.assertEqual([r["code"] for r in rows], ["redefined_term", "repeated_hedging", "long_cold_open"])
+        self.assertEqual([r["code"] for r in rows],
+                         ["redefined_term", "repeated_hedging", "long_cold_open", "low_partner_share"])
 
 
 class Combined(unittest.TestCase):
@@ -194,7 +238,9 @@ class Combined(unittest.TestCase):
                          "ein Gedankenbeispiel, nicht gemessen.")
         rows = advisories(episode, plan(), script_metrics(episode), language="de-DE",
                           terms=["Aufmerksamkeitskopf"])
-        self.assertEqual([r["code"] for r in rows], ["redefined_term", "repeated_hedging", "long_cold_open"])
+        # The partner's share joins the end of the order since 2026-10-06; the earlier rows keep their places.
+        self.assertEqual([r["code"] for r in rows],
+                         ["redefined_term", "repeated_hedging", "long_cold_open", "low_partner_share"])
         self.assertTrue(all(r["episode_id"] == "ep_002" for r in rows))
         self.assertTrue(all(r["detail"] for r in rows))
 

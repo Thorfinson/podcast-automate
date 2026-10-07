@@ -7,7 +7,7 @@ they exist so a pattern that survives the prompts stays visible instead of unmea
 
 The heuristics are language-keyed. German and English carry patterns; any other language gets
 an empty list so nothing fires silently on a project the phrasing was never written for. The
-cold-open and duration checks count words and minutes and hold for every language.
+cold-open, duration, turn and share checks count words and minutes and hold for every language.
 """
 from __future__ import annotations
 
@@ -18,6 +18,15 @@ SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 COLD_OPEN_WORDS = 100
 HEDGING_LIMIT = 2
 DURATION_FACTOR = 1.2
+# What the ear gets (2026-10-06). The finished episodes of three series gave the expert 70 to 87 % of the words and 9 to
+# 25 turns over 120 words; the rewrites the user liked had the partner at about 35 % and no turn over about 55 words.
+# The listenability rules aim at turns of about TURN_WORDS and a partner at about a third; the script review sends back
+# what the advisories below report, a share under PARTNER_SHARE_FLOOR or more than LONG_TURN_LIMIT turns over
+# LONG_TURN_WORDS (prompts listenability.txt and script_review.txt name the same numbers).
+TURN_WORDS = 80
+LONG_TURN_WORDS = 120
+LONG_TURN_LIMIT = 2
+PARTNER_SHARE_FLOOR = 0.25
 
 # A definition reads as "<Begriff> ist …", "ein <Begriff> ist …", "<Begriff>, also …",
 # "nennen wir <Begriff>" or "heißt <Begriff>". {term} is filled with the escaped term.
@@ -194,7 +203,59 @@ def over_target_duration(script, entry, metrics) -> list[dict]:
                  "gilt die Folge als zu lang.")]
 
 
+def turns(script) -> list[tuple[str, list[str], int]]:
+    """The turns a listener hears, as (speaker_id, segment_ids, words): consecutive segments of one host are one turn,
+    also across a chapter boundary, since one voice keeps speaking."""
+    rows = []
+    for segment in script.segments:
+        if rows and rows[-1][0] == segment.speaker_id:
+            rows[-1][1].append(segment.segment_id)
+            rows[-1][2] += words(segment.text)
+        else:
+            rows.append([segment.speaker_id, [segment.segment_id], words(segment.text)])
+    return [(speaker, ids, count) for speaker, ids, count in rows]
+
+
+def partner_share(heard) -> float:
+    """host_b's share of the words in ``heard`` (turns), unrounded."""
+    total = sum(count for _, _, count in heard)
+    return sum(count for speaker, _, count in heard if speaker == "host_b") / total if total else 0.0
+
+
+def dialogue_shape(script) -> dict:
+    """host_b's share of the spoken words, the number of turns and every turn over TURN_WORDS words. The script review
+    and the polishing comparison read it, since a model does not count words reliably."""
+    heard = turns(script)
+    return {"partner_share": round(partner_share(heard), 2), "turns": len(heard),
+            "long_turns": [{"speaker_id": speaker, "segment_ids": ids, "words": count}
+                           for speaker, ids, count in heard if count > TURN_WORDS]}
+
+
+def long_turns(script) -> list[dict]:
+    """More than LONG_TURN_LIMIT turns over LONG_TURN_WORDS words: one step of a worked example may need such a turn,
+    an episode told in them is a lecture."""
+    over = [(ids, count) for _, ids, count in turns(script) if count > LONG_TURN_WORDS]
+    if len(over) <= LONG_TURN_LIMIT:
+        return []
+    return [_row("long_turns", script, [key for ids, _ in over for key in ids], len(over),
+                 f"{len(over)} Redebeiträge mit mehr als {LONG_TURN_WORDS} Wörtern, der längste mit "
+                 f"{max(count for _, count in over)}; vorgesehen sind Beiträge um {TURN_WORDS} Wörter und höchstens "
+                 f"{LONG_TURN_LIMIT} längere, etwa für einen Schritt des durchgearbeiteten Beispiels.")]
+
+
+def low_partner_share(script) -> list[dict]:
+    share = partner_share(turns(script))
+    if share >= PARTNER_SHARE_FLOOR:
+        return []
+    # The count is the share in whole percent, like the duration advisory's.
+    percent = round(share * 100)
+    return [_row("low_partner_share", script, [], percent,
+                 f"Host B spricht {percent} Prozent der Wörter; vorgesehen ist etwa ein Drittel, unter "
+                 f"{round(PARTNER_SHARE_FLOOR * 100)} Prozent klingt die Folge wie ein Vortrag.")]
+
+
 def advisories(script, entry, metrics, *, language, terms=()) -> list[dict]:
     """All advisory rows for one episode, in a stable order."""
     return [*redefined_terms(script, terms, language), *repeated_hedging(script, language),
-            *long_cold_open(script), *over_target_duration(script, entry, metrics)]
+            *long_cold_open(script), *over_target_duration(script, entry, metrics),
+            *long_turns(script), *low_partner_share(script)]

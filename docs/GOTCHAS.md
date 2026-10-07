@@ -2,7 +2,7 @@
 title: Gotchas
 doc_type: gotchas
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-06
 ---
 
 # Gotchas
@@ -118,6 +118,11 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Scripts
 
+- ⚠ **A resumed script run rewrites drafts it had already accepted (after 2026-10-06):** the teaching-design, writing
+  and polishing checkpoints are bound to their prompt text, and the listenability change rewrote those prompts. A stage
+  still open asks its calls again (more calls against `research_limits.model_calls`); finished stages and passed
+  script reviews stay. To give a published series the new style, start a new `pla script` run or `--revise`.
+  ([Existing projects](TEACHING.md#existing-projects))
 - ✓ **Publishing a new table of contents stops with `episodes_locked`:** a file in an earlier series' episode folder is
   open (for example during a recording), so the folder cannot move to `episodes/archive/`. Close or finish what holds
   it, then resume (`script_artifacts.py`). ([Earlier series](SCRIPTS.md#earlier-series))
@@ -140,11 +145,24 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Audio
 
-- ⚠ **A stopped Gemini recording asks for a new approval after an update:** its inputs bind the file hash of
-  `speech.py` (`worker_sha256` in `episode_audio`), so any change to that file ends the resumability of every
-  recording not yet finished (`inputs_changed`; Transformer ep_010, 2026-10-04). Approve the episode again: the new
-  run takes every segment already spoken from `cache/audio/gemini`, whose key holds text, voice, language and model,
-  not the code. Change `speech.py` only while no Gemini recording is open.
+- ⚠ **A stopped Gemini recording asks for a new approval after an update:** its inputs bind the file hash of its
+  engine, `speech.py` for OpenRouter and `google_speech.py` for Google (`worker_sha256` in `episode_audio`), so any
+  change to that file ends the resumability of every recording of that route not yet finished (`inputs_changed`;
+  Transformer ep_010, 2026-10-04). Approve the episode again: the new run takes every segment or passage already
+  spoken from `cache/audio/gemini` or `cache/audio/google`, whose keys hold the text and the voices, not the code.
+  Change an engine file only while no recording of its route is open.
+- ✓ **Switching an episode from OpenRouter to Google records it completely again:** the two routes share no cache
+  (one segment against a passage of several) and an approval names its provider. The old recording stays until the
+  new one is published.
+- ✓ **A wrong Google key comes back as HTTP 400, not 401:** Google names it `API_KEY_INVALID`; the recording stops
+  with `google_authentication` and shows Google's message. Store the right key under „Google-Key“, then resume.
+  ([Keys, errors and limits](AUDIO.md#keys-errors-and-limits))
+- ✓ **Google stops a recording with `google_quota` at once instead of waiting:** the key's daily quota is used up,
+  which waiting minutes cannot lift. Resume after the quota resets, or raise the tier in Google AI Studio.
+  ([Keys, errors and limits](AUDIO.md#keys-errors-and-limits))
+- ⚠ **A literal pipe in a spoken text becomes a listener reaction in a Google recording:** Google reads text
+  between pipes (`|mhm|`) as the other host's reaction. The expression check admits only the listed reactions, but a
+  pipe in the script itself or a spoken form would be taken the same way; write it out instead.
 - ✓ **Every chapter of a Qwen recording fails as `invalid_audio` after the GPU work:** `runtime.tts_revision` was
   `main`, while the worker records the commit it actually loaded. `pla init` pins the known commit
   (`cli.pinned_revision`); when it knows none it says so, and you enter the commit in `project.yaml` before the first
@@ -163,8 +181,8 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   Data Retention providers, which excludes Google's speech model. Allow it at openrouter.ai/settings/privacy, then
   resume; the error names the setting (`speech.py`). ([Keys, errors and limits of the check](AUDIO.md#keys-errors-and-limits-of-the-check))
 - ✓ **Gemini reads a style direction such as „Sag es fröhlich:“ aloud:** written directions are part of the input
-  text, and OpenRouter does not pass `speech_metadata` through. Use only the allowed inline tags; the expression check
-  admits nothing else (`expression.py`). ([Style directions](AUDIO.md#style-directions))
+  text. A Google recording sends each role's style in its own field; for OpenRouter use only the allowed inline tags,
+  the expression check admits nothing else (`expression.py`). ([Style directions](AUDIO.md#style-directions))
 - ⚠ **Recordings in another project seem to stall without an error:** a 429 in any project makes all Gemini
   recordings wait through `projects/.gemini_throttle.json`, for up to about three minutes. Wait; only a persisting
   limit stops an episode. ([Rate limits and transient errors](AUDIO.md#rate-limits-and-transient-errors))
