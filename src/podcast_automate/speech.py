@@ -10,11 +10,11 @@ import wave
 from array import array
 from http.client import HTTPException, IncompleteRead
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
-from pydantic import Field, SecretStr, model_serializer, model_validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator, model_serializer, model_validator, with_config
 
 from . import studio_settings
 from .audio import PAUSE_TAGS, silent_runs
@@ -70,12 +70,34 @@ STYLE_PRESETS = {
 }
 DEFAULT_STYLES = {role: STYLE_PRESETS["neugierig"][role] for role in ("host_a", "host_b")}
 MAX_STYLE_CHARACTERS = 80
+# The languages a project speaks (TopicBrief.language), each with a pace of its own (LanguagePace).
+SPEECH_LANGUAGES = ("de-DE", "en-US")
+# The word a calm pace adds to both roles' styles of a Google recording (AudioChoice.spoken_styles).
+UNHURRIED = "unhurried"
 
 
 class RoleStyles(Contract):
     """The style each role speaks in, in English as Google recommends; empty means none."""
     host_a: str = Field(default=DEFAULT_STYLES["host_a"], max_length=MAX_STYLE_CHARACTERS, pattern=r"^[^\n<>|]*$")
     host_b: str = Field(default=DEFAULT_STYLES["host_b"], max_length=MAX_STYLE_CHARACTERS, pattern=r"^[^\n<>|]*$")
+
+
+class LanguagePace(Contract):
+    """How fast one language is spoken (D-147): ``tempo`` slows the montage of every recording in that language with
+    the pitch kept (audio.assemble), never speeds it up; ``unhurried`` asks Google's voices for a calm delivery."""
+    tempo: float = Field(default=1.0, ge=0.8, le=1.0)
+    unhurried: bool = False
+
+    @field_validator("tempo")
+    @classmethod
+    def two_decimals(cls, value):
+        return round(value, 2)
+
+
+# The pace of each language by its fixed key, either one optional: an object with named fields, as the strict schema of
+# a structured answer requires (openrouter.strict_schema; the studio's BriefProposal carries an AudioChoice).
+LanguagePaces = with_config(ConfigDict(extra="forbid"))(
+    TypedDict("LanguagePaces", {language: LanguagePace for language in SPEECH_LANGUAGES}, total=False))
 
 
 class AudioChoice(Contract):
@@ -91,6 +113,9 @@ class AudioChoice(Contract):
     alternate_roles: bool = False
     # The style of each role; Google only (google_speech), the other routes have no style field.
     styles: RoleStyles = Field(default_factory=RoleStyles)
+    # Each language's pace; a language without an entry is spoken as recorded. The user's choice of 2026-10-07:
+    # English slower, German as it is.
+    pace: LanguagePaces = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_voices(self):
@@ -103,6 +128,9 @@ class AudioChoice(Contract):
             self.expression = False
         if self.provider != "google_gemini_tts":
             self.styles = RoleStyles()
+            # Only Google takes a style; the montage tempo holds for every route.
+            self.pace = {language: pace.model_copy(update={"unhurried": False}) for language, pace in self.pace.items()}
+        self.pace = {language: pace for language, pace in sorted(self.pace.items()) if pace != LanguagePace()}
         return self
 
     @model_serializer(mode="wrap")
@@ -118,11 +146,29 @@ class AudioChoice(Contract):
             data.pop("alternate_roles", None)  # And without alternating roles as before they existed.
         if data.get("styles") == DEFAULT_STYLES:
             data.pop("styles", None)  # And the default styles as before they were selectable.
+        if not data.get("pace"):
+            data.pop("pace", None)  # And every language at its recorded pace as before the pace existed.
         return data
 
     @property
     def remote(self):
         return self.provider in GEMINI_PROVIDERS
+
+    def for_language(self, language):
+        """The choice a recording in ``language`` binds and speaks: the other language's pace left out, so a pace
+        set for English never changes what a German recording was approved for, nor the reverse."""
+        return self.model_copy(update={"pace": {key: value for key, value in self.pace.items() if key == language}})
+
+    def pace_for(self, language):
+        return self.pace.get(language) or LanguagePace()
+
+    def spoken_styles(self, language):
+        """The style each role is asked for in ``language``: its own, with UNHURRIED added where that language's
+        pace asks for a calm delivery."""
+        styles = self.styles.model_dump()
+        if not self.pace_for(language).unhurried:
+            return styles
+        return {role: f"{style}, {UNHURRIED}" if style else UNHURRIED for role, style in styles.items()}
 
     def for_episode(self, episode_id):
         """The choice with the voices ``episode_id`` is spoken in: swapped in an even-numbered episode when the roles
@@ -158,6 +204,7 @@ def audio_catalog():
         "google_gemini_tts": {"label": "Gemini TTS · Google", "models": GEMINI_MODELS, "default_model": GEMINI_MODEL,
                               "voices": GEMINI_VOICES, "defaults": {"host_a": "Erinome", "host_b": "Sadachbia"},
                               "alternate_roles": True, "style_presets": STYLE_PRESETS, "default_styles": DEFAULT_STYLES,
+                              "unhurried": UNHURRIED,
                               "max_style_characters": MAX_STYLE_CHARACTERS},
         "openrouter_gemini_tts": {"label": "Gemini TTS · OpenRouter (Abschnitt für Abschnitt)", "models": GEMINI_MODELS,
                                   "default_model": GEMINI_MODEL, "voices": GEMINI_VOICES,

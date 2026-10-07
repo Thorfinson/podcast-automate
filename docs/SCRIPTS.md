@@ -2,7 +2,7 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
@@ -56,11 +56,12 @@ The Studio sets text model and reasoning level on the Settings page
 
 | Option | Meaning |
 | --- | --- |
-| `--backend codex_cli\|claude_code\|auto\|openrouter` | Text provider for scripts and reviews; default `codex_cli`. |
+| `--backend codex_cli\|claude_code\|auto\|openrouter\|claude_api` | Text provider for scripts and reviews; default `codex_cli`. `claude_api` is Claude on your Anthropic API key, billed per call and only with a money limit ([Claude on your own API key](BUSINESS_LOGIC.md#claude-on-your-own-api-key)). |
 | `--model` | Model ID, for example `gpt-6-astra` (Codex), `claude-sonnet-5-5` or `claude-opus-5-5` (Claude). Required for OpenRouter. |
 | `--reasoning-effort` | `low`, `medium`, `high` or `xhigh` (`text_settings.REASONING_EFFORTS`); Claude also `max` (`text_settings.CLAUDE_EFFORTS`). Optional for OpenRouter, where the model must support the level. |
-| `--api-key` | OpenRouter key; without a value it is asked for hidden. |
+| `--api-key` | OpenRouter key, or the Anthropic key with `claude_api`; without a value it is asked for hidden. |
 | `--max-output-tokens` | Output limit per OpenRouter call. |
+| `--web-search` | `model` (default) or `perplexity`: how a new run's supplementary research searches the web; the Perplexity key comes from `PERPLEXITY_API_KEY` ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). |
 
 A new Codex run with `--model gpt-6-astra --reasoning-effort xhigh` matches the Studio's Codex choice. Defaults per
 provider, presets and minimum Claude Code versions: [Providers and models](PRODUCT.md#providers-and-models). All
@@ -88,7 +89,9 @@ and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
 
 The Codex subscription stays the default. Optionally, planning, teaching, writing, dialogue polishing and every model
 review of one script run go through OpenRouter, paid per call from its API credit. Research and the automatic
-supplementary research stay on the subscriptions; speech is generated separately ([Recording flow](AUDIO.md#recording-flow)).
+supplementary research stay on the subscriptions, unless the run searches through Perplexity (`--web-search
+perplexity`), which lets the OpenRouter model research too; speech is generated separately
+([Recording flow](AUDIO.md#recording-flow)).
 
 ```powershell
 # Replace provider/model-id with an OpenRouter model ID that supports JSON schemas.
@@ -104,6 +107,8 @@ supplementary research stay on the subscriptions; speech is generated separately
 - Provider, model, token limit and adapter version are stored inputs: changing one needs a new `script` run,
   optionally with `--revise` (same provider options); a rotated key does not.
 - `reports/script_quality.yaml` names the selection under `text_generation`.
+- The run needs a money limit in USD (`research_limits.cost_usd`, or `pla approve --cost-usd N` for this run); without
+  one it stops at its first OpenRouter call with `cost_limit_required` ([Money limit](BUSINESS_LOGIC.md#money-limit)).
 - Structured outputs, provider sorting, the `--max-output-tokens` default, truncated or rejected answers, per-call
   costs, and pauses for missing credits, rate limits or network errors: [Text provider
   adapters](ARCHITECTURE.md#text-provider-adapters).
@@ -529,8 +534,8 @@ objections and still the series review's original objection (why: D-077); only t
 ### Standalone `pla series-review`
 
 `pla series-review <project> [--run <run_id>]` reviews a finished run's scripts afterwards as a series; without
-`--run`, the most recently published run. It also takes `--backend codex_cli|claude_code|auto`, `--model` and
-`--reasoning-effort`.
+`--run`, the most recently published run. It also takes `--backend codex_cli|claude_code|claude_api|auto` (`claude_api`
+reads its key from `ANTHROPIC_API_KEY`), `--model` and `--reasoning-effort`.
 
 - Its one call counts against the new run's budget (`runs/<run_id>/budget.json`); the verdict lands in a run of its
   own, of kind `series_review`.
@@ -597,6 +602,8 @@ changes the input hash and so leads to a new run.
 
 The files lie in the private project folder and are excluded from Git. `runs/<run_id>/` keeps inputs, model answers,
 drafts and reviews for resuming; per-call records: [Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest).
+`research/series_outline.md`, `teaching_plan.md` and `show_notes.md` use the fixed words of the project's language,
+German or English ([Languages](ARCHITECTURE.md#languages)).
 
 ### Rejected answers
 
@@ -604,6 +611,16 @@ A readable model answer that violates its answer contract (`rejected_output`), f
 chapter sequence, is requested again up to twice with the fields objected to. Each attempt is a counted call with
 `failure.json` and `rejected_output.json` in its call folder; only the third rejection stops the stage. A `resume`
 repeats this episode's call, because it leaves no checkpoint.
+
+The same holds for every correction loop of a script run that keeps no rejections: the draft and its repairs, the
+script review and its repair, the teaching design, its review and focused repair, the reader, editorial and teaching
+reviews, the polishing comparison, the series review and the supplementary research's own checks
+(`run_budget.REASKED_CODES`, for example `invalid_script` or `invalid_teaching_review`). Their stop message ends with
+„die abgewiesenen Antworten liegen bei den Aufrufen“ (the rejected answers are with the calls;
+`run_budget.REASKED_MARKER`). Since 2026-10-07 such a stop also takes **„Mit neuen Anläufen fortsetzen“** and a
+fresh-attempt [pre-approval](BUSINESS_LOGIC.md#pre-approvals): nothing is set aside, and the resume asks the stage anew
+(`run_budget.reasked_stop`). The same codes without this message replay a saved state, such as a changed checkpoint or a
+series correction's recorded failure, and take no fresh attempts this way. (why: D-155)
 
 ### Earlier series
 

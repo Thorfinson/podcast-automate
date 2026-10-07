@@ -25,11 +25,22 @@ import json, os, sys, time
 sys.stdin.reconfigure(encoding="utf-8")
 sys.stdout.reconfigure(encoding="utf-8")
 mode = os.environ.get("PLA_CLAUDE_TEST", "ok")
-assert not any(k in os.environ for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"))
+# "apikey" and "apikey_<mode>": a claude_api call, which gets the key and nothing that could outrank or redirect it.
+api = mode.startswith("apikey")
+if api:
+    mode = mode[len("apikey_"):] if mode != "apikey" else "ok"
+key_call = api and sys.argv[1:2] == ["-p"]
+if key_call:
+    assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-test-key-0123456789"
+    assert not any(k in os.environ for k in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                                             "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"))
+else:
+    assert not any(k in os.environ for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"))
 assert os.environ.get("DISABLE_TELEMETRY") == "1" and os.environ.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") == "1"
 assert os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == "64000"
 args = sys.argv[1:]
 if args == ["auth", "status", "--json"]:
+    assert not api, "a call on the key never asks for the login"
     print(json.dumps({"loggedIn": mode != "logout", "authMethod": "apiKey" if mode == "api" else "claude.ai",
                       "apiProvider": "firstParty", "subscriptionType": "max", "email": "private@example.org"}))
     sys.exit(0)
@@ -59,12 +70,19 @@ def emit(event):
     print(json.dumps(event), flush=True)
 def delta(index, kind, **fields):
     emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": index, "delta": {"type": kind, **fields}}})
-emit({"type": "system", "subtype": "init", "model": "claude-opus-5", "session_id": "s", "tools": []})
+emit({"type": "system", "subtype": "init", "model": "claude-opus-5", "session_id": "s", "tools": [],
+      **({"apiKeySource": "none" if mode == "keyless" else "ANTHROPIC_API_KEY"} if api else {})})
 if mode == "hang":
     time.sleep(20)
 if mode == "budget":
-    emit({"type": "result", "subtype": "error_max_budget_usd", "is_error": True, "num_turns": 1,
+    emit({"type": "result", "subtype": "error_max_budget_usd", "is_error": True, "num_turns": 1, "total_cost_usd": 12.04,
           "errors": ["Reached maximum budget ($0.001) test-only-secret"], "usage": {}})
+    sys.exit(1)
+if mode == "credits":
+    emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "Credit balance is too low"}]},
+          "error": "billing_error"})
+    emit({"type": "result", "subtype": "success", "is_error": True, "num_turns": 1, "result": "Credit balance is too low",
+          "usage": {}})
     sys.exit(1)
 emit({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m1"}}})
 delta(0, "thinking_delta", thinking="")
@@ -140,6 +158,82 @@ def fake_cli(root):
     script = root / "claude fake.py"
     script.write_text(FAKE_CLAUDE, encoding="utf-8")
     return [sys.executable, str(script)]
+
+
+class ClaudeApiAdapterTests(unittest.TestCase):
+    """The Claude Code CLI on the user's own Anthropic key, the billed provider claude_api (D-145)."""
+
+    KEY = "sk-ant-test-key-0123456789"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.adapter = ClaudeCodeAdapter(RuntimeSettings(text_timeout_seconds=4), model="claude-opus-5",
+                                         reasoning_effort="high", auth="api_key", api_key=self.KEY)
+        mock = patch.object(self.adapter, "command", return_value=fake_cli(self.root))
+        mock.start()
+        self.addCleanup(mock.stop)
+
+    def call(self, mode, directory=None, prompt="Synthetic test only"):
+        with patch.dict(os.environ, {"PLA_CLAUDE_TEST": mode, "ANTHROPIC_AUTH_TOKEN": "outranking-token",
+                                     "ANTHROPIC_BASE_URL": "https://elsewhere.example", "CLAUDE_CODE_USE_BEDROCK": "1"}):
+            return self.adapter.structured(prompt, Result, self.root / (directory or mode), prompt_version="test")
+
+    def assert_no_key(self, directory):
+        for path in directory.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(self.KEY.encode(), path.read_bytes(), path.name)
+
+    def test_a_call_on_the_key_uses_only_the_key_and_records_what_it_bills(self):
+        result, metadata = self.call("apikey")
+        self.assertEqual(result.reason, "Alpha Beta")
+        self.assertEqual((metadata["provider"], metadata["auth_mode"], metadata["adapter_version"]),
+                         ("claude_api", "api_key", "claude_api.v1"))
+        self.assertEqual((metadata["reported_cost_usd"], metadata["separately_billed_cost"], metadata["cost_currency"]),
+                         (0.0087, 0.0087, "USD"))
+        self.assertEqual(metadata["api_key_source"], "ANTHROPIC_API_KEY")
+        self.assertNotIn("Gegenwert", metadata["cost_basis"])
+        self.assert_no_key(self.root / "apikey")
+
+    def test_failures_on_the_key_keep_their_cost_and_name_the_billed_cause(self):
+        expectations = {"apikey_invalid": ("rejected_output", "blocked", 0.0087),
+                        "apikey_budget": ("claude_budget_cap", "blocked", 12.04),
+                        "apikey_quota": ("anthropic_rate_limit", "waiting_for_quota", None),
+                        "apikey_credits": ("anthropic_credits", "waiting_for_quota", None),
+                        "apikey_keyless": ("claude_api_auth_mismatch", "blocked", None)}
+        for mode, (code, status, billed) in expectations.items():
+            with self.subTest(mode=mode), self.assertRaises(AppError) as error:
+                self.call(mode)
+            self.assertEqual((error.exception.code, error.exception.status), (code, status))
+            self.assertEqual(error.exception.details.get("billed_usd"), billed)
+            receipt = json.loads((self.root / mode / "failure.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt.get("billed_usd"), billed)
+            self.assertFalse((self.root / mode / "response.json").exists())
+            self.assert_no_key(self.root / mode)
+
+    def test_without_a_key_or_with_the_key_in_the_prompt_no_cli_starts(self):
+        keyless = ClaudeCodeAdapter(RuntimeSettings(text_timeout_seconds=4), model="claude-opus-5", auth="api_key")
+        with patch.dict(os.environ, {}, clear=False), patch("podcast_automate.claude_code.run_process") as process:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            with self.assertRaises(AppError) as missing:
+                keyless.structured("Synthetic test only", Result, self.root / "keyless", prompt_version="test")
+            with self.assertRaises(AppError) as leaked:
+                self.adapter.structured("key " + self.KEY, Result, self.root / "leaked", prompt_version="test")
+        self.assertEqual((missing.exception.code, missing.exception.status), ("anthropic_key_required", "blocked"))
+        self.assertEqual(leaked.exception.code, "credential_in_prompt")
+        process.assert_not_called()
+
+    def test_the_same_causes_keep_their_subscription_codes_without_the_key(self):
+        """The API-key mode must not change how a subscription failure is read (2026-10-02 rule)."""
+        self.assertEqual(classify_claude_failure("You've hit your weekly limit").code, "claude_quota_exhausted")
+        self.assertEqual(classify_claude_failure("You've hit your weekly limit", auth="api_key").code,
+                         "anthropic_rate_limit")
+        self.assertEqual(classify_claude_failure("x", api_error="billing_error").code, "claude_failed")
+        self.assertEqual(classify_claude_failure("x", api_error="billing_error", auth="api_key").code,
+                         "anthropic_credits")
+        self.assertEqual(classify_claude_failure("x", api_error="authentication_failed", auth="api_key").code,
+                         "anthropic_authentication")
 
 
 class ClaudeCodeAdapterTests(unittest.TestCase):

@@ -41,6 +41,19 @@ class VoiceLibraryTests(unittest.TestCase):
         self.assertIn("Aoede", sample_inventory(self.projects)["de-DE"])
         self.assertNotIn("Aoede", sample_inventory(self.projects)["en-US"])
 
+    def test_a_voice_sample_is_marked_as_synthetic_speech_in_its_tags(self):
+        """D-154 (2026-10-07): the previews carry the same machine-readable marking as an exported episode, read back
+        with ffprobe; a sample reads a fixed text, so its comment names the synthetic voice only."""
+        from podcast_automate.audio import DIGITAL_SOURCE_TYPE, audio_info
+        if not shutil.which("ffprobe"):
+            self.skipTest("ffprobe not installed")
+        with patch("podcast_automate.speech.build_opener") as build:
+            build.return_value.open.side_effect = spoken
+            generate_sample(self.root, "Aoede", "en-US", "test-key")
+        tags = audio_info(ready_sample(self.projects, "Aoede", "en-US"))["format"]["tags"]
+        self.assertEqual((tags["DIGITAL_SOURCE_TYPE"], tags["AI_GENERATED"], tags["comment"]),
+                         (DIGITAL_SOURCE_TYPE, "true", "AI-generated: speech made with synthetic voices."))
+
     def test_adopts_old_project_speech_without_a_paid_call(self):
         with patch("podcast_automate.speech.build_opener") as build:
             build.return_value.open.side_effect = spoken

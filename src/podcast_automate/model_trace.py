@@ -74,7 +74,7 @@ def redact(text, secrets=()):
             if text.endswith(secret[:size]):
                 text = text[:-size]
                 break
-    text = re.sub(r"\b(?:sk-|sess-)[A-Za-z0-9_-]*", "[Zugangsdaten entfernt]", text)
+    text = re.sub(r"\b(?:sk-|sess-|pplx-)[A-Za-z0-9_-]*", "[Zugangsdaten entfernt]", text)
     # Google API keys (the Google key of Gemini audio, google_speech) start with "AIza".
     text = re.sub(r"\bAIza[0-9A-Za-z_-]{20,}", "[Zugangsdaten entfernt]", text)
     text = re.sub(r"(?i)\bBearer\s+\S*", "Bearer [entfernt]", text)

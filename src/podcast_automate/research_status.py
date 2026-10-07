@@ -176,8 +176,13 @@ def work_insight(work, run):
     no_progress = row.get("no_progress", 0)
     results = list((work / "calls").glob("call_*/response.json"))
     timeout = next((e.get("timeout_seconds") for e in diagnostics.get("events", []) if e.get("kind") == "request"), None)
+    # The German assignment feeds the status brief; the Studio shows assignment.<assignment_id> in its interface
+    # language (D-152).
+    assignment_id = (schema if schema in ASSIGNMENTS else f"phase.{state.get('phase')}" if state.get("phase") in phases
+                     else "saved_results")
     return {"basis": "request" if recorded else "saved_state", "question": context.get("question", ""),
             "assignment": ASSIGNMENTS.get(schema, phases.get(state.get("phase"), "Gespeicherte Rechercheergebnisse weiterverarbeiten.")),
+            "assignment_id": assignment_id,
             "criteria": context.get("criteria", []), "last_step": context.get("last_step", ""),
             "feedback": context.get("feedback", []), "material": context.get("material", {}),
             "candidate_count": context.get("candidate_count", 0), "queries": context.get("queries", []),

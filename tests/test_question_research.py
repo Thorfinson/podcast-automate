@@ -761,6 +761,11 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("A concrete next step.", row["reason"])
         self.assertIn("Das Quellenlimit des Laufs ist erreicht (1 Quellen)", row["reason"])
         self.assertFalse(any(c[0] is QuestionSearch for c in self.calls))
+        # The limit is named as a field beside the sentence (D-152); the public ledger shows it with a budget block
+        # only, as the Studio offers the raise only there.
+        self.assertEqual((row["block_cause"], row["outcome"]), ("source_limit", "evidence_block"))
+        public = json.loads((self.work / "research_questions.json").read_text(encoding="utf-8"))["questions"][0]
+        self.assertNotIn("block_cause", public)
 
     def test_an_approved_source_limit_lets_the_web_search_load_new_sources(self):
         self.config.research_limits.sources = 1

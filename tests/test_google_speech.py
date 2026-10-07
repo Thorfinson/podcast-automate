@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
+from podcast_automate.audio import audio_info
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.google_speech import (GOOGLE_SPEECH_ENDPOINT, MAX_PASSAGE_CHARACTERS, MAX_PASSAGE_TURNS,
@@ -18,9 +19,9 @@ from podcast_automate.google_speech import (GOOGLE_SPEECH_ENDPOINT, MAX_PASSAGE_
                                             request_body)
 from podcast_automate.models import EpisodeScript, Segment
 from podcast_automate.scripting import run_script
-from podcast_automate.speech import DEFAULT_STYLES, AudioChoice
+from podcast_automate.speech import DEFAULT_STYLES, AudioChoice, audio_generation_record
 from podcast_automate.storage import read_yaml
-from podcast_automate.voice_samples import generate_pair, pair_view
+from podcast_automate.voice_samples import generate_pair, pair_view, ready_pair
 from tests import script_fixtures as fixtures
 
 
@@ -218,6 +219,33 @@ class AudioChoiceTests(unittest.TestCase):
             AudioChoice(provider="google_gemini_tts", voices={"host_a": "Erinome", "host_b": "Sadachbia"},
                         styles={"host_a": "x" * 81, "host_b": ""})
 
+    def test_a_language_pace_is_stored_only_where_set_and_binds_only_its_own_language(self):
+        # D-147, the user's choice of 2026-10-07: English slower and unhurried, German as it is.
+        base = {"provider": "google_gemini_tts", "voices": {"host_a": "Erinome", "host_b": "Sadachbia"}}
+        plain = AudioChoice.model_validate(base)
+        # Full speed without a calm delivery is no pace: stored choices keep their hashes.
+        self.assertEqual(AudioChoice.model_validate({**base, "pace": {"de-DE": {"tempo": 1.0}}}).model_dump(),
+                         plain.model_dump())
+        self.assertNotIn("pace", plain.model_dump())
+        paced = AudioChoice.model_validate({**base, "pace": {"en-US": {"tempo": 0.934, "unhurried": True}}})
+        self.assertEqual(paced.model_dump()["pace"], {"en-US": {"tempo": 0.93, "unhurried": True}})
+        # A German recording binds exactly what it bound before English had a pace.
+        self.assertEqual(paced.for_language("de-DE").model_dump(), plain.model_dump())
+        self.assertEqual(paced.for_language("en-US").model_dump(), paced.model_dump())
+        self.assertEqual(paced.pace_for("de-DE").tempo, 1.0)
+        self.assertEqual(paced.spoken_styles("de-DE"), DEFAULT_STYLES)
+        self.assertEqual(paced.spoken_styles("en-US"), {role: style + ", unhurried" for role, style in DEFAULT_STYLES.items()})
+        silent = AudioChoice.model_validate({**paced.model_dump(), "styles": {"host_a": "", "host_b": ""}})
+        self.assertEqual(silent.spoken_styles("en-US"), {"host_a": "unhurried", "host_b": "unhurried"})
+        # Only Google takes a style; the montage tempo holds on every route.
+        other = AudioChoice.model_validate({"provider": "openrouter_gemini_tts", "voices": {"host_a": "Puck", "host_b": "Aoede"},
+                                            "pace": {"en-US": {"tempo": 0.9, "unhurried": True}, "de-DE": {"unhurried": True}}})
+        self.assertEqual(other.model_dump()["pace"], {"en-US": {"tempo": 0.9, "unhurried": False}})
+        # Slower down to 80 %, never faster, and only for a language a project can speak.
+        for pace in ({"en-US": {"tempo": 0.79}}, {"en-US": {"tempo": 1.01}}, {"fr-FR": {"tempo": 0.9}}):
+            with self.subTest(pace), self.assertRaises(ValueError):
+                AudioChoice.model_validate({**base, "pace": pace})
+
 
 class GoogleEpisodeTests(unittest.TestCase):
     def setUp(self):
@@ -258,6 +286,51 @@ class GoogleEpisodeTests(unittest.TestCase):
         self.assertEqual(len(check_google_rows(self.root, script, tts, AudioChoice.model_validate(self.choice), "de-DE")),
                          calls)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_a_language_pace_slows_and_calms_only_recordings_in_that_language(self):
+        # D-147: the fixture project speaks German. A pace for English leaves its recording and binding as they were;
+        # the same pace for German slows the montage, asks for a calm delivery and binds both.
+        calm = {"tempo": 0.93, "unhurried": True}
+        plain = {**self.choice, "expression": False}
+        recorded = {}
+        for language in ("en-US", "de-DE"):
+            with patch("podcast_automate.google_speech.build_opener") as build:
+                build.return_value.open.side_effect = spoken_answer
+                run = run_episode_audio(self.root, episode="ep_001", approve_audio=True,
+                                        audio_choice={**plain, "pace": {language: calm}},
+                                        speech_key="AIza-google-key-0123456789")
+                self.assertEqual(run.status, "completed")
+                styles = [item["annotations"][0]["style"] for call in build.return_value.open.call_args_list
+                          for item in json.loads(call.args[0].data)["input"][0]["content"]]
+            work = self.root / "runs" / run.run_id
+            report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
+            export = (self.root / report["parts"][0]["audio"]).parent
+            recorded[language] = {"run": run, "styles": styles,
+                                  "inputs": json.loads((work / "inputs.json").read_text(encoding="utf-8")),
+                                  "report": report,
+                                  "audio": json.loads((export / "audio_report.json").read_text(encoding="utf-8")),
+                                  "timeline": json.loads((export / "timeline.json").read_text(encoding="utf-8"))}
+        other, own = recorded["en-US"], recorded["de-DE"]
+        self.assertEqual(other["inputs"]["audio_generation"],
+                         audio_generation_record(AudioChoice.model_validate(plain)))
+        self.assertEqual(other["report"]["audio_generation"], AudioChoice.model_validate(plain).model_dump())
+        self.assertEqual(set(other["styles"]), set(DEFAULT_STYLES.values()))
+        self.assertNotIn("tempo", other["audio"])
+        self.assertEqual(own["inputs"]["audio_generation"]["pace"], {"de-DE": calm})
+        self.assertTrue(own["styles"] and all(style.endswith(", unhurried") for style in own["styles"]))
+        self.assertEqual(own["audio"]["tempo"], 0.93)
+        # Each passage is slowed with the same takes' lengths, the pauses between them stay as they were.
+        for slow, plain_row in zip(own["timeline"]["segments"], other["timeline"]["segments"], strict=True):
+            speech = lambda row: row["speech_end_seconds"] - row["start_seconds"]
+            self.assertAlmostEqual(speech(slow), speech(plain_row) / 0.93, delta=0.05)
+            self.assertEqual(slow["pause_ms"], plain_row["pause_ms"])
+        # A resume reads the pace it bound; a pace set for another language since then changes nothing.
+        with patch("podcast_automate.google_speech.build_opener") as build:
+            resumed = run_episode_audio(self.root, resume=True, run_id=own["run"].run_id,
+                                        audio_choice={**plain, "pace": {"de-DE": calm, "en-US": {"tempo": 0.85}}})
+            build.return_value.open.assert_not_called()
+        self.assertEqual(resumed.status, "completed")
+
     def test_without_the_google_key_the_recording_stops_before_any_request(self):
         with patch("podcast_automate.google_speech.build_opener") as build, \
                 patch.dict("os.environ", {"GEMINI_API_KEY": ""}):
@@ -288,6 +361,29 @@ class PairSampleTests(unittest.TestCase):
             self.assertTrue(any("|mhm|" in item["text"] for item in body["input"][0]["content"]))
             # Another style is another sample.
             self.assertFalse(pair_view(projects, voices, {"host_a": "", "host_b": ""}, "de-DE")["ready"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_a_language_pace_can_be_heard_in_the_conversation_sample(self):
+        # D-147: a slower tempo re-encodes the same take, a calm delivery is a take of its own.
+        with tempfile.TemporaryDirectory() as temporary:
+            projects = Path(temporary).resolve()
+            voices = {"host_a": "Erinome", "host_b": "Sadachbia"}
+            key = "AIza-google-key-0123456789"
+            with patch("podcast_automate.google_speech.build_opener") as build:
+                build.return_value.open.side_effect = spoken_answer
+                generate_pair(projects, voices, None, "en-US", key)
+                self.assertFalse(pair_view(projects, voices, None, "en-US", {"tempo": 0.9})["ready"])
+                slowed = generate_pair(projects, voices, None, "en-US", key, pace={"tempo": 0.9})
+                self.assertEqual(build.return_value.open.call_count, 1)
+                calm = generate_pair(projects, voices, None, "en-US", key, pace={"unhurried": True})
+                self.assertEqual(build.return_value.open.call_count, 2)
+                body = json.loads(build.return_value.open.call_args.args[0].data)
+            self.assertTrue(slowed["ready"] and calm["ready"])
+            self.assertEqual(len({slowed["url"], calm["url"], pair_view(projects, voices, None, "en-US")["url"]}), 3)
+            seconds = lambda pace: float(audio_info(ready_pair(projects, voices, None, "en-US", pace))["format"]["duration"])
+            self.assertAlmostEqual(seconds({"tempo": 0.9}), seconds(None) / 0.9, delta=0.1)
+            self.assertTrue(all(item["annotations"][0]["style"].endswith(", unhurried")
+                                for item in body["input"][0]["content"]))
 
 
 if __name__ == "__main__":

@@ -244,6 +244,35 @@ class Combined(unittest.TestCase):
         self.assertTrue(all(r["episode_id"] == "ep_002" for r in rows))
         self.assertTrue(all(r["detail"] for r in rows))
 
+    def test_each_row_carries_the_values_of_its_sentence_as_params(self):
+        """D-153 (2026-10-07): the Studio words a row by its code and params in the reader's language; ``detail`` stays
+        the German sentence it always was, so reports written before read as they did."""
+        episode = script("Ein Aufmerksamkeitskopf ist eine gewichtete Auswahl. " + " ".join(["Wort"] * 110),
+                         "Ein Aufmerksamkeitskopf ist wieder eine gewichtete Auswahl. Hypothetisch, "
+                         "ein Gedankenbeispiel, nicht gemessen.")
+        metrics = script_metrics(episode)
+        rows = {r["code"]: r for r in advisories(episode, plan(minutes=0.5), metrics, language="de-DE",
+                                                 terms=["Aufmerksamkeitskopf"])}
+        self.assertEqual(set(rows), {"redefined_term", "repeated_hedging", "long_cold_open", "over_target_duration",
+                                     "low_partner_share"})
+        expected = {
+            "redefined_term": {"term": "Aufmerksamkeitskopf", "definitions": 2},
+            "repeated_hedging": {"reminders": rows["repeated_hedging"]["count"], "limit": 2},
+            "long_cold_open": {"words": rows["long_cold_open"]["count"], "limit": 100},
+            "over_target_duration": {"estimated_minutes": metrics["estimated_minutes"], "target_minutes": 0.5,
+                                     "percent": rows["over_target_duration"]["count"], "limit_percent": 120},
+            "low_partner_share": {"percent": rows["low_partner_share"]["count"], "floor_percent": 25}}
+        self.assertEqual({code: row["params"] for code, row in rows.items()}, expected)
+        self.assertEqual(rows["redefined_term"]["detail"], "«Aufmerksamkeitskopf» wird in dieser Folge 2-mal neu "
+                                                           "definiert, obwohl der Begriff aus einer früheren Folge bekannt ist.")
+        self.assertEqual(rows["long_cold_open"]["detail"],
+                         f"Der erste gesprochene Abschnitt hat {rows['long_cold_open']['count']} Wörter; über 100 "
+                         "beginnt die Folge ohne Atempause.")
+        long = LONG_TURN_WORDS + 1
+        lecture = long_turns(spoken(*[("scene_a", "host_a", long), ("scene_a", "host_b", 60)] * 3))
+        self.assertEqual(lecture[0]["params"], {"turns": 3, "longest_words": long, "over_words": LONG_TURN_WORDS,
+                                                "turn_words": TURN_WORDS, "limit": LONG_TURN_LIMIT})
+
     def test_a_clean_episode_produces_no_rows(self):
         episode = script("Willkommen zurück. Heute geht es um die Reihenfolge.",
                          "Der Aufmerksamkeitskopf gewichtet dabei stärker.")

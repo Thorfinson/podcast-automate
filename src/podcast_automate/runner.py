@@ -24,12 +24,17 @@ PROBE_BACKENDS = ("codex_cli", "claude_code", "auto")
 # What a paused stage keeps of its error for the automatic resume (studio_worker, subscriptions.quota_retry_at):
 # these keys only and plain values only, so a manifest never holds model output or provider text.
 RETRY_DETAIL_KEYS = ("provider", "blocked_until", "earliest_reset", "earliest_provider", "reason")
+# Which run limit a budget stop reached (research.reserve_call, since 2026-10-07): the Studio names it from this field
+# instead of the German message. These values only.
+LIMIT_DETAIL_VALUES = ("model_calls", "search_rounds")
 
 
 def failure_details(error: AppError) -> dict | None:
-    """The reset facts of a quota pause; None for every other stop, so its manifest dumps as before."""
+    """The reset facts of a quota pause, the reached limit of a budget stop; None for every other stop, so its
+    manifest dumps as before."""
     if error.status != "waiting_for_quota":
-        return None
+        limit = (error.details or {}).get("limit")
+        return {"limit": limit} if error.code == "research_budget_exhausted" and limit in LIMIT_DETAIL_VALUES else None
     details = {key: value for key in RETRY_DETAIL_KEYS
                if isinstance(value := (error.details or {}).get(key), (str, int, float, bool))}
     return details or None

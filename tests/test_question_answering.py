@@ -1,5 +1,6 @@
 """The per-question loop of question_answering: reading progress, offered actions, prerequisite digests, review memory
 and the settling of a review's final attempt (2026-10-02)."""
+import json
 import threading
 import unittest
 
@@ -229,12 +230,64 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(engine, "call", side_effect=taken) as called:
             self.assertFalse(engine.web_search(spec, row, ["energy"]))
         self.assertEqual(called.call_count, 1, "the round was free when checked")
-        self.assertEqual(row["outcome"], "budget_block")
+        self.assertEqual((row["outcome"], row["block_cause"]), ("budget_block", "search_budget"))
         self.assertIn("Web-Suchbudget", row["reason"])
         # With the model calls spent as well, the run stops for an approval as before.
         with patch.object(engine, "call", side_effect=taken), patch.object(engine, "calls_left", return_value=False), \
                 self.assertRaises(AppError):
             engine.web_search(spec, dict(row, outcome=None), ["energy measured"])
+
+    def test_a_run_limit_that_ends_the_web_search_is_named_beside_its_reason(self):
+        """D-152: the Studio offered to raise the search rounds by matching /Suchbudget|Suchrunden/ in the German
+        reason. ``block_cause`` names the run limit instead; the reason stays as the advisor reads it."""
+        from podcast_automate.question_answering import SEARCH_BUDGET_REASON
+        from podcast_automate.research_ledger import public_ledger
+        engine, spec, row = self.completed()
+        limits = engine.limits()
+
+        def public():
+            return next(r for r in public_ledger(engine.state, engine.index)["questions"] if r["id"] == spec.id)
+        self.assertNotIn("block_cause", public(), "a row no run limit stopped keeps its earlier form")
+        row.update(status="blocked", web_attempts=0, reason="", outcome=None)
+        write_json(self.fixture.work / "budget.json", {"model_calls": 1, "search_rounds": limits.search_rounds})
+        self.assertFalse(engine.web_search(spec, row, ["energy"]))
+        self.assertEqual((row["outcome"], row["reason"], row["block_cause"]),
+                         ("budget_block", SEARCH_BUDGET_REASON, "search_budget"))
+        engine.save()
+        written = json.loads((self.fixture.work / "research_questions.json").read_text(encoding="utf-8"))
+        self.assertEqual(next(r for r in written["questions"] if r["id"] == spec.id)["block_cause"], "search_budget")
+        self.assertEqual(read_value(engine.folder / "state.json")["tasks"][spec.id]["block_cause"], "search_budget")
+
+        write_json(self.fixture.work / "budget.json", {"model_calls": 1, "search_rounds": 0})
+        engine.attempts = {f"https://example.org/{n}" for n in range(limits.sources)}
+        self.assertFalse(engine.web_search(spec, row, ["energy"]))
+        self.assertIn(f"Das Quellenlimit des Laufs ist erreicht ({limits.sources} Quellen)", row["reason"])
+        self.assertEqual((row["block_cause"], public()["block_cause"]), ("source_limit", "source_limit"))
+
+        # Only beside a budget block: the reader's own block keeps the sentence in its reason, the Studio no button.
+        row["outcome"] = "evidence_block"
+        self.assertNotIn("block_cause", public())
+        row["outcome"] = "budget_block"
+        # A reason built on the earlier one keeps the cause; one started afresh (after a reopening) drops it.
+        engine.lock_block(spec, row)
+        self.assertEqual((row["outcome"], row["block_cause"]), ("budget_block", "source_limit"))
+        fresh = dict(row, reason="")
+        engine.lock_block(spec, fresh)
+        self.assertNotIn("block_cause", fresh)
+        # A limit of this sub-question alone is no run limit.
+        engine.attempts = set()
+        row.update(web_attempts=engine.web_attempt_limit(row))
+        self.assertFalse(engine.web_search(spec, row, ["energy"]))
+        self.assertEqual(row["outcome"], "budget_block")
+        self.assertNotIn("block_cause", row)
+        self.assertNotIn("block_cause", public())
+
+        # A row written before block_cause existed loads and dumps as before; the Studio reads its reason.
+        row.update(reason=SEARCH_BUDGET_REASON, outcome="budget_block")
+        engine.save()
+        self.assertNotIn("block_cause", read_value(engine.folder / "state.json")["tasks"][spec.id])
+        written = json.loads((self.fixture.work / "research_questions.json").read_text(encoding="utf-8"))
+        self.assertNotIn("block_cause", next(r for r in written["questions"] if r["id"] == spec.id))
 
     def test_an_earlier_objection_that_is_still_unresolved_still_blocks(self):
         _, _, row, _, _ = self.failed_then_reworked(lambda payload: self.review(payload, passed=False))

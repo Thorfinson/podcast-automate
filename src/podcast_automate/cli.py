@@ -27,148 +27,186 @@ from .teaching import TEACHING_SCHEMAS
 from .scripting import run_script
 from .storage import init_project, load_project, read_yaml, write_json
 from .platforms import configure_path
+from .trial import TRIAL_LIMITS, TRIAL_MINUTES, TRIAL_SUB_QUESTIONS, trial_brief, trial_facts
 
 # pla approve --text-switch VALUE -> run_budget.TEXT_SWITCHES
 SWITCH_OPTIONS = {"claude": "claude_first", "astra": "astra_first", "claude-only": "claude", "astra-only": "astra",
-                  "openrouter": "openrouter"}
+                  "openrouter": "openrouter", "claude-api": "claude_api"}
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # The CLI speaks English (D-156): its help, its own messages and the doctor's details. Messages that pipeline
+    # modules raise keep their wording; codes and --json keys never change.
     parser = argparse.ArgumentParser(
-        prog="pla", description="Podcast Automate: Projektverwaltung und technische Proben.")
+        prog="pla", description="Podcast Automate: project management and technical probes.")
     parser.add_argument("--version", action="version", version=f"podcast-automate {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
-    studio = commands.add_parser("studio", help="Geführtes Podcast Studio lokal im Browser öffnen")
+    studio = commands.add_parser("studio", help="Open the guided Podcast Studio locally in the browser")
     studio.add_argument("workspace", type=Path, nargs="?", default=Path.cwd())
     studio.add_argument("--port", type=int, default=8765)
     studio.add_argument("--no-browser", action="store_true")
     studio.add_argument("--lan", action="store_true",
-                        help="Auch im Heimnetz erreichbar, etwa vom Handy im WLAN; aus dem Internet nicht")
+                        help="Also reachable in the home network, for example from a phone on Wi-Fi; never from the "
+                             "internet")
     studio.set_defaults(json_output=False)
-    init = commands.add_parser("init", help="Persönliches Projekt anlegen")
+    init = commands.add_parser("init", help="Create a personal project")
     init.add_argument("project_dir", type=Path)
-    init.add_argument("--topic", required=True)
+    # Required unless --trial, which then takes a narrow sample topic (checked in main).
+    init.add_argument("--topic", help="Topic of the series; required unless --trial")
     init.add_argument("--total-minutes", type=float, default=None)
-    init.add_argument("--tts-python", help="Python der separaten Qwen-Umgebung")
-    doctor = commands.add_parser("doctor", help="Installation, Abo-Anmeldungen (Codex, Claude) und Kontingent prüfen; kein Modellaufruf")
+    init.add_argument("--tts-python", help="Python of the separate Qwen environment")
+    # A trial project (D-157): the whole pipeline once, small and cheap (trial.py).
+    init.add_argument("--trial", action="store_true",
+                      help=f"Create a trial project: one episode of at most {TRIAL_MINUTES:g} minutes, a research plan "
+                           f"of at most {TRIAL_SUB_QUESTIONS} sub-questions and small limits per run "
+                           f"({TRIAL_LIMITS.model_calls} model calls, {TRIAL_LIMITS.search_rounds} search rounds, "
+                           f"{TRIAL_LIMITS.sources} sources, a money limit of at most {TRIAL_LIMITS.cost_usd:g} USD "
+                           "where one is set); without --topic a narrow sample topic")
+    doctor = commands.add_parser("doctor", help="Check the installation, the subscription logins (Codex, Claude) and "
+                                                "their quota; no model call")
     doctor.add_argument("project_dir", type=Path, nargs="?")
-    doctor.add_argument("--skip-tts", action="store_true", help="Lokales Qwen überspringen, etwa bei Gemini-Audio")
-    state = commands.add_parser("status", help="Fortschritt und Fehler des letzten Laufs anzeigen")
+    doctor.add_argument("--skip-tts", action="store_true", help="Skip local Qwen, for example with Gemini audio")
+    state = commands.add_parser("status", help="Show progress and errors of the last run")
     state.add_argument("project_dir", type=Path)
     state.add_argument("--run-id")
-    text_probe = commands.add_parser("text-probe", help="Strukturierte Abo-Verbindungsprobe (Codex oder Claude Code)")
+    text_probe = commands.add_parser("text-probe", help="Structured subscription connection probe (Codex or Claude Code)")
     text_probe.add_argument("project_dir", type=Path)
     text_probe.add_argument("--backend", choices=("codex_cli", "claude_code", "auto"),
-                            help="Abo-Anbieter der Probe; Standard codex_cli")
-    quota = commands.add_parser("quota", help="Kontingent beider Abos (Codex, Claude) ohne Modellaufruf anzeigen")
-    audio_probe = commands.add_parser("audio-probe", help="Deutsche oder englische Qwen-Hörprobe montieren")
+                            help="Subscription provider of the probe; default codex_cli")
+    quota = commands.add_parser("quota", help="Show the quota of both subscriptions (Codex, Claude) without a model call")
+    audio_probe = commands.add_parser("audio-probe", help="Assemble a German or English Qwen voice sample")
     audio_probe.add_argument("project_dir", type=Path)
     audio_probe.add_argument("--approve-audio", action="store_true")
-    research = commands.add_parser("research", help="Live recherchieren, Quellen abrufen und ein belegtes Dossier erstellen")
+    research = commands.add_parser("research", help="Research live, fetch sources and write an evidenced dossier")
     research.add_argument("project_dir", type=Path)
     research.add_argument("--reuse-sources", metavar="RUN_ID",
-                          help="Gespeicherte Quellen für einen neuen Dossiertext wiederverwenden")
+                          help="Reuse the stored sources for a new dossier text")
     research.add_argument("--seed-corpus", metavar="RUN_ID",
-                          help="Die gespeicherten Quellen eines früheren Recherchelaufs als Startbibliothek anbieten; "
-                               "gewählte werden kopiert statt neu geladen, gesucht wird trotzdem neu")
-    research.add_argument("--backend", choices=("codex_cli", "claude_code", "auto"),
-                          help="Abo-Anbieter der Recherche; Standard codex_cli, auto wechselt bei leerem Kontingent")
-    research.add_argument("--model", help="Modell-ID des festen Abo-Anbieters")
+                          help="Offer the stored sources of an earlier research run as a starting library; chosen ones "
+                               "are copied instead of fetched again, and the search still runs anew")
+    research.add_argument("--backend", choices=("codex_cli", "claude_code", "claude_api", "openrouter", "auto"),
+                          help="Text provider of the research; default codex_cli, auto switches on an empty quota, "
+                               "claude_api bills your own Anthropic API key")
+    research.add_argument("--api-key", nargs="?", const="", default=None, metavar="",
+                          help="Ask hidden for the key of the billed provider (claude_api: Anthropic, openrouter: "
+                               "OpenRouter), for this call only; alternatively ANTHROPIC_API_KEY or OPENROUTER_API_KEY")
+    research.add_argument("--model", help="Model ID of the fixed subscription provider")
+    research.add_argument("--web-search", choices=("model", "perplexity"),
+                          help="Web search of a new run: model (the text model's own tools, the default) or perplexity "
+                               "(Perplexity Search API, key from PERPLEXITY_API_KEY, billed); required for openrouter")
     research.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"),
-                          help="Denkaufwand für Recherche-Modellaufrufe des festen Anbieters")
+                          help="Reasoning effort for the research model calls of the fixed provider")
     research.add_argument("--approve-plan", action="store_true",
-                          help="Den Rechercheplan ohne Freigabe-Stopp automatisch freigeben; die Hochrechnung steht "
-                               "trotzdem in runs/<run_id>/question_research/plan_projection.json")
-    script = commands.add_parser("script", help="Geprüftes Dossier in Serienentwurf und Dialogskripte umsetzen")
+                          help="Approve the research plan automatically, without the approval stop; the projection is "
+                               "still written to runs/<run_id>/question_research/plan_projection.json")
+    script = commands.add_parser("script", help="Turn a reviewed dossier into a series plan and dialogue scripts")
     script.add_argument("project_dir", type=Path)
-    script.add_argument("--episode", help="Nur die gewählte Folge schreiben, zum Beispiel ep_001")
-    script.add_argument("--revise", metavar="EPISODE_ID", help="Vorhandenes Skript mit seinem bisherigen Plan überarbeiten")
-    script.add_argument("--feedback", default="", help="Redaktionelle Rückmeldung für --revise")
+    script.add_argument("--episode", help="Write only the chosen episode, for example ep_001")
+    script.add_argument("--revise", metavar="EPISODE_ID", help="Revise an existing script with its previous plan")
+    script.add_argument("--feedback", default="", help="Editorial feedback for --revise")
     series = commands.add_parser("series-review",
-        help="Veröffentlichte Skripte eines Laufs als Serie prüfen, ohne den Lauf zu verändern")
+        help="Review the published scripts of a run as a series, without changing the run")
     series.add_argument("project_dir", type=Path)
-    series.add_argument("--run", dest="run_id", help="Skriptlauf; Standard ist der zuletzt veröffentlichte")
-    series.add_argument("--backend", choices=("codex_cli", "claude_code", "auto"))
-    series.add_argument("--model", help="Modell-ID des festen Abo-Anbieters")
+    series.add_argument("--run", dest="run_id", help="Script run; default the last published one")
+    series.add_argument("--backend", choices=("codex_cli", "claude_code", "claude_api", "auto"))
+    series.add_argument("--model", help="Model ID of the fixed subscription provider")
     series.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"))
-    audio = commands.add_parser("audio", help="Geprüfte Folge mit Qwen vertonen und zur Hörprüfung montieren")
+    audio = commands.add_parser("audio", help="Record a reviewed episode with Qwen and assemble it for the listening "
+                                              "review")
     audio.add_argument("project_dir", type=Path)
     audio.add_argument("--episode", required=True)
     audio.add_argument("--approve-audio", action="store_true")
-    audio.add_argument("--approval-note", default="", help="Rückmeldung zur Freigabe dieses Skriptstands")
-    kit = commands.add_parser("publish-kit", help="Begleitmaterial einer Folge für Spotify und andere Plattformen schreiben: "
-                                                  "Kurz- und Folgenbeschreibung, Kapitelmarken, Quellen; veröffentlicht nichts")
+    audio.add_argument("--approval-note", default="", help="Feedback on approving this script state")
+    kit = commands.add_parser("publish-kit", help="Write an episode's companion material for Spotify and other "
+                                                  "platforms: short and episode description, chapter marks, sources; "
+                                                  "or the whole podcast's, with the transcript of every episode; "
+                                                  "publishes nothing")
     kit.add_argument("project_dir", type=Path)
-    kit.add_argument("--episode", required=True)
+    scope = kit.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--episode")
+    scope.add_argument("--podcast", action="store_true",
+                       help="The whole podcast: its description, every source and the transcript of every episode")
     kit.add_argument("--fresh", action="store_true",
-                     help="Beschreibungen neu schreiben lassen, auch wenn sich das Skript nicht geändert hat")
-    resume = commands.add_parser("resume", help="Unterbrochene Probe ohne fertige Arbeit zu wiederholen fortsetzen")
+                     help="Have the descriptions written anew, even if the script has not changed")
+    resume = commands.add_parser("resume", help="Continue an interrupted run without repeating finished work")
     resume.add_argument("project_dir", type=Path)
     resume.add_argument("--run-id")
     resume.add_argument("--approve-audio", action="store_true")
-    resume.add_argument("--approval-note", default="", help="Rückmeldung zur erneuten Audio-Freigabe")
+    resume.add_argument("--approval-note", default="", help="Feedback on the renewed audio approval")
     for command in (script, resume):
-        command.add_argument("--backend", choices=("codex_cli", "openrouter", "claude_code", "auto"),
-                             help="Textanbieter für Skripte und Reviews; Standard codex_cli, auto wählt je Aufruf Codex oder "
-                                  "Claude nach Kontingent, bei resume gespeicherter Anbieter")
-        command.add_argument("--model", help="Modell-ID des Textanbieters; für OpenRouter erforderlich")
+        command.add_argument("--backend", choices=("codex_cli", "openrouter", "claude_code", "claude_api", "auto"),
+                             help="Text provider for scripts and reviews; default codex_cli, auto picks Codex or Claude "
+                                  "per call by quota, claude_api bills your own Anthropic API key; on resume the saved "
+                                  "provider")
+        command.add_argument("--model", help="Model ID of the text provider; required for OpenRouter")
         command.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"),
-                             help="Denkaufwand für Textmodellaufrufe; bei resume bleibt die gespeicherte Stufe erhalten")
+                             help="Reasoning effort for text model calls; on resume the saved level stays")
         # The key is asked for hidden, never taken as a value: a command line is visible in the process list
         # and the shell history (2026-10-02). A value given anyway is refused unread (run_command).
         command.add_argument("--api-key", nargs="?", const="", default=None, metavar="",
-                             help="OpenRouter-Key nur für diesen Aufruf verdeckt abfragen; alternativ OPENROUTER_API_KEY")
+                             help="Ask hidden for the key of the billed provider, for this call only; alternatively "
+                                  "OPENROUTER_API_KEY or ANTHROPIC_API_KEY")
         command.add_argument("--max-output-tokens", type=int,
-                             help="OpenRouter-Ausgabelimit pro Modellaufruf; Standard 32768")
+                             help="OpenRouter output limit per model call; default 32768")
+    script.add_argument("--web-search", choices=("model", "perplexity"),
+                        help="Web search of a new run's supplementary research: model (default) or perplexity "
+                             "(key from PERPLEXITY_API_KEY, billed)")
     script.add_argument("--jev-probe", action="store_true",
-                        help="Lückenprobe zusätzlich mit Jev (OpenRouter, Key aus OPENROUTER_API_KEY): findet Abschnitte "
-                             "auch über Sprachgrenzen, etwa 0,60 USD je Lauf; gilt für neue Skriptläufe")
-    approve = commands.add_parser("approve", help="Ausdrückliche Freigabe für einen Lauf: Rechercheplan freigeben, "
-                                                   "höheres Aufruf-, Suchrunden- oder Quellenlimit oder eine blockierte "
-                                                   "Teilfrage als Lücke akzeptieren")
+                        help="Also run the gap probe with Jev (OpenRouter, key from OPENROUTER_API_KEY): finds "
+                             "passages across languages too, about 0.60 USD per run; applies to new script runs")
+    approve = commands.add_parser("approve", help="Explicit approval for a run: approve the research plan, a higher "
+                                                   "call, search-round or source limit, or accept a blocked "
+                                                   "sub-question as a gap")
     approve.add_argument("project_dir", type=Path)
-    approve.add_argument("--run-id", help="Standard: der letzte Lauf des Projekts")
-    approve.add_argument("--model-calls", type=int, help="Neues Limit für Modellaufrufe dieses Laufs")
-    approve.add_argument("--search-rounds", type=int, help="Neues Limit für Web-Suchrunden dieses Laufs")
-    approve.add_argument("--sources", type=int, help="Neues Limit für abgerufene Quellen dieses Laufs")
+    approve.add_argument("--run-id", help="Default: the project's last run")
+    approve.add_argument("--model-calls", type=int, help="New limit for model calls of this run")
+    approve.add_argument("--search-rounds", type=int, help="New limit for web search rounds of this run")
+    approve.add_argument("--sources", type=int, help="New limit for fetched sources of this run")
+    approve.add_argument("--cost-usd", type=float,
+                         help="Money limit in USD for a run billed to an API key (required for claude_api and "
+                              "OpenRouter); can only rise")
     approve.add_argument("--accept-gap", metavar="TASK_ID",
-                         help="Blockierte Teilfrage, die im Dossier als Lücke dokumentiert bleibt")
-    approve.add_argument("--reason", default="", help="Kurze Begründung der akzeptierten Lücke")
+                         help="Blocked sub-question that stays documented as a gap in the dossier")
+    approve.add_argument("--reason", default="", help="Short reason for the accepted gap")
     approve.add_argument("--retry", metavar="TASK_ID",
-                         help="Blockierte Teilfrage beim nächsten Fortsetzen erneut versuchen, mit dem Spielraum einer neuen Frage")
-    approve.add_argument("--hint", default="", help="Hinweis für den neuen Versuch; geht als Rückmeldung an das Modell")
+                         help="Retry a blocked sub-question on the next resume, with the allowance of a new question")
+    approve.add_argument("--hint", default="", help="Hint for the new attempt; goes to the model as feedback")
     approve.add_argument("--redesign-teaching", metavar="EPISODE_ID",
-                         help="Das angehaltene Lehrkonzept dieser Folge beim nächsten Fortsetzen neu entwerfen; "
-                              "--hint ist dabei der verbindliche Hinweis")
+                         help="Redesign this episode's stopped teaching plan on the next resume; --hint is the "
+                              "binding hint")
     approve.add_argument("--access-gap", nargs=2, metavar=("TASK_ID", "CRITERION"),
-                         help="Ein Kriterium einer blockierten Teilfrage als Zugangslücke akzeptieren (Nummer ab 0); "
-                              "verlangt --blocked-source")
+                         help="Accept one criterion of a blocked sub-question as an access gap (numbered from 0); "
+                              "requires --blocked-source")
     approve.add_argument("--fresh-attempts", action="store_true",
-                         help="Schritte, die ihre Korrekturversuche verbraucht haben, beim nächsten Fortsetzen mit neuen "
-                              "Anläufen wiederholen (die abgewiesenen Antworten bleiben lesbar)")
+                         help="Repeat steps that used up their correction attempts with fresh attempts on the next "
+                              "resume (the rejected answers stay readable)")
     approve.add_argument("--text-switch", nargs="?", const="claude", choices=tuple(SWITCH_OPTIONS),
-                         help="Skript- oder Rechercheauftrag ab dem nächsten Fortsetzen weiter mit: claude (Claude, sonst "
-                              "Astra; Standard), astra (Astra, sonst Claude), claude-only, astra-only oder openrouter "
-                              "(bezahlt, mit --switch-model und Key). Astra arbeitet auf xhigh, Claude mit Standardmodell und "
-                              "-stufe des Katalogs; Zwischenstände bleiben gültig")
-    approve.add_argument("--switch-model", help="OpenRouter-Modell für --text-switch openrouter, z. B. openai/gpt-6-astra")
+                         help="Continue the script or research job from the next resume with: claude (Claude, else "
+                              "Astra; default), astra (Astra, else Claude), claude-only, astra-only, openrouter (billed, "
+                              "with --switch-model and a key) or claude-api (billed, Anthropic API key); billed "
+                              "providers need a money limit (--cost-usd). Astra works at xhigh, Claude with the "
+                              "catalog's default model and level; checkpoints stay valid")
+    approve.add_argument("--switch-model", help="Model for --text-switch openrouter (e.g. openai/gpt-6-astra) or "
+                                                "claude-api (e.g. claude-opus-5-5)")
     approve.add_argument("--finish-with-residuals", action="store_true",
-                         help="Nach der nächsten Gesamtprüfung abschließen; verbliebene Einwände stehen im Qualitätsbericht "
-                              "(--reason wird als Notiz gespeichert)")
+                         help="Finish after the next overall review; remaining objections go into the quality report "
+                              "(--reason is saved as a note)")
     approve.add_argument("--rebuild-dossier", action="store_true",
-                         help="Das Dossier beim nächsten Fortsetzen aus allen geprüften Antworten zusammensetzen; das bisher "
-                              "verfasste Dossier und seine Prüfeinwände werden beiseitegelegt, nichts wird neu recherchiert")
-    approve.add_argument("--dispute", nargs=2, metavar=("OBJECTION_ID", "SEITE"),
-                         help="Streitfall der Gesamtprüfung entscheiden: reviewer (dem Prüfer folgen) oder objection "
-                              "(Einwand aufrechterhalten); --reason wird als Notiz gespeichert")
+                         help="Assemble the dossier from all verified answers on the next resume; the dossier written "
+                              "so far and its review objections are set aside, nothing is researched again")
+    approve.add_argument("--dispute", nargs=2, metavar=("OBJECTION_ID", "SIDE"),
+                         help="Decide a dispute of the overall review: reviewer (follow the reviewer) or objection "
+                              "(uphold the objection); --reason is saved as a note")
     approve.add_argument("--blocked-source", metavar="URL",
-                         help="Adresse, deren Abruf in diesem Lauf nachweislich gesperrt war (research_questions.json, blocked_sources)")
+                         help="Address whose fetch was demonstrably blocked in this run (research_questions.json, "
+                              "blocked_sources)")
     approve.add_argument("--research-plan", nargs="?", const=True, default=None, metavar="RUN_ID",
-                         help="Den wartenden Rechercheplan dieses Laufs freigeben (Hochrechnung in "
-                              "runs/<run_id>/question_research/plan_projection.json); ohne RUN_ID gilt --run-id oder der letzte Lauf")
+                         help="Approve the waiting research plan of this run (projection in "
+                              "runs/<run_id>/question_research/plan_projection.json); without RUN_ID, --run-id or the "
+                              "last run applies")
     approve.add_argument("--max-tasks", type=int, metavar="N",
-                         help="Mit --research-plan: höchstens N Teilfragen; der Plan wird einmal neu zugeschnitten und erneut vorgelegt")
-    schemas = commands.add_parser("schemas", help="Implementierte JSON-Schemas exportieren")
+                         help="With --research-plan: at most N sub-questions; the plan is cut once and presented again")
+    schemas = commands.add_parser("schemas", help="Export the implemented JSON schemas")
     schemas.add_argument("output_dir", type=Path)
     for command in (init, doctor, state, text_probe, audio_probe, research, script, series, audio, kit, resume, schemas,
                     quota, approve):
@@ -224,18 +262,18 @@ def emit(data: dict, as_json: bool):
         return
     if "checks" in data:
         for check in data["checks"]:
-            print(f"{'OK' if check['ok'] else 'FEHLT'} {check['name']}: {check['detail']}")
-        print("Modell-Inferenz ist erst mit audio-probe geprüft.")
+            print(f"{'OK' if check['ok'] else 'MISSING'} {check['name']}: {check['detail']}")
+        print("Model inference is checked only by audio-probe.")
         return
     if "lines" in data and "codex_cli" in data:
         for line in data["lines"]:
             print(line)
-        print(f"Geprüft: {data['checked_at']}")
+        print(f"Checked: {data['checked_at']}")
         return
     print(data.get("message", f"Status: {data.get('status', 'ok')}"))
     run = data.get("run")
     if run:
-        print(f"Lauf: {run['run_id']} ({run['kind']})")
+        print(f"Run: {run['run_id']} ({run['kind']})")
         for name, stage in run["stages"].items():
             print(f"  {name}: {stage['status']}")
             if stage["error"]:
@@ -244,15 +282,18 @@ def emit(data: dict, as_json: bool):
                 if output.startswith(("probes/", "research/", "reports/", "models/", "episodes/")):
                     print(f"  {output}")
     if data.get("project_changed"):
-        print("Projektkonfiguration geändert; für neue Eingaben eine neue Probe starten.")
+        print("Project configuration changed; start a new run for the new inputs.")
     if data.get("invalid_completed_stages"):
-        print("Artefakte fehlen oder wurden geändert: " + ", ".join(data["invalid_completed_stages"]))
+        print("Artifacts missing or changed: " + ", ".join(data["invalid_completed_stages"]))
     if data.get("failure_records"):
-        print("Technische Fehlerprotokolle: " + ", ".join(data["failure_records"]))
+        print("Technical failure logs: " + ", ".join(data["failure_records"]))
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "init" and args.topic is None and not args.trial:
+        parser.error("init needs --topic; only a trial project (--trial) takes a sample topic")
     configure_path(Path.cwd())
     project_dir = getattr(args, "project_dir", None)
     log_path = project_dir / "logs/pla.log" if isinstance(project_dir, Path) and project_dir.is_dir() else None
@@ -263,11 +304,36 @@ def main(argv: list[str] | None = None) -> int:
         release_logging(log_path)
 
 
+def hidden_key(args):
+    """The key of a billed text provider, asked for hidden when --api-key is given without a value (D-112). Which
+    provider it is for follows --backend, or for a resume the run's current choice (run_budget.run_text_generation)."""
+    if getattr(args, "api_key", None) != "":
+        return None
+    backend = getattr(args, "backend", None)
+    if backend is None and args.command == "resume":
+        from .run_budget import run_text_generation
+        selection = run_text_generation(manifest_path(args.project_dir.resolve(), args.run_id).parent) or {}
+        backend = selection.get("provider")
+    anthropic = backend == "claude_api"
+    label, variable = ("Anthropic", "ANTHROPIC_API_KEY") if anthropic else ("OpenRouter", "OPENROUTER_API_KEY")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            key = getpass.getpass(f"{label} API key (for this call only): ")
+    except (EOFError, getpass.GetPassWarning):
+        raise AppError(f"No hidden key input possible; use {variable}.",
+                       code="anthropic_key_required" if anthropic else "openrouter_key_required",
+                       status="blocked") from None
+    add_secret(key)
+    return key
+
+
 def run_command(args) -> int:
     try:
         if getattr(args, "api_key", None):
-            raise AppError("--api-key nimmt keinen Wert an: Ein Key in der Befehlszeile steht in der Prozessliste und im "
-                           "Shell-Verlauf. --api-key ohne Wert fragt ihn verdeckt ab; alternativ OPENROUTER_API_KEY setzen.",
+            raise AppError("--api-key takes no value: a key on the command line shows in the process list and the "
+                           "shell history. --api-key without a value asks for it hidden; alternatively set "
+                           "OPENROUTER_API_KEY or ANTHROPIC_API_KEY.",
                            code="invalid_request", status="blocked")
         if args.command == "studio":
             from .studio import serve
@@ -280,14 +346,26 @@ def run_command(args) -> int:
             revision = pinned_revision(runtime.tts_model, args.project_dir.resolve())
             if revision:
                 runtime.tts_revision = revision
-            config = TopicBrief(topic=args.topic, central_question=args.topic,
+            # Without --topic (only a trial, see main) the placeholder gives way to the sample topic at once.
+            config = TopicBrief(topic=args.topic or "-", central_question=args.topic or "",
                                 target_total_minutes=args.total_minutes, runtime=runtime)
+            if args.trial:
+                config = trial_brief(config, sample_topic=args.topic is None)
             init_project(args.project_dir.resolve(), config)
-            message = f"Projekt angelegt: {args.project_dir.resolve()}"
+            parts = [f"Project created: {args.project_dir.resolve()}"]
+            if args.trial:
+                parts.append(f'Trial project on "{config.topic}": one episode of at most '
+                             f"{config.target_total_minutes:g} minutes; each run stops at {TRIAL_LIMITS.model_calls} "
+                             f"model calls (a research plan of at most {TRIAL_SUB_QUESTIONS} sub-questions), "
+                             f"{TRIAL_LIMITS.search_rounds} search rounds and {TRIAL_LIMITS.sources} sources, and a "
+                             f"money limit, where one is set, at {TRIAL_LIMITS.cost_usd:g} USD at most")
             if not revision:
-                message += (". Die Qwen-Modellrevision ist noch nicht festgelegt (runtime.tts_revision: main); vor der "
-                            "ersten Qwen-Vertonung den Commit des geladenen Modells in project.yaml eintragen.")
+                parts.append("The Qwen model revision is not pinned yet (runtime.tts_revision: main); enter the commit "
+                             "of the loaded model in project.yaml before the first Qwen recording")
+            message = ". ".join(parts) + ("." if len(parts) > 1 else "")
             data = {"status": "created", "message": message, "project": config.model_dump(mode="json")}
+            if args.trial:
+                data["trial"] = trial_facts()
             code = 0
         elif args.command == "doctor":
             runtime = load_project(args.project_dir).runtime if args.project_dir else RuntimeSettings()
@@ -310,25 +388,28 @@ def run_command(args) -> int:
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
-            if (args.model_calls is None and args.search_rounds is None and args.sources is None and not args.accept_gap
+            if (args.model_calls is None and args.search_rounds is None and args.sources is None and args.cost_usd is None
+                    and not args.accept_gap
                     and not args.retry and not args.access_gap and not args.dispute and not args.finish_with_residuals
                     and not args.fresh_attempts and args.research_plan is None and not args.redesign_teaching
                     and not args.text_switch and not args.rebuild_dossier):
-                raise AppError("Freigabe angeben: --research-plan, --model-calls, --search-rounds, --sources, --accept-gap, "
-                               "--access-gap, --dispute, --finish-with-residuals, --fresh-attempts, --retry, "
-                               "--redesign-teaching, --rebuild-dossier oder --text-switch.",
+                raise AppError("Name an approval: --research-plan, --model-calls, --search-rounds, --sources, "
+                               "--cost-usd, --accept-gap, --access-gap, --dispute, --finish-with-residuals, "
+                               "--fresh-attempts, --retry, --redesign-teaching, --rebuild-dossier or --text-switch.",
                                code="invalid_request", status="blocked")
             if bool(args.access_gap) != bool(args.blocked_source):
-                raise AppError("--access-gap und --blocked-source gehören zusammen.", code="invalid_request", status="blocked")
+                raise AppError("--access-gap and --blocked-source go together.", code="invalid_request", status="blocked")
             if args.max_tasks is not None and args.research_plan is None:
-                raise AppError("--max-tasks gilt nur zusammen mit --research-plan.", code="invalid_request", status="blocked")
+                raise AppError("--max-tasks applies only together with --research-plan.", code="invalid_request",
+                               status="blocked")
             data = {"status": "approved", "run_id": run_id}
             if args.research_plan is not None:
                 plan = approve_research_plan(root, run_id, max_tasks=args.max_tasks, source="pla approve --research-plan")
                 data["plan_approval"] = plan.model_dump(mode="json")
-            if args.model_calls is not None or args.search_rounds is not None or args.sources is not None:
+            if (args.model_calls is not None or args.search_rounds is not None or args.sources is not None
+                    or args.cost_usd is not None):
                 approval = approve_model_call_limit(root, run_id, args.model_calls, search_rounds=args.search_rounds,
-                                                    sources=args.sources)
+                                                    sources=args.sources, cost_usd=args.cost_usd)
                 data["budget_approval"] = approval.model_dump(mode="json")
             if args.accept_gap:
                 gap = approve_research_gap(root, run_id, args.accept_gap, args.reason)
@@ -355,38 +436,50 @@ def run_command(args) -> int:
             if args.access_gap:
                 task_id, criterion = args.access_gap
                 if not criterion.isdigit():
-                    raise AppError("Das Kriterium ist eine Nummer ab 0.", code="invalid_request", status="blocked")
+                    raise AppError("The criterion is a number from 0.", code="invalid_request", status="blocked")
                 access = approve_criterion_gap(root, run_id, task_id, int(criterion), args.blocked_source, args.reason)
                 data["access_gap"] = access.model_dump(mode="json")
-            data["message"] = "Freigabe gespeichert. Der Lauf übernimmt sie beim nächsten Aufruf oder mit pla resume."
+            data["message"] = "Approval saved. The run takes it over on its next call or with pla resume."
             code = 0
         elif args.command == "schemas":
             for name, model in (SCHEMAS | RESEARCH_SCHEMAS | SCRIPT_SCHEMAS | TEACHING_SCHEMAS |
                                 {"dialogue_polish_review": DialoguePolishReview, "series_review": SeriesReview}).items():
                 write_json(args.output_dir / f"{name}.schema.json", model.model_json_schema())
-            data = {"status": "completed", "message": f"Schemas exportiert: {args.output_dir.resolve()}"}
+            data = {"status": "completed", "message": f"Schemas exported: {args.output_dir.resolve()}"}
             code = 0
         elif args.command == "series-review":
             from .scripting import run_series_review, series_review_target
             manifest = run_series_review(args.project_dir, run_id=args.run_id, backend=args.backend,
                                          model=args.model, reasoning_effort=args.reasoning_effort)
             target = series_review_target(args.project_dir, manifest.run_id)
-            verdict = ("Serienprüfung abgeschlossen." if manifest.status == "completed"
-                       else "Serienprüfung meldet Einwände; Bericht prüfen.")
-            location = (" Das Urteil steht in reports/script_quality.yaml." if target["report_mirrored"] else
-                        f" Der geprüfte Lauf {target['script_run_id']} ist nicht der veröffentlichte Stand; "
-                        f"das Urteil steht nur unter runs/{manifest.run_id}/series_review.json.")
+            verdict = ("Series review completed." if manifest.status == "completed"
+                       else "Series review reports objections; check the report.")
+            location = (" The verdict is in reports/script_quality.yaml." if target["report_mirrored"] else
+                        f" The reviewed run {target['script_run_id']} is not the published state; "
+                        f"the verdict is only in runs/{manifest.run_id}/series_review.json.")
             data = {"status": manifest.status, "run_id": manifest.run_id, **target, "message": verdict + location}
             code = 0 if manifest.status == "completed" else 1
+        elif args.command == "publish-kit" and args.podcast:
+            from .publish_kit import build_podcast_kit
+            kit = build_podcast_kit(args.project_dir, fresh=args.fresh)
+            covered = kit["transcript"]
+            message = (f"Podcast companion material written: {kit['folder']} (episodes: {covered['episodes']}, "
+                       f"recorded: {covered['recorded']}, sources: {len(kit['sources'])}).")
+            if covered["recorded"] < covered["episodes"]:
+                message += " Episodes without a recording of their script have no time marks in the transcript."
+            if kit["descriptions_reused"]:
+                message += " Descriptions taken over unchanged, without a model call."
+            data = {"status": "completed", "message": message, "kit": kit}
+            code = 0
         elif args.command == "publish-kit":
             from .publish_kit import build_publish_kit
             # The OpenRouter key of a script run that wrote with OpenRouter comes from OPENROUTER_API_KEY.
             kit = build_publish_kit(args.project_dir, args.episode, fresh=args.fresh)
-            message = f"Begleitmaterial geschrieben: {kit['folder']}."
+            message = f"Companion material written: {kit['folder']}."
             if kit["recording"] is None:
-                message += " Dieser Skriptstand ist noch nicht vertont; die Kapitel stehen ohne Zeitmarken."
+                message += " This script state is not recorded yet; the chapters have no time marks."
             if kit["descriptions_reused"]:
-                message += " Beschreibungen unverändert übernommen, ohne Modellaufruf."
+                message += " Descriptions taken over unchanged, without a model call."
             data = {"status": "completed", "message": message, "kit": kit}
             code = 0
         else:
@@ -402,37 +495,29 @@ def run_command(args) -> int:
             if (args.command == "resume" and
                     read_yaml(manifest_path(args.project_dir.resolve(), args.run_id)).get("kind") == "series_review"):
                 # A review run holds one verdict and nothing to continue; it never becomes a probe.
-                raise AppError("Ein Serienprüflauf ist nicht fortsetzbar; pla series-review erneut aufrufen.",
+                raise AppError("A series review run cannot be resumed; call pla series-review again.",
                                code="invalid_run", status="blocked")
             text_options = ("backend", "model", "api_key", "max_output_tokens", "reasoning_effort")
             given = {name for name in text_options if getattr(args, name, None) is not None}
-            allowed = (set(text_options) if script_run else {"backend", "model", "reasoning_effort"} if research_run
-                       else {"backend"} if args.command == "text-probe" else set())
+            allowed = (set(text_options) if script_run else {"backend", "model", "reasoning_effort", "api_key"}
+                       if research_run else {"backend"} if args.command == "text-probe" else set())
             if given - allowed:
-                raise AppError("Textanbieter-Optionen gelten für script, research, text-probe und die Wiederaufnahme "
-                               "eines Skript- oder Rechercheaufs; --api-key und --max-output-tokens nur für script.",
+                raise AppError("Text provider options apply to script, research, text-probe and the resume of a script "
+                               "or research run; --max-output-tokens only to script.",
                                code="invalid_backend", status="blocked")
+            api_key = hidden_key(args) if script_run or research_run else None
             if episode_audio_run:
                 manifest = run_episode_audio(args.project_dir, episode=getattr(args, "episode", None),
                     approve_audio=getattr(args, "approve_audio", False), approval_note=getattr(args, "approval_note", ""),
                     resume=args.command == "resume", run_id=getattr(args, "run_id", None))
             elif script_run:
-                api_key = args.api_key
-                if api_key == "":
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("error", getpass.GetPassWarning)
-                            api_key = getpass.getpass("OpenRouter API-Key (nur für diesen Aufruf): ")
-                    except (EOFError, getpass.GetPassWarning):
-                        raise AppError("Keine verdeckte Key-Eingabe möglich; OPENROUTER_API_KEY verwenden.",
-                                       code="openrouter_key_required", status="blocked") from None
-                add_secret(api_key)
                 manifest = run_script(args.project_dir, episode=getattr(args, "episode", None),
                                       revise=getattr(args, "revise", None), feedback=getattr(args, "feedback", ""),
                                       resume=args.command == "resume", run_id=getattr(args, "run_id", None),
                                       backend=args.backend, model=args.model, api_key=api_key,
                                       max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort,
-                                      jev_probe=getattr(args, "jev_probe", False))
+                                      jev_probe=getattr(args, "jev_probe", False),
+                                      web_search=getattr(args, "web_search", None))
             elif research_run:
                 # The plan gate is the CLI default; only an explicit --approve-plan at the start waives it.
                 manifest = run_research(args.project_dir, resume=args.command == "resume",
@@ -441,7 +526,8 @@ def run_command(args) -> int:
                                         seed_corpus=getattr(args, "seed_corpus", None),
                                         backend=getattr(args, "backend", None), model=getattr(args, "model", None),
                                         reasoning_effort=getattr(args, "reasoning_effort", None),
-                                        plan_review="auto" if getattr(args, "approve_plan", False) else "required")
+                                        plan_review="auto" if getattr(args, "approve_plan", False) else "required",
+                                        api_key=api_key, web_search=getattr(args, "web_search", None))
             else:
                 manifest = run_probe(
                     args.project_dir,
@@ -459,14 +545,14 @@ def run_command(args) -> int:
         errors = "; ".join(".".join(map(str, item["loc"])) + ": " + item["msg"]
                            for item in exc.errors(include_input=False, include_url=False))
         emit({"status": "blocked", "code": "invalid_configuration",
-              "message": f"Ungültige Daten: {errors}"}, args.json_output)
+              "message": f"Invalid data: {errors}"}, args.json_output)
         return 1
     except OSError as exc:
-        logger("cli").error("Dateizugriff fehlgeschlagen: %s", exc, exc_info=exc)
+        logger("cli").error("File access failed: %s", exc, exc_info=exc)
         emit({"status": "failed", "code": "filesystem_error",
-              "message": "Dateizugriff fehlgeschlagen; Pfad und Schreibrechte prüfen."}, args.json_output)
+              "message": "File access failed; check the path and the write permissions."}, args.json_output)
         return 1
     except KeyboardInterrupt:
         emit({"status": "pending", "code": "interrupted",
-              "message": "Abgebrochen. Gespeicherten Lauf mit pla resume fortsetzen."}, args.json_output)
+              "message": "Interrupted. Continue the saved run with pla resume."}, args.json_output)
         return 130

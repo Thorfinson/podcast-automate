@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -86,10 +86,10 @@ No dossier is composed, closed or published while a sub-question has neither a v
 
 ### Stages
 
-1. **Discovery:** The text model derives questions and search queries and searches live for accessible primary sources. The application checks actual search events in the CLI log; a mere claim by the model is not enough. Research always runs on a subscription ([Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection)); how its calls invoke the CLI: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
+1. **Discovery:** The text model derives questions and search queries and searches live for accessible primary sources. The application checks actual search events in the CLI log; a mere claim by the model is not enough. Research runs on a subscription or on Claude with your Anthropic API key, or with any text model when the run searches through Perplexity ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)); how its calls invoke the CLI: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters). Through Perplexity the model plans up to ten queries, the pipeline runs them itself, and the model takes its candidates only from the results, whose requests stand in for the CLI log ([Web search through Perplexity](ARCHITECTURE.md#web-search-through-perplexity)).
 2. **Retrieval:** The application downloads HTML, PDF or text itself, stores the raw files and extracts sections with stable IDs. PDFs keep page references. Duplicate URLs and identical texts are detected; access errors stay in the report.
 3. **Fixed research questions:** A work plan breaks the original guiding questions into separately checkable sub-questions with completion criteria. Every original guiding question and every evidence gap already stored must be assigned. Definitions and empirical confirmation are handled separately; looking up a term demands no invented proof of effectiveness. Before reading, a new plan gets a separate [scope check](#scope-check-and-plan-approval).
-4. **Reading and answering:** Each sub-question gets matching original sections. The model can search the whole stored corpus or within one source, request further result pages and read neighbouring sections; only when material is missing does it search the web for new sources. Its own notes remain hints and cannot support an answer on their own.
+4. **Reading and answering:** Each sub-question gets matching original sections. The model can search the whole stored corpus or within one source, request further result pages and read neighbouring sections; only when material is missing does it search the web for new sources, with its own tools or through Perplexity (up to five queries per search). Its own notes remain hints and cannot support an answer on their own.
 5. **Individual review:** A separate model call checks the answer against its fixed criteria and the evidence actually read, on two levels:
    - An unmet criterion, a refuted finding or one not checkable without context, an unsuitable source, a changed claim profile or unproven independence rejects the answer.
    - Anything else (a partly supported subordinate clause, a wording note, a blanket "not fully supported") lets it pass and is stored at the sub-question as a **review limitation** with finding and clause, in `research_questions.json` and `research_quality.md`. A written dossier of older runs carries it as `review_limitations` into the limitations of the affected finding.
@@ -175,10 +175,11 @@ How planning stays within the approved call limit and what the minimum need afte
 
 After planning and scope check, before the first call for a sub-question, the run stops and presents its projection. It uses no further model call until approval; resuming without approval stops at the same point. No automatic resume skips this gate ([Human approvals](BUSINESS_LOGIC.md#human-approvals)).
 
-- The projection is stored in `runs/<run_id>/question_research/plan_projection.json` with `tasks`, `tasks_pending`, `expected_calls_per_task` and its origin (`expected_calls_source`), `closing_reserve`, `closing_calls`, `projected_calls`, `approved_limit`, `seconds_per_call` and its origin, `projected_hours` and `plan_hash`.
+- The projection is stored in `runs/<run_id>/question_research/plan_projection.json` with `tasks`, `tasks_pending`, `expected_calls_per_task` and its origin (`expected_calls_source`), `closing_reserve`, `closing_calls`, `projected_calls`, `approved_limit`, `seconds_per_call` and its origin, `projected_hours` and `plan_hash`; a run billed to a key adds a `cost` block with the expected money ([Money limit](BUSINESS_LOGIC.md#money-limit)).
+- Since 2026-10-07 it also projects sources and search rounds ([Research projection](BUSINESS_LOGIC.md#research-projection); why: D-155): `sources_used`, `sources_limit`, `sources_per_task`, `projected_sources` and `sources_within_limit`, the same five for `search_rounds`, their origin `search_rates_source` (`project` or `default`), and `raise_to` with `model_calls`, `search_rounds` and `sources` (`null` while all fit). A projection written before has none of these fields, and its message stays as it was.
 - The stage reports `research_plan_review` (status `blocked`), the question state the phase `awaiting_plan_approval`.
-- The message states the figures in one sentence, for example „18 Teilfragen, voraussichtlich 290 Aufrufe, etwa 22 Stunden bei 4,5 Minuten je Aufruf (16 Aufrufe je Teilfrage, Standardwert; genehmigtes Limit 750 Aufrufe, 3 verbraucht)“, plus the scope check's note (`scope_note`) if its second pass still split.
-- In the Studio, every research job shows „Wartet auf Freigabe des Rechercheplans“ (waiting for research plan approval) in the header and at the top of the **„Recherche“** (Research) page, with the projection: number of sub-questions, expected calls, estimated hours, minutes per call and the origin of the experience values (measured in this run, project experience value or default value). If the projection exceeds the limit, the card next to it offers the increase.
+- The message states the figures in one sentence, for example „18 Teilfragen, voraussichtlich 290 Aufrufe, etwa 22 Stunden bei 4,5 Minuten je Aufruf (16 Aufrufe je Teilfrage, Standardwert; genehmigtes Limit 750 Aufrufe, 3 verbraucht)“, then the sources and search rounds expected by the run's end with their limits, the limits that rise with `raise_to` together with the matching `pla approve … --model-calls … --search-rounds … --sources …`, plus the scope check's note (`scope_note`) if its second pass still split (`question_budget.plan_review_message`).
+- In the Studio, every research job shows „Wartet auf Freigabe des Rechercheplans“ (waiting for research plan approval) in the header and at the top of the **„Recherche“** (Research) page, with the projection: number of sub-questions, expected calls, estimated hours, minutes per call and the origin of the experience values (measured in this run, project experience value or default value), and for a billed run the expected cost in USD next to its money limit. If the projection exceeds the limit, the card next to it offers the increase.
 - From six sub-questions on (`question_budget.LARGE_RUN_TASKS`) the plan approval warns that the dossier no longer fits one model window and that every review round reviews the whole dossier again, about 1.4 review parts per sub-question (`question_budget.REVIEW_PARTS_PER_TASK`; see [Written dossier of older runs](#written-dossier-of-older-runs)).
 
 ### Approval receipt
@@ -213,7 +214,7 @@ Open points of the [guiding-question assessment](#assessment-of-the-guiding-ques
 
 ### Advisor
 
-Before the run stops for blocked sub-questions, each gets an advisor call (`research_advisor`, prompt `block_advice`, version `block_advice.v2`) at the subscription's deepest level (Opus 5.5 on xhigh, `research_advisor.ADVISOR_MODEL` and `ADVISOR_EFFORT`, when the run uses the Claude subscription). In parallel mode up to five questions are advised at once.
+Before the run stops for blocked sub-questions, each gets an advisor call (`research_advisor`, prompt `block_advice`, version `block_advice.v2`) at the subscription's deepest level (Opus 5.5 on xhigh, `research_advisor.ADVISOR_MODEL` and `ADVISOR_EFFORT`, when the run uses the Claude subscription; a run on Claude with the API key keeps its own model and level, why: D-145). In parallel mode up to five questions are advised at once.
 
 - It reads the unmet criteria, the sources read, the failed downloads, the limits, and every earlier advice on this question with its outcome: which new attempt followed, how it ended and how many new sections it read (`advice_history`).
 - It may search the web itself while search rounds are free. If a question advised at the same time takes the last search round, it advises on without its own search instead of stopping the run for an approval (`search_fallback` on the advice).
@@ -250,7 +251,7 @@ If a sub-question fails only on a criterion whose source the publisher refuses, 
 
 ### Finishing with remaining objections
 
-Every review round reviews the whole dossier again and often finds new details; otherwise the loop ends only when every sub-question has used its two reworks. From the first overall review on it can be ended explicitly: **„Nach der nächsten Gesamtprüfung mit Resteinwänden abschließen“** (finish with remaining objections after the next overall review) on the **„Recherche“** page, or `pla approve <project> --finish-with-residuals [--reason "…"]`, stored in `runs/<run_id>/residual_finish.json`.
+Every review round reviews the whole dossier again and often finds new details; otherwise the loop ends only when every sub-question has used its two reworks. From the first overall review on it can be ended explicitly: **„Nach der nächsten Prüfung abschließen“** (finish after the next review; the card names the open objections and the round in one sentence) on the **„Recherche“** page, or `pla approve <project> --finish-with-residuals [--reason "…"]`, stored in `runs/<run_id>/residual_finish.json`.
 
 - The next overall review runs as always; instead of reopening sub-questions, the run then closes, without a further rework round.
 - Its open objections appear under „Verbliebene Prüfeinwände“ (remaining review objections) in the quality report and in `accepted_gaps.json`, in the objection register with status `residual`, and the publication carries `model_review: residual_objections_remaining`.
@@ -457,7 +458,7 @@ A new script run can also check the gaps with Jev, TypeSafe's decision model via
 - **Hits:** Sections with a probability of at least 0.3 (`jev.THRESHOLD`) join the word hits, at most five per gap (`jev.JEV_HITS`), marked with `"via": "jev"` and their probability.
 - **Reading stays mandatory:** Jev decides nothing; a Jev hit has to be read like any other before the gap may stand. Jev finds the matching passages even when gap and source are in different languages; the text model still reads and confirms them.
 - **Safe to interrupt:** The answers are stored in `runs/<run_id>/jev_scan.jsonl`, where an interrupted scan continues; `runs/<run_id>/jev_probe.json` reports progress, requests and cost.
-- **Effort:** With the source corpora of Asimov and Ontologies about 20,000 requests and 0.60 USD per run.
+- **Effort:** With the source corpora of Asimov and Ontologies about 20,000 requests and 0.60 USD per run. With a money limit set, the run checks it before the scan and counts the scan's cost once it is complete ([Money limit](BUSINESS_LOGIC.md#money-limit)).
 - **Basis:** The evaluation of 29 September 2026 (`evals/jev_decisions`) showed that Jev separates cited sections from random ones well (AUC 0.95 to 0.975), including German questions against English sources; there the word search reported 15 of 23 Asimov gaps as `no_hits`. Jev does not reliably judge whether individual statements are faithful to findings and is not used for that. (why: D-041)
 - **Errors:** A rejected key, missing credit or a privacy setting that excludes TypeSafe stop the run with the respective reason.
 
@@ -468,7 +469,7 @@ The general explanation standard (no prior knowledge assumed, everyday language 
 - The commission is stored permanently in the project's `audience_level`, `prior_knowledge` and `depth_request`; the dossier and review instructions apply it.
 - At university level the dossier also records the justifying intermediate steps that connect foundations and advanced mechanisms. Necessary concepts such as gradient and normalisation are explained, not excluded wholesale.
 - An intuitive derivation does not replace a formal proof; evidence actually missing stays visible as a gap.
-- An invented image stands apart from the supported finding in `illustration`, always with `illustration_limit`: where does the comparison stop helping? A lone half of the pair is dropped. The readable dossier shows both as „Bild zum Mitdenken“ (image to think along) and „Grenze des Bildes“ (limit of the image).
+- An invented image stands apart from the supported finding in `illustration`, always with `illustration_limit`: where does the comparison stop helping? A lone half of the pair is dropped. The readable dossier shows both as „Bild zum Mitdenken“ (image to think along) and „Grenze des Bildes“ (limit of the image), in an English project as "Illustration" and "Limit of the illustration".
 - The review also checks for understandable language and misleading comparisons.
 - Original titles and short evidence quotes stay in the source section; they are not spoken podcast text.
 
@@ -480,7 +481,7 @@ The project budgets apply too; default limits, what counts against them and whic
 
 - Local re-reading stays possible when the web or source budget is exhausted.
 - A written dossier holds at most 120 findings (`research_models.MAX_FINDINGS`), an assembled one all verified findings.
-- Every web search loads new sources. When the source limit, the run's search rounds or the sub-question's web attempts are used up, it ends before it starts and the sub-question names the limit as its reason (`budget_block`), also when a parallel sub-question took the last search round.
+- Every web search loads new sources. When the source limit, the run's search rounds or the sub-question's web attempts are used up, it ends before it starts and the sub-question names the limit as its reason (`budget_block`), also when a parallel sub-question took the last search round. Since 2026-10-07 a run limit also stands as `block_cause` beside the German reason, `search_budget` or `source_limit` (`question_answering.BLOCK_CAUSES`), in the question state and the public rows of `research_questions.json`, so the Studio names the limit and offers its raise without reading the reason's wording; a limit of the sub-question alone has none, and older rows have none either.
 - The source limit also counts failed and duplicate-content downloads. A persistent register reserves every new canonical address before the download. Interrupted downloads continue their reservation; finished downloads are restored from their receipts even when the limit is exhausted.
 - A quota limit pauses the run; an exhausted configured research budget blocks further model calls of this run.
 
@@ -556,7 +557,7 @@ The source stays fully stored within the import limits. For each sub-question th
 
 - Individual text model calls have **30 minutes** by default (`runtime.text_timeout_seconds: 1800`), independent of the call budget (`ResearchLimits.model_calls`); existing explicit time limits are kept. Codex stores the actual time limit in the call metadata or in the error report.
 - After a timeout, raise this time limit (on the Studio's settings page, or in `project.yaml` without workspace settings: [Studio settings](CONFIGURATION.md#studio-settings)) and resume the same run: finished search and sources are kept, only the interrupted call is repeated, and the aborted call is not charged. Topic and model choice stay binding.
-- The adapters repeat once, uncharged, a streaming call (Codex app server, Claude Code) with **10 minutes without any output** (`stall_retry.json`), and repeat once a Claude response the CLI could not bring into the required format (`claude_structured_output`, `format_retry.json`); only a second such failure stops the run. A prompt too large for Claude's window is refused before the start, uncharged (`prompt_too_large`), and goes to Codex under the automatic subscription choice. Details: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
+- The adapters repeat once, uncharged, a streaming call (Codex app server, Claude Code) with **10 minutes without any output** (`stall_retry.json`), and repeat once a Claude response the CLI could not bring into the required format (`claude_structured_output`, `format_retry.json`) and a research call that ran no observable web search (`search_not_observed`, `search_retry.json`, since 2026-10-07; why: D-155); only a second such failure stops the run. A prompt too large for Claude's window is refused before the start, uncharged (`prompt_too_large`), and goes to Codex under the automatic subscription choice. Details: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
 
 ### Resuming interrupted and older runs
 
@@ -620,6 +621,8 @@ Runs started before 1 October 2026 (prompt generation 2 or earlier) keep their w
 | `runs/<run_id>/` | Manifest, checkpoints, search events, model metadata and repair findings |
 
 The evidence artefacts (`evidence_report.json`, `search_receipts.json`, `objections.json`) are listed under [Artifacts and presentation](#artifacts-and-presentation).
+
+The readable files (the dossier markdown, `open_questions.md`, `questions.md`, `research_questions.md` and `quality.md`) use the fixed words of the project's language, German or English; which labels stay German everywhere: [Languages](ARCHITECTURE.md#languages).
 
 A source candidate is not yet evidence. Only imported sections the writing model actually had in front of it may be quoted. Publication details may partly come from search results and are marked as metadata still to be checked.
 

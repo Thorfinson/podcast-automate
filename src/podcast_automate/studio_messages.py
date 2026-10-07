@@ -1,53 +1,49 @@
-"""Stop messages as the Studio shows them: German, without CLI commands, local paths or internal ids.
+"""Stop messages as the Studio shows them: in the interface language where the Studio can say it, without CLI
+commands, local paths or internal ids.
 
 The pipeline raises one message for every reader: the command line, the log and, for a rejected
 answer, the model itself, which is re-asked with that text. Only this Studio boundary rewrites a
 message for a person at the browser, so no prompt, CLI text or stored record changes here.
+
+German output is what it always was (D-152): English check sentences become their catalog text, other English
+sentences one generic German sentence. In the English interface the catalog's English replaces a known check
+sentence, any other English sentence stays as written, and a German pipeline message stays German; the result names
+its ``message_language``, so the page shows it inline only where it matches the interface.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path, PureWindowsPath
 
-REVIEW_DISAGREEMENT = ("Die Gesamtprüfung erhebt einen Einwand, den sie nicht mit gelesenen Belegen verankern kann. "
-                       "Dafür startet keine automatische Nachrecherche.")
+from .studio_text import Localized, text as catalog_text
 
-# English texts of pipeline checks. Most of them are also re-ask instructions for the model, so
-# they stay English at their source and are translated only here.
+REVIEW_DISAGREEMENT = "message.review_disagreement"
+
+# English texts of pipeline checks, each to its catalog key. Most of them are also re-ask instructions for the model,
+# so they stay English at their source and are translated only here.
 ENGLISH = {
     "An unresolved review disagreement cannot trigger unanchored research.": REVIEW_DISAGREEMENT,
     "Unanchored review disagreement; no automatic new research.": REVIEW_DISAGREEMENT,
     "Review disagreement cannot trigger more research.": REVIEW_DISAGREEMENT,
-    "Stored support review no longer passes.": "Eine gespeicherte Belegprüfung besteht mit dem heutigen Stand nicht mehr.",
-    "The verified prerequisites changed.": "Die geprüften Voraussetzungen einer Teilfrage haben sich seit ihrer Prüfung geändert.",
-    "Invalid research task prerequisites.": "Der Rechercheplan nennt ungültige Voraussetzungen zwischen Teilfragen.",
-    "Research task prerequisites contain a cycle.": "Die Teilfragen des Rechercheplans setzen sich gegenseitig voraus.",
-    "Search must record executed queries and counterevidence outcome.":
-        "Eine Websuche hat ihre Suchbegriffe oder das Ergebnis der Gegenrecherche nicht festgehalten.",
-    "Every existing objection needs an explicit closure check.":
-        "Die Gesamtprüfung hat nicht jeden bestehenden Einwand ausdrücklich geprüft.",
-    "Failing support receipts require explicit corrective issues.":
-        "Die Gesamtprüfung nennt für eine fehlgeschlagene Belegprüfung keine Korrektur.",
-    "Objection closure requires read source evidence.": "Ein Einwand wurde ohne gelesene Quellenbelege als erledigt markiert.",
-    "A dossier objection requires an affected finding and closure condition.":
-        "Ein Einwand der Gesamtprüfung nennt keinen betroffenen Befund oder keine Abschlussbedingung.",
-    "Every routed task needs a specific evidence or criterion anchor.":
-        "Ein Einwand wurde einer Teilfrage ohne konkreten Beleg- oder Kriterienbezug zugeordnet.",
-    "Missing task-specific objection anchor.":
-        "Ein Einwand wurde einer Teilfrage ohne konkreten Beleg- oder Kriterienbezug zugeordnet.",
-    "The closure condition of an existing objection changed.":
-        "Die Abschlussbedingung eines bestehenden Einwands hat sich geändert.",
-    "Synthesis edits must concern the editable findings.":
-        "Eine Dossieränderung betrifft Befunde, die in diesem Schritt nicht geändert werden dürfen.",
-    "Script review must check every segment's claim preservation exactly once.":
-        "Die Skriptprüfung hat nicht jeden Abschnitt genau einmal auf erhaltene Aussagen geprüft.",
-    "Script preservation receipt is inconsistent with its segment.":
-        "Ein Prüfbeleg der Skriptprüfung passt nicht zu seinem Abschnitt.",
-    "Supplement semantic support check failed.": "Die inhaltliche Prüfung der Zusatzbelege ist fehlgeschlagen.",
-    "Codex app-server stream closed before the account data arrived.":
-        "Die Verbindung zu Codex endete, bevor die Kontodaten ankamen.",
+    "Stored support review no longer passes.": "message.support_review_stale",
+    "The verified prerequisites changed.": "message.prerequisites_changed",
+    "Invalid research task prerequisites.": "message.prerequisites_invalid",
+    "Research task prerequisites contain a cycle.": "message.prerequisites_cycle",
+    "Search must record executed queries and counterevidence outcome.": "message.search_receipt",
+    "Every existing objection needs an explicit closure check.": "message.objection_closure_check",
+    "Failing support receipts require explicit corrective issues.": "message.failing_support_receipts",
+    "Objection closure requires read source evidence.": "message.objection_closure_evidence",
+    "A dossier objection requires an affected finding and closure condition.": "message.objection_anchor",
+    "Every routed task needs a specific evidence or criterion anchor.": "message.routed_anchor",
+    "Missing task-specific objection anchor.": "message.routed_anchor",
+    "The closure condition of an existing objection changed.": "message.closure_condition_changed",
+    "Synthesis edits must concern the editable findings.": "message.synthesis_edits",
+    "Script review must check every segment's claim preservation exactly once.": "message.script_preservation_coverage",
+    "Script preservation receipt is inconsistent with its segment.": "message.script_preservation_receipt",
+    "Supplement semantic support check failed.": "message.supplement_support",
+    "Codex app-server stream closed before the account data arrived.": "message.codex_stream_closed",
 }
-GENERIC_ENGLISH = "Eine automatische Prüfung hat ein Ergebnis abgewiesen."
+GENERIC_ENGLISH = "message.generic_english"
 REJECTED = re.compile(r"^(?P<provider>[\w -]{1,40}?) answered, but the answer violates its output contract: "
                       r"(?P<defects>.*?)\.? Return the complete answer again with exactly these defects corrected\.\s*",
                       re.DOTALL)
@@ -72,7 +68,7 @@ POSIX_PATH = re.compile(r"(?<![\w.:/])/(?:[\w.-]+/)+[\w.-]+")
 SOURCE_ID = re.compile(r"\bsrc_[0-9a-f]{6,}#sec_[0-9a-f]{6,}\b")
 SECTION_ID = re.compile(r"\bsec_[0-9a-f]{6,}\b")
 DOCUMENT_ID = re.compile(r"\bsrc_[0-9a-f]{6,}\b")
-EXCEPTIONS = {"OutOfMemoryError": "Grafikspeicher reicht nicht aus", "MemoryError": "Arbeitsspeicher reicht nicht aus"}
+EXCEPTIONS = ("OutOfMemoryError", "MemoryError")
 ENGLISH_WORDS = re.compile(r"\b(the|must|cannot|requires?|needs?|was|were|is|are|does|every|missing|invalid|changed|"
                            r"failed|answer|evidence|should|contains?|unknown|only)\b", re.IGNORECASE)
 GERMAN_WORDS = re.compile(r"[äöüÄÖÜß]|\b(der|die|das|und|nicht|ist|wird|wurde|ein|eine|einen|bitte|für|mit|auf|"
@@ -81,6 +77,13 @@ GERMAN_WORDS = re.compile(r"[äöüÄÖÜß]|\b(der|die|das|und|nicht|ist|wird|w
 
 def english(sentence: str) -> bool:
     return len(ENGLISH_WORDS.findall(sentence)) >= 2 and not GERMAN_WORDS.search(sentence)
+
+
+def language_of(text) -> str:
+    """The language of a message the Studio did not write itself: "en" for English, else "de" (D-152)."""
+    if isinstance(text, Localized):
+        return text.language
+    return "en" if english(str(text or "")) else "de"
 
 
 def relative(path_text: str, root: Path | None) -> str:
@@ -103,11 +106,13 @@ def sentences(text: str) -> list[str]:
     return [part for part in re.split(r"(?<=[.!?])\s+(?=[A-ZÄÖÜ„\"'(])", text) if part.strip()]
 
 
-def user_text(message, root: Path | None = None) -> dict:
-    """The reader's version of a stop message.
+def user_text(message, root: Path | None = None, language: str = "de") -> dict:
+    """The reader's version of a stop message in the interface ``language`` ("de" or "en").
 
-    ``message`` is the German or rewritten text; ``detail`` keeps the original wording when it
-    had to be rewritten; ``file`` is a project-relative diagnostics file named by the message.
+    ``message`` is the pipeline's or the Studio's text; ``detail`` keeps the original wording when it
+    had to be rewritten; ``file`` is a project-relative diagnostics file named by the message;
+    ``message_language`` is the language the result is in: exact for the Studio's own text, else "de" as soon as one
+    sentence it kept is not clearly English.
     """
     original = str(message or "").strip()
     text, file = original, None
@@ -115,43 +120,54 @@ def user_text(message, root: Path | None = None) -> dict:
     if found:
         file = relative(found["path"], root)
         text = text[:found.start()].rstrip()
+    # Words the rewriting inserts are in the message's own language, so a German message stays German throughout.
+    words = language if language == "de" or english(text) else "de"
     rejected = REJECTED.match(text)
     if rejected:
         fields = re.findall(r"(?:^|; )([\w.]+):", rejected["defects"])
         named = ", ".join(dict.fromkeys(fields[:3]))
-        text = (f"Die Antwort von {rejected['provider'].strip()} passte nicht zum erwarteten Format"
-                f"{f' ({named})' if named else ''}. " + text[rejected.end():]).strip()
+        provider = rejected["provider"].strip()
+        lead = (catalog_text(language, "message.rejected_fields", provider=provider, fields=named) if named
+                else catalog_text(language, "message.rejected", provider=provider))
+        text = (lead + " " + text[rejected.end():]).strip()
     for pattern, replacement in CLI:
         text = pattern.sub(replacement, text)
     text = WINDOWS_PATH.sub(lambda m: relative(m[0], root), text)
     text = POSIX_PATH.sub(lambda m: relative(m[0], root), text)
-    text = SOURCE_ID.sub("Quellenstelle", text)
-    text = SECTION_ID.sub("Quellenabschnitt", text)
-    text = DOCUMENT_ID.sub("Quelle", text)
-    for name, meaning in EXCEPTIONS.items():
-        text = text.replace(f"({name})", f"({meaning})")
-    rows, translated_any = [], bool(rejected)
+    text = SOURCE_ID.sub(str(catalog_text(words, "message.source_passage")), text)
+    text = SECTION_ID.sub(str(catalog_text(words, "message.source_section")), text)
+    text = DOCUMENT_ID.sub(str(catalog_text(words, "message.source")), text)
+    for name in EXCEPTIONS:
+        text = text.replace(f"({name})", f"({catalog_text(words, 'message.exception.' + name)})")
+    rows, translated_any, german = [], bool(rejected), False
     for sentence in sentences(text):
         if DROP.search(sentence):
             continue
-        translated = ENGLISH.get(sentence.strip())
-        if translated is None and english(sentence):
-            translated = GENERIC_ENGLISH
+        key = ENGLISH.get(sentence.strip())
+        if key is None and english(sentence) and language == "de":
+            key = GENERIC_ENGLISH
+        translated = str(catalog_text(language, key)) if key else None
         translated_any = translated_any or bool(translated)
         if translated and translated not in rows:
             rows.append(translated)
         elif not translated:
             rows.append(sentence.strip())
+            # The pipeline writes German; a sentence counts as English only when it clearly is (english).
+            german = german or (language == "en" and not english(sentence))
     text = " ".join(rows).strip()
     # The original wording stays available as technical detail wherever a translation replaced it.
     detail = None
     if translated_any:
         detail = WINDOWS_PATH.sub(lambda m: relative(m[0], root), FAILURE.sub("", original))
-    return {"message": text, "detail": detail, "file": file}
+    if isinstance(message, Localized):
+        shown = message.language
+    else:
+        shown = "de" if language == "de" or german else "en"
+    return {"message": text, "detail": detail, "file": file, "message_language": shown}
 
 
-def clean(message, root: Path | None = None) -> str:
-    return user_text(message, root)["message"]
+def clean(message, root: Path | None = None, language: str = "de") -> str:
+    return user_text(message, root, language)["message"]
 
 
 def paths_only(text, root: Path | None = None):

@@ -30,6 +30,15 @@ SUMMARY_TIMEOUT = 90
 # The cheap status model per provider; never the production model of the run.
 STATUS_MODELS = {"codex_cli": "gpt-5.6-luna", "claude_code": "claude-haiku-4-5",
                  "openrouter": "deepseek/deepseek-v4.1-flash"}
+# The Studio's interface languages (D-152), as the prompts name them: the brief is written in the language the job
+# was started in; the facts the model reads stay German.
+UI_LANGUAGES = {"de": "German", "en": "English"}
+REDACTED = {"de": "[Zugangsdaten entfernt]", "en": "[credentials removed]"}
+
+
+def interface_language(value) -> str:
+    """The interface language a request or job names, ``de`` when it names none or an unknown one."""
+    return value if isinstance(value, str) and value in UI_LANGUAGES else "de"
 
 
 def status_generation(choice):
@@ -188,7 +197,8 @@ def summary_view(work, job_id=None):
     if not state or (job_id is not None and state.get("job_id") != job_id):
         return None
     return {key: state.get(key) for key in ("job_id", "status", "summary", "generated_at", "checked_at",
-            "provider", "model", "calls", "call_limit", "live_events_available", "last_record_at", "history")}
+            "provider", "model", "calls", "call_limit", "live_events_available", "last_record_at", "history",
+            "language")}
 
 
 def publish(work, state, research=False):
@@ -199,9 +209,13 @@ def publish(work, state, research=False):
 
 
 def update_summary(root, job, *, api_key=None, clock=time.time):
+    """One status brief when the run's facts changed since the last one, in the job's interface language
+    (``job["ui_language"]``, ``de`` without one; D-152). A brief in another language counts as changed, so switching
+    the language writes a fresh one at the next check; the facts the model reads stay German."""
     run = job.get("run") or {}
     if run.get("kind") not in {"research", "script"}:
         return
+    language = interface_language(job.get("ui_language"))
     work = manifest_path(root, run["run_id"]).parent
     state = read(work / "status_reports/state.json", {})
     if state.get("job_id") != job["id"]:
@@ -217,7 +231,8 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
                  live_events_available=snapshot["live_events_available"], last_record_at=snapshot["last_record_at"],
                  call_limit=MAX_CALLS)
     research = run["kind"] == "research"
-    if state.get("snapshot_hash") == signature:
+    # A state written before the language arrived holds a German brief.
+    if state.get("snapshot_hash") == signature and state.get("language", "de") == language:
         state["status"] = "unchanged"
         publish(work, state, research)
         return
@@ -231,13 +246,19 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
     except (OSError, ValueError):
         choice = studio_settings.text_data(root, {})
     provider = choice.get("provider", "codex_cli")
+    if provider == "claude_api":
+        # A run on the Anthropic key gets no status report: it would bill the key outside the run's money limit, and
+        # the fallback below would put it on the Codex subscription unasked (D-149).
+        state.update(provider=provider, model=None, status="off", reason="billed_text")
+        publish(work, state, research)
+        return
     model = STATUS_MODELS.get(provider)
     state.update(provider=provider, model=model, status="summarizing", calls=state.get("calls", 0) + 1)
     publish(work, state, research)
     directory = work / "status_reports" / f"summary_{state['calls']:03d}"
     settings = load_project(root).runtime.model_copy(update={"text_timeout_seconds": SUMMARY_TIMEOUT})
     prompt = (
-        instructions("studio_status") + "\n" + json.dumps(snapshot, ensure_ascii=False))
+        instructions("studio_status", language=UI_LANGUAGES[language]) + "\n" + json.dumps(snapshot, ensure_ascii=False))
     try:
         if provider == "openrouter":
             adapter = OpenRouterAdapter(settings, model=model, api_key=api_key,
@@ -245,7 +266,8 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
         else:
             adapter = AdapterPool(settings, status_generation(choice),
                                   cancel_check=lambda: not active_job(root, job["id"]), max_budget_usd=1.0)
-        result, metadata = adapter.structured(prompt, ProgressDigest, directory, prompt_version="studio_status.v1", search=False)
+        result, metadata = adapter.structured(prompt, ProgressDigest, directory,
+                                              prompt_version="studio_status.v2-ui-language", search=False)
         if provider != "openrouter" and isinstance(metadata, dict):
             # An automatic run reports the subscription that actually wrote this digest.
             provider = metadata.get("provider") or provider
@@ -259,10 +281,10 @@ def update_summary(root, job, *, api_key=None, clock=time.time):
         generated = timestamp(clock())
         text = clean_status(result.summary, 1000)
         if api_key:
-            text = text.replace(api_key, "[Zugangsdaten entfernt]")
+            text = text.replace(api_key, REDACTED[language])
         history = state.get("history", [])
         state.update(status="ready", summary=text, generated_at=generated, snapshot_hash=signature, errors=0,
-                     history=(history + [{"text": text, "at": generated, "model": model}])[-5:])
+                     language=language, history=(history + [{"text": text, "at": generated, "model": model}])[-5:])
     except Exception as exc:
         # A missing key, rate limit or unavailable status model never stops production.
         state.update(status="unavailable", errors=state.get("errors", 0) + 1,
@@ -275,14 +297,16 @@ def status_lock(root, job_id):
     return root / "studio" / (".status-" + job_id + ".lock")
 
 
-def watch_summaries(root, job_id, api_key=None):
+def watch_summaries(root, job_id, api_key=None, ui_language="de"):
+    """Brief the job's run until the job ends, in ``ui_language``, the interface language the job was started in; a
+    ``ui_language`` the job file names itself takes precedence."""
     root = root.resolve()
     lock = status_lock(root, job_id)
     try:
         with file_lock(lock):
             while (job := active_job(root, job_id)):
                 try:
-                    update_summary(root, job, api_key=api_key)
+                    update_summary(root, {"ui_language": ui_language, **job}, api_key=api_key)
                 except (OSError, ValueError, KeyError, TypeError, AppError):
                     pass
                 time.sleep(5)
@@ -296,13 +320,14 @@ def watch_summaries(root, job_id, api_key=None):
         pass
 
 
-def start_monitor(root, job_id, api_key=None):
+def start_monitor(root, job_id, api_key=None, ui_language="de"):
+    """The status monitor of a job, a process of its own; the key and the interface language arrive through stdin."""
     process = subprocess.Popen([sys.executable, "-m", "podcast_automate.status_summary", str(root), job_id],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         text=True, encoding="utf-8", env=subscription_environment(), start_new_session=os.name != "nt",
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     try:
-        process.stdin.write(json.dumps({"api_key": api_key}))
+        process.stdin.write(json.dumps({"api_key": api_key, "ui_language": ui_language}))
         process.stdin.close()
     except (BrokenPipeError, OSError):
         pass
@@ -311,4 +336,5 @@ def start_monitor(root, job_id, api_key=None):
 
 if __name__ == "__main__":
     credentials = json.loads(sys.stdin.read() or "{}")
-    watch_summaries(Path(sys.argv[1]), sys.argv[2], credentials.get("api_key"))
+    watch_summaries(Path(sys.argv[1]), sys.argv[2], credentials.get("api_key"),
+                    interface_language(credentials.get("ui_language")))

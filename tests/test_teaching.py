@@ -449,12 +449,12 @@ class TeachingTests(unittest.TestCase):
         self.assertEqual(old.model_dump(), saved)
         self.assertIn("\n\nMögliche Fehlvorstellung: Lower is always worse.\n\nThis score uses the lower-is-better "
                       "convention.\n\nGrenze: Scores alone do not provide probabilities.\n\n## Synthese und Übertragung",
-                      render_teaching_plan(old))
+                      render_teaching_plan(old, language="de-DE"))
         example = {key: value for key, value in saved["worked_example"].items()
                    if key not in ("misconception", "correction", "limits")}
         qualitative = TeachingPlan.model_validate({**saved, "worked_example": example})
         self.assertEqual(validate_teaching_plan(qualitative, entry), [])
-        rendered = render_teaching_plan(qualitative)
+        rendered = render_teaching_plan(qualitative, language="de-DE")
         self.assertNotIn("Fehlvorstellung", rendered)
         self.assertNotIn("Grenze", rendered)
         self.assertIn("lower one because it indicates fit.\n\n## Synthese und Übertragung", rendered)
@@ -471,7 +471,7 @@ class TeachingTests(unittest.TestCase):
         old = TeachingPlan.model_validate(saved)
         self.assertEqual((old.model_dump(), digest(old.model_dump())), (saved, digest(saved)))
         self.assertFalse(set(TeachingPlan.LATER) & set(saved))
-        self.assertNotIn("Spannungsbogen", render_teaching_plan(old))
+        self.assertNotIn("Spannungsbogen", render_teaching_plan(old, language="de-DE"))
         arc = {"big_idea": "A score decides between candidates.", "hook_question": "Why would lower be better?",
                "first_answer": "A higher score sounds better.", "turning_point": "The energy convention turns it around.",
                "turning_finding_ids": ["f_energy"], "payoff": "Lower energy means a better fit.",
@@ -481,7 +481,7 @@ class TeachingTests(unittest.TestCase):
         planned = TeachingPlan.model_validate({**saved, **arc})
         self.assertEqual(validate_teaching_plan(planned, entry), [])
         self.assertEqual({key: planned.model_dump()[key] for key in arc}, arc)
-        rendered = render_teaching_plan(planned)
+        rendered = render_teaching_plan(planned, language="de-DE")
         self.assertIn("## Spannungsbogen\n\nGroße Idee: A score decides between candidates.\n\n"
                       "Leitfrage: Why would lower be better?\n\n", rendered)
         self.assertIn("Rückgriff auf den Anfang: The two candidates from the opening.\n\n## Lernziele", rendered)
@@ -508,7 +508,7 @@ class TeachingTests(unittest.TestCase):
         errors = validate_teaching_plan(told, entry, before)
         self.assertTrue(any("dramaturgy discovery" in error for error in errors), errors)
         self.assertTrue(any("partner_stance skeptic" in error for error in errors), errors)
-        rendered = render_teaching_plan(told)
+        rendered = render_teaching_plan(told, language="de-DE")
         self.assertIn("## Spannungsbogen\n\nDramaturgie: Entdeckungsgeschichte\n\nEinstieg: Anekdote\n\n"
                       "Rolle der fragenden Stimme: Skeptisch\n\n", rendered)
         self.assertIn("Kapitelende: Abschluss", rendered)

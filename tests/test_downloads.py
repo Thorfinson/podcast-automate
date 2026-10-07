@@ -126,7 +126,7 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue((self.root / "project.yaml").exists())
 
     def test_names_are_bounded_and_safe_on_windows_mac_and_linux(self):
-        name = episode_filename('.. / Bad:"<>|*?\r\n' + "Ä" * 250, "ep_012", "話" * 300, 1, 2, 3)
+        name = episode_filename('.. / Bad:"<>|*?\r\n' + "Ä" * 250, "ep_012", "話" * 300, 1, 2, 3, language="de-DE")
         self.assertLessEqual(len(name.encode("utf-8")), 128)
         self.assertFalse(any(c in name for c in '<>:"/\\|?*\r\n'))
         self.assertNotIn("…", name)
@@ -155,5 +155,38 @@ class DownloadTests(unittest.TestCase):
 
     def test_omitting_repeated_topic_leaves_room_for_meaningful_episode_titles(self):
         title = "Wie der ursprüngliche Transformer aus einem Satz eine Übersetzung macht"
-        self.assertEqual(episode_filename("Transformer", "ep_001", title, 1, 1, 1, in_archive=True),
+        self.assertEqual(episode_filename("Transformer", "ep_001", title, 1, 1, 1, language="de-DE", in_archive=True),
                          f"Folge 01 - {title}.mp3")
+
+    def test_an_english_podcast_downloads_with_english_names(self):
+        """D-153: the names follow the podcast's content language; the path budget holds as for German."""
+        self.config.language = "en-US"
+        self.config.topic = "Die Entwicklung der Transformer Architektur von Attention is all you need zu Deep Seek 4.1 Flash" * 3
+        write_yaml(self.root / "project.yaml", self.config.model_dump(mode="json"))
+        self.episode(1, 2)
+        self.episode(2)
+        write_json(self.root / "studio/outline.json", {"run_id": "run_plan"})
+        write_json(self.root / "runs/run_plan/series_plan.json", {"episodes": [
+            {"episode_id": "ep_001"}, {"episode_id": "ep_002"}, {"episode_id": "ep_003"}]})
+        status, body, headers = self.request("/download/example/podcast.zip")
+        self.assertEqual(status, 200)
+        filename = unquote(headers["Content-Disposition"].split("UTF-8''")[1])
+        self.assertTrue(filename.endswith(" - 2 of 3 episodes.zip"), filename)
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            names = archive.namelist()
+        self.assertEqual([name.split(" - ")[0] for name in names], ["Episode 01", "Episode 01", "Episode 02"])
+        self.assertTrue(names[0].endswith(" - Part 01 of 02.mp3"), names[0])
+        bases = [PureWindowsPath("C:/Users/Ein langer Benutzername/Downloads"),
+                 PureWindowsPath("C:/Projekte/podcast-automate/projects/die-entwicklung-der-transformer-architek-13325a/downloads")]
+        for member in names:
+            self.assertLessEqual(len(member.encode("utf-8")), 92)
+            for base in bases:
+                self.assertLess(len(str(base / Path(filename).stem / member).encode("utf-16-le")) // 2, 260)
+        relative = "exports/ep_002/run_test/part_01/audio.mp3"
+        _, _, single = self.request("/download/example/file/" + relative)
+        sent = unquote(single["Content-Disposition"].split("UTF-8''")[1])
+        self.assertTrue(sent.endswith(" - Episode 02 - Übersetzung Erklärung 2.mp3"), sent)
+        # What the Studio can show in its links: the same names the routes send.
+        from podcast_automate.downloads import download_names
+        self.assertEqual((download_names(self.root)["zip"], download_names(self.root)["files"][relative]),
+                         (filename, sent))

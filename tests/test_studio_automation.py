@@ -1,12 +1,20 @@
 """What the Studio does by itself between the user's visits: allowances set ahead, the production report, restart
-when idle."""
+when idle, and the resumes that need no decision (D-155)."""
+import io
 import json
+import os
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from podcast_automate.models import RunManifest, StageRecord, now
+from podcast_automate import studio_allowances
+from podcast_automate.errors import AppError
+from podcast_automate.models import Failure, RunManifest, StageRecord, TopicBrief, now
+from podcast_automate.run_budget import REASKED_MARKER
 from podcast_automate.storage import read_yaml, write_json, write_yaml
-from podcast_automate.studio import relaunch
+from podcast_automate.studio import LOGIN_CHECKS, Studio, relaunch
 from tests import test_studio
 
 
@@ -150,6 +158,215 @@ class AllowanceTests(unittest.TestCase):
         log = json.loads((self.root / "studio/allowance_log.json").read_text(encoding="utf-8"))
         self.assertEqual([row["skipped"] for row in log], [True])
         self.assertEqual(json.loads(self.request("/api/projects/example")[1])["allowances"]["used"]["fresh_attempts"], 0)
+
+    def test_a_script_stop_that_asks_anew_on_resume_takes_a_fresh_attempt_and_resumes(self):
+        """D-155: the pre-approval was tried and skipped on all four invalid_script stops of the 2026-09-30 series,
+        although a resume writes the episode anew; now it covers them like every other correction loop."""
+        self.allow(fresh=2)
+        spent = f"Skript verletzt Struktur- oder Quellenzuordnung. Der Aufruf wurde 3 Mal mit Korrekturhinweis wiederholt; {REASKED_MARKER}."
+        run = RunManifest(run_id="run_s", kind="script", status="blocked", project_hash="p", input_hash="a" * 64,
+                          stages={"writing": StageRecord(status="blocked", error=Failure(code="invalid_script", message=spent))})
+        write_yaml(self.root / "runs/run_s/run_manifest.yaml", run.model_dump(mode="json"))
+        write_json(self.root / "studio/job.json", {"id": "job1", "status": "blocked", "action": "resume", "message": spent,
+                                                   "finished_at": now(), "run": run.model_dump(mode="json")})
+        self.assertTrue(self.app.job(self.root)["fresh_attempts"])
+        with patch.object(self.app, "start") as start:
+            self.assertEqual(self.app.apply_allowances(), ["example"])
+        self.assertEqual(start.call_args.args, ("example", {"action": "resume", "run_id": "run_s"}))
+        log = json.loads((self.root / "studio/allowance_log.json").read_text(encoding="utf-8"))
+        self.assertEqual([(row["code"], row["kind"], row.get("skipped"), row["resumed"]) for row in log],
+                         [("invalid_script", "fresh_attempts", None, True)])
+        self.assertEqual(len(json.loads((self.root / "runs/run_s/fresh_attempts.json").read_text(encoding="utf-8"))), 1)
+
+
+class ResumeWithoutDecisionTests(unittest.TestCase):
+    """D-155: technical stops the scheduler resumes by itself; none of them takes an editorial decision."""
+    request = test_studio.StudioHttpTests.request
+
+    def setUp(self):
+        test_studio.StudioHttpTests.setUp(self)
+        self.addCleanup(LOGIN_CHECKS.clear)
+
+    def stopped(self, code, *, status="blocked", kind="research", stage="dossier", message="Angehalten.", count=None,
+                finished_at="2026-09-01T10:00:00+00:00", selection=None, job_level=False):
+        run = RunManifest(run_id="run_x", kind=kind, status=status, project_hash="p", input_hash="i",
+                          stages={stage: StageRecord(status=status, attempts=1,
+                                                     error=None if job_level else Failure(code=code, message=message))})
+        work = self.root / "runs/run_x"
+        write_yaml(work / "run_manifest.yaml", run.model_dump(mode="json"))
+        if selection is not None:
+            write_json(work / f"{kind}_request.json", {"text_generation": selection})
+        job = {"id": "job_x", "action": "resume", "status": status, "finished_at": finished_at, "message": message,
+               "run": run.model_dump(mode="json"), **({"error_code": code} if job_level else {}),
+               **({"auto_resume_count": count} if count is not None else {})}
+        write_json(self.root / "studio/job.json", job)
+        return job
+
+    def test_a_login_stop_resumes_once_a_login_check_passes_and_never_by_waiting(self):
+        """2026-10-01: three runs stopped at the same minute for an expired Claude login; each was resumed by hand within
+        two minutes of ``claude auth login``. The login stays the user's; the resume after it needs no decision."""
+        self.stopped("authentication_required", selection={"provider": "claude_code"})
+        # Waiting never resumes it, and the page announces no time.
+        self.assertNotIn("auto_resume_at", self.app.job(self.root))
+        self.assertEqual(self.app.due_resumes(time.time() + 86400), [])
+        checks, valid = [], {"claude_code": False, "codex_cli": False}
+
+        def logged_in(provider, settings=None):
+            checks.append(provider)
+            return valid[provider]
+        base = time.time()
+        with patch("podcast_automate.subscriptions.logged_in", side_effect=logged_in), \
+                patch.object(self.app, "start") as start:
+            self.assertEqual(self.app.resume_after_login(base), [])
+            self.assertEqual(checks, ["claude_code"], "a fixed Claude run asks only Claude's login")
+            # At most one check every five minutes, and none while the project is busy.
+            self.assertEqual(self.app.resume_after_login(base + 299), [])
+            with patch.object(self.app, "ready_to_start", return_value=False):
+                self.assertEqual(self.app.resume_after_login(base + 300), [])
+            self.assertEqual(checks, ["claude_code"])
+            valid["claude_code"] = True
+            self.assertEqual(self.app.resume_after_login(base + 300), ["example"])
+            self.assertEqual(start.call_args.args, ("example", {"action": "resume", "run_id": "run_x", "auto_resume_count": 1}))
+            # Under the automatic rule either login lets the run go on.
+            LOGIN_CHECKS.clear()
+            valid.update(claude_code=False, codex_cli=True)
+            self.stopped("authentication_required", selection={"provider": "auto", "prefer": "claude_code",
+                                                               "candidates": {"claude_code": {}, "codex_cli": {}}})
+            self.assertEqual(self.app.resume_after_login(base), ["example"])
+            self.assertEqual(checks[-2:], ["claude_code", "codex_cli"])
+            # Bounded like every automatic resume: three in a row without progress, then it waits for the user.
+            LOGIN_CHECKS.clear()
+            calls = len(checks)
+            self.stopped("authentication_required", selection={"provider": "codex_cli"}, count=3)
+            self.assertEqual(self.app.resume_after_login(base), [])
+            # Only the login stop: a decision or a credit stop is never checked.
+            for code in ("research_questions_blocked", "anthropic_credits", "research_plan_review"):
+                self.stopped(code, selection={"provider": "codex_cli"})
+                self.assertEqual(self.app.resume_after_login(base), [])
+            self.assertEqual(len(checks), calls)
+        self.assertEqual(start.call_count, 2)
+
+    def test_a_checkpoint_or_program_error_resumes_once_after_the_code_changed(self):
+        """2026-10-01/02: all five invalid_research_checkpoint and processing_failed stops of the series cleared with a
+        resume 1 to 62 minutes after the code fix."""
+        self.stopped("invalid_research_checkpoint")
+        with patch("podcast_automate.studio.code_updated_at", return_value="2026-09-01T09:00:00+00:00"):
+            self.assertNotIn("auto_resume_at", self.app.job(self.root))
+            self.assertEqual(self.app.due_resumes(), [])
+        with patch("podcast_automate.studio.code_updated_at", return_value="2026-09-01T10:05:00+00:00"):
+            shown = self.app.job(self.root)
+            self.assertEqual((shown["auto_resume_kind"], shown["auto_resume_at"]), ("code_update", "2026-09-01T10:05:00+00:00"))
+            self.assertEqual(self.app.due_resumes(), [("example", "run_x", 0)])
+            # A program error the worker caught names its code on the job.
+            self.stopped("processing_failed", status="failed", job_level=True)
+            self.assertEqual(self.app.due_resumes(), [("example", "run_x", 0)])
+            # The resume after the update stopped again: it waits for the next update.
+            self.stopped("processing_failed", status="failed", job_level=True, count=1,
+                         finished_at="2026-09-01T10:30:00+00:00")
+            self.assertNotIn("auto_resume_at", self.app.job(self.root))
+            self.assertEqual(self.app.due_resumes(), [])
+            with self.started():
+                self.stopped("invalid_research_checkpoint")
+                self.assertEqual(self.app.resume_due(), ["example"])
+        self.assertEqual(json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))["auto_resume_count"], 1)
+
+    started = test_studio.StudioStopTests.started
+
+    def test_a_missing_search_or_an_unreadable_answer_resumes_but_a_spent_correction_loop_waits_for_its_allowance(self):
+        from podcast_automate.subscriptions import parse_iso
+        base = parse_iso("2026-09-01T10:00:00+00:00").timestamp()
+        for code in ("search_not_observed", "invalid_model_output"):
+            with self.subTest(code=code):
+                self.stopped(code)
+                shown = self.app.job(self.root)
+                self.assertEqual((shown["auto_resume_kind"], shown["auto_resume_at"]), ("transient", "2026-09-01T10:10:00+00:00"))
+                self.assertEqual(self.app.due_resumes(base + 600), [("example", "run_x", 0)])
+        # The same code after a correction loop spent its attempts on rejected answers is no transient failure: the
+        # fresh-attempt pre-approval covers it (run_budget.reasked_stop), not the waiting.
+        spent = f"Review verweist auf unbekannte Segmente: seg_9. Der Aufruf wurde 2 Mal mit Korrekturhinweis wiederholt; {REASKED_MARKER}."
+        self.stopped("invalid_model_output", kind="script", stage="review", message=spent)
+        self.assertNotIn("auto_resume_at", self.app.job(self.root))
+        self.assertEqual(self.app.due_resumes(base + 86400), [])
+        self.assertEqual(self.request("/api/projects/example/allowances", {"fresh_attempts": 1, "extra_calls": 0})[0], 200)
+        with patch.object(self.app, "start") as start:
+            self.assertEqual(self.app.apply_allowances(), ["example"])
+        self.assertEqual(start.call_args.args, ("example", {"action": "resume", "run_id": "run_x"}))
+
+    def run_worker(self, job, perform):
+        from podcast_automate import studio_worker
+        from podcast_automate.logs import release_logging
+        write_json(self.root / "studio/job.json", job)
+        request = {"action": "resume", "run_id": "run_x", "text": {}}
+        with patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(self.workspace / "subscriptions.json")}), \
+                patch.object(studio_worker, "perform", side_effect=perform), \
+                patch.object(studio_worker, "keep_awake", return_value=lambda: None), \
+                patch.object(studio_worker, "watch", return_value=None), \
+                patch.object(studio_worker, "start_monitor", side_effect=OSError("no monitor in tests")), \
+                patch.object(studio_worker.sys, "argv", ["studio_worker", str(self.root)]), \
+                patch.object(studio_worker.sys, "stdin", io.StringIO(json.dumps(request))):
+            try:
+                studio_worker.main()
+            finally:
+                release_logging(self.root / "studio/worker.log")
+        return json.loads((self.root / "studio/job.json").read_text(encoding="utf-8"))
+
+    def test_the_count_of_automatic_resumes_starts_again_once_a_resumed_job_answered_a_call(self):
+        """D-155: a research run of 33 to 35 hours on one subscription meets the five-hour window more than three times;
+        the count carried every automatic resume since the last manual one, progress or not. MAX_AUTO_RESUMES now
+        bounds resumes in a row without progress, as STUDIO.md words it."""
+        job = self.stopped("subscriptions_exhausted", status="waiting_for_quota", count=2)
+        paused = RunManifest(run_id="run_x", kind="research", status="waiting_for_quota", project_hash="p", input_hash="i",
+                             stages={"dossier": StageRecord(status="waiting_for_quota", error=Failure(
+                                 code="subscriptions_exhausted", message="Kein Abo hat gerade Kontingent."))})
+        calls = self.root / "runs/run_x/calls"
+        write_json(calls / "call_001/response.json", {"answer": "before the resume"})
+
+        def answered(root, request, progress=None):
+            write_json(calls / "call_002/response.json", {"answer": "after the resume"})
+            return {"run": paused.model_dump(mode="json")}
+
+        def silent(root, request, progress=None):
+            write_json(calls / "call_003/failure.json", {"code": "timeout"})
+            return {"run": paused.model_dump(mode="json")}
+
+        def raised(root, request, progress=None):
+            write_json(calls / "call_004/response.json", {"answer": "then a stop"})
+            raise AppError("Zeitlimit erreicht.", code="timeout", status="failed")
+        self.assertEqual(self.run_worker(job, silent)["auto_resume_count"], 2)
+        self.assertEqual(self.run_worker(job, answered)["auto_resume_count"], 0)
+        self.assertEqual(self.run_worker(job, raised)["auto_resume_count"], 0)
+        # A resume by hand carries no count, and nothing is added.
+        by_hand = {key: value for key, value in job.items() if key != "auto_resume_count"}
+        self.assertNotIn("auto_resume_count", self.run_worker(by_hand, answered))
+
+
+class NewWorkspaceTests(unittest.TestCase):
+    def test_a_new_workspace_starts_with_two_fresh_attempts_and_250_extra_calls_and_no_other_one_changes(self):
+        """D-155: a newcomer meets every pre-approvable stop; the user's own tested values are the start of a workspace
+        that has neither settings nor a project. Every other workspace keeps what it has."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        workspace = Path(temp.name).resolve()
+        studio = Studio(workspace)
+        self.assertEqual(studio.settings_values()["allowances"], {"fresh_attempts": 2, "extra_calls": 250})
+        brief = TopicBrief(topic="Erstes Projekt", voice_profile={"host_a": "Aiden", "host_b": "Vivian"}).model_dump(mode="json")
+        first = workspace / "projects" / studio.create({"config": brief, "text": {}})["id"]
+        self.assertEqual(studio_allowances.allowances(first), {"fresh_attempts": 2, "extra_calls": 250})
+        self.assertEqual(studio.settings_values(first)["allowances"], {"fresh_attempts": 2, "extra_calls": 250})
+        # From the first project on the workspace is no longer new: the rule for the next project stays as it was.
+        self.assertEqual(studio.settings_values()["allowances"], {"fresh_attempts": 0, "extra_calls": 0})
+        second = workspace / "projects" / studio.create({"config": {**brief, "topic": "Zweites Projekt"}, "text": {}})["id"]
+        self.assertFalse((second / "studio/allowances.json").exists())
+        self.assertEqual(studio_allowances.allowances(second), {"fresh_attempts": 0, "extra_calls": 0})
+        # A workspace whose settings were saved before its first project keeps them as well.
+        other = Path(tempfile.mkdtemp(dir=temp.name)).resolve()
+        (other / "projects").mkdir()
+        write_json(other / "projects/.studio-settings.json", {"allowances": {"fresh_attempts": 1, "extra_calls": 0}})
+        saved = Studio(other)
+        self.assertEqual(saved.settings_values()["allowances"], {"fresh_attempts": 0, "extra_calls": 0})
+        project = other / "projects" / saved.create({"config": brief, "text": {}})["id"]
+        self.assertFalse((project / "studio/allowances.json").exists())
+        self.assertEqual(studio_allowances.allowances(project), {"fresh_attempts": 1, "extra_calls": 0})
 
 
 class ReportTests(unittest.TestCase):

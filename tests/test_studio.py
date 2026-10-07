@@ -20,7 +20,7 @@ from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.speech import AudioChoice, audio_generation_record
 from podcast_automate.storage import (digest, file_hash, file_lock, init_project, project_hash, project_lock, read_yaml,
                                       write_json, write_yaml)
-from podcast_automate.studio import BriefProposal, Studio, make_server, read_json, record_interruption
+from podcast_automate.studio import HEAVY_FIELDS, BriefProposal, Studio, make_server, read_json, record_interruption
 from podcast_automate.studio_worker import perform, probe_key
 from tests import script_fixtures as fixtures
 from tests.script_fixtures import example_plan, example_script
@@ -96,6 +96,29 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
         self.assertEqual(result["proposal"]["topic"], "New title")
         self.assertEqual(original, (self.root / "project.yaml").read_bytes())
         self.assertIn("Go deeper", (self.root / "studio/chat.json").read_text())
+
+    def test_the_assistant_learns_the_interface_language_and_the_settings_page_name(self):
+        """D-152: the partner replies in the Studio's interface language when the user's own is unclear and names the
+        settings page as the page does; the request's ui_language sets both, German without one. Only a trial brief
+        (D-157) shows the trial key."""
+        proposal = BriefProposal(message="A proposal.", topic="Title", central_question="Why?", prior_knowledge="",
+                                 depth_request="Deep", focus_questions=[], excluded_topics=[])
+        payloads = []
+
+        def reply(adapter, prompt, *args, **kwargs):
+            payloads.append((json.loads(prompt.rsplit("\n", 1)[1]), kwargs["prompt_version"]))
+            return proposal, {}
+        with patch("podcast_automate.studio_worker.CodexAdapter.structured", autospec=True, side_effect=reply):
+            perform(self.root, {"action": "assistant", "message": "Help", "text": {}, "ui_language": "en"})
+            perform(self.root, {"action": "assistant", "message": "Hilfe", "text": {}})
+            write_yaml(self.root / "project.yaml", {**read_yaml(self.root / "project.yaml"), "trial": True})
+            perform(self.root, {"action": "assistant", "message": "Kürzer", "text": {}, "ui_language": "de"})
+        self.assertEqual([payload["studio"] for payload, _ in payloads],
+                         [{"language": "English", "settings_page": "Settings"},
+                          {"language": "German", "settings_page": "Einstellungen"},
+                          {"language": "German", "settings_page": "Einstellungen"}])
+        self.assertEqual({version for _, version in payloads}, {"studio_brief.v8-ui-language"})
+        self.assertEqual([payload["brief"].get("trial") for payload, _ in payloads], [None, None, True])
 
     def test_worker_uses_selected_model_for_assistant_and_initial_research(self):
         from podcast_automate.studio import TextChoice
@@ -228,7 +251,8 @@ class StudioHttpTests(unittest.TestCase):
             self.assertEqual(detail["audio_queue"][0], {"episode": "ep_001", "position": 1,
                              "queued_at": "2026-10-06T10:00:00+00:00", "waiting": "key", "key": "google"})
             status, body, _ = self.request("/api/key", {"key": "AIza-google-test-key-0123", "kind": "google"})
-            self.assertEqual(json.loads(body), {"key_available": True, "google_key_available": True})
+            self.assertEqual(json.loads(body), {"key_available": True, "google_key_available": True,
+                                            "anthropic_key_available": False, "perplexity_key_available": False})
             self.assertEqual((self.app.key, self.app.google_key), ("or-key", "AIza-google-test-key-0123"))
             self.assertEqual(json.loads(self.request("/api/projects/example")[1])["audio_queue"][0]["waiting"], "place")
             # A key pasted into the chat never reaches a model.
@@ -242,6 +266,38 @@ class StudioHttpTests(unittest.TestCase):
                 status, body, _ = self.request("/api/projects/example/start", {"action": "check"})
                 self.assertEqual(status, 200, body)
                 self.assertEqual(json.loads(process.return_value.stdin.getvalue())["google_key"], "AIza-google-test-key-0123")
+            self.app.stop_all()
+
+    def test_the_anthropic_key_stays_in_memory_and_a_billed_start_needs_a_money_limit(self):
+        """D-145, D-146: Claude on the user's key is set up like the other keys, never pasted into the chat, and a
+        billed text model starts no worker before the project has a money limit."""
+        key = "sk-ant-api03-test-key-0123456789"
+        write_json(self.root / "studio/text.json", {"provider": "claude_api", "model": "claude-sonnet-5-5",
+                                                   "reasoning_effort": "high", "max_output_tokens": 32768})
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            reminder = json.loads(self.request("/api/projects/example")[1])["key_reminder"]
+            self.assertIn({"need": "anthropic_text", "projects": ["A test project"], "key": "anthropic"}, reminder)
+            status, body, _ = self.request("/api/key", {"key": key, "kind": "anthropic"})
+            self.assertEqual((status, json.loads(body)["anthropic_key_available"]), (200, True))
+            self.assertEqual(self.app.anthropic_key, key)
+            status, body, _ = self.request("/api/projects/example/start",
+                                           {"action": "assistant", "message": "Mein Key: sk-ant-api03-other-key-0123456789"})
+            self.assertEqual(json.loads(body)["code"], "credential_in_prompt")
+            with patch("podcast_automate.studio.subprocess.Popen") as process:
+                status, body, _ = self.request("/api/projects/example/start", {"action": "plan"})
+                self.assertEqual((status, json.loads(body)["code"]), (400, "cost_limit_required"))
+                process.assert_not_called()
+                config = read_yaml(self.root / "project.yaml")
+                config["research_limits"]["cost_usd"] = 30.0
+                write_yaml(self.root / "project.yaml", config)
+                process.return_value.stdin = io.StringIO()
+                process.return_value.stdin.close = Mock()
+                process.return_value.poll.return_value = None
+                status, body, _ = self.request("/api/projects/example/start", {"action": "plan"})
+                self.assertEqual(status, 200, body)
+                handed = json.loads(process.return_value.stdin.getvalue())
+                self.assertEqual(handed["anthropic_key"], key)
+                self.assertNotIn(key, " ".join(map(str, process.call_args.args[0])))
             self.app.stop_all()
 
     def test_a_work_arrives_as_raw_bytes_and_only_as_octet_stream(self):
@@ -891,6 +947,57 @@ class StudioHttpTests(unittest.TestCase):
         self.request(f"/api/projects/{project}/jev_probe", {"enabled": True})
         self.assertEqual(json.loads(self.request("/api/projects/" + project)[1])["jev_default"], False)
 
+    def test_a_trial_starts_without_a_topic_of_its_own_and_the_page_learns_its_limits_from_the_server(self):
+        """D-157: the new-project page offers a trial. An empty topic is allowed only for one (the server takes the sample
+        topic of the brief's language), and the page names a trial's limits from /api/bootstrap, not numbers of its own."""
+        from podcast_automate.trial import TRIAL_TOPICS, trial_facts
+        self.assertEqual(json.loads(self.request("/api/bootstrap")[1])["trial"], trial_facts())
+        brief = {**self.config.model_dump(mode="json"), "topic": "", "central_question": ""}
+        status, body, _ = self.request("/api/projects", {"config": brief})
+        self.assertEqual(status, 400, "only a trial goes without a topic")
+        status, body, _ = self.request("/api/projects", {"config": brief, "trial": True})
+        self.assertEqual(status, 200, body)
+        project = json.loads(body)["id"]
+        saved = read_yaml(self.workspace / "projects" / project / "project.yaml")
+        self.assertEqual((saved["topic"], saved["central_question"], saved["trial"]),
+                         (TRIAL_TOPICS["de-DE"], TRIAL_TOPICS["de-DE"], True))
+        cards = {row["id"]: row for row in json.loads(self.request("/api/projects")[1])["projects"]}
+        self.assertEqual((cards[project]["trial"], cards["example"]["trial"]), (True, False))
+        # A trial with a topic of its own keeps it.
+        status, body, _ = self.request("/api/projects", {"config": {**brief, "topic": "Wie zeigt ein Kompass nach Norden?"},
+                                                         "trial": True})
+        self.assertEqual(status, 200, body)
+        saved = read_yaml(self.workspace / "projects" / json.loads(body)["id"] / "project.yaml")
+        self.assertEqual((saved["topic"], saved["trial"]), ("Wie zeigt ein Kompass nach Norden?", True))
+
+    def test_every_recording_and_the_zip_carry_their_download_names_in_the_content_language(self):
+        """D-153: the page built German download names itself; the server sends each recording's name and the ZIP's in
+        the podcast's content language, on the project page, its light status and the overview card."""
+        from podcast_automate.downloads import download_names
+        folder = self.root / "episodes/ep_001"
+        write_yaml(folder / "script.yaml", example_script().model_dump())
+        (folder / "script.md").write_text("Script", encoding="utf-8")
+        path = self.root / "exports/ep_001/run_test/audio.mp3"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"0123456789")
+        write_json(folder / "audio_latest.json", {"script_sha256": file_hash(folder / "script.yaml"),
+            "voices": self.config.voice_profile, "parts": [{"audio": "exports/ep_001/run_test/audio.mp3"}]})
+        names = download_names(self.root)
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(detail["episodes"][0]["download_names"], [names["files"]["exports/ep_001/run_test/audio.mp3"]])
+        self.assertTrue(detail["episodes"][0]["download_names"][0].startswith("A test project - Folge 01 - "))
+        self.assertEqual(detail["download_zip"], names["zip"])
+        self.assertTrue(names["zip"].endswith(" - Alle Folgen.zip"), names)
+        self.assertEqual(json.loads(self.request("/api/projects/example/status")[1])["download_zip"], names["zip"])
+        card = json.loads(self.request("/api/projects")[1])["projects"][0]
+        self.assertEqual((card["download_zip"], card["episodes"][0]["download_names"]),
+                         (names["zip"], detail["episodes"][0]["download_names"]))
+        # An English podcast's names are English, read anew once the brief changed.
+        write_yaml(self.root / "project.yaml", {**read_yaml(self.root / "project.yaml"), "language": "en-US"})
+        detail = json.loads(self.request("/api/projects/example")[1])
+        self.assertTrue(detail["download_zip"].endswith(" - All episodes.zip"), detail["download_zip"])
+        self.assertIn(" - Episode 01 - ", detail["episodes"][0]["download_names"][0])
+
     def test_audio_requires_checked_box_current_text_and_current_voices(self):
         folder = self.root / "episodes/ep_001"
         write_yaml(folder / "script.yaml", example_script().model_dump())
@@ -1040,6 +1147,100 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual((status, body), (206, b"2345"))
         self.assertEqual(headers["Content-Range"], "bytes 2-5/10")
 
+    def test_a_pace_for_another_language_keeps_a_recording_current(self):
+        # D-147: setting English slower and unhurried must not outdate this German project's recording; the same pace
+        # for German does, since its recording would now be made otherwise.
+        folder = self.root / "episodes/ep_001"
+        write_yaml(folder / "script.yaml", example_script().model_dump())
+        (folder / "script.md").write_text("Script", encoding="utf-8")
+        choice = {"provider": "google_gemini_tts", "voices": {"host_a": "Erinome", "host_b": "Sadachbia"}, "expression": True}
+        write_json(folder / "audio_latest.json", {"script_sha256": file_hash(folder / "script.yaml"), "voices": choice["voices"],
+            "audio_generation": AudioChoice.model_validate(choice).model_dump(), "parts": []})
+        calm = {"tempo": 0.93, "unhurried": True}
+        for pace, current in (({}, True), ({"en-US": calm}, True), ({"de-DE": calm}, False)):
+            write_json(self.root / "studio/audio.json", {**choice, "pace": pace})
+            detail = json.loads(self.request("/api/projects/example")[1])
+            self.assertEqual(detail["episodes"][0]["audio_current"], current, pace)
+
+    def test_an_older_recording_names_what_changed_and_every_recording_its_length(self):
+        # D-160: nineteen recordings said only "Aufnahme eines früheren Skript- oder Stimmenstands" (2026-10-07).
+        folder = self.root / "episodes/ep_001"
+        write_yaml(folder / "script.yaml", example_script().model_dump())
+        (folder / "script.md").write_text("Script", encoding="utf-8")
+        path = self.root / "exports/ep_001/run_test/audio.mp3"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"0123456789")
+        choice = {"provider": "google_gemini_tts", "voices": {"host_a": "Erinome", "host_b": "Sadachbia"}, "expression": True}
+        report = {"script_sha256": file_hash(folder / "script.yaml"), "voices": choice["voices"], "total_seconds": 2286.09,
+                  "audio_generation": AudioChoice.model_validate(choice).model_dump(),
+                  "parts": [{"audio": "exports/ep_001/run_test/audio.mp3", "duration_seconds": 2286.09}]}
+        write_json(folder / "audio_latest.json", report)
+        write_json(self.root / "studio/audio.json", choice)
+        row = json.loads(self.request("/api/projects/example")[1])["episodes"][0]
+        self.assertEqual((row["audio_current"], row["audio_stale"], row["audio_seconds"]), (True, [], 2286))
+        write_json(self.root / "studio/audio.json", {**choice, "pace": {"de-DE": {"tempo": 0.93, "unhurried": True}}})
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["episodes"][0]["audio_stale"], ["pace"])
+        write_json(folder / "audio_latest.json", {**report, "script_sha256": "older", "voices": {"host_a": "Aoede", "host_b": "Puck"}})
+        write_json(self.root / "studio/audio.json", choice)
+        card = json.loads(self.request("/api/projects")[1])["projects"][0]["episodes"][0]
+        self.assertEqual(card["audio_stale"], ["script", "voices"])
+        self.assertEqual(card["audio_seconds"], 2286)
+
+    def test_the_page_polls_a_light_status_whose_version_follows_the_heavy_parts(self):
+        # D-159: each 2.5 s poll carried the whole project, 2.5-3.7 MB with nineteen scripts (2026-10-07).
+        folder = self.root / "episodes/ep_001"
+        write_yaml(folder / "script.yaml", example_script().model_dump())
+        (folder / "script.md").write_text("Script", encoding="utf-8")
+        audio_id = "a" * 32
+        write_json(self.root / "studio/audio_jobs" / (audio_id + ".json"), {"id": audio_id, "episode": "ep_001",
+                   "status": "completed", "started_at": "2026-09-02T10:00:00+00:00",
+                   "run": {"run_id": "run_a", "kind": "episode_audio", "stages": {"synthesis": {"status": "completed",
+                           "outputs": {"exports/ep_001/x.mp3": "hash"}}}}})
+        detail = json.loads(self.request("/api/projects/example")[1])
+        status = json.loads(self.request("/api/projects/example/status")[1])
+        self.assertEqual(status["content_version"], detail["content_version"])
+        self.assertTrue(set(HEAVY_FIELDS).isdisjoint(status), sorted(status))
+        self.assertIn("outputs", detail["audio_jobs"][0]["run"]["stages"]["synthesis"])
+        self.assertNotIn("outputs", status["audio_jobs"][0]["run"]["stages"]["synthesis"])
+        self.assertEqual(status["audio_jobs"][0]["run"]["stages"]["synthesis"]["status"], "completed")
+        self.assertEqual({key: status[key] for key in ("chat", "config_hash", "key_reminder")},
+                         {key: detail[key] for key in ("chat", "config_hash", "key_reminder")})
+        # A changed script is a changed content: the page loads the whole project again.
+        write_yaml(folder / "script.yaml", {**example_script().model_dump(), "title": "A revised title"})
+        self.assertNotEqual(json.loads(self.request("/api/projects/example/status")[1])["content_version"],
+                            status["content_version"])
+        # The overview card carries the running and stopped recordings only, without their output hashes.
+        stopped = "b" * 32
+        write_json(self.root / "studio/audio_jobs" / (stopped + ".json"), {"id": stopped, "episode": "ep_002",
+                   "status": "blocked", "started_at": "2026-09-03T10:00:00+00:00",
+                   "run": {"run_id": "run_b", "kind": "episode_audio", "stages": {"synthesis": {"status": "blocked",
+                           "outputs": {"x": "y"}}}}})
+        card = json.loads(self.request("/api/projects")[1])["projects"][0]
+        self.assertEqual([job["id"] for job in card["audio_jobs"]], [stopped])
+        self.assertNotIn("outputs", card["audio_jobs"][0]["run"]["stages"]["synthesis"])
+
+    def test_read_marks_and_listening_positions_stay_in_the_project(self):
+        # D-163: kept on the server, so they follow the editor from the computer to the phone; the page itself keeps
+        # nothing in browser storage, where a key must never land.
+        recording = "exports/ep_001/run_test/audio.mp3"
+        status, body, _ = self.request("/api/projects/example/reader_state", {"episode": "ep_001", "read": "hash-1"})
+        self.assertEqual(status, 200, body)
+        self.request("/api/projects/example/reader_state", {"recording": recording, "position": 754.6})
+        self.request("/api/projects/example/reader_state", {"rate": 1.25})
+        saved = json.loads(self.request("/api/projects/example")[1])["reader_state"]
+        self.assertEqual(saved, {"read": {"ep_001": "hash-1"}, "positions": {recording: 754}, "heard": {}, "rate": 1.25})
+        self.request("/api/projects/example/reader_state", {"recording": recording, "heard": True})
+        self.request("/api/projects/example/reader_state", {"episode": "ep_001", "read": ""})
+        saved = json.loads((self.root / "studio/reader_state.json").read_text(encoding="utf-8"))
+        self.assertEqual((saved["read"], saved["positions"], saved["heard"]), ({}, {}, {recording: True}))
+        for wrong in ({"episode": "../x", "read": "h"}, {"recording": "../outside.mp3", "position": 1},
+                      {"recording": "exports/a.wav", "position": 1}, {"recording": recording, "position": -1},
+                      {"rate": 9}, {"rate": "fast"}):
+            with self.subTest(wrong=wrong):
+                self.assertEqual(self.request("/api/projects/example/reader_state", wrong)[0], 400)
+        # Without the session token nothing is written.
+        self.assertEqual(self.request("/api/projects/example/reader_state", {"rate": 1}, headers={"X-Studio-Token": "x"})[0], 403)
+
     def test_restart_marks_unfinished_job_as_interrupted_and_keeps_run(self):
         write_json(self.root / "studio/job.json", {"id":"test", "status":"running", "action":"plan",
                                                   "run":{"run_id":"run_saved"}})
@@ -1161,6 +1362,39 @@ class WorkspaceSettingsTests(unittest.TestCase):
     def view(self):
         return json.loads(self.request("/api/settings")[1])
 
+    def test_the_web_search_through_perplexity_is_a_workspace_choice_with_a_money_limit_and_its_key(self):
+        """D-151: searching through Perplexity bills its key, so the setting needs a money limit; projects then name the
+        missing Perplexity key, and a started job hands the Studio's key to its worker on stdin only."""
+        view = json.loads(self.request("/api/settings")[1])
+        self.assertEqual(view["settings"]["web_search"], "model")
+        values = {**view["settings"], "web_search": "perplexity"}
+        status, body, _ = self.request("/api/settings", {"settings": values, "hash": view["hash"], "claude_extra_usage": False})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "cost_limit_required"))
+        status, body, _ = self.request("/api/settings", {"settings": {**values, "web_search": "anywhere"},
+                                                         "hash": view["hash"], "claude_extra_usage": False})
+        self.assertEqual(status, 400)
+        values["research_limits"] = {**values["research_limits"], "cost_usd": 20.0}
+        status, body, _ = self.request("/api/settings", {"settings": values, "hash": view["hash"], "claude_extra_usage": False})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["settings"]["web_search"], "perplexity")
+        with patch.dict(os.environ, {"PERPLEXITY_API_KEY": ""}):
+            reminder = json.loads(self.request("/api/projects/example")[1])["key_reminder"]
+            self.assertIn("perplexity_search", [row["need"] for row in reminder])
+            status, body, _ = self.request("/api/key", {"key": "pplx-test-key-0123456789", "kind": "perplexity"})
+            self.assertEqual(json.loads(body)["perplexity_key_available"], True)
+            status, body, _ = self.request("/api/projects/example/start",
+                                           {"action": "assistant", "message": "Key: pplx-another-key-0123456789"})
+            self.assertIn("Perplexity-Key", json.loads(body)["error"])
+            with patch("podcast_automate.studio.subprocess.Popen") as process:
+                process.return_value.stdin = io.StringIO()
+                process.return_value.stdin.close = Mock()
+                process.return_value.poll.return_value = None
+                status, body, _ = self.request("/api/projects/example/start", {"action": "research"})
+                self.assertEqual(status, 200, body)
+                self.assertEqual(json.loads(process.return_value.stdin.getvalue())["perplexity_key"],
+                                 "pplx-test-key-0123456789")
+            self.app.stop_all()
+
     def test_saved_settings_hold_for_every_project_and_runs_take_them(self):
         from podcast_automate import studio_allowances
         from podcast_automate.execution import selected_execution
@@ -1178,6 +1412,10 @@ class WorkspaceSettingsTests(unittest.TestCase):
                   "allowances": {"fresh_attempts": 2, "extra_calls": 250},
                   "research_limits": {"model_calls": 1200, "sources": 150, "search_rounds": 48},
                   "text_timeout_seconds": 5400}
+        # A text model billed to a key needs a money limit before it can be saved (D-146).
+        status, body, _ = self.request("/api/settings", {"settings": values, "hash": first["hash"], "claude_extra_usage": True})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "cost_limit_required"))
+        values["research_limits"]["cost_usd"] = 80.0
         status, body, _ = self.request("/api/settings", {"settings": values, "hash": first["hash"], "claude_extra_usage": True})
         self.assertEqual(status, 200, body)
         saved = json.loads(body)
@@ -1628,6 +1866,139 @@ class OverviewJobTests(unittest.TestCase):
             "retry_requested")} | {"advice": {"key": "1.2", "recommendation": "retry"}})
         self.assertIn("findings", job["progress"]["research_questions"]["questions"][0], "the project page keeps whole rows")
         self.assertIsNone(overview_job(None))
+
+
+class InterfaceLanguageTests(unittest.TestCase):
+    """D-152: the Studio speaks German or English, chosen for the workspace or taken from the browser. A workspace that
+    had projects before the choice existed stays German; a request without Accept-Language is answered in German."""
+    setUp = StudioHttpTests.setUp
+    request = StudioHttpTests.request
+
+    def locale(self, accept=None):
+        status, body, headers = self.request("/locale.js", headers={"Accept-Language": accept} if accept else None)
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertTrue(text.startswith("const STUDIO_LOCALE=") and text.endswith(";\n"), text[:80])
+        return json.loads(text[len("const STUDIO_LOCALE="):-2]), headers
+
+    def started(self):
+        process = Mock(stdin=io.StringIO())
+        process.stdin.close = Mock()
+        process.poll.return_value = None
+        return patch("podcast_automate.studio.subprocess.Popen", return_value=process)
+
+    def choose(self, value, accept=None):
+        status, body, _ = self.request("/api/ui-language", {"ui_language": value},
+                                       {"Accept-Language": accept} if accept else None)
+        return status, json.loads(body)
+
+    def test_the_page_gets_its_language_and_catalog_from_locale_js(self):
+        # The example project existed before the choice: German, whatever the browser asks for.
+        data, headers = self.locale("en-US,en;q=0.9")
+        self.assertEqual((data["setting"], data["language"], data["catalog"]["nav.step.brief"]),
+                         ("de", "de", "Auftrag"))
+        self.assertTrue(headers["Content-Type"].startswith("text/javascript"))
+        self.assertEqual((headers["Cache-Control"], headers["Vary"]), ("no-store", "Accept-Language"))
+        self.assertEqual(self.choose("auto"), (200, {"ui_language": "auto", "language": "de"}))
+        for accept, language in (("en-US,en;q=0.9", "en"), (None, "de"), ("fr-FR,de;q=0.5,en;q=0.4", "de"),
+                                 ("fr-FR", "en"), ("de;q=0.2,en;q=0.8", "en")):
+            with self.subTest(accept=accept):
+                data, _ = self.locale(accept)
+                self.assertEqual((data["setting"], data["language"]), ("auto", language))
+                self.assertEqual(data["catalog"]["nav.step.brief"], {"en": "Brief", "de": "Auftrag"}[language])
+
+    def test_the_choice_is_a_protected_workspace_setting_outside_the_settings_draft(self):
+        status, _, _ = self.request("/api/ui-language", {"ui_language": "en"}, {"X-Studio-Token": "stale"})
+        self.assertEqual(status, 403)
+        status, body = self.choose("fr")
+        self.assertEqual((status, body["code"]), (400, "invalid_request"))
+        self.assertFalse((self.workspace / ".studio/ui.json").exists())
+        self.assertEqual(self.choose("en", "de-DE"), (200, {"ui_language": "en", "language": "en"}))
+        self.assertEqual(read_json(self.workspace / ".studio/ui.json"), {"ui_language": "en"})
+        self.assertEqual(self.locale("de-DE")[0]["language"], "en", "a saved choice beats the browser")
+        self.assertFalse((self.workspace / "projects" / ".studio-settings.json").exists(),
+                         "the workspace settings stay unsaved, so projects keep their own values")
+        self.assertEqual(json.loads(self.request("/api/bootstrap")[1])["ui_language"], {"setting": "en", "language": "en"})
+
+    def test_errors_name_the_language_of_their_message(self):
+        self.choose("auto")
+        english = {"Accept-Language": "en-US"}
+        status, body, _ = self.request("/api/projects/example/start", {"action": "dance"}, english)
+        self.assertEqual((status, json.loads(body)), (400, {"error": "Unknown work step.", "code": "invalid_action",
+                                                            "message_language": "en"}))
+        status, body, _ = self.request("/api/projects/example/start", {"action": "dance"})
+        self.assertEqual(json.loads(body), {"error": "Unbekannter Arbeitsschritt.", "code": "invalid_action",
+                                            "message_language": "de"})
+        # A pipeline module's message keeps its German; the page shows it under the technical details.
+        status, body, _ = self.request("/api/projects/example/remove_attachment", {"id": "missing"}, english)
+        self.assertEqual((json.loads(body)["code"], json.loads(body)["message_language"]), ("invalid_attachment", "de"))
+
+    def test_a_stop_the_studio_wrote_reads_in_the_language_of_whoever_reads_it(self):
+        write_json(self.root / "studio/job.json", {"id": "owned", "status": "running", "action": "assistant"})
+        record_interruption(self.root, expected_job_id="owned")
+        saved = read_json(self.root / "studio/job.json")
+        self.assertEqual((saved["message"], saved["message_key"]),
+                         ("Angehalten. Fertige Arbeit bleibt gespeichert.", "server.job.stopped"))
+        self.choose("auto")
+        job = json.loads(self.request("/api/projects/example", headers={"Accept-Language": "en"})[1])["job"]
+        self.assertEqual((job["message"], job["message_language"], job["stop"]["message"], job["stop"]["message_language"]),
+                         ("Stopped. Finished work stays saved.", "en", "Stopped. Finished work stays saved.", "en"))
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["job"]["stop"]["message"],
+                         "Angehalten. Fertige Arbeit bleibt gespeichert.")
+        # Once a later writer replaced the message, the key no longer speaks for it.
+        write_json(self.root / "studio/job.json", {**saved, "message": "Der Lauf hielt an."})
+        job = json.loads(self.request("/api/projects/example", headers={"Accept-Language": "en"})[1])["job"]
+        self.assertEqual((job["stop"]["message"], job["stop"]["message_language"]), ("Der Lauf hielt an.", "de"))
+
+    def test_a_budget_stop_names_the_limit_it_reached(self):
+        run = StudioStopTests.research_run(self, error=Failure(code="research_budget_exhausted",
+            message="Limit von 48 Rechercherunden erreicht.", details={"limit": "search_rounds"}))
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "blocked", "run": run})
+        self.assertEqual(self.app.job(self.root)["stop"]["limit"], "search_rounds")
+        older = StudioStopTests.research_run(self, error=Failure(code="research_budget_exhausted",
+            message="Limit von 48 Rechercherunden erreicht."))
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "blocked", "run": older})
+        self.assertNotIn("limit", self.app.job(self.root)["stop"], "an older run leaves the page to its message")
+
+    def test_a_worker_writes_in_the_language_its_job_was_started_in(self):
+        self.choose("auto")
+        with self.started() as popen:
+            status, body, _ = self.request("/api/projects/example/start", {"action": "check"}, {"Accept-Language": "en"})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(popen.return_value.stdin.getvalue())["ui_language"], "en")
+        self.assertEqual(read_json(self.root / "studio/job.json")["ui_language"], "en")
+        self.app.workers.clear()
+        # A resume the scheduler starts, without a request, takes the language of the job it resumes.
+        run = StudioStopTests.research_run(self, error=Failure(code="timeout", message="Zeitlimit."))
+        write_json(self.root / "studio/job.json", {"id": "r", "action": "research", "status": "failed", "run": run,
+                                                   "ui_language": "en"})
+        with self.started() as popen:
+            resumed = self.app.start("example", {"action": "resume", "run_id": "run_r"})
+            self.assertEqual(json.loads(popen.return_value.stdin.getvalue())["ui_language"], "en")
+        self.assertEqual(resumed["ui_language"], "en")
+        self.app.workers.clear()
+        # An explicit choice beats the browser; a job started outside a request without a language of its own uses it.
+        self.choose("de")
+        with self.started() as popen:
+            self.request("/api/projects/example/start", {"action": "check"}, {"Accept-Language": "en"})
+            self.assertEqual(json.loads(popen.return_value.stdin.getvalue())["ui_language"], "de")
+        self.app.workers.clear()
+
+    def test_a_queued_recording_keeps_the_language_of_its_approval(self):
+        from podcast_automate import studio_text
+        with studio_text.using("en"):
+            self.app.enqueue_audio(self.root, "ep_001", {"action": "audio", "episode": "ep_001", "api_key": "secret"})
+        row = read_json(self.root / "studio/audio_queue.json")[0]
+        self.assertEqual((row["data"]["ui_language"], "api_key" in row["data"]), ("en", False))
+        # Why it did not start reads in the reader's language where the Studio wrote it, in German otherwise.
+        from podcast_automate.studio import queue_view, stored_message
+        refused = stored_message({**row, "error_code": "script_edited"}, studio_text.t("server.audio.script_changed"), "error")
+        with studio_text.using("en"):
+            self.assertEqual(queue_view([refused])[0] | {"queued_at": None}, {
+                "episode": "ep_001", "position": 1, "queued_at": None, "error": "The script has changed in the meantime. "
+                "Please read it again.", "error_code": "script_edited", "error_language": "en"})
+            self.assertEqual(queue_view([{**row, "error": "Kapitel fehlt.", "error_code": "invalid_script"}])[0]["error_language"],
+                             "de")
 
 
 if __name__ == "__main__":

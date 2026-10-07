@@ -2,7 +2,7 @@
 title: Quality
 doc_type: quality
 status: current
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_advisories.py
@@ -38,7 +38,7 @@ scripts), `series_review.py` and `script_advisories.py`.
 | `rights_check` | Planned gate | Individual rights states and export blocks are not implemented yet. Currently only private use and the deterministic quote limits apply; see [Source rights and privacy](SECURITY.md#source-rights-and-privacy). |
 | `audio_readiness_check` | Yes, before rendering | Speakers, spoken text, pauses and chapters are unambiguous. |
 | `audio_output_check` | Yes, before the final audio export | All segments are present and technically valid; assembly, measured duration and chapters match. |
-| `advisories` | No | Non-blocking review notes beside the gates: terms defined again, repeated reminders that an example is invented, a long cold open, a duration above the target, more than two turns over 120 words and a partner share under 25 % (`script_advisories.py` with German and English patterns; other languages get only the cold-open, duration, turn and share notes); series-review findings that only describe a source limitation or that, in the re-check of a repair round, newly concern an unchanged episode; and, in the research, findings from only one research group (`single_group_findings`). They are stored in `reports/script_quality.yaml` under `episodes.<ep>.advisories` and `series_review.advisories`, or in the research report, and the Studio shows them under **„Hinweise der Prüfungen“** (review notes, [on the reading page](STUDIO.md#review-notes-on-the-reading-page)). Nothing evaluates them automatically. |
+| `advisories` | No | Non-blocking review notes beside the gates: terms defined again, repeated reminders that an example is invented, a long cold open, a duration above the target, more than two turns over 120 words and a partner share under 25 % (`script_advisories.py` with German and English patterns; other languages get only the cold-open, duration, turn and share notes); series-review findings that only describe a source limitation or that, in the re-check of a repair round, newly concern an unchanged episode; and, in the research, findings from only one research group (`single_group_findings`). They are stored in `reports/script_quality.yaml` under `episodes.<ep>.advisories` and `series_review.advisories`, or in the research report, and the Studio shows them under **„Hinweise der Prüfungen“** (review notes, [on the reading page](STUDIO.md#review-notes-on-the-reading-page)). Since 2026-10-07 each row of `script_advisories.py` also carries `params`, the values of its German `detail`, so the Studio can word it in its interface language by `code`: `redefined_term` (`term`, `definitions`), `repeated_hedging` (`reminders`, `limit`), `long_cold_open` (`words`, `limit`), `over_target_duration` (`estimated_minutes`, `target_minutes`, `percent`, `limit_percent`), `long_turns` (`turns`, `longest_words`, `over_words`, `turn_words`, `limit`), `low_partner_share` (`percent`, `floor_percent`); `detail` is unchanged, and older rows have no `params` (why: D-153). Nothing evaluates them automatically. |
 
 ID and schema checks are deterministic. Depth of content, fit of the evidence and naturalness need an editorial
 assessment; a source ID does not prove that a statement is factually correct. The report keeps automatic checks, model
@@ -210,6 +210,9 @@ The cases under `evals/`, each with a README on how to run it:
   tests of the regular suite and a read-only check of a saved source set; no model calls.
 - [`teaching_quality/`](../evals/teaching_quality/README.md): teaching-quality controls through `assess_teaching`,
   run by `scripts/evaluate-teaching.py`; subscription calls with `--live`.
+- [`web_search/`](../evals/web_search/README.md): whether the [Perplexity search](ARCHITECTURE.md#web-search-through-perplexity)
+  finds what the text model's own search found, on sub-question searches of a finished project (`run.py build`, `run`,
+  `score`); the saved search is the baseline, not ground truth; paid OpenRouter and Perplexity requests (see V-36).
 
 No real-model run of the teaching, dialogue-polishing and research-evidence evals is recorded after the prompt changes
 of 19 September 2026 (see V-3).

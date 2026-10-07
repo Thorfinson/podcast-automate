@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import Field
 
 from .prompts import instructions
+from .content_text import catalog_label, text as wording
 from .dramaturgy import (DRAMATURGIES, DRAMATURGY_DISTANCE, ENDINGS, OPENINGS, STANCES, catalog, label,
                          variety_defects)
 from .errors import AppError
@@ -499,40 +500,57 @@ def design_prompt(config, entry, dossier, sources, continuity=None, *, series_co
             **({"editor_note": editor_note} if editor_note else {})}, ensure_ascii=False))
 
 
-def render_teaching_plan(design):
-    lines = [f"# Lehrplan: {design.episode_id}", "", "## Ausgangspunkt", "", design.learner_start,
+def render_teaching_plan(design, *, language):
+    """The readable plan.md, in the podcast's language (D-153); the plan's own text is the model's."""
+    say = lambda key, **values: wording(language, key, **values)
+    # A device in the reader's words: dramaturgy.py's German label, or content_text's for another language.
+    named = lambda table, catalog, key: catalog_label(language, catalog, key) or label(table, key)
+    lines = [f"# {say('plan_title', episode=design.episode_id)}", "", f"## {say('plan_start')}", "", design.learner_start,
              "", design.opening_problem, "", design.relevance, "", design.destination, ""]
     # The arc since 2026-10-06; a plan without it renders as before.
-    arc = [f"{label}: {text}" for label, text in (
-        ("Große Idee", design.big_idea), ("Leitfrage", design.hook_question),
-        ("Naheliegende erste Antwort", design.first_answer), ("Wendepunkt", design.turning_point),
-        ("Auflösung", design.payoff), ("Rückgriff auf den Anfang", design.callback)) if text]
+    arc = [f"{say(key)}: {text}" for key, text in (
+        ("plan_big_idea", design.big_idea), ("plan_hook_question", design.hook_question),
+        ("plan_first_answer", design.first_answer), ("plan_turning_point", design.turning_point),
+        ("plan_payoff", design.payoff), ("plan_callback", design.callback)) if text]
     # The storytelling devices since 2026-10-06 (D-143), in the reader's words.
-    devices = [f"{name}: {label(table, key)}" for name, table, key in (
-        ("Dramaturgie", DRAMATURGIES, design.dramaturgy), ("Einstieg", OPENINGS, design.opening),
-        ("Rolle der fragenden Stimme", STANCES, design.partner_stance)) if key]
+    devices = [f"{say(name)}: {named(table, catalog, key)}" for name, table, catalog, key in (
+        ("plan_dramaturgy", DRAMATURGIES, "dramaturgy", design.dramaturgy),
+        ("plan_opening", OPENINGS, "opening", design.opening),
+        ("plan_stance", STANCES, "partner_stance", design.partner_stance)) if key]
     if arc or devices:
-        lines.extend(["## Spannungsbogen", "", *(part for line in [*devices, *arc] for part in (line, ""))])
-    lines.extend(["## Lernziele", ""])
+        lines.extend([f"## {say('plan_arc')}", "", *(part for line in [*devices, *arc] for part in (line, ""))])
+    lines.extend([f"## {say('plan_objectives')}", ""])
     for goal in design.objectives:
         lines.extend([f"### {goal.objective_id}: {goal.ability}", "", goal.question, "",
                       *[f"- {step}" for step in goal.expected_reasoning], ""])
-    lines.extend(["## Gedankengang", ""])
+    lines.extend([f"## {say('plan_reasoning')}", ""])
     for scene in design.scenes:
         lines.extend([f"### {scene.scene_id}: {scene.entry_question}", "",
                       *[f"- {step}" for step in scene.reasoning_steps], "", scene.listener_can_now, "",
-                      *([f"Kapitelende: {label(ENDINGS, scene.ending)}", ""] if scene.ending else [])])
+                      *([say("plan_ending", ending=named(ENDINGS, "ending", scene.ending)), ""] if scene.ending else [])])
     example = design.worked_example
     # A misconception and a limit are optional since 2026-10-02; a plan that has them reads as before.
-    lines.extend(["## Durchgearbeitetes Beispiel", "", example.setup, "",
+    lines.extend([f"## {say('plan_example')}", "", example.setup, "",
                   *[f"- {step}" for step in example.reasoning_steps], "",
-                  *(["Mögliche Fehlvorstellung: " + example.misconception, "", example.correction, ""]
+                  *([say("plan_misconception") + example.misconception, "", example.correction, ""]
                     if example.misconception else []),
-                  *(["Grenze: " + example.limits, ""] if example.limits else []),
-                  "## Synthese und Übertragung", "",
+                  *([say("plan_limit") + example.limits, ""] if example.limits else []),
+                  f"## {say('plan_synthesis')}", "",
                   *[f"- {step}" for step in design.synthesis.reasoning_steps], "",
                   design.synthesis.conclusion, "", design.synthesis.transfer_question, ""])
     return "\n".join(lines)
+
+
+def render_research_needed(gaps, *, language):
+    """research_needed.md while the plan waits for research: each question with why it is needed (D-153)."""
+    return (f"# {wording(language, 'needed_title')}\n\n" +
+            "\n\n".join(f"- {g.question}\n\n  {g.why_needed}" for g in gaps) + "\n")
+
+
+def render_research_resolved(questions, *, language):
+    """research_needed.md once the plan was accepted with the sources at hand (D-153)."""
+    return (f"# {wording(language, 'resolved_title')}\n\n{wording(language, 'resolved_note')}\n\n" +
+            "\n".join(f"- {question}" for question in questions) + "\n")
 
 
 def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, continuity=None, series_context=None,
@@ -614,8 +632,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
         if gaps:
             write_json(work / "research_needed.json", {"episode_id": entry.episode_id,
                        "questions": [g.model_dump() for g in gaps]})
-            atomic_text(work / "research_needed.md", "# Recherche für die Erklärung ergänzen\n\n" +
-                        "\n\n".join(f"- {g.question}\n\n  {g.why_needed}" for g in gaps) + "\n")
+            atomic_text(work / "research_needed.md", render_research_needed(gaps, language=config.language))
             raise AppError(f"Erforderliche Erklärgrundlagen fehlen: {work / 'research_needed.md'}",
                            code="teaching_research_required", status="blocked")
         issues = errors + (review.issues if review else []) + [
@@ -647,16 +664,16 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
     write_json(work / "review.json", review.model_dump())
     write_json(work / "dismissed_gaps.json", dismissed_design_gaps(review))
     limits = [g.reason for g in review.gap_assessments if not g.required_for_objective]
-    atomic_text(work / "plan.md", render_teaching_plan(design) +
-                ("\n## Eingeordnete Forschungsgrenzen\n\n" + "\n".join(f"- {s}" for s in limits) + "\n" if limits else ""))
+    research_limits = f"\n## {wording(config.language, 'plan_research_limits')}\n\n"
+    atomic_text(work / "plan.md", render_teaching_plan(design, language=config.language) +
+                (research_limits + "\n".join(f"- {s}" for s in limits) + "\n" if limits else ""))
     gap_path = work / "research_needed.json"
     if gap_path.exists():
         gaps = json.loads(gap_path.read_text(encoding="utf-8"))
         gaps["resolved"] = True
         write_json(gap_path, gaps)
-        atomic_text(work / "research_needed.md", "# Recherchefragen geklärt\n\n"
-                    "Die Lehrplanung wurde mit den verfügbaren Quellen erneut geprüft und angenommen.\n\n" +
-                    "\n".join(f"- {g['question']}" for g in gaps["questions"]) + "\n")
+        atomic_text(work / "research_needed.md", render_research_resolved([g["question"] for g in gaps["questions"]],
+                                                                         language=config.language))
     files = [work / "plan.json", work / "review.json", work / "dismissed_gaps.json", work / "plan.md", checkpoint]
     if focused_repair:
         files.append(work / "focused_repair.json")

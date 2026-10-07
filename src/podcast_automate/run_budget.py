@@ -2,7 +2,8 @@
 
 Four receipts live next to a run and are written only by an explicit user action:
 
-- ``budget_approval.json`` raises the model-call limit and, optionally, the search-round and source limits.
+- ``budget_approval.json`` raises the model-call limit and, optionally, the search-round and source limits and the
+  money limit of a billed run (D-146).
 - ``gap_approvals.json`` lists blocked research tasks the user accepts as documented gaps, so the
   dossier can be finished and published without them.
 - ``retry_requests.json`` lists blocked research tasks the user wants attempted again; the next
@@ -38,6 +39,8 @@ class BudgetApproval(Contract):
     search_rounds: int | None = Field(default=None, strict=True, gt=0)
     # Sources a run may fetch: a web search that could load none ends a blocked question without searching.
     sources: int | None = Field(default=None, strict=True, gt=0)
+    # Money in USD a billed run may spend (D-146); receipts written before it validate without it.
+    cost_usd: float | None = Field(default=None, gt=0, le=100_000)
     approved_at: datetime
 
 
@@ -157,6 +160,8 @@ def effective_limits(work, limits, input_hash):
     for key in ("search_rounds", "sources"):
         if getattr(approval, key) is not None:
             update[key] = max(getattr(approval, key), getattr(limits, key))
+    if approval.cost_usd is not None:
+        update["cost_usd"] = max(approval.cost_usd, limits.cost_usd or 0)
     return limits.model_copy(update=update)
 
 
@@ -168,17 +173,17 @@ def _text_run(root, run_id):
     return work, manifest
 
 
-def approve_model_call_limit(root, run_id, model_calls=None, *, search_rounds=None, sources=None):
+def approve_model_call_limit(root, run_id, model_calls=None, *, search_rounds=None, sources=None, cost_usd=None):
     """Call only after the user explicitly approves these limits for this text run.
 
     The separate atomic receipt can be written while the worker is busy. Its counters,
     checkpoints, project configuration and outline/audio approvals remain untouched. A previously
-    raised search-round or source limit is kept when another limit is raised; ``model_calls``
-    may be omitted to raise only the search rounds or the sources.
+    raised search-round, source or money limit is kept when another limit is raised; ``model_calls``
+    may be omitted to raise only the search rounds, the sources or the money (``cost_usd``, in USD).
     """
     work, manifest = _text_run(root, run_id)
     limits = effective_limits(work, load_project(root).research_limits, manifest.input_hash)
-    if model_calls is None and (search_rounds is not None or sources is not None):
+    if model_calls is None and (search_rounds is not None or sources is not None or cost_usd is not None):
         model_calls = limits.model_calls
     if type(model_calls) is not int or model_calls < limits.model_calls:
         raise AppError("Das neue Aufruflimit muss eine ganze Zahl mindestens in Höhe des bisherigen Limits sein.",
@@ -189,13 +194,20 @@ def approve_model_call_limit(root, run_id, model_calls=None, *, search_rounds=No
     if sources is not None and (type(sources) is not int or sources < limits.sources):
         raise AppError("Das neue Quellenlimit muss eine ganze Zahl mindestens in Höhe des bisherigen Limits sein.",
                        code="invalid_budget_approval")
+    if cost_usd is not None and (type(cost_usd) not in (int, float) or not 0 < cost_usd <= 100_000 or
+                                 cost_usd != cost_usd or (limits.cost_usd is not None and cost_usd < limits.cost_usd)):
+        raise AppError("Die neue Kostengrenze muss ein Betrag in USD über 0 und mindestens in Höhe der bisherigen sein.",
+                       code="invalid_budget_approval")
     previous = read_budget_approval(work)
     if search_rounds is None and previous is not None:
         search_rounds = previous.search_rounds
     if sources is None and previous is not None:
         sources = previous.sources
+    if cost_usd is None and previous is not None:
+        cost_usd = previous.cost_usd
     approval = BudgetApproval(run_id=manifest.run_id, input_hash=manifest.input_hash, model_calls=model_calls,
-                              search_rounds=search_rounds, sources=sources, approved_at=now())
+                              search_rounds=search_rounds, sources=sources,
+                              cost_usd=float(cost_usd) if cost_usd is not None else None, approved_at=now())
     write_json(work / "budget_approval.json", approval.model_dump(mode="json"))
     return approval
 
@@ -465,6 +477,37 @@ def stuck_calls(work):
     return rows
 
 
+# The words every correction loop without a receipt store ends with once its corrections are spent:
+# research_patches.corrected_call and re_asked, and the writer's own repairs (script_pipeline.write_episode). Such a
+# loop keeps no rejection, so a resume asks the model anew; research_patches.cached_call, whose rejections are saved and
+# replayed, ends with "sind gespeichert" instead. tests/test_run_budget pins the words against those functions.
+REASKED_MARKER = "die abgewiesenen Antworten liegen bei den Aufrufen"
+# Stop codes of a script run's correction loops that keep no rejection: the draft and its repairs (writing), the script
+# review and its repair, the teaching design, its review and focused repair, the listener, editorial and teaching reviews,
+# the polishing comparison, the series review, and the supplementary research's own checks. A resume after such a stop
+# asks the stage anew; "fresh attempts" then set nothing aside, they are that resume (D-155: 4 invalid_script and one
+# invalid_teaching_review stop of the 2026-09-30 series waited for the user although a plain resume would have done).
+# The same codes without REASKED_MARKER replay a saved state (a changed checkpoint, a series correction's recorded
+# failure, which series_repair covers) and stay out.
+REASKED_CODES = frozenset({
+    "invalid_script", "rejected_output", "invalid_model_output", "invalid_script_evidence_review",
+    "invalid_teaching_review", "invalid_teaching_evidence", "invalid_teaching_repair", "invalid_polish_review",
+    "invalid_polish_evidence", "invalid_series_review", "invalid_series_evidence", "invalid_supplement",
+    "invalid_evidence_review"})
+
+
+def reasked_stop(manifest):
+    """``{"stage", "code"}`` of a script run stopped where its resume asks the model anew (REASKED_CODES with
+    REASKED_MARKER), or None."""
+    if manifest.kind != "script":
+        return None
+    for name, record in manifest.stages.items():
+        error = record.error
+        if record.status == "blocked" and error and error.code in REASKED_CODES and REASKED_MARKER in error.message:
+            return {"stage": name, "code": error.code}
+    return None
+
+
 def fresh_attempts_plan(work, manifest):
     """What ``approve_fresh_attempts`` would set aside for this stopped run, without touching anything; raises the
     refusal the approval would raise. The Studio offers the button only where this finds something (2026-10-02:
@@ -493,10 +536,12 @@ def fresh_attempts_plan(work, manifest):
             issues = (saved.get("review") or {}).get("issues") or []
             if saved.get("repairs", 0) >= MAX_REVIEW_REPAIRS and any(i["category"] not in NOTED_CATEGORIES for i in issues):
                 reviews.append((path, saved))
-        if not folders and not reviews and not failed_series:
+        # A stage whose correction loop keeps no rejection: nothing to set aside, the resume itself asks anew.
+        reasked = reasked_stop(manifest)
+        if not folders and not reviews and not failed_series and not reasked:
             raise AppError("Keine Nachrecherche, keine Skriptprüfung und keine Serienkorrektur dieses Laufs hat ihre "
                            "Korrekturversuche verbraucht.", code="invalid_retry_request")
-        return {"supplements": folders, "reviews": reviews, "series_repair": failed_series}
+        return {"supplements": folders, "reviews": reviews, "series_repair": failed_series, "reasked": reasked}
     if manifest.kind != "research":
         raise AppError("Neue Anläufe gibt es nur für einen Recherche- oder Skriptauftrag.", code="invalid_retry_request")
     stuck = stuck_calls(work)
@@ -537,6 +582,9 @@ def approve_fresh_attempts(root, run_id):
         record = {"supplements": [folder.relative_to(work).as_posix() for folder in folders],
                   "reviews": [path.name.removesuffix("_checkpoint.json") for path, _ in reviews],
                   "series_repair": bool(failed_series), "approved_at": now()}
+        if plan.get("reasked"):
+            # A correction loop that keeps no rejections (D-155): nothing is set aside, the record names the stop.
+            record["reasked"] = plan["reasked"]
         path = work / "fresh_attempts.json"
         write_json(path, [*(json.loads(path.read_text(encoding="utf-8")) if path.exists() else []), record])
         return record
@@ -736,7 +784,7 @@ def run_text_generation(work):
 
 
 # The ways a text run may continue (approve_text_switch), by the id the Studio and the CLI send.
-TEXT_SWITCHES = ("claude_first", "astra_first", "claude", "astra", "openrouter")
+TEXT_SWITCHES = ("claude_first", "astra_first", "claude", "astra", "openrouter", "claude_api")
 
 
 def switch_choice(selection):
@@ -747,19 +795,23 @@ def switch_choice(selection):
     return {"claude_code": "claude", "codex_cli": "astra"}.get(provider, provider)
 
 
-def approve_text_switch(root, run_id, choice="claude_first", *, model=None):
+def approve_text_switch(root, run_id, choice="claude_first", *, model=None, cost_usd=None):
     """Let a script or research run continue with another text provider, after the user explicitly chose it
     (2026-09-29: Claude's seven-day window ran low while both projects were in the script review, and the user
     asked for the choice for every text run).
 
     ``claude_first`` and ``astra_first`` ask one subscription first and the other when its quota is spent;
     ``claude`` and ``astra`` stay on one; ``openrouter`` bills ``model`` per token and needs the key, while web
-    searches keep running on the subscriptions, since OpenRouter has no search tools. Astra works at xhigh; Claude
+    searches keep running on the subscriptions, since OpenRouter has no search tools, unless the run searches
+    through Perplexity (D-151), which a switch keeps. Astra works at xhigh; Claude
     works with the catalog's Claude default (Sonnet 5.5 at high since 2026-09-29, when the user replaced the
-    runs' Opus 5.5 at medium with it). A later choice replaces the earlier one, and choosing what the run started
-    with removes the receipt. It may be written while the worker runs; the next start reads it."""
+    runs' Opus 5.5 at medium with it). ``claude_api`` bills Claude to the user's Anthropic key (D-145). A billed
+    choice needs the run's money limit (D-146): ``cost_usd`` sets it with the switch. A later choice replaces the
+    earlier one, and choosing what the run started with removes the receipt. It may be written while the worker
+    runs; the next start reads it."""
     from .provider_pool import text_generation_settings
-    from .text_settings import DEFAULT_CLAUDE_EFFORT, DEFAULT_CODEX_MODEL, OPENROUTER_MODELS, TEXT_PRESETS
+    from .text_settings import (BILLED_TEXT_PROVIDERS, CLAUDE_MODELS, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL,
+                                DEFAULT_CODEX_MODEL, OPENROUTER_MODELS, TEXT_PRESETS)
     work, manifest = _text_run(root, run_id)
     if choice not in TEXT_SWITCHES:
         raise AppError("Weiter mit Claude, Astra oder OpenRouter wählen.", code="invalid_text_switch")
@@ -774,11 +826,25 @@ def approve_text_switch(root, run_id, choice="claude_first", *, model=None):
         selection = text_generation_settings(config, backend="claude_code", reasoning_effort=level)
     elif choice == "astra":
         selection = text_generation_settings(config, backend="codex_cli", model=DEFAULT_CODEX_MODEL, reasoning_effort="xhigh")
+    elif choice == "claude_api":
+        if model is not None and model not in CLAUDE_MODELS:
+            raise AppError("Ein Claude-Modell aus der Liste wählen.", code="invalid_text_switch")
+        selection = text_generation_settings(config, backend="claude_api", model=model or DEFAULT_CLAUDE_MODEL,
+                                             reasoning_effort=level)
     else:
         if model not in OPENROUTER_MODELS:
             raise AppError("Ein OpenRouter-Modell aus der Liste wählen.", code="invalid_text_switch")
         effort = next((p["reasoning_effort"] for p in TEXT_PRESETS if p["provider"] == "openrouter" and p["model"] == model), None)
         selection = text_generation_settings(config, backend="openrouter", model=model, reasoning_effort=effort)
+    if saved and saved.get("web_search"):
+        # The run's web search stays as it started (D-151); only the text model changes.
+        selection = {**selection, "web_search": saved["web_search"], "web_search_version": saved.get("web_search_version")}
+    if selection["provider"] in BILLED_TEXT_PROVIDERS:
+        if cost_usd is not None:
+            approve_model_call_limit(root, run_id, cost_usd=cost_usd)
+        if effective_limits(work, config.research_limits, manifest.input_hash).cost_usd is None:
+            raise AppError("Ein abgerechneter Anbieter braucht eine Kostengrenze in USD für diesen Lauf.",
+                           code="cost_limit_required", status="blocked")
     path = work / "text_switch.json"
     if saved is not None and settled(selection) == settled(saved):
         path.unlink(missing_ok=True)

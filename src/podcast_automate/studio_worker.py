@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .prompts import instructions
 from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.studio_worker.CodexAdapter.structured)
-from . import attachments
+from . import attachments, studio_settings
 from .doctor import inspect
 from .episode_audio import run_episode_audio, saved_expression, tag_episode
 from .expression import TAG
@@ -24,22 +24,26 @@ from .execution import selected_execution
 from .editorial import terminology
 from .logs import add_secret, configure_logging, logger, record_failure
 from .models import now
-from .provider_pool import AdapterPool, text_generation_settings
-from .research import reserve_call, run_research, latest_research_run
+from .provider_pool import AdapterPool, text_generation_settings, text_key as pool_key, use_anthropic_key, use_worker_key
+from .research import reserve_call, run_research, latest_research_run, settle_call
 from .run_budget import run_text_generation
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
 from .google_speech import GoogleSpeech
-from .publish_kit import build_publish_kit
+from .publish_kit import build_podcast_kit, build_publish_kit
 from .speech import GeminiSpeech, selected_audio
 from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
 from .studio import BriefProposal, TextChoice, audio_job_path, chat_limits, read_json
 from .studio_progress import safe_script_progress, watch
-from .status_summary import start_monitor
+from .status_summary import UI_LANGUAGES, interface_language, start_monitor
 from .process import stop_process_tree
 from .voice_samples import generate_sample, generate_samples
+
+# What the chat partner calls the settings page in each interface language (D-152); the prompt names no label itself.
+# Must match the page's navigation label in web/app.js.
+SETTINGS_PAGE = {"de": "Einstellungen", "en": "Settings"}
 
 
 def tag_episodes(root, episodes, api_key=None, *, run_id=None, progress=None):
@@ -136,9 +140,10 @@ def probe_key(root, request, run_id=None):
 
 
 def text_key(root, request, run_id):
-    """The key goes to a text run only while the run works with OpenRouter, as started or as switched."""
+    """The key goes to a text run only while the run works with a provider that bills it, as started or as switched:
+    OpenRouter's key to OpenRouter, the Anthropic key to Claude on the key (D-145)."""
     current = run_text_generation(manifest_path(root, run_id).parent) or {}
-    return request.get("api_key") if current.get("provider") == "openrouter" else None
+    return pool_key(current, request.get("api_key"), request.get("anthropic_key"))
 
 
 def perform(root, request, sample_progress=None):
@@ -146,11 +151,16 @@ def perform(root, request, sample_progress=None):
     config = load_project(root)
     choice = TextChoice.model_validate(request["text"])
     kwargs = choice.kwargs()
-    kwargs["api_key"] = request.get("api_key") if choice.provider == "openrouter" else None
+    kwargs["api_key"] = pool_key({"provider": choice.provider}, request.get("api_key"), request.get("anthropic_key"))
     saved_key = text_key(root, request, request["run_id"]) if action in {"script", "replan"} else None
+    # New research and script runs bind the workspace's web search (D-151); resumed ones keep theirs. The model's own
+    # search is the default and passes nothing, so such calls stay as they were.
+    web_search = studio_settings.web_search(root)
+    search = {"web_search": web_search} if web_search != "model" else {}
     if action == "check":
         audio = selected_audio(root, config)
-        checks = inspect(config.runtime, include_tts=not audio.remote)
+        checks = inspect(config.runtime, include_tts=not audio.remote, anthropic_key=request.get("anthropic_key"),
+                         perplexity_key=request.get("perplexity_key"), openrouter_key=request.get("api_key"))
         if audio.remote:
             google = audio.provider == "google_gemini_tts"
             try:
@@ -179,23 +189,32 @@ def perform(root, request, sample_progress=None):
             adapter = AdapterPool(config.runtime, selection, api_key=kwargs["api_key"])
             adapter.require_key()
             work = root / "studio/assistant"
-            number = reserve_call(work, chat_limits(root, config.research_limits))
+            number = reserve_call(work, chat_limits(root, config.research_limits), billed=adapter.billed())
+            # The interface language the request was sent in (D-152): the partner answers in it when the user's own
+            # language is unclear, and names the settings page as the page does.
+            language = interface_language(request.get("ui_language"))
             # The machine-learning names only for a machine-learning brief; no receipt binds this prompt's text.
             prompt = (
                 terminology(config.language, config.topic, config.central_question) +
                 instructions("studio_assistant") + " " +
                 attachments.MATERIAL_RULES +
                 instructions("studio_assistant_attachments") + "\n" +
-                json.dumps({"brief": {key: getattr(config, key) for key in
+                json.dumps({"brief": {**{key: getattr(config, key) for key in
                     ("topic", "central_question", "prior_knowledge", "depth_request", "focus_questions", "excluded_topics",
                      "language", "target_total_minutes", "seed_urls", "series_goal", "recency_months")},
+                    # A trial project (D-157) keeps its topic narrow; other briefs show no such key.
+                    **({"trial": True} if config.trial else {})},
+                    "studio": {"language": UI_LANGUAGES[language], "settings_page": SETTINGS_PAGE[language]},
                     # What the settings page holds, for answers about it; the conversation does not change it.
                     "saved_settings": {"text": choice.normalized(), "audio_settings": selected_audio(root, config).model_dump(),
                                        "execution": selected_execution(root).model_dump()},
                     "attachments": attachments.context(root),
                     "conversation": conversation[-16:], "user_message": request["message"]}, ensure_ascii=False))
-            proposal, _ = adapter.structured(prompt, BriefProposal, work / f"call_{number:03d}",
-                                              prompt_version="studio_brief.v7-settings-page", search=False)
+            try:
+                proposal, _ = adapter.structured(prompt, BriefProposal, work / f"call_{number:03d}",
+                                                  prompt_version="studio_brief.v8-ui-language", search=False)
+            finally:
+                settle_call(work, number, work / f"call_{number:03d}")
             # Text model, audio and execution are the settings page's for every project (studio_settings, 2026-10-03):
             # a proposal carries the brief only, whatever the model put there.
             proposal.text = proposal.audio_settings = proposal.execution = None
@@ -210,15 +229,23 @@ def perform(root, request, sample_progress=None):
             research_choice = {key: kwargs[key] for key in ("model", "reasoning_effort")}
         elif choice.provider in {"claude_code", "auto"}:
             research_choice = {"backend": choice.provider, "model": kwargs["model"], "reasoning_effort": kwargs["reasoning_effort"]}
+        elif choice.provider == "claude_api":
+            # Claude on the key searches with its own web tools and bills the key (D-145).
+            research_choice = {"backend": "claude_api", "model": kwargs["model"],
+                               "reasoning_effort": kwargs["reasoning_effort"], "api_key": kwargs["api_key"]}
+        elif web_search == "perplexity":
+            # OpenRouter has no web tools; with Perplexity it researches on its own (D-151).
+            research_choice = {"backend": "openrouter", "model": kwargs["model"],
+                               "reasoning_effort": kwargs["reasoning_effort"], "api_key": kwargs["api_key"]}
         else:
             # OpenRouter has no web tools; research runs on the subscriptions with the automatic rule.
             research_choice = {"backend": "auto"}
         # Studio runs always stop for the plan projection; the approval comes from the research page.
         # The earlier research's stored sources as a starting library, when the page asked for it.
         seed = {"seed_corpus": latest_research_run(root)} if request.get("seed_corpus") else {}
-        run = run_research(root, **research_choice, plan_review="required", **seed)
+        run = run_research(root, **research_choice, plan_review="required", **search, **seed)
     elif action == "plan":
-        run = run_script(root, plan_only=True, probe_key=probe_key(root, request), **kwargs)
+        run = run_script(root, plan_only=True, probe_key=probe_key(root, request), **search, **kwargs)
     elif action == "replan":
         run = run_script(root, plan_only=True, resume=True, run_id=request["run_id"],
                          outline_feedback=request["message"], api_key=saved_key,
@@ -229,11 +256,17 @@ def perform(root, request, sample_progress=None):
                          probe_key=probe_key(root, request, request["run_id"]))
     elif action == "revise":
         run = run_script(root, revise=request["episode"], feedback=request["message"],
-                         probe_key=probe_key(root, request), **kwargs)
+                         probe_key=probe_key(root, request), **search, **kwargs)
     elif action == "expression":
         episodes = request.get("episodes") or sorted(folder.name for folder in (root / "episodes").glob("ep_*")
                                                      if (folder / "script.yaml").is_file())
         return {"expression": tag_episodes(root, episodes, request.get("api_key"), progress=sample_progress)}
+    elif action == "publish_kit" and request.get("podcast") is True:
+        # The whole podcast's kit with the transcript of every episode (publish_kit.build_podcast_kit), one model call
+        # unless its descriptions are saved.
+        kit = build_podcast_kit(root, api_key=request.get("api_key"), fresh=request.get("fresh") is True)
+        return {"podcast_kit": {"folder": kit["folder"], **kit["transcript"], "sources": len(kit["sources"]),
+                                "characters": kit["description"]["characters"], "reused": kit["descriptions_reused"]}}
     elif action == "publish_kit":
         episodes = request.get("episodes") or sorted(folder.name for folder in (root / "episodes").glob("ep_*")
                                                      if (folder / "script.yaml").is_file())
@@ -322,14 +355,37 @@ def process_started_at() -> str:
         return now()
 
 
+def answered_calls(root, run_id):
+    """How many calls of the run have an answer (``calls/call_NNN/response.json``), or None without a readable run."""
+    if not isinstance(run_id, str):
+        return None
+    try:
+        calls = manifest_path(root, run_id).parent / "calls"
+        return sum(1 for _ in calls.glob("call_*/response.json")) if calls.is_dir() else 0
+    except (AppError, OSError, TypeError):
+        return None
+
+
 def main():
     root = Path(sys.argv[1]).resolve()
     request = json.loads(sys.stdin.read())
     add_secret(request.get("api_key"))
     add_secret(request.get("google_key"))
+    add_secret(request.get("anthropic_key"))
+    use_anthropic_key(request.get("anthropic_key"))
+    add_secret(request.get("perplexity_key"))
+    use_worker_key("perplexity", request.get("perplexity_key"))
     configure_logging(root / "studio/worker.log")
     job_path = audio_job_path(root, request["audio_job_id"]) if request.get("audio_job_id") else root / "studio/job.json"
     job = read_json(job_path)
+    # An automatic resume (the scheduler's count) that gets answers made progress: the count starts again, so
+    # studio.MAX_AUTO_RESUMES bounds resumes without progress, not the quota pauses of a long run (D-155).
+    answered = (answered_calls(root, request.get("run_id"))
+                if request.get("action") == "resume" and job.get("auto_resume_count") else None)
+
+    def progressed():
+        if answered is not None and (answered_calls(root, request.get("run_id")) or 0) > answered:
+            job["auto_resume_count"] = 0
     logger("worker").info("Auftrag %s gestartet (%s)", job.get("id"), request.get("action"))
     # The worker names itself in its job file, so a restarted Studio finds it again (pid plus creation time).
     job.update(pid=os.getpid(), started_process_at=process_started_at())
@@ -342,7 +398,9 @@ def main():
         progress_thread = threading.Thread(target=watch, args=(root, job["id"], progress_stop), daemon=True)
         progress_thread.start()
         try:
-            summary_process = start_monitor(root, job["id"], request.get("api_key"))
+            # The status briefs follow the interface language the job was started in (D-152).
+            summary_process = start_monitor(root, job["id"], request.get("api_key"),
+                                            ui_language=interface_language(request.get("ui_language")))
         except OSError:
             pass
 
@@ -364,6 +422,7 @@ def main():
 
     try:
         result = perform(root, request, sample_progress)
+        progressed()
         job.update(result)
         run = result.get("run")
         job["status"] = run["status"] if run else "completed"
@@ -384,6 +443,7 @@ def main():
                    for r in run["stages"].values() if r.get("error")):
                 job["research_gaps"] = gaps_in(manifest_path(root, run["run_id"]).parent)
     except (Exception, KeyboardInterrupt) as exc:
+        progressed()
         job["status"] = exc.status if isinstance(exc, AppError) else "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
         job["error_code"] = exc.code if isinstance(exc, AppError) else "interrupted" if isinstance(exc, KeyboardInterrupt) else "processing_failed"
         job["message"] = str(exc) if isinstance(exc, AppError) else "Auftrag unterbrochen oder Verarbeitung fehlgeschlagen. Gespeicherten Stand prüfen."
@@ -393,11 +453,13 @@ def main():
                 job["retry_at"] = quota_retry_at(exc, attempt=job.get("auto_resume_count", 0))
         elif not isinstance(exc, KeyboardInterrupt):
             receipt = record_failure(root / "studio", "worker", exc,
-                                     secrets=(request.get("api_key") or "", request.get("google_key") or ""))
+                                     secrets=(request.get("api_key") or "", request.get("google_key") or "",
+                                              request.get("anthropic_key") or "", request.get("perplexity_key") or ""))
             logger("worker").error("Auftrag %s fehlgeschlagen: %s", job.get("id"), type(exc).__name__, exc_info=exc)
             if receipt:
                 job["message"] += f" Technische Details: {receipt.relative_to(root).as_posix()}"
-        for key in (request.get("api_key"), request.get("google_key")):
+        for key in (request.get("api_key"), request.get("google_key"), request.get("anthropic_key"),
+                    request.get("perplexity_key")):
             if key:
                 job["message"] = job["message"].replace(key, "[Key verborgen]")
     finally:

@@ -3,27 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Dein lokaler Arbeitsraum für recherchierte Podcasts: Idee, Inhaltsverzeichnis, Skript und Audio.">
+  <meta name="description" data-i18n-content="page.meta_description" content="Dein lokaler Arbeitsraum für recherchierte Podcasts: Idee, Inhaltsverzeichnis, Skript und Audio.">
   <title>Podcast Studio</title>
   <link rel="stylesheet" href="/style.css">
+  <!-- The interface language and its catalog (D-152); deferred scripts run in order, so app.js finds it. -->
+  <script src="/locale.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <a class="skip" href="#main">Zum Arbeitsbereich</a>
+  <a class="skip" href="#main" data-i18n="page.skip">Zum Arbeitsbereich</a>
   <aside class="sidebar">
-    <a class="brand" href="/" aria-label="Podcast Studio Startseite"><span class="brand-mark">p<span>●</span></span><span>podcast<br><strong>studio</strong></span></a>
-    <nav id="steps" aria-label="Arbeitsschritte"></nav>
-    <div class="sidebar-bottom"><span id="studio-place"><span class="live-dot"></span>Lokal auf diesem Computer</span><button class="quiet small" data-action="quit">Studio beenden</button></div>
+    <a class="brand" href="/" aria-label="Podcast Studio Startseite" data-i18n-label="page.home_label"><span class="brand-mark">p<span>●</span></span><span>podcast<br><strong>studio</strong></span></a>
+    <nav id="steps" aria-label="Arbeitsschritte" data-i18n-label="nav.steps_label"></nav>
+    <div class="sidebar-bottom"><span id="studio-place"><span class="live-dot"></span><span data-i18n="place.local">Lokal auf diesem Computer</span></span>
+      <label class="sr-only" for="ui-language">Sprache / Language</label><select id="ui-language" class="language-select" data-ui-language><option value="auto">Automatisch / Automatic</option><option value="de">Deutsch</option><option value="en">English</option></select>
+      <button class="quiet small" data-action="quit" data-i18n="page.quit">Studio beenden</button></div>
   </aside>
   <div class="workspace">
     <header class="topbar">
       <div class="project-switch">
-        <button id="project-overview" class="quiet small">Übersicht</button>
-        <button class="quiet small" data-action="open-settings">Einstellungen</button>
-        <label class="sr-only" for="project-select">Projekt auswählen</label>
-        <select id="project-select"><option value="">Neues Projekt</option></select>
-        <button id="new-project" class="quiet small" aria-label="Neues Projekt anlegen">＋ Neu</button>
-        <h2 id="project-title" class="sr-only">Neues Podcast-Projekt</h2>
+        <button id="project-overview" class="quiet small" data-i18n="page.overview">Übersicht</button>
+        <button class="quiet small" data-action="open-settings" data-i18n="settings.title">Einstellungen</button>
+        <label class="sr-only" for="project-select" data-i18n="page.project_select_label">Projekt auswählen</label>
+        <select id="project-select"><option value="" data-i18n="project.new">Neues Projekt</option></select>
+        <button id="new-project" class="quiet small" aria-label="Neues Projekt anlegen" data-i18n-label="page.new_project_label" data-i18n="page.new_short">＋ Neu</button>
+        <h2 id="project-title" class="sr-only" data-i18n="project.new_title">Neues Podcast-Projekt</h2>
       </div>
       <div id="job-bar" class="job-bar" role="status" aria-live="polite" hidden></div>
     </header>
@@ -31,13 +35,20 @@
       <div id="key-note" class="note key-note" role="status" hidden></div>
       <div id="server-note" class="note server-note" role="status" hidden></div>
       <div id="notice" role="status" aria-live="polite" hidden></div>
-      <div id="content"><p>Studio wird geladen …</p></div>
+      <div id="content"><p data-i18n="page.loading">Studio wird geladen …</p></div>
     </main>
-    <section id="sample-playback" class="sample-playback" aria-label="Hörprobe" hidden>
+    <section id="sample-playback" class="sample-playback" aria-label="Hörprobe" data-i18n-label="page.sample_label" hidden>
       <strong id="sample-playing-label" aria-live="polite"></strong>
       <audio id="sample-player" controls preload="none"></audio>
     </section>
-    <section id="job-status" class="drawer" aria-label="Maschinenraum" hidden></section>
+    <section id="episode-playback" class="episode-playback" aria-label="Podcast-Wiedergabe" data-i18n-label="page.playback_label" hidden>
+      <button type="button" class="quiet small" data-player="prev" aria-label="Vorherige Folge" data-i18n-label="page.previous_episode">‹</button>
+      <div class="player-main"><strong id="episode-playing-label" aria-live="polite"></strong><audio id="episode-player" controls preload="metadata"></audio></div>
+      <label class="sr-only" for="player-rate" data-i18n="page.rate_label">Wiedergabegeschwindigkeit</label><select id="player-rate"></select>
+      <button type="button" class="quiet small" data-player="next" aria-label="Nächste Folge" data-i18n-label="page.next_episode">›</button>
+      <button type="button" class="quiet small" data-player="close" aria-label="Wiedergabe schließen" data-i18n-label="page.close_player">×</button>
+    </section>
+    <section id="job-status" class="drawer" aria-label="Maschinenraum" data-i18n-label="drawer.title" hidden></section>
   </div>
 </body>
 </html>

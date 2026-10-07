@@ -28,13 +28,22 @@ class TextSelectionTests(unittest.TestCase):
         choice to the partner, and only an applied proposal saved it, for that one project."""
         self.subscriptions_store()
         boot = json.loads(self.request("/api/bootstrap")[1])
-        # Sonnet 5.5 at high joined as its own preset next to Opus 5.5 (2026-09-29).
-        self.assertEqual(len(boot["text_catalog"]["presets"]), 9)
+        # Sonnet 5.5 at high joined as its own preset next to Opus 5.5 (2026-09-29); Sonnet and Opus on the user's
+        # Anthropic key followed (2026-10-07, D-145).
+        self.assertEqual(len(boot["text_catalog"]["presets"]), 11)
         for preset in TEXT_PRESETS:
             with self.subTest(preset=preset["id"]):
                 view = json.loads(self.request("/api/settings")[1])
                 chosen = TextChoice(**text_preset(preset["id"])).normalized()
-                status, body, _ = self.request("/api/settings", {"settings": {**view["settings"], "text": chosen},
+                settings = {**view["settings"], "text": chosen}
+                if chosen["provider"] in {"openrouter", "claude_api"}:
+                    # A text model billed to a key is saved only with a money limit (D-146).
+                    unlimited = {key: value for key, value in settings["research_limits"].items() if key != "cost_usd"}
+                    status, body, _ = self.request("/api/settings", {"settings": {**settings, "research_limits": unlimited},
+                                                                     "hash": view["hash"], "claude_extra_usage": False})
+                    self.assertEqual((status, json.loads(body)["code"]), (400, "cost_limit_required"))
+                    settings["research_limits"] = {**unlimited, "cost_usd": 25.0}
+                status, body, _ = self.request("/api/settings", {"settings": settings,
                                                                  "hash": view["hash"], "claude_extra_usage": False})
                 self.assertEqual(status, 200, body)
                 detail = json.loads(self.request("/api/projects/example")[1])

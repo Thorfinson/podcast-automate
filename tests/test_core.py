@@ -144,6 +144,28 @@ class ResumeTests(ProjectCase):
             stopped = run_probe(self.root, resume=True)
         self.assertNotIn("details", read_yaml(manifest_path(self.root, stopped.run_id))["stages"]["codex_probe"]["error"])
 
+    def test_a_budget_stop_keeps_the_limit_it_reached_and_nothing_else(self):
+        # D-152: the Studio named the spent limit by matching "Rechercherunden" in the German message.
+        cases = [(AppError("Limit erreicht", code="research_budget_exhausted", status="blocked",
+                           details={"limit": "search_rounds", "payload": {"answer": "model output"}}), {"limit": "search_rounds"}),
+                 (AppError("Limit erreicht", code="research_budget_exhausted", status="blocked",
+                           details={"limit": "model_calls"}), {"limit": "model_calls"}),
+                 # Only the two limit names, and only on the budget stop.
+                 (AppError("Limit erreicht", code="research_budget_exhausted", status="blocked",
+                           details={"limit": "Rechercherunden"}), None),
+                 (AppError("Zu knapp", code="research_budget_insufficient", status="blocked",
+                           details={"limit": "model_calls"}), None)]
+        for error, expected in cases:
+            with self.subTest(details=error.details, code=error.code):
+                with patch("podcast_automate.runner.CodexAdapter.probe", side_effect=error):
+                    stopped = run_probe(self.root, kind="text_probe")
+                self.assertEqual(stopped.stages["codex_probe"].error.details, expected)
+                saved = read_yaml(manifest_path(self.root, stopped.run_id))["stages"]["codex_probe"]["error"]
+                if expected:
+                    self.assertEqual(saved["details"], expected)
+                else:
+                    self.assertNotIn("details", saved)
+
     def test_a_manifest_written_before_failure_details_keeps_its_bytes(self):
         manifest = RunManifest(run_id="run_old", kind="text_probe", project_hash="p", input_hash="i",
                                stages={"codex_probe": StageRecord(status="blocked", error=Failure(code="x", message="y"))})

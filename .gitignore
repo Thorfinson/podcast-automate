@@ -9,6 +9,10 @@ Thumbs.db
 *.swo
 *~
 
+# Coding-agent files that are personal to one machine
+.claude/settings.local.json
+.claude/worktrees/
+
 # Environment files
 .env
 .env.*

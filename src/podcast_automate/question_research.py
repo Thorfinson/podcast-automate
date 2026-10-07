@@ -37,11 +37,13 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from contextvars import copy_context
 
+from .content_text import catalog_label, text as wording
 from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
 from .question_answering import ACCESS_GAP_READER, TaskResearchMixin, answer_errors, read_context, review_passes
+from .trial import plan_cap
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
                               plan_projection, plan_review_message, run_timings)
 from .question_dependencies import (gatekeepers, invalidate_dependents, ordered_tasks, prerequisite_met,
@@ -126,6 +128,38 @@ def _gaps(dossier, migration):
         texts.extend(c.gap for c in dossier.coverage if c.gap)
     texts.extend(i["reason"] for i in (migration.get("last_review") or {}).get("issues", []))
     return {gap_id(text): text for text in dict.fromkeys(texts)}
+
+
+def render_question_ledger(public, budget, phase, lookup, *, language):
+    """research_questions.md (research/questions.md): the public ledger with the budget projection, its fixed words in
+    the podcast's content language (D-153). The questions, answers and the run's activity keep their own words, and
+    research_questions.json, which code reads, is unchanged. ``lookup`` is the reader's reference -> (source, _,
+    section)."""
+    say = lambda key, **values: wording(language, key, **values)
+    source_key = budget.get("expected_calls_source") if budget.get("expected_calls_source") in SOURCE_LABELS else "default"
+    estimate = catalog_label(language, "call_source", source_key) or SOURCE_LABELS[source_key]
+    lines = [f"# {say('rq_title')}", "", say("rq_closed", closed=public["closed"], total=public["total"]), ""]
+    if public["accepted"]:
+        lines += [say("rq_accepted", accepted=public["accepted"]), ""]
+    if phase == "awaiting_plan_approval":
+        lines += [say("rq_awaiting"), ""]
+    lines += [say("rq_budget", minimum=budget["minimum_remaining_calls"], closing=budget["closing_calls"],
+                  remaining=budget["remaining"], expected=budget["expected_remaining_calls"],
+                  per_task=budget["expected_calls_per_task"], source=estimate), ""]
+    for row in public["questions"]:
+        status = row["status"] + (say("rq_accepted_gap") if row["accepted_gap"] else "")
+        lines += [f"## {row['question']}", "", say("rq_status", status=status), "", row["answer"] or row["activity"], ""]
+        lines += [f"- {say('rq_criterion', criterion=c)}" for c in row["acceptance"]]
+        if row["reason"]:
+            lines += ["", row["reason"]]
+        for finding in row["findings"]:
+            lines += ["", finding["statement"]]
+            for evidence in finding["evidence"]:
+                source, _, section = lookup[evidence["reference"]]
+                lines += [f"- [{source.title.replace('[', '').replace(']', '')}]({source.final_url})"
+                          + (say("dossier_page", page=section.page) if section.page else "")]
+        lines += [""]
+    return "\n".join(lines)
 
 
 class QuestionResearch(TaskResearchMixin, SynthesisMixin):
@@ -634,32 +668,9 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         write_json(self.folder / "gap_probes.json", self.state.get("gap_probes", []))
         public = public_ledger(self.state, self.index)
         write_json(self.work / "research_questions.json", public)
-        lines = ["# Recherchefragen", "", f"{public['closed']} von {public['total']} Teilfragen geprüft abgeschlossen.", ""]
-        if public["accepted"]:
-            lines += [f"{public['accepted']} Teilfragen als Lücke ausdrücklich akzeptiert.", ""]
-        budget = self.state["budget_projection"]
-        if self.state["phase"] == "awaiting_plan_approval":
-            lines += ["Der Rechercheplan wartet auf Freigabe; bis dahin wird kein weiterer Modellaufruf verbraucht.", ""]
-        lines += [f"Mindestens {budget['minimum_remaining_calls']} weitere Modellaufrufe, davon "
-                  f"{budget['closing_calls']} für Dossier und Abschlussprüfung; {budget['remaining']} verfügbar. "
-                  f"Erfahrungsgemäß etwa {budget['expected_remaining_calls']} Aufrufe "
-                  f"({budget['expected_calls_per_task']} je offener Teilfrage, "
-                  f"{SOURCE_LABELS.get(budget.get('expected_calls_source'), SOURCE_LABELS['default'])}). "
-                  "Zusätzliche Lese-, Such- und Korrekturschritte können mehr benötigen.", ""]
-        for row in public["questions"]:
-            status = row["status"] + (" (akzeptierte Lücke)" if row["accepted_gap"] else "")
-            lines += [f"## {row['question']}", "", f"Status: {status}", "", row["answer"] or row["activity"], ""]
-            lines += [f"- Abschlusskriterium: {c}" for c in row["acceptance"]]
-            if row["reason"]:
-                lines += ["", row["reason"]]
-            for finding in row["findings"]:
-                lines += ["", finding["statement"]]
-                for evidence in finding["evidence"]:
-                    source, _, section = self.reader.lookup[evidence["reference"]]
-                    lines += [f"- [{source.title.replace('[', '').replace(']', '')}]({source.final_url})"
-                              + (f", Seite {section.page}" if section.page else "")]
-            lines += [""]
-        atomic_text(self.work / "research_questions.md", "\n".join(lines))
+        atomic_text(self.work / "research_questions.md",
+                    render_question_ledger(public, self.state["budget_projection"], self.state["phase"],
+                                           self.reader.lookup, language=self.config.language))
         if activity:
             self.progress(activity)
 
@@ -814,9 +825,11 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.save("Rechercheplan gespeichert – wartet auf Freigabe")
 
     def planning_allowance(self, path, *, cap=None):
-        """The allowance the planner sees, saved once so replays judge a plan by the same rule."""
+        """The allowance the planner sees, saved once so replays judge a plan by the same rule. A trial project plans
+        at most its own few sub-questions (trial.plan_cap, D-157)."""
         if path.exists():
             return read_value(path)
+        cap = plan_cap(self.config, cap)
         used = self.budget_counts().get("model_calls", 0)
         limit = self.limits().model_calls
         per_task, source = expected_calls_per_task(self.work, self.root, self.state)

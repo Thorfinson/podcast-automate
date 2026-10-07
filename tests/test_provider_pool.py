@@ -13,7 +13,7 @@ from podcast_automate import subscriptions
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.models import RunManifest, RuntimeSettings, StageRecord, TextProbeOutput, TopicBrief
-from podcast_automate.provider_pool import AdapterPool, text_generation_settings
+from podcast_automate.provider_pool import AdapterPool, check_adapter_versions, read_billing, text_generation_settings
 from podcast_automate.runner import run_probe
 from podcast_automate.research import run_research
 from podcast_automate.run_budget import approve_text_switch, run_text_generation, saved_text_generation
@@ -277,7 +277,11 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         with self.assertRaises(AppError) as unlisted:
             approve_text_switch(self.root, research, "openrouter", model="not/listed")
         self.assertEqual(unlisted.exception.code, "invalid_text_switch")
-        chosen = approve_text_switch(self.root, research, "openrouter", model="openai/gpt-6-astra")
+        with self.assertRaises(AppError) as unlimited:
+            approve_text_switch(self.root, research, "openrouter", model="openai/gpt-6-astra")
+        # A billed provider needs the run's money limit (D-146); the switch can set it at the same time.
+        self.assertEqual(unlimited.exception.code, "cost_limit_required")
+        chosen = approve_text_switch(self.root, research, "openrouter", model="openai/gpt-6-astra", cost_usd=20)
         self.assertEqual((chosen["provider"], chosen["model"]), ("openrouter", "openai/gpt-6-astra"))
         self.assertEqual(text_key(self.root, {"api_key": "test-key"}, research), "test-key")
         approve_text_switch(self.root, research, "astra")
@@ -312,6 +316,111 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
 
 
 class PoolUnitTests(unittest.TestCase):
+    def test_a_search_through_perplexity_plans_runs_and_picks_only_from_the_results(self):
+        """D-151: an OpenRouter model searches without a subscription. It plans the queries, Perplexity runs them, and
+        the answer may name only addresses the search returned; an invented one is asked again with the defect named.
+        Every step's money is a billing row: the model's in its folders, each Perplexity request at its price."""
+        from podcast_automate.research_models import SourceCandidate
+        from podcast_automate.research_tasks import QuestionSearch
+        from podcast_automate.web_search import SearchPlan
+        config = TopicBrief(topic="Thema")
+        selection = text_generation_settings(config, backend="openrouter", model="openai/gpt-6-astra",
+                                             web_search="perplexity")
+        self.assertEqual((selection["web_search"], selection["web_search_version"]), ("perplexity", "perplexity_search.v1"))
+        pool = AdapterPool(config.runtime, selection, api_key="or-key", perplexity_key="pplx-test-key-0123456789")
+        self.assertEqual(pool.plan(search=True)[0], "openrouter")
+        self.assertTrue(pool.billed(search=True))
+        subscription = AdapterPool(config.runtime, text_generation_settings(config, backend="claude_code",
+                                                                           web_search="perplexity"))
+        self.assertEqual((subscription.billed(), subscription.billed(search=True)), (False, True))
+        with self.assertRaises(AppError):
+            check_adapter_versions({**selection, "web_search_version": "perplexity_search.v0"})
+
+        def candidate(url):
+            return SourceCandidate(url=url, title="T", authors=[], published_date="", rationale="r",
+                                   primary_source=True, source_type="study")
+        answers = [QuestionSearch(candidates=[candidate("https://invented.example/x")], limitations=[],
+                                  executed_queries=["something else"]),
+                   QuestionSearch(candidates=[candidate("https://EXAMPLE.org/paper/")], limitations=[],
+                                  executed_queries=["something else"])]
+        prompts = []
+
+        def openrouter(adapter, prompt, output_type, directory, **kwargs):
+            prompts.append((output_type.__name__, directory.name, prompt))
+            if output_type is SearchPlan:
+                return SearchPlan(queries=["energy models", "energy models", "critique"], languages=["en"]), \
+                    {"separately_billed_cost": 0.01}
+            return answers.pop(0), {"separately_billed_cost": 0.02}
+        found = {"queries": ["energy models", "critique"], "request_id": "r1", "usd": 0.005, "elapsed_seconds": 0.1,
+                 "results": [{"title": "Paper", "url": "https://example.org/paper", "snippet": "s", "date": None,
+                              "last_updated": None}]}
+        with tempfile.TemporaryDirectory() as temp, \
+                patch("podcast_automate.openrouter.OpenRouterAdapter.structured", autospec=True, side_effect=openrouter), \
+                patch("podcast_automate.web_search.PerplexitySearch.search", return_value=found) as search, \
+                patch.object(subscriptions, "claude_quota", side_effect=AssertionError("no subscription")), \
+                patch.object(subscriptions, "codex_quota", side_effect=AssertionError("no subscription")):
+            directory = Path(temp) / "call_001"
+            output, metadata = pool.structured("Find sources.\n{\"question\": \"q\"}", QuestionSearch, directory,
+                                               prompt_version="question_search.v3", search=True)
+            self.assertEqual(search.call_args.args[0], ["energy models", "critique"])
+            self.assertEqual(output.executed_queries, ["energy models", "critique"])
+            self.assertEqual([c.url for c in output.candidates], ["https://EXAMPLE.org/paper/"])
+            self.assertIn("https://invented.example/x", prompts[-1][2], "the defect is named on the second ask")
+            self.assertEqual(json.loads(prompts[1][2].splitlines()[-1])["task"], "Find sources.\n{\"question\": \"q\"}")
+            self.assertEqual((metadata["search_provider"], metadata["research_performed"],
+                              metadata["observed_search_queries"]), ("perplexity", True, ["energy models", "critique"]))
+            saved = json.loads((directory / "search_results.json").read_text(encoding="utf-8"))
+            self.assertEqual((saved["queries"], len(saved["results"])), (["energy models", "critique"], 1))
+            rows = read_billing(directory)
+            self.assertEqual(sorted((row["provider"], row["state"], row["usd"]) for row in rows),
+                             [("openrouter", "priced", 0.01), ("openrouter", "priced", 0.02), ("openrouter", "priced", 0.02),
+                              ("perplexity", "priced", 0.005)])
+
+    def test_claude_on_the_key_is_fixed_billed_and_never_touches_the_subscription_store(self):
+        """D-145: claude_api is its own provider, so no subscription rule applies to it: no quota query, no note in
+        the store after a success or a rate limit, and every attempt leaves a billing row (D-148)."""
+        config = TopicBrief(topic="Thema")
+        selection = text_generation_settings(config, backend="claude_api", model="opus", reasoning_effort="high")
+        self.assertEqual((selection["provider"], selection["model"], selection["adapter_version"]),
+                         ("claude_api", "claude-opus-5-5", "claude_api.v1"))
+        check_adapter_versions(selection)
+        with self.assertRaises(AppError):
+            check_adapter_versions({**selection, "adapter_version": "claude_code.v1"})
+        pool = AdapterPool(config.runtime, selection, anthropic_key="sk-ant-test-key-0123456789")
+        self.assertEqual(pool.plan(search=True)[:2], ("fixed", "claude_api"))
+        self.assertTrue(pool.billed() and pool.billed(search=True))
+        self.assertFalse(AdapterPool(config.runtime, text_generation_settings(config, backend="claude_code")).billed())
+        openrouter = AdapterPool(config.runtime, text_generation_settings(config, backend="openrouter",
+                                                                         model="openai/gpt-6-astra"), api_key="k")
+        self.assertEqual((openrouter.billed(), openrouter.billed(search=True)), (True, False))
+        answer = TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz")
+        stall = AppError("hängt", code="stall")
+        limit = AppError("Ratenlimit", code="anthropic_rate_limit", status="waiting_for_quota",
+                         details={"provider": "claude_api"})
+        keys = []
+
+        def call(adapter, *args, **kwargs):
+            keys.append((adapter.auth, adapter._key.get_secret_value()))
+            if len(keys) == 1:
+                raise stall
+            return answer, {"separately_billed_cost": 0.42}
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(subscriptions, "claude_quota", side_effect=AssertionError("no quota query")), \
+                patch.object(subscriptions, "update_store", side_effect=AssertionError("no store write")), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True,
+                      side_effect=call) as structured:
+            directory = Path(temp) / "call"
+            self.assertEqual(pool.structured("Prompt", TextProbeOutput, directory, prompt_version="test")[0], answer)
+            rows = read_billing(directory)
+            self.assertEqual([(row["state"], row["usd"], row["code"]) for row in rows],
+                             [("unpriced", None, "stall"), ("priced", 0.42, None)])
+            self.assertEqual(set(keys), {("api_key", "sk-ant-test-key-0123456789")})
+            structured.side_effect = limit
+            with self.assertRaises(AppError) as error:
+                pool.structured("Prompt", TextProbeOutput, Path(temp) / "limit", prompt_version="test")
+            self.assertEqual(error.exception.code, "anthropic_rate_limit")
+            self.assertEqual(read_billing(Path(temp) / "limit")[0]["state"], "free")
+
     def test_openrouter_text_keeps_openrouter_but_research_uses_the_subscription_rule(self):
         config = TopicBrief(topic="Thema")
         pool = AdapterPool(config.runtime, text_generation_settings(config, backend="openrouter", model="openai/gpt-6-astra"),
@@ -395,6 +504,70 @@ class PoolUnitTests(unittest.TestCase):
                 AdapterPool(config.runtime, text_generation_settings(config, backend="codex_cli")).structured(
                     "Prompt", TextProbeOutput, Path(temp) / "fixed", prompt_version="test")
         self.assertEqual(fixed.exception.code, "codex_failed")
+
+    def test_a_failed_claude_turn_moves_to_codex_under_auto_and_a_fixed_claude_choice_still_stops(self):
+        """D-155: two claude_failed stops of the 2026-09-30 series waited for a resume by hand, unlike a failed Codex
+        turn (D-130). A failed turn's output is lost either way, so under auto the call moves; a fixed choice stops."""
+        config = TopicBrief(topic="Thema")
+        answer = TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz")
+        failed = AppError("Claude-Aufruf fehlgeschlagen: socket hang up.", code="claude_failed")
+        claude_first = {**text_generation_settings(config, backend="auto"), "prefer": "claude_code"}
+        QuotaFakes(self)
+        with tempfile.TemporaryDirectory() as temp, \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=failed), \
+                patch("podcast_automate.provider_pool.CodexAdapter.structured", return_value=(answer, {})):
+            folder = Path(temp) / "auto"
+            output, _ = AdapterPool(config.runtime, claude_first).structured("Prompt", TextProbeOutput, folder,
+                                                                            prompt_version="test")
+            self.assertEqual(output, answer)
+            switch = json.loads((folder / "provider_switch.json").read_text(encoding="utf-8"))
+            self.assertEqual((switch["from"], switch["to"], switch["error_code"]), ("claude_code", "codex_cli", "claude_failed"))
+            self.assertEqual(subscriptions.unavailable_state("claude_code")["reason"], "claude_failed")
+            with self.assertRaises(AppError) as fixed:
+                AdapterPool(config.runtime, text_generation_settings(config, backend="claude_code")).structured(
+                    "Prompt", TextProbeOutput, Path(temp) / "fixed", prompt_version="test")
+        self.assertEqual(fixed.exception.code, "claude_failed")
+        self.assertFalse((Path(temp) / "fixed/provider_switch.json").exists())
+
+    def test_a_research_call_without_an_observed_search_is_repeated_once_on_the_same_provider(self):
+        """D-155: search_not_observed stopped runs four times where a resume usually passed; it is now asked once more
+        in the same call, with a receipt, and a second miss stops as before."""
+        config = TopicBrief(topic="Thema")
+        answer = TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz")
+        missed = AppError("Kein Websuch-Ereignis im Claude-Lauf nachgewiesen. Recherche nicht übernommen.",
+                          code="search_not_observed", status="blocked")
+        pool = AdapterPool(config.runtime, text_generation_settings(config, backend="claude_code"))
+        with tempfile.TemporaryDirectory() as temp:
+            with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=[missed, (answer, {})]) as call:
+                output, _ = pool.structured("Prompt", TextProbeOutput, Path(temp) / "once", prompt_version="test", search=True)
+            self.assertEqual((output, call.call_count), (answer, 2))
+            receipt = json.loads((Path(temp) / "once/search_retry.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["provider"], "claude_code")
+            with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=[missed, missed]) as call, \
+                    self.assertRaises(AppError) as twice:
+                pool.structured("Prompt", TextProbeOutput, Path(temp) / "twice", prompt_version="test", search=True)
+        self.assertEqual((twice.exception.code, call.call_count), ("search_not_observed", 2))
+
+    def test_a_login_check_asks_the_cli_afresh_without_a_model_call(self):
+        """D-155: the Studio resumes a run stopped for an expired login once this check passes (studio.resume_after_login)."""
+        settings = RuntimeSettings()
+        asked = []
+
+        def claude(*, refresh=False, clock=None):
+            asked.append(("claude_code", refresh))
+            return snapshot("claude_code", available=False, usable=True, reason="opus_limit")
+
+        def codex(given, *, refresh=False, clock=None):
+            asked.append(("codex_cli", refresh, given is settings))
+            return snapshot("codex_cli", available=True, usable=False, reason="authentication_required")
+        with patch.object(subscriptions, "claude_quota", side_effect=claude), \
+                patch.object(subscriptions, "codex_quota", side_effect=codex):
+            # Logged in with its quota spent still counts: the quota pause is the scheduler's other rule.
+            self.assertTrue(subscriptions.logged_in("claude_code"))
+            self.assertFalse(subscriptions.logged_in("codex_cli", settings))
+            self.assertFalse(subscriptions.logged_in("codex_cli"))
+            self.assertFalse(subscriptions.logged_in("openrouter", settings))
+        self.assertEqual(asked, [("claude_code", True), ("codex_cli", True, True)])
 
     def test_a_fixed_codex_quota_error_names_its_provider_without_a_quota_query(self):
         config = TopicBrief(topic="Thema")

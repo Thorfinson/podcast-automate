@@ -45,7 +45,14 @@ EFFORT_EQUIVALENTS = {"low": "low", "medium": "medium", "high": "high", "xhigh":
 SUBSCRIPTION_PROVIDERS = ("codex_cli", "claude_code")
 # The subscription the automatic rule asks first; the other one takes over when its quota is out.
 AUTO_PREFERENCE = "claude_code"
-TEXT_PROVIDERS = ("codex_cli", "claude_code", "openrouter", "auto")
+# ``claude_api`` is the Claude Code CLI on the user's own Anthropic API key (D-145): a provider of its own, so every
+# rule written for the subscription ("claude_code") leaves a billed run alone. It is always a fixed choice, never
+# part of ``auto``, and asks no quota.
+TEXT_PROVIDERS = ("codex_cli", "claude_code", "openrouter", "claude_api", "auto")
+# Providers that bill each call to the user's key; a run on one of them needs a money limit (D-146).
+BILLED_TEXT_PROVIDERS = ("openrouter", "claude_api")
+# Providers that run Claude Code and share its models, levels and CLI versions.
+CLAUDE_PROVIDERS = ("claude_code", "claude_api")
 # The user's choice of 2026-10-03, verified against https://openrouter.ai/api/v1/models that day: each reports
 # structured_outputs, response_format and reasoning_effort. Astra Pro and Claude Fable 5.1 are no longer offered.
 OPENROUTER_MODELS = {
@@ -67,6 +74,11 @@ TEXT_PRESETS = [
      "model": "claude-opus-5-5", "reasoning_effort": "xhigh"},
     {"id": "codex_astra", "label": "Astra · Codex-Abo", "provider": "codex_cli",
      "model": "gpt-6-astra", "reasoning_effort": "xhigh"},
+    # Billed to the user's own Anthropic key (D-145); Opus at high, since xhigh roughly doubles a billed run.
+    {"id": "claude_sonnet_api", "label": "Sonnet 5.5 · high · Anthropic-API-Key", "provider": "claude_api",
+     "model": "claude-sonnet-5-5", "reasoning_effort": "high"},
+    {"id": "claude_opus_api", "label": "Opus 5.5 · high · Anthropic-API-Key", "provider": "claude_api",
+     "model": "claude-opus-5-5", "reasoning_effort": "high"},
     # The levels of the OpenRouter presets are the user's choice of 2026-10-03.
     {"id": "openrouter_astra", "label": "Astra · xhigh · OpenRouter", "provider": "openrouter",
      "model": "openai/gpt-6-astra", "reasoning_effort": "xhigh"},
@@ -82,6 +94,8 @@ PROVIDER_NOTES = {
     "claude_code": "Claude Code CLI mit Claude-Max-Abo (claude.ai-Anmeldung); keine API-Kosten. Ein erreichtes "
                    "Limit wird erst beim Aufruf sichtbar und danach bis zum Reset vermerkt.",
     "openrouter": "OpenRouter-API mit eigenem Key und Guthaben.",
+    "claude_api": "Claude Code CLI mit eigenem Anthropic-API-Key; jeder Aufruf wird über dein Anthropic-Konto "
+                  "abgerechnet. Ein Lauf braucht eine Kostengrenze in USD.",
     "auto": "Automatische Abo-Wahl je Modellaufruf: Claude (Sonnet 5.5) über das Claude-Max-Abo, bis dessen Kontingent erschöpft "
             "ist, dann Codex über das ChatGPT-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Die Modelle "
             "kommen aus dem Katalog; die Stufe ist deren Standard oder eine gemeinsame Stufe wie high für beide.",
@@ -126,7 +140,7 @@ def provider_model(provider, model):
     if provider == "codex_cli" and model in {"gpt-6-astra-pro", "openai/gpt-6-astra-pro"}:
         raise AppError("Astra Pro bitte mit OpenRouter auswählen. Für das Codex-Abo steht Astra zur Verfügung.",
                        code="invalid_backend")
-    if provider == "claude_code":
+    if provider in CLAUDE_PROVIDERS:
         if model in {"opus", "claude-opus"}:
             return "claude-opus-5-5"
         if model in {"sonnet", "claude-sonnet"}:
@@ -145,7 +159,7 @@ def provider_model(provider, model):
 def validate_reasoning(effort, *, provider="codex_cli", model=None):
     if provider == "openrouter":
         allowed = OPENROUTER_EFFORTS.get(model, (*REASONING_EFFORTS, "max"))
-    elif provider == "claude_code":
+    elif provider in CLAUDE_PROVIDERS:
         allowed = CLAUDE_EFFORTS
     elif provider == "auto":
         # One level for both subscriptions, so only a level both know.

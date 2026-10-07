@@ -1,0 +1,159 @@
+name: Release
+# A pushed version tag vX.Y.Z builds the sdist and the wheel, checks them, runs both test suites against the built
+# wheel on Linux, publishes to PyPI through trusted publishing and creates the GitHub release with the version's
+# CHANGELOG section. The tag must equal "v" + the version in pyproject.toml, and CHANGELOG.md needs a "## [X.Y.Z]"
+# section. One-time setup: a PyPI trusted publisher for this repository, workflow file release.yml and environment
+# "pypi", and a GitHub environment named "pypi".
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+# Never cancel a release half-way: a cancelled run could leave PyPI and the GitHub release out of step.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Build and check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Check that the tag matches the package version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match version ${version} in pyproject.toml (expected v${version})."
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+      - name: Extract the CHANGELOG section of this version
+        run: |
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no section '## [${VERSION}]' with content. Move the [Unreleased] entries under it before tagging."
+            exit 1
+          fi
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Check the wheel's package data
+        shell: python
+        run: |
+          import glob
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              sys.exit(f"expected one wheel, found {wheels}")
+          names = set(zipfile.ZipFile(wheels[0]).namelist())
+          package = Path("src/podcast_automate")
+          # Every non-Python file the package ships must be in the wheel; a new file type that the package-data
+          # globs in pyproject.toml do not cover would otherwise be missing only in the installed package.
+          expected = {
+              "podcast_automate/" + path.relative_to(package).as_posix()
+              for path in package.rglob("*")
+              if path.is_file()
+              and path.suffix not in {".py", ".pyc"}
+              and "__pycache__" not in path.parts
+              and path.relative_to(package).as_posix() != "prompts/README.md"
+          }
+          missing = sorted(expected - names)
+          if missing:
+              sys.exit("missing from the wheel: " + ", ".join(missing))
+          for folder in ("data/", "prompts/", "web/"):
+              if not any(name.startswith("podcast_automate/" + folder) for name in names):
+                  sys.exit(f"no files under podcast_automate/{folder} in the wheel")
+          print(f"{len(expected)} data files present in {wheels[0]}")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  test:
+    name: Tests (Linux, Python ${{ matrix.python }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Install the built wheel
+        run: python -m pip install dist/*.whl
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Test without model accounts or GPU
+        run: python -m unittest discover -s tests -v
+      - name: Test browser logic
+        run: node --test tests/studio_ui.test.cjs
+
+  pypi:
+    name: Publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/podcast-automate/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: GitHub release
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: notes/
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          prerelease=""
+          case "${GITHUB_REF_NAME#v}" in
+            *a[0-9]*|*b[0-9]*|*rc[0-9]*|*dev[0-9]*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file notes/release-notes.md $prerelease

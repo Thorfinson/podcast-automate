@@ -2,12 +2,13 @@
 title: Architecture
 doc_type: architecture
 status: current
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/claude_code.py
   - src/podcast_automate/codex.py
   - src/podcast_automate/codex_stream.py
   - src/podcast_automate/openrouter.py
+  - src/podcast_automate/web_search.py
   - src/podcast_automate/provider_pool.py
   - src/podcast_automate/call_activity.py
   - src/podcast_automate/process.py
@@ -19,6 +20,9 @@ covers:
   - src/podcast_automate/runner.py
   - src/podcast_automate/prompts.py
   - src/podcast_automate/prompts/
+  - src/podcast_automate/studio_text.py
+  - src/podcast_automate/content_text.py
+  - src/podcast_automate/locales/
 ---
 
 # Architecture
@@ -41,7 +45,7 @@ Pipeline stages per run kind (runner.execute_stages)
    ▼                                         ▼
 Text adapters (provider_pool.AdapterPool)    Speech: Qwen worker (.venv-tts), Gemini via Google
    claude_code · codex · openrouter            (google_speech) or via OpenRouter (speech),
-                                               then FFmpeg/ffprobe assembly
+   + Perplexity search (web_search)            then FFmpeg/ffprobe assembly
    │                                         │
    ▼                                         ▼
 Project folder projects/<project>/  (project.yaml, studio/, research/, models/, episodes/, runs/, exports/, …)
@@ -113,8 +117,10 @@ sub-questions run at once is in [Sequential or parallel](STUDIO.md#sequential-or
 ## Text provider adapters
 
 Codex CLI and Claude Code use their existing subscription logins (ChatGPT; claude.ai with Claude Max); OpenRouter is
-the API alternative. Per provider a small adapter with the same contract wraps requests, structured outputs,
-validation, available usage metadata and errors:
+the API alternative, and Claude Code also runs on your own Anthropic API key as the separate provider `claude_api`
+([On the API key](#claude-code)). A run may also search the web through the Perplexity Search API instead of its
+model's own tools ([Web search through Perplexity](#web-search-through-perplexity)). Per provider a small adapter with
+the same contract wraps requests, structured outputs, validation, available usage metadata and errors:
 
 ```python
 structured(prompt, output_type, directory, *, prompt_version, search=False) -> (output, metadata)
@@ -126,12 +132,14 @@ structured(prompt, output_type, directory, *, prompt_version, search=False) -> (
   are listed under [Per-call records](#per-call-records).
 - **Official logins only.** The application uses the official CLI logins and implements no access of its own with
   extracted session tokens; `codex.subscription_environment` removes the API-key variables from the CLIs' environment
-  ([Secrets and keys](SECURITY.md#secrets-and-keys)). Model and CLI version are recorded per call.
+  ([Secrets and keys](SECURITY.md#secrets-and-keys)). The one exception is `claude_api`, which gives Claude Code your
+  Anthropic key instead of the login. Model and CLI version are recorded per call.
 - **Search needs real tool events.** Search, retrieval and text extraction need real tool connections: the search tools
   of the chosen CLI backend, whose availability is checked by a real fetch. A model may not present sources it did not
-  fetch as read evidence; inaccessible texts stay source candidates or documented gaps. Each subscription adapter
-  writes the observed tool events to `search_events.json`; a research call without them is refused with
-  `search_not_observed`. The OpenRouter adapter does not search.
+  fetch as read evidence; inaccessible texts stay source candidates or documented gaps. Each CLI adapter, Claude on the
+  API key included, writes the observed tool events to `search_events.json`; a research call without them is refused with
+  `search_not_observed`, which the [adapter pool](#adapter-pool) repeats once. The OpenRouter adapter does not search. With the Perplexity search the pool runs the search
+  requests itself and records them in `search_results.json` instead.
 - **Time limits.** Each call has the absolute limit `runtime.text_timeout_seconds` (default 1800 s, see
   [Project brief](CONFIGURATION.md#project-brief)) and is stopped as hung after `process.STALL_TIMEOUT_SECONDS` (600 s)
   without output (`stall`); a hung call is not charged.
@@ -141,10 +149,25 @@ structured(prompt, output_type, directory, *, prompt_version, search=False) -> (
 `provider_pool.AdapterPool` builds the adapter for every call of a run from the run's saved text choice. It applies
 the provider rule ([Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection)), lowers
 the level of capped stages (`text_settings.stage_effort`) and repeats a call once on the same provider after a stalled
-stream (`stall`) or a Claude answer in the wrong format (`claude_structured_output`; `provider_pool.REPEATED_ONCE`).
+stream (`stall`), a Claude answer in the wrong format (`claude_structured_output`) or a research call without an
+observed web search (`search_not_observed`, since 2026-10-07: four such stops in the runs of September and October
+2026, where a resume usually passed; why: D-155) (`provider_pool.REPEATED_ONCE`). The repeat is a second model turn.
 Each decision leaves a receipt in the call folder ([Per-call records](#per-call-records)). A saved run binds the
 adapter contract it started with (`openrouter.ADAPTER_VERSION` `openrouter.v1`, `claude_code.ADAPTER_VERSION`
-`claude_code.v1`); a newer adapter needs a new run (`inputs_changed`).
+`claude_code.v1`, `claude_code.API_ADAPTER_VERSION` `claude_api.v1`, and with the Perplexity search
+`web_search.ADAPTER_VERSION` `perplexity_search.v1` as `web_search_version`); a newer adapter needs a new run
+(`inputs_changed`).
+
+For a provider billed to a key (OpenRouter, `claude_api`; `provider_pool.AdapterPool.attempt`) every attempt leaves a
+row in the call folder's `billing.json`: `started` when it begins, replaced when it ends by `priced` (with the USD the
+receipt or the failure's `billed_usd` names), `unpriced` (time limit or stall: model work without a reported cost) or
+`free` (refused before any model work, such as a missing key). A killed worker leaves `started`; a repeat after a
+stall or a wrong format adds a row in the same folder. A Perplexity search call adds one row per search request, and
+`provider_pool.read_billing` also reads the rows its planning step keeps in `search_plan/`
+([Web search through Perplexity](#web-search-through-perplexity)). `research.settle_call` counts the rows into the run
+budget once per call ([Money limit](BUSINESS_LOGIC.md#money-limit); why: D-148). A `claude_api` failure never notes a block in the
+subscription store. The pool hands the Anthropic key only to `claude_api` adapters (`provider_pool.use_anthropic_key`
+holds a Studio worker's key, `provider_pool.text_key` picks the key a choice needs).
 
 ### Claude Code
 
@@ -156,8 +179,9 @@ adapter contract it started with (`openrouter.ADAPTER_VERSION` `openrouter.v1`, 
   npm shim (`.cmd`, `.bat`, `.ps1`) is never run through `cmd.exe`: the adapter calls `node` with the
   `node_modules/@anthropic-ai/claude-code/cli.js` next to it, else stops with `unsupported_claude_launcher`; a missing
   CLI stops with `claude_missing`. There is no project setting for the Claude path (why: D-013).
-- **Login and version.** `claude auth status --json` must report `loggedIn` and `authMethod: "claude.ai"`, else the
-  call stops with `authentication_required` or `subscription_required`. `claude --version` must reach
+- **Login and version.** On the subscription, `claude auth status --json` must report `loggedIn` and
+  `authMethod: "claude.ai"`, else the call stops with `authentication_required` or `subscription_required`; on the API
+  key there is no login check. `claude --version` must reach
   `MINIMUM_CLI_VERSION` (2.1.280) and the model's entry in `MODEL_MINIMUM_CLI` (`claude-sonnet-5-5`: 2.1.284), else
   `claude_version` with the hint `claude update`.
 - **Invocation.** Per call:
@@ -181,6 +205,16 @@ adapter contract it started with (`openrouter.ADAPTER_VERSION` `openrouter.v1`, 
   `DISABLE_ERROR_REPORTING=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: 128 000
   for `claude-opus-5-5` and `claude-sonnet-5-5` (`MODEL_OUTPUT_TOKENS`), else `MAX_OUTPUT_TOKENS` (64 000)
   (why: D-028). `CLAUDE_CONFIG_DIR` stays untouched because it holds the subscription login.
+- **On the API key.** `ClaudeCodeAdapter(auth="api_key", api_key=…)` is the provider `claude_api` (why: D-145). It
+  uses the given key, else `ANTHROPIC_API_KEY`, and stops without one with `anthropic_key_required`. Its environment
+  is `claude_api_environment(model, key)`: the subscription environment above without `API_ENV_DROPPED`
+  (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`,
+  `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`: variables that would outrank the key or send the call to
+  another endpoint or account), plus `ANTHROPIC_API_KEY` set to the key. Invocation, isolation and checks are the
+  same. After the call the adapter reads `apiKeySource` from the stream's `system/init` event; `"none"` means the call
+  ran on a login instead of the key, and the answer is discarded with `claude_api_auth_mismatch` (`blocked`; the field
+  is unverified, see V-29). A key in the prompt stops the call with `credential_in_prompt`, a key in the output with
+  `credential_in_response`. The subscription path (`claude_code`, `claude_code.v1`) is unchanged.
 - **Checks before the start.** A prompt longer than `prompt_limit(model)` is refused with `prompt_too_large`, neither
   started nor charged: `PROMPT_LIMIT_CHARS` (300 000 characters) for a `BASE_WINDOW_TOKENS` (200 000-token) window,
   scaled by `CONTEXT_WINDOW_TOKENS` (1 000 000 for Opus 5.5 and Sonnet 5.5, so 1 500 000 characters). The schema
@@ -194,14 +228,20 @@ adapter contract it started with (`openrouter.ADAPTER_VERSION` `openrouter.v1`, 
 - **Failures.** `classify_claude_failure` yields `claude_budget_cap`, `claude_quota_exhausted` (`waiting_for_quota`),
   `claude_output_limit` (`blocked`; a cut answer is never accepted), `authentication_required`,
   `claude_structured_output` or `claude_failed`. The order of its checks and what counts as a reached limit are in
-  [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
+  [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection). On the API key the same
+  causes get the billed provider's codes: a rate limit is `anthropic_rate_limit` (`waiting_for_quota`, never a
+  subscription block), a refused key `anthropic_authentication` (`blocked`), and an account without credit
+  `anthropic_credits` (`waiting_for_quota`; the CLI's category `billing_error`, else the words „credit balance“ or
+  „billing“). The stream fields for these cases are unverified (V-31). Every failure on the key carries the money the
+  call cost as `billed_usd` in its details and `failure.json`.
 - **Rate-limit events.** The stream carries `rate_limit_event` entries with `status`, `resetsAt` and `rateLimitType`
-  (for example `five_hour`). The last one is stored as `rate_limit` in `metadata.json` and in the quota store; a
-  refused event gives the exact reset time of a block. `isUsingOverage` and `overageStatus` are kept as
+  (for example `five_hour`). The last one is stored as `rate_limit` in `metadata.json` and, for the subscription, in
+  the quota store; a refused event gives the exact reset time of a block. `isUsingOverage` and `overageStatus` are kept as
   `using_overage` and `overage_status` where the CLI names them; nothing acts on them yet (see V-17).
-- **Cost cap.** `--max-budget-usd` (`MAX_BUDGET_USD`, 12.0 per call) limits outliers; the reported amount is an
-  equivalent value, not a bill. Measured with 2.1.92 on 2026-09-19: the cap ends a call with subtype
-  `error_max_budget_usd`, but only after the first model turn has run.
+- **Cost cap.** `--max-budget-usd` (`MAX_BUDGET_USD`, 12.0 per call) limits outliers; on the subscription the reported
+  amount is an equivalent value, not a bill, on the API key it is money spent (recalibration: V-32). Measured with
+  2.1.92 on 2026-09-19: the cap ends a call with subtype `error_max_budget_usd`, but only after the first model turn
+  has run.
 - **Search proof.** `search_events.json` is built from the `tool_use` blocks (`WebSearch` with a query is a search,
   `WebFetch` with a URL an opened page). A call counts as research when it has any such event or
   `usage.server_tool_use.web_search_requests` above 0; an opened page without a query counts too (why: D-047).
@@ -275,6 +315,51 @@ tests.
   work. A dropped connection triggers no automatic repeated paid request. A key found in the prompt or the answer
   stops the call (`credential_in_prompt`, `credential_in_response`; see [Secrets and keys](SECURITY.md#secrets-and-keys)).
 - **No search.** The adapter refuses `search=True` and model IDs with `:online` (`openrouter_search_unsupported`).
+  With the [Perplexity search](#web-search-through-perplexity) the pool never asks it to search.
+
+### Web search through Perplexity
+
+`web_search.PerplexitySearch` is a search tool the pipeline calls itself, not a text model. A run uses it when its
+saved selection names `web_search: "perplexity"` (why: D-151; who chooses it and what it costs:
+[Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)).
+
+- **Request.** A POST to `web_search.ENDPOINT` (`https://api.perplexity.ai/search`, following the
+  [Search API reference](https://docs.perplexity.ai/api-reference/search-post) as read on 2026-10-07) with up to five
+  queries (`MAX_QUERIES_PER_REQUEST`), `max_results` 10, `max_tokens_per_page` 300 and the planned languages as
+  `search_language_filter`. The key is the one given to the pool (`AdapterPool(perplexity_key=…)`), else the Studio
+  worker's (`provider_pool.use_worker_key("perplexity", …)`), else `PERPLEXITY_API_KEY`; it travels only in the
+  `Authorization` header, and no redirect is followed (`openrouter.NoRedirect`). Each result keeps `title`, `url`,
+  `snippet`, `date` and `last_updated`; repeated addresses and addresses other than http(s) are dropped.
+- **Price.** `USD_PER_REQUEST` 0.005: 5 USD per 1,000 requests, read from third-party pages on 2026-10-07 and not
+  checked against a bill (see V-35); a request with several queries counts once.
+- **Errors.** A missing key stops with `perplexity_key_required`, 401 and 403 with `perplexity_authentication`, any
+  other 4xx with `perplexity_request` (all `blocked`); 402 `perplexity_credits` and 429 `perplexity_rate_limit` pause
+  the run with `waiting_for_quota`; a 5xx, a timeout or an unreadable answer is `perplexity_failed` (`failed`, a
+  resume asks again). The key in a query stops with `credential_in_prompt`, in the answer with
+  `credential_in_response`.
+
+**The search call.** With the Perplexity search, `AdapterPool.structured(search=True)` runs `AdapterPool.searched`
+instead of the model's own tools, in three steps inside one call folder:
+
+1. **Plan.** The run's text model writes the queries (`prompts/search_queries.txt`, contract `web_search.SearchPlan`:
+   1 to 10 queries and at most five ISO 639-1 languages, empty for any) as a call of its own in the subfolder
+   `search_plan/`, prompt version `<original>.perplexity_queries`. The pool keeps at most ten queries for the
+   discovery (`ResearchDiscovery`) and five for every other search.
+2. **Search.** Perplexity runs them, five per request. Each request leaves a row in the call folder's `billing.json`
+   (`provider: perplexity`, `priced` at `USD_PER_REQUEST`, or `free` when it failed), and `search_results.json`
+   keeps the queries, the languages, every request (`queries`, `request_id`, `usd`, `elapsed_seconds`, number of
+   results) and the merged results.
+3. **Select.** The run's text model completes the original task from those results (`prompts/search_select.txt`,
+   prompt version `<original>.perplexity`). Every candidate's address must be among the results, compared by
+   `provider_pool.address` (scheme and host in lower case, no fragment, no trailing slash); otherwise the model is
+   asked again with the invented addresses named, at most twice (`research_patches.MAX_REJECTIONS`), and then the call
+   stops with `invalid_search_selection` (`blocked`).
+
+The answer's `executed_queries` become the queries that ran, and `metadata.json` adds `search_provider: perplexity`,
+`search_adapter_version`, `research_performed: true`, `observed_search_queries` and `web_search_requests` (the number
+of queries). Both model steps go through the pool like any call, so an OpenRouter run answers them on OpenRouter and
+needs no subscription. Only the planned queries and the language filter go to Perplexity, never the task's prompt or
+any source text ([Trust boundaries](SECURITY.md#trust-boundaries)).
 
 ## Prompts and versioning
 
@@ -289,10 +374,47 @@ text change repeats only the affected calls ([Runs, resume and input binding](BU
 When the meaning of a prompt changes, the tag at the call site is bumped so receipts show which wording produced a
 result.
 
-The task families are: research search; question plan and scope check; reading decision and answer review per
+The task families are: research search, with the Perplexity search split into planning the queries and selecting
+from the results; question plan and scope check; reading decision and answer review per
 sub-question; dossier composition with overall review and objection routing; series plan; teaching plan with its
 review; script draft; dialogue polishing with comparison; source, reading, editorial and teaching reviews; and the
 series review. Details and the composition rules: [prompts/README.md](../src/podcast_automate/prompts/README.md).
+
+## Languages
+
+Each kind of text has its own language rule (why: D-152, D-153, D-156):
+
+| Text | Language | Source |
+| --- | --- | --- |
+| What the Studio shows: its pages and the server's own messages | The interface language, German or English ([Interface language](CONFIGURATION.md#interface-language)) | The catalogs `locales/de.json` and `locales/en.json`, through `studio_text` |
+| What a podcast's listeners and readers get: download and ZIP names, the export's README, transcript notice, show notes and listening sheet, the companion kits of an episode and of the podcast with its transcript, the series outline, the teaching plan, `research_needed.md`, the readable research files, and the transparency note and MP3 comment of the AI marking (D-154) | The project's content language (`TopicBrief.language`), whatever the interface language | `content_text` |
+| The command line: help texts, metavars, prints, the CLI's own messages and the doctor's own detail texts | English; codes and `--json` keys are unchanged | `cli`, `doctor` |
+| Prompts, the pipeline's messages (the `AppError` texts of the run modules), run files, receipts and hashes | As they are, never translated | The run modules |
+
+**Interface language.** `studio_text.t(key, **params)` looks up a flat catalog key and returns a `Localized` string
+that keeps its key, its parameters and its language; a plural value (`{"one": …, "other": …}`) is chosen by the
+`count` parameter. A key missing in the active language falls back to English, then to the key itself, with one
+warning. Both catalogs have the same keys (704 on 2026-10-07); `de.json` holds the German the Studio always showed, so
+German output is unchanged. Only `studio*.py` and `production_report.py` import `studio_text`, which a test guards.
+The page loads its catalog from `GET /locale.js` (the active language over English, `Vary: Accept-Language`). A job
+keeps the language it started in (`ui_language` in the worker's request and in `job.json`); a resume by the scheduler
+takes the parked job's language, a queued recording the one stored when it was approved.
+
+**Pipeline messages stay German.** A pipeline message is also model input, a receipt or part of a hash, so it is not
+translated: the Studio shows it as it is and marks its language (`message_language`). Where the Studio must name a
+cause in either language, the run carries it as data: the limit of a budget stop in the manifest
+([Run folder and manifest](#run-folder-and-manifest)), the run limit that ended a sub-question's web search as
+`block_cause` ([Run limits](RESEARCH.md#run-limits)) and an advisory's values as `params`
+([Quality gates](QUALITY.md#quality-gates)). Pipeline messages that `pla status`, `pla quota` and `pla approve` print
+keep their German wording too.
+
+**Content language.** `content_text.TEXT` holds the fixed words per `de-DE` and `en-US`; any other language reads
+German, as every file did before. Each renderer takes a required `language` keyword. A German project writes the same
+files and names byte for byte as before, since a stage's outputs are hash-checked on resume (golden tests). Labels that
+also reach a prompt, a report or a Studio message keep their German home: `research_quality.CRITERIA` and
+`PROBE_LABELS`, `question_budget.SOURCE_LABELS` and `why_needed` in `research_needed.json`. The byte budgets of
+download names were measured with the German words; where an English word is longer, that much comes off the title or
+topic, so a name keeps its length (`downloads.longer_than_german`).
 
 ## Data contracts
 
@@ -401,6 +523,7 @@ projects/<project>/
   reports/                quality reports
   runs/<run_id>/          manifest, checkpoints, model calls, budget, failures/
   exports/<ep>/<run_id>/  MP3, chapters, transcript, show notes, listening sheet, publish/ (companion kit)
+  publish/                the whole podcast's companion kit: descriptions, sources, transcript of every episode
   cache/audio/            reusable audio segments
   probes/                 results of text-probe and audio-probe
   logs/                   log of single CLI commands
@@ -466,8 +589,11 @@ the run as far as permitted, so later changes to online sources do not silently 
 **Where it lives.** `run_manifest.yaml` (`models.RunManifest`) holds `schema_version`, `pipeline_version`, `run_id`,
 `kind`, `created_at`, `updated_at`, `project_hash`, `input_hash`, `status` (statuses:
 [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)), `audio_approved` and `stages` with
-`status`, `attempts`, `outputs` and `error` (`code`, `message`, and for a quota pause the reset facts in `details`,
-`runner.RETRY_DETAIL_KEYS`). The rest sits next to it:
+`status`, `attempts`, `outputs` and `error` (`code`, `message`, and in `details` for a quota pause the reset facts,
+`runner.RETRY_DETAIL_KEYS`, and since 2026-10-07 for a `research_budget_exhausted` stop the limit it reached,
+`{"limit": "model_calls"}` or `{"limit": "search_rounds"}`, `runner.LIMIT_DETAIL_VALUES`; every other stop keeps no
+`details`). The Studio names a budget stop from this field, not from the German message, and shows it as `job.stop.limit`.
+The rest sits next to it:
 
 | File | Content |
 | --- | --- |
@@ -476,7 +602,7 @@ the run as far as permitted, so later changes to online sources do not silently 
 | `script_request.json` | Script run: research run, episode, execution mode and the bound text choice (`text_generation`) |
 | `research_request.json` | Research run: the bound text choice (when chosen explicitly), requirements, quality policy and seed corpus |
 | `probe_request.json` | Text probe with a backend other than `codex_cli` |
-| `budget.json`, `budget_projection.json` | Budget use and projection ([Budgets](BUSINESS_LOGIC.md#budgets)) |
+| `budget.json`, `budget_projection.json` | Budget use and projection ([Budgets](BUSINESS_LOGIC.md#budgets)); a run billed to a key also keeps its money in `budget.json` (`billed_usd`, `priced_attempts`, `estimated_usd`, `unpriced_attempts`, `external_usd`, `settled`, `settled_external`) and a `cost` block in the projection ([Money limit](BUSINESS_LOGIC.md#money-limit)) |
 | `calls/call_NNN/` | One folder per model call (below) |
 | `model_trace.json` | Shared ring buffer of the live output ([Progress and telemetry](STUDIO.md#progress-and-telemetry)) |
 | `status_reports/` | Status briefs and their call metadata |
@@ -491,23 +617,31 @@ Every model call has its folder `runs/<run_id>/calls/call_NNN/`:
 | --- | --- | --- |
 | `provider_choice.json` | Adapter pool | Provider, model, reasoning level, mode, reason and quota snapshots of the decision; `run_effort` when a stage cap lowered the level; `search`, `prompt_version`, `prompt_chars` |
 | `provider_switch.json` | Adapter pool | A switch inside the call: `from`, `to`, `error_code`, `message`, `switched_at` |
-| `stall_retry.json`, `format_retry.json` | Adapter pool | Receipt of the one repeat after a stalled stream (`stall`) or a Claude answer in the wrong format (`claude_structured_output`) |
+| `stall_retry.json`, `format_retry.json`, `search_retry.json` | Adapter pool | Receipt of the one repeat after a stalled stream (`stall`), a Claude answer in the wrong format (`claude_structured_output`) or a research call without an observed web search (`search_not_observed`) |
 | `prompt_size.json` | Adapter pool | Prompt length, limit and the provider left out for it |
+| `billing.json` | Adapter pool | Only for a provider billed to a key: one row per attempt with `attempt`, `provider`, `model`, `prompt_version`, `started_at`, `state` (`started`, `priced`, `unpriced`, `free`), `usd`, `code` and `ended_at` ([Adapter pool](#adapter-pool)); with the Perplexity search also one row per search request (`provider: perplexity`) |
+| `search_plan/` | Adapter pool | Only with the Perplexity search: the planning step's own call records (`response.json` with the planned queries, its `metadata.json` and, for a billed text model, its `billing.json`) ([Web search through Perplexity](#web-search-through-perplexity)) |
+| `search_results.json` | Adapter pool | Only with the Perplexity search: queries, languages, every request (`request_id`, `usd`, `elapsed_seconds`, number of results) and the merged results with title, address, snippet and dates |
 | `output_schema.json` | Adapter | The strict schema sent |
 | `metadata.json` | Adapter | Provider, models, versions, usage, cost and search figures (below) |
 | `response.json` | Adapter | The validated answer |
 | `rejected_output.json` | Adapter | A parsed answer the contract rejected; it is model output like an accepted answer, and the call stays charged |
 | `failure.json` | Adapter | Code, message, exit code, model, level, prompt version and CLI version of a failed call, never raw provider output or the prompt; with `rejected_output` the rejected fields; with `codex_failed` Codex's own short reason (`provider_message`, redacted, at most 300 characters) |
-| `search_events.json` | Subscription adapters | Observed search and open-page tool events |
+| `search_events.json` | CLI adapters | Observed search and open-page tool events |
 | `diagnostics.json` | `call_activity.CallActivity` | Cleaned technical diagnostics, also after timeout or stop (times, request size, events, error categories such as connection, rate limit or answer format); no raw error messages, prompts, tool output or credentials |
 | `activity.json` | `call_activity.CallActivity` | Public activity record of the call |
 | `work_context.json` | `research_status.record_request` | A limited selection of the call's actual inputs (question, criteria, material) without full prompts or source texts |
 
 `metadata.json` holds `provider`, `auth_mode` (`claude.ai`, `chatgpt` or `api_key`), `requested_model`,
 `requested_reasoning_effort`, `prompt_version`, `usage` and the search figures (`research_performed`,
-`web_search_requests`, `observed_search_queries`), plus per adapter the CLI or adapter version, the reported model
+`web_search_requests`, `observed_search_queries`; with the Perplexity search also `search_provider` and
+`search_adapter_version`), plus per adapter the CLI or adapter version, the reported model
 (`actual_model`; for Claude the key of `modelUsage`), duration and, for Claude, `num_turns` and the last `rate_limit`;
 never the `session_id`. The requested fields document the requested values, not a confirmation by the provider.
 `reported_cost_usd` with `cost_basis` is the equivalent value a CLI reports; `separately_billed_cost` is an amount
-billed separately, OpenRouter's reported USD cost and `null` for the subscriptions. A missing cost means unknown cost,
-not free use; these metadata do not replace OpenRouter's billing.
+billed separately, OpenRouter's reported USD cost and `null` for the subscriptions. A `claude_api` call records
+`provider: claude_api`, `auth_mode: api_key`, `adapter_version: claude_api.v1`, Claude Code's `total_cost_usd` as both
+`reported_cost_usd` and `separately_billed_cost`, `cost_currency: USD`, the CLI's `api_key_source`, and an English
+`cost_basis` saying the amount is Claude Code's own estimate at API prices and the Anthropic Console bill is
+authoritative. A missing cost means unknown cost, not free use; these metadata do not replace OpenRouter's or
+Anthropic's billing.

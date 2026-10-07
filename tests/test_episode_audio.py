@@ -274,6 +274,59 @@ class EpisodeAudioTests(unittest.TestCase):
         self.assertIn("[Folge anhören](audio.mp3)", (destination / "README.md").read_text(encoding="utf-8"))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_an_english_podcast_exports_english_files_and_marks_its_mp3_in_english(self):
+        """D-153 and D-154 (2026-10-07): the export of an English project is written in English, and its MP3 says in
+        its tags, in English, that a model wrote the script and synthetic voices speak it."""
+        from podcast_automate.audio import DIGITAL_SOURCE_TYPE, audio_info
+        config = self.fixture.config.model_copy(update={"language": "en-US"})
+        write_yaml(self.root / "project.yaml", config.model_dump(mode="json"))
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
+            self.assertEqual(run_script(self.root, episode="ep_001").status, "completed")
+
+        def english(config, script, root, work, **kwargs):
+            paths = self.synthesize(config, script, root, work, **kwargs)
+            report = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
+            for row in report["segments"]:
+                row["settings"]["language"] = "English"
+            write_json(work / "tts_report.json", report)
+            return paths
+        with patch("podcast_automate.episode_audio.run_tts", side_effect=english):
+            run = run_episode_audio(self.root, episode="ep_001", approve_audio=True)
+        self.assertEqual(run.status, "completed")
+        destination = self.root / "exports/ep_001" / run.run_id
+        notes = (destination / "show_notes.md").read_text(encoding="utf-8")
+        self.assertIn("Audio version with Host A and Host B.\nVoices: Aiden (Host A) and Vivian (Host B).", notes)
+        self.assertIn("\n## Chapters\n\n- 0:00 A concrete comparison\n", notes)
+        self.assertIn("\n## Transparency note\n\nThis output is a source-bound synthesis.", notes)
+        sheet = (destination / "listening_sheet.md").read_text(encoding="utf-8")
+        self.assertIn("| Time | Chapter | Unclear | Attention lost | Pronunciation |", sheet)
+        self.assertIn("\n## Transparency note\n", sheet)
+        readme = (destination / "README.md").read_text(encoding="utf-8")
+        self.assertIn("\nFirst audio version for listening review.\n", readme)
+        self.assertIn("- [Listen to the episode](audio.mp3) – ", readme)
+        tags = audio_info(destination / "audio.mp3")["format"]["tags"]
+        self.assertEqual((tags["comment"], tags["DIGITAL_SOURCE_TYPE"], tags["AI_GENERATED"]),
+                         ("AI-generated: script written by a language model, speech made with synthetic voices.",
+                          DIGITAL_SOURCE_TYPE, "true"))
+        for text in (notes, sheet, readme):
+            for german in ("Kapitel", "Stimmen", "Hörprüfung", "Zeitmarken", "Folge"):
+                self.assertNotIn(german, text)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_a_german_export_readme_reads_as_before(self):
+        """Pinned on 2026-10-07 before content_text.py (D-153): a German project's README.md byte for byte."""
+        run = self.render()
+        destination = self.root / "exports/ep_001" / run.run_id
+        report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
+        minutes = report["parts"][0]["duration_seconds"] / 60
+        self.assertEqual((destination / "README.md").read_text(encoding="utf-8"),
+                         "# A model compares possibilities\n\nErste Audiofassung zur Hörprüfung.\n"
+                         "Stimmen: Aiden (Host A) und Vivian (Host B).\n\n"
+                         f"- [Folge anhören](audio.mp3) – {minutes:.2f} Minuten\n\n"
+                         "Der gesamte freigegebene Text ist in Skriptreihenfolge enthalten.\n"
+                         "Die technische Montage ersetzt keine Hörprüfung von Aussprache und Natürlichkeit.\n")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_a_changed_pause_policy_needs_a_fresh_approval(self):
         self.assertEqual(self.render().status, "completed")
         from podcast_automate.speech import AudioChoice
@@ -305,12 +358,12 @@ class ListeningSheetTests(unittest.TestCase):
         script = fixtures.example_script()
         chapters = [{"part": 1, "timestamp": "0:00", "title": "Erstes"}, {"part": 1, "timestamp": "12:30", "title": "Zweites"},
                     {"part": 2, "timestamp": "0:00", "title": "Drittes"}]
-        sheet = render_listening_sheet(script, chapters)
+        sheet = render_listening_sheet(script, chapters, language="de-DE")
         self.assertIn("| Teil | Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |", sheet)
         self.assertIn("| 1 | 0:00 | Erstes | | | |", sheet)
         self.assertIn("| 2 | 0:00 | Drittes | | | |", sheet)
         # A single part keeps the sheet as it was.
-        single = render_listening_sheet(script, chapters[:2])
+        single = render_listening_sheet(script, chapters[:2], language="de-DE")
         self.assertIn("| Zeit | Kapitel | Unklar | Aufmerksamkeit verloren | Aussprache |", single)
         self.assertIn("| 12:30 | Zweites | | | |", single)
         self.assertNotIn("Teil", single)

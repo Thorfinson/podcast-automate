@@ -37,7 +37,8 @@ from .storage import digest, file_hash, inside, write_json
 
 GOOGLE_SPEECH_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GOOGLE_SPEECH_VERSION = "google_gemini_tts.v1"
-# Each role's short style comes from the audio choice (speech.RoleStyles, presets in speech.STYLE_PRESETS).
+# Each role's short style comes from the audio choice (speech.RoleStyles, presets in speech.STYLE_PRESETS), with
+# "unhurried" added where the project's language asks for a calm pace (AudioChoice.spoken_styles).
 # The names the request gives the two speakers; never spoken. Gender-neutral, so a name never hints at who explains.
 SPEAKER_NAMES = {"host_a": "Alex", "host_b": "Robin"}
 MAX_PASSAGE_CHARACTERS = 3600
@@ -333,7 +334,7 @@ def run_google_tts(config, script, root, work, choice, api_key=None, *, table=No
     engine = engine or GoogleSpeech(api_key, timeout=config.runtime.tts_timeout_seconds, model=choice.model,
                                     throttle_file=shared_throttle(root))
     spoken = heard_texts(script, table, overrides, expression)
-    styles = choice.styles.model_dump()
+    styles = choice.spoken_styles(config.language)
     passages = plan_passages(script.segments)
     rows, paths, done = [], [], 0
     for number, indices in enumerate(passages, 1):
@@ -371,7 +372,8 @@ def check_google_rows(root, script, report, choice, language, *, table=None, ove
     for row, indices in zip(rows, passages, strict=True):
         path = inside(root / "cache/audio", row["path"])
         segments = [script.segments[index] for index in indices]
-        expected = passage_settings(segments, spoken, choice.voices, language, choice.model, choice.styles.model_dump())
+        expected = passage_settings(segments, spoken, choice.voices, language, choice.model,
+                                    choice.spoken_styles(language))
         if row.get("settings") != expected or not path.is_file() or file_hash(path) != row.get("sha256"):
             raise AppError("Gemini-Text, Stimme oder Audiodatei geändert.", code="invalid_audio")
         paths.append(path)

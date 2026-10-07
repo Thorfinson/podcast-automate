@@ -210,6 +210,10 @@ def public_ledger(state, index=None):
                      "review_limitations": (task.get("verification") or {}).get("limitations", []) if answer else [],
                      "search_count": len(task.get("search_receipts", [])),
                      "read_sections": len(task["read_refs"]), "reason": task.get("reason", ""),
+                     # The run limit a budget block hit (question_answering.BLOCK_CAUSES), so the Studio need not read
+                     # the German reason; only beside a reason that names it. Rows without one keep their earlier form.
+                     **({"block_cause": task["block_cause"]} if task.get("block_cause")
+                        and task.get("outcome") == "budget_block" and task.get("reason") else {}),
                      "answer": answer["summary"] if answer else "", "limits": answer["limits"] if answer else [],
                      "findings": answer["findings"] if answer else [],
                      "sources": [{"reference": ref, "title": sections[ref][0].title,

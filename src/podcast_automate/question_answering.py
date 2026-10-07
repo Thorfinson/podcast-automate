@@ -318,6 +318,24 @@ def access_gap_rows(spec, row):
              "evidence": gap["evidence"], "editor_note": gap.get("reason", "")} for gap in row.get("access_gaps", [])]
 
 
+SEARCH_BUDGET_REASON = ("Das Web-Suchbudget ist ausgeschöpft; diese konkrete Frage bleibt unbelegt. Ein höheres "
+                        "Suchrundenlimit kann ausdrücklich genehmigt werden.")
+# The run limits a sub-question's web search can stop at, as ``block_cause`` beside the German ``reason`` (since
+# 2026-10-07): the Studio names the limit and offers its raise from this field, not from the reason's wording.
+BLOCK_CAUSES = ("search_budget", "source_limit")
+
+
+def budget_block(row, reason, cause=None):
+    """The web search of ``row`` ended before it started: ``reason`` says why, ``cause`` names the run limit it hit
+    (``BLOCK_CAUSES``), None for a limit of this sub-question alone. The reason text feeds the advisor's prompt and
+    stays as it was; rows written before have no ``block_cause``."""
+    row.update(reason=reason, outcome="budget_block")
+    if cause:
+        row["block_cause"] = cause
+    else:
+        row.pop("block_cause", None)
+
+
 def search_folder(folder, queries):
     """Where a step's web search keeps its receipts. One step can search twice, first in the automatic recovery
     and then by the reader's own choice; a search for other queries than the one saved there gets a folder of its
@@ -508,6 +526,8 @@ class TaskResearchMixin:
             self.unlock(row)
         elif not row["reason"]:
             row["reason"] = "Auch die gezielte Ersatzsuche lieferte keine neuen passenden Belege. " + " ".join(row["feedback"])
+            # A reason started afresh carries no run limit (a reopening clears the reason, not block_cause).
+            row.pop("block_cause", None)
         return novel
 
     def verify(self, spec, row):
@@ -590,8 +610,9 @@ class TaskResearchMixin:
             row.update(status="verified", activity="Antwort und Belege geprüft", reason="", feedback=[], no_progress=0,
                        answer_locked=False, lock=None)
             # A pass ends the rework: a later reopening starts a fresh review, and an unchanged resubmission of
-            # this answer is no longer let through (``resubmit``, set by an access gap or a revalidation).
-            for key in ("resubmit", "review_memory", "review_scope", "review_repeat"):
+            # this answer is no longer let through (``resubmit``, set by an access gap or a revalidation). The cleared
+            # reason takes its run limit (``block_cause``) along.
+            for key in ("resubmit", "review_memory", "review_scope", "review_repeat", "block_cause"):
                 row.pop(key, None)
             row["outcome"] = answer.outcome
             row["verification"] = {"answer_hash": digest(answer.model_dump()), "review": verdict.model_dump(),
@@ -626,6 +647,8 @@ class TaskResearchMixin:
         searched = ("auch die Websuche brachte keine neuen Belege" if row.get("web_attempts", 0) >= 1
                     else "die gespeicherten Quellen brachten keine neuen Belege")
         reason = f"Die unabhängige Prüfung hat die Antwort abgewiesen, und {searched}. Unerfüllt: {unmet}"
+        if not row["reason"]:
+            row.pop("block_cause", None)
         row.update(status="blocked", activity="Keine neuen Belege für die abgewiesenen Kriterien",
                    reason=reason + (" " + row["reason"] if row["reason"] else ""),
                    outcome="budget_block" if row.get("outcome") == "budget_block" else "evidence_block")
@@ -708,19 +731,16 @@ class TaskResearchMixin:
         request_path = folder / "search_request.json"
         resuming = (folder / "search.json").exists() or request_path.exists()
         if not resuming and remaining <= 0:
-            row["reason"] = (f"Das Quellenlimit des Laufs ist erreicht ({source_limit} Quellen); eine Websuche könnte "
-                             "keine neuen Quellen laden. Ein höheres Quellenlimit kann ausdrücklich genehmigt werden.")
-            row["outcome"] = "budget_block"
+            budget_block(row, f"Das Quellenlimit des Laufs ist erreicht ({source_limit} Quellen); eine Websuche könnte "
+                              "keine neuen Quellen laden. Ein höheres Quellenlimit kann ausdrücklich genehmigt werden.",
+                         "source_limit")
             return False
         if not resuming and row["web_attempts"] >= self.web_attempt_limit(row):
-            row["reason"] = "Für diese Frage wurden die begrenzten zusätzlichen Quellenversuche ausgeschöpft."
-            row["outcome"] = "budget_block"
+            budget_block(row, "Für diese Frage wurden die begrenzten zusätzlichen Quellenversuche ausgeschöpft.")
             return False
         # A completed search may still have downloads to restore even when the search budget is now exhausted.
         if budget.get("search_rounds", 0) >= self.limits().search_rounds and not (folder / "search.json").exists():
-            row["reason"] = ("Das Web-Suchbudget ist ausgeschöpft; diese konkrete Frage bleibt unbelegt. Ein höheres "
-                             "Suchrundenlimit kann ausdrücklich genehmigt werden.")
-            row["outcome"] = "budget_block"
+            budget_block(row, SEARCH_BUDGET_REASON, "search_budget")
             return False
         if (folder / "search.json").exists() and not request_path.exists():
             # Reconstruct the old prompt for pre-ledger cached searches only.
@@ -766,9 +786,7 @@ class TaskResearchMixin:
             # question's budget block, as the check would have found, not a stop of the whole run (as in advise_task).
             if exc.code != "research_budget_exhausted" or not self.calls_left():
                 raise
-            row["reason"] = ("Das Web-Suchbudget ist ausgeschöpft; diese konkrete Frage bleibt unbelegt. Ein höheres "
-                             "Suchrundenlimit kann ausdrücklich genehmigt werden.")
-            row["outcome"] = "budget_block"
+            budget_block(row, SEARCH_BUDGET_REASON, "search_budget")
             return False
         result = read_value(receipt) if receipt.exists() else {
             "processed": [], "attempted": [], "base": self.state["index_hash"], "added": [], "failures": []}
@@ -891,12 +909,15 @@ class TaskResearchMixin:
             if row["step"] >= self.step_limit(row):
                 row.update(status="blocked", activity="Recherche ohne ausreichenden Abschluss beendet",
                            reason="Die begrenzten Lese- und Prüfversuche reichen für diese Frage nicht aus. " + " ".join(row["feedback"]))
+                row.pop("block_cause", None)
                 break
             if row["no_progress"] >= 2 and not row["pending"]:
                 if not self.recover(spec, row):
                     if row.get("answer_locked"):
                         self.lock_block(spec, row)
                     else:
+                        if not row["reason"]:
+                            row.pop("block_cause", None)
                         row.update(status="blocked", activity="Keine neuen passenden Belege",
                                    reason=row["reason"] or "Wiederholte Schritte lieferten keine neuen Belege oder geprüfte Antwort.")
                     break
@@ -983,6 +1004,8 @@ class TaskResearchMixin:
                 else:
                     # A web search the run's limits stopped says so next to the reader's own reason.
                     stopped = row["reason"] if row.get("outcome") == "budget_block" else ""
+                    if not stopped:
+                        row.pop("block_cause", None)
                     row.update(status="blocked", reason=" ".join(filter(None, [decision.reason, stopped])),
                                activity="Konkrete Beleglücke bleibt offen", outcome=(decision.block_kind or "evidence") + "_block")
             row["actions"].append({"action": action, "reason": decision.reason,

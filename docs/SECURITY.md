@@ -2,7 +2,7 @@
 title: Security
 doc_type: security
 status: current
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/google_speech.py
   - src/podcast_automate/studio.py
@@ -14,6 +14,8 @@ covers:
   - src/podcast_automate/storage.py
   - src/podcast_automate/attachments.py
   - src/podcast_automate/openrouter.py
+  - src/podcast_automate/web_search.py
+  - src/podcast_automate/provider_pool.py
   - src/podcast_automate/speech.py
   - src/podcast_automate/jev.py
   - src/podcast_automate/claude_code.py
@@ -28,7 +30,8 @@ covers:
 # Security
 
 Podcast Automate is a personal, local application: no external web host, no login to the Studio, no upload of
-project files to a hosting service.
+project files to a hosting service. How to report a vulnerability, privately through GitHub, is in the repository's
+[security policy](../SECURITY.md) (why: D-158).
 
 ## Trust boundaries
 
@@ -38,7 +41,9 @@ the processing you commissioned:
 | What leaves the computer | To whom | When |
 | --- | --- | --- |
 | Prompts with the selected content: brief, chat messages, text of attachments and provided works, source sections, plans, scripts and reviews | OpenAI (Codex CLI, your ChatGPT subscription) or Anthropic (Claude Code CLI, your claude.ai login, Claude Max) | every text call the selection routes to that subscription, live web research included |
-| The same prompts, except web research | OpenRouter and the model provider it routes to, billed to your API credit | only with an OpenRouter text model |
+| The same prompts; web research only with the Perplexity search, as planning the queries and choosing among the results | OpenRouter and the model provider it routes to, billed to your API credit | only with an OpenRouter text model |
+| The same prompts, live web research included | Anthropic (Claude Code CLI on your Anthropic API key), billed to your key | only with Claude on the API key (`claude_api`) |
+| The planned search queries and their language filter, never the task's prompt or any source text | Perplexity (Search API), billed to your Perplexity key | only with the web search through Perplexity ([ARCHITECTURE](ARCHITECTURE.md#web-search-through-perplexity)) |
 | The spoken text of approved scripts and of conversation samples | Google (Gemini API), billed to your Google key | only for a Gemini recording through Google or a new conversation sample |
 | The spoken text of approved scripts and of voice samples | OpenRouter (Gemini TTS) | only for a Gemini recording through OpenRouter or a new Gemini voice sample |
 | Reported gaps and corpus sections of the research | OpenRouter (Jev, TypeSafe) | only when the gap probe with Jev is on ([RESEARCH](RESEARCH.md#gap-probe)) |
@@ -48,8 +53,9 @@ the processing you commissioned:
 What never leaves the computer, or never gets in:
 
 - **Keys never go into prompts.** A chat message or upload (name or text) containing a stored session key, an
-  OpenRouter key (`sk-or-…`) or a Google key (`AIza…`), and an OpenRouter prompt or Gemini text containing the key in
-  use, are refused with `credential_in_prompt`; the editorial partner never sees a key.
+  OpenRouter key (`sk-or-…`), an Anthropic key (`sk-ant-…`), a Perplexity key (`pplx-…`) or a Google key (`AIza…`),
+  and an OpenRouter prompt, a prompt of Claude on the API key, a Perplexity search query or Gemini text containing the
+  key in use, are refused with `credential_in_prompt`; the editorial partner never sees a key.
 - **No browser credentials.** Source retrieval uses no browser cookies or credentials. Each source address and each
   redirect must resolve to a public server (`sources.public_url`); an address in a private network is refused with
   `invalid_source_url`.
@@ -87,12 +93,18 @@ What never leaves the computer, or never gets in:
 
 - The application uses the official CLI logins (`codex login`, `claude auth login`); it reads no access tokens and
   builds no access of its own from CLI session tokens.
-- API-key logins are refused, because they would bill per call (why: D-109): Codex must be logged in with ChatGPT,
-  Claude Code must report `authMethod: "claude.ai"`; anything else stops as `subscription_required`.
-- The CLIs are started without `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
+- For the subscription providers (`codex_cli`, `claude_code`, and both under `auto`) API-key logins are refused,
+  because they would bill per call (why: D-109): Codex must be logged in with ChatGPT, Claude Code must report
+  `authMethod: "claude.ai"`; anything else stops as `subscription_required`.
+- Their CLIs are started without `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
   `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` (`codex.subscription_environment`), so they can
   only use the subscription login.
   `CLAUDE_CONFIG_DIR` stays untouched, because it holds the Claude login.
+- Claude on your Anthropic API key (`claude_api`) is a separate, billed provider that uses the key and nothing else:
+  its calls drop every variable that would outrank or redirect the key, receive the key as `ANTHROPIC_API_KEY`, and
+  are discarded with `claude_api_auth_mismatch` when Claude Code reports that it used no API key (why: D-145;
+  environment and check: [ARCHITECTURE](ARCHITECTURE.md#claude-code)). It runs no login check and never touches the
+  subscription login.
 - The quota store `~/.podcast-automate/subscriptions.json` never holds credentials. The login check keeps only whether
   you are logged in, the login method, the subscription type and the CLI version, no e-mail address or IDs.
 
@@ -121,6 +133,33 @@ The Google key serves Gemini audio through Google and the conversation samples (
   use, whose requests it does not (as known when this was written; not re-checked on 2026-10-06). The key's tier is
   set in Google AI Studio, not here.
 
+### Anthropic key in the Studio
+
+The Anthropic key serves Claude on your API key (`claude_api`) and nothing else (why: D-145):
+
+- It is entered under **„Anthropic-Key“** on the settings page, in a hold card that asks for it or in the note
+  **„Anthropic-Key fehlt“** (Anthropic key missing), kept in the Studio server's memory only (or read from
+  `ANTHROPIC_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a worker, never in
+  project files or browser storage, gone after a restart.
+- A worker hands it only to pools that run Claude on the key (`studio_worker.text_key`,
+  `provider_pool.use_anthropic_key`): to a text job while it works with `claude_api`, and to the expression tags and
+  the companion kit of such a run. A subscription call never receives it.
+- Every call is billed to your Anthropic account; the run's [money limit](BUSINESS_LOGIC.md#money-limit) bounds what a
+  run may spend.
+
+### Perplexity key in the Studio
+
+The Perplexity key serves the web search through Perplexity and nothing else (why: D-151):
+
+- It is entered under **„Perplexity-Key“** on the settings page, in a hold card that asks for it or in the note
+  **„Perplexity-Key fehlt“** (Perplexity key missing), kept in the Studio server's memory only (or read from
+  `PERPLEXITY_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a worker, never in
+  project files or browser storage, gone after a restart.
+- A worker holds it for the pools of runs that search through Perplexity (`provider_pool.use_worker_key`); no text
+  model, subscription or OpenRouter request ever receives it, only the search requests to Perplexity.
+- Every search request is billed to your Perplexity account; the run's [money limit](BUSINESS_LOGIC.md#money-limit)
+  bounds what a run may spend.
+
 ### OpenRouter key on the command line
 
 - `--api-key` without a value asks for the key hidden in the terminal. A key given as a value
@@ -128,6 +167,12 @@ The Google key serves Gemini audio through Google and the conversation samples (
   the shell history. (why: D-112)
 - The alternative is `OPENROUTER_API_KEY`, which the OpenRouter adapter reads; a key entered hidden takes precedence.
   Without a secure terminal input the hidden prompt aborts instead of reading the key visibly; use the variable then.
+- The Anthropic key of `claude_api` follows the same rules: `pla research`, `pla script` and `pla resume` take
+  `--api-key` without a value, and the hidden prompt names Anthropic or OpenRouter after the run's provider; the
+  alternative is `ANTHROPIC_API_KEY`, which the adapter reads when no key was entered. A value given to `--api-key` is
+  refused naming both variables.
+- The Perplexity key of `--web-search perplexity` has no option of its own: `pla research` and `pla script` read it
+  from `PERPLEXITY_API_KEY`.
 - Keys do not belong in `project.yaml`. The application writes them into no prompt, project or answer file.
 
 ### Keys on the wire
@@ -135,6 +180,10 @@ The Google key serves Gemini audio through Google and the conversation samples (
 - OpenRouter text, Gemini speech and Jev requests keep the key in memory and in the `Authorization` header only, and
   follow no redirects (`openrouter.NoRedirect`). Gemini speech through Google sends its key only in the
   `x-goog-api-key` header, never in the URL, and follows no redirects either.
+- A Perplexity search request keeps its key in the `Authorization` header only and follows no redirects
+  (`openrouter.NoRedirect`); an answer that contains the key is not used (`credential_in_response`).
+- Claude on the API key hands the key to the Claude Code process only in its environment, never as an argument; an
+  answer or CLI output that contains the key is not stored (`credential_in_response`).
 - A source fetch that carries a service key (CORE's free key, `PLA_CORE_API_KEY`) follows a redirect only on the same
   host and never from https to http (`sources.PublicRedirect`); otherwise it aborts with `source_download_failed`, so
   the key never reaches another server. (why: D-113)
@@ -142,10 +191,10 @@ The Google key serves Gemini audio through Google and the conversation samples (
 ### Credentials in traces, diagnostics and logs
 
 - Before anything is stored, `model_trace.redact` removes the known keys and anything that looks like a credential
-  (`sk-…`, `sess-…`, `AIza…`, `Bearer …`, values after `api_key`, `access_token`, `token`, `password` or `secret`): in the live
+  (`sk-…`, `sess-…`, `pplx-…`, `AIza…`, `Bearer …`, values after `api_key`, `access_token`, `token`, `password` or `secret`): in the live
   trace `runs/<run_id>/model_trace.json` and in the tracebacks of failed stages and workers (`logs.record_failure`:
   `runs/<run_id>/failures/`, `<project>/studio/failures/`). Error messages and diagnostic files shown in the Studio
-  replace its stored key with „[Key verborgen]“ (key hidden).
+  replace each of its stored keys (OpenRouter, Google, Anthropic, Perplexity) with „[Key verborgen]“ (key hidden).
 - `calls/call_*/diagnostics.json` keeps only sanitised technical diagnostics, no raw error messages, prompts, tool
   outputs or credentials. The one exception is a Codex failure the adapter cannot name (`codex_failed`): its
   `failure.json` and stop message carry Codex's own short reason, redacted by `model_trace.redact` and cut to 300
@@ -155,8 +204,8 @@ The Google key serves Gemini audio through Google and the conversation samples (
   full prompts or source texts.
 - The rotating log files `.studio/studio.log`, `<project>/studio/worker.log` and `<project>/logs/pla.log` (tracebacks
   included) and the terminal output of every `pla` process pass through `logs.scrub`: the keys the process knows (the
-  Studio's stored keys, a worker's keys, a key typed after `--api-key`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`;
-  `logs.add_secret`) are
+  Studio's stored keys, a worker's keys, a key typed after `--api-key`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`; `logs.add_secret`) are
   replaced whole, then the patterns of `model_trace.redact` apply. The tail of a crashed worker's error output, shown
   in the Studio under „Technische Details“ (technical details), passes the same filter.
 - Not filtered: a traceback that Python itself prints when a process dies outside its own error handling. A worker's
@@ -198,9 +247,15 @@ What version 0.1 implements:
   - These limits do not replace a check of every later spoken wording for usage rights.
 - **Companion kit.** The kit for podcast platforms (`publish_kit.py`, D-139) names sources only by title, authors,
   year and web address; an idea source and a local file path never appear in it. It publishes nothing: uploading it
-  with an episode is your step, and so is the rights check above.
+  with an episode is your step, and so is the rights check above. The whole podcast's kit (D-165) follows the same
+  rule for its source list, and its `transcript.md` holds the complete approved text of every episode, verbatim quotes
+  included; publishing it puts every quote in writing, so the rights check covers the transcript as well.
+- **AI marking.** Every exported episode MP3, voice preview and conversation sample says in its tags that it was made
+  with AI, and the show notes, the listening sheet and the companion kit's description end with a transparency note
+  (EU AI Act Art. 50; why: D-154; tags and wording: [Exports and listening sheet](AUDIO.md#exports-and-listening-sheet)).
+  Whether note and tags satisfy Art. 50 for an intended public use has not been checked legally (see V-43).
 - Transfers and credential handling: [Trust boundaries](#trust-boundaries), [Secrets and keys](#secrets-and-keys).
 - **No PII redaction.** A general detection and removal of personal data is not implemented.
 
-Planned before any public export ([PRODUCT](PRODUCT.md#roadmap)): adjustable rights states and export blocks, a
-redaction stage for personal content before model calls, and the transparency note in the exports.
+Planned before any public export ([PRODUCT](PRODUCT.md#roadmap)): adjustable rights states and export blocks, and a
+redaction stage for personal content before model calls.

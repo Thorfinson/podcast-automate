@@ -20,6 +20,7 @@ themselves; they only make ``no_hits`` rarer where the words of gap and corpus d
 """
 from __future__ import annotations
 
+from .content_text import text as wording
 from .research_retrieval import terms
 from .storage import digest
 
@@ -117,15 +118,13 @@ def statuses(rows) -> list[dict]:
              "references": [hit["reference"] for hit in row["hits"]]} for row in rows]
 
 
-def suffix(row) -> str:
-    """The sentence appended to a gap in ``open_questions.md``."""
+def suffix(row, *, language="de-DE") -> str:
+    """The sentence appended to a gap in ``open_questions.md``, in the podcast's content language (D-153). Only that
+    reader file uses it; no prompt or hash does."""
     if row["status"] == "no_hits":
-        return "Korpusprobe: kein passender Abschnitt in den gespeicherten Quellen."
+        return wording(language, "probe_no_hits")
     if row["status"] == "resolved":
-        return "Korpusprobe: in den gespeicherten Quellen beantwortet."
+        return wording(language, "probe_resolved")
     references = ", ".join(hit["reference"] for hit in row["hits"])
-    if row["status"] == "hits_read_confirmed":
-        return f"Korpusprobe: gelesen und bestätigt trotz Treffern in {references}."
-    if row["status"] == "hits_unowned":
-        return f"Korpusprobe: Treffer in {references}, die keine Folge nutzt."
-    return f"Korpusprobe: ungelesene Treffer in {references}."
+    key = {"hits_read_confirmed": "probe_confirmed", "hits_unowned": "probe_unowned"}.get(row["status"], "probe_unread")
+    return wording(language, key, references=references)

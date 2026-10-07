@@ -2,7 +2,7 @@
 title: Operations
 doc_type: operations
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-07
 covers:
   - scripts/setup.sh
   - scripts/setup-ffmpeg.ps1
@@ -15,6 +15,7 @@ covers:
   - src/podcast_automate/cli.py
   - src/podcast_automate/codex.py
   - src/podcast_automate/claude_code.py
+  - src/podcast_automate/web_search.py
   - src/podcast_automate/qwen_worker.py
   - src/podcast_automate/runner.py
   - src/podcast_automate/studio.py
@@ -25,6 +26,7 @@ covers:
   - Podcast-Studio.cmd
   - Podcast-Studio.sh
   - Podcast-Studio.command
+  - .github/workflows/release.yml
 ---
 
 # Operations
@@ -41,8 +43,11 @@ on macOS and Linux. All commands: [Commands](PRODUCT.md#commands); in daily use 
 | Install | [Windows 11](#install-on-windows-11), [macOS and Linux](#install-on-macos-and-linux) |
 | Start the Studio | `Podcast-Studio.cmd` (Windows), `Podcast-Studio.command` (macOS) or `sh Podcast-Studio.sh`; [Starting the Studio](STUDIO.md#starting-the-studio) |
 | Update | [Update the Studio](#update-the-studio) |
+| Try the whole pipeline small and cheap | `pla init <project> --trial` (a sample topic without `--topic`); [Trial project](BUSINESS_LOGIC.md#trial-project) |
 | Check subscriptions and quota | `pla doctor --skip-tts`, `pla quota`; [Check the subscriptions](#check-the-subscriptions) |
 | Set the OpenRouter key | Studio key field, `--api-key` or `OPENROUTER_API_KEY`; [Secrets and keys](SECURITY.md#secrets-and-keys) |
+| Run without a subscription | Claude Code with your Anthropic API key, or an OpenRouter model with the Perplexity search, each with a money limit; [Claude on your Anthropic API key](#claude-on-your-anthropic-api-key), [Research with OpenRouter and Perplexity](#research-with-openrouter-and-perplexity) |
+| Set or raise a run's money limit | Settings „Kostengrenze je Lauf in USD“, the hold card's offer or `pla approve <project> --cost-usd N`; [Money limit](BUSINESS_LOGIC.md#money-limit) |
 | Watch progress | `pla status <project>` in a second terminal; [Logs and diagnosis](#logs-and-diagnosis) |
 | Resume a run | **„Fortsetzen“** (resume) or `pla resume <project> [--run-id <run_id>]`; [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding) |
 | Raise a run's call limit | The hold card's offer or `pla approve <project> --model-calls N`; [Budgets](BUSINESS_LOGIC.md#budgets) |
@@ -53,6 +58,7 @@ on macOS and Linux. All commands: [Commands](PRODUCT.md#commands); in daily use 
 | Make a voice sample | `pla audio-probe <project> --approve-audio`; [Voice samples](#voice-samples) |
 | Read logs | [Logs and diagnosis](#logs-and-diagnosis) |
 | Run the tests | [AGENTS.md](../AGENTS.md) |
+| Release a version | [Release a version](#release-a-version) |
 
 ## Install on Windows 11
 
@@ -68,7 +74,8 @@ py -3.12 -m venv .venv
 
 `.venv-tts` is set up later ([Set up local Qwen on Windows](#set-up-local-qwen-on-windows)); the project already
 records its planned Python path. Running `init` again never overwrites an existing project (`project_exists`). Then set
-up FFmpeg (below) and log in to at least one subscription ([Check the subscriptions](#check-the-subscriptions)).
+up FFmpeg (below) and log in to at least one subscription, or set up your Anthropic API key or the OpenRouter and
+Perplexity keys ([Check the subscriptions](#check-the-subscriptions)).
 
 ### FFmpeg
 
@@ -94,8 +101,10 @@ ffprobe -version
 
 ## Check the subscriptions
 
-Web research and every text call that does not go to OpenRouter need at least one logged-in subscription: Codex CLI
-with a ChatGPT subscription or Claude Code with a Claude Max subscription. Choice between them and quota pauses:
+Web research and every text call that does not go to OpenRouter need at least one logged-in subscription, Codex CLI
+with a ChatGPT subscription or Claude Code with a Claude Max subscription, or Claude Code on your own Anthropic API key
+([below](#claude-on-your-anthropic-api-key)); an OpenRouter model needs none of them when the run searches through
+Perplexity ([below](#research-with-openrouter-and-perplexity)). Choice between them and quota pauses:
 [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection); login rules:
 [Subscription logins](SECURITY.md#subscription-logins).
 
@@ -117,7 +126,8 @@ go to `probes/text/<run_id>/` (`result.json`, `metadata.json`). When the quota i
 ### Claude Code
 
 Log in to Claude Code through claude.ai with `claude auth login`; `claude auth status --json` must show
-`authMethod: "claude.ai"`. An API-key login is refused (why: D-109).
+`authMethod: "claude.ai"`. An API-key login is refused for the subscription (why: D-109); a key is used only by
+[Claude on your Anthropic API key](#claude-on-your-anthropic-api-key).
 
 ```powershell
 claude auth login
@@ -128,6 +138,55 @@ claude auth status --json
 
 The adapter is verified against Claude Code 2.1.92 (2026-09-19), 2.1.283 (2026-09-26) and 2.1.284 (2026-09-29)
 (`claude_code.py`). Minimum CLI version per model: [Providers and models](PRODUCT.md#providers-and-models).
+
+### Claude on your Anthropic API key
+
+Without a subscription, Claude Code can run on your own Anthropic API key (`claude_api`; why: D-145). Every call, web
+research included, is billed to your Anthropic account:
+
+1. Install Claude Code (the same minimum versions); no `claude auth login` is needed.
+2. Give the key to the Studio under **„Anthropic-Key“** on the settings page (kept in memory until the next restart),
+   or set `ANTHROPIC_API_KEY` in the environment of the Studio or of `pla`; `pla research`, `script` and `resume` also
+   ask for it hidden with `--api-key` ([Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio)).
+3. Set a money limit: **„Kostengrenze je Lauf in USD“** under „Limits“ on the settings page, or
+   `research_limits.cost_usd` in `project.yaml` outside a Studio workspace. A billed run without one does not start.
+   What a run and a whole series cost: [Money limit](BUSINESS_LOGIC.md#money-limit).
+4. Choose „Sonnet 5.5 · high · Anthropic-API-Key“ or „Opus 5.5 · high · Anthropic-API-Key“ on the settings page, or
+   `--backend claude_api` on the command line.
+
+```powershell
+.\.venv\Scripts\pla.exe doctor --skip-tts
+.\.venv\Scripts\pla.exe research .\projects\energy-models --backend claude_api --api-key
+.\.venv\Scripts\pla.exe approve .\projects\energy-models --cost-usd 300
+```
+
+`pla approve --cost-usd` raises the limit of the project's last run. Check the bill in the Anthropic Console: the
+amounts the application counts are Claude Code's own estimate ([GOTCHAS](GOTCHAS.md#subscriptions-and-providers)).
+
+### Research with OpenRouter and Perplexity
+
+Without any subscription and without Claude Code, an OpenRouter model can do all the text work, research included,
+when the run searches the web through Perplexity's Search API (why: D-151). OpenRouter bills the model calls,
+Perplexity every search request:
+
+1. Give the Studio the **„OpenRouter-Key“** and the **„Perplexity-Key“** on the settings page (kept in memory until
+   the next restart), or set `OPENROUTER_API_KEY` and `PERPLEXITY_API_KEY` in the environment of the Studio or of
+   `pla` ([Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio)).
+2. Set a money limit (**„Kostengrenze je Lauf in USD“**, as above); it covers the OpenRouter calls and the
+   Perplexity requests together.
+3. Choose an OpenRouter preset under „Textmodell“ and **„Über Perplexity“** (through Perplexity) under
+   **„Websuche“** (web search) on the settings page, or `--backend openrouter --model … --web-search perplexity` on the
+   command line.
+
+```powershell
+.\.venv\Scripts\pla.exe research .\projects\energy-models --backend openrouter --model deepseek/deepseek-v4.1-flash --web-search perplexity --api-key
+.\.venv\Scripts\pla.exe script .\projects\energy-models --backend openrouter --model deepseek/deepseek-v4.1-flash --web-search perplexity --api-key
+```
+
+`--api-key` asks for the OpenRouter key hidden; the Perplexity key comes from `PERPLEXITY_API_KEY`. A resume keeps the
+run's web search. `pla doctor` counts this setup as ready through its `openrouter_text` check; its
+`perplexity_search` line only says whether a Perplexity key is set. Whether the Perplexity search finds sources as good
+as a model's own search is still open (V-36).
 
 ### Quota and installation check
 
@@ -141,12 +200,21 @@ and a noted block if there is one).
   work),
 - `ffmpeg` and `ffprobe` on PATH,
 - the Codex and Claude logins and the quota of both subscriptions,
+- Claude on the API key (`claude_api`): `ANTHROPIC_API_KEY` is set and Claude Code is recent enough; it makes no
+  model call, so whether Anthropic accepts the key shows only at the first billed call,
+- an OpenRouter key for text (`openrouter_text`): whether `OPENROUTER_API_KEY` is set; it makes no request,
+- the web search through Perplexity (`perplexity_search`, informational, never blocks readiness): whether
+  `PERPLEXITY_API_KEY` is set; it makes no request,
 - without `--skip-tts`, the Qwen environment set in the project (default settings without a project; see
   [Set up local Qwen on Windows](#set-up-local-qwen-on-windows)).
 
-The installation is ready when every technical check passes and at least one subscription login is usable
-(`doctor.readiness`). `--skip-tts` skips only local Qwen, for example when you record with Gemini. `doctor` produces no
-audio and does not check an OpenRouter key; research needs a subscription whatever the audio provider.
+Without `--json` it prints one line per check, `OK` or `MISSING`, then its name and its detail, in English except
+where a detail is a message of a pipeline module (why: D-156).
+The installation is ready when every technical check passes and at least one text access is usable: a subscription
+login, Claude on the API key or an OpenRouter key (`doctor.readiness`, `doctor.TEXT_ACCESS`). `--skip-tts` skips only
+local Qwen, for example when you record with Gemini. `doctor` produces no audio; research needs a subscription, Claude
+on the API key or, with an OpenRouter model, the Perplexity search, whatever the audio provider. In the Studio,
+„Verbindungen prüfen“ also counts the keys entered on the settings page.
 
 ### Where the CLIs are found
 
@@ -158,7 +226,7 @@ double-clicked Studio needs no reinstall; its ChatGPT login is checked separatel
 written.
 
 On macOS and Linux, the Studio starter and `scripts/setup.sh` also add `~/.local/bin`, `/opt/homebrew/bin` and
-`/usr/local/bin` to `PATH`. One usable subscription is enough.
+`/usr/local/bin` to `PATH`. One usable subscription, or Claude on the API key, is enough.
 
 ## Install on macOS and Linux
 
@@ -483,8 +551,8 @@ traceback files ([Credentials in traces, diagnostics and logs](SECURITY.md#crede
 ### When a step fails
 
 - **Unexpected program error.** The Studio message stays short; the hold card opens the cleaned traceback as text
-  under **„Technische Details“** (technical details), and `pla status` lists the same files („Technische
-  Fehlerprotokolle“).
+  under **„Technische Details“** (technical details), and `pla status` lists the same files ("Technical failure
+  logs").
 - **Stop with a domain reason** (quota, missing evidence, review objections). The log gets one line without traceback
   and the message names no traceback file, but the stop is still recorded under `runs/<run_id>/failures/`, like every
   stage stop (`runner.execute_stages`).
@@ -499,3 +567,40 @@ Every `pla` command returns `0` for success, `1` for blocked or failed, `2` for 
 interruption. `pla doctor` returns `1` when the installation is not ready; `pla quota` returns `2` when a subscription is
 usable but none has quota left, and `1` when none is usable. `--json` gives machine-readable results
 ([Commands](PRODUCT.md#commands)).
+
+## Release a version
+
+A release is a pushed version tag `vX.Y.Z`; `.github/workflows/release.yml` builds, checks, tests and publishes it
+(why: D-158). Versions are semantic; the first public release is 0.2.0.
+
+1. Set `version` in `pyproject.toml` to `X.Y.Z` and move the entries under `## [Unreleased]` in `CHANGELOG.md` into
+   a new section `## [X.Y.Z] - YYYY-MM-DD`.
+2. Merge this to `main` and wait until all six legs of `.github/workflows/tests.yml` pass. The release workflow tests
+   only on Linux, so tag only a `main` commit whose six CI legs passed.
+3. Tag that commit and push the tag:
+
+   ```sh
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+The workflow then, each step only after the previous one passed:
+
+- checks that the tag equals `v` plus the version in `pyproject.toml` and that `CHANGELOG.md` has a `## [X.Y.Z]`
+  section with content;
+- builds the sdist and the wheel (`python -m build`), checks them with `twine check --strict` and checks that the
+  wheel holds every data file of the package (catalogs, prompts, web files);
+- runs both test suites on Linux with Python 3.12 and 3.13 against the installed wheel;
+- publishes to PyPI through trusted publishing in the GitHub environment `pypi`, without a stored token;
+- creates the GitHub release with the built files and the version's CHANGELOG section as its notes; a version with
+  `a`, `b`, `rc` or `dev` in it becomes a pre-release.
+
+A release run is never cancelled half-way, so PyPI and the GitHub release stay in step.
+
+**One-time setup** before the first release, by the repository owner:
+
+- On PyPI, a pending trusted publisher: project `podcast-automate`, owner `Thorfinson`, repository
+  `podcast-automate`, workflow `release.yml`, environment `pypi`.
+- On GitHub, an environment named `pypi` in the repository settings.
+- On GitHub, private vulnerability reporting turned on, the only reporting channel of the
+  [security policy](../SECURITY.md).

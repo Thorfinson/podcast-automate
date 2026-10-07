@@ -11,6 +11,7 @@ import json
 import math
 
 from .errors import AppError
+from .cost_estimate import money_view
 from .storage import read_yaml, write_json
 from .script_checkpoints import finished
 
@@ -96,7 +97,9 @@ def budget_projection(work, manifest, limits, entries, *, series_review: bool, r
     expected_breakdown = {stage: math.ceil(count * factor) if stage in STAGE_CALLS else count
                           for stage, count in breakdown.items()}
     expected = sum(expected_breakdown.values())
-    return {"used": used, "limit": limits.model_calls, "remaining": remaining,
+    # A run billed to the user's key also shows its money (D-146); every other projection stays as it was.
+    money = money_view(root, work, "script", limits, expected)
+    return {**({"cost": money} if money else {}), "used": used, "limit": limits.model_calls, "remaining": remaining,
             "minimum_remaining_calls": minimum, "breakdown": breakdown,
             "shortfall": max(0, minimum - remaining), "feasible": minimum <= remaining,
             "calls_per_episode": calls_per_episode(), "stage_calls": STAGE_CALLS,

@@ -193,6 +193,15 @@ def api_failure(code, reason=""):
                     code="openrouter_unavailable", status="blocked")
 
 
+def billed_cost(envelope):
+    """The cost OpenRouter reports for a completed stream, or None."""
+    usage = envelope.get("usage") if isinstance(envelope, dict) else None
+    cost = usage.get("cost") if isinstance(usage, dict) else None
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0:
+        return cost
+    return None
+
+
 class OpenRouterAdapter:
     def __init__(self, settings, *, model: str, api_key: str | None = None,
                  max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning_effort=None):
@@ -213,6 +222,7 @@ class OpenRouterAdapter:
         self.model = model
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = validate_reasoning(reasoning_effort, provider="openrouter", model=model)
+        self._billed = None
 
     def require_key(self):
         if not self._key.get_secret_value():
@@ -222,6 +232,9 @@ class OpenRouterAdapter:
     def structured(self, prompt: str, output_type, directory: Path, *,
                    prompt_version: str, search: bool = False):
         self.require_key()
+        # The cost of a completed stream, kept when its answer is then refused (truncated, invalid, rejected): that
+        # model work is billed all the same (D-148).
+        self._billed = None
         activity = CallActivity(directory, output_type.__name__, self.model,
                                 secrets=(self._key.get_secret_value(),))
         activity.diagnostic("request", prompt_chars=len(prompt), prompt_bytes=len(prompt.encode("utf-8")),
@@ -234,6 +247,9 @@ class OpenRouterAdapter:
             activity.diagnostic("failure", exc.code, code=exc.code)
             activity.finish(exc.code)
             receipt = {"code": exc.code, "message": str(exc), "model": self.model, "prompt_version": prompt_version}
+            if self._billed is not None:
+                exc.details.setdefault("billed_usd", self._billed)
+                receipt["billed_usd"] = self._billed
             if exc.code == "rejected_output":
                 # The parsed answer is model output, kept as an accepted one is kept in response.json.
                 receipt["validation_errors"] = exc.details["defects"]
@@ -273,6 +289,7 @@ class OpenRouterAdapter:
         try:
             with build_opener(NoRedirect()).open(request, timeout=self.settings.text_timeout_seconds) as response:
                 envelope = stream_response(response, activity, secret, start + self.settings.text_timeout_seconds)
+            self._billed = billed_cost(envelope)
         except HTTPError as exc:
             code = exc.code
             try:

@@ -1,4 +1,7 @@
-"""Readable download names and a bounded-memory bundle of published recordings."""
+"""Readable download names and a bounded-memory bundle of published recordings.
+
+The names are in the podcast's content language (D-153, content_text): a German project's names are the ones it had
+before, an English one's say "Episode 03 - … - Part 01 of 02" and "All episodes"."""
 import json
 import re
 import tempfile
@@ -9,9 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+from .content_text import DEFAULT, text as wording
 from .errors import AppError
 from .models import EpisodeScript
-from .publish_kit import TEXT_FILES, saved_kit
+from .publish_kit import PODCAST_FILES, TEXT_FILES, saved_kit, saved_podcast_kit
 from .runner import manifest_path
 from .storage import inside, load_project, project_lock, read_yaml
 
@@ -30,13 +34,21 @@ def name_part(value: str, max_bytes: int = 64) -> str:
     return value
 
 
-def episode_filename(topic, episode_id, title, index, part, parts, *, in_archive=False):
+def longer_than_german(language, key, **values):
+    """How many bytes ``key`` in ``language`` is longer than the German words the name budgets were measured with
+    (D-153); that much comes off the title or topic, so a name keeps its length on disk and inside the ZIP's folder."""
+    size = lambda lang: len(wording(lang, key, **values).encode("utf-8"))
+    return max(0, size(language) - size(DEFAULT))
+
+
+def episode_filename(topic, episode_id, title, index, part, parts, *, language, in_archive=False):
     match = re.fullmatch(r"ep_(\d+)", episode_id)
     number = int(match[1]) if match else index
-    suffix = f" - Teil {part:02d} von {parts:02d}" if parts > 1 else ""
+    suffix = wording(language, "part_suffix", part=part, parts=parts) if parts > 1 else ""
     prefix = "" if in_archive else f"{name_part(topic, 32)} - "
-    title_budget = 76 - len(suffix.encode("utf-8")) if in_archive else 56
-    return f"{prefix}Folge {number:02d} - {name_part(title, title_budget)}{suffix}.mp3"
+    title_budget = (76 - len(suffix.encode("utf-8")) if in_archive else 56) - longer_than_german(
+        language, "episode", number=number)
+    return f"{prefix}{wording(language, 'episode', number=number)} - {name_part(title, title_budget)}{suffix}.mp3"
 
 
 def disposition(filename):
@@ -59,6 +71,7 @@ class PodcastDownload:
     topic: str
     recordings: list[Recording]
     episode_count: int
+    language: str
 
     @property
     def finished_episodes(self):
@@ -66,14 +79,17 @@ class PodcastDownload:
 
     @property
     def filename(self):
-        scope = "Alle Folgen" if self.finished_episodes == self.episode_count else f"{self.finished_episodes} von {self.episode_count} Folgen"
+        finished, total = self.finished_episodes, self.episode_count
+        key, values = ("all_episodes", {}) if finished == total else ("some_episodes", {"finished": finished, "total": total})
         # Explorer extracts into a folder with the ZIP's base name. Budget for
         # that folder AND the member name, not just each name independently.
-        return f"{name_part(self.topic, 44)} - {scope}.zip"
+        topic = name_part(self.topic, 44 - longer_than_german(self.language, key, **values))
+        return f"{topic} - {wording(self.language, key, **values)}.zip"
 
 
 def podcast_download(root: Path, *, selected_path=None) -> PodcastDownload:
-    topic = load_project(root).topic
+    config = load_project(root)
+    topic, language = config.topic, config.language
     recordings, episodes = [], set()
     pointer = root / "studio/outline.json"
     if pointer.is_file():
@@ -100,16 +116,31 @@ def podcast_download(root: Path, *, selected_path=None) -> PodcastDownload:
                     not path.is_relative_to((root / "exports" / folder.name).resolve()) or not path.is_file()):
                 raise AppError(f"Die Aufnahme für „{script.title}“ ist nicht vollständig verfügbar. "
                                "Audioexport dieser Folge prüfen.", code="missing_audio")
-            filename = episode_filename(topic, script.episode_id, script.title, index, part, len(parts))
+            filename = episode_filename(topic, script.episode_id, script.title, index, part, len(parts),
+                                        language=language)
             archive_filename = episode_filename(topic, script.episode_id, script.title, index, part,
-                                                 len(parts), in_archive=True)
+                                                 len(parts), language=language, in_archive=True)
             used = {r.archive_filename.casefold() for r in recordings}
             candidate, suffix = archive_filename, 2
             while candidate.casefold() in used:
-                candidate = f"{archive_filename[:-4]} - Aufnahme {suffix}.mp3"
+                candidate = f"{archive_filename[:-4]} - {wording(language, 'recording', number=suffix)}.mp3"
                 suffix += 1
             recordings.append(Recording(relative, path, filename, script.episode_id, candidate))
-    return PodcastDownload(topic, recordings, len(episodes))
+    return PodcastDownload(topic, recordings, len(episodes), language)
+
+
+def download_names(root: Path) -> dict:
+    """The names the Studio offers for downloads, in the podcast's content language (D-153): ``zip`` for the whole
+    podcast (None while no episode is recorded) and ``files``, each published MP3's name by its project path as
+    ``audio_latest.json`` lists it. The download routes send the same names in Content-Disposition; a page shows them
+    in its links' ``download`` attribute instead of building its own. Empty while a recording is incomplete
+    (podcast_download refuses it with ``missing_audio``)."""
+    try:
+        download = podcast_download(root)
+    except AppError:
+        return {"zip": None, "files": {}}
+    return {"zip": download.filename if download.recordings else None,
+            "files": {recording.relative: recording.filename for recording in download.recordings}}
 
 
 @contextmanager
@@ -135,5 +166,14 @@ def podcast_zip(root: Path, *, locked: bool = True):
                         for name in TEXT_FILES:
                             source = inside(root, f"{kit['folder']}/{name}")
                             if source.is_file():
-                                archive.write(source, f"{recording.archive_filename.split(' - ')[0]} - Begleitmaterial/{name}")
+                                folder = f"{recording.archive_filename.split(' - ')[0]} - {wording(download.language, 'companion_kit')}"
+                                archive.write(source, f"{folder}/{name}")
+                # The podcast's own kit with the transcript of every episode, while it covers exactly the published
+                # episodes and these recordings (publish_kit.saved_podcast_kit).
+                kit = saved_podcast_kit(root)
+                if kit:
+                    for name in PODCAST_FILES:
+                        source = inside(root, f"{kit['folder']}/{name}")
+                        if source.is_file():
+                            archive.write(source, f"{wording(download.language, 'podcast_kit')}/{name}")
             yield path, download.filename

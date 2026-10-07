@@ -2,7 +2,7 @@
 title: Teaching design
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/teaching.py
   - src/podcast_automate/teaching_research.py
@@ -243,7 +243,8 @@ teaching review (why: D-079).
 
 The supplementary research uses web search: at most three primary sources per episode (fewer when
 `research_limits.sources` is lower), evidenced additions and an independent source review. Like all research, it
-runs on the subscriptions ([Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection)).
+searches with the run's web search: the subscriptions' or the API key's own tools, or Perplexity
+([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)).
 
 - On success, the teaching plan continues without another click; the approved series plan is kept.
 - Additions lie with their original sources and checksums under `teaching/<episode_id>/supplement/`; writing, reviews
@@ -309,7 +310,8 @@ earlier point, ignoring case, whitespace and trailing punctuation, counts as ear
 ### Redesign with a hint
 
 If an episode's teaching plan keeps open points after the focused correction round (`teaching_design_failed`), the
-hold card offers **„Lehrkonzept mit Hinweis neu entwerfen“** (redesign the teaching plan with a hint); on the command
+hold card offers **„Mit den offenen Punkten neu entwerfen“** (redraft with the open points; the note arrives
+prefilled and stays editable); on the command
 line `pla approve <project> --redesign-teaching <episode> --hint "…"`.
 
 - The hint, for example „Keine Abfragesprache wörtlich vorlesen, Abkürzungen beim ersten Mal ausschreiben“ ("Do not
@@ -323,7 +325,9 @@ line `pla approve <project> --redesign-teaching <episode> --hint "…"`.
 
 ### Reports and evals
 
-`episodes/<episode_id>/teaching_plan.md` makes the teaching plan readable. The detailed report in
+`episodes/<episode_id>/teaching_plan.md` makes the teaching plan readable; it and the `research_needed.md` of a
+supplementary research use the fixed words of the project's language, German or English
+([Languages](ARCHITECTURE.md#languages)). The detailed report in
 `reports/script_quality.yaml` holds the reader answers, the evidenced individual verdicts and
 `human_learning_validated: false`: simulated reading comprehension is not a measurement with real listeners.
 

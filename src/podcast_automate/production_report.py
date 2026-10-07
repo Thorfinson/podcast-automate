@@ -32,7 +32,8 @@ def minutes_between(start, end):
 def production_report(work, *, allowance_rows=()):
     stages = defaultdict(lambda: {"calls": 0, "failed": 0, "minutes": 0.0, "providers": Counter()})
     versions = defaultdict(lambda: {"calls": 0, "minutes": 0.0, "first": None, "last": None})
-    providers = defaultdict(lambda: {"calls": 0, "minutes": 0.0, "reported_usd": 0.0, "billed_usd": 0.0})
+    providers = defaultdict(lambda: {"calls": 0, "minutes": 0.0, "reported_usd": 0.0, "billed_usd": 0.0,
+                                     "unpriced_attempts": 0})
     starts, ends = [], []
     for folder in sorted((work / "calls").glob("call_*")):
         activity = read(folder / "activity.json", {}) or {}
@@ -62,7 +63,15 @@ def production_report(work, *, allowance_rows=()):
         spent["calls"] += 1
         spent["minutes"] += minutes
         spent["reported_usd"] += float(metadata.get("reported_cost_usd") or 0)
-        spent["billed_usd"] += float(metadata.get("separately_billed_cost") or 0)
+        rows = read(folder / "billing.json", []) or []
+        if isinstance(rows, list) and rows:
+            # Every billed attempt, a rejected or repeated one too (D-148); one without a reported cost is counted.
+            spent["billed_usd"] += sum(float(row.get("usd") or 0) for row in rows
+                                       if isinstance(row, dict) and row.get("state") == "priced")
+            spent["unpriced_attempts"] += sum(isinstance(row, dict) and row.get("state") in {"unpriced", "started"}
+                                              for row in rows)
+        else:
+            spent["billed_usd"] += float(metadata.get("separately_billed_cost") or 0)
     total_minutes = sum(stage["minutes"] for stage in stages.values())
     stops = Counter(path.name.split("_")[0] for path in (work / "failures").glob("*.txt"))
     fresh = read(work / "fresh_attempts.json", []) or []

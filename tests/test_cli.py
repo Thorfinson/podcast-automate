@@ -110,7 +110,8 @@ class CliTests(unittest.TestCase):
             code, data = self.invoke("series-review", str(fixture.root), "--run", first.run_id, "--json")
         self.assertEqual((code, data["status"], data["report_mirrored"], data["script_run_id"]),
                          (0, "completed", False, first.run_id))
-        self.assertIn("nicht der veröffentlichte Stand", data["message"])
+        # The CLI's own messages are English since D-156; the fact asserted is the same.
+        self.assertIn("is not the published state", data["message"])
         self.assertEqual(report.read_bytes(), before)
         review_run = fixture.root / "runs" / data["run_id"]
         verdict = json.loads((review_run / "series_review.json").read_text(encoding="utf-8"))["report"]
@@ -190,6 +191,26 @@ class CliTests(unittest.TestCase):
                                                             "stages": {}}
                 code, _ = self.invoke("script", root, "--backend", "openrouter", "--model", "vendor/model", "--api-key", "--json")
             self.assertEqual((code, prompt.call_count, run.call_args.kwargs["api_key"]), (0, 1, "typed-key"))
+            # Research on Claude with the user's Anthropic key asks for that key, hidden, by its name (D-145).
+            with patch("podcast_automate.cli.getpass.getpass", return_value="sk-ant-typed-key") as prompt, \
+                    patch("podcast_automate.cli.run_research") as research:
+                research.return_value.status = "completed"
+                research.return_value.model_dump.return_value = {"run_id": "run_r", "kind": "research",
+                                                                 "status": "completed", "stages": {}}
+                code, _ = self.invoke("research", root, "--backend", "claude_api", "--api-key", "--json")
+            self.assertEqual((code, research.call_args.kwargs["api_key"], research.call_args.kwargs["backend"]),
+                             (0, "sk-ant-typed-key", "claude_api"))
+            self.assertIn("Anthropic", prompt.call_args.args[0])
+
+    def test_an_openrouter_key_alone_counts_as_text_access(self):
+        """D-151: an OpenRouter model researches through the Perplexity search, so such a setup is ready without a
+        subscription; the Perplexity line stays informational."""
+        from podcast_automate.doctor import readiness
+        checks = [{"name": "python", "ok": True}, {"name": "codex_login", "ok": False}, {"name": "claude_login", "ok": False},
+                  {"name": "claude_api", "ok": False}, {"name": "perplexity_search", "ok": False},
+                  {"name": "openrouter_text", "ok": True}]
+        self.assertTrue(readiness(checks))
+        self.assertFalse(readiness([{**row, "ok": False} if row["name"] == "openrouter_text" else row for row in checks]))
 
     def test_init_pins_the_qwen_revision_this_computer_uses(self):
         """2026-10-02: ``main`` never matched the commit the Qwen worker records, so every chapter failed after the
@@ -217,6 +238,20 @@ class CliTests(unittest.TestCase):
                 (hub / f"models--{model.replace('/', '--')}/snapshots" / cached).rmdir()
                 _, data = self.invoke("init", str(workspace / "projects/fourth"), "--topic", "Thema", "--json")
                 self.assertEqual(data["project"]["runtime"]["tts_revision"], cached)
+
+    def test_the_help_of_every_command_is_english(self):
+        """D-156: help texts, metavars and descriptions carry no German; pipeline messages are not part of it."""
+        import argparse
+        from podcast_automate.cli import build_parser
+        parser = build_parser()
+        commands = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+        self.assertGreaterEqual(len(commands.choices), 15)
+        for name, command in {"pla": parser, **commands.choices}.items():
+            with self.subTest(command=name):
+                text = command.format_help()
+                self.assertFalse(set(text) & set("äöüÄÖÜß„“"), text)
+                for word in (" und ", " oder ", " für ", " nicht ", " des ", " Lauf"):
+                    self.assertNotIn(word, text)
 
     def test_invalid_user_configuration_has_no_traceback(self):
         with tempfile.TemporaryDirectory() as root:

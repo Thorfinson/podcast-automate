@@ -34,7 +34,7 @@ from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManife
                      TopicBrief, host_labels, now)
 from .episode_audio import reading_hash, saved_approval, saved_expression
 from .expression import BACKCHANNEL, TAG
-from .runner import manifest_path
+from .runner import LIMIT_DETAIL_VALUES, manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
                          approve_fresh_attempts, approve_research_retry, approve_residual_finish, approve_text_switch,
                          decide_review_disagreement, fresh_attempts_available, request_teaching_redesign, switch_choice,
@@ -46,22 +46,26 @@ from .speech import (AudioChoice, GEMINI_PROVIDERS, GEMINI_VOICES, QWEN_VOICES, 
                      same_audio_generation)
 from .storage import (atomic_text, digest, file_hash, file_lock, init_project, inside, load_project, project_hash,
                       project_lock, read_text, read_yaml, write_json, write_yaml)
-from .publish_kit import saved_kit
+from .publish_kit import PODCAST_FOLDER, saved_kit, saved_podcast_kit
 from .voice_samples import (SAMPLE_TEXTS, generate_pair, pair_view, ready_pair_file, ready_sample, sample_inventory,
                             sample_path)
 from .spoken_forms import (SpokenForms, apply as apply_spoken_forms, load_forms, report as pronunciation_report,
                            spoken_text)
 from .studio_progress import memo
-from .studio_messages import clean, paths_only, user_text
-from . import provided_works, studio_allowances, studio_settings, subscriptions
+from .studio_messages import clean, language_of, paths_only, user_text
+from . import provided_works, studio_allowances, studio_settings, studio_text, subscriptions
+from .studio_text import Localized, t
 from .sources import core_usage
 from .production_report import production_report
 from .studio_scripts import review_notes, script_previews
-from .downloads import disposition, podcast_download, podcast_zip
+from .downloads import disposition, download_names, podcast_download, podcast_zip
+from .trial import trial_brief, trial_facts
 from .studio_trash import has_artifacts, move_contents
 from .platforms import configure_path, venv_python
 from .process import stop_process_tree
-from .text_settings import (CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL,
+from .cost_estimate import COST_TABLE_MEASURED_ON, DEFAULT_USD_PER_CALL
+from .text_settings import (BILLED_TEXT_PROVIDERS, CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, DEFAULT_CLAUDE_EFFORT,
+                            DEFAULT_CLAUDE_MODEL,
                             DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT, EFFORT_EQUIVALENTS, OPENROUTER_EFFORTS,
                             OPENROUTER_MODELS, PROVIDER_NOTES, REASONING_EFFORTS, TEXT_PRESETS, TEXT_PROVIDERS,
                             auto_candidates, provider_model, text_preset, validate_model, validate_reasoning)
@@ -75,15 +79,30 @@ SCHEDULER_INTERVAL_SECONDS = 30
 MAX_PROJECT_JOBS = 3
 # A paused text job in one of these states stays the project's job even when a later audio job exists.
 ATTENTION = {"blocked", "failed", "interrupted", "waiting_for_quota", "pending", "review_ready"}
-# Empty credit and an expired login do not come back by waiting, so the scheduler never resumes them.
-NO_AUTO_RESUME = {"openrouter_credits", "authentication_required"}
+# Empty credit and an expired login do not come back by waiting, so the scheduler never resumes them; neither does a
+# refused Anthropic key or account without credit (D-145). An expired subscription login is resumed only once a login
+# check passes (Studio.resume_after_login, D-155); the login itself stays the user's.
+NO_AUTO_RESUME = {"openrouter_credits", "authentication_required", "anthropic_credits", "anthropic_authentication",
+                  "perplexity_credits", "perplexity_authentication"}
 # Technical stops of a research or script run that a later attempt usually passes: a call that ran out of time or
-# went silent, a failed provider turn, a connection that dropped. The scheduler resumes them by itself, MAX_AUTO_RESUMES
-# times after these pauses (2026-10-02: about 186 resumes by hand against 8 automatic ones, which covered quota waits
-# only). Editorial decisions, limits, credit and logins are never among them.
+# went silent, a failed provider turn, a connection that dropped, a research call without an observable web search
+# (repeated once in the call first, provider_pool.REPEATED_ONCE), an answer without a readable result. The scheduler
+# resumes them by itself, MAX_AUTO_RESUMES times without progress after these pauses (2026-10-02: about 186 resumes by
+# hand against 8 automatic ones, which covered quota waits only; D-155 added the last two). Editorial decisions,
+# limits, credit and logins are never among them, and neither is a correction loop that spent its attempts on answers
+# it rejected (run_budget.REASKED_MARKER), which the fresh-attempt pre-approval covers instead.
 TRANSIENT_STOPS = {"timeout", "stall", "claude_failed", "codex_failed", "claude_structured_output",
-                   "openrouter_connection", "openrouter_unavailable"}
+                   "openrouter_connection", "openrouter_unavailable", "perplexity_failed", "search_not_observed",
+                   "invalid_model_output"}
 TRANSIENT_BACKOFF_MINUTES = (10, 30, 90)
+# Stops a fix of the code usually clears: a saved state the code then reads again, an unexpected program error. Each
+# gets one automatic resume once the Studio's code changed after the stop (D-155: all five such stops of the Sep/Oct
+# series cleared exactly so, 1 to 62 minutes after the fix); a stop after that resume waits for the next update.
+CODE_UPDATE_STOPS = {"invalid_research_checkpoint", "processing_failed"}
+# How often the scheduler checks the login of a run stopped for an expired one (resume_after_login), and when it last
+# did per (project root, run id). Kept by this server process only: a restarted Studio checks again at once.
+LOGIN_CHECK_SECONDS = 300
+LOGIN_CHECKS: dict[tuple[str, str], float] = {}
 # Each lane keeps its own parked job (park); paused_job.json is the single slot of Studios before 2026-10-02.
 LANES = ("research", "script", "audio")
 # Jobs that never write exports: while one of them holds the project lock, downloads read without it.
@@ -109,6 +128,56 @@ def overview_job(job):
              **({"advice": {"key": row["advice"].get("key"), "recommendation": row["advice"].get("recommendation")}}
                 if isinstance(row.get("advice"), dict) else {})} for row in ledger["questions"]]
     return {**job, "progress": {**job["progress"], "research_questions": {**ledger, "questions": rows}}}
+
+# The parts of a project page that change only with its content: the page polls without them (Studio.status) and loads
+# them again when content_version changes (D-159; 2026-10-07: each 2.5 s poll carried 2.5-3.7 MB).
+HEAVY_FIELDS = ("research", "outline", "episodes", "script_previews")
+
+
+def slim_job(job):
+    """A job without its stages' output hashes, which the page never reads (about 5.6 of an audio job's 6.7 KB)."""
+    run = (job or {}).get("run")
+    if not isinstance(run, dict) or not isinstance(run.get("stages"), dict):
+        return job
+    stages = {name: {key: value for key, value in stage.items() if key != "outputs"} if isinstance(stage, dict) else stage
+              for name, stage in run["stages"].items()}
+    return {**job, "run": {**run, "stages": stages}}
+
+
+def content_version(data):
+    """A fingerprint of a project page's heavy parts; the route computes it outside the Studio's mutex."""
+    return digest({key: data.get(key) for key in HEAVY_FIELDS})
+
+
+def status_view(data):
+    """The project page without its heavy parts and with slim jobs: what the page polls (Studio.status)."""
+    view = {key: value for key, value in data.items() if key not in HEAVY_FIELDS}
+    for key in ("job", "main_job"):
+        view[key] = slim_job(view.get(key))
+    view["audio_jobs"] = [slim_job(job) for job in view.get("audio_jobs") or []]
+    view["parked_jobs"] = [slim_job(job) for job in view.get("parked_jobs") or []]
+    if isinstance(view.get("run"), dict):
+        view["run"] = slim_job({"run": view["run"]})["run"]
+    return view
+
+
+def stale_reasons(report, script_hash, voices, stored, current):
+    """Why a recording no longer matches its episode, as the page names it: "script", "voices", or each field of the
+    audio choice that differs (expression aside, as in same_audio_generation)."""
+    reasons = []
+    if report.get("script_sha256") != script_hash:
+        reasons.append("script")
+    if report.get("voices") != voices:
+        reasons.append("voices")
+    try:
+        first, second = (AudioChoice.model_validate(value).model_dump() for value in (stored, current))
+    except (ValueError, TypeError):
+        return reasons or ["audio"]
+    for key in sorted((set(first) | set(second)) - {"expression"}):
+        if first.get(key) != second.get(key) and key not in reasons:
+            reasons.append(key)
+    return reasons
+
 
 
 def stop_code(job):
@@ -255,19 +324,51 @@ class ExternalWorker:
             pass
 
 
+def stop_message(job):
+    """The message of a stopped job's stop: its stage's error, or the job's own for a stop the worker raised."""
+    code, stage = stop_code(job)
+    record = (((job or {}).get("run") or {}).get("stages") or {}).get(stage) if stage else None
+    error = record.get("error") if isinstance(record, dict) else None
+    return str((error or {}).get("message") or (job or {}).get("message") or "")
+
+
+def login_providers(root, run_id):
+    """The subscriptions whose login lets this stopped run go on: its fixed one, either candidate under the automatic
+    rule, and both for an OpenRouter run, whose searches run on the subscriptions. A run from before the saved choice
+    works with Codex (switch_choice); a run on a key needs no subscription login."""
+    from .run_budget import run_text_generation
+    selection = run_text_generation(manifest_path(root, run_id).parent) or {}
+    provider = selection.get("provider") or "codex_cli"
+    if provider == "auto":
+        return [name for name in ("claude_code", "codex_cli") if name in (selection.get("candidates") or {})]
+    if provider == "openrouter":
+        return ["claude_code", "codex_cli"]
+    return [provider] if provider in {"claude_code", "codex_cli"} else []
+
+
+def spent_corrections(job):
+    """Whether the stop ends a correction loop that spent its attempts on answers it rejected (run_budget.REASKED_MARKER):
+    a model answer that keeps breaking its contract, not a transient failure; the fresh-attempt pre-approval covers it."""
+    from .run_budget import REASKED_MARKER
+    return REASKED_MARKER in stop_message(job)
+
+
 def auto_resume(job):
     """When the scheduler resumes this stopped main job by itself: ``(kind, ISO time)``, ``(kind, None)`` once its
     automatic resumes are used up, or None when it never does. ``quota`` waits for the named reset; ``transient``
-    waits TRANSIENT_BACKOFF_MINUTES after the stop."""
+    waits TRANSIENT_BACKOFF_MINUTES after the stop; ``code_update`` resumes a stop of CODE_UPDATE_STOPS once, as soon as
+    the Studio's code changed after it (code_updated_at). The count is of automatic resumes without progress: the
+    worker sets it back once a resumed job answered a call (studio_worker.main)."""
     run = (job or {}).get("run") or {}
-    if not run.get("run_id") or stop_code(job)[0] in NO_AUTO_RESUME:
+    code = stop_code(job)[0]
+    if not run.get("run_id") or code in NO_AUTO_RESUME:
         return None
     count = job.get("auto_resume_count", 0)
     count = count if type(count) is int and count >= 0 else 0
     if job.get("status") == "waiting_for_quota" and job.get("retry_at"):
         return "quota", job["retry_at"] if count < MAX_AUTO_RESUMES else None
-    if (job.get("status") in {"failed", "blocked"} and stop_code(job)[0] in TRANSIENT_STOPS
-            and run.get("kind") in {"research", "script"}):
+    stopped_run = job.get("status") in {"failed", "blocked"} and run.get("kind") in {"research", "script"}
+    if stopped_run and code in TRANSIENT_STOPS and not spent_corrections(job):
         stopped = parse_iso(job.get("finished_at"))
         if stopped is None:
             return None
@@ -275,6 +376,11 @@ def auto_resume(job):
             return "transient", None
         return "transient", datetime.fromtimestamp(stopped.timestamp() + 60 * TRANSIENT_BACKOFF_MINUTES[count],
                                                    timezone.utc).isoformat()
+    if stopped_run and code in CODE_UPDATE_STOPS:
+        stopped, updated = parse_iso(job.get("finished_at")), parse_iso(code_updated_at())
+        if stopped is None or updated is None or updated <= stopped:
+            return None
+        return "code_update", updated.isoformat() if count < MAX_AUTO_RESUMES else None
     return None
 
 
@@ -296,18 +402,57 @@ def latest_provider_choice(work):
 
 def audio_job_path(root, job_id):
     if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id):
-        raise AppError("Ungültiger Audioauftrag.", code="invalid_job")
+        raise AppError(t("server.invalid_job"), code="invalid_job")
     return root / "studio/audio_jobs" / (job_id + ".json")
 
 
-def record_interruption(root, *, expected_job_id=None, audio_job_id=None,
-                        message="Angehalten. Fertige Arbeit bleibt gespeichert.", shared=None, crash_detail=None):
+def stored_message(record, message, field="message"):
+    """Set a job's message (or a queue row's error). One the Studio wrote itself keeps its catalog key and parameters,
+    so every reader sees it in their own language (own_message, D-152); a pipeline message has none."""
+    record[field] = str(message)
+    if isinstance(message, Localized):
+        record.update({f"{field}_key": message.key, f"{field}_params": message.params})
+    else:
+        record.pop(f"{field}_key", None)
+        record.pop(f"{field}_params", None)
+    return record
+
+
+def own_message(record, field="message"):
+    """The Studio's own message in the current request's language, or None for a pipeline message. Only while the
+    saved text is still what its key wrote: a later writer may have replaced the message and left the key."""
+    key, params = record.get(f"{field}_key"), record.get(f"{field}_params") or {}
+    if not isinstance(key, str) or not key.startswith("server.") or not isinstance(params, dict):
+        return None
+    if record.get(field) not in {studio_text.text(language, key, **params) for language in studio_text.LANGUAGES}:
+        return None
+    return t(key, **params)
+
+
+def message_language(message):
+    """"de" or "en": exact for the Studio's own text (Localized), detected for a pipeline message (D-152)."""
+    return message.language if isinstance(message, Localized) else language_of(message)
+
+
+def reached_limit(job, code):
+    """Which run limit a budget stop reached, "model_calls" or "search_rounds", as the stage's failure details keep it
+    (runner.failure_details); None for an older run, whose page falls back to reading the message (D-152)."""
+    for record in ((job.get("run") or {}).get("stages") or {}).values():
+        error = record.get("error") if isinstance(record, dict) else None
+        if isinstance(error, dict) and error.get("code") == code:
+            limit = (error.get("details") or {}).get("limit")
+            if limit in LIMIT_DETAIL_VALUES:
+                return limit
+    return None
+
+
+def record_interruption(root, *, expected_job_id=None, audio_job_id=None, message=None, shared=None, crash_detail=None):
     """Persist an interruption after the owned worker and its children have exited."""
     with project_lock(root, shared=bool(audio_job_id) if shared is None else shared):
         job_path = audio_job_path(root, audio_job_id) if audio_job_id else root / "studio/job.json"
         job = read_json(job_path)
         if expected_job_id is not None and job.get("id") != expected_job_id:
-            raise AppError("Der Studio-Auftrag hat sich geändert.", code="job_changed")
+            raise AppError(t("server.job.changed"), code="job_changed")
         if job.get("status") not in {"running", "interrupted"}:
             return job  # A worker may have saved its final result just before exiting.
         run = job.get("run")
@@ -324,7 +469,8 @@ def record_interruption(root, *, expected_job_id=None, audio_job_id=None,
                     manifest.updated_at = now()
                     write_yaml(path, manifest.model_dump(mode="json"))
                 job["run"] = manifest.model_dump(mode="json")
-        job.update(status="interrupted", finished_at=now(), message=message)
+        job.update(status="interrupted", finished_at=now())
+        stored_message(job, t("server.job.stopped") if message is None else message)
         if crash_detail:
             job["crash_detail"] = crash_detail
         from .studio_progress import safe_script_progress
@@ -383,7 +529,7 @@ def relaunch(workspace, port, lan):
 
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", value):
-        raise AppError("Ungültige Projektauswahl.", code="invalid_project")
+        raise AppError(t("server.invalid_project"), code="invalid_project")
     return value
 
 
@@ -416,7 +562,7 @@ class TextChoice(Contract):
 
     def kwargs(self):
         if self.provider not in TEXT_PROVIDERS:
-            raise AppError("Textanbieter auswählen.", code="invalid_backend")
+            raise AppError(t("server.text.choose_provider"), code="invalid_backend")
         defaults = {"codex_cli": (DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT),
                     "claude_code": (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT)}
         default_model, default_effort = defaults.get(self.provider, (None, None))
@@ -450,14 +596,21 @@ def queue_view(rows, key_available=True, key="openrouter"):
     "openrouter" or "google"), which lives only in the server's memory and is gone after a restart (2026-10-02: the
     queue still said it waited for a place)."""
     return [{"episode": row.get("episode"), "position": number, "queued_at": row.get("queued_at"),
-             **({"error": row["error"]} if row.get("error") else
+             **(queue_error(row) if row.get("error") else
                 {"waiting": "place"} if key_available else {"waiting": "key", "key": key})}
             for number, row in enumerate(rows, 1)]
 
 
+def queue_error(row):
+    """Why a queued recording did not start, in the reader's language where the Studio wrote it (D-152)."""
+    error = own_message(row, "error") or row["error"]
+    return {"error": str(error), "error_code": row.get("error_code"), "error_language": message_language(error)}
+
+
 # What of a project can need a key, in the order the reminder names them (web/app.js KEY_NEED_TEXT), and which key.
-KEY_NEEDS = ("google_audio", "gemini_audio", "jev", "openrouter_text")
-NEED_KEYS = {"google_audio": "google", "gemini_audio": "openrouter", "jev": "openrouter", "openrouter_text": "openrouter"}
+KEY_NEEDS = ("google_audio", "gemini_audio", "jev", "openrouter_text", "anthropic_text", "perplexity_search")
+NEED_KEYS = {"google_audio": "google", "gemini_audio": "openrouter", "jev": "openrouter", "openrouter_text": "openrouter",
+             "anthropic_text": "anthropic", "perplexity_search": "perplexity"}
 
 
 def audio_key(audio):
@@ -476,9 +629,22 @@ def key_needs(root, config):
         needs.append("gemini_audio")
     if jev_probe_enabled(root):
         needs.append("jev")
-    if (studio_settings.text_data(root, TextChoice().model_dump()) or {}).get("provider") == "openrouter":
+    provider = (studio_settings.text_data(root, TextChoice().model_dump()) or {}).get("provider")
+    if provider == "openrouter":
         needs.append("openrouter_text")
+    if provider == "claude_api":
+        needs.append("anthropic_text")
+    if studio_settings.web_search(root) == "perplexity":
+        needs.append("perplexity_search")
     return needs
+
+
+def billed_text(provider, action, web_search="model"):
+    """Whether ``action`` with a text model of ``provider`` bills a key and so needs a money limit (D-146). A research
+    run on OpenRouter searches on the subscriptions unless Perplexity searches (D-151), which bills its key."""
+    if web_search == "perplexity" and action in {"research", "plan", "script", "revise"}:
+        return True
+    return provider == "claude_api" or (provider == "openrouter" and action != "research")
 
 
 def kept_local_sources(root, saved, requested):
@@ -536,6 +702,30 @@ def publish_view(root, folder):
                                                folder / "audio_latest.json", folder / "latest.json", *kits], compute)
 
 
+def podcast_kit_view(root):
+    """What the recording page shows of the whole podcast's kit (publish_kit.saved_podcast_kit): its two descriptions to
+    copy and what the transcript and the source list cover; ``{"outdated": True}`` while a kit exists that no longer
+    covers the published episodes and their latest recordings; None while there is none."""
+    folders = [folder for folder in sorted((root / "episodes").glob("ep_*")) if (folder / "script.yaml").is_file()]
+    kit_file = root / PODCAST_FOLDER / "kit.json"
+
+    def compute():
+        kit = saved_podcast_kit(root)
+        if kit is None:
+            return {"outdated": True} if kit_file.is_file() else None
+        path = root / PODCAST_FOLDER / "description.txt"
+        return {"folder": PODCAST_FOLDER, "short": kit["descriptions"]["short"],
+                "description": read_text(path).rstrip("\n") if path.is_file() else "",
+                "characters": kit["description"]["characters"], "limit": kit["description"]["limit"],
+                "episodes": kit["transcript"]["episodes"], "recorded": kit["transcript"]["recorded"],
+                "sources_total": len(kit["sources"])}
+    watched = [kit_file, root / "episodes/latest.json"]
+    for folder in folders:
+        watched += [folder / "script.yaml", folder / "episode_plan.yaml", folder / "audio_latest.json",
+                    folder / "latest.json"]
+    return memo(("podcast_kit", str(root), tuple(folder.name for folder in folders)), watched, compute)
+
+
 def project_job(main, jobs, parked):
     """The job a project shows. A running or paused main job stays the project's job: a later audio job must not hide
     its decision, and a parked run waits behind a finished chat, check or job of another lane."""
@@ -587,6 +777,8 @@ class Studio:
         self.token = secrets.token_urlsafe(32)
         self.key = ""  # The OpenRouter key: text, Jev and OpenRouter speech.
         self.google_key = ""  # The Google key: Gemini speech through Google (google_speech).
+        self.anthropic_key = ""  # The Anthropic key: Claude on the user's API key (claude_api, D-145).
+        self.perplexity_key = ""  # The Perplexity key: the web search through Perplexity (D-151).
         self.mutex = threading.RLock()
         self.workers = {}  # project root -> (process, uses the GPU) of its main job
         self.audio_processes = {}
@@ -604,7 +796,7 @@ class Studio:
     def root(self, project):
         root = inside(self.projects, identifier(project))
         if not (root / "project.yaml").is_file():
-            raise AppError("Projekt nicht gefunden.", code="unknown_project")
+            raise AppError(t("server.project.not_found"), code="unknown_project")
         return root
 
     def runtime(self):
@@ -654,15 +846,17 @@ class Studio:
 
     def pair_sample(self, data):
         """The conversation sample of a Google selection on the settings page (voice_samples.pair_view): its URL and
-        whether it exists, made first when ``generate`` asks for it, with one short request on the Google key."""
-        voices, styles, language = data.get("voices"), data.get("styles"), data.get("language")
-        if language not in {"de-DE", "en-US"} or not isinstance(voices, dict) or not isinstance(styles, (dict, type(None))):
-            raise AppError("Stimmen, Stil und Sprache für die Gesprächsprobe angeben.", code="invalid_voice")
-        view = pair_view(self.projects, voices, styles, language)
+        whether it exists, made first when ``generate`` asks for it, with one short request on the Google key. ``pace``
+        is the sample language's pace from the form (speech.LanguagePace), so a slower English can be heard first."""
+        voices, styles, language, pace = data.get("voices"), data.get("styles"), data.get("language"), data.get("pace")
+        if (language not in {"de-DE", "en-US"} or not isinstance(voices, dict)
+                or not isinstance(styles, (dict, type(None))) or not isinstance(pace, (dict, type(None)))):
+            raise AppError(t("server.pair.invalid"), code="invalid_voice")
+        view = pair_view(self.projects, voices, styles, language, pace)
         if data.get("generate") is True and not view["ready"]:
             if not self.google_key_available():
-                raise AppError("Für die Gesprächsprobe zuerst den Google-Key hinterlegen.", code="google_key_required")
-            view = generate_pair(self.projects, voices, styles, language, self.google_key or None)
+                raise AppError(t("server.pair.google_key"), code="google_key_required")
+            view = generate_pair(self.projects, voices, styles, language, self.google_key or None, pace=pace)
         return view
 
     def bootstrap(self):
@@ -670,7 +864,8 @@ class Studio:
         return {"app": "podcast-studio", "workspace": str(self.workspace),
                 "capabilities": {"text_reasoning_selection": True, "parallel_audio": True,
                                  "project_execution": True, "conversational_setup": True, "project_overview": True,
-                                 "podcast_downloads": True, "project_attachments": True, "subscription_auto": True},
+                                 "podcast_downloads": True, "project_attachments": True, "subscription_auto": True,
+                                 "light_status": True},
                 "attachment_limits": {"files": attachments.MAX_FILES, "file_bytes": attachments.MAX_FILE_BYTES,
                                       "docx_bytes": attachments.MAX_DOCX_BYTES, "transfer_bytes": attachments.MAX_TRANSFER_BYTES,
                                       "total_bytes": attachments.MAX_TOTAL_BYTES},
@@ -681,14 +876,26 @@ class Studio:
                                  "openrouter_efforts": OPENROUTER_EFFORTS, "presets": TEXT_PRESETS,
                                  "reasoning_efforts": REASONING_EFFORTS, "claude_models": CLAUDE_MODELS,
                                  "claude_efforts": CLAUDE_EFFORTS, "effort_equivalents": EFFORT_EQUIVALENTS,
-                                 "provider_notes": PROVIDER_NOTES, "auto_candidates": auto_candidates()},
+                                 "provider_notes": PROVIDER_NOTES, "auto_candidates": auto_candidates(),
+                                 # What a billed run's money limit is set against (cost_estimate, D-146).
+                                 "billed_providers": list(BILLED_TEXT_PROVIDERS),
+                                 "usd_per_call": [{"kind": kind, "model": model, "usd": usd}
+                                                  for (kind, model), usd in DEFAULT_USD_PER_CALL.items()],
+                                 "usd_per_call_measured_on": COST_TABLE_MEASURED_ON.isoformat()},
                 "token": self.token, "projects": projects, "voices": VOICES,
                 "lan": {"enabled": self.lan,
                         "urls": [f"http://{address}:{self.port}" for address in lan_addresses()] if self.lan else []},
                 "audio_catalog": audio_catalog(),
                 "voice_samples": self.voice_samples(),
                 "key_available": self.key_available(), "google_key_available": self.google_key_available(),
+                "anthropic_key_available": self.anthropic_key_available(),
+                "perplexity_key_available": self.perplexity_key_available(),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
+                "ui_language": {"setting": studio_text.setting(self.workspace),
+                                "language": studio_text.current_language()},
+                # What a trial project („Probelauf“, D-157) is limited to: the new-project page shows it beside the
+                # trial option instead of numbers of its own.
+                "trial": trial_facts(),
                 "defaults": TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
                                       voice_profile={"host_a": "Aiden", "host_b": "Vivian"}).model_dump(mode="json")}
 
@@ -697,6 +904,21 @@ class Studio:
 
     def google_key_available(self):
         return bool(self.google_key or os.environ.get("GEMINI_API_KEY"))
+
+    def anthropic_key_available(self):
+        return bool(self.anthropic_key or os.environ.get("ANTHROPIC_API_KEY"))
+
+    def perplexity_key_available(self):
+        return bool(self.perplexity_key or os.environ.get("PERPLEXITY_API_KEY"))
+
+    def stored_keys(self):
+        """Every key this server holds, for redaction."""
+        return tuple(key for key in (self.key, self.google_key, self.anthropic_key, self.perplexity_key) if key)
+
+    def key_states(self):
+        return {"key_available": self.key_available(), "google_key_available": self.google_key_available(),
+                "anthropic_key_available": self.anthropic_key_available(),
+                "perplexity_key_available": self.perplexity_key_available()}
 
     def audio_key_available(self, audio):
         """Whether the key a recording with ``audio`` needs is there; local Qwen needs none."""
@@ -709,7 +931,9 @@ class Studio:
         the pages remind of them until they are entered again (the user's wish, 2026-10-04: Jev had gone without a key
         unnoticed, and a fresh page after a restart said nothing)."""
         missing = {key for key, available in (("openrouter", self.key_available()),
-                                              ("google", self.google_key_available())) if not available}
+                                              ("google", self.google_key_available()),
+                                              ("anthropic", self.anthropic_key_available()),
+                                              ("perplexity", self.perplexity_key_available())) if not available}
         if not missing:
             return []
         needs = {}
@@ -836,9 +1060,7 @@ class Studio:
         if alive:
             return self.external(data, stoppable=True)
         detail = worker_stderr(root, data)
-        message = ("Der Arbeitsprozess wurde unerwartet beendet." if detail else
-                   "Der Arbeitsprozess läuft nicht mehr, etwa nach einem Neustart des Studios.") + \
-            " Fertige Arbeit bleibt gespeichert."
+        message = t("server.job.crashed" if detail else "server.job.gone")
         try:
             # The exclusive lock proves that no worker of this project is left; a dead recorded worker needs only the
             # shared one beside the project's other recordings, as a stop does. Only then is the run reset.
@@ -853,12 +1075,12 @@ class Studio:
                 return self.external(data, stoppable=False)
             # The recorded worker has ended, but another process holds the project: shown as interrupted, written
             # once the lock is free.
-            view = {**data, "status": "interrupted", "message": message}
+            view = stored_message({**data, "status": "interrupted"}, message)
             if detail:
                 view["crash_detail"] = detail
             return view
         except (OSError, ValueError):
-            data.update(status="interrupted", message=message)
+            stored_message(data, message).update(status="interrupted")
             if detail:
                 data["crash_detail"] = detail
             write_json(path, data)
@@ -871,17 +1093,28 @@ class Studio:
 
     @staticmethod
     def readable(root, data):
-        """The job as a reader sees it: a stop names its code and a German message without CLI advice or paths."""
+        """The job as a reader sees it: a stop names its code and a message without CLI advice or paths. The Studio's
+        own message is shown in the reader's language; a pipeline message keeps its language, which
+        ``message_language`` names, so the page shows it inline only in a matching interface (D-152). A budget stop
+        names the limit it reached (``stop.limit``)."""
+        language = studio_text.current_language()
+        own = own_message(data)
+        if own is not None:
+            data["message"] = own
         if data.get("status") not in {"running", "completed"}:
             code, stage = stop_code(data)
             data["stop"] = {"code": code, "stage": stage, "run_kind": (data.get("run") or {}).get("kind"),
-                            **user_text(data.get("message") or "", root),
+                            **user_text(data.get("message") or "", root, language),
                             "crash_detail": paths_only(data.get("crash_detail"), root)}
+            limit = reached_limit(data, code)
+            if limit:
+                data["stop"]["limit"] = limit
         if data.get("message"):
-            data["message"] = clean(data["message"], root)
+            shown = user_text(data["message"], root, language)
+            data["message"], data["message_language"] = shown["message"], shown["message_language"]
         for gap in data.get("research_gaps") or []:
             if isinstance(gap, dict):
-                gap.update({key: clean(gap.get(key), root) for key in ("question", "why_needed")})
+                gap.update({key: clean(gap.get(key), root, language) for key in ("question", "why_needed")})
         run_id = (data.get("run") or {}).get("run_id")
         if (data.get("stop") or {}).get("code") == "teaching_design_failed" and isinstance(run_id, str):
             # The episode a new design with the editor's note is for; read from the run, so older jobs have it too.
@@ -900,16 +1133,15 @@ class Studio:
             current = chat_limits(root, load_project(root).research_limits).model_calls
             calls = data.get("model_calls")
             if type(calls) is not int or not current < calls <= current + 500:
-                raise AppError("Das neue Gesprächslimit muss eine ganze Zahl über dem bisherigen Limit sein.",
-                               code="invalid_budget_approval")
+                raise AppError(t("server.approve.chat_limit"), code="invalid_budget_approval")
             write_json(root / "studio/assistant/limit.json", {"model_calls": calls, "approved_at": now()})
             return {"chat_calls": calls}
         run_id = data.get("run_id") or ((self.job(root) or {}).get("run") or {}).get("run_id")
         if not isinstance(run_id, str):
-            raise AppError("Kein Lauf für diese Freigabe vorhanden.", code="no_run")
+            raise AppError(t("server.approve.no_run"), code="no_run")
         if kind == "model_calls":
             approval = approve_model_call_limit(root, run_id, data.get("model_calls"), search_rounds=data.get("search_rounds"),
-                                                sources=data.get("sources"))
+                                                sources=data.get("sources"), cost_usd=data.get("cost_usd"))
             return {"approval": approval.model_dump(mode="json")}
         if kind == "gap":
             approval = approve_research_gap(root, run_id, data.get("task_id"), data.get("reason", ""))
@@ -919,7 +1151,7 @@ class Studio:
             return {"retry": request.model_dump(mode="json")}
         if kind == "fresh_attempts":
             if self.worker(root) is not None:
-                raise AppError("Der Auftrag läuft gerade; neue Anläufe erst, wenn er angehalten hat.", code="studio_busy")
+                raise AppError(t("server.approve.busy"), code="studio_busy")
             return {"fresh_attempts": approve_fresh_attempts(root, run_id)}
         if kind == "residual":
             finish = approve_residual_finish(root, run_id, data.get("note", ""))
@@ -933,7 +1165,8 @@ class Studio:
                                              data.get("reason", ""))
             return {"access_gap": approval.model_dump(mode="json")}
         if kind == "text_switch":
-            return {"text_switch": approve_text_switch(root, run_id, data.get("choice", "claude_first"), model=data.get("model"))}
+            return {"text_switch": approve_text_switch(root, run_id, data.get("choice", "claude_first"), model=data.get("model"),
+                                                       cost_usd=data.get("cost_usd"))}
         if kind == "teaching_redesign":
             request = request_teaching_redesign(root, run_id, data.get("episode_id"), data.get("note", ""))
             return {"teaching_redesign": request.model_dump(mode="json")}
@@ -941,12 +1174,14 @@ class Studio:
             # The receipt binds to the projected plan; a cap asks the next resume to plan again and present anew.
             approval = approve_research_plan(root, run_id, max_tasks=data.get("max_tasks"), source="studio")
             return {"plan": approval.model_dump(mode="json")}
-        raise AppError("Unbekannte Freigabe.", code="invalid_action")
+        raise AppError(t("server.approve.unknown"), code="invalid_action")
 
     def enqueue_audio(self, root, episode, data):
         """Keep an approved Gemini recording until a place is free; a newer approval of the episode replaces it."""
         rows = [row for row in read_queue(root) if row.get("episode") != episode]
         request = {key: value for key, value in data.items() if key not in {"from_queue", "api_key"}}
+        # The approval's interface language travels with it, so its start writes in it (start, D-152).
+        request["ui_language"] = studio_text.current_language()
         rows.append({"episode": episode, "queued_at": now(), "data": request})
         write_queue(root, rows)
         return {"queued": True, "episode": episode, "position": len(rows)}
@@ -956,7 +1191,7 @@ class Studio:
         root = self.root(project)
         episode = data.get("episode")
         if not isinstance(episode, str):
-            raise AppError("Folge angeben.", code="unknown_episode")
+            raise AppError(t("server.queue.episode"), code="unknown_episode")
         rows = [row for row in read_queue(root) if row.get("episode") != episode]
         write_queue(root, rows)
         return {"audio_queue": queue_view(rows)}
@@ -984,7 +1219,8 @@ class Studio:
                         rows = read_queue(root)
                         for saved in rows:
                             if saved.get("episode") == row["episode"]:
-                                saved.update(error=str(exc), error_code=exc.code)
+                                stored_message(saved, exc.args[0] if exc.args else str(exc), "error")
+                                saved["error_code"] = exc.code
                         write_queue(root, rows)
                         logger("studio").warning("Vertonung aus der Warteschlange nicht gestartet (%s): %s", exc.code, exc)
                         continue
@@ -1025,6 +1261,53 @@ class Studio:
                     logger("studio").info("Auftrag automatisch fortgesetzt (Versuch %s): %s", count + 1, project)
                 except AppError as exc:
                     logger("studio").warning("Automatische Fortsetzung nicht möglich (%s): %s", exc.code, exc)
+        return started
+
+    def resume_after_login(self, now_seconds=None):
+        """Research and script runs stopped for an expired subscription login (authentication_required) resume once a
+        login check passes (D-155: three such stops of the Sep/Oct series were resumed by hand within two minutes of
+        ``claude auth login``). While the project could start, the check runs at most every LOGIN_CHECK_SECONDS per run,
+        for the subscriptions the run can use (login_providers), with the CLIs' own status commands and no model call
+        (subscriptions.logged_in). The login itself stays the user's. The resume counts like every automatic one, so
+        MAX_AUTO_RESUMES bounds resumes that come to nothing (a login the CLI reports valid that the next call refuses)."""
+        current = time.time() if now_seconds is None else now_seconds
+        started, seen = [], set()
+        for path in sorted([*self.projects.glob("*/studio/job.json"), *self.projects.glob("*/studio/paused_*.json")]):
+            job = read_json(path)
+            if not isinstance(job, dict) or job.get("status") not in {"blocked", "failed"}:
+                continue
+            run = job.get("run") or {}
+            run_id, root, project = run.get("run_id"), path.parents[1], path.parents[1].name
+            if (stop_code(job)[0] != "authentication_required" or run.get("kind") not in {"research", "script"}
+                    or not isinstance(run_id, str) or (project, run_id) in seen):
+                continue
+            seen.add((project, run_id))
+            count = job.get("auto_resume_count", 0)
+            count = count if type(count) is int and count >= 0 else 0
+            key = (str(root), run_id)
+            if count >= MAX_AUTO_RESUMES or current - LOGIN_CHECKS.get(key, float("-inf")) < LOGIN_CHECK_SECONDS:
+                continue
+            with self.mutex:
+                if not self.ready_to_start(root):
+                    continue  # Checked once the run could resume; a busy project costs no check.
+            LOGIN_CHECKS[key] = current
+            try:
+                settings = load_project(root).runtime
+                ready = any(subscriptions.logged_in(provider, settings) for provider in login_providers(root, run_id))
+            except (AppError, OSError, ValueError) as exc:
+                logger("studio").warning("Anmeldeprüfung nicht möglich (%s): %s", getattr(exc, "code", type(exc).__name__), exc)
+                continue
+            if not ready:
+                continue
+            with self.mutex:
+                try:
+                    if not self.ready_to_start(root):
+                        continue
+                    self.start(project, {"action": "resume", "run_id": run_id, "auto_resume_count": count + 1})
+                    started.append(project)
+                    logger("studio").info("Anmeldung gültig, Auftrag automatisch fortgesetzt: %s", project)
+                except AppError as exc:
+                    logger("studio").warning("Fortsetzen nach Anmeldung nicht möglich (%s): %s", exc.code, exc)
         return started
 
     def ready_to_start(self, root, gpu=False):
@@ -1095,7 +1378,7 @@ class Studio:
     def request_restart(self, data):
         """Restart once nothing runs, so the scheduler and every new job use the current code."""
         if self.restart_hook is None:
-            raise AppError("Dieses Studio kann sich nicht selbst neu starten.", code="restart_unavailable")
+            raise AppError(t("server.restart.unavailable"), code="restart_unavailable")
         self.restart_requested = data.get("cancel") is not True
         return {"server": self.server_state()}
 
@@ -1110,10 +1393,20 @@ class Studio:
         self.restart_hook()
         return True
 
+    @staticmethod
+    def run_language(root, run_id):
+        """The interface language a stopped run's job was started in (start's ui_language), or None for an older job."""
+        for path in [root / "studio/job.json", *parked_paths(root)]:
+            job = read_json(path, {}) or {}
+            if (job.get("run") or {}).get("run_id") == run_id and job.get("ui_language") in studio_text.LANGUAGES:
+                return job["ui_language"]
+        return None
+
     def _schedule_loop(self):
         while True:
             time.sleep(SCHEDULER_INTERVAL_SECONDS)
             for step, failure in ((self.resume_due, "Automatische Fortsetzung übersprungen."),
+                                  (self.resume_after_login, "Anmeldeprüfung übersprungen."),
                                   (self.apply_allowances, "Vorab-Erlaubnisse übersprungen."),
                                   (self.start_queued, "Warteschlange der Vertonung übersprungen."),
                                   (self.restart_when_idle, "Neustart übersprungen.")):
@@ -1145,14 +1438,13 @@ class Studio:
         """A failure receipt, worker output or run report the Studio names in a stop message, as plain text."""
         root = self.root(project)
         if not isinstance(relative, str) or not DIAGNOSTIC_FILES.fullmatch(relative):
-            raise AppError("Diese Datei kann das Studio nicht anzeigen.", code="not_found")
+            raise AppError(t("server.file.not_shown"), code="not_found")
         path = inside(root, relative)
         if not path.is_file() or path.stat().st_size > 2_000_000:
-            raise AppError("Datei nicht gefunden.", code="not_found")
+            raise AppError(t("server.file.not_found"), code="not_found")
         text = path.read_text(encoding="utf-8", errors="replace")
-        for key in (self.key, self.google_key):
-            if key:
-                text = text.replace(key, "[Key verborgen]")
+        for key in self.stored_keys():
+            text = text.replace(key, t("server.key_hidden"))
         return text
 
     def audio_jobs(self, root):
@@ -1176,7 +1468,8 @@ class Studio:
         for receipt in (self.workspace / ".studio/trash").glob("*/receipt.json"):
             item = read_json(receipt, {})
             if (receipt.parent / "project/project.yaml").is_file():
-                trash.append({"id": receipt.parent.name, "topic": item.get("topic", "Projekt"), "deleted_at": item.get("deleted_at")})
+                trash.append({"id": receipt.parent.name, "topic": item.get("topic", t("server.trash.untitled")),
+                              "deleted_at": item.get("deleted_at")})
         return {"projects": projects, "trash": trash, "server": self.server_state(), "key_reminder": self.key_reminder()}
 
     def card(self, project):
@@ -1190,12 +1483,42 @@ class Studio:
         job = project_job(main, jobs, self.parked_job(root, light=True))
         episodes = self.episode_rows(root, config, audio, full=False)
         planned = self.outline_episodes(root)
-        return {"id": project, "topic": config.topic, "config_hash": project_hash(config), "job": overview_job(job),
-                "audio_jobs": jobs, "has_research": self.has_research(root), "has_outline": planned is not None,
+        names = self.download_view(root)
+        # A card needs the running and stopped recordings only; finished ones made a third of the overview's megabyte.
+        return {"id": project, "topic": config.topic, "config_hash": project_hash(config),
+                "trial": config.trial, "download_zip": names["zip"],
+                "job": overview_job(slim_job(job)),
+                "audio_jobs": [slim_job(row) for row in jobs if row.get("status") != "completed"],
+                "has_research": self.has_research(root), "has_outline": planned is not None,
                 "episode_count": len({e["script"]["episode_id"] for e in episodes} | set(planned or ())),
                 "script_count": len(episodes),
                 "episodes": [{"episode_id": e["script"]["episode_id"], "title": e["script"]["title"],
-                              "audio": e["audio"], "audio_current": e["audio_current"]} for e in episodes]}
+                              "audio": e["audio"], "audio_current": e["audio_current"],
+                              "download_names": [names["files"].get(path) for path in e["audio"]],
+                              "audio_stale": e["audio_stale"], "audio_seconds": e["audio_seconds"]} for e in episodes]}
+
+    @staticmethod
+    def download_view(root):
+        """downloads.download_names: the ZIP's name and each recording's in the podcast's content language (D-153),
+        which the page sets as its links' download names. Read again only after the brief, the outline, an episode's
+        script or its recording changed, since the overview builds every card each ten seconds; a project whose names
+        cannot be read has none, and the page falls back to its own."""
+        pointer = read_json(root / "studio/outline.json") or {}
+        files = [root / "project.yaml", root / "studio/outline.json",
+                 *(folder / name for folder in sorted((root / "episodes").glob("ep_*"))
+                   for name in ("script.yaml", "audio_latest.json"))]
+        try:
+            if isinstance(pointer, dict) and pointer.get("run_id"):
+                files.append(manifest_path(root, pointer["run_id"]).parent / "series_plan.json")
+        except AppError:
+            pass
+
+        def compute():
+            try:
+                return download_names(root)
+            except (AppError, OSError, ValueError, KeyError, TypeError):
+                return {"zip": None, "files": {}}
+        return memo(("download_names", str(root)), files, compute)
 
     @staticmethod
     def has_research(root):
@@ -1269,11 +1592,18 @@ class Studio:
             row = dict(episode_view(folder, table, table_key, config.language))
             report = read_json(folder / "audio_latest.json", {})
             row["audio"] = [part["audio"] for part in report.get("parts", []) if inside(root, part["audio"]).is_file()]
-            # A recording reports the voices of its episode, swapped in an even one when the roles alternate.
+            # A recording reports the voices of its episode, swapped in an even one when the roles alternate, and the
+            # choice as its language speaks it (D-147).
+            stored = report.get("audio_generation", {"provider": "qwen3_local", "voices": report.get("voices")})
+            current = audio.for_language(config.language).model_dump()
+            voices = audio.for_episode(folder.name).voices
             row["audio_current"] = (report.get("script_sha256") == row["hash"]
-                and report.get("voices") == audio.for_episode(folder.name).voices
-                and same_audio_generation(report.get("audio_generation",
-                    {"provider": "qwen3_local", "voices": report.get("voices")}), audio.model_dump()))
+                and report.get("voices") == voices and same_audio_generation(stored, current))
+            # What an older recording differs in, so the page can say why it is not current (D-160).
+            row["audio_stale"] = ([] if row["audio_current"] or not row["audio"]
+                                  else stale_reasons(report, row["hash"], voices, stored, current))
+            seconds = report.get("total_seconds") or sum(part.get("duration_seconds") or 0 for part in report.get("parts", []))
+            row["audio_seconds"] = round(seconds) if row["audio"] and isinstance(seconds, (int, float)) else None
             if full:
                 row["review_notes"] = review_notes((reported or {}).get(folder.name))
                 row["expression"] = reading_expression(root, folder.name, row["hash"],
@@ -1285,13 +1615,13 @@ class Studio:
     def delete(self, project, data):
         root = self.root(project)
         if data.get("confirm_id") != project:
-            raise AppError("Das Löschen dieses Projekts bitte ausdrücklich bestätigen.", code="delete_confirmation")
+            raise AppError(t("server.delete.confirm"), code="delete_confirmation")
         if self.worker(root) is not None or any(value[1] == root for value in self.active_audio().values()):
-            raise AppError("Laufende Aufträge dieses Projekts zuerst abschließen oder anhalten.", code="project_busy")
+            raise AppError(t("server.delete.busy"), code="project_busy")
         with project_lock(root):
             config = load_project(root)
             if data.get("config_hash") != project_hash(config):
-                raise AppError("Projekt inzwischen geändert. Übersicht neu laden.", code="inputs_changed")
+                raise AppError(t("server.delete.changed"), code="inputs_changed")
             trash_id = uuid.uuid4().hex
             destination = inside(self.workspace / ".studio/trash", trash_id)
             content = destination / "project"
@@ -1312,16 +1642,16 @@ class Studio:
     def restore(self, data):
         trash_id = data.get("trash_id")
         if not isinstance(trash_id, str) or not re.fullmatch(r"[a-f0-9]{32}", trash_id):
-            raise AppError("Ungültiger Papierkorbeintrag.", code="invalid_project")
+            raise AppError(t("server.restore.invalid"), code="invalid_project")
         destination = inside(self.workspace / ".studio/trash", trash_id)
         receipt = read_json(destination / "receipt.json", {})
         root = inside(self.projects, identifier(receipt.get("project")))
         content = destination / "project"
         if not (content / "project.yaml").is_file():
-            raise AppError("Projekt nicht im Papierkorb gefunden.", code="unknown_project")
+            raise AppError(t("server.restore.missing"), code="unknown_project")
         with project_lock(root):
             if has_artifacts(root):
-                raise AppError("Am ursprünglichen Speicherort liegt bereits ein Projekt.", code="project_exists")
+                raise AppError(t("server.restore.exists"), code="project_exists")
             move_contents(content, root)
         return {"id": root.name, "restored": True}
 
@@ -1366,6 +1696,7 @@ class Studio:
                 "attachments": attachments.inventory(root),
                 # The books and articles blocked questions lack, and the copies the editor provided.
                 "works": self.works(root),
+                "reader_state": read_json(root / "studio/reader_state.json", {}) or {},
                 "outline": None, "episodes": [], "research": None, "run": None}
         proposal = next((item for item in reversed(data["chat"]) if item.get("role") == "assistant"), None)
         data["proposal_hash"] = digest(proposal) if proposal else None
@@ -1382,6 +1713,12 @@ class Studio:
         if (root / "runs/latest.json").exists():
             data["run"] = read_yaml(manifest_path(root))
         data["episodes"] = self.episode_rows(root, config, audio)
+        data["podcast_kit"] = podcast_kit_view(root) if data["episodes"] else None
+        # Each recording's download name beside its path, and the ZIP's (downloads.download_names, D-153).
+        names = self.download_view(root)
+        for row in data["episodes"]:
+            row["download_names"] = [names["files"].get(path) for path in row["audio"]]
+        data["download_zip"] = names["zip"]
         run = (main or {}).get("run") or data.get("run")
         data["script_previews"] = script_previews(root, run)
         return data
@@ -1401,13 +1738,21 @@ class Studio:
         busy = (self.worker(root) is not None or any(value[1] == root for value in audio)) if root else (
             bool(self.active_workers()) or bool(audio))
         if busy:
-            raise AppError("In diesem Projekt läuft bereits ein Auftrag. Erst fertigstellen oder anhalten.", code="project_busy")
+            raise AppError(t("server.project.busy"), code="project_busy")
         if root:
             with project_lock(root):
                 pass
 
     def create(self, data):
-        config = TopicBrief.model_validate(data["config"])
+        raw, trial = data["config"], data.get("trial") is True
+        # A trial without a topic of its own takes the sample topic of its language: a placeholder lets the brief
+        # validate, and trial_brief replaces it at once (the new-project page allows an empty topic only for a trial).
+        sample = trial and isinstance(raw, dict) and not str(raw.get("topic") or "").strip()
+        config = TopicBrief.model_validate({**raw, "topic": "-"} if sample else raw)
+        if trial:
+            # A trial project (D-157): narrow, one short episode, a few sub-questions. Its small limits come from
+            # storage.load_project.
+            config = trial_brief(config, sample_topic=sample)
         choice = TextChoice.model_validate(data.get("text", {}))
         choice.kwargs()
         if choice.provider == "openrouter":
@@ -1424,17 +1769,23 @@ class Studio:
         self.validate_voices(config)
         audio = AudioChoice.model_validate(data.get("audio_settings", {"voices": config.voice_profile}))
         execution = ExecutionChoice.model_validate(data.get("execution", {}))
+        # The first project of a new workspace, one with neither settings nor a project, starts with the pre-approvals
+        # its settings page showed (studio_allowances.NEW_WORKSPACE, D-155); every other project keeps the rule as before.
+        first = not studio_settings.path_for(self.projects).exists() and not any(self.projects.glob("*/project.yaml"))
+        studio_text.remember_auto(self.workspace)
         init_project(root, config)
         write_json(root / "studio/text.json", choice.normalized())
         write_json(root / "studio/audio.json", audio.model_dump())
         write_json(root / "studio/execution.json", execution.model_dump())
+        if first:
+            studio_allowances.set_allowances(root, studio_allowances.NEW_WORKSPACE)
         default_jev_probe(root, config.language)
         return {"id": slug}
 
     @staticmethod
     def validate_voices(config):
         if any(v not in VOICES for v in config.voice_profile.values()):
-            raise AppError("Bitte eine verfügbare Qwen-Stimme wählen.", code="invalid_voice")
+            raise AppError(t("server.voice.qwen"), code="invalid_voice")
 
     def save_text(self, root, data):
         choice = TextChoice.model_validate(data)
@@ -1451,32 +1802,32 @@ class Studio:
         with project_lock(root):
             old = load_project(root)
             if data.get("config_hash") != project_hash(old):
-                raise AppError("Projekt wurde inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
+                raise AppError(t("server.save.project_changed"), code="inputs_changed")
             config = TopicBrief.model_validate(data["config"])
             config.runtime = old.runtime
             config.local_sources = kept_local_sources(root, old.local_sources, config.local_sources)
             self.validate_voices(config)
             current_audio = selected_audio(root, old)
             if "audio_settings" in data and data.get("audio_hash") != digest(current_audio.model_dump()):
-                raise AppError("Audioauswahl inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
+                raise AppError(t("server.save.audio_changed"), code="inputs_changed")
             audio = AudioChoice.model_validate(data.get("audio_settings", current_audio.model_dump()))
             execution = settings_execution(root)
             if "execution" in data:
                 if data.get("execution_hash") != digest(execution.model_dump()):
-                    raise AppError("Ausführungsmodus inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
+                    raise AppError(t("server.save.execution_changed"), code="inputs_changed")
                 # The Jev probe has its own switch (jev_probe); a proposal or settings save never sets it.
                 execution = ExecutionChoice.model_validate(data["execution"]).model_copy(update={"jev_probe": False})
             if "style_notes" in data:
                 notes = data["style_notes"]
                 if not isinstance(notes, str) or len(notes) > 20000:
-                    raise AppError("Redaktionelle Notizen sind zu lang.", code="invalid_request")
+                    raise AppError(t("server.save.notes_long"), code="invalid_request")
                 if data.get("style_notes_hash") != digest(style_notes(root)):
-                    raise AppError("Notizen inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
+                    raise AppError(t("server.save.notes_changed"), code="inputs_changed")
                 atomic_text(root / "style_notes.md", notes.strip() + "\n" if notes.strip() else "")
             forms = None
             if "spoken_forms" in data:
                 if data.get("spoken_forms_hash") != digest(load_forms(root).model_dump()):
-                    raise AppError("Sprechformen inzwischen geändert. Ansicht neu laden.", code="inputs_changed")
+                    raise AppError(t("server.save.forms_changed"), code="inputs_changed")
                 forms = SpokenForms.model_validate(data["spoken_forms"])
             write_yaml(root / "project.yaml", config.model_dump(mode="json"))
             if studio_settings.load(root) is None:
@@ -1495,7 +1846,7 @@ class Studio:
         work = manifest_path(root, run_id).parent
         manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml")) if (work / "run_manifest.yaml").is_file() else None
         if manifest is None or manifest.kind not in {"research", "script"}:
-            raise AppError("Einen Recherche- oder Skriptlauf wählen.", code="no_run")
+            raise AppError(t("server.report.no_run"), code="no_run")
         return {"run_id": run_id, "kind": manifest.kind,
                 "report": production_report(work, allowance_rows=studio_allowances.allowance_log(root))}
 
@@ -1509,20 +1860,25 @@ class Studio:
         if root is None:
             config = TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
                                 voice_profile={"host_a": "Aiden", "host_b": "Vivian"})
+            # A new workspace (neither settings nor a project) shows the pre-approvals its first project gets (create).
+            new = not studio_settings.path_for(self.projects).exists() and not any(self.projects.glob("*/project.yaml"))
             return {"text": TextChoice(**text_preset("auto_subscriptions")).normalized(),
                     "audio": AudioChoice(voices=config.voice_profile).model_dump(),
                     "execution": {"text": "sequential", "audio": "sequential"},
-                    "allowances": {"fresh_attempts": 0, "extra_calls": 0},
+                    "allowances": dict(studio_allowances.NEW_WORKSPACE) if new else {"fresh_attempts": 0, "extra_calls": 0},
                     "research_limits": config.research_limits.model_dump(),
-                    "text_timeout_seconds": config.runtime.text_timeout_seconds}
-        config = load_project(root)
+                    "text_timeout_seconds": config.runtime.text_timeout_seconds, "web_search": "model"}
+        # The project's own limits, not a trial's caps: a trial changed last must not make its small limits every
+        # project's on the first save of the settings page (D-157).
+        config = load_project(root, trial_caps=False)
         execution = settings_execution(root)
         return {"text": TextChoice.model_validate(studio_settings.text_data(root, TextChoice().model_dump())).normalized(),
                 "audio": selected_audio(root, config).model_dump(),
                 "execution": {"text": execution.text, "audio": execution.audio},
                 "allowances": studio_allowances.allowances(root),
                 "research_limits": config.research_limits.model_dump(),
-                "text_timeout_seconds": config.runtime.text_timeout_seconds}
+                "text_timeout_seconds": config.runtime.text_timeout_seconds,
+                "web_search": studio_settings.web_search(root)}
 
     def settings_view(self):
         """The settings page: the workspace settings once saved; before that the values of the project changed last,
@@ -1535,8 +1891,8 @@ class Studio:
             {**self.settings_values(), **{key: saved[key] for key in studio_settings.SECTIONS if key in saved}}
         return {"settings": values, "hash": digest(values), "global": saved is not None,
                 "source_project": source.name if source else None,
-                "claude_extra_usage": subscriptions.claude_extra_usage(), "key_available": self.key_available(),
-                "google_key_available": self.google_key_available(), "key_reminder": self.key_reminder(),
+                "claude_extra_usage": subscriptions.claude_extra_usage(), **self.key_states(),
+                "key_reminder": self.key_reminder(),
                 "allowance_choices": {"fresh_attempts": list(studio_allowances.FRESH_ATTEMPT_CHOICES),
                                       "extra_calls": list(studio_allowances.EXTRA_CALL_CHOICES)}}
 
@@ -1544,28 +1900,34 @@ class Studio:
         """Save the workspace settings for every project (studio_settings). Runs keep what they bound at their start;
         limits and the time limit of one call apply when a run resumes."""
         if data.get("hash") != self.settings_view()["hash"]:
-            raise AppError("Einstellungen inzwischen geändert. Seite neu laden.", code="inputs_changed")
+            raise AppError(t("server.settings.changed"), code="inputs_changed")
         values = data.get("settings")
         if not isinstance(values, dict) or set(values) != set(studio_settings.SECTIONS):
-            raise AppError("Alle Einstellungen angeben.", code="invalid_request")
+            raise AppError(t("server.settings.incomplete"), code="invalid_request")
         choice = TextChoice.model_validate(values["text"])
         normalized = choice.normalized()
         if choice.provider == "openrouter":
             from .openrouter import OpenRouterAdapter
             OpenRouterAdapter(self.runtime(), model=normalized["model"], api_key=self.key or None,
                               max_output_tokens=choice.max_output_tokens, reasoning_effort=choice.reasoning_effort)
+        limits = ResearchLimits.model_validate(values["research_limits"])
+        if values["web_search"] not in studio_settings.WEB_SEARCH:
+            raise AppError(t("server.settings.web_search"), code="invalid_request")
+        if (choice.provider in BILLED_TEXT_PROVIDERS or values["web_search"] == "perplexity") and limits.cost_usd is None:
+            # A text model billed to a key needs a money limit before any run can use it (D-146).
+            raise AppError(t("server.settings.cost_limit"), code="cost_limit_required")
         execution = ExecutionChoice.model_validate(values["execution"])
         timeout = values["text_timeout_seconds"]
         if type(timeout) is not int or not 300 <= timeout <= 14400:
-            raise AppError("Zeitlimit eines Modellaufrufs: 5 bis 240 Minuten.", code="invalid_request")
+            raise AppError(t("server.settings.timeout"), code="invalid_request")
         settings = {"text": normalized, "audio": AudioChoice.model_validate(values["audio"]).model_dump(),
                     "execution": {"text": execution.text, "audio": execution.audio},
                     "allowances": studio_allowances.checked(values["allowances"]),
-                    "research_limits": ResearchLimits.model_validate(values["research_limits"]).model_dump(),
-                    "text_timeout_seconds": timeout}
+                    "research_limits": limits.model_dump(),
+                    "text_timeout_seconds": timeout, "web_search": values["web_search"]}
         extra = data.get("claude_extra_usage")
         if not isinstance(extra, bool):
-            raise AppError("Claude-Zusatzkontingent ein- oder ausschalten.", code="invalid_request")
+            raise AppError(t("server.settings.claude_extra"), code="invalid_request")
         write_json(studio_settings.path_for(self.projects), {**settings, "changed_at": now()})
         if extra != subscriptions.claude_extra_usage():
             subscriptions.set_claude_extra_usage(extra)
@@ -1576,7 +1938,7 @@ class Studio:
         choice; the switch applies from the next new script run."""
         enabled = data.get("enabled")
         if not isinstance(enabled, bool):
-            raise AppError("Jev-Lückenprobe ein- oder ausschalten.", code="invalid_request")
+            raise AppError(t("server.jev.switch"), code="invalid_request")
         set_jev_probe(self.root(project), enabled)
         return {"jev_probe": enabled}
 
@@ -1586,17 +1948,17 @@ class Studio:
         episode, segment_id = data.get("episode"), data.get("segment_id")
         spoken = data.get("spoken", "")
         if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode):
-            raise AppError("Unbekannte Folge.", code="invalid_request")
+            raise AppError(t("server.episode.unknown"), code="invalid_request")
         if not isinstance(segment_id, str) or not isinstance(spoken, str) or len(spoken) > 4000:
-            raise AppError("Ungültige Sprechform.", code="invalid_request")
+            raise AppError(t("server.spoken.invalid"), code="invalid_request")
         folder = inside(root / "episodes", episode)
         script_file = folder / "script.yaml"
         if not script_file.is_file():
-            raise AppError("Für diese Folge gibt es noch keinen veröffentlichten Text.", code="unknown_episode")
+            raise AppError(t("server.episode.unpublished"), code="unknown_episode")
         script = EpisodeScript.model_validate(read_yaml(script_file))
         segment = next((s for s in script.segments if s.segment_id == segment_id), None)
         if segment is None:
-            raise AppError("Dieser Abschnitt kommt in der Folge nicht vor.", code="invalid_request")
+            raise AppError(t("server.spoken.segment"), code="invalid_request")
         with self.decision_lock(root, folder):
             decision = read_yaml(folder / "audio_review.yaml") if (folder / "audio_review.yaml").is_file() else {}
             overrides = dict(decision.get("spoken_overrides") or {})
@@ -1622,8 +1984,7 @@ class Studio:
             except AppError as exc:
                 if exc.code != "project_busy":
                     raise
-                raise AppError("Diese Folge wird gerade vertont. Die Eingabe geht, sobald ihre Vertonung fertig ist "
-                               "oder angehalten wurde.", code="episode_busy") from None
+                raise AppError(t("server.episode.recording"), code="episode_busy") from None
             yield
 
     def listening_review(self, project, data):
@@ -1631,17 +1992,53 @@ class Studio:
         root = self.root(project)
         episode, note = data.get("episode"), data.get("note", "")
         if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode):
-            raise AppError("Unbekannte Folge.", code="invalid_request")
+            raise AppError(t("server.episode.unknown"), code="invalid_request")
         if not isinstance(note, str) or len(note) > 4000 or not isinstance(data.get("reviewed"), bool):
-            raise AppError("Ungültige Hörprüfung.", code="invalid_request")
+            raise AppError(t("server.listening.invalid"), code="invalid_request")
         folder = inside(root / "episodes", episode)
         if not (folder / "audio_review.yaml").is_file():
-            raise AppError("Für diese Folge gibt es noch keine Audioentscheidung.", code="unknown_episode")
+            raise AppError(t("server.listening.no_decision"), code="unknown_episode")
         with self.decision_lock(root, folder):
             decision = read_yaml(folder / "audio_review.yaml")
             write_yaml(folder / "audio_review.yaml", {**decision, "human_listening_reviewed": data["reviewed"],
                                                      "listening_note": note.strip()})
         return {"episode": episode, "human_listening_reviewed": data["reviewed"]}
+
+    def reader_state(self, project, data):
+        """What the editor read and heard on the Studio's pages (D-163): the script state each episode was marked read
+        at, where each recording stopped, which were heard to the end, and the playback speed. Studio-only state in the
+        project, so it follows the editor from the computer to the phone; no run reads it, and the page keeps nothing
+        in browser storage, where a key must never land."""
+        root = self.root(project)
+        path = root / "studio/reader_state.json"
+        saved = read_json(path, {}) or {}
+        state = {"read": dict(saved.get("read") or {}), "positions": dict(saved.get("positions") or {}),
+                 "heard": dict(saved.get("heard") or {}), "rate": saved.get("rate", 1)}
+        if "episode" in data:
+            episode, read = data.get("episode"), data.get("read")
+            if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode) or read is not None and (
+                    not isinstance(read, str) or len(read) > 128):
+                raise AppError("Ungültige Lesemarke.", code="invalid_request")
+            if read:
+                state["read"][episode] = read
+            else:
+                state["read"].pop(episode, None)
+        if "recording" in data:
+            recording, seconds = data.get("recording"), data.get("position")
+            if (not isinstance(recording, str) or not re.fullmatch(r"exports/[\w./-]+\.mp3", recording) or ".." in recording
+                    or seconds is not None and (type(seconds) not in (int, float) or not 0 <= seconds <= 86400)):
+                raise AppError("Ungültige Wiedergabestelle.", code="invalid_request")
+            if data.get("heard") is True:
+                state["heard"][recording] = True
+                state["positions"].pop(recording, None)
+            elif seconds is not None:
+                state["positions"][recording] = int(seconds)
+        if "rate" in data:
+            if type(data["rate"]) not in (int, float) or not 0.5 <= data["rate"] <= 3:
+                raise AppError("Ungültige Wiedergabegeschwindigkeit.", code="invalid_request")
+            state["rate"] = data["rate"]
+        write_json(path, state)
+        return {"reader_state": state}
 
     def apply_proposal(self, project, data):
         root = self.root(project)
@@ -1649,10 +2046,9 @@ class Studio:
         proposal = next((item for item in reversed(read_json(root / "studio/chat.json", []))
                          if item.get("role") == "assistant"), None)
         if not proposal or data.get("proposal_hash") != digest(proposal):
-            raise AppError("Der Vorschlag hat sich geändert. Bitte die aktuelle Zusammenfassung prüfen.", code="proposal_changed")
+            raise AppError(t("server.proposal.changed"), code="proposal_changed")
         if not attachments.proposal_current(root, proposal):
-            raise AppError("Die Anhänge haben sich geändert. Bitte den Partner die Zusammenfassung aktualisieren lassen.",
-                           code="proposal_changed")
+            raise AppError(t("server.proposal.attachments"), code="proposal_changed")
         chosen = BriefProposal.model_validate({key: value for key, value in proposal.items() if key != "role"})
         config = load_project(root).model_dump(mode="json")
         for key in ("topic", "central_question", "prior_knowledge", "depth_request", "focus_questions", "excluded_topics"):
@@ -1690,8 +2086,9 @@ class Studio:
         self.idle(root)
         with project_lock(root):
             rows = attachments.add(root, data.get("files"),
-                                   secrets=(self.key, self.google_key, os.environ.get("OPENROUTER_API_KEY", ""),
-                                            os.environ.get("GEMINI_API_KEY", "")))
+                                   secrets=(*self.stored_keys(), os.environ.get("OPENROUTER_API_KEY", ""),
+                                            os.environ.get("GEMINI_API_KEY", ""), os.environ.get("ANTHROPIC_API_KEY", ""),
+                                            os.environ.get("PERPLEXITY_API_KEY", "")))
         return {"attachments": rows}
 
     def upload_work(self, project, raw, query):
@@ -1715,78 +2112,93 @@ class Studio:
     def start(self, project, data):
         root = self.root(project)
         if self.restarting:
-            raise AppError("Das Studio startet gerade mit neuem Code neu. In einigen Sekunden erneut versuchen.",
-                           code="studio_restarting")
+            raise AppError(t("server.start.restarting"), code="studio_restarting")
         action = data.get("action")
         if action not in {"assistant", "research", "plan", "replan", "script", "revise", "audio", "audio_sample", "audio_samples",
                           "resume", "check", "expression", "publish_kit"}:
-            raise AppError("Unbekannter Arbeitsschritt.", code="invalid_action")
+            raise AppError(t("server.start.unknown"), code="invalid_action")
         payload = {"action": action, "message": str(data.get("message", ""))[:12000]}
         if action == "research" and data.get("seed_corpus") is True:
             payload["seed_corpus"] = True
         if (self.key and self.key in payload["message"]) or re.search(r"sk-or-[A-Za-z0-9_-]{12,}", payload["message"]):
-            raise AppError("Den OpenRouter-Key bitte in den Einstellungen unter „OpenRouter-Key“ hinterlegen, nicht im Chat.", code="credential_in_prompt")
+            raise AppError(t("server.start.credential.openrouter"), code="credential_in_prompt")
         if (self.google_key and self.google_key in payload["message"]) or re.search(r"\bAIza[0-9A-Za-z_-]{20,}", payload["message"]):
-            raise AppError("Den Google-Key bitte in den Einstellungen unter „Google-Key“ hinterlegen, nicht im Chat.", code="credential_in_prompt")
+            raise AppError(t("server.start.credential.google"), code="credential_in_prompt")
+        if ((self.anthropic_key and self.anthropic_key in payload["message"]) or
+                re.search(r"sk-ant-[A-Za-z0-9_-]{12,}", payload["message"])):
+            raise AppError(t("server.start.credential.anthropic"), code="credential_in_prompt")
+        if ((self.perplexity_key and self.perplexity_key in payload["message"]) or
+                re.search(r"pplx-[A-Za-z0-9_-]{12,}", payload["message"])):
+            raise AppError(t("server.start.credential.perplexity"), code="credential_in_prompt")
+        text_provider = (studio_settings.text_data(root, TextChoice().model_dump()) or {}).get("provider")
+        if (action in {"assistant", "research", "plan", "script", "revise", "expression", "publish_kit"}
+                and billed_text(text_provider, action, studio_settings.web_search(root))
+                and load_project(root).research_limits.cost_usd is None):
+            # Refused before any worker starts; a run would stop at its first call anyway (D-146).
+            raise AppError(t("server.start.cost_limit"), code="cost_limit_required")
         remote_episode = remote_provider = None
         if action == "audio_sample":
             if data.get("voice") not in GEMINI_VOICES or data.get("language") not in {"de-DE", "en-US"}:
-                raise AppError("Gemini-Stimme und Sprache für die Hörprobe auswählen.", code="invalid_voice")
+                raise AppError(t("server.sample.voice"), code="invalid_voice")
             if data.get("approve_sample") is not True:
-                raise AppError("Gemini-Hörprobe ausdrücklich erzeugen lassen.", code="audio_approval_required")
+                raise AppError(t("server.sample.approve"), code="audio_approval_required")
             payload.update(voice=data["voice"], language=data["language"])
         if action == "audio_samples":
             if data.get("language") not in {"de-DE", "en-US"}:
-                raise AppError("Sprache für die Hörproben auswählen.", code="invalid_voice")
+                raise AppError(t("server.samples.language"), code="invalid_voice")
             if data.get("approve_samples") is not True:
-                raise AppError("Fehlende Gemini-Hörproben ausdrücklich erzeugen lassen.", code="audio_approval_required")
+                raise AppError(t("server.samples.approve"), code="audio_approval_required")
             payload["language"] = data["language"]
         if action in {"expression", "publish_kit"}:
             # Inline audio tags for reading before approval (episode_audio.tag_episode), or the companion kit for podcast
             # platforms (publish_kit); none named means every episode.
             if action == "publish_kit":
                 payload["fresh"] = data.get("fresh") is True
+                # The whole podcast's kit instead of the episodes' (publish_kit.build_podcast_kit).
+                payload["podcast"] = data.get("podcast") is True
             episodes = data.get("episodes") or []
             if not isinstance(episodes, list) or any(not isinstance(e, str) or not re.fullmatch(r"ep_[a-z0-9_]+", e)
                                                      or not (root / "episodes" / e / "script.yaml").is_file() for e in episodes):
-                raise AppError("Folgen mit veröffentlichtem Skript auswählen.", code="unknown_episode")
+                raise AppError(t("server.start.episodes"), code="unknown_episode")
             payload["episodes"] = episodes
         if action in {"assistant", "replan", "revise"} and not payload["message"].strip():
-            raise AppError("Bitte deinen Änderungswunsch eingeben.", code="missing_feedback")
+            raise AppError(t("server.start.feedback"), code="missing_feedback")
         if action in {"replan", "script"}:
             # A stopped draft has no outline to revise or approve; the worker would only stop again (scripting.outline_revision).
             work = self.outline_work(root)
             if work is None:
-                raise AppError("Zuerst das Inhaltsverzeichnis erstellen.", code="plan_required")
+                raise AppError(t("server.start.plan_required"), code="plan_required")
             payload["run_id"] = work.name
             payload["plan_hash"] = data.get("plan_hash")
             if action == "script" and payload["plan_hash"] != outline_hash(work):
-                raise AppError("Bitte das aktuelle Inhaltsverzeichnis lesen und freigeben.", code="plan_changed")
+                raise AppError(t("server.start.plan_changed"), code="plan_changed")
         if action in {"audio", "revise"}:
             episode = data.get("episode")
             if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode):
-                raise AppError("Folge auswählen.", code="unknown_episode")
+                raise AppError(t("server.start.episode"), code="unknown_episode")
             payload["episode"] = episode
             if action == "audio":
                 rerender = data.get("rerender") is True
                 if not rerender and data.get("approve_audio") is not True:
-                    raise AppError("Das gelesene Skript ausdrücklich für Audio freigeben.", code="audio_approval_required")
+                    raise AppError(t("server.audio.approve"), code="audio_approval_required")
                 for key, name in (("script_hash", "script.yaml"), ("readable_hash", "script.md")):
                     if data.get(key) != file_hash(root / "episodes" / episode / name):
-                        raise AppError("Skript inzwischen geändert. Bitte erneut lesen.", code="script_edited")
+                        raise AppError(t("server.audio.script_changed"), code="script_edited")
                     payload[key] = data[key]
                 payload["config_hash"] = data.get("config_hash")
-                if payload["config_hash"] != project_hash(load_project(root)):
-                    raise AppError("Stimmen oder Auftrag geändert. Bitte die aktuelle Ansicht erneut prüfen.", code="inputs_changed")
-                audio = selected_audio(root, load_project(root))
+                current = load_project(root)
+                if payload["config_hash"] != project_hash(current):
+                    raise AppError(t("server.audio.inputs_changed"), code="inputs_changed")
+                audio = selected_audio(root, current)
                 if data.get("audio_hash") != digest(audio.model_dump()):
-                    raise AppError("Audioanbieter oder Stimmen geändert. Bitte erneut freigeben.", code="inputs_changed")
+                    raise AppError(t("server.audio.audio_changed"), code="inputs_changed")
                 if rerender:
                     # A re-render changes only spoken forms. It starts on the saved approval by the
                     # rule the pipeline applies; without one the reader must approve the text first.
-                    if not saved_approval(root, episode, payload["script_hash"], audio_generation_record(audio)):
-                        raise AppError("Für diesen Stand liegt keine Audio-Freigabe vor. Bitte auf der Audioseite freigeben.",
-                                       code="audio_approval_required")
+                    # The approval binds the choice as the project's language speaks it (D-147).
+                    if not saved_approval(root, episode, payload["script_hash"],
+                                          audio_generation_record(audio.for_language(current.language))):
+                        raise AppError(t("server.audio.no_approval"), code="audio_approval_required")
                     payload["rerender"] = True
                 payload["audio_settings"] = audio.model_dump()
                 payload["audio_hash"] = data["audio_hash"]
@@ -1797,8 +2209,7 @@ class Studio:
                     # A reading placed for another route or an earlier script counts as none, as on the reader's page.
                     if data.get("expression_hash", "") != reading_hash(root, episode, payload["script_hash"],
                                                                        backchannels=audio.provider == "google_gemini_tts"):
-                        raise AppError("Der Ausdruck wurde seit dem Lesen neu gesetzt. Bitte das Skript mit den aktuellen "
-                                       "Tags lesen und erneut freigeben.", code="script_edited")
+                        raise AppError(t("server.audio.expression_changed"), code="script_edited")
                     payload["expression_hash"] = data.get("expression_hash", "")
                 if audio.remote:
                     remote_episode, remote_provider = episode, audio.provider
@@ -1806,7 +2217,7 @@ class Studio:
             job = self.job(root)
             run_id = data.get("run_id") or ((job or {}).get("run") or {}).get("run_id")
             if not run_id:
-                raise AppError("Kein fortsetzbarer Lauf vorhanden.", code="no_run")
+                raise AppError(t("server.resume.no_run"), code="no_run")
             path = manifest_path(root, run_id)
             saved_run = read_yaml(path) if path.is_file() else {}
             if saved_run.get("kind") == "episode_audio":
@@ -1818,7 +2229,7 @@ class Studio:
         if remote_episode:
             active = self.active_audio()
             if any(value[1:] == (root, remote_episode) for value in active.values()):
-                raise AppError("Diese Folge wird bereits vertont.", code="episode_busy")
+                raise AppError(t("server.audio.episode_busy"), code="episode_busy")
             limit = MAX_PARALLEL if selected_execution(root).audio == "parallel" else 1
             busy = self.worker(root) is not None
             full = len(active) >= MAX_PARALLEL or sum(value[1] == root for value in active.values()) >= limit
@@ -1826,9 +2237,9 @@ class Studio:
                 # A new approval waits its turn instead of being refused (start_queued starts it when a place is free).
                 return self.enqueue_audio(root, remote_episode, data)
             if busy:
-                raise AppError("Zuerst den laufenden Auftrag abschließen oder anhalten.", code="project_busy")
+                raise AppError(t("server.audio.project_busy"), code="project_busy")
             if full:
-                raise AppError(f"Alle {limit} Plätze für die Vertonung sind belegt. Eine laufende Folge fertigstellen oder anhalten.", code="audio_capacity")
+                raise AppError(t("server.audio.capacity", count=limit), code="audio_capacity")
             with project_lock(root, shared=True):
                 pass
             payload["parallel_remote"] = True
@@ -1838,17 +2249,29 @@ class Studio:
             gpu = action == "audio" or (action == "resume" and saved_run.get("kind") == "episode_audio")
             workers = self.active_workers()
             if len(workers) >= MAX_PROJECT_JOBS:
-                raise AppError(f"In {MAX_PROJECT_JOBS} Projekten laufen bereits Aufträge. Einen davon fertigstellen "
-                               "oder anhalten.", code="studio_capacity")
+                raise AppError(t("server.start.capacity", count=MAX_PROJECT_JOBS), code="studio_capacity")
             if gpu and any(uses_gpu for _, uses_gpu in workers.values()):
-                raise AppError("Qwen vertont gerade in einem anderen Projekt auf der Grafikkarte. Diese Vertonung "
-                               "zuerst fertigstellen oder anhalten.", code="gpu_busy")
+                raise AppError(t("server.start.gpu_busy"), code="gpu_busy")
         payload["text"] = studio_settings.text_data(root, TextChoice().model_dump())
         payload["api_key"] = self.key or None
+        # The worker hands it only to Claude on the key (studio_worker.text_key, provider_pool.use_anthropic_key).
+        payload["anthropic_key"] = self.anthropic_key or None
+        payload["perplexity_key"] = self.perplexity_key or None
         if action in {"audio", "resume", "check"}:
             # The Google key reaches only the steps that can speak through Google.
             payload["google_key"] = self.google_key or None
-        job = {"id": uuid.uuid4().hex, "action": action, "status": "running", "started_at": now(), "run": None}
+        # The interface language the worker writes its texts in (D-152): the request's; without a request, as the
+        # scheduler starts a resume or a queued recording, the language its job or approval was made in, else the
+        # saved choice or German.
+        language = studio_text.requested()
+        if language is None:
+            stored = (data.get("ui_language") if action == "audio" else
+                      self.run_language(root, payload.get("run_id")) if action == "resume" else None)
+            language = (stored if stored in studio_text.LANGUAGES
+                        else studio_text.resolve(None, studio_text.setting(self.workspace)))
+        payload["ui_language"] = language
+        job = {"id": uuid.uuid4().hex, "action": action, "status": "running", "started_at": now(), "run": None,
+               "ui_language": language}
         if action == "resume":
             # A resume refused before its first stage keeps showing the paused run and its decisions.
             job["run"] = saved_run or None
@@ -1883,11 +2306,10 @@ class Studio:
             process.stdin.close()
         except OSError as exc:
             reason = exc.strerror or type(exc).__name__
-            job.update(status="failed", error_code="worker_start",
-                       message=f"Auftrag konnte nicht gestartet werden ({reason}). Studio beenden und neu öffnen, "
-                               "dann erneut versuchen; fertige Arbeit bleibt gespeichert.")
+            message = t("server.start.worker_failed", reason=reason)
+            stored_message(job, message).update(status="failed", error_code="worker_start")
             write_json(job_path, job)
-            raise AppError(job["message"], code="worker_start") from None
+            raise AppError(message, code="worker_start") from None
         return job
 
     def stderr_file(self, root, job_id):
@@ -1931,12 +2353,12 @@ class Studio:
             process = (owner[0] if owner[1] == root else None) if owner else \
                 self.external_worker(root, audio_job_path(root, job_id))
             if owner is None and process is None:
-                raise AppError("Audioauftrag nicht gefunden.", code="no_active_job")
+                raise AppError(t("server.stop.audio_missing"), code="no_active_job")
         else:
             # A worker that outlived the Studio that started it is stopped as well, once its identity is verified.
             process = self.worker(root) or self.external_worker(root, root / "studio/job.json")
         if process is None or process.poll() is not None:
-            raise AppError("Kein aktiver Studio-Auftrag für dieses Projekt.", code="no_active_job")
+            raise AppError(t("server.stop.none"), code="no_active_job")
         stop_process_tree(process)
         return record_interruption(root, expected_job_id=job_id, audio_job_id=job_id)
 
@@ -1950,7 +2372,7 @@ class Studio:
         root = self.root(project)
         path = inside(root, relative)
         if path.suffix.lower() != ".mp3" or not relative.startswith(("exports/", "studio/samples/")) or not path.is_file():
-            raise AppError("Audiodatei nicht gefunden.", code="missing_audio")
+            raise AppError(t("server.media.missing"), code="missing_audio")
         return path
 
 
@@ -2008,20 +2430,20 @@ class StudioHandler(BaseHTTPRequestHandler):
         port = self.server.server_port
         scope = client_scope(self.client_address[0], self.server.studio.lan)
         if scope is None:
-            raise AppError("Zugriff nur von diesem Computer oder, mit der WLAN-Startdatei, aus dem Heimnetz.", code="forbidden")
+            raise AppError(t("server.guard.scope"), code="forbidden")
         # A device in the home network names this computer by the address it connected to. Any other name is
         # refused as before, which keeps a web page from steering the Studio through a rebound domain.
         allowed = ({f"127.0.0.1:{port}", f"localhost:{port}"} if scope == "local"
                    else {f"{self.connection.getsockname()[0]}:{port}"})
         if self.headers.get("Host") not in allowed:
-            raise AppError("Zugriff nur über die lokale Studio-Adresse.", code="forbidden")
+            raise AppError(t("server.guard.host"), code="forbidden")
         origin = self.headers.get("Origin")
         if origin and origin not in {f"http://{h}" for h in allowed}:
-            raise AppError("Fremde Webseiten dürfen das Studio nicht steuern.", code="forbidden")
+            raise AppError(t("server.guard.origin"), code="forbidden")
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            raise AppError("Zugriff von einer fremden Webseite abgewiesen.", code="forbidden")
+            raise AppError(t("server.guard.cross_site"), code="forbidden")
         if mutation and not secrets.compare_digest(self.headers.get("X-Studio-Token", ""), self.server.studio.token):
-            raise AppError("Studio-Sitzung neu laden.", code="forbidden")
+            raise AppError(t("server.guard.token"), code="forbidden")
 
     def drain(self):
         """Read the body a refused request already sent. On Windows, closing a socket with unread data resets
@@ -2059,25 +2481,25 @@ class StudioHandler(BaseHTTPRequestHandler):
                 # A book as raw bytes, its citation in the query. Only application/octet-stream is taken: like JSON
                 # it needs the browser's preflight, so no other page can post a file here.
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/octet-stream":
-                    raise AppError("Datei als application/octet-stream erwartet.", code="invalid_request")
+                    raise AppError(t("server.request.octet"), code="invalid_request")
                 size = int(length) if length.isdigit() else 0
                 if not 0 < size <= limit:
-                    raise AppError(f"Das Werk darf höchstens {limit // (1024 * 1024)} MB groß sein.", code="invalid_work")
+                    raise AppError(t("server.request.work_size", mb=limit // (1024 * 1024)), code="invalid_work")
                 raw = self.rfile.read(size)
                 self.unread = 0
                 with app.mutex:
                     result = app.upload_work(work[1], raw, parse_qs(urlsplit(self.path).query))
             elif mutation:
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
-                    raise AppError("JSON-Anfrage erwartet.", code="invalid_request")
+                    raise AppError(t("server.request.json"), code="invalid_request")
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 0 < size <= limit:
-                    raise AppError("Anfrage zu groß oder leer.", code="invalid_request")
+                    raise AppError(t("server.request.size"), code="invalid_request")
                 raw = self.rfile.read(size)
                 self.unread = 0
                 data = json.loads(raw)
                 if not isinstance(data, dict):
-                    raise AppError("Ungültige Anfrage.", code="invalid_request")
+                    raise AppError(t("server.request.invalid"), code="invalid_request")
                 # A conversation sample may speak through Google for some seconds; it never holds the Studio's lock.
                 with nullcontext() if path == "/api/pair-sample" else app.mutex:
                     if path == "/api/quit":
@@ -2089,19 +2511,29 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = app.pair_sample(data)
                     elif path == "/api/key":
                         value, kind = data.get("key", ""), data.get("kind", "openrouter")
-                        if (kind not in {"openrouter", "google"} or not isinstance(value, str) or len(value) > 512
+                        if (kind not in {"openrouter", "google", "anthropic", "perplexity"} or not isinstance(value, str)
+                                or len(value) > 512
                                 or any(ord(c) < 33 or ord(c) > 126 for c in value)):
-                            raise AppError("Ungültiger API-Key.", code="invalid_key")
+                            raise AppError(t("server.key.invalid"), code="invalid_key")
                         add_secret(value)
                         if kind == "google":
                             app.google_key = value
+                        elif kind == "anthropic":
+                            app.anthropic_key = value
+                        elif kind == "perplexity":
+                            app.perplexity_key = value
                         else:
                             app.key = value
-                        result = {"key_available": app.key_available(), "google_key_available": app.google_key_available()}
+                        result = app.key_states()
                     elif path == "/api/projects":
                         result = app.create(data)
                     elif path == "/api/settings":
                         result = app.save_settings(data)
+                    elif path == "/api/ui-language":
+                        # The interface language for this workspace, outside the settings draft and its hash (D-152).
+                        choice = studio_text.save_setting(app.workspace, data.get("ui_language"))
+                        result = {"ui_language": choice,
+                                  "language": studio_text.resolve(self.headers.get("Accept-Language"), choice)}
                     elif path == "/api/server/restart":
                         result = app.request_restart(data)
                     elif path == "/api/restore":
@@ -2109,15 +2541,21 @@ class StudioHandler(BaseHTTPRequestHandler):
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
                                              r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
-                                             r"|audio_queue|allowances)", path)
+                                             r"|audio_queue|allowances|reader_state)", path)
                         if not match:
-                            raise AppError("Seite nicht gefunden.", code="not_found")
+                            raise AppError(t("server.not_found"), code="not_found")
                         project, action = match.groups()
                         result = app.stop(project, data.get("job_id")) if action == "stop" else getattr(app, action)(project, data)
             elif path in {"/", "/app.js", "/style.css"}:
                 name = "index.html" if path == "/" else path[1:]
                 body = files("podcast_automate").joinpath("web", name).read_bytes()
                 self.send_data(200, body, {"index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css"}[name] + "; charset=utf-8")
+                return
+            elif path == "/locale.js":
+                # The interface language and its catalog over English (studio_text.locale_script); the answer differs
+                # by Accept-Language while the choice is "auto".
+                body = studio_text.locale_script(studio_text.current_language(), studio_text.setting(app.workspace))
+                self.send_data(200, body.encode("utf-8"), "text/javascript; charset=utf-8", {"Vary": "Accept-Language"})
                 return
             elif path == "/api/bootstrap":
                 result = {**app.bootstrap(), "client": client_scope(self.client_address[0], app.lan)}
@@ -2130,6 +2568,12 @@ class StudioHandler(BaseHTTPRequestHandler):
             elif (match := re.fullmatch(r"/api/projects/([^/]+)", path)):
                 with app.mutex:
                     result = app.detail(match[1])
+                result["content_version"] = content_version(result)
+            elif (match := re.fullmatch(r"/api/projects/([^/]+)/status", path)):
+                # The page's poll: the heavy parts are fetched again only when their fingerprint changes (D-159).
+                with app.mutex:
+                    data = app.detail(match[1])
+                result = {**status_view(data), "content_version": content_version(data)}
             elif (match := re.fullmatch(r"/api/projects/([^/]+)/report", path)):
                 result = app.production(match[1], parse_qs(urlsplit(self.path).query).get("run_id", [None])[0])
             elif (match := re.fullmatch(r"/api/projects/([^/]+)/file", path)):
@@ -2151,43 +2595,45 @@ class StudioHandler(BaseHTTPRequestHandler):
                 with project_lock(root, shared=True) if not app.own_text_job(root) else nullcontext():
                     recording = next((r for r in podcast_download(root, selected_path=match[2]).recordings if r.relative == match[2]), None)
                     if recording is None:
-                        raise AppError("Aufnahme nicht mehr in der aktuellen Auswahl. Übersicht neu laden.", code="missing_audio")
+                        raise AppError(t("server.download.missing"), code="missing_audio")
                     self.send_file(recording.path, "audio/mpeg", recording.filename)
                 return
             elif (match := re.fullmatch(r"/samples/(de-DE|en-US)/([a-z_]+)", path)):
                 if match[2] not in {v.lower() for v in VOICES}:
-                    raise AppError("Stimme nicht gefunden.", code="not_found")
+                    raise AppError(t("server.sample.voice_missing"), code="not_found")
                 audio = inside(app.projects, f"voice-samples/{match[1]}/{match[2]}/audio.mp3")
                 self.send_audio(audio)
                 return
             elif (match := re.fullmatch(r"/samples/gemini/(de-DE|en-US)/([A-Za-z]+)", path)):
                 audio = ready_sample(app.projects, match[2], match[1])
                 if audio is None:
-                    raise AppError("Diese Hörprobe wurde noch nicht erstellt.", code="not_found")
+                    raise AppError(t("server.sample.missing"), code="not_found")
                 self.send_audio(audio)
                 return
             elif (match := re.fullmatch(r"/samples/google/(de-DE|en-US)/([0-9a-f]{64})", path)):
                 audio = ready_pair_file(app.projects, match[1], match[2])
                 if audio is None:
-                    raise AppError("Diese Gesprächsprobe wurde noch nicht erstellt.", code="not_found")
+                    raise AppError(t("server.pair.missing"), code="not_found")
                 self.send_audio(audio)
                 return
             else:
-                raise AppError("Seite nicht gefunden.", code="not_found")
+                raise AppError(t("server.not_found"), code="not_found")
             self.send_data(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return  # A cancelled download still exits its context and cleans up.
         except (AppError, ValueError, KeyError, TypeError, OSError) as exc:
             code = exc.code if isinstance(exc, AppError) else "invalid_request"
-            message = str(exc) if isinstance(exc, AppError) else "Daten konnten nicht verarbeitet werden. Eingaben prüfen und Ansicht neu laden."
-            if app.key:
-                message = message.replace(app.key, "[Key verborgen]")
+            raw = (exc.args[0] if exc.args else "") if isinstance(exc, AppError) else t("server.request.failed")
+            message, language = str(raw), message_language(raw)
+            for key in app.stored_keys():
+                message = message.replace(key, t("server.key_hidden"))
             if not isinstance(exc, AppError):
                 # Request bodies and paths stay out of the log; the traceback names the failing code.
                 logger("studio").warning("Anfrage %s abgewiesen: %s", urlsplit(self.path).path, type(exc).__name__, exc_info=exc)
             self.drain()
             self.send_data(403 if code == "forbidden" else 404 if code == "not_found" else 400,
-                           json.dumps({"error": message, "code": code}, ensure_ascii=False).encode("utf-8"))
+                           json.dumps({"error": message, "code": code, "message_language": language},
+                                      ensure_ascii=False).encode("utf-8"))
 
     def send_audio(self, path):
         self.send_file(path, "audio/mpeg")
@@ -2225,11 +2671,17 @@ class StudioHandler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
 
+    def ui_language(self):
+        """The interface language this request is answered in (D-152)."""
+        return studio_text.resolve(self.headers.get("Accept-Language"), studio_text.setting(self.server.studio.workspace))
+
     def do_GET(self):
-        self.dispatch()
+        with studio_text.using(self.ui_language()):
+            self.dispatch()
 
     def do_POST(self):
-        self.dispatch(True)
+        with studio_text.using(self.ui_language()):
+            self.dispatch(True)
 
 
 def make_server(workspace, port=8765, *, lan=False):

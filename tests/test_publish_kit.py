@@ -7,9 +7,12 @@ from unittest.mock import patch
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.models import Chapter, EpisodeScript, Segment
-from podcast_automate.publish_kit import (DESCRIPTION_LIMIT, PROMPT_VERSION, EpisodeDescriptions, author_names,
-                                          build_publish_kit, chapter_marks, chapter_problems, compose_description,
-                                          description_defects, episode_sources, saved_kit, source_line, sources_markdown)
+from podcast_automate.publish_kit import (DESCRIPTION_LIMIT, PODCAST_PROMPT_VERSION, PROMPT_VERSION,
+                                          EpisodeDescriptions, author_names, build_podcast_kit, build_publish_kit,
+                                          chapter_marks, chapter_problems, compose_description, description_defects,
+                                          episode_sources, podcast_sources, podcast_sources_markdown,
+                                          podcast_transcript, saved_kit, saved_podcast_kit, source_line,
+                                          sources_markdown)
 from podcast_automate.research_models import SourceDocument, SourceIndex, SourceSection
 from podcast_automate.runner import manifest_path
 from podcast_automate.scripting import run_script
@@ -22,6 +25,24 @@ LONG = ("Wie vergleicht ein Modell zwei Möglichkeiten? Die Folge geht von einem
         "Dabei wird auch deutlich, wo der Vergleich an seine Grenze kommt: Die Bewertung sagt nichts darüber, "
         "wie das Modell gelernt hat. Diese Frage bleibt für eine spätere Folge offen, und auch die Grenzen des "
         "Beispiels werden genannt, damit kein falscher Eindruck entsteht.")
+# The end of every description since 2026-10-07 (D-154): PRODUCT.md's transparency note and the AI notice.
+TRANSPARENCY_DE = ("Dieser Output ist eine quellengebundene Synthese. Er ersetzt keine fachliche, rechtliche, medizinische "
+                   "oder wissenschaftliche Begutachtung. Unsichere oder widersprüchliche Quellenlagen werden markiert.\n"
+                   "KI-Hinweis: Das Skript dieser Folge wurde von einem Sprachmodell geschrieben und wird von "
+                   "synthetischen Stimmen gesprochen.")
+NOTE_DE = TRANSPARENCY_DE.split("\n")[0]
+# The podcast's own kit (2026-10-07, D-165): its texts and the AI notice that names the podcast's scripts.
+PODCAST_SHORT = ("Der Podcast erklärt, wie ein Modell Möglichkeiten vergleicht und warum eine niedrigere Bewertung "
+                 "dabei die bessere Wahl ist.")
+PODCAST_LONG = ("Wie vergleicht ein Modell Möglichkeiten? Der Podcast beginnt mit einem konkreten Vergleich und erklärt, "
+                "welche Zahl das Modell jeder Möglichkeit zuordnet und was eine niedrige Zahl bedeutet.\n\n"
+                "Die Folgen zeigen auch, wo dieser Vergleich an seine Grenze kommt: Die Bewertung sagt nichts darüber, "
+                "wie das Modell gelernt hat. Diese Frage bleibt offen, und auch die Grenzen des Beispiels werden "
+                "genannt, damit kein falscher Eindruck entsteht.")
+AI_PODCAST_DE = ("KI-Hinweis: Die Skripte dieses Podcasts wurden von einem Sprachmodell geschrieben und werden von "
+                 "synthetischen Stimmen gesprochen.")
+TRANSCRIPT_NOTE_DE = ("Der freigegebene Text aller Folgen in Skriptreihenfolge. Die Zeitmarken der Kapitel stammen aus "
+                      "der gemessenen Montage der Aufnahme.")
 
 
 def document(source_id, title, *, url="", final_url="", authors=(), published="", source_type="unknown", citation=""):
@@ -80,11 +101,37 @@ class DescriptionCheckTests(unittest.TestCase):
         text, listed = compose_description(LONG, chapters, sources, "de-DE")
         self.assertLessEqual(len(text), DESCRIPTION_LIMIT)
         self.assertTrue(0 < listed < 20)
-        self.assertTrue(text.endswith(f"Weitere Quellen: {20 - listed}"))
+        # D-154 (2026-10-07): the transparency note ends the description and counts against the limit; the count of
+        # the sources left out comes right before it, where the text used to end.
+        note = TRANSPARENCY_DE
+        self.assertTrue(text.endswith(f"Weitere Quellen: {20 - listed}\n\n{note}"), text[-400:])
         self.assertIn("\n\nKapitel\n00:00 Anfang\n02:00 Ende\n\nQuellen\nA. Autor (2020): Quelle 0. https://", text)
         with self.assertRaises(AppError) as caught:
             compose_description("x" * DESCRIPTION_LIMIT, chapters, [], "de-DE")
         self.assertEqual(caught.exception.code, "description_too_long")
+        # A text and chapters that fit only without the note are refused too: the note is never cut.
+        head = len("\n\nKapitel\n00:00 Anfang\n02:00 Ende")
+        fits_without_note = "x" * (DESCRIPTION_LIMIT - head)
+        with self.assertRaises(AppError) as caught:
+            compose_description(fits_without_note, chapters, [], "de-DE")
+        self.assertEqual(caught.exception.code, "description_too_long")
+        fitting = "x" * (DESCRIPTION_LIMIT - head - len("\n\n" + note))
+        self.assertEqual(compose_description(fitting, chapters, [], "de-DE"),
+                         (fitting + "\n\nKapitel\n00:00 Anfang\n02:00 Ende\n\n" + note, 0))
+
+    def test_the_long_limit_leaves_room_for_the_note_and_usual_episodes_keep_their_prompt(self):
+        """D-154: the note counts against the 4,000 characters, so the longest description an episode with dozens of
+        chapters may ask for shrinks by its length; a usual episode still asks for LONG_CHARS[1], so its saved
+        descriptions are reused without a model call."""
+        from podcast_automate.publish_kit import LONG_CHARS, SOURCE_RESERVE, TIMESTAMP_WIDTH, long_limit
+        self.assertEqual(long_limit(script_with(["Kapitel"] * 12), "de-DE"), LONG_CHARS[1])
+        # Forty long chapter titles: without the note the limit would still be LONG_CHARS[1]; with it, less.
+        many = script_with([f"Ein recht langer Kapiteltitel Nummer {n:02d}" for n in range(40)])
+        chapters = len("\n\nKapitel") + sum(TIMESTAMP_WIDTH + len(c.title) + 1 for c in many.chapters)
+        self.assertGreaterEqual(DESCRIPTION_LIMIT - chapters - SOURCE_RESERVE, LONG_CHARS[1])
+        self.assertEqual(long_limit(many, "de-DE"),
+                         DESCRIPTION_LIMIT - chapters - SOURCE_RESERVE - len("\n\n" + TRANSPARENCY_DE))
+        self.assertTrue(LONG_CHARS[0] < long_limit(many, "de-DE") < LONG_CHARS[1])
 
 
 class SourceResolutionTests(unittest.TestCase):
@@ -126,7 +173,9 @@ class SourceResolutionTests(unittest.TestCase):
         self.assertEqual(source_line({**row, "authors": [], "year": "", "url": ""}), row["title"])
 
 
-class PublishKitTests(unittest.TestCase):
+class KitCase(unittest.TestCase):
+    """A published fixture episode, a fake text model and a recording; deliberately contains no test methods."""
+
     def setUp(self):
         self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root.resolve()
@@ -139,6 +188,9 @@ class PublishKitTests(unittest.TestCase):
         class Pool:
             def __init__(self, runtime, text_generation, api_key=None):
                 pass
+
+            def billed(self, search=False):
+                return False
 
             def structured(self, prompt, schema, directory, prompt_version):
                 prompts.append((prompt_version, prompt))
@@ -157,6 +209,8 @@ class PublishKitTests(unittest.TestCase):
             "parts": [{"part": 1, "audio": f"exports/ep_001/{run_id}/audio.mp3", "duration_seconds": 95.0}]})
         return folder
 
+
+class PublishKitTests(KitCase):
     def test_one_call_writes_the_kit_and_a_rebuild_or_a_recording_of_the_same_script_calls_no_model(self):
         prompts = []
         with patch("podcast_automate.publish_kit.AdapterPool", self.pool([{"short": SHORT, "long": LONG}], prompts)):
@@ -194,6 +248,23 @@ class PublishKitTests(unittest.TestCase):
         self.assertEqual(saved_kit(self.root, "ep_001")["folder"], recorded["folder"])
         self.record("run_20261006_130000_000000_rec00002")
         self.assertIsNone(saved_kit(self.root, "ep_001"), "a newer recording needs its own kit")
+
+    def test_a_kit_of_the_layout_before_the_note_is_rebuilt_without_a_model_call(self):
+        """D-154 changed description.txt, so kit.json's version moved to publish_kit.v2: a v1 kit is no longer shown or
+        zipped, and rebuilding it reuses the saved descriptions (their own version stayed publish_kit.v1)."""
+        from podcast_automate.publish_kit import DESCRIPTIONS_VERSION, KIT_VERSION
+        self.assertEqual((KIT_VERSION, DESCRIPTIONS_VERSION), ("publish_kit.v2", "publish_kit.v1"))
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool([{"short": SHORT, "long": LONG}], [])):
+            build_publish_kit(self.root, "ep_001")
+        folder = self.root / "episodes/ep_001/publish"
+        self.assertTrue((folder / "description.txt").read_text(encoding="utf-8").endswith(TRANSPARENCY_DE + "\n"))
+        old = json.loads((folder / "kit.json").read_text(encoding="utf-8"))
+        write_json(folder / "kit.json", {**old, "version": "publish_kit.v1"})
+        self.assertIsNone(saved_kit(self.root, "ep_001"))
+        with patch("podcast_automate.publish_kit.AdapterPool", side_effect=AssertionError("no model call")):
+            rebuilt = build_publish_kit(self.root, "ep_001")
+        self.assertTrue(rebuilt["descriptions_reused"])
+        self.assertEqual(saved_kit(self.root, "ep_001")["version"], "publish_kit.v2")
 
     def test_the_studio_builds_shows_and_zips_the_kit_of_the_current_recording(self):
         """The Studio's side (2026-10-06): the worker job builds the kits, the recording page shows the two texts to
@@ -271,11 +342,174 @@ class PublishKitTests(unittest.TestCase):
             code = main(["publish-kit", str(self.root), "--episode", "ep_001", "--json"])
         data = json.loads(output.getvalue())
         self.assertEqual((code, data["status"], data["kit"]["folder"]), (0, "completed", "episodes/ep_001/publish"))
-        self.assertIn("noch nicht vertont", data["message"])
+        # The CLI's own messages are English since D-156; the fact is the same: no recording, no time marks.
+        self.assertIn("not recorded yet", data["message"])
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = main(["publish-kit", str(self.root), "--episode", "ep_999", "--json"])
         self.assertEqual((code, json.loads(output.getvalue())["code"]), (1, "unknown_episode"))
+
+
+class PodcastTextTests(unittest.TestCase):
+    """The whole podcast's source list and transcript (2026-10-07, D-165), built from the data alone."""
+
+    def test_one_work_in_several_episodes_is_one_source_that_names_them_all(self):
+        def row(source_id, title, url=""):
+            return {"source_ids": [source_id], "title": title, "authors": ["A. Autor"], "year": "2020", "url": url,
+                    "source_type": "paper", "finding_ids": ["f_x"]}
+        first = [row("src_a", "Attention is All you Need", "https://arxiv.org/abs/1706.03762"), row("src_b", "Ein Buch")]
+        # The same work under another title through the research's work id, and under the same title with punctuation.
+        second = [row("src_c", "Attention Is All You Need (Preprint)"), row("src_d", "Ein Buch.", "https://example.org/buch"),
+                  row("src_e", "Neu")]
+        merged = podcast_sources([("ep_001", first, {"src_a": "work_attention"}),
+                                  ("ep_002", second, {"src_c": "work_attention"})])
+        self.assertEqual([(r["title"], r["source_ids"], r["episodes"], r["url"]) for r in merged],
+                         [("Attention is All you Need", ["src_a", "src_c"], ["ep_001", "ep_002"],
+                           "https://arxiv.org/abs/1706.03762"),
+                          ("Ein Buch", ["src_b", "src_d"], ["ep_001", "ep_002"], "https://example.org/buch"),
+                          ("Neu", ["src_e"], ["ep_002"], "")])
+        self.assertEqual(podcast_sources_markdown("Thema", merged, {"ep_001": 1, "ep_002": 2}, "de-DE").splitlines(), [
+            "# Quellen: Thema", "",
+            "Die Quellen der Rechercheergebnisse, auf die sich die Folgen stützen, in der Reihenfolge ihrer ersten "
+            "Verwendung; in Klammern die Folgen, die sie nutzen.", "",
+            "1. A. Autor (2020): *Attention is All you Need*. <https://arxiv.org/abs/1706.03762> (in Folge 01, Folge 02)",
+            "2. A. Autor (2020): *Ein Buch*. <https://example.org/buch> (in Folge 01, Folge 02)",
+            "3. A. Autor (2020): *Neu*. (in Folge 02)"])
+        self.assertEqual(podcast_sources_markdown("Thema", [], {}, "de-DE"),
+                         "# Quellen: Thema\n\nKeine Folge stützt sich auf eine Quelle der Recherche.\n")
+
+    def test_the_transcript_reads_every_episode_with_its_chapter_marks_and_names_one_without_a_recording(self):
+        one = script_with(["Anfang", "Ende"])
+        two = EpisodeScript(episode_id="ep_002", title="Zweite", purpose="deep_dive",
+                            chapters=[Chapter(chapter_id="c_0", title="Mitte")],
+                            segments=[Segment(segment_id="s_0", scene_id="c_0", chapter_id="c_0", speaker_id="host_b",
+                                              text="Zwei.", knowledge_refs=[])])
+        episodes = [{"script": one, "number": 1, "recording": {"run_id": "run_x"},
+                     "chapters": chapter_marks(one, {"starts": [0.4, 65.0]})},
+                    {"script": two, "number": 2, "recording": None, "chapters": chapter_marks(two, None)}]
+        self.assertEqual(podcast_transcript("Thema", episodes, {"host_a": "Anna", "host_b": "Ben"}, "de-DE"),
+                         f"# Thema\n\n{TRANSCRIPT_NOTE_DE}\n\n## Folge 01: Titel\n\n### 00:00 Anfang\n\n**Anna:** Text.\n\n"
+                         "### 01:05 Ende\n\n**Anna:** Text.\n\n## Folge 02: Zweite\n\n"
+                         "Noch nicht vertont: Die Kapitel stehen ohne Zeitmarken.\n\n### Mitte\n\n**Ben:** Zwei.\n\n"
+                         f"## Transparenzhinweis\n\n{NOTE_DE}\n\n{AI_PODCAST_DE}\n")
+
+
+class PodcastKitTests(KitCase):
+    """The whole podcast's kit on the published fixture episode (2026-10-07, D-165)."""
+    ANSWER = {"short": PODCAST_SHORT, "long": PODCAST_LONG}
+
+    def transcript(self, *, timed):
+        """publish/transcript.md as the fixture's one published episode gives it."""
+        script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
+        self.assertEqual({segment.chapter_id for segment in script.segments}, {"scene_example"})
+        turns = "".join(f"**{'Host A' if segment.speaker_id == 'host_a' else 'Host B'}:** {segment.text}\n\n"
+                        for segment in script.segments)
+        untimed = "" if timed else "Noch nicht vertont: Die Kapitel stehen ohne Zeitmarken.\n\n"
+        return (f"# Test topic\n\n{TRANSCRIPT_NOTE_DE}\n\n## Folge 01: {script.title}\n\n{untimed}"
+                f"### {'00:00 ' if timed else ''}A concrete comparison\n\n{turns}"
+                f"## Transparenzhinweis\n\n{NOTE_DE}\n\n{AI_PODCAST_DE}\n")
+
+    def test_one_call_writes_the_kit_and_a_rebuild_or_a_recording_calls_no_model(self):
+        prompts = []
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool([dict(self.ANSWER)], prompts)):
+            kit = build_podcast_kit(self.root)
+        self.assertEqual([version for version, _ in prompts], [PODCAST_PROMPT_VERSION])
+        payload = json.loads(prompts[0][1].splitlines()[-1])
+        self.assertEqual((payload["series_topic"], payload["central_question"]), ("Test topic", "Test topic"))
+        self.assertEqual(payload["episodes"], [{
+            "number": 1, "title": "A model compares possibilities", "central_question": "How are possibilities compared?",
+            "series_role": "Shows how a model compares possibilities, the base of the answer.",
+            "chapters": ["A concrete comparison"]}])
+        self.assertNotIn("transcript", payload, "the series is described from its plans, not from hours of text")
+        folder = self.root / "publish"
+        self.assertEqual((kit["folder"], kit["descriptions_reused"], kit["transcript"]),
+                         ("publish", False, {"episodes": 1, "recorded": 0}))
+        self.assertEqual((folder / "description_short.txt").read_text(encoding="utf-8"), PODCAST_SHORT + "\n")
+        self.assertEqual((folder / "description.txt").read_text(encoding="utf-8"),
+                         f"{PODCAST_LONG}\n\n{NOTE_DE}\n{AI_PODCAST_DE}\n")
+        self.assertEqual((folder / "transcript.md").read_text(encoding="utf-8"), self.transcript(timed=False))
+        self.assertEqual((folder / "sources.md").read_text(encoding="utf-8").splitlines()[-1],
+                         "1. Test Author: *Fixture paper*. <https://example.org/paper0> (in Folge 01)")
+        self.assertEqual([(row["title"], row["episodes"]) for row in kit["sources"]], [("Fixture paper", ["ep_001"])])
+        self.assertEqual(saved_podcast_kit(self.root)["files"], kit["files"])
+        first = (folder / "kit.json").read_bytes()
+
+        with patch("podcast_automate.publish_kit.AdapterPool", side_effect=AssertionError("no model call")):
+            again = build_podcast_kit(self.root)
+            self.assertTrue(again["descriptions_reused"])
+            self.assertEqual((folder / "kit.json").read_bytes(), first, "an unchanged kit is rewritten byte for byte")
+            self.record()
+            self.assertIsNone(saved_podcast_kit(self.root), "a new recording changes the transcript's time marks")
+            recorded = build_podcast_kit(self.root)
+        self.assertEqual((recorded["transcript"], recorded["episodes"][0]["recording"]["run_id"]),
+                         ({"episodes": 1, "recorded": 1}, "run_20261006_120000_000000_rec00001"))
+        self.assertEqual((folder / "transcript.md").read_text(encoding="utf-8"), self.transcript(timed=True))
+        self.assertIsNotNone(saved_podcast_kit(self.root))
+
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool([dict(self.ANSWER)], prompts)):
+            build_podcast_kit(self.root, fresh=True)
+        self.assertEqual(len(prompts), 2)
+        calls = sorted((self.root / "studio/publish_kit/podcast").glob("*/budget.json"))
+        self.assertEqual([json.loads(path.read_text(encoding="utf-8"))["model_calls"] for path in calls], [1, 1])
+
+    def test_the_studio_builds_shows_and_zips_the_kit_of_the_current_recordings(self):
+        import zipfile
+        from podcast_automate.downloads import podcast_zip
+        from podcast_automate.studio import podcast_kit_view
+        from podcast_automate.studio_worker import perform
+        self.record()
+        self.assertIsNone(podcast_kit_view(self.root))
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool([dict(self.ANSWER)], [])):
+            result = perform(self.root, {"action": "publish_kit", "text": {}, "podcast": True})
+        self.assertEqual(result["podcast_kit"], {
+            "folder": "publish", "episodes": 1, "recorded": 1, "sources": 1, "reused": False,
+            "characters": len(f"{PODCAST_LONG}\n\n{NOTE_DE}\n{AI_PODCAST_DE}")})
+        view = podcast_kit_view(self.root)
+        self.assertEqual((view["short"], view["episodes"], view["recorded"], view["sources_total"]),
+                         (PODCAST_SHORT, 1, 1, 1))
+        self.assertTrue(view["description"].startswith(PODCAST_LONG))
+        with podcast_zip(self.root) as (archive, _):
+            with zipfile.ZipFile(archive) as bundle:
+                names = bundle.namelist()
+                transcript = bundle.read("Begleitmaterial Podcast/transcript.md").decode("utf-8")
+        self.assertEqual(sorted(name for name in names if name.startswith("Begleitmaterial Podcast/")),
+                         ["Begleitmaterial Podcast/description.txt", "Begleitmaterial Podcast/description_short.txt",
+                          "Begleitmaterial Podcast/sources.md", "Begleitmaterial Podcast/transcript.md"])
+        self.assertEqual(transcript, self.transcript(timed=True))
+        # A newer recording is not covered yet: the page offers a rebuild and the ZIP leaves the old kit out.
+        self.record("run_20261006_130000_000000_rec00002")
+        self.assertEqual(podcast_kit_view(self.root), {"outdated": True})
+        with podcast_zip(self.root) as (archive, _):
+            with zipfile.ZipFile(archive) as bundle:
+                self.assertFalse(any(name.startswith("Begleitmaterial Podcast/") for name in bundle.namelist()))
+
+    def test_an_edited_script_stops_the_kit_and_a_podcast_without_a_published_script_has_none(self):
+        script = read_yaml(self.root / "episodes/ep_001/script.yaml")
+        script["segments"][0]["text"] = "Was vergleicht dieses Modell eigentlich?"
+        write_yaml(self.root / "episodes/ep_001/script.yaml", script)
+        with patch("podcast_automate.publish_kit.AdapterPool", side_effect=AssertionError("no model call")):
+            with self.assertRaises(AppError) as caught:
+                build_podcast_kit(self.root)
+            self.assertEqual(caught.exception.code, "script_edited")
+            self.assertIsNone(saved_podcast_kit(self.root))
+            # A folder no publish pointer names is not part of the series.
+            pointer = self.root / "episodes/ep_001/latest.json"
+            write_json(pointer, {**json.loads(pointer.read_text(encoding="utf-8")), "episode_ids": []})
+            with self.assertRaises(AppError) as caught:
+                build_podcast_kit(self.root)
+        self.assertEqual(caught.exception.code, "no_published_script")
+
+    def test_the_cli_writes_the_podcast_kit_and_needs_a_scope(self):
+        output = io.StringIO()
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool([dict(self.ANSWER)], [])), \
+                contextlib.redirect_stdout(output):
+            code = main(["publish-kit", str(self.root), "--podcast", "--json"])
+        data = json.loads(output.getvalue())
+        self.assertEqual((code, data["status"], data["kit"]["folder"]), (0, "completed", "publish"))
+        self.assertIn("(episodes: 1, recorded: 0, sources: 1)", data["message"])
+        self.assertIn("no time marks", data["message"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["publish-kit", str(self.root), "--json"])
 
 
 if __name__ == "__main__":

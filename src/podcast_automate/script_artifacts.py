@@ -5,6 +5,7 @@ import json
 import re
 from datetime import datetime, timezone
 
+from .content_text import text as wording, transparency_lines
 from .errors import AppError
 from .models import EpisodeScript, host_labels
 from .polishing import HOST_ROLES, POLISH_VERSION
@@ -89,6 +90,45 @@ def render_script(script, labels):
     return "\n".join(lines)
 
 
+def render_series_outline(plan, entries, *, language):
+    """research/series_outline.md: the plan's episodes and which of them this run checked, in the podcast's language
+    (D-153)."""
+    overview = [f"# {wording(language, 'outline_title')}", "", plan.explanation_path, "", plan.scope_note, ""]
+    for entry in plan.episodes:
+        overview.extend([f"## {entry.episode_id}: {entry.title}", "", entry.central_question, "",
+                         wording(language, "outline_planned", minutes=entry.target_minutes) +
+                         wording(language, "outline_checked" if entry in entries else "outline_only_planned"), ""])
+    return "\n".join(overview)
+
+
+def render_show_notes(script, entry, dossier, source_map, *, research_id, run_id, language):
+    """The script run's show_notes.md: chapters, open deep dives and the sources of the episode's findings, in the
+    podcast's language (D-153), ending with the transparency note (D-154)."""
+    notes = [f"# {wording(language, 'notes_title', title=script.title)}", "", entry.central_question, "",
+             f"## {wording(language, 'notes_chapters')}", "", *[f"- {c.title}" for c in script.chapters], "",
+             f"## {wording(language, 'notes_limits')}", "", *[f"- {q}" for q in entry.deferred_questions], "",
+             f"## {wording(language, 'notes_sources')}", ""]
+    # The supporting findings an episode may cite are its sources too; a plan without them lists as before.
+    listed_findings = {*entry.finding_ids, *entry.supporting_finding_ids}
+    used = {e.reference.split("#")[0] for f in dossier.findings if f.id in listed_findings for e in f.evidence}
+    # Two URLs of the same work are one source for a listener; the assessment's work_id
+    # says which those are, and a normalised title covers the sources without one.
+    works = {a.source_id: a.work_id for a in dossier.source_assessments if a.work_id}
+    listed = set()
+    for source_id in sorted(used):
+        source = source_map[source_id]
+        identity = works.get(source_id) or re.sub(r"\W+", " ", source.title).strip().casefold()
+        if identity in listed:
+            continue
+        listed.add(identity)
+        url = source.final_url or "../../" + source.raw_path
+        notes.append(f"- [{source.title.replace('[', '').replace(']', '')}]({url})")
+    notes.extend(["", f"## {wording(language, 'notes_traceability')}", "",
+                  wording(language, "notes_runs", research=research_id, script=run_id),
+                  wording(language, "notes_references"), "", *transparency_lines(language)])
+    return "\n".join(notes)
+
+
 def archive_other_series(root, plan, run_id):
     """Move the episode folders of another outline to ``episodes/archive/<time>_<run>/``; nothing is deleted. A
     folder belongs to this outline when its ``episode_plan.yaml`` is the plan's entry of the same id, as for every
@@ -135,12 +175,7 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
                        "models/series_plan.yaml": plan.model_dump()}.items():
         write_yaml(root / name, data)
         outputs.append(root / name)
-    overview = ["# Serienentwurf", "", plan.explanation_path, "", plan.scope_note, ""]
-    for entry in plan.episodes:
-        overview.extend([f"## {entry.episode_id}: {entry.title}", "", entry.central_question, "",
-                         f"Geplant: etwa {entry.target_minutes:g} Minuten. " +
-                         ("Skript in diesem Lauf geprüft." if entry in entries else "Bisher nur geplant."), ""])
-    atomic_text(root / "research/series_outline.md", "\n".join(overview))
+    atomic_text(root / "research/series_outline.md", render_series_outline(plan, entries, language=config.language))
     outputs.append(root / "research/series_outline.md")
     source_map = {s.id: s for s in sources.sources}
     for entry in entries:
@@ -153,28 +188,9 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
         design = teaching_for(entry)
         write_yaml(folder / "teaching_plan.yaml", design.model_dump())
         atomic_text(folder / "teaching_plan.md", (work / "teaching" / entry.episode_id / "plan.md").read_text(encoding="utf-8"))
-        notes = [f"# Quellen und Hinweise: {script.title}", "", entry.central_question, "",
-                 "## Kapitel", "", *[f"- {c.title}" for c in script.chapters], "",
-                 "## Grenzen und offene Vertiefungen", "", *[f"- {q}" for q in entry.deferred_questions], "",
-                 "## Quellen", ""]
-        # The supporting findings an episode may cite are its sources too; a plan without them lists as before.
-        listed_findings = {*entry.finding_ids, *entry.supporting_finding_ids}
-        used = {e.reference.split("#")[0] for f in dossier.findings if f.id in listed_findings for e in f.evidence}
-        # Two URLs of the same work are one source for a listener; the assessment's work_id
-        # says which those are, and a normalised title covers the sources without one.
-        works = {a.source_id: a.work_id for a in dossier.source_assessments if a.work_id}
-        listed = set()
-        for source_id in sorted(used):
-            source = source_map[source_id]
-            identity = works.get(source_id) or re.sub(r"\W+", " ", source.title).strip().casefold()
-            if identity in listed:
-                continue
-            listed.add(identity)
-            url = source.final_url or "../../" + source.raw_path
-            notes.append(f"- [{source.title.replace('[', '').replace(']', '')}]({url})")
-        notes.extend(["", "## Nachvollziehbarkeit", "", f"Recherchelauf: `{research_id}`. Skriptlauf: `{manifest.run_id}`.",
-                      "Wissensreferenzen stehen im kanonischen Skript und führen über das Wissensmodell zu den Quellenabschnitten.", ""])
-        atomic_text(folder / "show_notes.md", "\n".join(notes))
+        atomic_text(folder / "show_notes.md", render_show_notes(script, entry, dossier, source_map,
+                                                                research_id=research_id, run_id=manifest.run_id,
+                                                                language=config.language))
         metrics = script_metrics(script)
         teaching_report = json.loads((work / "reviews" / f"{entry.episode_id}_teaching.json").read_text(encoding="utf-8"))
         # ``reviews/<ep>.json`` is the review of exactly this text: a series repair rewrites both.

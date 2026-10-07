@@ -2,7 +2,7 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
@@ -13,9 +13,13 @@ covers:
   - src/podcast_automate/spoken_forms.py
   - src/podcast_automate/qwen_worker.py
   - src/podcast_automate/voice_samples.py
+  - src/podcast_automate/content_text.py
   - src/podcast_automate/transcription_check.py
   - src/podcast_automate/prompts/audio_expression.txt
   - src/podcast_automate/prompts/audio_expression_backchannels.txt
+  - src/podcast_automate/publish_kit.py
+  - src/podcast_automate/prompts/publish_kit.txt
+  - src/podcast_automate/prompts/podcast_kit.txt
   - src/podcast_automate/execution.py
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -45,8 +49,12 @@ The guided flow ends on the page **„Vertonung“** (recording):
 - Only **„Audio erzeugen“** (generate audio) starts the recording; when the episode has to wait for a free place, the
   button reads **„Freigeben und einreihen“** (approve and queue, see [Queue](#queue)).
 - For Gemini, progress, stopping and resuming are separate per episode.
-- All finished recordings are listed under **„Alle fertigen Folgen anhören“** (listen to all finished episodes) with
-  a player and an MP3 download, also while further episodes are being recorded; **„Podcast anhören“** (listen to the
+- All finished recordings are listed under **„Alle fertigen Folgen anhören“** (listen to all finished episodes), one
+  row per episode with its length, its state and an MP3 download, also while further episodes are being recorded. ▶
+  plays it in one player docked at the foot of the page, with speed, previous and next; an episode in parts plays its
+  parts in a row. Where each recording stopped, which were heard to the end and the speed are kept in the project
+  (`studio/reader_state.json`), so listening goes on where it stopped, also on another device (why: D-163). The page
+  says once what older recordings differ in. **„Podcast anhören“** (listen to the
   podcast) on the overview leads there.
 - Earlier recordings stay available and are marked as an earlier version when text, provider or voices have changed
   since.
@@ -169,7 +177,8 @@ characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAG
   The approval and the run inputs hold the choice itself, the report and the show notes the episode's voices.
 - Default voices of the route: Erinome (explains in episode 1) and Sadachbia (asks).
 - **„▶ Gesprächsprobe“** (conversation sample) on the settings page plays a short conversation of four turns with
-  exactly the selected voices and styles, with a pause tag and a listener reaction, in German or English;
+  exactly the selected voices and styles and the pace of the sample's language
+  ([Speaking pace per language](#speaking-pace-per-language)), with a pause tag and a listener reaction, in German or English;
   **„▶ Mit getauschten Rollen“** plays it with the roles swapped. A sample that does not exist yet is made after a
   confirmation with one short request on the Google key (`voice_samples.generate_pair`) and is then played from
   `projects/voice-samples/google/<language>/<fingerprint>/` without a further request.
@@ -374,6 +383,27 @@ The three pause values are minimum pauses for the same voice, for a change of vo
 - The default values are not stored in approvals and run inputs; only a deviating pause policy is stored there and
   changes the input hash.
 
+### Speaking pace per language
+
+Each language a project can speak has a pace of its own (`speech.LanguagePace` in `AudioChoice.pace`), set on the
+[Settings page](STUDIO.md#settings-page) (why: D-147). The user's choice of 2026-10-07: English at 93 % and unhurried,
+German as recorded.
+
+- **„Sprechtempo“** (speaking tempo), 80 to 100 %: under 100 % assembly slows every recording with its pitch kept
+  (FFmpeg `atempo`) before the pauses go in, so the pauses keep their length and the timeline and the chapters are
+  measured on the slowed audio. `audio_report.json` names it as `tempo`. It holds on every route and never speeds a
+  recording up.
+- **„… ohne Eile sprechen“** (speak unhurried), Google only: both roles' styles are sent with „, unhurried“ added
+  (`speech.UNHURRIED`, `AudioChoice.spoken_styles`); an empty style becomes „unhurried“. The takes are new requests.
+  How much slower Gemini speaks with it is not measured yet (V-28).
+- A recording binds only the pace of its project's language (`AudioChoice.for_language`): a pace set for English
+  leaves the approvals, run inputs and the „already recorded“ mark of German projects as they were, and the reverse.
+  A language at full tempo without the calm delivery is not stored, so choices and approvals made before the pace
+  existed keep their hashes.
+- A changed pace of the project's language is audible and needs a new audio approval. A new tempo alone reuses the
+  recorded takes from the cache and repeats only the montage; a calm delivery records anew.
+- The approval card shows the project language's pace under „Tempo“.
+
 ### Loudness
 
 Loudness is matched with linear gain to -16 LUFS and a true-peak limiter with a ceiling of -2 dBFS
@@ -484,9 +514,10 @@ twice. The rate-limit rules of the Google route: see [Keys, errors and limits](#
   auf den Google-Key“ or „wartet auf den OpenRouter-Key“ (waiting for the key).
 - Before starting, the scheduler checks script, reading view, voices and expression again; if something has
   changed, the episode stays in the queue with the reason.
-- The page Vertonung shows the queue with **„Entfernen“** (remove) and **„Alle gelesenen Folgen freigeben“**
-  (approve all read episodes): one checkmark confirms that all listed scripts, including their expression, have been
-  read, and approves them in one step. As many start at once as places are free; the rest is queued.
+- The page Vertonung shows the queue with **„Entfernen“** (remove) and **„{n} gelesene Folgen freigeben“**
+  (approve {n} read episodes), beside **„Zuerst die Skripte lesen“** (read the scripts first): one checkmark, never
+  preset, confirms that all listed scripts, including their expression, have been read, and approves them in one
+  step. As many start at once as places are free; the rest is queued.
 - The Studio must stay open for this.
 
 ### Locks and stopping
@@ -502,16 +533,40 @@ Each recording run writes its export to `exports/<episode>/<run_id>/`:
 
 | File | Content |
 | --- | --- |
-| `audio.mp3` | The episode with embedded chapters (ID3v2.3) |
+| `audio.mp3` | The episode with embedded chapters (ID3v2.3) and the [AI marking](#ai-marking) in its tags |
 | `chapters.json` | Chapters measured at assembly, and those read back from the MP3 (`embedded`) |
 | `timeline.json` | Start, speech end, end, pause and trimmed silence of every segment; for a Google recording of every passage, with its `segment_ids` and `speaker_ids` (`schema_version` 1.1) |
-| `audio_report.json` | Duration, format, loudness and pause data; `speech_quality_verified: false` |
+| `audio_report.json` | Duration, format, loudness and pause data; `speech_quality_verified: false`; `ai_marking` (the tags written) and `ai_marking_embedded` (whether ffprobe reads all of them back from the MP3) |
 | `transcript.md` | The approved text with host labels, in script order |
 | `README.md` | Link to the MP3 with its duration, the voices and any deviating spoken forms |
 | `playlist.m3u` | The MP3 |
-| `show_notes.md` | Chapters with timestamps from the measured assembly, the voices, and pronunciation notes for segments with a deviating spoken form |
-| `listening_sheet.md` | The listening sheet, see below |
-| `publish/` | The companion kit, written later on request („Begleitmaterial“, `pla publish-kit`; why: D-139): `description_short.txt`, `description.txt` (at most 4,000 characters: the description, chapters as `00:00 Title`, as many sources as fit), `sources.md` with every source, and `kit.json` bound to the script hash and this recording. Without a recording the kit lies in `episodes/<episode>/publish/`, chapters without times. |
+| `show_notes.md` | Chapters with timestamps from the measured assembly, the voices, and pronunciation notes for segments with a deviating spoken form; ends with the transparency note |
+| `listening_sheet.md` | The listening sheet, see below; ends with the transparency note |
+| `publish/` | The companion kit, written later on request („Begleitmaterial“, `pla publish-kit`; why: D-139): `description_short.txt`, `description.txt` (at most 4,000 characters: the description, chapters as `00:00 Title`, as many sources as fit, and the transparency note), `sources.md` with every source, and `kit.json` bound to the script hash and this recording (`publish_kit.KIT_VERSION`, `publish_kit.v2`). Without a recording the kit lies in `episodes/<episode>/publish/`, chapters without times. |
+
+The whole podcast gets a companion kit of its own in `publish/` of the project, written on request („Begleitmaterial
+für den Podcast“, `pla publish-kit --podcast`; why: D-165):
+
+| File | Content |
+| --- | --- |
+| `description_short.txt` | Two or three sentences on the podcast (80 to 300 characters) |
+| `description.txt` | The podcast description for the show page of Spotify and Apple Podcasts (400 to 1,500 characters), then the transparency note and an AI notice that names the podcast's scripts |
+| `sources.md` | Every source of the series once, in the order of first use, each with the episodes that use it („(in Folge 01, Folge 03)“) |
+| `transcript.md` | The approved text of every published episode in script order with the hosts' labels, as each recording's `transcript.md` has it, under „## Folge 01: Title“ and „### 00:00 Chapter“ with the chapter's measured start; an episode without a recording of its current script says so once and has chapters without times; ends with the transparency note |
+| `kit.json` | `publish_kit.PODCAST_KIT_VERSION` (`podcast_kit.v1`), per episode the script hash, the script run and the recording it covers, the sources, the idea sources left out and the files' hashes |
+| `descriptions.json` | The two descriptions with the hash of their prompt, reused by a rebuild |
+
+- One call of the newest script run's text model writes the two descriptions from what each episode is planned to
+  cover (title, central question, role in the series) and its chapter titles, not from the transcripts; the checks are
+  the episode kit's (length, language, no addresses, ids, Markdown, timestamps or exclamation marks), corrected at
+  most twice. Its calls lie in `studio/publish_kit/podcast/`.
+- The transcript and the sources are built from the published scripts, their recordings and their script runs, never
+  by a model; one work two episodes cite under two copies is one source (the research's `work_id`, else the same
+  title). Idea sources and local file paths never appear.
+- The kit covers every episode with a published script, also one not recorded yet. It counts as current while every
+  episode's script and latest recording are the ones it covers; after a new recording or script it is outdated, not
+  shown and not zipped until it is rebuilt („Neu zusammenstellen“), which reuses the descriptions without a model call
+  while no episode's plan or chapter titles changed.
 
 An episode recorded in parts before 2026-10-04 has the first five files once per part in `part_01/`, `part_02/` and so
 on; the other four cover all parts. The run also writes `reports/<episode>_audio.json`,
@@ -521,6 +576,52 @@ overrides, chapters, and `parts` with the one MP3) and `pronunciation.json` in t
 The export never publishes anything (see [Source rights and privacy](SECURITY.md#source-rights-and-privacy)). The
 technical reports do not claim a passed listening review: pronunciation, naturalness and voice consistency are
 judged from the MP3. Downloads of single episodes or the whole podcast as a ZIP: see [Downloads](STUDIO.md#downloads).
+
+### Language of the exports
+
+The fixed words of the export (the README, the transcript's notice, the show notes, the listening sheet, the companion
+kit, the MP3's comment and the transparency note) are in the project's content language (`language` in the
+[Project brief](CONFIGURATION.md#project-brief)), never in the Studio's interface language (why: D-153). German and
+English have their own words (`content_text.py`); any other language reads German. A German project's export is the
+same byte for byte as before 2026-10-07, apart from the transparency note. Which other files follow the content
+language: [Languages](ARCHITECTURE.md#languages).
+
+### AI marking
+
+Every exported MP3 says in its own tags that it was made with AI (why: D-154), written by FFmpeg at encoding
+(`audio.marking_args`, `audio.ai_marking`):
+
+| Tag | Value |
+| --- | --- |
+| `title` | The episode title, as before |
+| `comment` | An episode: „KI-generiert: Skript von einem Sprachmodell geschrieben, Sprache mit synthetischen Stimmen erzeugt.“ or "AI-generated: script written by a language model, speech made with synthetic voices."; a technical probe and a voice preview name the synthetic voices only („KI-generiert: Sprache mit synthetischen Stimmen erzeugt.“ or "AI-generated: speech made with synthetic voices.") |
+| `DIGITAL_SOURCE_TYPE` | `http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia` (the IPTC digital source type for media a trained model generated) |
+| `AI_GENERATED` | `true` |
+
+- The tags stand in every episode MP3, every audio probe (`pla audio-probe`), the samples of the Gemini
+  [voice library](#voice-library) and the Google [conversation samples](#style-and-roles); a sample's comment is in
+  the language of the sample.
+- FFmpeg 9 writes `comment` as a TXXX frame named "comment", not as a COMM frame, like the other two keys; a player that
+  reads only COMM shows no comment (V-42). `audio_report.json` records the tags written (`ai_marking`) and whether
+  all of them were read back from the MP3 (`ai_marking_embedded`). Whether podcast platforms keep the tags after an
+  upload is open (V-41).
+- `show_notes.md`, `listening_sheet.md`, the companion kit's `description.txt` and the podcast kit's
+  `description.txt` and `transcript.md` end with a transparency note:
+  the heading „Transparenzhinweis“ or "Transparency note", the source-bound synthesis note of the
+  [Roadmap](PRODUCT.md#roadmap) („Dieser Output ist eine quellengebundene Synthese. …“ or "This output is a
+  source-bound synthesis. …") and an AI notice („KI-Hinweis: Das Skript dieser Folge wurde von einem Sprachmodell
+  geschrieben und wird von synthetischen Stimmen gesprochen.“ or "AI notice: the script of this episode was written by
+  a language model and is spoken by synthetic voices."). The kit's description carries the note and the AI notice
+  without the heading. The podcast kit's AI notice names the podcast's scripts („KI-Hinweis: Die Skripte dieses
+  Podcasts wurden von einem Sprachmodell geschrieben …“ or "AI notice: the scripts of this podcast were written by a
+  language model …").
+- The companion kit counts the note against its 4,000 characters and never cuts it: sources give way first, and when
+  the description, the chapters and the note alone do not fit, the kit stops with `description_too_long`. A kit made
+  before the note (`publish_kit.v1`) is not shown on the recording page and not put into the ZIP until it is rebuilt
+  („Neu zusammenstellen“ or `pla publish-kit`); the rebuild reuses its saved descriptions without a model call
+  (`publish_kit.DESCRIPTIONS_VERSION` stays `publish_kit.v1`).
+- The audio itself carries no spoken disclosure; that stays an open option, since it would change approved audio.
+  Whether note and tags satisfy the EU AI Act's Art. 50 for an intended use is not checked legally (V-43).
 
 ### Listening review
 

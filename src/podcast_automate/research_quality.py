@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from .content_text import catalog_label, text as wording
 from .errors import AppError
 from .models import Contract, Identifier, NonEmpty
 from .research_models import ResearchDiscovery, ResearchDossier, SourceIndex, is_idea
@@ -187,120 +188,101 @@ PROBE_LABELS = {"no_hits": "kein passender Abschnitt gefunden",
                 "resolved": "in den Quellen beantwortet"}
 
 
-def render_quality(report):
-    lines = ["# Recherchequalität", "", f"{report['closed']} von {report['total']} Leitfragen erfüllen alle Qualitätsmerkmale.",
-             "", *[f"- {title}" for title in CRITERIA.values()], ""]
+def render_quality(report, *, language="de-DE"):
+    """quality.md, in the podcast's content language (D-153). The criteria and probe states keep their German words in
+    CRITERIA and PROBE_LABELS, which the report records; content_text has the other languages' words."""
+    say = lambda key, **values: wording(language, key, **values)
+    criterion = lambda key: catalog_label(language, "criterion", key) or CRITERIA[key]
+    probe_label = lambda status: (catalog_label(language, "probe_status", status)
+                                  or PROBE_LABELS.get(status, status))
+    lines = [f"# {say('quality_title')}", "", say("quality_closed", closed=report["closed"], total=report["total"]),
+             "", *[f"- {criterion(key)}" for key in CRITERIA], ""]
     if report.get("assessment_status") == "pending_after_source_review":
-        lines += ["Die Quellenprüfung hat fehlende Belege gefunden. Zuerst wird gezielt nachrecherchiert; "
-                  "die Bewertung aller Leitfragen wird danach erneuert. Die bisherigen Einzelbewertungen "
-                  "sind noch kein Urteil über den ergänzten Entwurf.", ""]
+        lines += [say("quality_pending"), ""]
     if report.get("passed_with_residual_objections"):
-        lines += ["Die Recherche wurde auf Wunsch der Redaktion mit dokumentierten Resteinwänden abgeschlossen"
-                  + (f" ({report['residual_note']})" if report.get("residual_note") else "") + ". Die letzte Gesamtprüfung "
-                  "hatte noch Einwände; sie stehen unten und gelten als offene Grenzen des Dossiers.", ""]
+        note = f" ({report['residual_note']})" if report.get("residual_note") else ""
+        lines += [say("quality_residual", note=note), ""]
     if report.get("passed_with_accepted_gaps"):
-        lines += ["Die Recherche wurde mit ausdrücklich akzeptierten Lücken abgeschlossen. Die betroffenen Teilfragen "
-                  "und verbliebenen Einwände stehen unten; das Dossier behauptet für sie keine Antwort.", ""]
+        lines += [say("quality_accepted"), ""]
     if report.get("passed_with_noted_limits"):
         # Not "complete": what is unmet or noted stays visible as a limit (2026-10-02: Ontologies passed with 6 of 9
         # requirements unmet and was published as if gaps had been accepted).
-        lines += [f"Die Recherche wurde mit vermerkten Grenzen abgeschlossen: {report['closed']} von {report['total']} "
-                  "Leitfragen erfüllen alle Merkmale. Was offen oder nur eingeschränkt belegt ist, steht unten als Grenze "
-                  "(Quellengrenzen, unverändert vermerkte Einwände, Hinweise fürs Skript); dafür wird nicht weiter "
-                  "recherchiert.", ""]
+        lines += [say("quality_noted", closed=report["closed"], total=report["total"]), ""]
     for row in report["requirements"]:
-        lines += [f"## {'Erfüllt' if row['passed'] else 'Offen'}: {row['question']}", "", row["reason"], ""]
-        lines += [f"- {CRITERIA[key]}: {'erfüllt' if row[key] else 'offen'}" for key in CRITERIA]
-        lines += [f"- Noch benötigt: {gap}" for gap in row["missing"]]
-        lines += [f"- Als Grenze vermerkt: {item}" for item in row.get("noted", [])]
+        verdict = say("quality_requirement_met" if row["passed"] else "quality_requirement_open")
+        lines += [f"## {verdict}: {row['question']}", "", row["reason"], ""]
+        lines += [f"- {criterion(key)}: {say('quality_criterion_met' if row[key] else 'quality_criterion_open')}"
+                  for key in CRITERIA]
+        lines += [f"- {say('quality_missing', gap=gap)}" for gap in row["missing"]]
+        lines += [f"- {say('quality_noted_item', item=item)}" for item in row.get("noted", [])]
         if row.get("source_limit"):
-            lines += ["- Grenze der verfügbaren Quellen: wird nicht weiter recherchiert und ist im Skript zu benennen"]
+            lines += [f"- {say('quality_source_limit')}"]
         if row.get("recorded_limit"):
-            lines += ["- Als Grenze vermerkt: Keine Teilfrage dieser Leitfrage hat sich seit dem letzten Urteil geändert, und "
-                      "ihr Einwand wurde vermerkt, war strittig oder betrifft eine akzeptierte Lücke. Das Urteil bleibt, "
-                      "bis sich eine ihrer Antworten ändert; das Skript benennt die Grenze"]
+            lines += [f"- {say('quality_recorded_limit')}"]
         if row.get("accepted_gap_tasks"):
-            lines += [f"- Akzeptierte Lücke: Teilfrage {tid}" for tid in row["accepted_gap_tasks"]]
+            lines += [f"- {say('quality_accepted_task', task=tid)}" for tid in row["accepted_gap_tasks"]]
         lines += [""]
     if report["blocking_gaps"]:
-        lines += ["## Weitere offene Punkte", "", *[f"- {gap}" for gap in report["blocking_gaps"]], ""]
+        lines += [f"## {say('quality_blocking')}", "", *[f"- {gap}" for gap in report["blocking_gaps"]], ""]
     if report.get("script_notes"):
-        lines += ["## Hinweise fürs Skript", "",
-                  "Grenzen der verfügbaren Quellen und Punkte zu unveränderten Antworten, die die Folgebewertung nannte. "
-                  "Sie öffnen keine Recherche; das Skript benennt sie, wo es die betroffenen Aussagen verwendet.", "",
+        lines += [f"## {say('quality_script_notes')}", "", say("quality_script_notes_intro"), "",
                   *[f"- {note}" for note in report["script_notes"]], ""]
     rows = (report.get("advisories") or {}).get("single_group_findings") or []
     if rows:
-        lines += ["## Befunde aus nur einer Forschungsgruppe", "",
-                  "Beschreibend, nicht blockierend: Für diese Befunde stammen alle Belege aus einer bekannten "
-                  "Gruppe, oder die Gruppe ist unbekannt. Eine unabhängige Prüfung existiert für manche "
-                  "Aussagen von 2026 noch nicht; dann ist die Grenze zu benennen, nicht eine Quelle zu erzwingen.", ""]
+        lines += [f"## {say('quality_single_group')}", "", say("quality_single_group_intro"), ""]
         for row in rows:
-            group = row["research_group"] or "unbekannte Gruppe"
+            group = row["research_group"] or say("quality_unknown_group")
             lines.append(f"- {row['finding_id']}: {group} ({', '.join(row['source_ids'])})")
         lines += [""]
     if report.get("gap_probes"):
-        lines += ["## Korpusprobe der Lücken", "",
-                  "Jede gemeldete Lücke wurde ohne Modellaufruf gegen die gespeicherten Abschnitte geprüft. "
-                  "Ein Treffer widerlegt die Lücke nicht; er benennt einen Abschnitt, der gelesen werden muss.", ""]
+        lines += [f"## {say('quality_probes')}", "", say("quality_probes_intro"), ""]
         for row in report["gap_probes"]:
-            lines += [f"- {row['text']} — {PROBE_LABELS.get(row['status'], row['status'])}"
+            lines += [f"- {row['text']} — {probe_label(row['status'])}"
                       + (": " + ", ".join(hit["reference"] for hit in row["hits"]) if row["hits"] else "")]
         lines += [""]
     if report.get("review_limitations"):
-        lines += ["## Einschränkungen der Prüfung", "",
-                  "Die unabhängige Antwortprüfung hat diese Teilfragen bestanden, einzelne Aussagen aber nur mit "
-                  "Einschränkung bestätigt. Sie gelten als Grenzen der Befunde, nicht als offene Recherche.", ""]
+        lines += [f"## {say('quality_review_limits')}", "", say("quality_review_limits_intro"), ""]
         for row in report["review_limitations"]:
             lines += [f"### {row['question']}", "", *[f"- {item['text']}" for item in row["limitations"]], ""]
     if report.get("accepted_gaps"):
-        lines += ["## Akzeptierte Lücken", ""]
+        lines += [f"## {say('quality_accepted_gaps')}", ""]
         for gap in report["accepted_gaps"]:
             lines += [f"- {gap['question'] or gap['task_id']}" + (f": {gap['reason']}" if gap.get("reason") else "")]
         lines += [f"- {gap}" for gap in report.get("accepted_coverage_gaps", [])]
         lines += [""]
     if report.get("disputed_objections"):
-        lines += ["## Strittige Prüfeinwände", "",
-                  "Die Gesamtprüfung hat diesen früheren Einwänden widersprochen; die Redaktion hat entschieden.", ""]
+        lines += [f"## {say('quality_disputed')}", "", say("quality_disputed_intro"), ""]
         for row in report["disputed_objections"]:
-            side = "dem Prüfer gefolgt, Einwand geschlossen" if row["decision"] == "reviewer" else "Einwand aufrechterhalten"
-            lines += [f"- Einwand: {(row.get('objection') or {}).get('reason', row['objection_id'])}",
-                      f"  Prüfer: {row['review']['reason']}",
-                      f"  Entscheidung: {side}" + (f" ({row['note']})" if row.get("note") else "")]
+            side = say("quality_side_reviewer" if row["decision"] == "reviewer" else "quality_side_objection")
+            lines += [f"- {say('quality_objection', text=(row.get('objection') or {}).get('reason', row['objection_id']))}",
+                      f"  {say('quality_reviewer', text=row['review']['reason'])}",
+                      f"  {say('quality_decision', side=side)}" + (f" ({row['note']})" if row.get("note") else "")]
         lines += [""]
     if report.get("noted_limits"):
-        lines += ["## Als Grenzen vermerkte Vollständigkeitseinwände", "",
-                  "Die geprüfte Antwort behandelt das jeweilige Kriterium mit belegten Befunden; die Gesamtprüfung hielt es "
-                  "für nicht ganz vollständig. Das steht hier als Grenze und wurde nicht erneut recherchiert.", "",
+        lines += [f"## {say('quality_noted_limits')}", "", say("quality_noted_limits_intro"), "",
                   *[f"- {objection}" for objection in report["noted_limits"]], ""]
     spent = [row for row in report.get("noted_after_reworks", []) if row.get("basis") != "rework_blocked"]
     blocked = [row for row in report.get("noted_after_reworks", []) if row.get("basis") == "rework_blocked"]
     if spent:
-        lines += ["## Einwände nach zwei Nachbesserungen", "",
-                  "Diese Teilfragen wurden zweimal nachgebessert und behalten ihre zuletzt geprüfte Antwort. Spätere "
-                  "Einwände der Gesamtprüfung stehen hier als Grenzen; sie haben den Lauf nicht mehr angehalten.", "",
+        lines += [f"## {say('quality_after_reworks')}", "", say("quality_after_reworks_intro"), "",
                   *[f"- {row['task_id']}: {row['objection']}" for row in spent], ""]
     if blocked:
-        lines += ["## Einwände, die eine Nachbesserung nicht schließen konnte", "",
-                  "Die Nachbesserung dieser Teilfragen fand keine neuen Belege und endete blockiert. Sie behalten ihre "
-                  "zuvor geprüfte Antwort; der Einwand steht hier als Grenze.", "",
-                  *[f"- {row['task_id']}: {row['objection']}" + (f" (Nachbesserung: {row['rework_block']})"
-                                                                 if row.get("rework_block") else "") for row in blocked], ""]
+        lines += [f"## {say('quality_rework_blocked')}", "", say("quality_rework_blocked_intro"), "",
+                  *[f"- {row['task_id']}: {row['objection']}"
+                    + (say("quality_rework_note", block=row["rework_block"]) if row.get("rework_block") else "")
+                    for row in blocked], ""]
     if report.get("revalidations"):
-        lines += ["## Nachprüfungen nach geänderten Voraussetzungen", "",
-                  "Beschreibend, nicht blockierend: So oft wurde eine geprüfte Antwort erneut gegen eine nachgebesserte "
-                  "Voraussetzung geprüft. Diese Nachprüfungen zählen nicht als Nachbesserung.", "",
+        lines += [f"## {say('quality_revalidations')}", "", say("quality_revalidations_intro"), "",
                   *[f"- {row.get('question') or row['task_id']}: {row['count']}×" for row in report["revalidations"]], ""]
     if report.get("residual_objections"):
         if report.get("passed_with_residual_objections"):
-            heading = "## Verbliebene Prüfeinwände"
+            heading = say("quality_residual_heading")
         elif report.get("passed_with_accepted_gaps") and not report.get("passed_with_noted_limits"):
-            heading = "## Verbliebene Prüfeinwände zu akzeptierten Lücken"
+            heading = say("quality_residual_accepted")
         else:
-            heading = "## Verbliebene Prüfeinwände, als Grenzen vermerkt oder strittig"
-        lines += [heading, "", *[f"- {objection}" for objection in report["residual_objections"]], ""]
+            heading = say("quality_residual_noted")
+        lines += [f"## {heading}", "", *[f"- {objection}" for objection in report["residual_objections"]], ""]
     return "\n".join(lines)
-
 
 def load_complete_research(work):
     folder = work / "complete_research"

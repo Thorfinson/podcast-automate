@@ -90,6 +90,16 @@ class PromptFileTests(unittest.TestCase):
         self.assertNotIn("tokenizer", prompts.text("continuity"))
         self.assertNotIn("map", prompts.text("plain_language").split())
 
+    def test_the_studio_prompts_take_the_interface_language_from_their_input(self):
+        """D-152: the chat partner and the status brief follow the Studio's interface language. The partner reads the
+        settings page's name from its payload instead of a German label in its text; the brief names its language."""
+        assistant = prompts.text("studio_assistant")
+        self.assertNotIn("Einstellungen", assistant)
+        for field in ("studio.language", "studio.settings_page", "brief.trial"):
+            self.assertIn(field, assistant)
+        self.assertEqual(placeholders("studio_status"), {"language"})
+        self.assertIn("in English", instructions("studio_status", language="English"))
+
     def test_shared_rules_compose_without_double_spaces(self):
         from podcast_automate.editorial import CONTINUITY, EPISODE_FRAMING, TEACHING_SCOPE, TERMINOLOGY
         from podcast_automate.research import PLAIN_LANGUAGE

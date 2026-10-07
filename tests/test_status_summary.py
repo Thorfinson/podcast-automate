@@ -79,6 +79,17 @@ class StatusSummaryTests(unittest.TestCase):
         self.assertNotIn(secret, (self.work / "status_reports/state.json").read_text())
         self.assertIn("status_reports", str(directory))
 
+    def test_a_run_on_the_anthropic_key_gets_no_report_and_no_subscription_call(self):
+        """D-149: the report would bill the key outside the run's money limit, and the fallback would have asked the
+        Codex subscription unasked; it shows as off instead."""
+        write_json(self.work / "research_request.json", {"text_generation": {"provider": "claude_api",
+                                                                             "model": "claude-sonnet-5-5"}})
+        with patch("podcast_automate.status_summary.CodexAdapter.structured", side_effect=AssertionError("no Codex")), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=AssertionError("no call")):
+            self.update()
+        state = json.loads((self.work / "status_reports/state.json").read_text(encoding="utf-8"))
+        self.assertEqual((state["status"], state["reason"], state.get("calls", 0)), ("off", "billed_text", 0))
+
     def test_research_uses_project_openrouter_choice_when_it_has_no_saved_text_choice(self):
         write_json(self.work / "research_request.json", {"text_generation": None})
         write_json(self.root / "studio/text.json", {"provider": "openrouter"})
@@ -91,6 +102,39 @@ class StatusSummaryTests(unittest.TestCase):
                 summary="Zwischenmeldungen liegen nicht vor.", evidence_ids=["live_events_available"]), {})):
             self.update()
         self.assertEqual(summary_view(self.work)["status"], "ready")
+
+    def test_the_brief_follows_the_jobs_interface_language_and_a_switch_writes_a_fresh_one(self):
+        """D-152: the job's interface language sets the brief's, while the facts the model reads stay German. A brief
+        in another language counts as changed, so the next check after a switch writes a fresh one."""
+        with patch("podcast_automate.status_summary.CodexAdapter.structured", autospec=True, side_effect=self.result):
+            self.job = {**self.job, "ui_language": "en"}
+            self.update()
+            self.seconds += 180
+            self.update()
+            self.assertEqual((len(self.calls), summary_view(self.work)["status"]), (1, "unchanged"))
+            self.assertEqual(summary_view(self.work)["language"], "en")
+            self.seconds += 180
+            self.job = {key: value for key, value in self.job.items() if key != "ui_language"}
+            self.update()
+        self.assertEqual(len(self.calls), 2)
+        english, german = (call[1] for call in self.calls)
+        self.assertIn("in English", english)
+        self.assertIn("in German", german)
+        self.assertIn("Arbeitsschritt", english)
+        self.assertEqual({call[3]["prompt_version"] for call in self.calls}, {"studio_status.v2-ui-language"})
+        self.assertEqual(summary_view(self.work)["language"], "de")
+
+    def test_the_monitor_hands_on_the_language_it_was_started_in_unless_the_job_names_one(self):
+        def stop(_):
+            write_json(self.root / "studio/job.json", {**self.job, "id": "different"})
+        for job_language, expected in ((None, "en"), ("de", "de")):
+            with self.subTest(job_language=job_language):
+                job = {**self.job, **({"ui_language": job_language} if job_language else {})}
+                write_json(self.root / "studio/job.json", job)
+                with patch("podcast_automate.status_summary.update_summary") as update, \
+                        patch("podcast_automate.status_summary.time.sleep", side_effect=stop):
+                    watch_summaries(self.root, "job_one", ui_language="en")
+                self.assertEqual(update.call_args.args[1]["ui_language"], expected)
 
     def test_status_provider_failure_is_bounded_and_does_not_fail_job(self):
         with patch("podcast_automate.status_summary.CodexAdapter.structured", side_effect=AppError("private-provider-details", code="quota_exhausted")) as model:

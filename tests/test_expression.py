@@ -207,6 +207,9 @@ class ExpressionRecordingTests(unittest.TestCase):
             def __init__(self, runtime, text_generation, api_key=None):
                 pass
 
+            def billed(self, search=False):
+                return False
+
             def structured(self, prompt, schema, directory, prompt_version):
                 prompts.append(prompt_version)
                 return schema(segments=[{"segment_id": first.segment_id, "text": tagged}]), {}
@@ -246,6 +249,9 @@ class ExpressionRecordingTests(unittest.TestCase):
         class Pool:
             def __init__(self, runtime, text_generation, api_key=None):
                 pass
+
+            def billed(self, search=False):
+                return False
 
             def structured(self, prompt, schema, directory, prompt_version):
                 calls.append(prompt_version)

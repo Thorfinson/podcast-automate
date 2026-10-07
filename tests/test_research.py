@@ -24,7 +24,7 @@ from podcast_automate.run_budget import approve_research_gap
 from podcast_automate.runner import status
 from podcast_automate.sources import (blocked_sources, canonical_url, extract, import_source, public_url,
                                       PublicRedirect)
-from podcast_automate.storage import write_json, write_yaml
+from podcast_automate.storage import read_yaml, write_json, write_yaml
 from tests import research_fixtures as fixtures
 from tests.research_fixtures import TEXT, HTML, discovery, dossier_from_prompt
 from tests.research_fixtures import composed_generation
@@ -301,6 +301,48 @@ class SourceTests(unittest.TestCase):
 
 
 class ResearchTests(fixtures.ResearchProjectCase):
+    def test_an_openrouter_model_researches_through_perplexity_without_any_subscription(self):
+        """D-151: with the Perplexity search an OpenRouter run needs no subscription; the run binds the search, the
+        discovery's candidates come from the search results, and the requests count toward the money limit."""
+        from podcast_automate.web_search import SearchPlan
+        config = json.loads(json.dumps(self.config.model_dump(mode="json")))
+        config["research_limits"]["cost_usd"] = 50.0
+        write_yaml(self.root / "project.yaml", config)
+
+        def openrouter(adapter, prompt, output_type, directory, **kwargs):
+            if output_type is SearchPlan:
+                return SearchPlan(queries=["energy model definition"], languages=[]), {"separately_billed_cost": 0.01}
+            payload = json.loads(prompt.splitlines()[-1])
+            searched = isinstance(payload, dict) and "results" in payload and "task" in payload
+            output, _ = self.model(payload["task"] if searched else prompt, output_type, directory,
+                                   **{**kwargs, "search": searched})
+            return output, {"separately_billed_cost": 0.01}
+        found = {"queries": ["energy model definition"], "request_id": "r1", "usd": 0.005, "elapsed_seconds": 0.1,
+                 "results": [{"title": "Paper 0", "url": "https://example.org/paper0", "snippet": "s", "date": None,
+                              "last_updated": None}]}
+        with patch("podcast_automate.openrouter.OpenRouterAdapter.structured", autospec=True, side_effect=openrouter), \
+                patch("podcast_automate.web_search.PerplexitySearch.search", return_value=found) as search, \
+                patch("podcast_automate.research.CodexAdapter.structured", side_effect=AssertionError("no Codex")), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=AssertionError("no Claude")):
+            run = run_research(self.root, backend="openrouter", model="vendor/test-model", api_key="or-key",
+                               web_search="perplexity", perplexity_key="pplx-test-key-0123456789", plan_review="auto")
+        self.assertEqual(run.status, "completed")
+        self.assertGreaterEqual(search.call_count, 1)
+        work = self.root / "runs" / run.run_id
+        request = json.loads((work / "research_request.json").read_text(encoding="utf-8"))
+        self.assertEqual((request["text_generation"]["provider"], request["text_generation"]["web_search"]),
+                         ("openrouter", "perplexity"))
+        budget = json.loads((work / "budget.json").read_text(encoding="utf-8"))
+        self.assertGreater(budget["billed_usd"], 0)
+        self.assertTrue(any(path.name == "search_results.json" for path in (work / "calls").rglob("*.json")))
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(b"pplx-test-key-0123456789", path.read_bytes(), path)
+        # Without the Perplexity search an OpenRouter model cannot research.
+        with self.assertRaises(AppError) as refused:
+            run_research(self.root, backend="openrouter", model="vendor/test-model", api_key="or-key")
+        self.assertEqual(refused.exception.code, "invalid_backend")
+
     def test_an_earlier_runs_sources_are_offered_as_a_library_and_reused_without_a_download(self):
         """2026-09-30: the rebuilt series research anew, with the stored corpus as a starting library."""
         seen = []
@@ -810,6 +852,10 @@ class ResearchTests(fixtures.ResearchProjectCase):
         self.assertEqual(first.stages["dossier"].error.code, "research_budget_exhausted")
         self.assertEqual(second.status, "blocked")
         self.assertEqual(self.calls, [ResearchDiscovery])
+        # The manifest names the spent limit, so the Studio need not read the German message (D-152).
+        self.assertEqual(first.stages["dossier"].error.details, {"limit": "model_calls"})
+        saved = read_yaml(self.root / "runs" / second.run_id / "run_manifest.yaml")
+        self.assertEqual(saved["stages"]["dossier"]["error"]["details"], {"limit": "model_calls"})
 
     def test_changed_local_source_requires_new_run(self):
         local = self.root / "notes.txt"

@@ -132,9 +132,11 @@ def established_terms(context) -> list[str]:
     return list(dict.fromkeys(term for term in (t.strip() for t in found) if term))
 
 
-def _row(code, script, segment_ids, count, detail):
+def _row(code, script, segment_ids, count, detail, params):
+    """``detail`` is the German sentence reports have carried since the start; ``params`` are its values, so the
+    Studio can word the row in its own language by ``code`` (D-153). Rows saved before 2026-10-07 have no params."""
     return {"code": code, "episode_id": script.episode_id, "segment_ids": list(segment_ids),
-            "count": count, "detail": detail}
+            "count": count, "detail": detail, "params": params}
 
 
 def definition_sentences(script, terms, language) -> dict[str, list[str]]:
@@ -158,7 +160,8 @@ def redefined_terms(script, terms, language) -> list[dict]:
     """
     return [_row("redefined_term", script, dict.fromkeys(hits), len(hits),
                  f"«{term}» wird in dieser Folge {len(hits)}-mal neu definiert, "
-                 "obwohl der Begriff aus einer früheren Folge bekannt ist.")
+                 "obwohl der Begriff aus einer früheren Folge bekannt ist.",
+                 {"term": term, "definitions": len(hits)})
             for term, hits in definition_sentences(script, terms, language).items() if len(hits) > 1]
 
 
@@ -176,7 +179,8 @@ def repeated_hedging(script, language) -> list[dict]:
         return []
     return [_row("repeated_hedging", script, dict.fromkeys(sid for sid, _ in hits), len(hits),
                  f"{len(hits)} Hinweise darauf, dass ein Beispiel erfunden oder nicht gemessen ist; "
-                 f"höchstens {HEDGING_LIMIT} sind vorgesehen.")]
+                 f"höchstens {HEDGING_LIMIT} sind vorgesehen.",
+                 {"reminders": len(hits), "limit": HEDGING_LIMIT})]
 
 
 def long_cold_open(script) -> list[dict]:
@@ -186,7 +190,8 @@ def long_cold_open(script) -> list[dict]:
         return []
     return [_row("long_cold_open", script, [first.segment_id], count,
                  f"Der erste gesprochene Abschnitt hat {count} Wörter; "
-                 f"über {COLD_OPEN_WORDS} beginnt die Folge ohne Atempause.")]
+                 f"über {COLD_OPEN_WORDS} beginnt die Folge ohne Atempause.",
+                 {"words": count, "limit": COLD_OPEN_WORDS})]
 
 
 def over_target_duration(script, entry, metrics) -> list[dict]:
@@ -200,7 +205,9 @@ def over_target_duration(script, entry, metrics) -> list[dict]:
     return [_row("over_target_duration", script, [], percent,
                  f"Geschätzte {estimated:g} Minuten gegenüber geplanten {entry.target_minutes:g}, "
                  f"also {percent} Prozent des Ziels; über {round(DURATION_FACTOR * 100)} Prozent "
-                 "gilt die Folge als zu lang.")]
+                 "gilt die Folge als zu lang.",
+                 {"estimated_minutes": estimated, "target_minutes": entry.target_minutes, "percent": percent,
+                  "limit_percent": round(DURATION_FACTOR * 100)})]
 
 
 def turns(script) -> list[tuple[str, list[str], int]]:
@@ -240,7 +247,9 @@ def long_turns(script) -> list[dict]:
     return [_row("long_turns", script, [key for ids, _ in over for key in ids], len(over),
                  f"{len(over)} Redebeiträge mit mehr als {LONG_TURN_WORDS} Wörtern, der längste mit "
                  f"{max(count for _, count in over)}; vorgesehen sind Beiträge um {TURN_WORDS} Wörter und höchstens "
-                 f"{LONG_TURN_LIMIT} längere, etwa für einen Schritt des durchgearbeiteten Beispiels.")]
+                 f"{LONG_TURN_LIMIT} längere, etwa für einen Schritt des durchgearbeiteten Beispiels.",
+                 {"turns": len(over), "longest_words": max(count for _, count in over), "over_words": LONG_TURN_WORDS,
+                  "turn_words": TURN_WORDS, "limit": LONG_TURN_LIMIT})]
 
 
 def low_partner_share(script) -> list[dict]:
@@ -251,7 +260,8 @@ def low_partner_share(script) -> list[dict]:
     percent = round(share * 100)
     return [_row("low_partner_share", script, [], percent,
                  f"Host B spricht {percent} Prozent der Wörter; vorgesehen ist etwa ein Drittel, unter "
-                 f"{round(PARTNER_SHARE_FLOOR * 100)} Prozent klingt die Folge wie ein Vortrag.")]
+                 f"{round(PARTNER_SHARE_FLOOR * 100)} Prozent klingt die Folge wie ein Vortrag.",
+                 {"percent": percent, "floor_percent": round(PARTNER_SHARE_FLOOR * 100)})]
 
 
 def advisories(script, entry, metrics, *, language, terms=()) -> list[dict]:

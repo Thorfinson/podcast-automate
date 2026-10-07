@@ -63,7 +63,7 @@ def subscription_environment() -> dict[str, str]:
     """A child environment that can only use the CLI's subscription login, never an API key."""
     environment = os.environ.copy()
     for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+                "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "PERPLEXITY_API_KEY"):
         environment.pop(key, None)
     return environment
 

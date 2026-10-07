@@ -2,16 +2,19 @@
 title: Business logic
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-04
+last_reviewed: 2026-10-07
 covers:
   - src/podcast_automate/provider_pool.py
   - src/podcast_automate/subscriptions.py
   - src/podcast_automate/text_settings.py
   - src/podcast_automate/claude_code.py
+  - src/podcast_automate/web_search.py
   - src/podcast_automate/run_budget.py
   - src/podcast_automate/script_budget.py
   - src/podcast_automate/question_budget.py
+  - src/podcast_automate/cost_estimate.py
   - src/podcast_automate/studio_allowances.py
+  - src/podcast_automate/trial.py
   - src/podcast_automate/storage.py
   - src/podcast_automate/models.py
   - src/podcast_automate/episode_audio.py
@@ -54,8 +57,11 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 ### Subscriptions first, never an automatic switch to paid APIs
 
 - Text runs on the existing subscriptions through their official CLI logins: Codex CLI with a ChatGPT subscription,
-  Claude Code with a claude.ai login (Claude Max). OpenRouter, the paid API alternative, runs only when you choose it,
-  on your API credit. No API payment details are required.
+  Claude Code with a claude.ai login (Claude Max). Two paid alternatives run only when you choose them: OpenRouter on
+  your OpenRouter credit, and Claude Code on your own Anthropic API key (`claude_api`,
+  [below](#claude-on-your-own-api-key)); likewise the web search through Perplexity on your Perplexity key
+  ([Research runs and their web search](#research-runs-and-their-web-search)). A subscription user needs no API
+  payment details.
 - Subscription quotas apply to automated calls too. Finished stage results are saved; an exhausted quota pauses the
   run with `waiting_for_quota`, never producing incomplete final results or switching automatically to a paid API.
   Retries after technical or validation failures are bounded.
@@ -67,8 +73,8 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 
 ### Fixed providers and the rule `auto`
 
-- A fixed choice (Sonnet 5.5, Opus 5.5, Astra, an OpenRouter model) never switches, stops even on an unusable
-  subscription and never queries quotas for the rule.
+- A fixed choice (Sonnet 5.5, Opus 5.5, Astra, an OpenRouter model, Claude on the API key) never switches, stops even
+  on an unusable subscription and never queries quotas for the rule.
 - **„Automatisch“** (automatic) is the preset of new Studio projects (`--backend auto`); without `--backend` the CLI
   uses `codex_cli`.
 - Under `auto` the provider is chosen before every model call, because quota changes during a run: Claude
@@ -79,6 +85,28 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 - Under `auto` a prompt larger than Claude's context limit goes to Codex.
 - A job can thus switch models; each call records its subscription and any switch within it
   ([ARCHITECTURE](ARCHITECTURE.md#run-folder-and-manifest)).
+
+### Claude on your own API key
+
+`claude_api` runs the Claude Code CLI on your Anthropic API key instead of the claude.ai login; every call is billed
+to your Anthropic account (presets „Sonnet 5.5 · high · Anthropic-API-Key“ and „Opus 5.5 · high · Anthropic-API-Key“).
+It is its own provider, so no rule written for the subscription `claude_code` applies to it (why: D-145):
+
+- It is always a fixed choice: never a candidate of `auto`, never chosen automatically, and a switch to it is
+  [explicit](#switching-a-job-to-another-provider).
+- It queries no quota and writes nothing to the quota store `~/.podcast-automate/subscriptions.json`; an API rate
+  limit never blocks the subscription.
+- Every run on it needs a [money limit](#money-limit).
+- Stops: `anthropic_rate_limit` pauses with `waiting_for_quota` and the Studio resumes it like a quota pause;
+  `anthropic_credits` (no credit left) also pauses with `waiting_for_quota`, but is never resumed automatically,
+  because waiting does not top up the account ([Automatic resume](STUDIO.md#automatic-resume));
+  `anthropic_key_required` (no key),
+  `anthropic_authentication` (key refused) and `claude_api_auth_mismatch` (Claude Code reports it used no API key)
+  stop the run `blocked`. `claude_budget_cap` ends one call at `claude_code.MAX_BUDGET_USD` (12 USD), which on the key
+  is money spent, not an equivalent value.
+- The status brief is off for such a run (why: D-149), and the research advisor keeps the run's own model instead of
+  Opus 5.5 at `xhigh` ([Advisor](RESEARCH.md#advisor)).
+- Codex on an OpenAI API key is not offered; OpenAI models are available through OpenRouter (why: D-150).
 
 ### Quota: what counts as "limit reached"
 
@@ -101,9 +129,10 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 
 ### An unusable subscription under `auto`
 
-- Unusable means an expired login, no subscription login, a CLI that is missing, cannot start or is too old, or a
-  Codex call that failed for a reason the adapter cannot name (`codex_failed`, since 2026-10-04; why: D-130)
-  (`provider_pool.UNAVAILABLE_CODES`). Under `auto` such a failure moves the call to the other subscription as a quota
+- Unusable means an expired login, no subscription login, a CLI that is missing, cannot start or is too old, a
+  Codex call that failed for a reason the adapter cannot name (`codex_failed`, since 2026-10-04; why: D-130), or a
+  Claude call that failed so (`claude_failed`, since 2026-10-07; why: D-155) (`provider_pool.UNAVAILABLE_CODES`).
+  A failed turn's output is lost either way, so the call loses nothing by moving. Under `auto` such a failure moves the call to the other subscription as a quota
   failure does, and the rule passes the failed one over for ten minutes (`subscriptions.UNAVAILABLE_SECONDS`, 600 s,
   as long as a cached login is trusted). For a login reason (`subscriptions.LOGIN_REASONS`) it re-checks the login at
   every choice, so a new login such as `claude auth login` counts at once. (why: D-026)
@@ -127,11 +156,24 @@ first-time reader (`listener_readback`), which should take in only what the dial
 expression tags for the recording (`audio_expression`). Evidence review, teaching review, writing and every correction
 keep the run's level. (why: D-023)
 
-### Research always runs on a subscription
+### Research runs and their web search
 
-Live research and supplementary web research run on the chosen subscription; with OpenRouter text, and with `auto`,
-they follow the automatic rule (Claude, else Codex) with the catalog defaults, because OpenRouter has no search tools.
-`pla research --backend` accepts only `codex_cli`, `claude_code` and `auto`.
+Live research and the supplementary web research of script runs search the web in one of two ways, chosen when a run
+starts (Studio setting **„Websuche“** (web search), `--web-search model|perplexity`; why: D-151):
+
+- **Through the text model** (`model`, the default): the chosen subscription searches with its own tools, or with
+  `claude_api` Claude Code's own WebSearch and WebFetch, billed to your key. With OpenRouter text, and with `auto`, the
+  search calls follow the automatic rule (Claude, else Codex) with the catalog defaults, because OpenRouter has no
+  search tools; those search calls bill nothing.
+- **Through Perplexity** (`perplexity`): the run's own text model plans the queries, Perplexity's Search API runs them
+  on your Perplexity key, and the same model chooses its sources from those results only
+  ([Web search through Perplexity](ARCHITECTURE.md#web-search-through-perplexity)). Every text model can research
+  this way, an OpenRouter model included, so research then needs no subscription at all. Every search request is
+  billed, so such a run needs a [money limit](#money-limit) even on a subscription.
+
+`pla research --backend` accepts `codex_cli`, `claude_code`, `claude_api` and `auto`, and `openrouter` only with
+`--web-search perplexity` (otherwise `invalid_backend`). The web search is bound to the run like its text model
+([next section](#the-choice-is-bound-to-the-run)).
 
 ### The choice is bound to the run
 
@@ -140,6 +182,11 @@ they follow the automatic rule (Claude, else Codex) with the catalog defaults, b
   `gpt-6-astra`/`xhigh`) and the first choice (`prefer: claude_code`) are stored.
 - Resume uses the stored choice: a different `--backend` or candidate list is refused as a changed input. Changes
   apply to new runs; the only exception is an explicit switch (next section).
+- The web search is part of the same saved selection: `web_search: perplexity` with the search adapter's version
+  (`web_search_version`; `provider_pool.with_web_search`); a selection that searches through the text model adds
+  nothing, so runs saved before keep their hash, while a research run without an explicit text choice then saves the
+  Codex default with the search. A resume keeps the run's web search whatever the settings say now, and a newer search adapter needs a
+  new run (`inputs_changed`).
 - Audio runs store the audio provider and both voices separately; resume keeps them too.
 - Checkpoints stay valid across a provider change, being bound to the prompt text, not the provider, so a draft and
   its review may come from different models. `reports/script_quality.yaml` names the selection, each call its
@@ -150,42 +197,50 @@ they follow the automatic rule (Claude, else Codex) with the catalog defaults, b
 Every script and research job can continue with another text provider at any time: in the Studio with
 **„Weiter mit …“** (continue with …) under the job's saved text choice ([STUDIO](STUDIO.md#choosing-the-text-model)),
 on the command line with
-`pla approve <project> --run-id <run_id> --text-switch claude|astra|claude-only|astra-only|openrouter [--switch-model MODEL]`
+`pla approve <project> --run-id <run_id> --text-switch claude|astra|claude-only|astra-only|openrouter|claude-api [--switch-model MODEL] [--cost-usd N]`
 (without a value `claude`; `run_budget.TEXT_SWITCHES`):
 
 - **Claude, else Astra** (`claude`) and **Astra, else Claude** (`astra`): the subscription asked first answers until
   its quota is spent, then the other takes over.
 - **Only Claude** (`claude-only`) and **only Astra** (`astra-only`): the job stays on one subscription.
 - **OpenRouter** (`openrouter`): one model from the list (`--switch-model`), paid per call, with the key; web searches
-  stay on the subscriptions, because OpenRouter has no search tools.
+  stay on the subscriptions, because OpenRouter has no search tools, unless the run searches through Perplexity.
+- **Claude on the Anthropic API key** (`claude-api`): Claude on your key, Sonnet 5.5 or a Claude model given with
+  `--switch-model`, paid per call; web searches run on the key too.
 
 Rules of a switch (why: D-024):
 
-- Astra works over the Codex subscription at `xhigh`; Claude with the catalog default Sonnet 5.5 at `high`, even when
-  the job started with Opus.
+- Astra works over the Codex subscription at `xhigh`; Claude, on the subscription or the key, at `high` with the
+  catalog default Sonnet 5.5, even when the job started with Opus (on the key `--switch-model` may name another Claude
+  model).
+- A switch to a billed provider (OpenRouter, `claude-api`) needs the run's [money limit](#money-limit): `--cost-usd`
+  (Studio: the cost field next to the choice) sets it with the switch; without one the switch is refused with
+  `cost_limit_required`.
 - The receipt `runs/<run_id>/text_switch.json` applies from the job's next start. A later choice replaces it;
   choosing the original selection removes it.
 - Inputs, hash, checkpoints and approvals stay unchanged, and `script_request.json` or `research_request.json` keeps
   the original selection; finished work stays valid.
+- A switch changes only the text model: a run that searches through Perplexity keeps that search
+  (`run_budget.approve_text_switch`).
 - The status brief, the quality report, the expression level of a later recording and the handover of the OpenRouter
-  key follow the current choice; a job receives the key only while it works with OpenRouter
-  ([SECURITY](SECURITY.md#secrets-and-keys)).
+  and the Anthropic key follow the current choice; a job receives the OpenRouter key only while it works with
+  OpenRouter, the Anthropic key only while it works with `claude_api` ([SECURITY](SECURITY.md#secrets-and-keys)).
 
 ## Budgets
 
 ### Default limits
 
 - New projects get 750 model calls, 48 search rounds and 150 source candidates per research or script run
-  (`ResearchLimits.model_calls`, `.search_rounds`, `.sources` in `models.py`). A saved project keeps its explicit
-  limits; the Studio settings set them for every project ([CONFIGURATION](CONFIGURATION.md#studio-settings)).
-  (why: D-034)
+  (`ResearchLimits.model_calls`, `.search_rounds`, `.sources` in `models.py`), and no money limit
+  ([Money limit](#money-limit)). A saved project keeps its explicit limits; the Studio settings set them for every
+  project ([CONFIGURATION](CONFIGURATION.md#studio-settings)). (why: D-034)
 - Every model decision and every independent review counts; local search and reading need neither a model nor the
   network. The source limit also counts failed and duplicate fetches ([RESEARCH](RESEARCH.md#limits-and-resume)).
 - Limits never cut the agreed topic scope automatically; a run that reaches a limit stays saved with its concrete
   gaps.
 - A call without a model answer (time limit, stalled stream, quota pause, abort) is not charged: `budget.json` lists
-  it under `refunded`, and call numbers stay unique. A charged failure (invalid output, a failed provider turn) keeps
-  its charge.
+  it under `refunded`, and call numbers stay unique; on a key its money still counts. A charged failure (invalid
+  output, a failed provider turn) keeps its charge.
 - **„Auftrag anhalten“** (stop job) ends the worker hard; its open calls keep their reservation until `resume`
   releases each that left neither an answer nor a charged failure, in research and script runs alike
   (`research.reconcile_budget`).
@@ -198,13 +253,16 @@ Rules of a switch (why: D-024):
 ### How a run stops on its budget
 
 - A research run stops with `research_budget_exhausted` at its call or search-round limit (`research.reserve_call`);
-  the state so far stays saved.
+  the state so far stays saved, and the stop names the limit it reached in its manifest entry
+  ([Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest)). A sub-question whose web search the run's
+  search-round or source limit ends records that cause too ([Run limits](RESEARCH.md#run-limits)).
 - After the scope check the Studio and the question report show the **minimum need of further calls** (dossier and
   closing reviews included) and the available budget. Finished answers and reusable checkpoints lower the need; more
   search, reading and corrections may raise it. If the budget does not cover even the minimum, the run stops with
   `research_budget_insufficient`; answers and topic scope stay. Optional calls may not use the closing reserve.
 - A script run stops with `script_budget_insufficient` when the approved limit does not cover its
   [lower bound](#script-lower-bound-and-expected-calls).
+- A run billed to a key stops with `cost_limit_required` or `cost_limit_reached` at its [money limit](#money-limit).
 
 ### Research projection
 
@@ -228,6 +286,20 @@ and stored fields: [RESEARCH](RESEARCH.md#scope-check-and-plan-approval)).
   for the default 750 calls at 16 per sub-question when few calls are used ((750 − 4) ÷ 16, rounded down).
 - Planning receives this number. A larger plan is requested again up to twice with this hint; then the minimum
   projection decides. The Studio and the question report show this experience value next to the minimum need.
+- **Sources and search rounds** are projected for the run's end the same way: used so far plus the open sub-questions
+  times the sources (or search rounds) per sub-question, rounded up (`question_budget.plan_projection`). The rates are
+  what the project's last published research run used per sub-question after its plan gate (`sources_per_task` and
+  `search_rounds_per_task` in `research/calibration.json`), else 5 sources and 2 search rounds
+  (`question_budget.DEFAULT_SOURCES_PER_TASK`, `DEFAULT_SEARCH_ROUNDS_PER_TASK`): the final research runs of
+  30 September 2026 used 4.4 to 4.5 sources and 1.5 to 1.7 search rounds per sub-question (Asimov, Ontologies),
+  rounded up. (why: D-155)
+- **Limits that carry the plan** (`raise_to`): when the projected calls, search rounds or sources exceed their limit,
+  the projection names what one approval would set. A limit that does not fit rises to what is used plus the expected
+  rest and a tenth more, rounded up; one that fits keeps its value; while all three fit, `raise_to` is `null`. The
+  plan-approval message names the limits that rise. So the plan gate asks once at the right size, instead of the run
+  stopping on these limits later: 9 of the 20 stops that needed the user in three series of 30 September to 4 October
+  2026 came from them. The raise stays your explicit click before the plan approval
+  (`run_budget.approve_model_call_limit`), never a pre-approval. (why: D-155)
 
 ### Script lower bound and expected calls
 
@@ -259,18 +331,80 @@ Without repairs a script run needs at least one call for the table of contents, 
   reviews, supplementary research and series corrections come on top; at that rate 750 calls cover about 17 to 24
   episodes. Longer series or many corrections need a higher limit.
 
+### Money limit
+
+A run whose calls bill your key, on OpenRouter, on `claude_api` or through the Perplexity search, also has a limit in
+USD (why: D-146, D-148, D-151):
+
+- **Required, without a default.** `research_limits.cost_usd` (above 0, at most 100 000;
+  [CONFIGURATION](CONFIGURATION.md#project-brief)) stays unset until you set it: on the settings page as
+  **„Kostengrenze je Lauf in USD“** (money limit per run in USD), for one run with `pla approve --cost-usd N`, in a stop
+  card or with a [switch](#switching-a-job-to-another-provider). The settings page refuses to save a billed text model
+  or the web search „Über Perplexity“ (through Perplexity) without it (`cost_limit_required`). Subscription runs that
+  search through the text model count no money.
+- **Billed calls.** A call is billed when it goes to OpenRouter or to `claude_api`, and a search call when the run
+  searches through Perplexity, whatever its text model (`provider_pool.AdapterPool.billed`). Otherwise the web searches
+  of an OpenRouter run go to the subscriptions and bill nothing, so a research job with OpenRouter text and the model's
+  search needs no limit.
+- **Stops.** Before every billed call `research.reserve_call` checks the limit: without one the run stops with
+  `cost_limit_required`, once the money spent has reached it with `cost_limit_reached`, both `blocked` and before the
+  call is charged; the state so far stays saved. A call already running may overshoot the limit by its own cost; in
+  parallel mode up to five calls run at once (`execution.MAX_PARALLEL_TEXT`; see V-32). The Studio refuses a billed
+  action (chat, plan, script, revision, research on `claude_api`, expression tags, companion kit; with the Perplexity
+  search also research, plan, script and revision on any text model) without a limit before a worker starts.
+- **Counting per attempt.** Every billed attempt leaves a row in `calls/call_NNN/billing.json` (`started`, then
+  `priced`, `unpriced` or `free`); a repeat after a stall or a wrong format, a rejected answer and a cut answer cost
+  money too. A search through Perplexity adds one row per search request at `web_search.USD_PER_REQUEST` (0.005 USD),
+  and the rows of its query-planning step count with its call. `research.settle_call` adds a call's rows to `budget.json` once (`billed_usd`, `priced_attempts`,
+  `estimated_usd`, `unpriced_attempts`, `settled`). An attempt without a reported cost (time limit, stall, killed
+  worker) counts at the run's mean per priced attempt, before the first one at the higher measured value of its model
+  (`cost_estimate.fallback_usd`). A refunded call returns its call, not its money. On resume `research.reconcile_budget`
+  settles what a killed worker left. A subscription run's `budget.json` gets none of these keys.
+- **Spent** = `billed_usd` + `estimated_usd` + `external_usd`. The billed amount is the cost the provider reports:
+  OpenRouter's, or Claude Code's own `total_cost_usd`, an estimate at API prices; the Anthropic Console bill is
+  authoritative (see V-30); a Perplexity request counts at the fixed price per request, and Perplexity's usage page is
+  authoritative (see V-35).
+- **Jev.** With a limit set, a script run stops before the Jev scan once its limit is reached; the scan's money counts
+  as `external_usd` when the scan is complete (`research.settle_external`).
+- **Side jobs.** Expression tags and the companion kits of an episode and of the whole podcast each run under a
+  small call allowance of their own with the
+  project's money limit; the editorial conversation counts its money in `studio/assistant/budget.json` against the same
+  limit.
+- **Projection.** The projections of a billed run (a research run's budget projection in its question state and its
+  plan projection, a script run's `budget_projection.json`) gain a `cost` block (`cost_estimate.cost_view`): limit,
+  spent, money per call and its origin, expected remaining and total, unpriced attempts. The money per call comes from
+  the run's own mean after ten priced attempts, else the project's last completed run of the same kind and model
+  (subscription runs count, since Claude Code reports their value at API prices), else the table below, else unknown.
+  It is a hint; only the limit stops a run. Other projections stay as they were.
+
+`cost_estimate.DEFAULT_USD_PER_CALL`, the mean Claude Code `total_cost_usd` per call over the completed runs created
+2026-09-26 to 2026-10-04, measured on 2026-10-07:
+
+| Run kind | Sonnet 5.5 | Opus 5.5 |
+| --- | --- | --- |
+| research | 0.37 USD (3,042 calls) | 0.75 USD (1,439 calls) |
+| script | 0.83 USD (1,071 calls) | 1.17 USD (735 calls) |
+
+A whole series (research and scripts) took 1,389 to 1,771 calls, worth 605 to 809 USD at API prices, with 33 to 35
+hours of research and 45 to 54 hours of script work (three series, measured on 2026-10-07).
+
 ### Raising a limit
 
-- Call, search-round and source limits are raised per run explicitly:
-  `pla approve <project> [--run-id <run_id>] --model-calls N --search-rounds M --sources Q` (without `--run-id` the
-  project's last run) or the buttons in the job status.
+- Call, search-round, source and money limits are raised per run explicitly:
+  `pla approve <project> [--run-id <run_id>] --model-calls N --search-rounds M --sources Q --cost-usd N` (without
+  `--run-id` the project's last run) or the buttons in the job status.
 - The raise is a receipt `runs/<run_id>/budget_approval.json`, bound to the run id and the run's input hash.
   Counters, checkpoints, project configuration and outline or audio approvals stay untouched; the next call takes the
   raise into account.
 - A new limit must be a whole number at least as high as the current one, otherwise the approval is refused with
-  `invalid_budget_approval`. Raising one limit keeps an earlier raise of the others.
+  `invalid_budget_approval`; a money limit is an amount in USD above 0 (at most 100 000), and it too can only rise.
+  Raising one limit keeps an earlier raise of the others, a money raise included. Receipts written before the money
+  field still validate.
 - The run uses the higher of its own receipt and the project's current limit (`run_budget.effective_limits`). A
   receipt of another run or input hash, or an unreadable one, stops the run with `invalid_budget_approval`.
+- In the Studio the stop cards „Kostengrenze fehlt“ and „Kostengrenze erreicht“ suggest a money limit: the larger of
+  1.5 times the limit and 1.25 times the money spent, or without a limit the larger of 10 USD and twice the money
+  spent ([STUDIO](STUDIO.md#stop-reasons)).
 
 ### Pre-approvals
 
@@ -280,7 +414,8 @@ display: [STUDIO](STUDIO.md#stopping-and-resuming)):
 
 - **„Neue Anläufe je Lauf“** (fresh attempts per run, up to three; `studio_allowances.FRESH_ATTEMPT_CHOICES`) when a
   step has used up its automatic corrections: the stops whose card offers **„Mit neuen Anläufen fortsetzen“**
-  (continue with fresh attempts), and only where the run would accept them (`run_budget.fresh_attempts_available`).
+  (continue with fresh attempts), and only where the run would accept them (`run_budget.fresh_attempts_available`),
+  a script correction loop that keeps no rejections included ([Rejected answers](SCRIPTS.md#rejected-answers)).
 - **„Aufruflimit erhöhen je Lauf“** (raise call limit per run, by up to 100, 250, 500 or 1000 calls;
   `studio_allowances.EXTRA_CALL_CHOICES`) when the approved limit is not enough, each time by the need the stop card
   suggests, at most by the rest still allowed.
@@ -289,13 +424,49 @@ display: [STUDIO](STUDIO.md#stopping-and-resuming)):
   records every use.
 - An allowance is applied only when the run can actually start (project free, a slot free). If the resume then fails,
   the scheduler resumes later without spending the allowance again.
-- Without a setting every stop waits for you. Editorial decisions and an exhausted search-round or source limit never
-  follow from an allowance ([Decisions that stay yours](#decisions-that-stay-yours)). (why: D-036)
+- **A new workspace** (no `projects/.studio-settings.json` and no project yet) starts with 2 fresh attempts and 250
+  extra calls (`studio_allowances.NEW_WORKSPACE`): its settings page shows them, and its first project gets them in
+  `studio/allowances.json`. Two fresh attempts per run covered every one granted in the three series of 30 September
+  2026, and 250 extra calls the research overshoot of two of their three topics. Existing workspaces keep their
+  values; a second project of a new workspace gets none (0/0) until the settings page is saved, which then sets them
+  for every project. (why: D-155)
+- Without a setting every stop waits for you. Editorial decisions, an exhausted search-round or source limit and a
+  money limit never follow from an allowance: a pre-approval never sets or raises money
+  ([Decisions that stay yours](#decisions-that-stay-yours)). (why: D-036, D-146)
+
+### Trial project
+
+A trial project („Probelauf“, trial run) runs the whole pipeline once on a narrow topic for little money and time
+(`trial.py`; why: D-157). It is an ordinary project whose brief carries `trial: true`
+([Project brief](CONFIGURATION.md#project-brief)); `pla init <project> --trial` without `--topic` takes the sample
+topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a rainbow form?" (`trial.TRIAL_TOPICS`).
+
+| Limit | Trial value | Where it applies |
+| --- | --- | --- |
+| Sub-questions of the research plan | 3 (`trial.TRIAL_SUB_QUESTIONS`) | `trial.plan_cap`, applied by `QuestionResearch.planning_allowance`, below any requested cap; a smaller `--max-tasks` still applies |
+| Planned total duration | at most 20 minutes (`trial.TRIAL_MINUTES`) | `target_total_minutes`, a planning wish ([Episode and series length](#episode-and-series-length)) |
+| Model calls, search rounds, sources per run | 110, 16, 40 (`trial.TRIAL_LIMITS`) | Research and script runs alike |
+| Money limit per run | at most 45 USD | Only lowers a limit you set |
+
+- `storage.load_project` keeps each limit at the lower of the project's (or the workspace settings') value and the
+  trial value, so the [Studio settings](CONFIGURATION.md#studio-settings) never lift a trial. A money limit is only
+  lowered, never introduced: unset, it still refuses every billed call (`cost_limit_required`), and setting one stays
+  your decision.
+- A raise for one run ([Raising a limit](#raising-a-limit), a stop card, a pre-approval) works as for every run.
+- Why these values: the completed runs measured 16.4 to 23.4 calls per sub-question, so three take up to about 70,
+  and discovery, planning, an advisor call and the closing calls about 15 more; 110 leaves a margin above that. The
+  same limit carries the one-episode script run: its lower bound is 11 calls, and the completed script runs took 31 to
+  42.5 calls per episode (2026-10-02). 45 USD covers each run of a trial on Sonnet 5.5 at the
+  [measured rates](#money-limit): research about 85 calls at 0.37 USD, the script run about 44 calls at 0.83 USD. On
+  Opus 5.5 a run may reach it and stops with `cost_limit_reached`. Whether a trial ends within its limits is open
+  (see V-48).
 
 ## Human approvals
 
 - Paid jobs start only through your actions on the page. Opening, navigating and playing stored Qwen or Gemini
-  samples use no model calls; new Gemini samples and Gemini recordings use your API credit.
+  samples use no model calls; new Gemini samples and Gemini recordings use your API credit, and text jobs on
+  OpenRouter or `claude_api` your OpenRouter or Anthropic account and searches through Perplexity your Perplexity
+  account, within the [money limit](#money-limit).
 - Navigation and reloading start no model calls and grant no approvals. The chat grants no plan or audio approval;
   **„Diese Auswahl übernehmen“** (accept this selection) only saves the reviewed summary. Intermediate states in the
   live window are unreviewed and grant no approval.
@@ -305,7 +476,8 @@ display: [STUDIO](STUDIO.md#stopping-and-resuming)):
 - The research plan approval is a gate: a research run stops after source search, planning and scope check, before
   the first sub-question, and uses no further model call until the plan is approved.
 - The approval is a receipt `runs/<run_id>/plan_approval.json`, bound to exactly this plan and written only by an
-  explicit action: **„Rechercheplan freigeben und starten“** (approve research plan and start) in the Studio or
+  explicit action: **„Plan freigeben und starten“** (approve plan and start), or **„Plan freigeben und Limits
+  anheben“** (approve plan and raise limits) when the plan needs higher limits, in the Studio, or
   `pla approve <project> --research-plan [<run_id>] [--max-tasks N]`.
 - No automatic resume passes this stop, neither after a subscription reset nor after a technical stop; without
   approval `pla research`, `pla resume` and every Studio job stop at the plan again.
@@ -327,7 +499,9 @@ approval.
   with the displayed provider and voices ([AUDIO](AUDIO.md#recording-flow)). Previews receive no audio approval.
 - The approval is bound to the episode's script hash, the audio provider and both voices
   (`episode_audio.saved_approval`), and for Gemini with expression to the expression tags that were read; tags placed
-  anew after reading need a new reading. A changed pause rule is audible and needs a new approval.
+  anew after reading need a new reading. A changed pause rule is audible and needs a new approval, and so does a
+  changed pace of the project's language; the pace of another language is not part of the approval
+  ([Speaking pace per language](AUDIO.md#speaking-pace-per-language)).
 - A series repair invalidates the audio approval of a corrected episode, because it is bound to the old script hash.
   A spoken form is not an editorial decision: re-rendering one segment uses the saved approval
   ([AUDIO](AUDIO.md#re-rendering-one-segment)).
@@ -340,8 +514,9 @@ approval.
 ### Decisions that stay yours
 
 Accepting a gap, deciding a disputed objection, finishing with remaining objections, requesting a new teaching plan,
-approving plans and audio, and raising an exhausted search-round or source limit are never taken automatically.
-Pre-approvals cover only fresh attempts and call-limit raises ([Pre-approvals](#pre-approvals)). Blocked
+approving plans and audio, raising an exhausted search-round or source limit, setting or raising a money limit, and
+switching to a provider billed to a key are never taken automatically. Pre-approvals cover only fresh attempts and
+call-limit raises ([Pre-approvals](#pre-approvals)). Blocked
 sub-questions and their decisions: [RESEARCH](RESEARCH.md#blocked-sub-questions-and-decisions).
 
 ## Runs, resume and input binding
