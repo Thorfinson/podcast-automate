@@ -448,6 +448,7 @@ dd{margin:0;overflow-wrap:anywhere}
 .card-title:hover{background:none;color:var(--green);text-decoration:underline}
 .card-state{margin:6px 0 0;font-size:14px;color:var(--muted);overflow-wrap:anywhere}
 .card-state strong{color:#7a4b12;font-weight:600}
+.card-progress{margin:2px 0 0;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
 .pipeline .download-all{background:#fff;color:var(--ink);border:1px solid #b9c8c3;font-weight:600}
 .pipeline .download-all:hover{filter:none;background:var(--green-soft)}
 .card-menu{position:relative}

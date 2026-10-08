@@ -1841,18 +1841,40 @@ const PIPE_WORDS=Object.fromEntries(["done","running","decision","paused","block
 const pipeMarkup = states => states.map((s,i)=>`<span class="${s}" title="${steps[i]}: ${PIPE_WORDS[s]||s}"></span>`).join("");
 const pipeLabel = states => states.map((s,i)=>`${steps[i]}: ${PIPE_WORDS[s]||s}`).join(", ");
 const cardClass = p => `pipeline${runningOf(p)?" running":attentionOf(p)?" waiting":""}`;
+// The numbers a running or stopped text run reached, in one line under the card's state (the user's wish, 2026-10-08:
+// "49 von 74 geprüft, 5 in Arbeit …" took asking each time): sub-questions verified, in work and blocked (and how many
+// of those only wait for a prerequisite), else the segments done, and the calls of the run's limit.
+function cardProgress(p) {
+  const j=p?.job;
+  if(!j?.run||j.status==="completed"||!["research","script"].includes(j.run.kind))return "";
+  const progress=j.progress||{}, ledger=progress.research_questions, parts=[];
+  if(Number(ledger?.total)>0){
+    const rows=ledger.questions||[];
+    const working=rows.filter(q=>["researching","reviewing"].includes(q.status)).length;
+    const waiting=rows.filter(q=>q.status==="blocked"&&q.outcome==="prerequisite_block").length;
+    const blocked=Number(ledger.blocked||0);
+    parts.push(tp("overview.progress.verified",{closed:Number(ledger.closed||0),total:Number(ledger.total)}));
+    if(working)parts.push(tp("overview.progress.working",{count:working}));
+    if(blocked)parts.push(waiting?tp("overview.progress.blocked_waiting",{count:blocked,waiting}):tp("overview.progress.blocked",{count:blocked}));
+  }else if(Number(progress.total_segments)>0){
+    parts.push(tp("overview.progress.segments",{done:Number(progress.completed_segments||0),total:Number(progress.total_segments)}));
+  }
+  if(Number.isSafeInteger(progress.model_call_limit)&&progress.model_call_limit>0)
+    parts.push(tp("job.calls",{used:Number(progress.model_calls||0),limit:progress.model_call_limit}));
+  return parts.join(" · ");
+}
 // The title opens the project where its work is; the card's one filled button is the next action, deleting sits in a
 // menu instead of beside "Öffnen".
 function overviewCardInner(p) {
   const a=attentionOf(p), busy=runningOf(p), hasAudio=(p.episodes||[]).some(e=>e.audio?.length), states=pipelineStates(p), id=escape(p.id);
   // A stopped project's recommended step is the card's filled button; looking first stays one click beside it.
-  const next=cardNextAction(p);
+  const next=cardNextAction(p), numbers=cardProgress(p);
   const nextButton=next?`<button class="small" data-card-action="${escape(next.kind)}" data-card-project="${id}" data-run-id="${escape(next.runId)}">${escape(next.label)}</button>`:"";
   const open=nextButton+(a?`<button class="${next?"secondary ":""}small" data-open-project="${id}" data-open-step="${a.page}">${escape(a.button)}</button>`
     :`<button class="secondary small" data-open-project="${id}">${t("overview.open")}</button>`);
   return `<div class="pipeline-main"><h2><button type="button" class="card-title" data-open-project="${id}" title="${escape(p.topic)}">${escape(p.topic)}</button>${p.trial?` ${trialChip()}`:""}${versionChip(p)}</h2>
     <div class="pipe" id="pipe-${id}" role="img" aria-label="${escape(pipeLabel(states))}">${pipeMarkup(states)}</div>
-    <p class="card-state" id="project-state-${id}">${a?`<strong>${escape(a.text)}</strong>`:escape(overviewStatus(p))}</p></div>
+    <p class="card-state" id="project-state-${id}">${a?`<strong>${escape(a.text)}</strong>`:escape(overviewStatus(p))}</p>${numbers?`<p class="card-progress" id="project-progress-${id}">${escape(numbers)}</p>`:""}</div>
     <div class="actions">${open}${hasAudio?`<button class="secondary small" data-open-project="${id}" data-open-step="${PAGE.audio}">${t("overview.listen")}</button>`:""}<span id="overview-download-${id}">${overviewDownload(p)}</span>
     <details class="card-menu"><summary aria-label="${t("overview.more_label",{topic:shortText(p.topic,40)})}">⋯</summary><div class="card-menu-list">${boot.capabilities?.project_versions?`<button class="quiet small" data-new-version="${id}" ${p.unavailable?"disabled":""}>${t("version.new")}</button>`:""}<button class="quiet small danger-text" data-delete-project="${id}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>${t("overview.delete")}</button></div></details></div>`;
 }

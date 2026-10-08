@@ -1097,6 +1097,11 @@
  "overview.download": "Podcast herunterladen",
  "overview.action_done": "{topic} läuft weiter.",
  "overview.action_stale": "Der Stand dieses Projekts hat sich inzwischen geändert. Die Karte zeigt jetzt den aktuellen Schritt.",
+ "overview.progress.verified": "{closed} von {total} geprüft",
+ "overview.progress.working": "{count} in Arbeit",
+ "overview.progress.blocked": "{count} blockiert",
+ "overview.progress.blocked_waiting": "{count} blockiert, {waiting} davon nur wegen Vorfragen",
+ "overview.progress.segments": "{done} von {total} erledigt",
  "overview.trash": {
   "one": "Papierkorb · {count} Projekte",
   "other": "Papierkorb · {count} Projekte"

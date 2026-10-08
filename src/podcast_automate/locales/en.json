@@ -1097,6 +1097,11 @@
  "overview.download": "Download the podcast",
  "overview.action_done": "{topic} carries on.",
  "overview.action_stale": "This project's state has changed in the meantime. The card now shows the current step.",
+ "overview.progress.verified": "{closed} of {total} verified",
+ "overview.progress.working": "{count} in progress",
+ "overview.progress.blocked": "{count} blocked",
+ "overview.progress.blocked_waiting": "{count} blocked, {waiting} of them only by prerequisites",
+ "overview.progress.segments": "{done} of {total} done",
  "overview.trash": {
   "one": "Trash · {count} project",
   "other": "Trash · {count} projects"

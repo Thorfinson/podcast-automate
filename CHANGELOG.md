@@ -8,6 +8,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-10-08 · Studio overview: a research or script run's card shows its numbers under its state, such as „49 von 74 geprüft · 6 in Arbeit · 6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500“.
 - 2026-10-08 · „Weiter mit …“: „Nur Claude“ and Claude on the Anthropic API key name their model in a „Claude-Modell“ list (`pla approve --text-switch claude-only --switch-model claude-sonnet-5-5`), so one run can continue on Sonnet 5.5 at high while the default stays Haiku 5.5 (D-170).
 - 2026-10-08 · Studio overview: a stopped project's card offers the step its page recommends as one click, without opening the project — „Fortsetzen“, „Mit neuen Anläufen fortsetzen“, „Empfehlungen übernehmen und fortsetzen“, „Limits anheben und Empfehlungen übernehmen“ or the call limit's raise; „Ansehen“ stays beside it (D-169).
 - 2026-10-07 · New version of a podcast: „Neue Version anlegen“ in an overview card's ⋯ menu and `pla new-version <project>` start a new project with the old one's brief, attachments, provided works, style notes and choices, but none of its runs, so research, scripts and audio are made again by the current pipeline; the old version stays as it was. Versions are numbered per podcast („Version 2“ beside the topic). The newest completed research run's sources come along as a starting library that the new version's first research offers (preselected; `pla research <version> --seed-corpus <run_id>`) instead of downloading them again (D-168).

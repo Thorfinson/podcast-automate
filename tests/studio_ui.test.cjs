@@ -4037,3 +4037,22 @@ test('the card adopts the advisor\'s retries with their hints and resumes, as th
   assert.equal(raise.kind,'raise_adopt');
   assert.ok(raise.sources>200&&raise.searchRounds>85,'both limits rise as on the decision card');
 });
+
+test('a text run\'s card names its numbers: verified, in work, blocked and the calls of its limit',()=>{
+  // 2026-10-08: "49 von 74 geprüft, 5 in Arbeit …" took asking each time.
+  const app=studio();
+  const rows=[...Array(49).fill({status:'verified'}),...Array(5).fill({status:'researching'}),{status:'reviewing'},
+    ...Array(4).fill({status:'blocked',outcome:'prerequisite_block'}),{status:'blocked',outcome:'search_block'},{status:'blocked',outcome:'evidence_block'},
+    ...Array(13).fill({status:'pending'})];
+  const job={id:'j',status:'running',action:'resume',run:{run_id:'r',kind:'research',stages:{}},
+    progress:{model_calls:1119,model_call_limit:1500,research_questions:{total:74,closed:49,blocked:6,questions:rows}}};
+  const p={id:'orla',topic:'Orlagau',episodes:[],job};
+  assert.equal(app.run(`cardProgress(${JSON.stringify(p)})`),'49 von 74 geprüft · 6 in Arbeit · 6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500');
+  assert.ok(app.run(`overviewCardInner(${JSON.stringify(p)})`).includes('<p class="card-progress" id="project-progress-orla">49 von 74 geprüft'));
+  // A stopped run keeps its numbers; a script run without a ledger counts its segments.
+  const script={...p,job:{...job,status:'interrupted',run:{run_id:'s',kind:'script',stages:{}},progress:{completed_segments:3,total_segments:8,model_calls:40,model_call_limit:300}}};
+  assert.equal(app.run(`cardProgress(${JSON.stringify(script)})`),'3 von 8 erledigt · Aufrufe 40 von 300');
+  // A finished project and a recording show no such line.
+  assert.equal(app.run(`cardProgress(${JSON.stringify({...p,job:{...job,status:'completed'}})})`),'');
+  assert.ok(!app.run(`overviewCardInner(${JSON.stringify({id:'x',topic:'X',episodes:[],job:{id:'a',status:'running',action:'audio',run:{run_id:'a',kind:'episode_audio',stages:{}}}})})`).includes('card-progress'));
+});
