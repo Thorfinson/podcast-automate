@@ -121,12 +121,13 @@ OVERVIEW_QUESTION_FIELDS = ("id", "question", "kind", "status", "outcome", "depe
 
 
 def overview_job(job):
-    """The job as a project card sees it: the research ledger with short question rows."""
+    """The job as a project card sees it: the research ledger with short question rows. A row's advice keeps what the
+    card's one-click step needs (the decision card's adoption: the hint a retry carries, the limit a raise names)."""
     ledger = ((job or {}).get("progress") or {}).get("research_questions")
     if not isinstance(ledger, dict) or not ledger.get("questions"):
         return job
     rows = [{**{field: row[field] for field in OVERVIEW_QUESTION_FIELDS if field in row},
-             **({"advice": {"key": row["advice"].get("key"), "recommendation": row["advice"].get("recommendation")}}
+             **({"advice": {key: row["advice"][key] for key in ("key", "recommendation", "hint", "limit") if key in row["advice"]}}
                 if isinstance(row.get("advice"), dict) else {})} for row in ledger["questions"]]
     return {**job, "progress": {**job["progress"], "research_questions": {**ledger, "questions": rows}}}
 
@@ -1062,12 +1063,15 @@ class Studio:
             data["text_switchable"] = True
             data["text_switch_choice"] = switch_choice(data["text_generation"])
             data["provider_choice"] = latest_provider_choice(work)
-            if data.get("status") in {"blocked", "failed"}:
-                # Whether "Mit neuen Anläufen fortsetzen" would be accepted now: a step spent its corrections and no
-                # approval reset them yet. Kept while the run and its records of fresh attempts are unchanged.
-                data["fresh_attempts"] = memo(("fresh_attempts", str(work)),
-                    [work / name for name in ("run_manifest.yaml", "fresh_attempts.json", "series_repair.json")],
-                    lambda: fresh_attempts_available(root, run["run_id"]))
+        if data and (data.get("run") or {}).get("kind") in {"script", "research"} and data.get("status") in {"blocked", "failed"}:
+            # Whether "Mit neuen Anläufen fortsetzen" would be accepted now: a step spent its corrections and no
+            # approval reset them yet. Kept while the run and its records of fresh attempts are unchanged. The light
+            # view carries it too, for the overview card's one-click step (cardNextAction).
+            run = data["run"]
+            work = manifest_path(root, run["run_id"]).parent
+            data["fresh_attempts"] = memo(("fresh_attempts", str(work)),
+                [work / name for name in ("run_manifest.yaml", "fresh_attempts.json", "series_repair.json")],
+                lambda: fresh_attempts_available(root, run["run_id"]))
         if data and audio_job_id is None:
             # Announced only where the scheduler acts: the project's main job with a run to resume.
             plan = auto_resume(data)

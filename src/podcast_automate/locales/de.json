@@ -428,6 +428,7 @@
  "switch.current": "aktuell",
  "switch.label": "Weiter mit",
  "switch.model_label": "OpenRouter-Modell",
+ "switch.claude_model_label": "Claude-Modell",
  "switch.cost_label": "Kostengrenze dieses Laufs in USD",
  "switch.cost_placeholder": "Kostengrenze USD",
  "common.apply": "Übernehmen",
@@ -1094,6 +1095,8 @@
  "overview.more_label": "Weitere Aktionen: {topic}",
  "overview.delete": "Projekt löschen",
  "overview.download": "Podcast herunterladen",
+ "overview.action_done": "{topic} läuft weiter.",
+ "overview.action_stale": "Der Stand dieses Projekts hat sich inzwischen geändert. Die Karte zeigt jetzt den aktuellen Schritt.",
  "overview.trash": {
   "one": "Papierkorb · {count} Projekte",
   "other": "Papierkorb · {count} Projekte"

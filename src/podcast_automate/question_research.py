@@ -71,7 +71,10 @@ from .storage import atomic_text, digest, inside, read_optional_json, read_text,
 __all__ = ["QuestionResearch", "run_question_research", "validate_plan", "answer_errors", "review_passes",
            "read_context", "MAX_STEPS", "MAX_WEB_ATTEMPTS", "MAX_REOPENINGS"]
 
-MAX_STEPS = 10
+# Steps per working pass on a sub-question, bound into a run's state at its start (D-171: 15 since 2026-10-08; Haiku
+# needed a median of 5 to 7.5 steps per passed answer against Sonnet's 3 to 5, and with ten a pass often ended
+# before the rework of a rejected answer; runs started earlier keep their 10).
+MAX_STEPS = 15
 MAX_WEB_ATTEMPTS = 2
 MAX_REOPENINGS = 2
 

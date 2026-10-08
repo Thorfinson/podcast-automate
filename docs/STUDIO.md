@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-08
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -300,7 +300,10 @@ Where a run stores its choice: [Run folder and manifest](ARCHITECTURE.md#run-fol
 Every script and research job can continue with another text provider at any time: below the job's saved text choice,
 **„Weiter mit …“** (continue with …) offers „Claude, sonst Astra (xhigh)“, „Astra (xhigh), sonst Claude“, „Nur
 Claude“, „Nur Astra (xhigh)“, „OpenRouter · bezahlt pro Aufruf“ (OpenRouter · paid per call) with a model selection,
-and „Claude über den Anthropic-API-Key · bezahlt pro Aufruf“ (Claude on the Anthropic API key · paid per call). Both
+and „Claude über den Anthropic-API-Key · bezahlt pro Aufruf“ (Claude on the Anthropic API key · paid per call). „Nur
+Claude“ and the API key show a **„Claude-Modell“** (Claude model) list, preselected with the run's own Claude model; a
+chosen model works at its preset's level, Sonnet 5.5 at high (D-170). The hold card's „Mit Claude fortsetzen“ keeps the
+catalog default. Both
 paid choices show a field **„Kostengrenze USD“** (money limit in USD) for this run, which the switch needs unless the
 run already has one; **„Übernehmen“** (apply) saves the choice. If a job with a fixed provider stops because its subscription is
 exhausted, the hold card offers the other one: **„Mit Astra (xhigh) fortsetzen“** (continue with Astra) for Claude,
@@ -311,7 +314,13 @@ exhausted, the hold card offers the other one: **„Mit Astra (xhigh) fortsetzen
 The overview lists each project once, as a card: those waiting for you first, then running ones, then the rest. A
 card holds the bar of the six steps, whose segments name their step and state (a legend above the cards: erledigt,
 läuft, wartet auf dich, angehalten, braucht Hilfe), one line of state, and its next action as the one filled button,
-such as „Skripte lesen“ or „Plan freigeben“; otherwise **„Öffnen“** (open). Clicking the title or the card opens the
+such as „Skripte lesen“ or „Plan freigeben“; otherwise **„Öffnen“** (open). A stopped project's card carries the
+step its page recommends as that button, done in one click on the overview: **„Fortsetzen“** where the header offers
+it, **„Mit neuen Anläufen fortsetzen“** where the server would accept fresh attempts, **„Empfehlungen übernehmen und
+fortsetzen“** or **„Limits anheben und Empfehlungen übernehmen“** for the advisor's retry advice (with each
+question's hint and the decision card's sized limits), the raise of the call limit the advice needs, and the call or
+search limit a stop names as its way on. „Ansehen“ or „Entscheiden“ stays beside it; a key, a money limit, a note, a
+dispute or a choice per question still opens the page (why: D-169). Clicking the title or the card opens the
 project where its work waits. Once takes are finished, „Podcast anhören“ and **„Podcast herunterladen“** (download
 podcast, ZIP) follow; **„Projekt löschen“** sits in the card's „⋯“ menu (why: D-161).
 

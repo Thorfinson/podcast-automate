@@ -1937,6 +1937,18 @@ class OverviewJobTests(unittest.TestCase):
         self.assertIn("findings", job["progress"]["research_questions"]["questions"][0], "the project page keeps whole rows")
         self.assertIsNone(overview_job(None))
 
+    def test_a_card_keeps_the_hint_and_limit_its_one_click_step_adopts(self):
+        # 2026-10-08: the card's "Empfehlungen übernehmen" sends each retry with the advisor's hint, as the page does;
+        # a raise recommendation names the limit the decision card sizes.
+        from podcast_automate.studio import overview_job
+        rows = [{"id": "t1", "status": "blocked", "advice": {"key": "0.1", "recommendation": "retry", "hint": "Read Patze, ch. 3.",
+                                                             "diagnosis": "x" * 2000}},
+                {"id": "t2", "status": "blocked", "advice": {"key": "0.0", "recommendation": "raise_limit", "limit": "sources"}}]
+        job = {"status": "blocked", "progress": {"research_questions": {"questions": rows}}}
+        advice = [row["advice"] for row in overview_job(job)["progress"]["research_questions"]["questions"]]
+        self.assertEqual(advice, [{"key": "0.1", "recommendation": "retry", "hint": "Read Patze, ch. 3."},
+                                  {"key": "0.0", "recommendation": "raise_limit", "limit": "sources"}])
+
 
 class InterfaceLanguageTests(unittest.TestCase):
     """D-152: the Studio speaks German or English, chosen for the workspace or taken from the browser. A workspace that

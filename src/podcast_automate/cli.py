@@ -191,9 +191,9 @@ def build_parser() -> argparse.ArgumentParser:
                               "Astra; default), astra (Astra, else Claude), claude-only, astra-only, openrouter (billed, "
                               "with --switch-model and a key) or claude-api (billed, Anthropic API key); billed "
                               "providers need a money limit (--cost-usd). Astra works at xhigh, Claude with the "
-                              "catalog's default model and level; checkpoints stay valid")
-    approve.add_argument("--switch-model", help="Model for --text-switch openrouter (e.g. openai/gpt-6-astra) or "
-                                                "claude-api (e.g. claude-opus-5-5)")
+                              "catalog's default model and level unless --switch-model names one; checkpoints stay valid")
+    approve.add_argument("--switch-model", help="Model for --text-switch openrouter (e.g. openai/gpt-6-astra), "
+                                                "claude-only or claude-api (e.g. claude-sonnet-5-5, at its preset's level)")
     approve.add_argument("--finish-with-residuals", action="store_true",
                          help="Finish after the next overall review; remaining objections go into the quality report "
                               "(--reason is saved as a note)")

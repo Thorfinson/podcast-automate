@@ -287,6 +287,14 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         approve_text_switch(self.root, research, "astra")
         self.assertIsNone(text_key(self.root, {"api_key": "test-key"}, research), "the key goes only to OpenRouter")
         self.assertEqual(run_text_generation(work)["model"], "gpt-6-astra")
+        # A research run moves to a named Claude model on the subscription and the next resume works with it (D-170).
+        approve_text_switch(self.root, research, "claude", model="claude-sonnet-5-5")
+        self.assertEqual({key: run_text_generation(work)[key] for key in ("provider", "model", "reasoning_effort")},
+                         {"provider": "claude_code", "model": "claude-sonnet-5-5", "reasoning_effort": "high"})
+        # The advisor of a blocked question stays on Opus 5.5 at xhigh whatever Claude model answers.
+        from podcast_automate.research_advisor import advisor_selection
+        advisor = advisor_selection(run_text_generation(work))
+        self.assertEqual((advisor["model"], advisor["reasoning_effort"]), ("claude-opus-5-5", "xhigh"))
 
     def test_fixed_providers_never_query_quota_and_claude_runs_use_claude_only(self):
         with patch.object(subscriptions, "codex_quota", side_effect=AssertionError("no quota query")), \
@@ -782,6 +790,15 @@ class StatusAndStudioTests(unittest.TestCase):
         opus = json.loads(self.request("/api/projects/example")[1])["job"]
         self.assertEqual((opus["text_switched"], opus["text_generation"]["model"], opus["text_generation"]["reasoning_effort"]),
                          (True, "claude-haiku-5-5", "xhigh"))
+        # D-170: "Nur Claude" may name its model, which works at its preset's level (Orlagau, 2026-10-08).
+        self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude", "choice": "claude",
+                                                       "model": "claude-sonnet-5-5"})
+        sonnet = json.loads(self.request("/api/projects/example")[1])["job"]
+        self.assertEqual((sonnet["text_switch_choice"], sonnet["text_generation"]["model"], sonnet["text_generation"]["reasoning_effort"]),
+                         ("claude", "claude-sonnet-5-5", "high"))
+        status, _, _ = self.request("/api/projects/example/approve", {"kind": "text_switch", "run_id": "run_claude",
+                                                                      "choice": "claude", "model": "claude-unknown"})
+        self.assertEqual(status, 400, "only a listed Claude model")
         # Choosing what the run started with removes the receipt: a run that started on the default.
         claude = {**claude, "model": "claude-haiku-5-5", "reasoning_effort": "xhigh"}
         write_json(work / "script_request.json", {"text_generation": claude})

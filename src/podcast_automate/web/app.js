@@ -430,6 +430,13 @@ function renderRunTextChoice(job) {
   return `<p class="hint">${t(job.text_switched?"run_text.now":"run_text.saved",{choice:asHtml(saved)})}</p>${renderProviderChoice(job)}${switcher?`<details class="text-switch-box"><summary>${t("run_text.switch")}</summary>${switcher}</details>`:""}`;
 }
 const SWITCH_CHOICES=Object.fromEntries(["claude_first","astra_first","claude","astra","openrouter","claude_api"].map(id=>[id,tp(`switch.${id}`)]));
+const CLAUDE_SWITCHES=new Set(["claude","claude_api"]);
+// The model a switch sends: OpenRouter's from its list, Claude's from the Claude list (D-170); a hold card's own
+// button (fromCard) keeps the catalog default.
+function switchModel(choice, fromCard=false) {
+  if(choice==="openrouter")return $("text-switch-model")?.value||"";
+  return CLAUDE_SWITCHES.has(choice)&&!fromCard?$("text-switch-claude-model")?.value||"":"";
+}
 function renderTextSwitch(job) {
   // Every script or research run may continue with another text provider (approve_text_switch).
   if(!job.text_switchable)return "";
@@ -437,8 +444,13 @@ function renderTextSwitch(job) {
   const currentModel=job.text_generation?.provider==="openrouter"?job.text_generation.model:"";
   const options=Object.entries(SWITCH_CHOICES).map(([id,name])=>`<option value="${id}" ${id===current?"selected":""}>${escape(name)}${id===current?` · ${t("switch.current")}`:""}</option>`).join("");
   const modelOptions=Object.entries(models).map(([id,name])=>`<option value="${escape(id)}" ${id===currentModel?"selected":""}>${escape(name)}</option>`).join("");
+  // Claude on the subscription or the key names its model too (D-170), each at its preset's level.
+  const claudeModels=boot.text_catalog?.claude_models||{};
+  const currentClaude=["claude_code","claude_api"].includes(job.text_generation?.provider)?job.text_generation.model:"";
+  const claudeOptions=Object.entries(claudeModels).map(([id,name])=>`<option value="${escape(id)}" ${id===currentClaude?"selected":""}>${escape(name)}</option>`).join("");
   return `<div class="text-switch"><label for="text-switch-choice">${t("switch.label")}</label> <select id="text-switch-choice">${options}</select>
     <select id="text-switch-model" aria-label="${t("switch.model_label")}" ${current==="openrouter"?"":"hidden"}>${modelOptions}</select>
+    <select id="text-switch-claude-model" aria-label="${t("switch.claude_model_label")}" ${CLAUDE_SWITCHES.has(current)?"":"hidden"}>${claudeOptions}</select>
     <input id="text-switch-cost" type="number" inputmode="decimal" min="1" step="1" aria-label="${t("switch.cost_label")}" placeholder="${t("switch.cost_placeholder")}" ${billedProvider(current)?"":"hidden"} value="${Number(job.progress?.cost_limit_usd)||""}">
     <button class="secondary" data-action="text-switch" data-run-id="${runId}">${t("common.apply")}</button>
     <p class="hint">${job.text_switched?`${t("switch.switched")} `:""}${t("switch.hint")}</p></div>`;
@@ -1763,6 +1775,55 @@ function attentionOf(p) {
   if(p.script_count&&audio.unvoiced)return {text:tp("attention.unvoiced",{count:audio.unvoiced}),button:tp("attention.view_audio"),page:PAGE.audio};
   return null;
 }
+// The one step a stopped project's page recommends, offered on its overview card as one click (the user's wish,
+// 2026-10-08: each stop took "Ansehen", then "Fortsetzen"). Only steps that need no input on the page: the header's
+// plain resume, fresh attempts the server would accept, the decision card's adoption of the advisor's retries (with
+// the limits they need, or the calls the advice needs), and the call or search limit a stop names as its first way
+// on. A key, a money limit, a note, a dispute or a choice per question still opens the page.
+function cardNextAction(p) {
+  const j=p?.job, info=stopInfo(j);
+  if(p?.unavailable||!j?.run?.run_id||!info||runningOf(p))return null;
+  const runId=j.run.run_id, ledger=j.progress?.research_questions;
+  if(info.code==="research_questions_blocked"&&ledger){
+    const {open}=decisionRows(ledger), advised=adviceRetries(ledger), limits=limitsRaise(j,open);
+    const retries=advised.map(q=>({id:q.id,hint:q.advice?.hint||""}));
+    const adviceCalls=unadvised(ledger)&&!adviceAffordable(ledger)?adviceCallLimit(ledger):0;
+    // A server whose card rows carry no hints (before D-169) would have the retries go without them: the page decides.
+    if(advised.length&&!advised.every(q=>Object.hasOwn(q.advice||{},"hint")))return null;
+    if(limits.raise&&advised.length)return {kind:"raise_adopt",label:tp("decisions.raise_adopt"),runId,retries,
+      sources:limits.sized.sources,searchRounds:limits.sized.search_rounds,...(adviceCalls?{modelCalls:adviceCalls}:{})};
+    if(advised.length)return {kind:"adopt",label:tp("decisions.adopt"),runId,retries};
+    if(adviceCalls)return {kind:"calls",label:tp("decisions.raise_advise",{count:adviceCalls}),runId,modelCalls:adviceCalls};
+    return canResume(j,info)?{kind:"resume",label:tp("button.resume"),runId}:null;
+  }
+  // Fresh attempts only where the server said it would take them; without its answer the page decides, and its header
+  // offers no plain resume where fresh attempts are recommended.
+  if(freshRecommended(j,info))return j.fresh_attempts===true?{kind:"fresh",label:tp("stop_button.fresh"),runId}:null;
+  if(canResume(j,info))return {kind:"resume",label:tp("button.resume"),runId};
+  if(info.actions[0]==="approve_calls"){const n=suggestedCalls(j);return {kind:"calls",label:tp("stop_button.calls",{count:n}),runId,modelCalls:n};}
+  if(info.actions[0]==="approve_search"){const n=(Number(j.progress?.search_round_limit)||0)+6;return {kind:"search",label:tp("stop_button.search",{count:n}),runId,searchRounds:n};}
+  return null;
+}
+// The card's step carried out as the page's buttons do it, then the run resumes; the card stays on the overview.
+// The step is computed again from the current overview, so a card drawn before the state changed does nothing.
+async function runCardAction(button) {
+  const id=button.dataset.cardProject, p=overviewData?.projects?.find(row=>row.id===id), next=p&&cardNextAction(p);
+  if(!next||next.kind!==button.dataset.cardAction||next.runId!==button.dataset.runId){
+    overviewData=await loadOverview();refreshOverview();throw new Error(tp("overview.action_stale"));
+  }
+  const path=`/api/projects/${encodeURIComponent(id)}`;
+  const approve=payload=>api(`${path}/approve`,{run_id:next.runId,...payload});
+  submitting=true;
+  try {
+    if(next.kind==="fresh")await approve({kind:"fresh_attempts"});
+    const limits={...(next.modelCalls?{model_calls:next.modelCalls}:{}),...(next.sources?{sources:next.sources}:{}),...(next.searchRounds?{search_rounds:next.searchRounds}:{})};
+    if(Object.keys(limits).length)await approve({kind:"model_calls",...limits});
+    for(const q of next.retries||[])await approve({kind:"retry",task_id:q.id,hint:q.hint});
+    await api(`${path}/start`,{action:"resume",run_id:next.runId});
+  } finally { submitting=false; }
+  overviewData=await loadOverview();refreshOverview();
+  notice(tp("overview.action_done",{topic:quoted(shortText(p.topic,60))}),"ok");
+}
 function pipelineStates(p) {
   const j=p.job, run=j?.run, busy=runningOf(p);
   const blocked=["blocked","failed","interrupted","waiting_for_quota","pending"].includes(j?.status);
@@ -1784,8 +1845,11 @@ const cardClass = p => `pipeline${runningOf(p)?" running":attentionOf(p)?" waiti
 // menu instead of beside "Öffnen".
 function overviewCardInner(p) {
   const a=attentionOf(p), busy=runningOf(p), hasAudio=(p.episodes||[]).some(e=>e.audio?.length), states=pipelineStates(p), id=escape(p.id);
-  const open=a?`<button class="small" data-open-project="${id}" data-open-step="${a.page}">${escape(a.button)}</button>`
-    :`<button class="secondary small" data-open-project="${id}">${t("overview.open")}</button>`;
+  // A stopped project's recommended step is the card's filled button; looking first stays one click beside it.
+  const next=cardNextAction(p);
+  const nextButton=next?`<button class="small" data-card-action="${escape(next.kind)}" data-card-project="${id}" data-run-id="${escape(next.runId)}">${escape(next.label)}</button>`:"";
+  const open=nextButton+(a?`<button class="${next?"secondary ":""}small" data-open-project="${id}" data-open-step="${a.page}">${escape(a.button)}</button>`
+    :`<button class="secondary small" data-open-project="${id}">${t("overview.open")}</button>`);
   return `<div class="pipeline-main"><h2><button type="button" class="card-title" data-open-project="${id}" title="${escape(p.topic)}">${escape(p.topic)}</button>${p.trial?` ${trialChip()}`:""}${versionChip(p)}</h2>
     <div class="pipe" id="pipe-${id}" role="img" aria-label="${escape(pipeLabel(states))}">${pipeMarkup(states)}</div>
     <p class="card-state" id="project-state-${id}">${a?`<strong>${escape(a.text)}</strong>`:escape(overviewStatus(p))}</p></div>
@@ -2725,29 +2789,43 @@ function renderDisputeCard(j, runId, active) {
     <ol class="decisions">${rows.map(item).join("")}</ol>${resume}</section>`;
 }
 // Every open decision stands in one card above the ledger with its buttons visible: nothing to expand, no dialog.
+// The blocked questions a decision card lists. With the finish requested, a question blocked only by spent reworks is
+// decided: its objections go on record. A run that keeps such answers (keeps_spent_answers) decides it the same way,
+// without the finish.
+function decisionRows(ledger) {
+  const rows=ledger?.questions||[];
+  const residual=rows.filter(q=>(ledger.residual_finish||ledger.keeps_spent_answers)&&q.status==="blocked"&&!q.accepted_gap&&q.outcome==="audit_block");
+  return {rows,residual,open:rows.filter(q=>q.status==="blocked"&&!q.accepted_gap&&!residual.includes(q)),accepted:rows.filter(q=>q.accepted_gap)};
+}
+// Whether the run's limits stop its open questions, and the sized values to raise them to (sizedRaise): the decision
+// card and the overview card's one-click step read the same facts.
+function limitsRaise(j, open) {
+  const ledger=j.progress?.research_questions||{};
+  const rounds=Number(j.progress?.search_rounds||0), roundLimit=Number(j.progress?.search_round_limit||0);
+  // Every web search loads new sources; at the run's source limit it ends before it starts.
+  const fetched=Number(ledger.source_attempt_count||0), sourceLimit=Number(j.progress?.source_limit||0);
+  const sized=sizedRaise(j);
+  const full=sourceLimit>0&&fetched>=sourceLimit, spent=roundLimit>0&&rounds>=roundLimit, low=roundLimit>0&&roundLimit-rounds<=1;
+  const raiseAdvised=open.filter(q=>currentAdvice(q)?.recommendation==="raise_limit"&&["sources","search_rounds"].includes(q.advice.limit));
+  return {rounds,roundLimit,fetched,sourceLimit,sized,full,spent,low,raiseAdvised,
+    raise:!!((full||low||raiseAdvised.length)&&sized.sources&&sized.search_rounds)};
+}
 function renderResearchDecisions(j, r, active, reopenable, resumable, searchLimit) {
-  const ledger=j.progress.research_questions, rows=ledger?.questions||[], runId=r?.run_id||"";
+  const ledger=j.progress.research_questions, runId=r?.run_id||"";
+  const {rows,residual,open,accepted}=decisionRows(ledger);
   if(active||!rows.length)return "";
   const resume=quoted(tp("button.resume"));
-  // With the finish requested, a question blocked only by spent reworks is decided: its objections go on record.
-  // A run that keeps such answers (keeps_spent_answers) decides it the same way, without the finish.
-  const residual=rows.filter(q=>(ledger.residual_finish||ledger.keeps_spent_answers)&&q.status==="blocked"&&!q.accepted_gap&&q.outcome==="audit_block");
-  const open=rows.filter(q=>q.status==="blocked"&&!q.accepted_gap&&!residual.includes(q)), accepted=rows.filter(q=>q.accepted_gap);
   const undecided=open.filter(q=>!q.retry_requested&&!q.access_gap_requested), retrying=open.filter(q=>q.retry_requested||q.access_gap_requested);
   // Accepted gaps alone are no decision; they only lead the card while the run stopped for the blocked questions.
   const code=stopInfo(j)?.code;
   if(!open.length&&!((accepted.length||residual.length)&&(!code||code==="research_questions_blocked")))return "";
-  const rounds=Number(j.progress.search_rounds||0), roundLimit=Number(j.progress.search_round_limit||0);
-  // Every web search loads new sources; at the run's source limit it ends before it starts.
-  const fetched=Number(ledger.source_attempt_count||0), sourceLimit=Number(j.progress.source_limit||0);
-  const sized=sizedRaise(j), advised=adviceRetries(ledger);
-  const full=sourceLimit>0&&fetched>=sourceLimit, spent=roundLimit>0&&rounds>=roundLimit, low=roundLimit>0&&roundLimit-rounds<=1;
-  const raiseAdvised=open.filter(q=>currentAdvice(q)?.recommendation==="raise_limit"&&["sources","search_rounds"].includes(q.advice.limit));
+  const {rounds,roundLimit,fetched,sourceLimit,sized,full,spent,low,raiseAdvised,raise}=limitsRaise(j,open);
+  const advised=adviceRetries(ledger);
   // Limits that stop the open questions: one sentence and one button that raises both to the sized values, adopts the
   // advisor's retries and resumes (D-155); deciding each question on its own stays below. Without advice to adopt the
   // button only raises. A run whose page knows only one of the two limits keeps the earlier notes.
   let limitsNote="", roundsNote="", sourcesNote="";
-  if((full||low||raiseAdvised.length)&&sized.sources&&sized.search_rounds){
+  if(raise){
     const values={count:open.length,sources:sized.sources-sourceLimit,rounds:sized.search_rounds-roundLimit};
     const sentence=full?t("decisions.raise.sources",{...values,used:fetched,limit:sourceLimit})
       :spent?t("decisions.raise.rounds",{...values,used:rounds,limit:roundLimit})
@@ -2957,6 +3035,8 @@ function replaceKeeping(el, html) {
   // The model list belongs to the kept choice, not to the one the markup was drawn with.
   const choice=document.getElementById("text-switch-choice"), model=document.getElementById("text-switch-model");
   if(choice&&model)model.hidden=choice.value!=="openrouter";
+  const claudeModel=document.getElementById("text-switch-claude-model");
+  if(choice&&claudeModel)claudeModel.hidden=!CLAUDE_SWITCHES.has(choice.value);
 }
 // Redraw a container only when its own markup changed. The browser adds open="" to an opened <details>,
 // so comparing with innerHTML would redraw, and close, it on every poll.
@@ -3373,6 +3453,7 @@ document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="trial-option"){trialChecked=!!event.target.checked;refreshAttachmentComposer();}
   if(event.target.id==="project-select")await selectProject(event.target.value);
   if(event.target.id==="text-switch-choice"&&$("text-switch-model"))$("text-switch-model").hidden=event.target.value!=="openrouter";
+  if(event.target.id==="text-switch-choice"&&$("text-switch-claude-model"))$("text-switch-claude-model").hidden=!CLAUDE_SWITCHES.has(event.target.value);
   if(event.target.id==="text-switch-choice"&&$("text-switch-cost"))$("text-switch-cost").hidden=!billedProvider(event.target.value);
   if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
@@ -3434,6 +3515,7 @@ document.addEventListener("click",event=>{
     if(button.dataset.removeAttachment){await removeAttachment(button.dataset.removeAttachment);return;}
     if(button.id==="new-project"||button.hasAttribute("data-new-project")){await selectProject("");return;}
     if(button.id==="project-overview"||button.dataset.action==="overview"){await showOverview();return;}
+    if(button.dataset.cardAction){await runCardAction(button);return;}
     if(button.dataset.openProject){await selectProject(button.dataset.openProject,null,button.dataset.openStep!==undefined?Number(button.dataset.openStep):null);return;}
     if(button.dataset.deleteProject){
       const p=overviewData.projects.find(p=>p.id===button.dataset.deleteProject);
@@ -3540,9 +3622,10 @@ document.addEventListener("click",event=>{
     }
     if(action==="text-switch"){
       const choice=button.dataset.choice||$("text-switch-choice")?.value||"claude_first";
-      const model=choice==="openrouter"?$("text-switch-model")?.value||"":"";
+      const model=switchModel(choice,!!button.dataset.choice);
       const cost=billedProvider(choice)?Number($("text-switch-cost")?.value||0):0;
-      const order=choice==="openrouter"?`OpenRouter · ${boot.text_catalog?.openrouter_models?.[model]||model}`:SWITCH_CHOICES[choice]||choice;
+      const order=choice==="openrouter"?`OpenRouter · ${boot.text_catalog?.openrouter_models?.[model]||model}`:
+        model?`${SWITCH_CHOICES[choice]||choice} · ${boot.text_catalog?.claude_models?.[model]||model}`:SWITCH_CHOICES[choice]||choice;
       await api(`/api/projects/${project.id}/approve`,{kind:"text_switch",run_id:button.dataset.runId,choice,...(model?{model}:{}),...(cost>0?{cost_usd:cost}:{})});
       if(button.dataset.thenResume&&!running()){await resumeFrom(button);notice(`${tp("act.switched",{order})} ${tp("act.carries_on")}`,"ok");return;}
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();

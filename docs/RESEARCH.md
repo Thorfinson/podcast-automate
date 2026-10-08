@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-08
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -227,7 +227,7 @@ Before the run stops for blocked sub-questions, each gets an advisor call (`rese
 
 ### Try again
 
-With **„Noch einmal versuchen“** (try again), a blocked sub-question gets the allowance of a new question at the next resume: ten steps and two web searches on top of those used, plus your optional hint as feedback to the model. Sub-questions that only waited for it start again afterwards. Each request covers exactly one new attempt; if the question blocks again, you decide again. Command line: `pla approve <project> --retry <task_id> [--hint "…"]`.
+With **„Noch einmal versuchen“** (try again), a blocked sub-question gets the allowance of a new question at the next resume: another working pass (15 steps, 10 in runs started before 2026-10-08) and two web searches on top of those used, plus your optional hint as feedback to the model. Sub-questions that only waited for it start again afterwards. Each request covers exactly one new attempt; if the question blocks again, you decide again. Command line: `pla approve <project> --retry <task_id> [--hint "…"]`.
 
 ### Accepting a gap
 
@@ -490,7 +490,7 @@ The project budgets apply too; default limits, what counts against them and whic
 
 Question work has fixed limits:
 
-- at most **10 read, search or answer decisions per working pass on a sub-question (also after reopening)** (`question_research.MAX_STEPS`);
+- at most **15 read, search or answer decisions per working pass on a sub-question (also after reopening)** (`question_research.MAX_STEPS`); the value is bound into the run's state at its start, so runs started before 2026-10-08 keep 10 (why: D-171);
 - at most **2 additional web searches per sub-question** (`question_research.MAX_WEB_ATTEMPTS`);
 - at most **2 reopenings after concrete objections of the overall review** (`question_research.MAX_REOPENINGS`).
 

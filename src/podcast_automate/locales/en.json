@@ -428,6 +428,7 @@
  "switch.current": "current",
  "switch.label": "Continue with",
  "switch.model_label": "OpenRouter model",
+ "switch.claude_model_label": "Claude model",
  "switch.cost_label": "Money limit of this run in USD",
  "switch.cost_placeholder": "Money limit USD",
  "common.apply": "Apply",
@@ -1094,6 +1095,8 @@
  "overview.more_label": "More actions: {topic}",
  "overview.delete": "Delete project",
  "overview.download": "Download the podcast",
+ "overview.action_done": "{topic} carries on.",
+ "overview.action_stale": "This project's state has changed in the meantime. The card now shows the current step.",
  "overview.trash": {
   "one": "Trash · {count} project",
   "other": "Trash · {count} projects"

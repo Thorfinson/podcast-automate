@@ -818,19 +818,30 @@ def approve_text_switch(root, run_id, choice="claude_first", *, model=None, cost
     saved = saved_text_generation(work)
     level = DEFAULT_CLAUDE_EFFORT
     config = load_project(root)
+
+    def claude_choice(provider):
+        """The Claude model a switch names (D-170: Orlagau, 2026-10-08, was to continue on Sonnet 5.5 while the
+        workspace default stayed Haiku), at its preset's level; without one the catalog default at xhigh."""
+        if model is not None and model not in CLAUDE_MODELS:
+            raise AppError("Ein Claude-Modell aus der Liste wählen.", code="invalid_text_switch")
+        chosen = model or DEFAULT_CLAUDE_MODEL
+        effort = next((p["reasoning_effort"] for p in TEXT_PRESETS if p["provider"] == provider and p["model"] == chosen),
+                      level) if model else level
+        return chosen, effort
+
     if choice in {"claude_first", "astra_first"}:
         selection = text_generation_settings(config, backend="auto", reasoning_effort=level)
         selection["prefer"] = "claude_code" if choice == "claude_first" else "codex_cli"
         selection["candidates"]["codex_cli"] = {"model": DEFAULT_CODEX_MODEL, "reasoning_effort": "xhigh"}
     elif choice == "claude":
-        selection = text_generation_settings(config, backend="claude_code", reasoning_effort=level)
+        chosen, effort = claude_choice("claude_code")
+        selection = text_generation_settings(config, backend="claude_code", model=chosen if model else None,
+                                             reasoning_effort=effort)
     elif choice == "astra":
         selection = text_generation_settings(config, backend="codex_cli", model=DEFAULT_CODEX_MODEL, reasoning_effort="xhigh")
     elif choice == "claude_api":
-        if model is not None and model not in CLAUDE_MODELS:
-            raise AppError("Ein Claude-Modell aus der Liste wählen.", code="invalid_text_switch")
-        selection = text_generation_settings(config, backend="claude_api", model=model or DEFAULT_CLAUDE_MODEL,
-                                             reasoning_effort=level)
+        chosen, effort = claude_choice("claude_api")
+        selection = text_generation_settings(config, backend="claude_api", model=chosen, reasoning_effort=effort)
     else:
         if model not in OPENROUTER_MODELS:
             raise AppError("Ein OpenRouter-Modell aus der Liste wählen.", code="invalid_text_switch")

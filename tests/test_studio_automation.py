@@ -170,6 +170,8 @@ class AllowanceTests(unittest.TestCase):
         write_json(self.root / "studio/job.json", {"id": "job1", "status": "blocked", "action": "resume", "message": spent,
                                                    "finished_at": now(), "run": run.model_dump(mode="json")})
         self.assertTrue(self.app.job(self.root)["fresh_attempts"])
+        # The overview's light view carries it as well: the card offers the fresh attempts as its one click (2026-10-08).
+        self.assertTrue(self.app.job(self.root, light=True)["fresh_attempts"])
         with patch.object(self.app, "start") as start:
             self.assertEqual(self.app.apply_allowances(), ["example"])
         self.assertEqual(start.call_args.args, ("example", {"action": "resume", "run_id": "run_s"}))

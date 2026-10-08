@@ -2527,6 +2527,24 @@ test('every text run offers "Weiter mit …", and a stop on a spent fixed subscr
   const paid={...job,text_switch_choice:'openrouter',text_generation:{provider:'openrouter',model:'anthropic/claude-fable-5.1'}};
   const paidPanel=app.run(`renderRunTextChoice(${JSON.stringify(paid)})`);
   assert.ok(paidPanel.includes('<option value="anthropic/claude-fable-5.1" selected>')&&!paidPanel.includes('OpenRouter-Modell" hidden'));
+  assert.ok(paidPanel.includes('id="text-switch-claude-model" aria-label="Claude-Modell" hidden'),'the Claude list waits for a Claude choice');
+});
+
+test('"Nur Claude" names its model, preselected with the run\'s own, and a hold card\'s switch keeps the default (D-170)',()=>{
+  const app=studio();
+  app.run(`boot.text_catalog={openrouter_models:{},claude_models:{'claude-haiku-5-5':'Claude Haiku 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'}};`);
+  const job={id:'j',status:'interrupted',action:'resume',run:{run_id:'run_o',kind:'research',stages:{}},text_switchable:true,
+    text_switch_choice:'claude',text_generation:{provider:'claude_code',model:'claude-haiku-5-5',reasoning_effort:'xhigh'}};
+  const panel=app.run(`renderRunTextChoice(${JSON.stringify(job)})`);
+  assert.ok(panel.includes('<select id="text-switch-claude-model" aria-label="Claude-Modell" >'),'shown for "Nur Claude"');
+  assert.ok(panel.includes('<option value="claude-haiku-5-5" selected>Claude Haiku 5.5</option>'));
+  assert.ok(panel.includes('<option value="claude-sonnet-5-5" >Claude Sonnet 5.5</option>'));
+  app.run(`document.getElementById('text-switch-claude-model').value='claude-sonnet-5-5';document.getElementById('text-switch-model').value='openai/gpt-6-astra';`);
+  assert.equal(app.run(`switchModel('claude')`),'claude-sonnet-5-5');
+  assert.equal(app.run(`switchModel('claude_api')`),'claude-sonnet-5-5');
+  assert.equal(app.run(`switchModel('claude',true)`),'','a hold card\'s "Mit Claude fortsetzen" keeps the default');
+  assert.equal(app.run(`switchModel('claude_first')`),'','the pair takes no model');
+  assert.equal(app.run(`switchModel('openrouter')`),'openai/gpt-6-astra');
 });
 
 test('the setup summary switches the Jev gap probe and script stops name Jev, not Gemini',()=>{
@@ -3970,4 +3988,52 @@ test('a podcast gets a new version from its card menu, opens it, and offers the 
   assert.ok(page.includes('id="seed-corpus" checked')&&page.includes('Die 42 Quellen aus Version 1 als Startbibliothek anbieten'));
   app.run('project.version.library=null');
   assert.ok(!app.run('renderResearch()').includes('seed-corpus'),'without a library there is nothing to offer');
+});
+
+test('a stopped project card offers the step its page recommends as one click, with looking first beside it',()=>{
+  // 2026-10-08: every stopped run took "Ansehen" and then "Fortsetzen" on its page.
+  const app=studio(), run={run_id:'run_r',kind:'research',stages:{}};
+  const card=job=>app.run(`overviewCardInner(${JSON.stringify({id:'p',topic:'Orlagau',episodes:[],job})})`);
+  let html=card({id:'j',status:'interrupted',action:'resume',run});
+  assert.ok(html.includes('<button class="small" data-card-action="resume" data-card-project="p" data-run-id="run_r">Fortsetzen</button>'));
+  assert.ok(html.includes('<button class="secondary small" data-open-project="p"'),'opening the project stays one click beside it');
+  assert.ok(!card({id:'j',status:'running',action:'resume',run}).includes('data-card-action'),'a running project has no step to take');
+  assert.ok(!card({id:'j',status:'blocked',action:'resume',stop:{code:'invalid_key'},run}).includes('data-card-action'),'a key is typed on its page');
+  html=card({id:'j',status:'blocked',action:'resume',stop:{code:'invalid_model_output'},run,fresh_attempts:true});
+  assert.ok(html.includes('data-card-action="fresh"')&&html.includes('Mit neuen Anläufen fortsetzen'));
+  html=card({id:'j',status:'blocked',action:'resume',stop:{code:'invalid_model_output'},run,fresh_attempts:false});
+  assert.ok(html.includes('data-card-action="resume"'),'without fresh attempts the server would accept, the stop resumes as the header offers');
+  assert.ok(!card({id:'j',status:'blocked',action:'resume',stop:{code:'invalid_model_output'},run}).includes('data-card-action'),
+    'a server that does not say whether it takes fresh attempts leaves the choice to the page');
+  html=card({id:'j',status:'blocked',action:'resume',stop:{code:'research_budget_exhausted'},run,progress:{model_call_limit:1200,model_calls:1200}});
+  assert.ok(html.includes('data-card-action="calls"')&&html.includes('Aufruflimit auf 1250 erhöhen und fortsetzen'),'the raise the stop card offers, with its number');
+});
+
+test('the card adopts the advisor\'s retries with their hints and resumes, as the decision card does',async()=>{
+  const app=studio();
+  const ledger={phase:'blocked',closed:13,budget_projection:{used:600,limit:1200,remaining:600,minimum_remaining_calls:2,expected_calls_per_task:10},
+    questions:[{id:'q1',question:'Eins?',status:'blocked',outcome:'search_block',retries:0,auto_retries:1,advice:{key:'0.1',recommendation:'retry',hint:'Patze lesen.'}},
+      {id:'q2',question:'Zwei?',status:'blocked',outcome:'search_block',retries:0,auto_retries:0,advice:{key:'0.0',recommendation:'accept_gap'}}]};
+  const p={id:'orla',topic:'Orlagau',episodes:[],job:{id:'j',status:'blocked',action:'resume',run:{run_id:'run_o',kind:'research',stages:{}},
+    progress:{phase:'research',research_questions:ledger}}};
+  app.run(`overviewData={projects:[${JSON.stringify(p)}],trash:[]};overviewPage=true;`);
+  const next=app.run('cardNextAction(overviewData.projects[0])');
+  assert.equal(next.kind,'adopt');
+  assert.equal(next.label,'Empfehlungen übernehmen und fortsetzen');
+  assert.deepEqual(JSON.parse(JSON.stringify(next.retries)),[{id:'q1',hint:'Patze lesen.'}],'only the retry advice, with its hint');
+  const unhinted=structuredClone(p);delete unhinted.job.progress.research_questions.questions[0].advice.hint;
+  assert.equal(app.run(`cardNextAction(${JSON.stringify(unhinted)})`),null,'rows without hints (an older server) leave the adoption to the page');
+  // A card drawn before the state changed does nothing and says so.
+  await assert.rejects(app.run(`runCardAction({dataset:{cardAction:'resume',cardProject:'orla',runId:'run_o'}})`),/Stand dieses Projekts/);
+  app.run(`overviewData={projects:[${JSON.stringify(p)}],trash:[]};`);
+  app.requests.length=0;
+  await app.run(`runCardAction({dataset:{cardAction:'adopt',cardProject:'orla',runId:'run_o'}})`);
+  const posted=app.requests.filter(r=>r.options?.method==='POST').map(r=>[r.path,JSON.parse(r.options.body)]);
+  assert.deepEqual(posted,[['/api/projects/orla/approve',{run_id:'run_o',kind:'retry',task_id:'q1',hint:'Patze lesen.'}],
+    ['/api/projects/orla/start',{action:'resume',run_id:'run_o'}]]);
+  // Where the source limit stops the questions, the card raises it to the decision card's sized value first.
+  const limited=structuredClone(p);Object.assign(limited.job.progress,{source_limit:200,search_round_limit:85,search_rounds:20});limited.job.progress.research_questions.source_attempt_count=200;
+  const raise=app.run(`cardNextAction(${JSON.stringify(limited)})`);
+  assert.equal(raise.kind,'raise_adopt');
+  assert.ok(raise.sources>200&&raise.searchRounds>85,'both limits rise as on the decision card');
 });

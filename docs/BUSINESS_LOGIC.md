@@ -2,7 +2,7 @@
 title: Business logic
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-08
 covers:
   - src/podcast_automate/provider_pool.py
   - src/podcast_automate/subscriptions.py
@@ -202,7 +202,8 @@ on the command line with
 
 - **Claude, else Astra** (`claude`) and **Astra, else Claude** (`astra`): the subscription asked first answers until
   its quota is spent, then the other takes over.
-- **Only Claude** (`claude-only`) and **only Astra** (`astra-only`): the job stays on one subscription.
+- **Only Claude** (`claude-only`) and **only Astra** (`astra-only`): the job stays on one subscription; only Claude may
+  name its model (`--switch-model`, Studio: the Claude model list), such as Sonnet 5.5 (D-170).
 - **OpenRouter** (`openrouter`): one model from the list (`--switch-model`), paid per call, with the key; web searches
   stay on the subscriptions, because OpenRouter has no search tools, unless the run searches through Perplexity.
 - **Claude on the Anthropic API key** (`claude-api`): Claude on your key, Haiku 5.5 or a Claude model given with
@@ -211,8 +212,9 @@ on the command line with
 Rules of a switch (why: D-024):
 
 - Astra works over the Codex subscription at `xhigh`; Claude, on the subscription or the key, at `xhigh` with the
-  catalog default Haiku 5.5 (D-166), even when the job started with Opus (on the key `--switch-model` may name another Claude
-  model).
+  catalog default Haiku 5.5 (D-166), even when the job started with Opus. A Claude model the switch names (only
+  Claude or the key) works at its preset's level: on the subscription Sonnet 5.5 at `high`, Haiku 5.5 and Opus 5.5 at
+  `xhigh`; on the key Sonnet 5.5 and Opus 5.5 at `high` (`run_budget.approve_text_switch`, D-170).
 - A switch to a billed provider (OpenRouter, `claude-api`) needs the run's [money limit](#money-limit): `--cost-usd`
   (Studio: the cost field next to the choice) sets it with the switch; without one the switch is refused with
   `cost_limit_required`.

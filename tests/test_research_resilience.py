@@ -130,6 +130,8 @@ class RetryRequestTests(WorkflowCase):
         self.assertEqual(row["step"], used_steps, "the saved step folders stay valid")
         self.assertEqual((row["extra_steps"], row["extra_web_attempts"]),
                          (engine.state["limits"]["steps_per_question"], engine.state["limits"]["web_attempts"]))
+        # A run started now takes 15 steps per working pass into its state (D-171); one started before keeps its 10.
+        self.assertEqual(engine.state["limits"]["steps_per_question"], 15)
         self.assertIn("Note from the editor: Read the original paper", row["feedback"])
         self.assertEqual(engine.state["tasks"]["task_follow"]["status"], "pending")
         self.assertEqual(engine.adopt_retries(), [], "one request is adopted once")
