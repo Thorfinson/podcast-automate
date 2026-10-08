@@ -229,10 +229,11 @@ projects:
 | **„Ohne Rückfrage“** (without asking) | See [Pre-approvals](#pre-approvals). |
 | **„Limits“** | Model calls per run, sources and search rounds per research, the time limit of one model call, and **„Kostengrenze je Lauf in USD“** (money limit per run in USD), required for a text model billed to a key and for the web search through Perplexity: saving either without it is refused with `cost_limit_required` ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
 | **„Claude“** | The switch for bought extra usage ([Studio settings](CONFIGURATION.md#studio-settings)). |
-| **„OpenRouter-Key“** | The key for OpenRouter text, Gemini audio through OpenRouter and Jev: **„Key hinterlegen“** (store key), **„Sitzungs-Key entfernen“** (remove session key); handling in [Secrets and keys](SECURITY.md#secrets-and-keys). |
+| **„OpenRouter-Key“** | The key for OpenRouter text, Gemini audio through OpenRouter and Jev: **„Key hinterlegen“** (store key), **„Key entfernen“** (remove key). Every key panel says where its key comes from (the credential store, this session only, or an environment variable of the server), and one note above them names the store; handling in [Keys in the credential store](SECURITY.md#keys-in-the-credential-store). |
 | **„Google-Key“** | The key for Gemini audio through Google and the conversation samples, with the same two buttons; handling in [Google key in the Studio](SECURITY.md#google-key-in-the-studio). |
 | **„Anthropic-Key“** | The key for Claude on your Anthropic API key (`claude_api`), with the same two buttons; every call is billed to your Anthropic account. Handling in [Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio). |
 | **„Perplexity-Key“** | The key for the web search through Perplexity, with the same two buttons; only the search queries go to Perplexity, and every request is billed to your Perplexity account. Handling in [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio). |
+| **„CORE-Key“** | CORE's free key for free copies of blocked sources, with the same two buttons; only the title or DOI of the work goes to CORE. Handling in [CORE key in the Studio](SECURITY.md#core-key-in-the-studio). |
 
 Below the title, links jump to each section, and **„Keys“** shows whether the OpenRouter, the Google, the Anthropic
 and the Perplexity key are there („✓ hinterlegt“ or „fehlt“), entered in the Studio or taken from the server's
@@ -428,6 +429,21 @@ unanswered message is replaced, not repeated. When the conversation has used up 
 **„Projekt löschen“** (delete project) on an overview card moves a resting project to `.studio/trash/`; the overview's
 **„Papierkorb“** (trash) restores it with **„Wiederherstellen“** (restore). Running projects cannot be deleted.
 
+### New versions
+
+**„Neue Version anlegen“** (start a new version) in an overview card's **⋯** menu makes a podcast again from its
+inputs with the current pipeline (`pla new-version <project>` from the command line; why: D-168). After a confirmation a
+new project opens beside the old one, with the old one's brief, attachments, provided works (their old questions
+cleared), other local sources, style notes, spoken forms and text, audio, execution and Jev choices; a German project
+without a Jev choice gets today's default. Runs, research, scripts, recordings, exports, the setup conversation and the
+project's own pre-approvals stay behind. The old version stays as it was and may keep running.
+
+Versions are numbered per podcast in the project's `version.json`; from version 2 on the number stands beside the topic
+in the overview, the sidebar and the project picker (**„Version 2“**). The newest completed research run's sources come
+along: until the new version has research of its own, its research page offers them as a starting library
+(**„Die … Quellen aus Version 1 als Startbibliothek anbieten“**, preselected); see
+[Starting library](RESEARCH.md#starting-library).
+
 ### WebMCP
 
 When the browser offers WebMCP (`document.modelContext`), the page registers two optional tools:
@@ -534,7 +550,8 @@ yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_L
   and **„Jev ausschalten“** (switch Jev off) switch Jev in this project's gap probe on and off; see
   [Gap probe](RESEARCH.md#gap-probe).
 - **Starting library.** „Recherche neu beginnen“ (start research anew) preselects offering the previous research's
-  sources as a starting library; see [Starting and resuming](RESEARCH.md#starting-and-resuming).
+  sources as a starting library, and so does the first research start of a [new version](#new-versions) for the old
+  version's sources; see [Starting and resuming](RESEARCH.md#starting-and-resuming).
 
 ### Table-of-contents corrections
 
@@ -552,7 +569,7 @@ runs, accepts no new ones meanwhile, ends itself and restarts in the background 
 without a browser window. The new server takes over queued recordings and scheduled resumes; the page reconnects by
 itself.
 
-An OpenRouter, Google, Anthropic or Perplexity key stored in the Studio lived only in the old server's memory and must be entered again
+The new server loads the keys from the credential store (D-167). Only on a system without one, an OpenRouter, Google, Anthropic or Perplexity key stored in the Studio lived only in the old server's memory and must be entered again
 ([Times and connection](#times-and-connection)); until then queued Gemini episodes show „wartet auf den Google-Key“
 or „wartet auf den OpenRouter-Key“ (waiting for the key of their route) instead of waiting for a free slot.
 
@@ -748,7 +765,10 @@ zusammenstellen“** (rebuild) takes the newest recording's chapters without a n
 **„Begleitmaterial für den Podcast“** (the podcast's companion kit) below it does the same for the whole podcast:
 the short description and the podcast description for the show page, each with **„Kopieren“**, how many episodes the
 transcript covers and how many of them are recorded, and how many sources the list holds; transcript and sources lie
-in `publish/` and in the ZIP. **„Begleitmaterial für den Podcast erstellen“** makes it with one text-model call,
+in `publish/` and in the ZIP. **„Transkript herunterladen“** and **„Quellen herunterladen“** fetch `transcript.md` and
+`sources.md` on their own, without the MP3s of the ZIP (`/download/<project>/kit/<file>`, named
+`Podcasttitel - transcript.md`). The route serves only the four files the ZIP carries and only while the kit is
+current; otherwise it refuses with `missing_kit`. **„Begleitmaterial für den Podcast erstellen“** makes it with one text-model call,
 **„Neu zusammenstellen“** takes the newest scripts and recordings without a new call, **„Neu formulieren“** asks
 again. After a new recording or script the panel says the kit is outdated and offers the rebuild (why: D-165).
 

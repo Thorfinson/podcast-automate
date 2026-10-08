@@ -294,13 +294,30 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertIn("claude update", str(error.exception))
         self.assertEqual(self.adapter.cli_version(), "2.1.283")
 
+    def test_haiku_5_5_needs_the_cli_that_lists_it(self):
+        # CLI 2.1.289 and 2.1.292 have no catalog entry for Haiku 5.5; 2.1.293 has (2026-10-07).
+        for reported, refused in (("2.1.292", True), ("2.1.293", False)):
+            haiku = ClaudeCodeAdapter(RuntimeSettings(text_timeout_seconds=4), model="claude-haiku-5-5",
+                                      reasoning_effort="xhigh")
+            answer = type("Result", (), {"returncode": 0, "stdout": f"{reported} (Claude Code)\n"})()
+            with self.subTest(cli=reported), patch.object(haiku, "command", return_value=fake_cli(self.root)), \
+                    patch("podcast_automate.claude_code.run_process", return_value=answer):
+                if refused:
+                    with self.assertRaises(AppError) as error:
+                        haiku.cli_version()
+                    self.assertEqual(error.exception.code, "claude_version")
+                    self.assertIn("2.1.293", str(error.exception))
+                else:
+                    self.assertEqual(haiku.cli_version(), "2.1.293")
+
     def test_the_output_cap_is_the_one_the_cli_lists_for_the_model(self):
         # CLI 2.1.286 lists Opus 5.5 and Sonnet 5.5 with 128 000 output tokens; a blanket 64 000 cut the Transformer
-        # outline of 2026-10-02. Other model ids keep 64 000, which the fake CLI asserts for claude-opus-5.
+        # outline of 2026-10-02. CLI 2.1.293 lists Haiku 5.5 with the same. Other model ids keep 64 000, which the
+        # fake CLI asserts for claude-opus-5.
         self.assertEqual({model: claude_code.claude_environment(model)["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]
-                          for model in ("claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", None)},
-                         {"claude-sonnet-5-5": "128000", "claude-opus-5-5": "128000", "claude-opus-5": "64000",
-                          None: "64000"})
+                          for model in ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", None)},
+                         {"claude-haiku-5-5": "128000", "claude-sonnet-5-5": "128000", "claude-opus-5-5": "128000",
+                          "claude-opus-5": "64000", None: "64000"})
         sonnet = ClaudeCodeAdapter(RuntimeSettings(text_timeout_seconds=4), model="claude-sonnet-5-5", reasoning_effort="high")
         caps = []
 

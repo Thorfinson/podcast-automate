@@ -483,6 +483,53 @@ class PodcastKitTests(KitCase):
             with zipfile.ZipFile(archive) as bundle:
                 self.assertFalse(any(name.startswith("Begleitmaterial Podcast/") for name in bundle.namelist()))
 
+    def test_the_studio_serves_the_current_kits_transcript_and_sources_on_their_own(self):
+        """The user's report of 2026-10-07: the page offered the two descriptions only, while the transcript lay in
+        publish/ and in the ZIP with every MP3. The route serves the files the ZIP carries, while the ZIP would."""
+        import http.client
+        import shutil
+        import tempfile
+        import threading
+        from pathlib import Path
+        from urllib.parse import unquote
+        from podcast_automate.studio import make_server
+        self.record()
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool([dict(self.ANSWER)], [])):
+            build_podcast_kit(self.root)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        workspace = Path(temp.name).resolve()
+        shutil.copytree(self.root, workspace / "projects/example")
+        self.root = workspace / "projects/example"
+        server = make_server(workspace, 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def get(name):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request("GET", f"/download/example/kit/{name}")
+            response = connection.getresponse()
+            result = response.status, response.read(), dict(response.getheaders())
+            connection.close()
+            return result
+
+        status, body, headers = get("transcript.md")
+        self.assertEqual((status, body), (200, (self.root / "publish/transcript.md").read_bytes()))
+        self.assertEqual(body.decode("utf-8"), self.transcript(timed=True))
+        self.assertEqual(headers["Content-Type"], "text/markdown; charset=utf-8")
+        self.assertTrue(unquote(headers["Content-Disposition"]).endswith("Test topic - transcript.md"))
+        status, body, headers = get("sources.md")
+        self.assertEqual((status, body), (200, (self.root / "publish/sources.md").read_bytes()))
+        self.assertEqual(get("description.txt")[2]["Content-Type"], "text/plain; charset=utf-8")
+        for name in ("kit.json", "descriptions.json", "..%2Fproject.yaml"):
+            self.assertNotEqual(get(name)[0], 200, name)
+        self.assertEqual(json.loads(get("kit.json")[1])["code"], "missing_kit")
+        # A newer recording is not covered yet: like the ZIP, the route leaves the old transcript out.
+        self.record("run_20261006_130000_000000_rec00002")
+        status, body, _ = get("transcript.md")
+        self.assertEqual((status, json.loads(body)["code"]), (400, "missing_kit"))
+
     def test_an_edited_script_stops_the_kit_and_a_podcast_without_a_published_script_has_none(self):
         script = read_yaml(self.root / "episodes/ep_001/script.yaml")
         script["segments"][0]["text"] = "Was vergleicht dieses Modell eigentlich?"

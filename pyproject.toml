@@ -42,7 +42,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Education",
 ]
-dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7", "psutil>=7,<8"]
+dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7", "psutil>=7,<8", "keyring>=25.7,<26"]
 
 [project.urls]
 Homepage = "https://github.com/Thorfinson/podcast-automate"

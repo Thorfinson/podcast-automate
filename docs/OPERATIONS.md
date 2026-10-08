@@ -44,6 +44,7 @@ on macOS and Linux. All commands: [Commands](PRODUCT.md#commands); in daily use 
 | Start the Studio | `Podcast-Studio.cmd` (Windows), `Podcast-Studio.command` (macOS) or `sh Podcast-Studio.sh`; [Starting the Studio](STUDIO.md#starting-the-studio) |
 | Update | [Update the Studio](#update-the-studio) |
 | Try the whole pipeline small and cheap | `pla init <project> --trial` (a sample topic without `--topic`); [Trial project](BUSINESS_LOGIC.md#trial-project) |
+| Make a podcast again with the current pipeline | „Neue Version anlegen“ in its overview card's ⋯ menu or `pla new-version <project>`; [New versions](STUDIO.md#new-versions) |
 | Check subscriptions and quota | `pla doctor --skip-tts`, `pla quota`; [Check the subscriptions](#check-the-subscriptions) |
 | Set the OpenRouter key | Studio key field, `--api-key` or `OPENROUTER_API_KEY`; [Secrets and keys](SECURITY.md#secrets-and-keys) |
 | Run without a subscription | Claude Code with your Anthropic API key, or an OpenRouter model with the Perplexity search, each with a money limit; [Claude on your Anthropic API key](#claude-on-your-anthropic-api-key), [Research with OpenRouter and Perplexity](#research-with-openrouter-and-perplexity) |
@@ -136,8 +137,8 @@ claude auth status --json
 .\.venv\Scripts\pla.exe text-probe .\projects\energy-models --backend claude_code
 ```
 
-The adapter is verified against Claude Code 2.1.92 (2026-09-19), 2.1.283 (2026-09-26) and 2.1.284 (2026-09-29)
-(`claude_code.py`). Minimum CLI version per model: [Providers and models](PRODUCT.md#providers-and-models).
+The adapter is verified against Claude Code 2.1.92 (2026-09-19), 2.1.283 (2026-09-26) and 2.1.284 (2026-09-29),
+and its Haiku 5.5 entries against the model catalog of 2.1.293 (2026-10-07) (`claude_code.py`). Minimum CLI version per model: [Providers and models](PRODUCT.md#providers-and-models).
 
 ### Claude on your Anthropic API key
 
@@ -145,7 +146,7 @@ Without a subscription, Claude Code can run on your own Anthropic API key (`clau
 research included, is billed to your Anthropic account:
 
 1. Install Claude Code (the same minimum versions); no `claude auth login` is needed.
-2. Give the key to the Studio under **„Anthropic-Key“** on the settings page (kept in memory until the next restart),
+2. Give the key to the Studio under **„Anthropic-Key“** on the settings page (kept in the credential store),
    or set `ANTHROPIC_API_KEY` in the environment of the Studio or of `pla`; `pla research`, `script` and `resume` also
    ask for it hidden with `--api-key` ([Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio)).
 3. Set a money limit: **„Kostengrenze je Lauf in USD“** under „Limits“ on the settings page, or
@@ -169,8 +170,8 @@ Without any subscription and without Claude Code, an OpenRouter model can do all
 when the run searches the web through Perplexity's Search API (why: D-151). OpenRouter bills the model calls,
 Perplexity every search request:
 
-1. Give the Studio the **„OpenRouter-Key“** and the **„Perplexity-Key“** on the settings page (kept in memory until
-   the next restart), or set `OPENROUTER_API_KEY` and `PERPLEXITY_API_KEY` in the environment of the Studio or of
+1. Give the Studio the **„OpenRouter-Key“** and the **„Perplexity-Key“** on the settings page (kept in the
+   credential store), or set `OPENROUTER_API_KEY` and `PERPLEXITY_API_KEY` in the environment of the Studio or of
    `pla` ([Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio)).
 2. Set a money limit (**„Kostengrenze je Lauf in USD“**, as above); it covers the OpenRouter calls and the
    Perplexity requests together.
@@ -521,8 +522,8 @@ program paths such as `runtime.codex_executable` where needed.
    **„Neu starten, sobald nichts läuft“** (restart once nothing is running); see
    [Stopping and resuming](STUDIO.md#stopping-and-resuming). Alternatively, once the running job has finished, click
    **„Studio beenden“** (stop the Studio) and start it again.
-4. Enter an OpenRouter key that was kept only in the Studio again; it lived in the old server's memory
-   ([Secrets and keys](SECURITY.md#secrets-and-keys)). Until then, queued Gemini episodes show
+4. Only on a system without a credential store: enter an OpenRouter key that was kept only in the Studio again; it
+   lived in the old server's memory ([Keys in the credential store](SECURITY.md#keys-in-the-credential-store)). Until then, queued Gemini episodes show
    „wartet auf den OpenRouter-Key“.
 
 A failed restart leaves its reason in `.studio/relaunch.log` ([Log files](#log-files)).

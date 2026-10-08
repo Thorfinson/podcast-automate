@@ -52,7 +52,7 @@ the processing you commissioned:
 
 What never leaves the computer, or never gets in:
 
-- **Keys never go into prompts.** A chat message or upload (name or text) containing a stored session key, an
+- **Keys never go into prompts.** A chat message or upload (name or text) containing a key stored in the Studio (the CORE key included), an
   OpenRouter key (`sk-or-…`), an Anthropic key (`sk-ant-…`), a Perplexity key (`pplx-…`) or a Google key (`AIza…`),
   and an OpenRouter prompt, a prompt of Claude on the API key, a Perplexity search query or Gemini text containing the
   key in use, are refused with `credential_in_prompt`; the editorial partner never sees a key.
@@ -108,14 +108,35 @@ What never leaves the computer, or never gets in:
 - The quota store `~/.podcast-automate/subscriptions.json` never holds credentials. The login check keeps only whether
   you are logged in, the login method, the subscription type and the CLI version, no e-mail address or IDs.
 
+### Keys in the credential store
+
+Every key entered in the Studio (OpenRouter, Google, Anthropic, Perplexity, CORE) is kept across restarts in the
+operating system's credential store (why: D-167):
+
+- `pla studio` opens the store through the `keyring` package (`key_store.Vault`): on Windows the Credential Manager,
+  on macOS the login keychain, on Linux the Secret Service. Each key is one entry under the service
+  `podcast-automate` with its kind (`openrouter`, `google`, `anthropic`, `perplexity`, `core`) as the user name,
+  encrypted with your login. You find and delete them there too (Windows: „Anmeldeinformationsverwaltung“ →
+  „Windows-Anmeldeinformationen“ → „Generische Anmeldeinformationen“).
+- At its start the server loads every stored key into memory (`Studio.load_stored_keys`); from there a key reaches a
+  worker as before, through its standard input. **„Key entfernen“** (remove key) removes the entry as well.
+- The settings page says where each key comes from: the store, this session only, or an environment variable of the
+  server (`Studio.key_source`). A system without a store, or a store that refuses, keeps the keys in memory only, gone
+  after a restart, and the page says so. A key that could not be stored is also removed from the store, so an older
+  one cannot come back.
+- Any program running under your account can read the store, as it can read your environment variables; the store
+  protects the keys on the disk and from other accounts. A key entered from another device in the home network
+  (`pla studio --lan`) crosses the network unencrypted: enter keys at the computer that runs the Studio.
+- A Studio built by a test or by `make_server` without a store never opens the system's own.
+
 ### OpenRouter key in the Studio
 
 - The key is entered on the **„Einstellungen“** (settings) page ([STUDIO](STUDIO.md#settings-page)) or in a hold
   card that asks for it, and serves OpenRouter text, Gemini audio through OpenRouter and Jev.
-- It stays in the local Studio server's memory and reaches a worker through its standard input, not through process
-  arguments; it is stored neither in project files nor in browser storage.
-- After a Studio restart it must be entered again, unless the server has `OPENROUTER_API_KEY` in its environment.
-  **„Sitzungs-Key entfernen“** (remove session key) removes only the key entered in the Studio, not that one.
+- It stays in the credential store and the local Studio server's memory and reaches a worker through its standard
+  input, not through process arguments; it is stored neither in project files nor in browser storage.
+- Without a store it must be entered again after a Studio restart, unless the server has `OPENROUTER_API_KEY` in its
+  environment. **„Key entfernen“** (remove key) removes only the key entered in the Studio, not that one.
 - The key can be exchanged at any time; a rotated key needs no new run.
 - A worker hands the key on only where OpenRouter is used: to a text job while it works with OpenRouter, to runs that
   use the Jev gap probe, to Gemini recordings and to new Gemini voice samples.
@@ -124,9 +145,9 @@ What never leaves the computer, or never gets in:
 
 The Google key serves Gemini audio through Google and the conversation samples (why: D-138):
 
-- It is entered under **„Google-Key“** on the settings page or in a hold card that asks for it, kept in the Studio
-  server's memory only (or read from `GEMINI_API_KEY` in its environment), and handled like the OpenRouter key:
-  standard input to a worker, never in project files or browser storage, gone after a restart.
+- It is entered under **„Google-Key“** on the settings page or in a hold card that asks for it, kept in the
+  credential store and the Studio server's memory (or read from `GEMINI_API_KEY` in its environment), and handled
+  like the OpenRouter key: standard input to a worker, never in project files or browser storage.
 - A worker receives it only for audio, resume and the connection check; the conversation sample is spoken by the
   Studio server itself.
 - Google's Gemini API terms distinguish unpaid use, whose requests Google may use to improve its products, from paid
@@ -138,9 +159,9 @@ The Google key serves Gemini audio through Google and the conversation samples (
 The Anthropic key serves Claude on your API key (`claude_api`) and nothing else (why: D-145):
 
 - It is entered under **„Anthropic-Key“** on the settings page, in a hold card that asks for it or in the note
-  **„Anthropic-Key fehlt“** (Anthropic key missing), kept in the Studio server's memory only (or read from
-  `ANTHROPIC_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a worker, never in
-  project files or browser storage, gone after a restart.
+  **„Anthropic-Key fehlt“** (Anthropic key missing), kept in the credential store and the Studio server's memory (or
+  read from `ANTHROPIC_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a worker,
+  never in project files or browser storage.
 - A worker hands it only to pools that run Claude on the key (`studio_worker.text_key`,
   `provider_pool.use_anthropic_key`): to a text job while it works with `claude_api`, and to the expression tags and
   the companion kit of such a run. A subscription call never receives it.
@@ -152,13 +173,25 @@ The Anthropic key serves Claude on your API key (`claude_api`) and nothing else 
 The Perplexity key serves the web search through Perplexity and nothing else (why: D-151):
 
 - It is entered under **„Perplexity-Key“** on the settings page, in a hold card that asks for it or in the note
-  **„Perplexity-Key fehlt“** (Perplexity key missing), kept in the Studio server's memory only (or read from
-  `PERPLEXITY_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a worker, never in
-  project files or browser storage, gone after a restart.
+  **„Perplexity-Key fehlt“** (Perplexity key missing), kept in the credential store and the Studio server's memory
+  (or read from `PERPLEXITY_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a
+  worker, never in project files or browser storage.
 - A worker holds it for the pools of runs that search through Perplexity (`provider_pool.use_worker_key`); no text
   model, subscription or OpenRouter request ever receives it, only the search requests to Perplexity.
 - Every search request is billed to your Perplexity account; the run's [money limit](BUSINESS_LOGIC.md#money-limit)
   bounds what a run may spend.
+
+### CORE key in the Studio
+
+CORE's free key serves the search for a free copy of a work whose own address refused the download, and nothing
+else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-archives); why: D-167):
+
+- It is entered under **„CORE-Key“** on the settings page, kept in the credential store and the Studio server's
+  memory (or read from `PLA_CORE_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a
+  worker, never in project files or browser storage; a chat message containing it is refused with
+  `credential_in_prompt`.
+- A worker holds it for the source search (`sources.use_core_key`); it outranks `PLA_CORE_API_KEY`. Only the title or
+  DOI of the work goes to CORE.
 
 ### OpenRouter key on the command line
 
@@ -184,7 +217,7 @@ The Perplexity key serves the web search through Perplexity and nothing else (wh
   (`openrouter.NoRedirect`); an answer that contains the key is not used (`credential_in_response`).
 - Claude on the API key hands the key to the Claude Code process only in its environment, never as an argument; an
   answer or CLI output that contains the key is not stored (`credential_in_response`).
-- A source fetch that carries a service key (CORE's free key, `PLA_CORE_API_KEY`) follows a redirect only on the same
+- A source fetch that carries a service key (CORE's free key) follows a redirect only on the same
   host and never from https to http (`sources.PublicRedirect`); otherwise it aborts with `source_download_failed`, so
   the key never reaches another server. (why: D-113)
 

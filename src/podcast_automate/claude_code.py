@@ -5,7 +5,7 @@ Same contract as :class:`CodexAdapter`: ``structured(prompt, output_type, direct
 validated object and public metadata. The CLI runs non-interactively with ``--output-format
 stream-json``; the last ``result`` line carries ``structured_output``. Verified against Claude Code
 2.1.92 on 2026-09-19 (``docs/specs/2026-09-19-claude-backend-plan.md``, Phase 0), against 2.1.283 with Opus 5.5 on
-2026-09-26 and against 2.1.284 with Sonnet 5.5 on 2026-09-29.
+2026-09-26, against 2.1.284 with Sonnet 5.5 on 2026-09-29 and against 2.1.293's model catalog for Haiku 5.5 on 2026-10-07.
 """
 from __future__ import annotations
 
@@ -40,8 +40,9 @@ API_ENV_DROPPED = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OA
                    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
 # Opus 5.5 and the level xhigh are refused by older CLIs (2.1.92 names 2.1.280 as the minimum).
 MINIMUM_CLI_VERSION = (2, 1, 280)
-# Models a newer CLI brings: 2.1.283 has no catalog entry for Sonnet 5.5, 2.1.284 has (2026-09-29).
-MODEL_MINIMUM_CLI = {"claude-sonnet-5-5": (2, 1, 284)}
+# Models a newer CLI brings: 2.1.283 has no catalog entry for Sonnet 5.5, 2.1.284 has (2026-09-29); 2.1.289 and
+# 2.1.292 have none for Haiku 5.5, 2.1.293 has (2026-10-07).
+MODEL_MINIMUM_CLI = {"claude-sonnet-5-5": (2, 1, 284), "claude-haiku-5-5": (2, 1, 293)}
 # Windows accepts 32 767 characters per command line, the terminating null included; the schema travels as one
 # argument. Both limits count the line as Windows receives it: every '"' of the schema arrives as '\"', about 16 % of
 # a schema's characters (review 2026-10-02: the raw length let a schema pass that the escaped line exceeded).
@@ -55,8 +56,9 @@ MAX_BUDGET_USD = 12.0
 # the context window, the CLI retries with a reduced cap by itself.
 MAX_OUTPUT_TOKENS = 64_000
 # Models the CLI lists with a higher cap: 2.1.286 gives Opus 5.5 and Sonnet 5.5 128 000 output tokens (default and
-# upper bound). The 64 000 above halved that and cut the 18-episode Transformer outline of 2026-10-02.
-MODEL_OUTPUT_TOKENS = {"claude-opus-5-5": 128_000, "claude-sonnet-5-5": 128_000}
+# upper bound). The 64 000 above halved that and cut the 18-episode Transformer outline of 2026-10-02. 2.1.293 lists
+# Haiku 5.5 with the same 128 000.
+MODEL_OUTPUT_TOKENS = {"claude-opus-5-5": 128_000, "claude-sonnet-5-5": 128_000, "claude-haiku-5-5": 128_000}
 # Claude Opus 5 has a 200 000-token window. Research prompts (German prose plus JSON) measured
 # about 1.6 characters per token, so this cap keeps a call inside the window with room for the
 # system prompt and the answer. A larger prompt is refused before the CLI starts.
@@ -64,8 +66,8 @@ PROMPT_LIMIT_CHARS = 300_000
 BASE_WINDOW_TOKENS = 200_000
 # Windows that differ from Opus 5's. CLI 2.1.283 lists Opus 5.5 with a native 1 000 000-token window
 # (no [1m] suffix, no beta flag); on this run's research prompts it measured 2.1 to 2.4 characters per token.
-# CLI 2.1.284 lists Sonnet 5.5 with the same native window and 128 000 output tokens.
-CONTEXT_WINDOW_TOKENS = {"claude-opus-5-5": 1_000_000, "claude-sonnet-5-5": 1_000_000}
+# CLI 2.1.284 lists Sonnet 5.5 with the same native window and 128 000 output tokens, CLI 2.1.293 Haiku 5.5.
+CONTEXT_WINDOW_TOKENS = {"claude-opus-5-5": 1_000_000, "claude-sonnet-5-5": 1_000_000, "claude-haiku-5-5": 1_000_000}
 SEARCH_TOOLS = "WebSearch,WebFetch"
 
 

@@ -32,6 +32,7 @@ from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
 from .google_speech import GoogleSpeech
 from .publish_kit import build_podcast_kit, build_publish_kit
+from .sources import use_core_key
 from .speech import GeminiSpeech, selected_audio
 from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
@@ -375,6 +376,8 @@ def main():
     use_anthropic_key(request.get("anthropic_key"))
     add_secret(request.get("perplexity_key"))
     use_worker_key("perplexity", request.get("perplexity_key"))
+    add_secret(request.get("core_key"))
+    use_core_key(request.get("core_key"))
     configure_logging(root / "studio/worker.log")
     job_path = audio_job_path(root, request["audio_job_id"]) if request.get("audio_job_id") else root / "studio/job.json"
     job = read_json(job_path)
@@ -454,12 +457,13 @@ def main():
         elif not isinstance(exc, KeyboardInterrupt):
             receipt = record_failure(root / "studio", "worker", exc,
                                      secrets=(request.get("api_key") or "", request.get("google_key") or "",
-                                              request.get("anthropic_key") or "", request.get("perplexity_key") or ""))
+                                              request.get("anthropic_key") or "", request.get("perplexity_key") or "",
+                                              request.get("core_key") or ""))
             logger("worker").error("Auftrag %s fehlgeschlagen: %s", job.get("id"), type(exc).__name__, exc_info=exc)
             if receipt:
                 job["message"] += f" Technische Details: {receipt.relative_to(root).as_posix()}"
         for key in (request.get("api_key"), request.get("google_key"), request.get("anthropic_key"),
-                    request.get("perplexity_key")):
+                    request.get("perplexity_key"), request.get("core_key")):
             if key:
                 job["message"] = job["message"].replace(key, "[Key verborgen]")
     finally:

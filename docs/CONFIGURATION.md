@@ -25,6 +25,7 @@ covers:
 | Place | Scope | Holds | Written by |
 | --- | --- | --- | --- |
 | `<project>/project.yaml` | One project | The topic brief, the CLI default adapters and the runtime settings ([Project brief](#project-brief)); never credentials | `pla init`, the Studio's brief conversation |
+| `<project>/version.json` | One project | Its version number, the podcast's first version, the version it came from and its starting library ([New versions](STUDIO.md#new-versions)); absent in a first version | `pla new-version`, the Studio's „Neue Version anlegen“ |
 | `projects/.studio-settings.json` | Every project of a Studio workspace | Text model, web search, audio, execution modes, pre-approvals, research limits and the time limit of one model call ([Studio settings](#studio-settings)) | The Studio's settings page only |
 | `<project>/studio/text.json`, `audio.json`, `execution.json`, `allowances.json` | One project | The same choices per project; used only while the workspace file does not exist | The Studio |
 | `<project>/studio/jev_probe.json` | One project | Whether new script runs also ask Jev in the gap probe; stays per project even with workspace settings ([Gap probe](RESEARCH.md#gap-probe)) | The Studio switch |
@@ -105,8 +106,9 @@ OpenRouter, Google, Anthropic and Perplexity keys; they apply to all projects (w
 
 The file also records `changed_at`. A save carries the hash of the values the page showed; if the settings changed in
 between, it is refused with „Einstellungen inzwischen geändert. Seite neu laden.“ (settings changed in the meantime,
-reload the page). Claude's extra usage is not part of this file (see below), and the OpenRouter, Google, Anthropic and
-Perplexity keys are held in memory only ([Secrets and keys](SECURITY.md#secrets-and-keys)).
+reload the page). Claude's extra usage is not part of this file (see below), and the OpenRouter, Google, Anthropic,
+Perplexity and CORE keys are kept in the operating system's credential store
+([Keys in the credential store](SECURITY.md#keys-in-the-credential-store)).
 
 **Without the file.** As long as `projects/.studio-settings.json` does not exist, every project keeps its own files
 and fields from the table. The page then shows the values of the most recently changed project, and the first save
@@ -164,7 +166,7 @@ Variables you can set. What the adapters set or remove for the CLIs they start i
 | `PLA_SUBSCRIPTIONS_STORE` | Path of the quota store instead of `~/.podcast-automate/subscriptions.json`; the tests set it so they never write to `~/.podcast-automate` | `subscriptions.store_path` |
 | `PLA_KEEP_AWAKE` | `0` stops worker processes from keeping the computer awake ([Stopping and resuming](STUDIO.md#stopping-and-resuming)) | `studio_worker.keep_awake` |
 | `PLA_UNPAYWALL_EMAIL` | Contact address that enables Unpaywall in the search for a free copy of a work whose own address refused the download | `sources.unpaywall_copies` |
-| `PLA_CORE_API_KEY` | Free CORE API key; enables CORE for the same search | `sources.core_copies`, `studio.py` |
+| `PLA_CORE_API_KEY` | Free CORE API key; enables CORE for the same search when none was entered in the Studio ([CORE key in the Studio](SECURITY.md#core-key-in-the-studio)) | `sources.core_copies`, `studio.py` |
 | `PLA_CORE_DAILY_LIMIT` | CORE calls per UTC day, default 1000 (`sources.CORE_DAILY_LIMIT`), shared by all research workers ([Pipeline](RESEARCH.md#pipeline)) | `sources.core_usage` |
 | `PLA_CORE_USAGE_STORE` | Path of the CORE call counter instead of `~/.podcast-automate/core_usage.json` | `sources.core_usage_path` |
 | `HF_HUB_CACHE`, `HF_HOME` | Where `pla init` looks for the Qwen revision: `HF_HUB_CACHE`, else `HF_HOME/hub`, else `~/.cache/huggingface/hub` | `cli.pinned_revision` |

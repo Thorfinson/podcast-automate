@@ -283,6 +283,8 @@ class ScriptingTests(fixtures.ScriptProjectCase):
                  ({"provider": "openrouter", "model": "anthropic/claude-sonnet-5.5"}, 1.3),
                  ({"provider": "auto", "prefer": "claude_code", "candidates": {"claude_code": sonnet, "codex_cli": astra}}, 1.3),
                  ({"provider": "claude_code", "model": "claude-opus-5-5"}, 1.0),
+                 # The Claude default since D-166; its drafts are not measured yet (V-50).
+                 ({"provider": "claude_code", "model": "claude-haiku-5-5"}, 1.0),
                  ({"provider": "codex_cli", "model": "gpt-6-astra"}, 1.0),
                  ({"provider": "openrouter", "model": "anthropic/claude-opus-5.5"}, 1.0),
                  ({"provider": "auto", "prefer": "codex_cli", "candidates": {"claude_code": sonnet, "codex_cli": astra}}, 1.0),
@@ -300,7 +302,8 @@ class ScriptingTests(fixtures.ScriptProjectCase):
                 lengths.append(json.loads(prompt.splitlines()[-1])["length"])
             return self.model(prompt, output_type, directory, **kwargs)
         with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
-            run = run_script(self.root, backend="claude_code")
+            # Named, since Haiku 5.5 replaced Sonnet 5.5 as the Claude default (D-166).
+            run = run_script(self.root, backend="claude_code", model="claude-sonnet-5-5")
         self.assertEqual(run.status, "completed", run.model_dump())
         self.assertEqual(lengths, [word_budget(example_plan().episodes[0], WRITER_TARGET_FACTORS["claude-sonnet-5-5"])])
 

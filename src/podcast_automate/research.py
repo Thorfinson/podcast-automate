@@ -34,6 +34,7 @@ from .research_gap_probe import suffix as probe_suffix
 from .research_quality import load_complete_research, requirements_for
 from .question_research import run_question_research
 from .research_advisor import advisor_selection
+from .project_versions import imported_library
 from .research_ledger import read_value
 from .research_evidence import verbatim
 from .sources import EXTRACTION_VERSION, canonical_url, clean, import_failure, import_source, library_view, load_library
@@ -445,8 +446,9 @@ def unanswered_questions(work: Path) -> list[str]:
 
 
 def latest_research_run(root: Path):
-    """The research run whose stored sources seed a new one: the newest completed, else the newest at all; None
-    without one. A run stopped right after its start holds almost no sources (Transformer, 2026-09-30)."""
+    """The research run whose stored sources seed a new one: the newest completed, else the starting library a new
+    version brought along (project_versions, D-168), else the newest at all; None without one. A run stopped right
+    after its start holds almost no sources (Transformer, 2026-09-30)."""
     newest = None
     for folder in sorted((root / "runs").glob("run_*"), reverse=True):
         try:
@@ -458,7 +460,7 @@ def latest_research_run(root: Path):
         if manifest.get("status") == "completed":
             return folder.name
         newest = newest or folder.name
-    return newest
+    return imported_library(root) or newest
 
 
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
@@ -540,7 +542,8 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                 raise AppError("Eine Startbibliothek gilt nur für einen neuen Lauf.", code="invalid_run")
             seed_corpus = (read_optional_json(manifest_path(root, run_id).parent / "research_request.json", {})
                            or {}).get("seed_corpus")
-        elif seed_corpus:
+        elif seed_corpus and seed_corpus != imported_library(root):
+            # A new version's library has no run here (project_versions); load_library checks its documents as any.
             parent = read_yaml(manifest_path(root, seed_corpus))
             if parent.get("kind") != "research":
                 raise AppError("Die Startbibliothek muss aus einem Recherchelauf stammen.", code="invalid_run")
