@@ -11,7 +11,7 @@ from urllib.error import HTTPError
 from podcast_automate.errors import AppError
 from podcast_automate.jev import DECISIONS_ENDPOINT, JEV_HITS, JEV_MODEL, JevClient, candidate_sections, scan
 from podcast_automate.research_gap_probe import probe, settle
-from tests.test_gap_probe import F13_GAP, V3_BIAS_RULE, index
+from tests.test_gap_probe import BIAS_GAP, F13_GAP, V3_BIAS_RULE, index
 
 LONG_UNRELATED = ("The minimum deployment unit of the prefilling stage consists of four nodes with thirty-two "
                   "accelerators sharing one attention partition, and the decoding stage uses a larger unit of forty "
@@ -120,6 +120,27 @@ class ScanTests(unittest.TestCase):
         newcomer = Fake({})
         scan(newcomer, self.corpus, {**gaps, "gap_new": "another missing thing"}, self.cache)
         self.assertEqual(newcomer.requests, [["g0"], ["g0"]])
+
+    def test_above_the_ceiling_each_gap_is_asked_about_its_best_ranked_sections_only(self):
+        """Orlagau, 2026-10-09: 81,010 sections and 33 gaps made 405,050 requests. Above MAX_REQUESTS a gap is asked
+        about the sections the probe's words rank first, and a resumed scan proposes only what was asked."""
+        corpus = index(V3_BIAS_RULE, *(f"{LONG_UNRELATED} Variant {n}." for n in range(3)))
+        gaps = {"gap_bias": BIAS_GAP, "gap_unit": "The size of the minimum deployment unit for decoding is missing."}
+        everything = Fake({("Variant 2", BIAS_GAP): 0.9, ("decrease the bias term", BIAS_GAP): 0.83})
+        _, full = scan(everything, corpus, gaps, self.cache)
+        self.assertEqual(full["requests"], 4, "four sections, two gaps in one request each")
+        self.cache.unlink()
+        client = Fake(everything.answers)
+        with patch("podcast_automate.jev.MAX_REQUESTS", 2):
+            found, summary = scan(client, corpus, gaps, self.cache)
+        self.assertEqual((len(client.requests), summary["requests"], summary["max_requests"]), (2, 2, 2))
+        self.assertEqual([ref for ref, *_ in found["gap_bias"]], ["src_v3#sec_001"],
+                         "the bias section ranks first for its gap; the variant is not asked about it")
+        # Answers cached by an unlimited scan propose nothing that the ceiling did not ask.
+        scan(Fake(everything.answers), corpus, gaps, self.cache)
+        with patch("podcast_automate.jev.MAX_REQUESTS", 2):
+            resumed, again = scan(Fake({}), corpus, gaps, self.cache)
+        self.assertEqual((resumed, again["requests"]), (found, 0))
 
 
 class MergeTests(unittest.TestCase):

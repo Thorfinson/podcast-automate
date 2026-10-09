@@ -8,7 +8,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
-- 2026-10-08 · Studio overview: a research or script run's card shows its numbers under its state, such as „49 von 74 geprüft · 6 in Arbeit · 6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500“.
+- 2026-10-08 · Studio overview: a research or script run's card shows its numbers under its state, such as „49 von 74 geprüft · 6 in Arbeit · 6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500“, and in the overall review its round and the reworked sub-questions done („Gesamtprüfung Runde 2 · 10 von 10 nachgebesserten Teilfragen fertig“).
 - 2026-10-08 · „Weiter mit …“: „Nur Claude“ and Claude on the Anthropic API key name their model in a „Claude-Modell“ list (`pla approve --text-switch claude-only --switch-model claude-sonnet-5-5`), so one run can continue on Sonnet 5.5 at high while the default stays Haiku 5.5 (D-170).
 - 2026-10-08 · Studio overview: a stopped project's card offers the step its page recommends as one click, without opening the project — „Fortsetzen“, „Mit neuen Anläufen fortsetzen“, „Empfehlungen übernehmen und fortsetzen“, „Limits anheben und Empfehlungen übernehmen“ or the call limit's raise; „Ansehen“ stays beside it (D-169).
 - 2026-10-07 · New version of a podcast: „Neue Version anlegen“ in an overview card's ⋯ menu and `pla new-version <project>` start a new project with the old one's brief, attachments, provided works, style notes and choices, but none of its runs, so research, scripts and audio are made again by the current pipeline; the old version stays as it was. Versions are numbered per podcast („Version 2“ beside the topic). The newest completed research run's sources come along as a starting library that the new version's first research offers (preselected; `pla research <version> --seed-corpus <run_id>`) instead of downloading them again (D-168).
@@ -62,6 +62,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-10-09 · Jev gap probe: a script run makes at most 10,000 Jev requests per scan; with a larger corpus each gap is asked about its best-matching sections. A project with many provided editions (Orlagau: 405,050 requests, about six hours) now finishes the probe in minutes (D-172).
 - 2026-10-08 · Research: a sub-question's working pass has 15 steps instead of 10; runs started before keep 10 (D-171).
 - 2026-10-07 · The Studio keeps every key in the operating system's credential store (Windows: Anmeldeinformationsverwaltung) and loads it at the next start, so keys are no longer typed in after every restart; „Sitzungs-Key entfernen“ is now „Key entfernen“ and removes the stored key. New on the settings page: „CORE-Key“ for free copies of blocked sources, instead of the `PLA_CORE_API_KEY` variable; each key panel says where its key comes from. Needs the new dependency `keyring` (`pip install -e .`) (D-167).
 - 2026-10-07 · Claude's default is Haiku 5.5 at `xhigh` instead of Sonnet 5.5 at `high`, for new runs on the subscription, under „Automatisch“, on the Anthropic API key and for „Weiter mit Claude“; new presets „Haiku 5.5 · Claude-Abo · xhigh“ and „Haiku 5.5 · xhigh · Anthropic-API-Key“, and `--model haiku`. Haiku 5.5 needs Claude Code 2.1.293 (`claude update`). Saved choices and started runs keep their model (D-166).
@@ -136,6 +137,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Fixed
 
+- 2026-10-09 · Script run: a research limit with unread passages in the sources is now read by the episode that states the limit, not by the first episode whose sources hold a passage. Before, one episode citing large editions read the limits of the whole series (Orlagau ep_001: 19 gaps, 16 of them other episodes'), and a limit it resolved left its own episode with neither the limit nor the answer (D-173).
 - 2026-10-07 · Studio: the overview said „Podcast verfügbar“ while the same project's steps showed two decisions; the header said „Arbeitsschritt abgeschlossen“ after a companion kit; ages beyond an hour read „vor 7475 Min.“; a stopped run's status brief read „wird gerade erstellt“; the reader's sticky bar hid the first chapter and the top of the margin; the settings page showed a new project's steps in the sidebar (D-160, D-161, D-164).
 
 - 2026-10-07 · After the switch to Google an episode whose expression tags were placed before could not be approved for audio („Der Ausdruck wurde seit dem Lesen neu gesetzt“); such a reading now counts as none, and the recording places its own tags with listener reactions.

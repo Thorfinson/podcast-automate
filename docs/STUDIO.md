@@ -314,7 +314,9 @@ exhausted, the hold card offers the other one: **„Mit Astra (xhigh) fortsetzen
 The overview lists each project once, as a card: those waiting for you first, then running ones, then the rest. A
 card holds the bar of the six steps, whose segments name their step and state (a legend above the cards: erledigt,
 läuft, wartet auf dich, angehalten, braucht Hilfe), one line of state (for a research or script run a second line with its numbers: „49 von 74 geprüft · 6 in Arbeit ·
-6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500“, or the segments done; `cardProgress`), and its next
+6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500“, or the segments done; in the overall review the round and the sent-back
+sub-questions done again instead, as in „Gesamtprüfung Runde 2 · 10 von 10 nachgebesserten Teilfragen fertig“;
+`cardProgress`), and its next
 action as the one filled button,
 such as „Skripte lesen“ or „Plan freigeben“; otherwise **„Öffnen“** (open). A stopped project's card carries the
 step its page recommends as that button, done in one click on the overview: **„Fortsetzen“** where the header offers

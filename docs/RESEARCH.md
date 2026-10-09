@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-08
+last_reviewed: 2026-10-09
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -427,7 +427,7 @@ A hit does not refute the gap. A term search over hundreds of sections almost al
 | `hits_unread` | Hits, not yet read. |
 | `hits_read_confirmed` | Read; the gap remains. |
 | `resolved` | Answered in the sources. |
-| `hits_unowned` | Script run only: hits that lie in no episode's sources (see below). |
+| `hits_unowned` | Script run only: a gap that is no research limit, with hits that lie in no episode's sources (see below). |
 
 Only `hits_unread` blocks: the quality review then names the section, and `open_questions.md` carries the status after every open question. Hits are also queued as the first read windows of the responsible sub-question, at no extra call.
 
@@ -435,14 +435,14 @@ Only `hits_unread` blocks: the quality review then names the section, and `open_
 
 In the script run the same probe runs once per run during planning over the uncertainties of the knowledge model, with the dossier's `gap_terms`, and writes `runs/<run_id>/gap_probes.json`. The uncertainties are the dossier's open questions and coverage gaps, its unresolved syntheses and, since 2026-10-04, the limits the research noted for the script ([Research limits in the script](SCRIPTS.md#research-limits-in-the-script)). An assembled dossier has no open questions and, with every sub-question answered, no coverage gap, so its limits are its only gaps; until then its probe searched nothing, and Jev never ran on it. (why: D-131)
 
-- Every row names in `owner_episodes` the episodes whose sources contain a hit.
-- Hits the research sub-questions have already read count as read, as in the research probe (`research_read`): if all are read, the row is `hits_read_confirmed` with `settled_by: research`; otherwise it keeps only the unread hits (`unread_references`) and the episodes whose sources contain them. A run file saved before this rule is reconciled the same way on resume; a second reconciliation changes nothing.
-- Before each teaching plan, the unread hits in this episode's sources go into the existing supplementary research, whose source context contains the unread hit sections.
+- Every row names in `owner_episodes` the episodes that read its hits: for a research limit the episodes that state it ([Research limits in the script](SCRIPTS.md#research-limits-in-the-script)), wherever its hits lie; for any other gap the episodes whose sources contain a hit. (why: D-173)
+- Hits the research sub-questions have already read count as read, as in the research probe (`research_read`): if all are read, the row is `hits_read_confirmed` with `settled_by: research`; otherwise it keeps only the unread hits (`unread_references`) and the episodes that read them. A run file saved before this rule is reconciled the same way on resume; a second reconciliation changes nothing.
+- Before each teaching plan, the unread hits of the gaps this episode reads go into the existing supplementary research, whose source context contains the unread hit sections, also from sources the episode does not cite. The routing is computed from the plan on every start, so a probe file saved before D-173 routes by the same rule.
   - If the supplement answers the question, the row becomes `resolved`.
   - If it names the question in `remaining_gaps`, the row becomes `hits_read_confirmed`, but only if all hit sections were in the supplement's source context. The question must be there verbatim; quotation marks around it and an appended reason are tolerated, and the reason then appears as `confirmation_note` in the row.
 - `settled_by` records the episode that decided it; a later episode with the same sources spends no further supplement round on it.
-- The script review of an episode waits for exactly the rows it should have read itself: unread hits in its own sources.
-- Hits that lie in no episode carry the state `hits_unowned`; they block nothing and stay in the run file for review.
+- The script review of an episode waits for exactly the rows it should have read itself: the unread gaps it reads.
+- A gap that is no research limit and whose hits lie in no episode's sources carries the state `hits_unowned`; it blocks nothing and stays in the run file for review.
 
 ### Jev as a second finder
 
@@ -456,10 +456,11 @@ A new script run can also check the gaps with Jev, TypeSafe's decision model via
 **How it works.**
 
 - **Scan:** For every section of at least 200 characters that is not a bibliography (`jev.MIN_SECTION_CHARS`) and every gap, Jev answers whether the section fills what the gap misses. Eight gaps go into one request (`jev.QUESTIONS_PER_REQUEST`).
+- **Ceiling:** A scan makes at most 10,000 requests (`jev.MAX_REQUESTS`). Above that, each gap is asked only about its best sections by the probe's word ranking (its sentence, key terms and `gap_terms`), the same number for every gap and as many as the ceiling allows (`jev.asked_pairs`). A section several gaps rank shares one request; a section without any word in common with a gap is not asked about it. Only asked pairs are proposed, so a resumed scan proposes what a fresh one would. (why: D-172)
 - **Hits:** Sections with a probability of at least 0.3 (`jev.THRESHOLD`) join the word hits, at most five per gap (`jev.JEV_HITS`), marked with `"via": "jev"` and their probability.
 - **Reading stays mandatory:** Jev decides nothing; a Jev hit has to be read like any other before the gap may stand. Jev finds the matching passages even when gap and source are in different languages; the text model still reads and confirms them.
 - **Safe to interrupt:** The answers are stored in `runs/<run_id>/jev_scan.jsonl`, where an interrupted scan continues; `runs/<run_id>/jev_probe.json` reports progress, requests and cost.
-- **Effort:** With the source corpora of Asimov and Ontologies about 20,000 requests and 0.60 USD per run. With a money limit set, the run checks it before the scan and counts the scan's cost once it is complete ([Money limit](BUSINESS_LOGIC.md#money-limit)).
+- **Effort:** At most 10,000 requests, at about 19 requests per second about nine minutes and, with sections of about 1,000 characters, an estimated 0.50 USD (`jev_probe.json` reports the billed cost). Without the ceiling the corpora of Asimov and Ontologies needed about 20,000 requests and 0.60 USD, and Orlagau's 92 provided editions 405,050 requests, about six hours; with it Orlagau's run of 9 October 2026 made 9,804 requests for 0.51 USD. With a money limit set, the run checks it before the scan and counts the scan's cost once it is complete ([Money limit](BUSINESS_LOGIC.md#money-limit)).
 - **Basis:** The evaluation of 29 September 2026 (`evals/jev_decisions`) showed that Jev separates cited sections from random ones well (AUC 0.95 to 0.975), including German questions against English sources; there the word search reported 15 of 23 Asimov gaps as `no_hits`. Jev does not reliably judge whether individual statements are faithful to findings and is not used for that. (why: D-041)
 - **Errors:** A rejected key, missing credit or a privacy setting that excludes TypeSafe stop the run with the respective reason.
 

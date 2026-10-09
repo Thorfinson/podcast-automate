@@ -12,7 +12,7 @@ from podcast_automate.research_models import (Evidence, Finding, ResearchDiscove
 from podcast_automate.runner import manifest_path
 from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.scripting import episode_sources, load_research, outline_hash, run_script
-from podcast_automate.storage import digest, file_hash, read_yaml, write_json
+from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
 from podcast_automate.teaching import ResearchGap, TeachingPlanReview
 from podcast_automate.text_settings import stage_effort
 from podcast_automate.teaching_research import (ASSEMBLED_ALLOWANCE, FoundationSupplement, FoundationReview,
@@ -821,6 +821,53 @@ class FoundationResearchTests(unittest.TestCase):
             resumed = run_script(self.root, resume=True)
         self.assertEqual((resumed.status, len(rounds)), ("completed", 1))
         self.assertEqual((work / "gap_probes.json").read_bytes(), before)
+
+    def note_script_limit(self, text):
+        """A limit the research noted for the script, as research_quality_gate.json carries it. The gate is a hashed
+        output of the research run, so its recorded hash follows (as in test_scripting)."""
+        work = manifest_path(self.root, self.fixture.research.run_id).parent
+        gate = work / "research_quality_gate.json"
+        write_json(gate, {**json.loads(gate.read_text(encoding="utf-8")), "script_notes": [text]})
+        manifest = read_yaml(work / "run_manifest.yaml")
+        relative = gate.relative_to(self.root).as_posix()
+        for record in manifest["stages"].values():
+            if relative in (record.get("outputs") or {}):
+                record["outputs"][relative] = file_hash(gate)
+        write_yaml(work / "run_manifest.yaml", manifest)
+
+    def test_a_research_limit_is_read_by_the_episode_stating_it_wherever_its_hits_lie(self):
+        """Orlagau, 2026-10-09: ep_001 cited the large editions, so 16 of the 19 gaps routed to it were limits of
+        nine later episodes, and a limit it resolved would have left its own episode with neither the limit nor the
+        answer. A limit goes to the episode that states it (D-173): the plan places this one in ep_001, its hit sits
+        in a source only ep_002 cites, and ep_001 reads the pinned section while ep_002 neither routes nor waits."""
+        rounds = []
+        gap = "The update of the bias term for an overloaded expert is missing."
+        self.note_script_limit(gap)
+        plan = two_episode_plan(("f_extra",))
+        plan.episodes[0].research_limit_ids = ["limit_001"]
+
+        def confirming(prompt, schema, version, **kwargs):
+            if schema is FoundationSupplement:
+                data = json.loads(prompt.splitlines()[-1])
+                self.assertEqual(data["episode"]["episode_id"], "ep_001")
+                self.assertIn("src_extra#sec_001", {s["reference"] for source in data["sources"] for s in source["sections"]})
+                return FoundationSupplement(explanations=[], remaining_gaps=data["questions"])
+            return self.invoke(prompt, schema, version, **kwargs)
+
+        with patch("podcast_automate.scripting.load_research", side_effect=self.research_with_extra_source), \
+             patch("podcast_automate.scripting.CodexAdapter.structured",
+                   side_effect=self.script_model(rounds, plan=plan, invoke=confirming)), \
+             patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", run.stages["teaching"].error or run.stages["review"].error)
+        work = self.root / "runs" / run.run_id
+        self.assertEqual([p.relative_to(work / "teaching").as_posix() for p in sorted((work / "teaching").glob("ep_*/supplement*"))],
+                         ["ep_001/supplement"])
+        row = next(row for row in self.probes_of(run) if row["text"] == gap)
+        self.assertEqual((row["status"], row["settled_by"], row["owner_episodes"]),
+                         ("hits_read_confirmed", "ep_001", ["ep_001"]))
+        self.assertEqual([h["reference"] for h in row["hits"]], ["src_extra#sec_001"])
+        self.assertFalse((work / "teaching/ep_002/research_needed.json").exists())
 
     def test_hits_the_research_already_read_are_not_routed_again(self):
         """Ontologies, 2026-09-27: 102 of 140 hits had been read by the research's question readers, yet the

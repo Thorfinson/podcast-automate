@@ -1102,6 +1102,9 @@
  "overview.progress.blocked": "{count} blocked",
  "overview.progress.blocked_waiting": "{count} blocked, {waiting} of them only by prerequisites",
  "overview.progress.segments": "{done} of {total} done",
+ "overview.progress.audit": "Overall review round {round}",
+ "overview.progress.rework": "Rework after the overall review",
+ "overview.progress.reworked": "{done} of {total} reworked sub-questions done",
  "overview.trash": {
   "one": "Trash · {count} project",
   "other": "Trash · {count} projects"

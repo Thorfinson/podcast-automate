@@ -1102,6 +1102,9 @@
  "overview.progress.blocked": "{count} blockiert",
  "overview.progress.blocked_waiting": "{count} blockiert, {waiting} davon nur wegen Vorfragen",
  "overview.progress.segments": "{done} von {total} erledigt",
+ "overview.progress.audit": "Gesamtprüfung Runde {round}",
+ "overview.progress.rework": "Nachbesserung nach der Gesamtprüfung",
+ "overview.progress.reworked": "{done} von {total} nachgebesserten Teilfragen fertig",
  "overview.trash": {
   "one": "Papierkorb · {count} Projekte",
   "other": "Papierkorb · {count} Projekte"

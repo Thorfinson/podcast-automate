@@ -2,7 +2,7 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-09
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
@@ -205,9 +205,10 @@ noted after two revisions, and the „Hinweise fürs Skript“ (notes for the sc
 - The script review counts a limit named this way as supported, as a gap probe supports a statement about something
   missing. A missing limit goes under `limitations`, not as an objection; a repair keeps a named limit.
 - Every limit is probed against the stored sources like a gap ([Gap probe](RESEARCH.md#in-the-script-run)), with Jev
-  where it is switched on. Unread hits in an episode's sources go to its supplementary research before its teaching
-  plan. A limit whose row that research resolves is answered by the sources after all: writing and the script review
-  no longer get it (`ScriptRun.stated_limits`); the plan, made before the probe, still names it. (why: D-131)
+  where it is switched on. Its unread hits go to the supplementary research of the episode that states it, before
+  that episode's teaching plan, wherever the hit sections lie (why: D-173). A limit whose row that research resolves is
+  answered by the sources after all: writing and the script review no longer get it (`ScriptRun.stated_limits`); the
+  plan, made before the probe, still names it. (why: D-131)
 - An older quality file without these details yields no limits.
 
 ## Writing and framing
@@ -643,9 +644,9 @@ The report speaks for all published episodes, not only the latest run.
   them; an entry whose text is no longer on disk is dropped. The top-level `run_id` names the latest run. So the
   Studio and the reading view keep the review notes (review limitations, dismissed gaps, advisories) of earlier
   episodes.
-- Under `gap_probes_unowned`, the report lists at series level the reported gaps whose corpus hits lie only in sources
-  no episode uses (`gap_id`, `text`, `status`, `references`). Nobody in this run can read those sections, so they
-  block nothing and are only reported ([Gap probe](RESEARCH.md#gap-probe)).
+- Under `gap_probes_unowned`, the report lists at series level the reported gaps that are no research limit and whose
+  corpus hits lie only in sources no episode uses (`gap_id`, `text`, `status`, `references`). Nobody in this run reads
+  those sections, so they block nothing and are only reported ([Gap probe](RESEARCH.md#gap-probe)).
 
 ### Canonical script
 

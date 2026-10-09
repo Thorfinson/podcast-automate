@@ -1852,8 +1852,15 @@ function cardProgress(p) {
     const rows=ledger.questions||[];
     const working=rows.filter(q=>["researching","reviewing"].includes(q.status)).length;
     const waiting=rows.filter(q=>q.status==="blocked"&&q.outcome==="prerequisite_block").length;
-    const blocked=Number(ledger.blocked||0);
-    parts.push(tp("overview.progress.verified",{closed:Number(ledger.closed||0),total:Number(ledger.total)}));
+    const blocked=Number(ledger.blocked||0), round=Number(ledger.audit_round||0);
+    // Once the overall review judges the dossier, all sub-questions counted as verified says nothing more: the card
+    // names the review's round and how many of the questions it sent back are done again.
+    const reworked=rows.filter(q=>Number(q.reopened)>0);
+    if(["audit","synthesis"].includes(ledger.phase))parts.push(tp("overview.progress.audit",{round:round+1}));
+    else if(round>0||reworked.length)parts.push(tp("overview.progress.rework"));
+    if(["audit","synthesis"].includes(ledger.phase)||round>0||reworked.length){
+      if(reworked.length)parts.push(tp("overview.progress.reworked",{done:reworked.filter(q=>q.status==="verified").length,total:reworked.length}));
+    }else parts.push(tp("overview.progress.verified",{closed:Number(ledger.closed||0),total:Number(ledger.total)}));
     if(working)parts.push(tp("overview.progress.working",{count:working}));
     if(blocked)parts.push(waiting?tp("overview.progress.blocked_waiting",{count:blocked,waiting}):tp("overview.progress.blocked",{count:blocked}));
   }else if(Number(progress.total_segments)>0){

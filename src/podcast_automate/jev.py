@@ -7,8 +7,9 @@ sources, where the term probe finds nothing. It does not judge whether a sentenc
 by the text model before a gap may stand, exactly like a term hit.
 
 The scan asks one yes/no question per gap and section, eight gaps to a request, and keeps every answer in a
-JSON-lines cache, so an interrupted scan resumes without asking again. The key stays in memory and in the
-Authorization header; redirects are refused.
+JSON-lines cache, so an interrupted scan resumes without asking again. A scan makes at most ``MAX_REQUESTS``
+requests: above that, each gap is asked only about its best sections by the probe's word ranking (``asked_pairs``).
+The key stays in memory and in the Authorization header; redirects are refused.
 """
 from __future__ import annotations
 
@@ -34,6 +35,9 @@ BOOL_TYPE = "noul"  # the documented name of the yes/no question type
 THRESHOLD = 0.3  # found 75 to 89 percent of the cited sections and 3 to 7 percent of random ones in the evaluation
 JEV_HITS = 5  # proposals per gap on top of the term hits, the ones the reader must read
 QUESTIONS_PER_REQUEST = 8
+# One scan's ceiling (D-172): Orlagau's 92 provided editions made 81,010 sections, 405,050 requests and about six
+# hours (2026-10-09); the user set ten thousand as the sensible most.
+MAX_REQUESTS = 10_000
 WORKERS = 8
 MIN_SECTION_CHARS = 200  # headings and captions carry no answer
 SECTION_CHARS = 6000
@@ -113,6 +117,50 @@ def candidate_sections(index):
     return rows
 
 
+def requests_for(gap_count):
+    return -(-gap_count // QUESTIONS_PER_REQUEST)
+
+
+def asked_pairs(index, sections, gaps, gap_terms=None):
+    """The gaps each candidate section is asked about, ``{reference: [gap ids]}``.
+
+    While asking every section about every gap fits ``MAX_REQUESTS``, that is what happens. Above it each gap is asked
+    about its best sections by the probe's word ranking (its query and key terms, ``gap_terms`` included), the same
+    number for every gap and as many as the ceiling allows; a section several gaps rank shares one request. Jev then
+    still finds what the words rank low but name, such as a German gap against a Latin edition naming the same places
+    and people; a section without any shared word is not asked."""
+    if len(sections) * requests_for(len(gaps)) <= MAX_REQUESTS:
+        return {reference: list(gaps) for reference, _, _ in sections}
+    from .research_gap_probe import key_terms
+    from .research_reader import SourceReader
+    from .research_retrieval import terms
+    allowed = {reference for reference, _, _ in sections}
+    reader = SourceReader(index)
+    ranked = {}
+    for gid, text in gaps.items():
+        supplied = list((gap_terms or {}).get(gid, ()))
+        words = list(dict.fromkeys([*(token for term in supplied for token in terms(term)), *key_terms(text)]))
+        # No gap needs more than MAX_REQUESTS sections: even fully shared, each costs at least one request.
+        result = reader.search(" ".join([text, *supplied]), key_terms=words, include_notes=True, limit=MAX_REQUESTS)
+        ranked[gid] = [row["reference"] for row in result["candidates"] if row["reference"] in allowed]
+
+    def pairs(depth):
+        chosen = {}
+        for gid in gaps:
+            for reference in ranked[gid][:depth]:
+                chosen.setdefault(reference, []).append(gid)
+        return chosen
+
+    low, high = 0, MAX_REQUESTS  # the deepest depth whose requests fit
+    while low < high:
+        middle = (low + high + 1) // 2
+        if sum(requests_for(len(asked)) for asked in pairs(middle).values()) <= MAX_REQUESTS:
+            low = middle
+        else:
+            high = middle - 1
+    return pairs(low)
+
+
 def load_scores(cache):
     scores = {}
     if cache.exists():
@@ -124,17 +172,20 @@ def load_scores(cache):
     return scores
 
 
-def scan(client, index, gaps, cache, *, progress=None):
-    """Jev's probability for every gap in ``gaps`` (id -> text) and every candidate section of ``index``.
+def scan(client, index, gaps, cache, *, progress=None, gap_terms=None):
+    """Jev's probability for the gaps in ``gaps`` (id -> text) on the candidate sections of ``index``, each section
+    asked about the gaps ``asked_pairs`` gives it.
 
     Returns ``({gap_id: [(reference, title, probability, preview)]}, summary)``, sections at or above the threshold
-    by falling probability. Answers already in ``cache`` are not asked again."""
+    by falling probability. Answers already in ``cache`` are not asked again; only asked pairs are proposed, so a
+    resumed scan proposes what a fresh one would."""
     client.require_key()
     sections = candidate_sections(index)
+    asked = asked_pairs(index, sections, gaps, gap_terms)
     scores = load_scores(cache)
     pending = []
     for reference, title, text in sections:
-        open_gaps = [gid for gid in gaps if (reference, gid) not in scores]
+        open_gaps = [gid for gid in asked.get(reference, ()) if (reference, gid) not in scores]
         for start in range(0, len(open_gaps), QUESTIONS_PER_REQUEST):
             pending.append((reference, title, text, open_gaps[start:start + QUESTIONS_PER_REQUEST]))
     lock, spent, done = threading.Lock(), [0.0], [0]
@@ -160,9 +211,11 @@ def scan(client, index, gaps, cache, *, progress=None):
             for _ in pool.map(ask, pending):
                 pass
     titles = {reference: (title, text) for reference, title, text in sections}
+    wanted = {(reference, gid) for reference, gap_ids in asked.items() for gid in gap_ids}
     found = {gid: sorted(((ref, titles[ref][0], p, titles[ref][1][:400]) for (ref, g), p in scores.items()
-                          if g == gid and p >= THRESHOLD and ref in titles), key=lambda row: (-row[2], row[0]))
+                          if g == gid and p >= THRESHOLD and (ref, g) in wanted), key=lambda row: (-row[2], row[0]))
              for gid in gaps}
     summary = {"model": JEV_MODEL, "version": JEV_PROBE_VERSION, "threshold": THRESHOLD, "sections": len(sections),
-               "requests": len(pending), "cost_usd": round(spent[0], 6)}
+               "asked_pairs": len(wanted), "max_requests": MAX_REQUESTS, "requests": len(pending),
+               "cost_usd": round(spent[0], 6)}
     return found, summary

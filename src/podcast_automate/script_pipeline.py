@@ -383,8 +383,9 @@ class ScriptRun:
         return self.work / "gap_probes.json"
 
     def jev_proposals(self, gaps):
-        """Jev's candidate sections for every gap, from one scan of the corpus (jev.scan). The answers are kept in
-        ``jev_scan.jsonl``, so a stop mid-scan resumes where it was; ``jev_probe.json`` reports progress and cost."""
+        """Jev's candidate sections for every gap, from one scan of the corpus (jev.scan), at most jev.MAX_REQUESTS
+        requests (D-172). The answers are kept in ``jev_scan.jsonl``, so a stop mid-scan resumes where it was;
+        ``jev_probe.json`` reports progress and cost."""
         from .jev import JevClient, scan
         report = self.work / "jev_probe.json"
         limit = self.limits().cost_usd
@@ -399,7 +400,7 @@ class ScriptRun:
                 write_json(report, {**state, "done": done, "total": total})
         try:
             found, summary = scan(JevClient(self.probe_key), self.sources, gaps, self.work / "jev_scan.jsonl",
-                                  progress=progress)
+                                  progress=progress, gap_terms=coverage_terms(self.dossier))
         except AppError:
             write_json(report, {**state, "status": "stopped"})
             raise
@@ -414,21 +415,44 @@ class ScriptRun:
         return {e.reference.split("#")[0] for f in self.dossier.findings if f.id in entry.finding_ids
                 for e in f.evidence}
 
+    def limit_episodes(self, plan=None):
+        """``{gap id: [episode ids]}`` for every gap that is a research limit: the episodes that state it
+        (script_checks.episode_limits). They read its hits wherever these lie (D-173): a resolved limit leaves every
+        script (stated_limits), and a supplement may only extend the findings of the episode that reads it, so a
+        limit resolved by any other episode left its own episode with neither the limit nor the answer (Orlagau,
+        2026-10-09: 16 of the 19 gaps routed to ep_001 were limits of nine later episodes, all hit in the editions
+        ep_001 cites)."""
+        plan = plan or self.selected()[0]
+        stating = {}
+        for episode in plan.episodes:
+            for limit in episode_limits(plan, episode, self.research_limits()):
+                stating.setdefault(gap_id(limit["text"]), []).append(episode.episode_id)
+        return stating
+
+    @staticmethod
+    def readers(row, held, owned, stating):
+        """The episodes that read a probe row's hits in the sources ``held``: those stating its limit, else those of
+        ``owned`` (episode id -> source ids) whose sources include one of them."""
+        if row["gap_id"] in stating:
+            return stating[row["gap_id"]]
+        return [eid for eid, sources in owned.items() if held & sources]
+
     def run_probes(self, plan=None):
         """Probe the knowledge model's uncertainties once per run; afterwards the saved rows are the truth.
 
-        Each row records ``owner_episodes``, the episodes whose sources hold a hit. A row with
-        hits that no episode's sources contain is ``hits_unowned``: nobody in this lane can be
-        asked to read those sections, so it is reported at publish, never routed or blocking.
-        Hits the research's readers already read are settled (settle_by_research), also in a
-        file saved before that rule; settling again changes nothing, so a resume keeps the file.
+        Each row records ``owner_episodes``, the episodes that read its hits (readers): for a research limit the
+        episodes stating it, for any other gap those whose sources hold a hit. A row with hits and no reader is
+        ``hits_unowned``: nobody in this lane can be asked to read those sections, so it is reported at publish,
+        never routed or blocking. Hits the research's readers already read are settled (settle_by_research), also
+        in a file saved before that rule; settling again changes nothing, so a resume keeps the file.
         """
         path = self.probe_path()
         plan = plan or self.selected()[0]
         owned = {episode.episode_id: self.episode_source_ids(episode) for episode in plan.episodes}
+        stating = self.limit_episodes(plan)
         if path.exists():
             saved = json.loads(path.read_text(encoding="utf-8"))
-            rows = self.settle_by_research(saved, owned)
+            rows = self.settle_by_research(saved, owned, stating)
             if rows != saved:
                 write_json(path, rows)
             return rows
@@ -444,10 +468,10 @@ class ScriptRun:
                     raise
                 write_json(self.work / "jev_probe.json", {"status": "skipped", "reason": "no_key"})
         for row in probe(self.sources, gaps, gap_terms=coverage_terms(self.dossier), proposals=proposals):
-            owners = [eid for eid, sources in owned.items() if hit_sources(row) & sources]
+            owners = self.readers(row, hit_sources(row), owned, stating) if row["hits"] else []
             status = "hits_unowned" if row["hits"] and not owners else row["status"]
             rows.append({**row, "status": status, "owner_episodes": owners})
-        rows = self.settle_by_research(rows, owned)
+        rows = self.settle_by_research(rows, owned, stating)
         write_json(path, rows)
         return rows
 
@@ -458,12 +482,12 @@ class ScriptRun:
             return set()
         return {ref for row in read_value(path)["tasks"].values() for ref in row.get("read_refs", [])}
 
-    def settle_by_research(self, rows, owned):
+    def settle_by_research(self, rows, owned, stating):
         """A hit the research already read is not unread, as in the research lane's own closing probe
         (question_synthesis.probe_declared_gaps). A row keeps only its unread references and the episodes
-        holding them; with every hit read it stands as ``hits_read_confirmed``, and with the rest in no
-        episode's sources as ``hits_unowned`` (Ontologies, 2026-09-27: 102 of 140 hits had been read by the
-        research, yet all 28 gaps counted as unread and 18 went to the first episode's supplement)."""
+        reading them; with every hit read it stands as ``hits_read_confirmed``, and with no reader left as
+        ``hits_unowned`` (Ontologies, 2026-09-27: 102 of 140 hits had been read by the research, yet all 28
+        gaps counted as unread and 18 went to the first episode's supplement)."""
         reads, settled = None, []
         for row in rows:
             if row["status"] == "hits_unread" and "research_read" not in row:
@@ -475,24 +499,29 @@ class ScriptRun:
                         row["settled_by"] = "research"
                     else:
                         left = {reference.split("#")[0] for reference in row["unread_references"]}
-                        row["owner_episodes"] = [eid for eid, sources in owned.items() if left & sources]
+                        row["owner_episodes"] = self.readers(row, left, owned, stating)
                         if not row["owner_episodes"]:
                             row["status"] = "hits_unowned"
             settled.append(row)
         return settled
 
     def routable_probes(self, entry):
-        """Unread rows with an unread hit in this episode's sources: exactly what its supplement can read
-        and exactly what its review waits for. A row settled by an earlier episode is not unread."""
-        owned = self.episode_source_ids(entry)
+        """Unread rows this episode reads: the research limits it states, and any other gap with an unread hit in
+        its sources. Exactly what its supplement reads and exactly what its review waits for. A row settled by an
+        earlier episode is not unread. Computed from the plan, not from ``owner_episodes``, so a probe file saved
+        before D-173 routes by the same rule."""
+        owned = {entry.episode_id: self.episode_source_ids(entry)}
+        stating = self.limit_episodes()
         return [row for row in unread(self.run_probes())
-                if {reference.split("#")[0] for reference in unread_references(row)} & owned]
+                if entry.episode_id in self.readers(row, {reference.split("#")[0] for reference in unread_references(row)},
+                                                    owned, stating)]
 
     def route_probe_gaps(self, entry):
         """Send gaps with unread corpus hits into the existing supplementary research path.
 
-        Only gaps whose hits sit in this episode's own sources are routed; a series-wide gap
-        about another episode's material has no place in this episode's supplement.
+        Only the gaps this episode reads are routed (routable_probes): a research limit goes to the episode that
+        states it, which reads the hit sections wherever they lie (pinned_sections), and another gap to an episode
+        whose sources hold a hit; a series-wide gap about another episode's material has no place here.
         """
         routed = self.routable_probes(entry)
         if not routed:
@@ -730,8 +759,8 @@ class ScriptRun:
         config, dossier, work = self.config, self.dossier, self.work
         # A gap whose corpus hits nobody read must not be carried into a published script.
         # The teaching stage routes such gaps; reaching the review with one is a defect. The
-        # guard has the routing scope: hits in sources this episode does not use are not its
-        # reading, and blocking on them could never be resolved here.
+        # guard has the routing scope (routable_probes): a gap another episode reads is not this
+        # one's reading, and blocking on it could never be resolved here.
         probes = self.run_probes()
         blocking = self.routable_probes(entry)
         if blocking:

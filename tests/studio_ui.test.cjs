@@ -4056,3 +4056,19 @@ test('a text run\'s card names its numbers: verified, in work, blocked and the c
   assert.equal(app.run(`cardProgress(${JSON.stringify({...p,job:{...job,status:'completed'}})})`),'');
   assert.ok(!app.run(`overviewCardInner(${JSON.stringify({id:'x',topic:'X',episodes:[],job:{id:'a',status:'running',action:'audio',run:{run_id:'a',kind:'episode_audio',stages:{}}}})})`).includes('card-progress'));
 });
+
+test('in the overall review the card names its round and the reworked sub-questions done, not all verified',()=>{
+  // 2026-10-08: "74 von 74 geprüft" said nothing once the run judged its dossier.
+  const app=studio();
+  const rows=[...Array(64).fill({status:'verified',reopened:0}),...Array(10).fill({status:'verified',reopened:1})];
+  const job=(ledger,status='running')=>({id:'j',status,action:'resume',run:{run_id:'r',kind:'research',stages:{}},
+    progress:{model_calls:1305,model_call_limit:2000,research_questions:{total:74,closed:74,blocked:0,...ledger}}});
+  const card=ledger=>app.run(`cardProgress(${JSON.stringify({id:'o',topic:'Orlagau',episodes:[],job:job(ledger)})})`);
+  assert.equal(card({phase:'audit',audit_round:1,questions:rows}),'Gesamtprüfung Runde 2 · 10 von 10 nachgebesserten Teilfragen fertig · Aufrufe 1305 von 2000');
+  assert.equal(card({phase:'audit',audit_round:0,questions:rows.map(q=>({...q,reopened:0}))}),'Gesamtprüfung Runde 1 · Aufrufe 1305 von 2000');
+  // Between two rounds the sent-back questions are reworked: how many are done again, and what is in work.
+  const rework=[...rows.slice(0,64),...Array(6).fill({status:'verified',reopened:1}),...Array(2).fill({status:'researching',reopened:1}),
+    {status:'reviewing',reopened:1},{status:'blocked',outcome:'search_block',reopened:1}];
+  assert.equal(card({phase:'questions',audit_round:1,closed:70,blocked:1,questions:rework}),
+    'Nachbesserung nach der Gesamtprüfung · 6 von 10 nachgebesserten Teilfragen fertig · 3 in Arbeit · 1 blockiert · Aufrufe 1305 von 2000');
+});
