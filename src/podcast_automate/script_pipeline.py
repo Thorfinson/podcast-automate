@@ -16,8 +16,8 @@ from .editorial import CONTINUITY, EPISODE_FRAMING, LISTENABILITY, TEACHING_SCOP
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .execution import run_episode_stage
-from .models import EpisodeScript, host_labels
-from .polishing import HOST_ROLES, polish_dialogue
+from .models import EpisodeScript, host_labels, host_roles_of
+from .polishing import cast_note, host_roles, polish_dialogue
 from .prompts import fragment, instructions
 from .research import check_money, refund_call, reserve_call, settle_call, settle_external, unanswered
 from .research_evidence import single_group_findings
@@ -219,9 +219,12 @@ class ScriptRun:
         return [limit for limit in self.research_limits() if gap_id(limit["text"]) not in resolved]
 
     def invoke(self, prompt, output_type, version, *, search=False, research=False):
-        """One validated answer; a parsed answer the contract rejects is re-asked with the defects named."""
+        """One validated answer; a parsed answer the contract rejects is re-asked with the defects named. A project
+        with a third host puts its cast before every call that is no search (polishing.cast_note, D-174)."""
         # The pool applies the saved choice per call; supplementary research follows the subscription rule.
         self.adapter.require_key()
+        if not (search or research):
+            prompt = cast_note(self.config) + prompt
 
         def once(attempt):
             number = reserve_call(self.work, self.limits(), search=search,
@@ -649,7 +652,7 @@ class ScriptRun:
                                         "audience": config.audience_level, "prior_knowledge": config.prior_knowledge,
                                         "style": config.depth_request, "style_notes": self.style_notes,
                                         **goal_and_recency(config)},
-                              "host_roles": HOST_ROLES,
+                              "host_roles": host_roles(self.config),
                               # Not the whole plan (2026-10-02: the Asimov finale's writing prompt reached about 780 000
                               # characters): series_context carries the order, roles and questions the prompt uses, the
                               # episode entry its own scenes. What remains is the series' scope and the order its
@@ -676,7 +679,7 @@ class ScriptRun:
     def script_errors(self, draft, entry):
         """validate_script, and for an assembled dossier the quotation rule over the passages the writer was given:
         at most 25 words of one source per episode (script_checks.quotation_errors)."""
-        errors = validate_script(draft, entry)
+        errors = validate_script(draft, entry, roles=host_roles_of(getattr(self, "config", None)))
         if self.dossier.assembled:
             errors += quotation_errors(draft, episode_sources(entry, self.dossier, self.context, self.sources))
         return errors
@@ -912,7 +915,7 @@ class ScriptRun:
 
         payload = {"brief": {"audience": config.audience_level, "depth": config.depth_request,
                              "style_notes": self.style_notes, **goal_and_recency(config)},
-                   "host_roles": HOST_ROLES, "original_draft": original_draft,
+                   "host_roles": host_roles(self.config), "original_draft": original_draft,
                    "metrics": script_metrics(draft), "dialogue_shape": dialogue_shape(draft),
                    "episode": entry.model_dump(), "script": draft.model_dump(),
                    "series_context": episode_series_context(plan, entry),

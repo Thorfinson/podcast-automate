@@ -63,6 +63,8 @@ TEXT = {
         # The recording's export (episode_audio.py, audio.py).
         "export_version": "Hörfassung mit {host_a} und {host_b}.",
         "export_voices": "Stimmen: {voice_a} ({host_a}) und {voice_b} ({host_b}).",
+        "export_version_three": "Hörfassung mit {host_a}, {host_b} und {host_c}.",
+        "export_voices_three": "Stimmen: {voice_a} ({host_a}), {voice_b} ({host_b}) und {voice_c} ({host_c}).",
         "export_chapters": "Kapitel",
         "export_part": " (Teil {part})",
         "export_untimed": "Zeitmarken liegen für diese Fassung nicht vor.",
@@ -286,6 +288,8 @@ TEXT = {
                             "the source sections.",
         "export_version": "Audio version with {host_a} and {host_b}.",
         "export_voices": "Voices: {voice_a} ({host_a}) and {voice_b} ({host_b}).",
+        "export_version_three": "Audio version with {host_a}, {host_b} and {host_c}.",
+        "export_voices_three": "Voices: {voice_a} ({host_a}), {voice_b} ({host_b}) and {voice_c} ({host_c}).",
         "export_chapters": "Chapters",
         "export_part": " (part {part})",
         "export_untimed": "No timestamps are available for this version.",

@@ -10,7 +10,7 @@ from pydantic import Field
 from .prompts import instructions
 from .errors import AppError
 from .editorial import CONTINUITY, LISTENABILITY, TERMINOLOGY, EPISODE_FRAMING, terminology
-from .models import Contract, EpisodeScript, Identifier, NonEmpty
+from .models import THIRD_HOST, Contract, EpisodeScript, Identifier, NonEmpty
 from .research_patches import corrected_call
 from .script_advisories import dialogue_shape
 from .storage import digest, write_json
@@ -40,6 +40,26 @@ HOST_ROLES = {
               "test assumptions and connect details to the larger significance. Bring a reasonable alternative "
               "or deduction rather than ask for the next definition. Do not act unintelligent or merely praise the expert.",
 }
+
+
+def host_roles(config=None):
+    """The part of every host the prompts describe: HOST_ROLES, and the third host's own role when the brief has one
+    (D-174). A project of two hosts gets HOST_ROLES itself, so its prompts and hashes stay as they were."""
+    third = getattr(config, "third_host", None)
+    return {**HOST_ROLES, THIRD_HOST: third.role} if third else HOST_ROLES
+
+
+def cast_note(config=None) -> str:
+    """What a script run's model call is told before its prompt when the project has a third host (D-174): the rule
+    for three hosts and the third host's name and part. Empty for two hosts, whose prompts stay byte-identical; the
+    payload's JSON stays the last line of every prompt."""
+    third = getattr(config, "third_host", None)
+    if not third:
+        return ""
+    return (instructions("third_host") + "\n" + json.dumps(
+        {"third_host": {"speaker_id": THIRD_HOST, "name": third.name, "role": third.role}}, ensure_ascii=False) + "\n")
+
+
 POLISH_CRITERIA = ("meaning", "completeness", "speaker_roles", "spoken_language", "episode_framing")
 # What the polish must keep of the checked draft; a loss blocks in every round (scoped_points).
 FIDELITY_CRITERIA = frozenset({"meaning", "completeness"})
@@ -139,16 +159,17 @@ def validate_polish_review(review, original, candidate):
 
 
 def compare_dialogue(brief, entry, original, candidate, invoke, *, series_context=None, prerequisite_context=None,
-                     follow_up=None, rule=TERMINOLOGY):
+                     follow_up=None, rule=TERMINOLOGY, roles=HOST_ROLES):
     """The before/after review as a single call, so an eval can run it without a polishing pass.
 
     ``follow_up`` (``follow_up_payload``) makes it the comparison after a repair: the previous round's failing points
     with what became of each, and the candidate segments changed since that round. ``rule`` is the project's
-    terminology rule (``editorial.terminology``); the eval keeps the general one."""
+    terminology rule (``editorial.terminology``); the eval keeps the general one. ``roles`` are the hosts' parts
+    (``host_roles``)."""
     return invoke(
         rule + CONTINUITY + EPISODE_FRAMING + LISTENABILITY +
         instructions("dialogue_polish_review") + "\n" +
-        json.dumps({"brief": brief, "host_roles": HOST_ROLES,
+        json.dumps({"brief": brief, "host_roles": roles,
                     "episode": entry.model_dump(), "series_context": series_context,
                     "prerequisite_context": prerequisite_context or [], **(follow_up or {}),
                     "original": original.model_dump(), "candidate": candidate.model_dump(),
@@ -212,7 +233,7 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
                           "host_names": getattr(config, "host_names", None),
                           "prior_knowledge": config.prior_knowledge, "depth": config.depth_request,
                           "style_notes": style_notes},
-               "host_roles": HOST_ROLES, "episode": entry.model_dump(), "series_context": series_context,
+               "host_roles": host_roles(config), "episode": entry.model_dump(), "series_context": series_context,
                "prerequisite_context": prerequisite_context or [],
                "teaching_design": design.model_dump() if design is not None else None,
                "original": original.model_dump()}
@@ -265,7 +286,7 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
             review = compare_dialogue(payload["brief"], entry, original, candidate, checked(candidate),
                                       series_context=series_context,
                                       prerequisite_context=payload["prerequisite_context"],
-                                      follow_up=follow_up_payload(scope), rule=rule)
+                                      follow_up=follow_up_payload(scope), rule=rule, roles=payload["host_roles"])
             save()
         blocking, notes = scoped_points(comparison_points(review, original, candidate) if review is not None else [], scope)
         issues = errors + [point["issue"] for point in blocking]
@@ -313,7 +334,7 @@ def polish_dialogue(config, entry, original, design, invoke, work: Path, validat
     write_json(work / "script.json", candidate.model_dump())
     write_json(work / "review.json", compared)
     write_json(work / "result.json", {"version": POLISH_VERSION, "prompt_version": POLISH_PROMPT_VERSION,
-        "status": "kept_draft" if kept_draft else "passed", "host_roles": HOST_ROLES,
+        "status": "kept_draft" if kept_draft else "passed", "host_roles": payload["host_roles"],
         "original_digest": digest(original.model_dump()), "polished_digest": digest(candidate.model_dump()),
         "repairs": repairs, "review": compared, "human_reviewed": False})
     return candidate, [work / name for name in ("script.json", "review.json", "result.json", "checkpoint.json")]

@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-10-08
+last_reviewed: 2026-10-12
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -224,7 +224,7 @@ projects:
 | --- | --- |
 | **„Textmodell“** (text model) | One of the presets; see [Choosing the text model](#choosing-the-text-model). Below them a line names the measured money per call of Claude Sonnet 5.5 and Opus 5.5 in research and script work and that a whole series took 1,400 to 1,800 calls ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
 | **„Websuche“** (web search) | **„Über das Textmodell“** (through the text model: Claude and Codex search with their own tools, the default) or **„Über Perplexity“** (through Perplexity: the Studio searches itself and the text model chooses among the results). Perplexity lets every text model research, an OpenRouter model included, needs the Perplexity key and a money limit, and costs about 0.005 USD per search request. New research and script runs take the choice; running ones keep theirs ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). |
-| **„Audio“** | Provider (Qwen, Gemini through Google, Gemini through OpenRouter), speech model (Gemini), the voices of host A and host B, the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **„Sprechtempo Deutsch“** and **„Sprechtempo Englisch“** (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini whether expression tags are set before recording. For Google also the style of each role with its presets, **„… ohne Eile sprechen“** (speak unhurried) per language, **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode) and **„▶ Gesprächsprobe“** (conversation sample) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles)). |
+| **„Audio“** | Provider (Qwen, Gemini through Google, Gemini through OpenRouter), speech model (Gemini), the voices of host A and host B, **„Stimme Host C (nur bei drei Sprechern)“** (the voice of a third host, automatic by default; [Three hosts](AUDIO.md#three-hosts)), the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **„Sprechtempo Deutsch“** and **„Sprechtempo Englisch“** (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini whether expression tags are set before recording. For Google also the style of each role with its presets and **„Stil von Host C“**, **„… ohne Eile sprechen“** (speak unhurried) per language, **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode) and **„▶ Gesprächsprobe“** (conversation sample) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles)). |
 | **„Ausführung“** (execution) | See [Sequential or parallel](#sequential-or-parallel). |
 | **„Ohne Rückfrage“** (without asking) | See [Pre-approvals](#pre-approvals). |
 | **„Limits“** | Model calls per run, sources and search rounds per research, the time limit of one model call, and **„Kostengrenze je Lauf in USD“** (money limit per run in USD), required for a text model billed to a key and for the web search through Perplexity: saving either without it is refused with `cost_limit_required` ([Money limit](BUSINESS_LOGIC.md#money-limit)). |

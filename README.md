@@ -128,6 +128,7 @@ quality audit of 19 September 2026 are in [docs/specs/](docs/specs/).
 | `src/podcast_automate/` | The `pla` CLI, the pipeline, the Studio server and its browser UI (`web/`), all prompts (`prompts/`) |
 | `tests/` | Python and browser test suites; which to run when is in [AGENTS.md](AGENTS.md) |
 | `evals/` | Real-model regression checks, run by hand ([QUALITY](docs/QUALITY.md#evals)) |
+| `examples/` | Example projects to copy into `projects/`: [geld-podcast](examples/geld-podcast/README.md), a podcast for twelve-year-olds with three hosts |
 | `scripts/` | Setup and maintenance scripts |
 | `docs/` | The documentation above; dated plans and specs in `docs/specs/` |
 | `.github/` | CI and release workflows, issue and pull request templates |

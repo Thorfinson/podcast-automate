@@ -15,8 +15,8 @@ from pathlib import Path
 from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.scripting.CodexAdapter.structured)
 from .errors import AppError
 from .execution import ExecutionChoice, selected_execution
-from .models import EpisodeScript, RunManifest, StageRecord
-from .polishing import HOST_ROLES, POLISH_VERSION
+from .models import EpisodeScript, RunManifest, StageRecord, host_roles_of
+from .polishing import POLISH_VERSION, cast_note, host_roles
 from .provider_pool import AdapterPool, check_adapter_versions, text_generation_settings  # noqa: F401  (re-exported)
 from .research import reconcile_budget, refund_call, reserve_call, settle_call, unanswered, validate_dossier
 from .text_settings import BILLED_TEXT_PROVIDERS
@@ -114,7 +114,7 @@ def resumed_run(root, run_id):
             "series_review_version": series_review_version, "inherited_plan": None, "inherited_knowledge": None}
 
 
-def revision_inputs(root, revise, feedback, research_id, dossier):
+def revision_inputs(root, revise, feedback, research_id, dossier, roles=None):
     """Reuse the approved plan of the latest published script for an editorial revision."""
     try:
         pointer = root / "episodes" / revise / "latest.json"
@@ -136,17 +136,18 @@ def revision_inputs(root, revise, feedback, research_id, dossier):
         raise AppError("Folge im vorhandenen Plan nicht gefunden.", code="unknown_episode", status="blocked")
     original = EpisodeScript.model_validate(read_yaml(root / "episodes" / selected_entry.episode_id / "script.yaml"))
     # A revision may be requested precisely because the existing text has the wrong length.
-    if validate_plan(inherited_plan, dossier) or validate_script(original, selected_entry, check_duration=False):
+    if validate_plan(inherited_plan, dossier) or validate_script(original, selected_entry, check_duration=False,
+                                                                         **({'roles': roles} if roles else {})):
         raise AppError("Vorhandenes Skript oder Plan verletzt die Quellenzuordnung.", code="invalid_script", status="blocked")
     inherited_knowledge = json.loads((previous_work / "knowledge_model.json").read_text(encoding="utf-8"))
     revision = {"source_run_id": previous_id, "original_script": original.model_dump(), "feedback": feedback}
     return inherited_plan, inherited_knowledge, revision
 
 
-def new_run(root, research_id, dossier, *, episode, revise, feedback):
+def new_run(root, research_id, dossier, *, episode, revise, feedback, roles=None):
     inherited_plan = inherited_knowledge = revision = None
     if revise:
-        inherited_plan, inherited_knowledge, revision = revision_inputs(root, revise, feedback, research_id, dossier)
+        inherited_plan, inherited_knowledge, revision = revision_inputs(root, revise, feedback, research_id, dossier, roles)
         episode = revise
     identifier = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
     return {"path": manifest_path(root, identifier), "manifest": None, "saved_backend": None,
@@ -180,7 +181,7 @@ def run_inputs(config, research_id, dossier, discovery, sources, context, state,
               "sources": sources.model_dump(), "discovery": discovery.model_dump(),
               "project": config_hash, "version": SCRIPT_VERSION, "teaching_version": TEACHING_VERSION,
               "design_version": DESIGN_VERSION,
-              "polish_version": POLISH_VERSION, "host_roles": HOST_ROLES,
+              "polish_version": POLISH_VERSION, "host_roles": host_roles(config),
               "episode": state["episode"], "text_generation": text_generation}
     if notes:
         # Only a project that uses style notes binds them, so existing runs keep their hash.
@@ -283,7 +284,8 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
         if (revise and (resume or (episode and episode != revise))) or (feedback and not revise):
             raise AppError("--revise mit einer passenden Folge und optional --feedback verwenden.", code="invalid_revision")
         state = resumed_run(root, run_id) if resume else new_run(root, research_id, dossier,
-                                                                 episode=episode, revise=revise, feedback=feedback)
+                                                                 episode=episode, revise=revise, feedback=feedback,
+                                                                 roles=host_roles_of(config))
         if jev_probe and resume and not state["execution"].jev_probe:
             raise AppError("Die Jev-Lückenprobe gilt nur für neue Skriptläufe; ein laufender behält seine Lückenproben.",
                            code="invalid_request", status="blocked")
@@ -398,7 +400,7 @@ def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reas
                         raise
                     finally:
                         settle_call(work, number)
-                return re_asked(once, prompt)
+                return re_asked(once, cast_note(config) + prompt)
 
             report = series_report(config, plan, scripts, manifest.input_hash, invoke)
             write_json(work / "series_review.json", {"report": report, "sha256": digest(report)})

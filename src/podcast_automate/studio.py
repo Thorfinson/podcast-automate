@@ -1847,7 +1847,8 @@ class Studio:
 
     @staticmethod
     def validate_voices(config):
-        if any(v not in VOICES for v in config.voice_profile.values()):
+        third = getattr(config, "third_host", None)
+        if any(v not in VOICES for v in [*config.voice_profile.values(), *([third.voice] if third else [])]):
             raise AppError(t("server.voice.qwen"), code="invalid_voice")
 
     def save_text(self, root, data):

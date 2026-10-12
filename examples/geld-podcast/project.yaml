@@ -1,0 +1,95 @@
+# Geld verstehen – ein Podcast für 12-Jährige, mit drei Sprechern (third_host, D-174).
+# Einrichtung und Kosten: README.md in diesem Ordner. Die Studio-Einstellungen schreiben diese Datei beim Speichern neu;
+# Kommentare gehen dabei verloren, die Werte bleiben.
+schema_version: '1.0'
+topic: Geld verstehen – ein Podcast für 12-Jährige
+central_question: >-
+  Wie funktioniert Geld, vom Taschengeld bis zur Weltwirtschaft, wer gewinnt und wer verliert dabei, und wie gehe
+  ich selbst klug damit um, heute und in einer Zukunft mit KI und Robotern?
+language: de-DE
+audience_level: >-
+  Zwölfjährige (6. und 7. Klasse) ohne Vorwissen, neugierig und klug; auf Augenhöhe angesprochen, nie von oben herab.
+  Die Zuhörer kommen aus sehr unterschiedlichen Familien, mit viel und mit wenig Geld.
+prior_knowledge: >-
+  Grundrechenarten und erste Prozentrechnung; Taschengeld, Einkaufen, Sparen und In-App-Käufe aus dem Alltag. Kein
+  Wissen über Zinsen, Kredite, Aktien, Banken, Steuern oder Wirtschaftstheorien.
+depth_request: >-
+  Die Serie folgt sechs Lernstufen, jede baut auf der vorigen auf: Erleben (ich und mein Geld), Verstehen (wie Geld,
+  Banken, Zinsen und Kredit funktionieren), Hinterfragen (wer gewinnt, wer verliert: Kritik mit Gegenargumenten),
+  Urteilen (was ist gerecht), Handeln (wie komme ich zu Vermögen, mit allen Risiken) und Vorausdenken (Geld in einer
+  Welt mit KI und Robotern). Der Weg führt vom Nahen zum Fernen, von mir über die Bank zur Gesellschaft und in die
+  Zukunft. Jede Folge hat eine Kernidee und beantwortet drei Fragen; sie beginnt mit einer Frage oder einer Szene,
+  nie mit einer Erklärung. Erst das Bild, dann der Begriff: höchstens ein neues Fachwort pro Folge, nach einem
+  starken Bild eingeführt (erst der Schneeball, dann das Wort Zinseszins). Geschichten echter Menschen statt
+  Definitionen, Schätzfragen vor jeder Auflösung, ein verblüffender Fakt zum Weitererzählen. Vier Begriffe kehren auf
+  jeder Stufe vertieft wieder: Arbeit, Zins, Schuld und Eigentum. Kurze Sätze, gesprochene Sprache, keine Formeln;
+  Zahlen nur, wenn ein Kind sie nachrechnen kann.
+focus_questions:
+  - Was ist Geld, und wie entstand es wirklich? Das Tauschmärchen gegen Kredit, Tontafeln und Kerbholz (Graeber).
+  - Wie verdienen, sparen und geben Kinder Geld klug aus, und wie erkennen sie Werbung, In-App-Käufe, Lootboxen und Betrug?
+  - Wie funktionieren Banken, Zinsen, Zinseszins, Kredit, Dispo, Aktien und ETFs?
+  - Wie funktioniert die Wirtschaft als Maschine aus Krediten, mit Auf- und Abschwüngen und dem Leitzins (Dalio)?
+  - Wem gehört der Gewinn? Kinderarbeit in der Industrialisierung (Engels), Arbeit und Kapital (Marx) und die Gegenargumente.
+  - Darf Geld arbeiten? Das Problem des Zinseszinses (Josephspfennig), Schwundgeld nach Gesell, Wörgl 1932 und der Chiemgauer.
+  - Warum werden Reiche reicher? Pikettys r > g, Eigentum gegen Lohn, und was dagegen spricht.
+  - Konkurrenz oder Zusammenarbeit? Kropotkins gegenseitige Hilfe und der Nutzen von Wettbewerb.
+  - Was ist gerecht, und was kann eine Gesellschaft tun? Steuern, Gesetze, Genossenschaften, Schuldenerlass.
+  - Wie kommt man im Leben zu Vermögen? Können, Gründen, Eigentum, Erben; eine Firma bewerten (KGV), den Markt bewerten (Buffett-Indikator), der Leitzins.
+  - Warum gewinnt beim Glücksspiel auf Dauer der Anbieter (Lotto, Casino, Sportwetten, Lootboxen), und warum macht Daytrading die meisten ärmer?
+  - Was passiert mit Geld und Arbeit, wenn KI und Roboter den Preis der Arbeit fast auf null senken? Utopien und Dystopien von Morus bis Cyberpunk, Grundeinkommen und Bürgerfonds.
+excluded_topics:
+  - Kauf- oder Anlageempfehlungen für einzelne Aktien, Fonds, Kryptowährungen oder Lotterien
+  - Anleitungen oder Tipps zu Glücksspiel, Wetten oder Daytrading
+  - Parteipolitische Empfehlungen
+  - Gewalt, Sex und Drogen aus den genannten Romanen; von Neuromancer und anderen Büchern nur die Ideen
+seed_people:
+  - David Graeber
+  - Thomas Piketty
+  - Ray Dalio
+  - Silvio Gesell
+  - Margrit Kennedy
+  - Pjotr Kropotkin
+  - Karl Marx
+  - Friedrich Engels
+  - John Maynard Keynes
+  - Warren Buffett
+  - Thomas Morus
+seed_urls:
+  - https://en.wikipedia.org/wiki/Ea-n%C4%81%E1%B9%A3ir
+  - https://en.wikipedia.org/wiki/Complaint_tablet_to_Ea-n%C4%81%E1%B9%A3ir
+local_sources: []
+# Zwei Staffeln, 30 Folgen von 20 bis 25 Minuten. Für einen ersten Test mit einer Folge: trial: true setzen.
+target_total_minutes: 660
+max_episode_minutes: 30
+research_limits:
+  search_rounds: 48
+  sources: 150
+  model_calls: 750
+text_backend: codex_cli
+tts_backend: qwen3_local
+# Qwen-Stimmen für die Kommandozeile; das Studio wählt die Stimmen auf der Einstellungsseite (auch Host C).
+voice_profile:
+  host_a: Ryan
+  host_b: Serena
+# Namen zum Ändern: Mara moderiert und erklärt, Leo ist der zwölfjährige Co-Host.
+host_names:
+  host_a: Mara
+  host_b: Leo
+style_profile_id: de_calm_deep
+export_context: private_learning
+series_goal:
+  understand: 3
+  evaluate: 2
+  apply: 2
+third_host:
+  name: Ea-nasir
+  role: >-
+    Ea-nasir, ein Kupferhändler aus der Stadt Ur, der vor rund 3750 Jahren lebte; an ihn ist die älteste bekannte
+    Kundenbeschwerde der Welt gerichtet, die Tontafel seines Kunden Nanni. Er ist aus seiner Museumsvitrine in unsere
+    Zeit gestiegen, auf der Flucht vor Nannis Mahnungen, und blickt mit fremdem, staunendem Blick auf heutiges Geld:
+    Banking-Apps, Karten, Aktien, Lootboxen. Er erzählt aus seiner Zeit (Schulden auf Tontafeln, Kupferhandel,
+    Schuldenerlasse der Könige), ist ein Schlitzohr mit Herz, klug und sympathisch, nie eine Klischeefigur. Running
+    Gag: Alle nennen ihn „Kupferdieb“, er besteht darauf, ein ehrbarer Kaufmann zu sein; ein Diebstahl ist nicht
+    belegt, und wir kennen nur Nannis Seite. In Streitfragen vertritt er mal die eine, mal die andere Seite. Er
+    erfindet nichts über seine Zeit: Was die Quellen nicht hergeben, weiß auch er nicht.
+  voice: Uncle_Fu

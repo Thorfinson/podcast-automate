@@ -39,12 +39,23 @@ GOOGLE_SPEECH_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/inter
 GOOGLE_SPEECH_VERSION = "google_gemini_tts.v1"
 # Each role's short style comes from the audio choice (speech.RoleStyles, presets in speech.STYLE_PRESETS), with
 # "unhurried" added where the project's language asks for a calm pace (AudioChoice.spoken_styles).
-# The names the request gives the two speakers; never spoken. Gender-neutral, so a name never hints at who explains.
-SPEAKER_NAMES = {"host_a": "Alex", "host_b": "Robin"}
+# The names the request gives the speakers; never spoken. Gender-neutral, so a name never hints at who explains. Sam is
+# a third host's (D-174).
+SPEAKER_NAMES = {"host_a": "Alex", "host_b": "Robin", "host_c": "Sam"}
 MAX_PASSAGE_CHARACTERS = 3600
 MAX_PASSAGE_TURNS = 20
 PASSAGE_RULE = {"version": "dialogue_passages.v1", "max_characters": MAX_PASSAGE_CHARACTERS,
                 "max_turns": MAX_PASSAGE_TURNS}
+# Google speaks at most two voices in one request ("up to 2 speakers", the speech-generation guide, checked
+# 2026-10-12). A script of three hosts is cut so no passage has more (plan_passages), and its recording binds this rule.
+MAX_PASSAGE_SPEAKERS = 2
+THREE_HOST_PASSAGE_RULE = {**PASSAGE_RULE, "max_speakers": MAX_PASSAGE_SPEAKERS}
+
+
+def passage_rule(script):
+    """The passage rule a recording of ``script`` binds: PASSAGE_RULE as before, with the speaker bound for a script
+    in which a third host speaks."""
+    return THREE_HOST_PASSAGE_RULE if any(s.speaker_id == "host_c" for s in script.segments) else PASSAGE_RULE
 # A passage of 3.7 minutes answers with about 15 MB of JSON (base64 WAV).
 RESPONSE_LIMIT = 64 * 1024 * 1024
 # A 429 waits Google's retryDelay (else a doubling pause), shared by every parallel recording, about eight times.
@@ -61,9 +72,10 @@ def google_model(model):
 
 
 def plan_passages(segments):
-    """The passages of ``segments`` as lists of their indices. A passage never crosses a chapter or scene. Each run of
-    one scene is cut into as few passages as the bounds allow, at the segment boundaries nearest equal shares of its
-    text, so no short remnant is left; a single segment over the bounds is a passage of its own."""
+    """The passages of ``segments`` as lists of their indices. A passage never crosses a chapter or scene, nor holds
+    more than MAX_PASSAGE_SPEAKERS hosts (only a script of three hosts has more, D-174). Each run of one scene is cut
+    into as few passages as the bounds allow, at the segment boundaries nearest equal shares of its text, so no short
+    remnant is left; a single segment over the bounds is a passage of its own."""
     groups, current = [], []
     for index, segment in enumerate(segments):
         if current and (segments[current[-1]].chapter_id, segments[current[-1]].scene_id) != (
@@ -73,6 +85,7 @@ def plan_passages(segments):
         current.append(index)
     if current:
         groups.append(current)
+    groups = [part for group in groups for part in speaker_runs(segments, group)]
     passages = []
     for group in groups:
         sizes = [len(segments[index].text) for index in group]
@@ -87,6 +100,22 @@ def plan_passages(segments):
             count += 1
         passages.extend(parts)
     return passages
+
+
+def speaker_runs(segments, group):
+    """``group`` cut where a further host would join: each run as long as it can be with at most MAX_PASSAGE_SPEAKERS
+    hosts. A group of one or two hosts, which every script of two hosts has, stays whole."""
+    runs, current, speakers = [], [], set()
+    for index in group:
+        speaker = segments[index].speaker_id
+        if current and speaker not in speakers and len(speakers) == MAX_PASSAGE_SPEAKERS:
+            runs.append(current)
+            current, speakers = [], set()
+        current.append(index)
+        speakers.add(speaker)
+    if current:
+        runs.append(current)
+    return runs
 
 
 def balanced_cuts(sizes, count):
@@ -126,7 +155,7 @@ def passage_settings(segments, spoken, voices, language, model=GEMINI_MODEL, sty
     styles = styles if styles is not None else DEFAULT_STYLES
     return {"provider": "google_gemini_tts", "model": model, "adapter_version": GOOGLE_SPEECH_VERSION,
             "language": language, "voices": {role: voices[role] for role in roles},
-            "styles": {role: styles[role] for role in roles},
+            "styles": {role: styles.get(role, "") for role in roles},
             "names": {role: SPEAKER_NAMES[role] for role in roles},
             "segments": [{"speaker_id": segment.speaker_id, "text": segment.text,
                           **spoken_settings(segment.text, spoken[segment.segment_id])} for segment in segments],
@@ -143,7 +172,7 @@ def request_body(turns, voices, model, styles=None):
     content = []
     for role, text in turns:
         metadata = {**({"speaker": SPEAKER_NAMES[role]} if two else {}),
-                    **({"style": styles[role]} if styles[role] else {})}
+                    **({"style": styles.get(role, "")} if styles.get(role) else {})}
         content.append({"type": "text", "text": text if two else " ".join(BACKCHANNEL.sub(" ", text).split()),
                         **({"annotations": [{"type": "speech_metadata", **metadata}]} if metadata else {})})
     speech = ({"mode": "conversational", "speakers": [{"speaker": SPEAKER_NAMES[role], "voice": voices[role]}

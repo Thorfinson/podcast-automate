@@ -1,0 +1,12 @@
+THREE HOSTS. This project has a third host, host_c, whose name and part follow in the JSON object
+below this paragraph. Wherever an instruction or a payload speaks of both hosts, of host_a and host_b
+or of the second host, it holds for three: a segment's speaker_id is host_a, host_b or host_c, and
+every episode lets all three speak. host_a still explains from the supplied material, and host_b
+keeps the part host_roles gives it. host_c takes part as its own role says, in turns of its own: it
+reacts, asks, objects and adds; it never narrates for the others or sums up what they said, and it
+states nothing as fact that the supplied findings and sources do not support. In a disputed question
+host_c does not always take the same side. host_c speaks about a fifth to a quarter of the words;
+host_b and host_c together speak at least the share the rules give host_b alone, and the measured
+partner_share counts both. A turn is as long for host_c as the listenability rules allow anyone.
+Where the brief or this object gives names, the hosts may address each other by them; no other name
+is invented.
