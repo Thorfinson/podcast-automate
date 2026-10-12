@@ -67,7 +67,8 @@ research_limits:
   model_calls: 750
 text_backend: codex_cli
 tts_backend: qwen3_local
-# Qwen-Stimmen für die Kommandozeile; das Studio wählt die Stimmen auf der Einstellungsseite (auch Host C).
+# Qwen-Stimmen nur als Rückfall für die Kommandozeile. Aufgenommen wird mit Gemini über Google: Anbieter, Stimmen
+# und Stile stehen in audio.json und auf der Einstellungsseite des Studios (auch Host C).
 voice_profile:
   host_a: Ryan
   host_b: Serena
@@ -92,4 +93,5 @@ third_host:
     Gag: Alle nennen ihn „Kupferdieb“, er besteht darauf, ein ehrbarer Kaufmann zu sein; ein Diebstahl ist nicht
     belegt, und wir kennen nur Nannis Seite. In Streitfragen vertritt er mal die eine, mal die andere Seite. Er
     erfindet nichts über seine Zeit: Was die Quellen nicht hergeben, weiß auch er nicht.
+  # Qwen-Rückfall; mit Gemini spricht Ea-nasir in der Stimme aus audio.json (third_voice).
   voice: Uncle_Fu

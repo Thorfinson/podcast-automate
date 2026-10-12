@@ -194,6 +194,21 @@ class PassageTests(unittest.TestCase):
         self.assertIn("Audio version with Host A, Host B and Ea-nasir.", notes)
 
 
+class ExampleProjectTests(unittest.TestCase):
+    def test_the_geld_podcast_example_is_a_valid_three_host_gemini_project(self):
+        from pathlib import Path
+        folder = Path(__file__).resolve().parents[1] / "examples/geld-podcast"
+        brief = TopicBrief.model_validate(read_yaml(folder / "project.yaml"))
+        self.assertEqual(host_labels(brief), {"host_a": "Mara", "host_b": "Leo", "host_c": "Ea-nasir"})
+        choice = AudioChoice.model_validate(json.loads((folder / "audio.json").read_text(encoding="utf-8")))
+        self.assertEqual(choice.provider, "google_gemini_tts")
+        # The characters keep their voices in every episode.
+        self.assertFalse(choice.alternate_roles)
+        voiced = choice.for_episode("ep_002").for_hosts(brief)
+        self.assertEqual(voiced.voices, {"host_a": "Sulafat", "host_b": "Leda", "host_c": "Algenib"})
+        self.assertTrue(all(voiced.spoken_styles("de-DE").values()))
+
+
 class ThreeHostScriptRunTests(fixtures.ScriptProjectCase):
     """A whole script run of a project with a third host, with the fixture's model answering."""
 

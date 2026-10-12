@@ -9,6 +9,7 @@ third host ([D-174](../../docs/DECISIONS.md)).
 | --- | --- |
 | `project.yaml` | The brief: audience, the six learning stages in `depth_request`, focus questions, excluded topics, the two hosts' names and the `third_host` |
 | `style_notes.md` | The standing editorial notes: the three voices, the shape of every episode, the storytelling rules, controversy and safeguards, the season-long story |
+| `audio.json` | The recording choice: Gemini through Google, Sulafat for Mara, Leda for Leo, Algenib for Ea-nasir, a style for each and the roles never swapping |
 | `inhaltsverzeichnis.md` | The planned table of contents (26 numbered episodes, four of them in two parts: 30 episodes), to give as feedback on the outline when the planned one differs |
 
 ## Set it up
@@ -16,10 +17,15 @@ third host ([D-174](../../docs/DECISIONS.md)).
 1. Create a project: `pla init projects/geld-verstehen --topic "Geld verstehen – ein Podcast für 12-Jährige"`, or
    create one in the Studio.
 2. Copy `project.yaml` and `style_notes.md` from this folder into the project folder, replacing the generated
-   `project.yaml`. With local Qwen, set `runtime.tts_python` to the Qwen environment again (`pla init --tts-python`
-   writes it).
-3. In the Studio's settings, choose the voices. „Stimme Host C" sets Ea-nasir's voice for every route; left on
-   automatic, the provider's first free voice speaks. On Google, „Stil von Host C" gives him a style of his own.
+   `project.yaml`, and `audio.json` to `studio/audio.json` in it.
+3. Record with Gemini through Google, in the Studio (`pla audio` records with Qwen only). Store the Google key under
+   „Google-Key" on the settings page. A project's `studio/audio.json` holds only while the workspace has no audio
+   choice of its own; once the settings page has been saved, set the same there under „Audio": provider „Gemini TTS ·
+   Google", „Stimme Host A" Sulafat, „Stimme Host B" Leda, „Stimme Host C" Algenib, the three styles from
+   `audio.json`, and leave „Rollen von Folge zu Folge tauschen" off, so Mara and Leo keep their voices in every
+   episode. The workspace's third voice speaks only in projects with a third host.
+   The voices are a suggestion: „▶ Gesprächsprobe" plays Mara and Leo before anything is recorded (two voices only).
+   `voice_profile` and `third_host.voice` in `project.yaml` are Qwen voices, used only by the command line.
 4. Start with a trial: set `trial: true` in `project.yaml` for one episode of at most 20 minutes before the whole
    series ([Trial project](../../docs/BUSINESS_LOGIC.md#trial-project)). A full series of this length is a large job;
    see [What it costs](../../README.md#what-it-costs).

@@ -1,0 +1,10 @@
+{
+  "provider": "google_gemini_tts",
+  "voices": {"host_a": "Sulafat", "host_b": "Leda"},
+  "third_voice": "Algenib",
+  "styles": {"host_a": "warm, clear and curious, explaining to a twelve-year-old",
+             "host_b": "a lively, curious twelve-year-old, quick and a little cheeky"},
+  "third_style": "an old, sly and warm merchant, amazed by today's world",
+  "alternate_roles": false,
+  "expression": true
+}

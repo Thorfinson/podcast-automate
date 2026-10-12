@@ -332,7 +332,10 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                     saved_choice, AudioChoice.model_validate(audio_choice).for_language(config.language).model_dump()):
                 raise AppError("Audioanbieter oder Stimmen geändert. Fortsetzen nutzt die gespeicherte Auswahl.", code="inputs_changed", status="blocked")
             audio_choice = saved_choice
-        choice = AudioChoice.model_validate(audio_choice) if audio_choice is not None else AudioChoice(voices=config.voice_profile)
+        # The command line records with the brief's Qwen voices, a third host's own included (D-174).
+        choice = (AudioChoice.model_validate(audio_choice) if audio_choice is not None else
+                  AudioChoice(voices=config.voice_profile,
+                              third_voice=config.third_host.voice if config.third_host else None))
         if parallel_remote and not choice.remote:
             raise AppError("Lokales Qwen wird einzeln ausgeführt.", code="invalid_parallel_audio", status="blocked")
         episode_folder = inside(root / "episodes", episode)
