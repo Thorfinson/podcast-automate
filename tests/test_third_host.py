@@ -1,4 +1,4 @@
-"""A third host (D-174): the brief, the script checks and prompts, the recording's voices and passages, and that a
+"""A third host (D-179): the brief, the script checks and prompts, the recording's voices and passages, and that a
 project of two hosts stays exactly as it was."""
 import json
 import shutil
@@ -6,7 +6,10 @@ import unittest
 from unittest.mock import patch
 
 from podcast_automate.content_text import text as wording
+from podcast_automate.elevenlabs_speech import PASSAGE_RULE as ELEVENLABS_PASSAGE_RULE, check_elevenlabs_rows
+from podcast_automate.elevenlabs_speech import plan as eleven_plan
 from podcast_automate.episode_audio import render_export_notes, run_episode_audio, voices_line
+from podcast_automate.errors import AppError
 from podcast_automate.google_speech import (MAX_PASSAGE_SPEAKERS, PASSAGE_RULE, check_google_rows, passage_rule,
                                             plan_passages, request_body)
 from podcast_automate.models import (EpisodeScript, Segment, ThirdHost, TopicBrief, host_labels, host_roles_of,
@@ -18,8 +21,12 @@ from podcast_automate.scripting import run_script
 from podcast_automate.speech import THIRD_VOICES, AudioChoice, audio_catalog, selected_audio
 from podcast_automate.storage import bound_brief, project_hash, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
+from tests.test_elevenlabs_speech import dialogue_answer
 from tests.test_google_speech import segments, spoken_answer
 
+ELEVEN_VOICES = {"host_a": "S87WJpstXs0Ge2ukRiXJ", "host_b": "VHYWoxffK1pFlM1dtRb0"}
+ELEVEN_THIRD = "LeoVoice0123456789ab"
+ELEVEN_KEY = "sk_" + "0123456789abcdef" * 3
 EA_NASIR = {"name": "Ea-nasir", "role": "A copper trader from Ur, 3750 years old: sly, warm, astonished by today.",
             "voice": "Dylan"}
 
@@ -120,6 +127,22 @@ class AudioChoiceTests(unittest.TestCase):
         qwen = AudioChoice(voices={"host_a": "Aiden", "host_b": "Vivian"}, third_voice="Dylan", third_style="sly")
         self.assertIsNone(qwen.third_style)
         self.assertEqual(audio_catalog()["qwen3_local"]["third_voices"], THIRD_VOICES["qwen3_local"])
+
+    def test_elevenlabs_takes_an_account_voice_for_the_third_host_and_has_no_default(self):
+        eleven = {"provider": "elevenlabs_tts", "voices": ELEVEN_VOICES}
+        for wrong in ("Algenib", ELEVEN_VOICES["host_a"]):
+            with self.assertRaises(ValueError, msg=wrong):
+                AudioChoice.model_validate({**eleven, "third_voice": wrong})
+        chosen = AudioChoice.model_validate({**eleven, "third_voice": ELEVEN_THIRD, "third_style": "sly and warm"})
+        self.assertEqual(chosen.for_hosts(three_hosts()).voices["host_c"], ELEVEN_THIRD)
+        # ElevenLabs takes a style per role, the third host's included.
+        self.assertEqual(chosen.spoken_styles("de-DE")["host_c"], "sly and warm")
+        unset = AudioChoice.model_validate(eleven)
+        self.assertIs(unset.for_hosts(TopicBrief(topic="Geld")), unset, "two hosts need no third voice")
+        with self.assertRaises(AppError) as stop:
+            unset.for_hosts(three_hosts())
+        self.assertEqual(stop.exception.code, "third_voice_required")
+        self.assertEqual(audio_catalog()["elevenlabs_tts"]["third_voices"], ())
 
     def test_a_recording_voices_the_third_host_and_alternation_never_moves_it(self):
         choice = AudioChoice(provider="google_gemini_tts", voices={"host_a": "Erinome", "host_b": "Charon"},
@@ -268,6 +291,45 @@ class ThreeHostScriptRunTests(fixtures.ScriptProjectCase):
         tts = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
         voiced = AudioChoice.model_validate(choice).for_hosts(read_yaml_brief(root))
         self.assertEqual(len(check_google_rows(root, script, tts, voiced, "de-DE")), len(bodies))
+
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_an_elevenlabs_recording_speaks_all_three_hosts_in_one_passage(self):
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            self.assertEqual(run_script(self.root).status, "completed")
+        root = self.root.resolve()
+        script = EpisodeScript.model_validate(read_yaml(root / "episodes/ep_001/script.yaml"))
+        choice = {"provider": "elevenlabs_tts", "voices": ELEVEN_VOICES, "expression": False}
+        with patch("podcast_automate.elevenlabs_speech.build_opener") as build, \
+                patch("podcast_automate.google_speech.build_opener", side_effect=AssertionError("No Google speech")), \
+                patch("podcast_automate.speech.build_opener", side_effect=AssertionError("No OpenRouter speech")):
+            build.return_value.open.side_effect = dialogue_answer
+            # Without a third voice the recording never starts: ElevenLabs has none to fall back on (D-179), and like
+            # the other checks before a run it leaves no run behind.
+            runs = sorted((root / "runs").iterdir())
+            with self.assertRaises(AppError) as stop:
+                run_episode_audio(root, episode="ep_001", approve_audio=True, audio_choice=choice,
+                                  elevenlabs_key=ELEVEN_KEY)
+            self.assertEqual(stop.exception.code, "third_voice_required")
+            build.return_value.open.assert_not_called()
+            self.assertEqual(sorted((root / "runs").iterdir()), runs)
+            choice["third_voice"] = ELEVEN_THIRD
+            run = run_episode_audio(root, episode="ep_001", approve_audio=True, audio_choice=choice,
+                                    elevenlabs_key=ELEVEN_KEY)
+            self.assertEqual(run.status, "completed")
+            bodies = [json.loads(call.args[0].data) for call in build.return_value.open.call_args_list]
+        # ElevenLabs takes up to ten voices per request, so its passages are cut as for two hosts.
+        self.assertEqual(len(bodies), len(eleven_plan(script)))
+        voices = [{item["voice_id"] for item in body["inputs"]} for body in bodies]
+        self.assertIn({*ELEVEN_VOICES.values(), ELEVEN_THIRD}, voices, "one passage speaks all three hosts")
+        work = root / "runs" / run.run_id
+        inputs = json.loads((work / "inputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(inputs["passages"], ELEVENLABS_PASSAGE_RULE)
+        report = json.loads((root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["voices"], {**ELEVEN_VOICES, "host_c": ELEVEN_THIRD})
+        tts = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
+        voiced = AudioChoice.model_validate(choice).for_hosts(read_yaml_brief(root))
+        self.assertEqual(len(check_elevenlabs_rows(root, script, tts, voiced, "de-DE")), len(bodies))
 
 
 def read_yaml_brief(root):

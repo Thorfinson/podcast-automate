@@ -11,13 +11,15 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
+from podcast_automate import episode_audio
 from podcast_automate.audio import audio_info
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.google_speech import (GOOGLE_SPEECH_ENDPOINT, MAX_PASSAGE_CHARACTERS, MAX_PASSAGE_TURNS,
                                             RATE_LIMIT_RETRIES, GoogleSpeech, check_google_rows, plan_passages,
                                             request_body)
-from podcast_automate.models import EpisodeScript, Segment
+from podcast_automate.models import Chapter, EpisodeScript, Segment
+from podcast_automate.script_models import ScenePlan, SeriesPlan
 from podcast_automate.scripting import run_script
 from podcast_automate.speech import DEFAULT_STYLES, AudioChoice, audio_generation_record
 from podcast_automate.storage import read_yaml
@@ -285,6 +287,41 @@ class GoogleEpisodeTests(unittest.TestCase):
         tts = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
         self.assertEqual(len(check_google_rows(self.root, script, tts, AudioChoice.model_validate(self.choice), "de-DE")),
                          calls)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_progress_counts_the_segments_of_finished_chapters_not_their_passages(self):
+        # The Studio adds the open chapter's segments to this count and shows it against all segments.
+        def two_chapters(prompt, output_type, directory, **kwargs):
+            result, meta = self.fixture.model(prompt, output_type, directory, **kwargs)
+            if output_type is SeriesPlan:
+                result.episodes[0].scenes.append(ScenePlan(scene_id="scene_two", title="Second",
+                    question="What follows?", purpose="synthesis", finding_ids=["f_energy"],
+                    explanation_steps=["Apply the comparison."]))
+            if output_type is EpisodeScript:
+                result.chapters.append(Chapter(chapter_id="scene_two", title="Second"))
+                result.segments.append(Segment(segment_id="seg_003", scene_id="scene_two", chapter_id="scene_two",
+                                               speaker_id="host_a", text="So the lower score wins.",
+                                               knowledge_refs=["f_energy"]))
+            return result, meta
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=two_chapters):
+            run_script(self.root, episode="ep_001")
+        script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
+        record, seen = episode_audio.run_google_tts, []
+
+        def chapter_start(config, batch, root, folder, *args, **kwargs):
+            seen.append(json.loads((folder.parent.parent / "progress.json").read_text(encoding="utf-8")))
+            return record(config, batch, root, folder, *args, **kwargs)
+        with patch("podcast_automate.google_speech.build_opener") as build, \
+                patch("podcast_automate.episode_audio.run_google_tts", side_effect=chapter_start):
+            build.return_value.open.side_effect = spoken_answer
+            run = run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=self.choice,
+                                    api_key="sk-or-text-key", speech_key="AIza-google-key-0123456789")
+        self.assertEqual(run.status, "completed")
+        sizes = [sum(s.chapter_id == c.chapter_id for s in script.segments) for c in script.chapters]
+        first = [s for s in script.segments if s.chapter_id == script.chapters[0].chapter_id]
+        self.assertLess(len(plan_passages(first)), sizes[0])
+        self.assertEqual([(p["completed_segments"], p["total_segments"]) for p in seen],
+                         [(sum(sizes[:n]), len(script.segments)) for n in range(len(sizes))])
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_a_language_pace_slows_and_calms_only_recordings_in_that_language(self):

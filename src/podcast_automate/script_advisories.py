@@ -225,7 +225,7 @@ def turns(script) -> list[tuple[str, list[str], int]]:
 
 def partner_share(heard) -> float:
     """The share of the words in ``heard`` (turns) that the expert host_a does not speak, unrounded: host_b's, and with
-    a third host (D-174) host_b's and host_c's together."""
+    a third host (D-179) host_b's and host_c's together."""
     total = sum(count for _, _, count in heard)
     return sum(count for speaker, _, count in heard if speaker != "host_a") / total if total else 0.0
 
@@ -260,7 +260,7 @@ def low_partner_share(script) -> list[dict]:
     # The count is the share in whole percent, like the duration advisory's.
     percent = round(share * 100)
     if any(segment.speaker_id == "host_c" for segment in script.segments):
-        # Three hosts (D-174): host_b and host_c share the partner's part, and the row says so.
+        # Three hosts (D-179): host_b and host_c share the partner's part, and the row says so.
         return [_row("low_partners_share", script, [], percent,
                      f"Host B und Host C sprechen zusammen {percent} Prozent der Wörter; vorgesehen ist mindestens "
                      f"ein Drittel, unter {round(PARTNER_SHARE_FLOOR * 100)} Prozent klingt die Folge wie ein Vortrag.",

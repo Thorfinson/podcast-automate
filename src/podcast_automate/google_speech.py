@@ -40,7 +40,7 @@ GOOGLE_SPEECH_VERSION = "google_gemini_tts.v1"
 # Each role's short style comes from the audio choice (speech.RoleStyles, presets in speech.STYLE_PRESETS), with
 # "unhurried" added where the project's language asks for a calm pace (AudioChoice.spoken_styles).
 # The names the request gives the speakers; never spoken. Gender-neutral, so a name never hints at who explains. Sam is
-# a third host's (D-174).
+# a third host's (D-179).
 SPEAKER_NAMES = {"host_a": "Alex", "host_b": "Robin", "host_c": "Sam"}
 MAX_PASSAGE_CHARACTERS = 3600
 MAX_PASSAGE_TURNS = 20
@@ -73,7 +73,7 @@ def google_model(model):
 
 def plan_passages(segments):
     """The passages of ``segments`` as lists of their indices. A passage never crosses a chapter or scene, nor holds
-    more than MAX_PASSAGE_SPEAKERS hosts (only a script of three hosts has more, D-174). Each run of one scene is cut
+    more than MAX_PASSAGE_SPEAKERS hosts (only a script of three hosts has more, D-179). Each run of one scene is cut
     into as few passages as the bounds allow, at the segment boundaries nearest equal shares of its text, so no short
     remnant is left; a single segment over the bounds is a passage of its own."""
     groups, current = [], []

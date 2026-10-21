@@ -58,6 +58,14 @@ class PromptFileTests(unittest.TestCase):
         self.assertIn("note a missing attribution in limitations, never as an issue", prompts.text("script_review"))
         self.assertIn("use a comparison only where the sources support it", prompts.text("plain_language"))
 
+    def test_the_script_review_asks_for_the_scene_order_the_script_check_enforces(self):
+        """Orlagau ep_001 and ep_003, 2026-10-19: the review asked to add a later scene's finding to an opening teaser's
+        knowledge_refs, validate_script rejected every repair that did so, and both reviews stopped (D-175). The review
+        now asks for what the repair prompt already says: move the fact to its scene."""
+        self.assertIn("never ask to add a later scene's finding to its knowledge_refs", prompts.text("script_review"))
+        self.assertIn("For a finding first introduced in a later scene, move its explanation there",
+                      prompts.text("script_review_repair"))
+
     def test_the_listenability_rules_replace_the_monologue_rules_and_name_their_measured_figures(self):
         """2026-10-06: listeners found the episodes "Fakten, Fakten, Fakten". The rules that welcomed long monologues and
         refused a target share between the hosts are reworded, not stacked against the new ones, and the prompts name

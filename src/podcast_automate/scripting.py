@@ -89,8 +89,12 @@ def load_research(root: Path, config):
                        code="research_coverage_incomplete", status="blocked")
     for local in local_files:
         source_id = "src_" + hashlib.sha256(str(local).encode()).hexdigest()[:16]
-        saved_source = next((s for s in sources.sources if s.id == source_id), None)
-        if not saved_source or not local.is_file() or file_hash(local) != saved_source.raw_hash:
+        content = file_hash(local) if local.is_file() else None
+        # The id comes from the file's absolute path, so a project copied or moved elsewhere names the same file anew;
+        # the content the research read still counts as that source (D-178; 2026-10-19, the copy „Orlagau (ElevenLabs)“).
+        saved_source = next((s for s in sources.sources if s.id == source_id), None) or next(
+            (s for s in sources.sources if content is not None and s.raw_hash == content), None)
+        if not saved_source or content is None or content != saved_source.raw_hash:
             raise AppError("Lokale Quelle seit der Recherche geändert oder nicht eingelesen.",
                            code="inputs_changed", status="blocked")
     if validate_dossier(dossier, discovery, context):

@@ -44,13 +44,13 @@ HOST_ROLES = {
 
 def host_roles(config=None):
     """The part of every host the prompts describe: HOST_ROLES, and the third host's own role when the brief has one
-    (D-174). A project of two hosts gets HOST_ROLES itself, so its prompts and hashes stay as they were."""
+    (D-179). A project of two hosts gets HOST_ROLES itself, so its prompts and hashes stay as they were."""
     third = getattr(config, "third_host", None)
     return {**HOST_ROLES, THIRD_HOST: third.role} if third else HOST_ROLES
 
 
 def cast_note(config=None) -> str:
-    """What a script run's model call is told before its prompt when the project has a third host (D-174): the rule
+    """What a script run's model call is told before its prompt when the project has a third host (D-179): the rule
     for three hosts and the third host's name and part. Empty for two hosts, whose prompts stay byte-identical; the
     payload's JSON stays the last line of every prompt."""
     third = getattr(config, "third_host", None)

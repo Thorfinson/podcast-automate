@@ -220,7 +220,7 @@ class ScriptRun:
 
     def invoke(self, prompt, output_type, version, *, search=False, research=False):
         """One validated answer; a parsed answer the contract rejects is re-asked with the defects named. A project
-        with a third host puts its cast before every call that is no search (polishing.cast_note, D-174)."""
+        with a third host puts its cast before every call that is no search (polishing.cast_note, D-179)."""
         # The pool applies the saved choice per call; supplementary research follows the subscription rule.
         self.adapter.require_key()
         if not (search or research):

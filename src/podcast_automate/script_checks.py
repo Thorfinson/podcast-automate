@@ -263,7 +263,7 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
         errors.append("Core findings (finding_ids) not yet cited: " + ", ".join(missing) +
                       ". Supporting and recalled findings need not be cited.")
     if {s.speaker_id for s in script.segments} != set(roles):
-        # Two hosts keep the wording the writer has been told since the start; a third host is named (D-174).
+        # Two hosts keep the wording the writer has been told since the start; a third host is named (D-179).
         errors.append("Use both hosts in the dialogue." if set(roles) == set(TWO_HOSTS) else
                       "Use exactly the hosts " + ", ".join(roles) + " in the dialogue, each of them.")
     metrics = script_metrics(script)
@@ -444,15 +444,18 @@ def outline_hash(work: Path) -> str:
 # v15 (2026-10-06): chapter endings vary by the teaching design's storytelling devices (D-143); a chapter may end on
 # another handover than a recap.
 # v16 (2026-10-07): the breathers of the listenability rules; a dialogue point only, like v14 and v15.
-SCRIPT_REVIEW_VERSION = "script_review.v16-breathers"
+# v17 (2026-10-19): a fact whose finding a later scene introduces is moved there or asked as that scene's open
+# question, never given the later finding's ID, which validate_script rejects (D-175).
+SCRIPT_REVIEW_VERSION = "script_review.v17-scene-order"
 # Versions whose saved verdict still stands when it blocked nothing: v12 and v13 only stop blocking, so an episode an
 # earlier version passed is not reviewed again; one it blocked is, under today's version, before the next repair. v14
 # adds only a dialogue point, which stops nothing once the repairs are spent (NOTED_CATEGORIES), so a v13 pass stands
 # too: an episode in flight is not reworked for it, while every draft written from now on is held to it. v15 only
-# loosens that point, so a v14 pass stands as well.
+# loosens that point, so a v14 pass stands as well. v16 adds a dialogue point like v14, so a v15 pass stands. v17
+# changes only the correction asked for a statement that blocks already, so a v16 pass stands.
 RELAXED_REVIEW_VERSIONS = frozenset({"script_review.v11-core-limits", "script_review.v12-source-corrected",
                                      "script_review.v13-reviewer-advisories", "script_review.v14-listenability",
-                                     "script_review.v15-dramaturgy"})
+                                     "script_review.v15-dramaturgy", "script_review.v16-breathers"})
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.

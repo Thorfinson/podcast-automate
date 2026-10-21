@@ -3,7 +3,7 @@
 A German podcast for twelve-year-olds about money, from pocket money to an economy of AI and robots, with three
 speakers: Mara explains, Leo (twelve) asks and objects, and Ea-nasir, the copper merchant of Ur to whom the oldest known
 customer complaint is addressed, brings the view of someone 3,750 years old. It is the reference project for the
-third host ([D-174](../../docs/DECISIONS.md)).
+third host ([D-179](../../docs/DECISIONS.md)).
 
 | File | Content |
 | --- | --- |

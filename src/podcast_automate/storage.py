@@ -19,7 +19,7 @@ from .trial import capped_limits
 # them as its saved snapshot recorded them (bound_brief).
 OPERATIONAL_FIELDS = ("runtime", "research_limits")
 # Fields the research lane never reads (checked with grep on 2026-10-02): voices, audio and text defaults, host names;
-# the third host (D-174) since 2026-10-12.
+# the third host (D-179) since 2026-10-12.
 RESEARCH_OPERATIONAL_FIELDS = ("voice_profile", "tts_backend", "text_backend", "host_names", "third_host")
 
 

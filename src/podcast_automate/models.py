@@ -42,7 +42,7 @@ class SeriesGoal(TypedDict):
 # of an unchanged project.yaml, and every binding built from the brief, stays what it was.
 LATER_BRIEF_FIELDS = ("series_goal", "recency_months", "third_host")
 
-# The two hosts every project has, and the third an optional TopicBrief.third_host adds (D-174).
+# The two hosts every project has, and the third an optional TopicBrief.third_host adds (D-179).
 TWO_HOSTS = ("host_a", "host_b")
 THIRD_HOST = "host_c"
 ROLE_LABELS = {"host_a": "Host A", "host_b": "Host B"}
@@ -77,7 +77,7 @@ class Contract(BaseModel):
 
 
 class ThirdHost(Contract):
-    """A third voice in the dialogue (D-174, 2026-10-12): who it is and how it takes part. Every script prompt of a
+    """A third voice in the dialogue (D-179, 2026-10-12): who it is and how it takes part. Every script prompt of a
     project with one gets its name and role, and every recording speaks it in a voice of its own."""
 
     # What the other hosts call it; also its label in transcript, reading page and show notes.
@@ -183,7 +183,7 @@ class TopicBrief(Contract):
     # every dump while false, so every other brief keeps its hash.
     trial: bool = Field(default=False, strict=True,
         description="Trial project: small limits per run, one short episode (trial.py); false for every other project.")
-    # A third host (D-174, 2026-10-12): unset, the project has the two hosts it always had and hashes as before.
+    # A third host (D-179, 2026-10-12): unset, the project has the two hosts it always had and hashes as before.
     third_host: ThirdHost | None = Field(default=None,
         description="Optional third host: name, role and the CLI's Qwen voice; unset means two hosts.")
 

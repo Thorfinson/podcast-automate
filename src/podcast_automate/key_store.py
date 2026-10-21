@@ -11,8 +11,8 @@ from __future__ import annotations
 from .logs import logger
 
 SERVICE = "podcast-automate"
-# Every key the Studio holds: OpenRouter, Google, Anthropic, Perplexity and CORE's free key.
-KINDS = ("openrouter", "google", "anthropic", "perplexity", "core")
+# Every key the Studio holds: OpenRouter, Google, Anthropic, Perplexity, CORE's free key and ElevenLabs.
+KINDS = ("openrouter", "google", "anthropic", "perplexity", "core", "elevenlabs")
 
 
 class Vault:
