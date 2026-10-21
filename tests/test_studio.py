@@ -277,9 +277,11 @@ class StudioHttpTests(unittest.TestCase):
             # A server without a credential store keeps both keys for the session only (D-167).
             self.assertEqual(json.loads(body), {"key_available": True, "google_key_available": True,
                                                 "anthropic_key_available": False, "perplexity_key_available": False,
-                                                "core_key_available": False, "key_vault": False,
+                                                "core_key_available": False, "elevenlabs_key_available": False,
+                                                "key_vault": False,
                                                 "key_sources": {"openrouter": "session", "google": "session",
-                                                                "anthropic": None, "perplexity": None, "core": None}})
+                                                                "anthropic": None, "perplexity": None, "core": None,
+                                                                "elevenlabs": None}})
             self.assertEqual((self.app.key, self.app.google_key), ("or-key", "AIza-google-test-key-0123"))
             self.assertEqual(json.loads(self.request("/api/projects/example")[1])["audio_queue"][0]["waiting"], "place")
             # A key pasted into the chat never reaches a model.
@@ -1409,6 +1411,55 @@ class StudioHttpTests(unittest.TestCase):
         before = path.read_bytes()
         self.assertEqual(record_interruption(self.root), completed)
         self.assertEqual(path.read_bytes(), before)
+
+
+class OwnAudioTests(unittest.TestCase):
+    """A project's own audio choice over the settings page's (D-177) and ElevenLabs' key and voices (D-176): Orlagau,
+    2026-10-19, was to be spoken by ElevenLabs in a copy while the original and every other project kept Google."""
+    request = StudioHttpTests.request
+
+    def setUp(self):
+        StudioHttpTests.setUp(self)
+        self.google = {"provider": "google_gemini_tts", "voices": {"host_a": "Erinome", "host_b": "Sadachbia"}}
+        write_json(self.workspace / "projects/.studio-settings.json", {"audio": self.google})
+        self.eleven = {"provider": "elevenlabs_tts", "voices": {"host_a": "S87WJpstXs0Ge2ukRiXJ",
+                                                                "host_b": "VHYWoxffK1pFlM1dtRb0"}}
+
+    def detail(self):
+        return json.loads(self.request("/api/projects/example")[1])
+
+    def test_a_project_speaks_with_its_own_choice_until_it_follows_the_settings_again(self):
+        self.assertEqual((self.detail()["audio_own"], self.detail()["audio_settings"]["provider"]),
+                         (False, "google_gemini_tts"))
+        status, body, _ = self.request("/api/projects/example/audio_own", {"audio": self.eleven})
+        self.assertEqual(status, 200, body)
+        detail = self.detail()
+        self.assertEqual((detail["audio_own"], detail["audio_settings"]["provider"], detail["audio_settings"]["expression"]),
+                         (True, "elevenlabs_tts", True))
+        # Its key is missing, and the reminder names it for this project only.
+        self.assertIn({"need": "elevenlabs_audio", "projects": ["A test project"], "key": "elevenlabs"},
+                      detail["key_reminder"])
+        status, body, _ = self.request("/api/projects/example/audio_own", {"audio": {**self.eleven, "voices": {
+            "host_a": "Erinome", "host_b": "Sadachbia"}}})
+        self.assertEqual(status, 400, "Gemini's voice names are no ElevenLabs voice ids")
+        self.request("/api/projects/example/audio_own", {"audio": None})
+        self.assertEqual((self.detail()["audio_own"], self.detail()["audio_settings"]["provider"]),
+                         (False, "google_gemini_tts"))
+
+    def test_the_elevenlabs_key_is_stored_under_its_kind_and_lists_the_accounts_voices(self):
+        status, body, _ = self.request("/api/elevenlabs/voices", {})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "elevenlabs_key_required"))
+        key = "sk_" + "0123456789abcdef" * 3
+        states = json.loads(self.request("/api/key", {"key": key, "kind": "elevenlabs"})[1])
+        self.assertEqual((states["elevenlabs_key_available"], states["key_sources"]["elevenlabs"]), (True, "session"))
+        voices = [{"voice_id": "S87WJpstXs0Ge2ukRiXJ", "name": "Pauli"}]
+        with patch("podcast_automate.studio.account_voices", return_value=voices) as listed:
+            status, body, _ = self.request("/api/elevenlabs/voices", {})
+        self.assertEqual((status, json.loads(body)), (200, {"voices": voices}))
+        self.assertEqual(listed.call_args.args, (key,))
+        # A key pasted into the chat never reaches a text model.
+        status, body, _ = self.request("/api/projects/example/start", {"action": "assistant", "message": f"Key: {key}"})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "credential_in_prompt"))
 
 
 class WorkspaceSettingsTests(unittest.TestCase):

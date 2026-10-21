@@ -2,7 +2,7 @@
 title: Configuration
 doc_type: configuration
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-19
 covers:
   - src/podcast_automate/studio_settings.py
   - src/podcast_automate/studio_text.py
@@ -28,6 +28,7 @@ covers:
 | `<project>/version.json` | One project | Its version number, the podcast's first version, the version it came from and its starting library ([New versions](STUDIO.md#new-versions)); absent in a first version | `pla new-version`, the Studio's „Neue Version anlegen“ |
 | `projects/.studio-settings.json` | Every project of a Studio workspace | Text model, web search, audio, execution modes, pre-approvals, research limits and the time limit of one model call ([Studio settings](#studio-settings)) | The Studio's settings page only |
 | `<project>/studio/text.json`, `audio.json`, `execution.json`, `allowances.json` | One project | The same choices per project; used only while the workspace file does not exist | The Studio |
+| `<project>/studio/audio_own.json` | One project | Its own speech choice, which holds over the workspace file's ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice), D-177) | The recording page's panel „Sprachanbieter dieses Projekts“ |
 | `<project>/studio/jev_probe.json` | One project | Whether new script runs also ask Jev in the gap probe; stays per project even with workspace settings ([Gap probe](RESEARCH.md#gap-probe)) | The Studio switch |
 | `<project>/studio/spoken_forms.json`, `<project>/style_notes.md` | One project | Spoken forms ([Spoken forms and pronunciation](AUDIO.md#spoken-forms-and-pronunciation)) and editorial notes ([Host names and style notes](SCRIPTS.md#host-names-and-style-notes)) | The Studio |
 | `~/.podcast-automate/subscriptions.json` | The user account, all workspaces | Quota store and the Claude extra-usage switch ([Files outside the project](#files-outside-the-project)) | Adapters, Studio, `pla quota` |
@@ -97,7 +98,7 @@ OpenRouter, Google, Anthropic and Perplexity keys; they apply to all projects (w
 | Section | Replaces in each project | Details |
 | --- | --- | --- |
 | `text` | `studio/text.json` | Preset, reasoning level and the OpenRouter output limit `max_output_tokens` (1 024 to 200 000, default 32 768); [Providers and models](PRODUCT.md#providers-and-models) |
-| `audio` | `studio/audio.json` | Provider, speech model, both voices, the pause minimums ([Pause minimums](AUDIO.md#pause-minimums)), for Gemini whether [expression tags](AUDIO.md#expression-tags) are set, and for Gemini through Google each role's style (`styles`) and whether the roles swap from episode to episode (`alternate_roles`; [Style and roles](AUDIO.md#style-and-roles)) |
+| `audio` | `studio/audio.json` | Provider, speech model, both voices (for ElevenLabs the account's voice ids), the pause minimums ([Pause minimums](AUDIO.md#pause-minimums)), for Gemini and ElevenLabs whether [expression tags](AUDIO.md#expression-tags) are set, and for Gemini through Google and ElevenLabs each role's style (`styles`) and whether the roles swap from episode to episode (`alternate_roles`; [Style and roles](AUDIO.md#style-and-roles)) |
 | `execution` | `studio/execution.json` | Sequential or parallel, separately for text work and recording ([Sequential or parallel](STUDIO.md#sequential-or-parallel)) |
 | `allowances` | `studio/allowances.json` | Pre-approvals ([Budgets](BUSINESS_LOGIC.md#budgets)) |
 | `research_limits` | `research_limits` in `project.yaml` | Model calls, sources, search rounds and the money limit `cost_usd`; a billed text model is refused without it ([Budgets](BUSINESS_LOGIC.md#budgets)) |
@@ -160,6 +161,7 @@ Variables you can set. What the adapters set or remove for the CLIs they start i
 | Variable | Effect | Read in |
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | OpenRouter key for text, Gemini speech through OpenRouter, Jev and the Studio server when no key was entered; handling rules: [Secrets and keys](SECURITY.md#secrets-and-keys) | `openrouter.OpenRouterAdapter`, `speech.py`, `jev.JevClient`, `studio.py`, `logs.scrub` |
+| `ELEVENLABS_API_KEY` | ElevenLabs key for recordings through ElevenLabs and the account's voice list, when none was entered in the Studio; handling rules: [ElevenLabs key in the Studio](SECURITY.md#elevenlabs-key-in-the-studio) | `elevenlabs_speech.ElevenLabsSpeech`, `studio.py`, `logs.scrub` |
 | `GEMINI_API_KEY` | Google key for Gemini speech through Google and the conversation samples, when none was entered in the Studio; handling rules: [Google key in the Studio](SECURITY.md#google-key-in-the-studio) | `google_speech.GoogleSpeech`, `studio.py`, `logs.scrub` |
 | `ANTHROPIC_API_KEY` | Anthropic key for Claude on your API key (`claude_api`), when none was entered in the Studio or after `--api-key`; checked by `pla doctor` (`claude_api`). Never handed to a subscription call; handling rules: [Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio) | `claude_code.ClaudeCodeAdapter`, `doctor.claude_api_check`, `studio.py`, `logs.scrub` |
 | `PERPLEXITY_API_KEY` | Perplexity key for the web search through Perplexity, when none was entered in the Studio; the only source of the key for `pla research` and `pla script` with `--web-search perplexity`; reported by `pla doctor` (`perplexity_search`). Handling rules: [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio) | `web_search.PerplexitySearch`, `doctor.inspect`, `studio.py`, `logs.scrub` |
@@ -179,6 +181,7 @@ Variables you can set. What the adapters set or remove for the CLIs they start i
 | `~/.podcast-automate/subscriptions.json` | Quota store shared by workers, Studio server and status monitor (last Codex rate-limit snapshot, last Claude login facts and rate-limit event, an active Claude block, short-lived "unusable" notes per subscription) and the Claude extra-usage switch; never credentials. Lock file `.subscriptions.lock` next to it; on Windows under `%USERPROFILE%`; override `PLA_SUBSCRIPTIONS_STORE` | [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection) |
 | `~/.podcast-automate/core_usage.json` | Today's CORE API calls; override `PLA_CORE_USAGE_STORE` | [Environment variables](#environment-variables) |
 | `projects/.gemini_throttle.json` | The rate-limit pause shared by all Gemini recordings of the workspace | [Parallel recording and queue](AUDIO.md#parallel-recording-and-queue) |
+| `projects/.elevenlabs_throttle.json` | The rate-limit pause shared by all ElevenLabs recordings of the workspace | [ElevenLabs](AUDIO.md#elevenlabs) |
 | `projects/voice-samples/gemini/` | Shared Gemini voice-sample library | [Voice samples](OPERATIONS.md#voice-samples) |
 | `.studio/trash/` | Deleted projects, restorable from the overview | [Overview, navigation and hold cards](STUDIO.md#overview-navigation-and-hold-cards) |
 | `.venv/`, `.venv-tts/`, `tools/ffmpeg/` | Controller environment, separate Qwen environment, local FFmpeg | [Install on Windows 11](OPERATIONS.md#install-on-windows-11) |

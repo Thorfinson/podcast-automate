@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-10-08
+last_reviewed: 2026-10-19
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -224,13 +224,14 @@ projects:
 | --- | --- |
 | **„Textmodell“** (text model) | One of the presets; see [Choosing the text model](#choosing-the-text-model). Below them a line names the measured money per call of Claude Sonnet 5.5 and Opus 5.5 in research and script work and that a whole series took 1,400 to 1,800 calls ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
 | **„Websuche“** (web search) | **„Über das Textmodell“** (through the text model: Claude and Codex search with their own tools, the default) or **„Über Perplexity“** (through Perplexity: the Studio searches itself and the text model chooses among the results). Perplexity lets every text model research, an OpenRouter model included, needs the Perplexity key and a money limit, and costs about 0.005 USD per search request. New research and script runs take the choice; running ones keep theirs ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). |
-| **„Audio“** | Provider (Qwen, Gemini through Google, Gemini through OpenRouter), speech model (Gemini), the voices of host A and host B, the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **„Sprechtempo Deutsch“** and **„Sprechtempo Englisch“** (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini whether expression tags are set before recording. For Google also the style of each role with its presets, **„… ohne Eile sprechen“** (speak unhurried) per language, **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode) and **„▶ Gesprächsprobe“** (conversation sample) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles)). |
+| **„Audio“** | Provider (Qwen, Gemini through Google, ElevenLabs, Gemini through OpenRouter), speech model (Gemini, ElevenLabs), the voices of host A and host B (for ElevenLabs the voices of your account, loaded with the ElevenLabs key, your own first, **„Stimmen neu laden“**), the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **„Sprechtempo Deutsch“** and **„Sprechtempo Englisch“** (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini and ElevenLabs whether expression tags are set before recording. For Google and ElevenLabs also the style of each role with its presets, **„… ohne Eile sprechen“** (speak unhurried) per language, **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode) and, for Google, **„▶ Gesprächsprobe“** (conversation sample) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles), [ElevenLabs](AUDIO.md#elevenlabs)). A project may hold a choice of its own instead ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice)): the recording page's panel **„Sprachanbieter dieses Projekts“** sets it and **„Wieder wie Einstellungen“** removes it. |
 | **„Ausführung“** (execution) | See [Sequential or parallel](#sequential-or-parallel). |
 | **„Ohne Rückfrage“** (without asking) | See [Pre-approvals](#pre-approvals). |
 | **„Limits“** | Model calls per run, sources and search rounds per research, the time limit of one model call, and **„Kostengrenze je Lauf in USD“** (money limit per run in USD), required for a text model billed to a key and for the web search through Perplexity: saving either without it is refused with `cost_limit_required` ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
 | **„Claude“** | The switch for bought extra usage ([Studio settings](CONFIGURATION.md#studio-settings)). |
 | **„OpenRouter-Key“** | The key for OpenRouter text, Gemini audio through OpenRouter and Jev: **„Key hinterlegen“** (store key), **„Key entfernen“** (remove key). Every key panel says where its key comes from (the credential store, this session only, or an environment variable of the server), and one note above them names the store; handling in [Keys in the credential store](SECURITY.md#keys-in-the-credential-store). |
 | **„Google-Key“** | The key for Gemini audio through Google and the conversation samples, with the same two buttons; handling in [Google key in the Studio](SECURITY.md#google-key-in-the-studio). |
+| **„ElevenLabs-Key“** | The key for recordings through ElevenLabs and the list of your ElevenLabs voices, with the same two buttons; handling in [ElevenLabs key in the Studio](SECURITY.md#elevenlabs-key-in-the-studio). |
 | **„Anthropic-Key“** | The key for Claude on your Anthropic API key (`claude_api`), with the same two buttons; every call is billed to your Anthropic account. Handling in [Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio). |
 | **„Perplexity-Key“** | The key for the web search through Perplexity, with the same two buttons; only the search queries go to Perplexity, and every request is billed to your Perplexity account. Handling in [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio). |
 | **„CORE-Key“** | CORE's free key for free copies of blocked sources, with the same two buttons; only the title or DOI of the work goes to CORE. Handling in [CORE key in the Studio](SECURITY.md#core-key-in-the-studio). |
@@ -586,9 +587,10 @@ The new server loads the keys from the credential store (D-167). Only on a syste
 ([Times and connection](#times-and-connection)); until then queued Gemini episodes show „wartet auf den Google-Key“
 or „wartet auf den OpenRouter-Key“ (waiting for the key of their route) instead of waiting for a free slot.
 
-While a key is missing but something needs it, every page shows **„Google-Key fehlt“**, **„OpenRouter-Key fehlt“**,
+While a key is missing but something needs it, every page shows **„Google-Key fehlt“**, **„ElevenLabs-Key fehlt“**, **„OpenRouter-Key fehlt“**,
 **„Anthropic-Key fehlt“** or **„Perplexity-Key fehlt“** (key missing) at the top, also on a page loaded fresh after a
-restart (`Studio.key_reminder`, `studio.key_needs`): Gemini through Google (Google key), Gemini through OpenRouter, Jev
+restart (`Studio.key_reminder`, `studio.key_needs`): Gemini through Google (Google key), ElevenLabs (ElevenLabs key, need
+`elevenlabs_audio`), Gemini through OpenRouter, Jev
 in the gap probe or an OpenRouter text model (OpenRouter key), Claude on the API key (Anthropic key, need
 `anthropic_text`), or the web search „Über Perplexity“ (Perplexity key, need `perplexity_search`), each with its
 projects and what happens without the key (Gemini recordings wait; new script runs search gaps by words only, or stop

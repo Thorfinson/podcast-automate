@@ -904,6 +904,29 @@ class ResearchTests(fixtures.ResearchProjectCase):
                 run_research(self.root, resume=True)
         self.assertEqual(error.exception.code, "inputs_changed")
 
+    def test_a_copied_project_still_finds_its_local_source_by_content(self):
+        """D-178, 2026-10-19: a local source's id comes from its absolute path, so the copy „Orlagau (ElevenLabs)“ named
+        its upload anew and every script and recording stopped with „Lokale Quelle seit der Recherche geändert“. The
+        content the research read counts; a changed file in the copy is still refused."""
+        import shutil
+        from podcast_automate.scripting import load_research
+        from podcast_automate.storage import load_project
+        local = self.root / "notes.txt"
+        local.write_text(TEXT, encoding="utf-8")
+        data = self.config.model_dump(mode="json")
+        data["local_sources"] = ["notes.txt"]
+        write_yaml(self.root / "project.yaml", data)
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
+            self.assertEqual(run_research(self.root).status, "completed")
+        copy = self.root.parent / (self.root.name + "-copy")
+        shutil.copytree(self.root, copy)
+        run_id, *_ = load_research(copy, load_project(copy))
+        self.assertTrue((copy / "runs" / run_id).is_dir())
+        (copy / "notes.txt").write_text(TEXT + " Changed in the copy.", encoding="utf-8")
+        with self.assertRaises(AppError) as changed:
+            load_research(copy, load_project(copy))
+        self.assertEqual(changed.exception.code, "inputs_changed")
+
     def test_reference_check_rejects_invented_or_unseen_evidence(self):
         context = [{"sections": [{"reference": "src_a#sec_a", "text": TEXT}]}]
         draft = ResearchDossier(topic="Test topic", scope_note="Test", findings=[Finding(

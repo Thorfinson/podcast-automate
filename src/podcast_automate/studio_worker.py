@@ -30,6 +30,7 @@ from .run_budget import run_text_generation
 from .runner import manifest_path, run_observer
 from .scripting import outline_hash, run_script
 from .teaching_research import gaps_in
+from .elevenlabs_speech import ElevenLabsSpeech
 from .google_speech import GoogleSpeech
 from .publish_kit import build_podcast_kit, build_publish_kit
 from .sources import use_core_key
@@ -163,15 +164,20 @@ def perform(root, request, sample_progress=None):
         checks = inspect(config.runtime, include_tts=not audio.remote, anthropic_key=request.get("anthropic_key"),
                          perplexity_key=request.get("perplexity_key"), openrouter_key=request.get("api_key"))
         if audio.remote:
-            google = audio.provider == "google_gemini_tts"
+            google, eleven = audio.provider == "google_gemini_tts", audio.provider == "elevenlabs_tts"
+            engine = (GoogleSpeech(request.get("google_key")) if google
+                      else ElevenLabsSpeech(request.get("elevenlabs_key")) if eleven
+                      else GeminiSpeech(request.get("api_key")))
             try:
-                (GoogleSpeech(request.get("google_key")) if google else GeminiSpeech(request.get("api_key"))).require_key()
+                engine.require_key()
                 available = True
             except AppError:
                 available = False
-            checks["checks"].append({"name": "Google-Key" if google else "Gemini-TTS-Key", "ok": available,
+            name = "Google-Key" if google else "ElevenLabs-Key" if eleven else "Gemini-TTS-Key"
+            checks["checks"].append({"name": name, "ok": available,
                 "detail": "Key hinterlegt; noch kein API-Hörtest durchgeführt." if available
-                          else "Google-Key fehlt." if google else "OpenRouter-Key fehlt."})
+                          else "Google-Key fehlt." if google else "ElevenLabs-Key fehlt." if eleven
+                          else "OpenRouter-Key fehlt."})
             checks["ready"] = checks["ready"] and available
         return {"checks": checks}
     if action == "audio_sample":
@@ -282,7 +288,7 @@ def perform(root, request, sample_progress=None):
             expected_config_hash=request["config_hash"], audio_choice=request.get("audio_settings"),
             expected_audio_hash=request.get("audio_hash"), api_key=request.get("api_key"),
             parallel_remote=request.get("parallel_remote", False), expected_expression_hash=request.get("expression_hash"),
-            speech_key=request.get("google_key"))
+            speech_key=request.get("google_key"), elevenlabs_key=request.get("elevenlabs_key"))
     elif action == "resume":
         run_id = request["run_id"]
         path = manifest_path(root, run_id)
@@ -303,7 +309,7 @@ def perform(root, request, sample_progress=None):
         elif manifest["kind"] == "episode_audio":
             run = run_episode_audio(root, resume=True, run_id=run_id, api_key=request.get("api_key"),
                                     parallel_remote=request.get("parallel_remote", False),
-                                    speech_key=request.get("google_key"))
+                                    speech_key=request.get("google_key"), elevenlabs_key=request.get("elevenlabs_key"))
         else:
             raise AppError("Diesen älteren Probentyp über die vorhandenen Werkzeuge fortsetzen.", code="unsupported_run")
     else:
@@ -372,6 +378,7 @@ def main():
     request = json.loads(sys.stdin.read())
     add_secret(request.get("api_key"))
     add_secret(request.get("google_key"))
+    add_secret(request.get("elevenlabs_key"))
     add_secret(request.get("anthropic_key"))
     use_anthropic_key(request.get("anthropic_key"))
     add_secret(request.get("perplexity_key"))
@@ -458,12 +465,12 @@ def main():
             receipt = record_failure(root / "studio", "worker", exc,
                                      secrets=(request.get("api_key") or "", request.get("google_key") or "",
                                               request.get("anthropic_key") or "", request.get("perplexity_key") or "",
-                                              request.get("core_key") or ""))
+                                              request.get("core_key") or "", request.get("elevenlabs_key") or ""))
             logger("worker").error("Auftrag %s fehlgeschlagen: %s", job.get("id"), type(exc).__name__, exc_info=exc)
             if receipt:
                 job["message"] += f" Technische Details: {receipt.relative_to(root).as_posix()}"
         for key in (request.get("api_key"), request.get("google_key"), request.get("anthropic_key"),
-                    request.get("perplexity_key"), request.get("core_key")):
+                    request.get("perplexity_key"), request.get("core_key"), request.get("elevenlabs_key")):
             if key:
                 job["message"] = job["message"].replace(key, "[Key verborgen]")
     finally:

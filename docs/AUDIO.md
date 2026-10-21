@@ -2,11 +2,12 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-19
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
   - src/podcast_automate/google_speech.py
+  - src/podcast_automate/elevenlabs_speech.py
   - src/podcast_automate/parallel_speech.py
   - src/podcast_automate/episode_audio.py
   - src/podcast_automate/expression.py
@@ -78,8 +79,8 @@ On the command line, `pla audio` records one reviewed episode with Qwen (see [Co
 - The cache key covers provider, model revision, voice, spoken segment text, pronunciation and TTS settings,
   including any seeds used. Only changed or missing segments are rendered again. Failed episodes can be resumed one
   by one.
-- Real speaker overlaps, scene-wide stage directions and ElevenLabs TTS are not implemented; music and other audio
-  extras: see [Out of scope](PRODUCT.md#out-of-scope).
+- Real speaker overlaps and scene-wide stage directions are not implemented; music and other audio extras: see
+  [Out of scope](PRODUCT.md#out-of-scope).
 
 ### Errors
 
@@ -170,7 +171,8 @@ characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAG
 - Each role has a short style in English, as Google recommends (`speech.RoleStyles`, at most 80 characters; a long
   direction makes the voice drift). The presets (`speech.STYLE_PRESETS`) are the listening rounds; **„Neugierig,
   gespannt auf das, was kommt“** (curious and eager for what comes next) is the default, the user's choice of
-  2026-10-06 (why: D-135). The fields can also be overwritten with own words or left empty. Styles are Google's only.
+  2026-10-06 (why: D-135). The fields can also be overwritten with own words or left empty. Styles are Google's and ElevenLabs' only
+  ([ElevenLabs](#elevenlabs)).
 - **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode, `AudioChoice.alternate_roles`): in
   every even-numbered episode the two voices swap, so each voice is the expert in turn; voice A explains in episode 1
   (`AudioChoice.for_episode`). The roles in the script stay host_a explains and host_b asks; only the voices swap.
@@ -196,6 +198,68 @@ characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAG
   connection are requested twice more; a lasting connection error stops with `google_connection`.
 - A passage of 20 turns hides a single skipped turn better from the plausibility check than a segment does; the
   listening review stays the acceptance.
+
+## ElevenLabs
+
+The listening round of 2026-10-19 (`.studio/hoerproben/elevenlabs_probe.py`, Orlagau episode 1 in German) tried
+ElevenLabs v4 with the voices of the user's own account; the user chose Pauli to explain and Thomas to ask (why:
+D-176). In the Studio, choose **„ElevenLabs · v4“** in the **„Audio“** section of the
+[Settings page](STUDIO.md#settings-page), or as a project's own choice ([A project's own speech
+choice](#a-projects-own-speech-choice)), and store the **„ElevenLabs-Key“** there.
+
+### The speech request
+
+- `POST https://api.elevenlabs.io/v1/text-to-dialogue/with-timestamps?output_format=pcm_24000`
+  (`elevenlabs_speech.ELEVENLABS_ENDPOINT`), the key only in the `xi-api-key` header. The body is the passage's turns
+  as `inputs` (`text`, `voice_id`), `model_id` `eleven_v4` (`speech.ELEVENLABS_MODELS`), `language_code` `de` or `en`,
+  a fixed `seed` (42, best effort), and `previous_text`/`future_text`: at most 100 characters of the passage before and
+  after in the same chapter, so the delivery runs on across a cut.
+- The answer carries the audio as base64 PCM (24 kHz, mono, 16 bit) and the start and end of every turn
+  (`voice_segments`); the cache record keeps them with the credits ElevenLabs reports (`character-cost`) and its
+  request id. Verified live on 2026-10-19: the 12 samples and the Orlagau series, 47,543 characters of episode 1 cost
+  10,449 credits.
+- The voices are the account's, named by their ids (20 letters and digits, `speech.VOICE_ID`); no list is fixed. The
+  settings page and the project panel list them through the Studio (`/api/elevenlabs/voices`,
+  `elevenlabs_speech.account_voices`), the account's own voices first. v4 speaks German fluently with any voice; a
+  voice's own accent stays only in its own language.
+
+### Passages and the reading
+
+- Passages as on Google's route ([Passages](#passages)), but at most 1,600 characters of script text and 20 segments
+  (`elevenlabs_speech.MAX_PASSAGE_CHARACTERS`, `PASSAGE_RULE`): ElevenLabs advises at most 2,000 characters per
+  dialogue request, and the tags and the other host's reactions add some. A passage over 2,000 characters is refused
+  before any request (`invalid_speech`).
+- The expression layer's reading is Gemini's ([Expression tags](#expression-tags)) and is spoken in ElevenLabs' words
+  (`elevenlabs_speech.passage_turns`): each tag becomes its square-bracket counterpart (`<sigh>` → `[sighs]`,
+  `<short pause>` → `[short pause]`, `<breath>` → `[inhales]`), a listener reaction `|mhm|` a short turn of the other
+  host („Mhm.“), and each role's style ([Style and roles](#style-and-roles)) a leading tag of its first turn in a
+  passage. A reading of its own in ElevenLabs' larger tag vocabulary is not built yet.
+- Styles, „Rollen von Folge zu Folge tauschen“ and the calm delivery („ohne Eile“) apply as on Google's route; the
+  conversation sample is Google's only.
+
+### Keys, errors and limits
+
+- Key handling: see [Secrets and keys](SECURITY.md#secrets-and-keys). Without an ElevenLabs key the run stops before
+  any request with `elevenlabs_key_required`.
+- Used-up credits (`quota_exceeded`, 402) stop with `elevenlabs_credits`; a refused key (401, 403) with
+  `elevenlabs_authentication`; a rejected request (400, 404, 413, 422) with `elevenlabs_speech_request`. ElevenLabs'
+  own short message is kept, without credentials.
+- A 429 is the plan's limit on parallel requests (Starter 3, Creator 5, Pro 10) or a busy ElevenLabs; it waits and
+  asks again up to eight times, with ElevenLabs' own throttle file for the workspace
+  (`projects/.elevenlabs_throttle.json`, `elevenlabs_speech.shared_throttle`), so it never slows Gemini. After that
+  the episode stops with `elevenlabs_busy`; fewer episodes at once help on a small plan. 500, 502, 503, 504, a cut
+  transfer and a reset connection are requested twice more; a lasting connection error stops with
+  `elevenlabs_connection`.
+
+## A project's own speech choice
+
+A project may speak with a choice of its own instead of the settings page's (`studio/audio_own.json`,
+`speech.own_audio`) (why: D-177): one podcast spoken by ElevenLabs while the others keep the workspace's route. It
+holds first, then the settings page's, then the project's `studio/audio.json` (`speech.selected_audio`). The
+recording page's panel **„Sprachanbieter dieses Projekts“** sets it (route, two voices, alternating roles; pauses,
+styles and pace come from the choice in force) and **„Wieder wie Einstellungen“** removes it
+(`POST /api/projects/<id>/audio_own`). As with any other change of the choice, every episode then needs a new
+approval, and finished recordings count as older.
 
 ## Gemini via OpenRouter
 
@@ -330,14 +394,15 @@ The tags belong to the script reading (why: D-091).
 
 ### Listener reactions
 
-A Google recording also gets the other host's short reactions (why: D-136): the expression stage places, from the
+A Google or ElevenLabs recording also gets the other host's short reactions (why: D-136, D-176; ElevenLabs speaks each
+as a short turn of the other host, [ElevenLabs](#elevenlabs)): the expression stage places, from the
 language's list (`expression.BACKCHANNELS`: for example `|mhm|`, `|right|`, `|aha|`), at most one reaction between
 pipes inside a segment of at least 30 words (`expression.MIN_BACKCHANNEL_WORDS`), never at its start or end, and per
 episode at most a quarter of its segments, at least two, counted apart from the tags
 (`prompts/audio_expression_backchannels.txt`, prompt version `audio_expression.v3-backchannels`). Gemini speaks the
 reaction in the other voice. The check removes nothing silently: without tags and reactions the text must be word for
 word the spoken one. A reading placed with reactions says so in `expression.json` (`"backchannels": true`) and is
-used only for a Google recording, a reading without them only for the other routes. The approval card and the
+used only for a Google or ElevenLabs recording, a reading without them only for the other routes. The approval card and the
 reading show the number of reactions. The OpenRouter route gets none: whether it passes pipes through is unverified.
 
 ### Style directions
@@ -393,7 +458,8 @@ German as recorded.
   (FFmpeg `atempo`) before the pauses go in, so the pauses keep their length and the timeline and the chapters are
   measured on the slowed audio. `audio_report.json` names it as `tempo`. It holds on every route and never speeds a
   recording up.
-- **„… ohne Eile sprechen“** (speak unhurried), Google only: both roles' styles are sent with „, unhurried“ added
+- **„… ohne Eile sprechen“** (speak unhurried), Google and ElevenLabs only: both roles' styles are sent with
+  „, unhurried“ added
   (`speech.UNHURRIED`, `AudioChoice.spoken_styles`); an empty style becomes „unhurried“. The takes are new requests.
   How much slower Gemini speaks with it is not measured yet (V-28).
 - A recording binds only the pace of its project's language (`AudioChoice.for_language`): a pace set for English
@@ -504,6 +570,8 @@ twice. The rate-limit rules of the Google route: see [Keys, errors and limits](#
   before the episode stops (why: D-098). A connection error that persists stops with `openrouter_connection`.
 - When an error persists, the recording stops; finished segments stay stored, and the user resumes the run
   explicitly.
+- ElevenLabs waits on its own file, `projects/.elevenlabs_throttle.json`, so its 429s never slow Gemini
+  ([ElevenLabs](#elevenlabs)).
 
 ### Queue
 

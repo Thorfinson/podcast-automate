@@ -53,6 +53,17 @@ class PausePolicy(Contract):
 # Gemini's two routes: Google's own API, which records two-host passages (google_speech.py, D-133), and OpenRouter,
 # which records every segment on its own and stays as the fallback.
 GEMINI_PROVIDERS = ("google_gemini_tts", "openrouter_gemini_tts")
+# ElevenLabs' Text to Dialogue, two-host passages like Google's (elevenlabs_speech.py, D-176). Its voices are the user's
+# own account's, named by their ids, so no list is fixed here.
+ELEVENLABS_PROVIDER = "elevenlabs_tts"
+ELEVENLABS_MODELS = {"eleven_v4": "Eleven v4"}
+ELEVENLABS_MODEL = next(iter(ELEVENLABS_MODELS))
+# ElevenLabs voice ids are 20 letters and digits; the bounds keep every Gemini voice name (13 at most) out.
+VOICE_ID = re.compile(r"[A-Za-z0-9]{16,32}")
+# Every route that records through an API, in parallel and with the expression layer; the local Qwen is the other.
+REMOTE_PROVIDERS = (*GEMINI_PROVIDERS, ELEVENLABS_PROVIDER)
+# The routes that record two-host passages instead of single segments (audio.assemble's units).
+PASSAGE_PROVIDERS = ("google_gemini_tts", ELEVENLABS_PROVIDER)
 # A short style per role for a Google recording (speech_metadata.style; a long direction makes the voice drift). The
 # presets are the listening rounds of 2026-10-06; "neugierig" was the user's choice (round 3, sample 5).
 STYLE_PRESETS = {
@@ -101,17 +112,18 @@ LanguagePaces = with_config(ConfigDict(extra="forbid"))(
 
 
 class AudioChoice(Contract):
-    provider: Literal["qwen3_local", "google_gemini_tts", "openrouter_gemini_tts"] = "qwen3_local"
+    provider: Literal["qwen3_local", "google_gemini_tts", "openrouter_gemini_tts", "elevenlabs_tts"] = "qwen3_local"
     voices: HostVoices = Field(
         default_factory=lambda: {"host_a": "Aiden", "host_b": "Vivian"})
     pauses: PausePolicy = Field(default_factory=PausePolicy)
-    model: Literal[tuple(GEMINI_MODELS)] = GEMINI_MODEL
-    # Inline audio tags placed by the text model before a Gemini recording (expression.py); Gemini only.
+    # A Gemini model (GEMINI_MODELS) on a Gemini route, an ElevenLabs model (ELEVENLABS_MODELS) on ElevenLabs.
+    model: str = GEMINI_MODEL
+    # Inline audio tags placed by the text model before a recording through an API (expression.py).
     expression: bool = False
     # The two voices swap roles in every even-numbered episode, so each host is the expert in turn (the user's wish of
     # 2026-10-06); host_a's voice explains in episode 1 (for_episode).
     alternate_roles: bool = False
-    # The style of each role; Google only (google_speech), the other routes have no style field.
+    # The style of each role; Google's style field (google_speech) and a leading tag on ElevenLabs (elevenlabs_speech).
     styles: RoleStyles = Field(default_factory=RoleStyles)
     # Each language's pace; a language without an entry is spoken as recorded. The user's choice of 2026-10-07:
     # English slower, German as it is.
@@ -119,16 +131,28 @@ class AudioChoice(Contract):
 
     @model_validator(mode="after")
     def validate_voices(self):
-        available = QWEN_VOICES if self.provider == "qwen3_local" else GEMINI_VOICES
+        if self.provider == ELEVENLABS_PROVIDER:
+            valid = lambda voice: bool(VOICE_ID.fullmatch(voice or ""))
+        else:
+            available = QWEN_VOICES if self.provider == "qwen3_local" else GEMINI_VOICES
+            valid = lambda voice: voice in available
         if (set(self.voices) != {"host_a", "host_b"} or len(set(self.voices.values())) != 2 or
-                any(voice not in available for voice in self.voices.values())):
+                not all(valid(voice) for voice in self.voices.values())):
             raise ValueError("Zwei unterschiedliche Stimmen des gewählten Audioanbieters auswählen.")
-        if self.provider == "qwen3_local":
+        if self.provider == ELEVENLABS_PROVIDER:
+            # A choice switched over from Gemini keeps no Gemini model.
+            if self.model not in ELEVENLABS_MODELS:
+                self.model = ELEVENLABS_MODEL
+        elif self.provider == "qwen3_local":
             self.model = GEMINI_MODEL  # The speech model applies to Gemini only.
             self.expression = False
-        if self.provider != "google_gemini_tts":
+        elif self.model in ELEVENLABS_MODELS:
+            self.model = GEMINI_MODEL  # A choice switched over from ElevenLabs takes Gemini's default.
+        elif self.model not in GEMINI_MODELS:
+            raise ValueError("Ein Gemini-Sprachmodell aus der Liste wählen.")
+        if self.provider not in PASSAGE_PROVIDERS:
             self.styles = RoleStyles()
-            # Only Google takes a style; the montage tempo holds for every route.
+            # Only Google and ElevenLabs take a style; the montage tempo holds for every route.
             self.pace = {language: pace.model_copy(update={"unhurried": False}) for language, pace in self.pace.items()}
         self.pace = {language: pace for language, pace in sorted(self.pace.items()) if pace != LanguagePace()}
         return self
@@ -152,7 +176,7 @@ class AudioChoice(Contract):
 
     @property
     def remote(self):
-        return self.provider in GEMINI_PROVIDERS
+        return self.provider in REMOTE_PROVIDERS
 
     def for_language(self, language):
         """The choice a recording in ``language`` binds and speaks: the other language's pace left out, so a pace
@@ -179,18 +203,36 @@ class AudioChoice(Contract):
         return self.model_copy(update={"voices": {"host_a": self.voices["host_b"], "host_b": self.voices["host_a"]}})
 
 
+# A project's own audio choice, which holds over the workspace settings' (D-177): one podcast spoken by ElevenLabs
+# while the others keep the workspace's route.
+OWN_AUDIO = "studio/audio_own.json"
+
+
+def own_audio(root):
+    """The project's own audio choice as stored, or None when it follows the workspace."""
+    path = Path(root) / OWN_AUDIO
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def selected_audio(root, config):
-    """The Studio's audio choice. A Gemini choice records expression unless it says otherwise: the user chose
-    that every Gemini recording gets its expression layer automatically (2026-09-29). The workspace settings' choice
-    holds for every project where they set one (studio_settings)."""
-    data = studio_settings.section(root, "audio")
+    """The Studio's audio choice. A choice through an API records expression unless it says otherwise: the user chose
+    that every Gemini recording gets its expression layer automatically (2026-09-29). A project's own choice holds
+    first (own_audio), then the workspace settings' for every project where they set one (studio_settings), then the
+    project's studio/audio.json."""
+    data = own_audio(root)
+    if data is None:
+        data = studio_settings.section(root, "audio")
     if not isinstance(data, dict):
         path = root / "studio/audio.json"
         if not path.exists():
             return AudioChoice(voices=config.voice_profile)
         data = json.loads(path.read_text(encoding="utf-8"))
     data = dict(data) if isinstance(data, dict) else data
-    if isinstance(data, dict) and data.get("provider") in GEMINI_PROVIDERS:
+    if isinstance(data, dict) and data.get("provider") in REMOTE_PROVIDERS:
         data.setdefault("expression", True)
     return AudioChoice.model_validate(data)
 
@@ -209,6 +251,11 @@ def audio_catalog():
         "openrouter_gemini_tts": {"label": "Gemini TTS · OpenRouter (Abschnitt für Abschnitt)", "models": GEMINI_MODELS,
                                   "default_model": GEMINI_MODEL, "voices": GEMINI_VOICES,
                                   "defaults": {"host_a": "Sadaltager", "host_b": "Aoede"}},
+        # The voices are the account's (the Studio's /api/elevenlabs/voices), so none are listed or preset here.
+        ELEVENLABS_PROVIDER: {"label": "ElevenLabs · v4", "models": ELEVENLABS_MODELS, "default_model": ELEVENLABS_MODEL,
+                              "voices": (), "account_voices": True, "defaults": None, "alternate_roles": True,
+                              "style_presets": STYLE_PRESETS, "default_styles": DEFAULT_STYLES,
+                              "unhurried": UNHURRIED, "max_style_characters": MAX_STYLE_CHARACTERS},
     }
 
 

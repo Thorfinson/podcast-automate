@@ -94,21 +94,26 @@ const savedSample = (voice, language) => voiceSamples()[language]?.[voice];
 // Gemini speaks through Google's own API (two hosts per request, the Google key) or through OpenRouter (each segment on
 // its own, the OpenRouter key); both use the same thirty voices and the same voice library.
 const isGemini = provider => provider === "google_gemini_tts" || provider === "openrouter_gemini_tts";
+// ElevenLabs (elevenlabs_speech, D-176): a route through an API like Gemini's, speaking two-host passages like Google's,
+// with the voices of the user's own account.
+const isEleven = provider => provider === "elevenlabs_tts";
+const isRemote = provider => isGemini(provider) || isEleven(provider);
+const isPassage = provider => provider === "google_gemini_tts" || isEleven(provider);
 // The voices an episode is spoken in: swapped in an even-numbered one when the roles alternate (AudioChoice.for_episode).
 const episodeVoices = (a, id) => {
   const number=/^ep_0*(\d+)$/.exec(id||"");
   return a.alternate_roles&&number&&Number(number[1])%2===0?{host_a:a.voices.host_b,host_b:a.voices.host_a}:a.voices;
 };
-const keyOf = provider => provider === "google_gemini_tts" ? "google" : "openrouter";
-const KEY_NAMES = Object.fromEntries(["openrouter","google","anthropic","perplexity"].map(key=>[key,tp(`key.name.${key}`)]));
+const keyOf = provider => provider === "google_gemini_tts" ? "google" : isEleven(provider) ? "elevenlabs" : "openrouter";
+const KEY_NAMES = Object.fromEntries(["openrouter","google","elevenlabs","anthropic","perplexity"].map(key=>[key,tp(`key.name.${key}`)]));
 // The field of the bootstrap and the settings view that says whether a key is there.
 const KEY_FLAGS = {openrouter:"key_available", google:"google_key_available", anthropic:"anthropic_key_available",
-  perplexity:"perplexity_key_available", core:"core_key_available"};
+  perplexity:"perplexity_key_available", core:"core_key_available", elevenlabs:"elevenlabs_key_available"};
 const keyAvailable = (key="openrouter") => boot[KEY_FLAGS[key]||"key_available"] !== false;
 const KEY_STATUS = {openrouter:"key-status", google:"google-key-status", anthropic:"anthropic-key-status",
-  perplexity:"perplexity-key-status", core:"core-key-status"};
+  perplexity:"perplexity-key-status", core:"core-key-status", elevenlabs:"elevenlabs-key-status"};
 const KEY_FIELDS = {openrouter:"api-key", google:"google-key", anthropic:"anthropic-key", perplexity:"perplexity-key",
-  core:"core-key"};
+  core:"core-key", elevenlabs:"elevenlabs-key"};
 // Besides the flags: where each key comes from and whether the system has a credential store (Studio.key_states, D-167).
 const copyKeyFlags = (from, to) => { for (const flag of [...Object.values(KEY_FLAGS),"key_sources","key_vault"])
   if (from[flag] !== undefined) to[flag] = from[flag]; };
@@ -121,6 +126,7 @@ const billedProvider = provider => (boot?.text_catalog?.billed_providers||["open
 // The keys a restarted server lost (it keeps them in memory only), as the notice names them; empty when none.
 const lostKeys = fresh => [boot.key_available&&!fresh.key_available?"openrouter":"",
   boot.google_key_available&&fresh.google_key_available===false?"google":"",
+  boot.elevenlabs_key_available&&fresh.elevenlabs_key_available===false?"elevenlabs":"",
   boot.anthropic_key_available&&fresh.anthropic_key_available===false?"anthropic":"",
   boot.perplexity_key_available&&fresh.perplexity_key_available===false?"perplexity":""].filter(Boolean);
 // The lost keys by name, joined as the notices say them („OpenRouter-Key und der Google-Key“).
@@ -136,9 +142,27 @@ const audioProviderLabel = (id, row) => serverLabel(`audio_provider.${id}`, row?
 // A Gemini choice saved without a model uses the default one; the label names the model an approval binds.
 const audioLabel = a => {
   if(a.provider==="qwen3_local")return tp("audio.qwen_local");
+  if(isEleven(a.provider)){const row=audioCatalog()[a.provider];return `${row?.models?.[a.model||row?.default_model]||"Eleven v4"} · ElevenLabs`;}
   const gemini=audioCatalog()[a.provider]||audioCatalog().openrouter_gemini_tts;
   return `${gemini?.models?.[a.model||gemini.default_model]||"Gemini"} · ${a.provider==="google_gemini_tts"?"Google":"OpenRouter"}`;
 };
+// The voices of the ElevenLabs account (Studio.elevenlabs_voices), loaded once a page needs them; a voice id is shown by
+// its name where it is known.
+let elevenVoices=null, elevenLoading=false;
+const voiceName = id => { const row=(elevenVoices||[]).find(v=>v.voice_id===id); return row?row.name.split(" - ")[0].trim():id; };
+// The account's voices as a select's options, the current ones kept even before the list is there.
+const elevenOptions = voices => {
+  const rows=(elevenVoices||[]).map(v=>[v.voice_id,`${v.name.split(" - ")[0].trim()}${v.labels?.gender?` · ${v.labels.gender}`:""}${v.german?" · DE":""}${v.category==="premade"?` · ${tp("settings.voice.premade")}`:""}`]);
+  const known=new Set(rows.map(([id])=>id));
+  return [...Object.values(voices||{}).filter(id=>id&&!known.has(id)).map(id=>[id,id]),...rows];
+};
+async function loadElevenVoices(force=false) {
+  if(elevenLoading||(elevenVoices&&!force)||!keyAvailable("elevenlabs"))return;
+  elevenLoading=true;
+  try{elevenVoices=(await api("/api/elevenlabs/voices",{})).voices||[];}catch{elevenVoices=elevenVoices||[];}
+  finally{elevenLoading=false;}
+  render();
+}
 const mediaUrl = path => "/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
 const running = () => submitting || project?.job?.status === "running" || (project?.audio_jobs||[]).some(j=>j.status==="running");
 const disabled = () => running() ? "disabled" : "";
@@ -146,8 +170,8 @@ function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.epi
   if(submitting)return tp("audio.block.starting");
   // Gemini fails at its first request without a key; the approval card offers the key field instead.
   const provider=currentAudio().provider;
-  if(isGemini(provider)&&!keyAvailable(keyOf(provider)))return tp(`audio.block.key.${keyOf(provider)}`);
-  if(!boot.capabilities?.parallel_audio||!isGemini(provider))
+  if(isRemote(provider)&&!keyAvailable(keyOf(provider)))return tp(`audio.block.key.${keyOf(provider)}`);
+  if(!boot.capabilities?.parallel_audio||!isRemote(provider))
     return running()?tp("audio.block.running"):"";
   const active=(project.audio_jobs||[]).filter(j=>j.status==="running");
   if(active.some(j=>j.episode===episode))return tp("audio.block.episode_busy");
@@ -505,7 +529,7 @@ function setupSummary() {
     ${c.seed_urls?.length?`<dt>${t("summary.seed_urls")}</dt><dd>${c.seed_urls.map(escape).join(" · ")}</dd>`:""}
     <dt>${t("summary.text_model")}</dt><dd>${textChoiceSummary(choice)}</dd>
     ${choice.provider==="openrouter"?`<dt>${t("summary.live_research")}</dt><dd>${t("summary.live_research_openrouter")}</dd>`:""}
-    <dt>${t("summary.voices")}</dt><dd>${escape(audioLabel(a))} · ${escape(a.voices.host_a)} &amp; ${escape(a.voices.host_b)}</dd>
+    <dt>${t("summary.voices")}</dt><dd>${escape(audioLabel(a))} · ${escape(voiceName(a.voices.host_a))} &amp; ${escape(voiceName(a.voices.host_b))}</dd>
     <dt>${t("summary.text_execution")}</dt><dd>${mode(x.text,tp("summary.text_parallel"))}</dd><dt>${t("summary.recording")}</dt><dd>${a.provider==="qwen3_local"?t("summary.recording_qwen"):mode(x.audio,tp("summary.recording_parallel"))}</dd>
     <dt>${t("summary.gap_probe")}</dt><dd>${project.jev_probe?`${t("summary.jev_on")}${project.jev_default?` · ${t("summary.jev_default")}`:""}`:t("summary.jev_off")} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${t(project.jev_probe?"summary.jev_switch_off":"summary.jev_switch_on")}</button></dd>
     <dt>${t("summary.allowances")}</dt><dd>${escape(allowanceSummary(project.allowances))}</dd></dl>
@@ -663,7 +687,9 @@ async function chooseLanguage(value) {
 }
 function renderSettings() {
   const d=settingsDraft, data=settingsData, catalog=audioCatalog(), presets=boot.text_catalog?.presets||[];
-  const a=d.audio, voices=(catalog[a.provider]?.voices||[]).map(v=>[v,v]), gemini=catalog[a.provider];
+  const a=d.audio, gemini=catalog[a.provider];
+  const voices=isEleven(a.provider)?elevenOptions(a.voices):(catalog[a.provider]?.voices||[]).map(v=>[v,v]);
+  if(isEleven(a.provider)&&!elevenVoices)loadElevenVoices();
   const chosen=presets.find(p=>presetMatches(p,d.text));
   const choices=data.allowance_choices||{fresh_attempts:[0,1,2,3],extra_calls:[0,100,250,500,1000]};
   const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
@@ -687,7 +713,7 @@ function renderSettings() {
     ["settings-section-language","language"]];
   return `<header class="page-head"><div class="page-title"><span class="eyebrow">Studio</span><h1>${t("settings.title")}</h1></div><span class="chip ${data.global?"done":"decision"}">${t(data.global?"settings.global":"settings.per_project")}</span></header>
     <nav class="settings-nav" aria-label="${t("settings.nav_label")}">${sections.map(([id,name])=>`<button class="quiet small" data-scroll="${id}">${t(`settings.section.${name}`)}</button>`).join("")}</nav>
-    <p class="key-states">Keys: <button class="quiet small" data-scroll="key-panel-openrouter">OpenRouter</button>${keyChip(data.key_available)} <button class="quiet small" data-scroll="key-panel-google">Google</button>${keyChip(data.google_key_available)} <button class="quiet small" data-scroll="key-panel-anthropic">Anthropic</button>${keyChip(data.anthropic_key_available)} <button class="quiet small" data-scroll="key-panel-perplexity">Perplexity</button>${keyChip(data.perplexity_key_available)} <button class="quiet small" data-scroll="key-panel-core">CORE</button>${keyChip(data.core_key_available)}</p>
+    <p class="key-states">Keys: <button class="quiet small" data-scroll="key-panel-openrouter">OpenRouter</button>${keyChip(data.key_available)} <button class="quiet small" data-scroll="key-panel-google">Google</button>${keyChip(data.google_key_available)} <button class="quiet small" data-scroll="key-panel-elevenlabs">ElevenLabs</button>${keyChip(data.elevenlabs_key_available)} <button class="quiet small" data-scroll="key-panel-anthropic">Anthropic</button>${keyChip(data.anthropic_key_available)} <button class="quiet small" data-scroll="key-panel-perplexity">Perplexity</button>${keyChip(data.perplexity_key_available)} <button class="quiet small" data-scroll="key-panel-core">CORE</button>${keyChip(data.core_key_available)}</p>
     ${data.global?"":`<p class="note">${data.source_project?t("settings.legacy.project",{project:quoted(data.source_project)}):t("settings.legacy.defaults")}</p>`}
     <p class="hint">${t("settings.running_hint")}</p>
     <section class="panel" id="settings-section-text"><h2>${t("settings.section.text")}</h2>${textOptions}
@@ -699,13 +725,14 @@ function renderSettings() {
       <p class="hint">${t("settings.search.hint")}</p></section>
     <section class="panel" id="settings-section-audio"><h2>${t("settings.section.audio")}</h2>
       <div class="row">${settingField("settings-audio-provider",tp("settings.audio.provider"),settingSelect("settings-audio-provider",Object.entries(catalog).map(([id,row])=>[id,audioProviderLabel(id,row)]),a.provider))}
-      ${isGemini(a.provider)&&gemini?.models?settingField("settings-audio-model",tp("settings.audio.model"),settingSelect("settings-audio-model",Object.entries(gemini.models),a.model||gemini.default_model)):""}</div>
-      <div class="row">${settingField("settings-voice-a",tp(a.provider==="google_gemini_tts"?"settings.voice.a_google":"settings.voice.a"),settingSelect("settings-voice-a",voices,a.voices.host_a))}${settingField("settings-voice-b",tp(a.provider==="google_gemini_tts"?"settings.voice.b_google":"settings.voice.b"),settingSelect("settings-voice-b",voices,a.voices.host_b))}</div>
-      ${a.provider==="google_gemini_tts"?renderGoogleAudio(a,gemini):""}
+      ${isRemote(a.provider)&&gemini?.models?settingField("settings-audio-model",tp("settings.audio.model"),settingSelect("settings-audio-model",Object.entries(gemini.models),a.model||gemini.default_model)):""}</div>
+      <div class="row">${settingField("settings-voice-a",tp(isPassage(a.provider)?"settings.voice.a_google":"settings.voice.a"),settingSelect("settings-voice-a",voices,a.voices.host_a))}${settingField("settings-voice-b",tp(isPassage(a.provider)?"settings.voice.b_google":"settings.voice.b"),settingSelect("settings-voice-b",voices,a.voices.host_b))}</div>
+      ${isEleven(a.provider)?elevenVoiceHint():""}
+      ${isPassage(a.provider)?renderGoogleAudio(a,gemini):""}
       <div class="row">${settingField("settings-pause-same",tp("settings.pause.same"),settingNumber("settings-pause-same",pauses.same_speaker_ms,0,10000,50))}${settingField("settings-pause-change",tp("settings.pause.change"),settingNumber("settings-pause-change",pauses.speaker_change_ms,0,10000,50))}${settingField("settings-pause-chapter",tp("settings.pause.chapter"),settingNumber("settings-pause-chapter",pauses.chapter_break_ms,0,10000,50))}</div>
-      ${a.provider==="google_gemini_tts"?`<p class="hint">${t("settings.pause.google_hint")}</p>`:""}
+      ${isPassage(a.provider)?`<p class="hint">${t(isEleven(a.provider)?"settings.pause.elevenlabs_hint":"settings.pause.google_hint")}</p>`:""}
       ${renderPace(a,gemini)}
-      ${isGemini(a.provider)?`<label class="approval"><input id="settings-expression" type="checkbox" ${a.expression!==false?"checked":""}><span>${t("settings.expression")}${a.provider==="google_gemini_tts"?` (${t("settings.expression_google")})`:""}</span></label>`:""}
+      ${isRemote(a.provider)?`<label class="approval"><input id="settings-expression" type="checkbox" ${a.expression!==false?"checked":""}><span>${t("settings.expression")}${isPassage(a.provider)?` (${t("settings.expression_google")})`:""}</span></label>`:""}
       <p class="hint">${t("settings.audio.hint")}</p></section>
     <section class="panel" id="settings-section-execution"><h2>${t("settings.section.execution")}</h2><div class="row">${settingField("settings-exec-text",tp("summary.text_execution"),settingSelect("settings-exec-text",EXECUTION_MODES,d.execution.text),t("settings.exec.text_hint"))}
       ${settingField("settings-exec-audio",tp("summary.recording"),settingSelect("settings-exec-audio",EXECUTION_MODES,d.execution.audio),t("settings.exec.audio_hint"))}</div></section>
@@ -718,7 +745,7 @@ function renderSettings() {
     <section class="panel" id="settings-section-claude"><h2>${t("settings.section.claude")}</h2><label class="approval"><input id="settings-claude-extra" type="checkbox" ${data.claude_extra_usage?"checked":""}><span>${t("settings.claude.extra")}</span></label>
       <p class="hint">${t("settings.claude.hint")}</p></section>
     <p class="note" id="key-storage">${t(data.key_vault?"key.storage.vault":"key.storage.memory")}</p>
-    ${["openrouter","perplexity","anthropic","google","core"].map(key=>keyPanel(key,data)).join("\n    ")}
+    ${["openrouter","perplexity","anthropic","google","elevenlabs","core"].map(key=>keyPanel(key,data)).join("\n    ")}
     <section class="panel" id="settings-section-language"><h2>${t("settings.section.language")}</h2><div class="field"><label for="ui-language-settings">${t("language.select.label")}</label>${languageSelect("ui-language-settings")}</div>
       <p class="hint">${t("settings.language.hint")}</p></section>
     <div class="action-bar settings-save"><p id="settings-dirty" class="hint${settingsDirty?" dirty":""}">${t(settingsDirty?"settings.dirty":"settings.clean")}</p><button data-action="save-settings">${t("settings.save")}</button></div>`;
@@ -739,7 +766,7 @@ function paceOf(a,language) {
 }
 function renderPace(a,gemini) {
   const tempos=tempo=>[...new Set([...TEMPO_CHOICES,Number(tempo)])].sort((x,y)=>y-x).map(value=>[value,`${Math.round(value*100)} %`]);
-  const google=a.provider==="google_gemini_tts";
+  const google=isPassage(a.provider);
   return `<div class="row">${PACE_LANGUAGES.map(([id,name])=>settingField(`settings-tempo-${id}`,tp("settings.pace.tempo",{language:name}),settingSelect(`settings-tempo-${id}`,tempos(paceOf(a,id).tempo),paceOf(a,id).tempo))).join("")}</div>
     ${google?PACE_LANGUAGES.map(([id,name])=>`<label class="approval"><input id="settings-unhurried-${id}" type="checkbox" ${paceOf(a,id).unhurried?"checked":""}><span>${t("settings.pace.unhurried",{language:name,word:quoted(gemini?.unhurried||"unhurried")})}</span></label>`).join(""):""}
     <p class="hint">${t("settings.pace.hint")}</p>`;
@@ -754,8 +781,13 @@ function renderGoogleAudio(a,gemini) {
     <div class="row">${settingField("settings-style-a",tp("settings.style_a"),field("settings-style-a",styles.host_a))}${settingField("settings-style-b",tp("settings.style_b"),field("settings-style-b",styles.host_b))}</div>
     <p class="hint">${t("settings.style_hint")}</p>
     <label class="approval"><input id="settings-alternate" type="checkbox" ${a.alternate_roles?"checked":""}><span>${t("settings.alternate")}</span></label>
-    <div class="actions"><label class="sr-only" for="settings-pair-language">${t("pair.language_label")}</label>${settingSelect("settings-pair-language",[["de-DE",languageName("de-DE")],["en-US",languageName("en-US")]],pairLanguage)}<button type="button" class="secondary small" data-action="pair-sample">${t("pair.play")}</button>${a.alternate_roles?`<button type="button" class="secondary small" data-action="pair-sample" data-swap="1">${t("pair.play_swapped")}</button>`:""}</div>
-    <p class="hint" id="pair-sample-status">${t("pair.hint")}</p>`;
+    ${isEleven(a.provider)?"":`<div class="actions"><label class="sr-only" for="settings-pair-language">${t("pair.language_label")}</label>${settingSelect("settings-pair-language",[["de-DE",languageName("de-DE")],["en-US",languageName("en-US")]],pairLanguage)}<button type="button" class="secondary small" data-action="pair-sample">${t("pair.play")}</button>${a.alternate_roles?`<button type="button" class="secondary small" data-action="pair-sample" data-swap="1">${t("pair.play_swapped")}</button>`:""}</div>
+    <p class="hint" id="pair-sample-status">${t("pair.hint")}</p>`}`;
+}
+// The account's voices for ElevenLabs: a short note while they load or when the key is missing, and a reload.
+function elevenVoiceHint() {
+  const state=!keyAvailable("elevenlabs")?"settings.voice.none":elevenVoices===null?"settings.voice.loading":"settings.voice.loaded";
+  return `<p class="hint">${t(state,{count:(elevenVoices||[]).length})} <button type="button" class="quiet small" data-action="load-eleven-voices">${t("settings.voice.load")}</button></p>`;
 }
 async function pairSample(button) {
   const a=settingsFromForm().audio, language=$("settings-pair-language")?.value||"de-DE";
@@ -797,9 +829,9 @@ function settingsFromForm() {
     pauses:{same_speaker_ms:Number(value("settings-pause-same")),speaker_change_ms:Number(value("settings-pause-change")),chapter_break_ms:Number(value("settings-pause-chapter"))}};
   if($("settings-audio-model"))d.audio.model=value("settings-audio-model");
   if($("settings-expression"))d.audio.expression=!!$("settings-expression").checked;
-  // Styles and alternating roles are Google's only; the other routes keep their choice as before.
-  if(provider==="google_gemini_tts"&&$("settings-style-a"))d.audio.styles={host_a:value("settings-style-a")||"",host_b:value("settings-style-b")||""};
-  if(provider==="google_gemini_tts"&&$("settings-alternate"))d.audio.alternate_roles=!!$("settings-alternate").checked;
+  // Styles and alternating roles are Google's and ElevenLabs' only; the other routes keep their choice as before.
+  if(isPassage(provider)&&$("settings-style-a"))d.audio.styles={host_a:value("settings-style-a")||"",host_b:value("settings-style-b")||""};
+  if(isPassage(provider)&&$("settings-alternate"))d.audio.alternate_roles=!!$("settings-alternate").checked;
   // The pace of each language; one at full speed and without a calm delivery is left out, as the server stores it.
   if($("settings-tempo-de-DE")){
     const pace=PACE_LANGUAGES.map(([id])=>[id,{tempo:Number(value(`settings-tempo-${id}`))||paceOf(d.audio,id).tempo,
@@ -1207,7 +1239,7 @@ const reviewNoteLabels=Object.fromEntries(["script_review","teaching_review","ed
 // Inline audio tags a Gemini recording speaks (episode_audio.tag_episode), shown where the reader reads the script.
 function expressionActive() {
   const a=currentAudio();
-  return isGemini(a.provider)&&a.expression!==false;
+  return isRemote(a.provider)&&a.expression!==false;
 }
 const EXPRESSION_TAG=/<[^<>\n]{1,40}>/g;
 // The twelve kinds a recording may use (expression.ALLOWED_TAGS), in the reader's words.
@@ -1454,6 +1486,37 @@ function renderStyleNotes() {
     ${pausedHint(["notes"])}
     <div class="actions"><button class="secondary" data-action="save-notes" ${disabled()}>${t("notes.save")}</button></div></details>`;
 }
+// A project's own audio choice over the settings page's (D-177): one podcast spoken by ElevenLabs while the others keep
+// the workspace's route. The panel takes the route, the two voices and whether the roles alternate; pauses, styles and
+// pace come from the choice in force.
+let ownAudioProvider=null;
+function renderOwnAudio(a) {
+  const catalog=audioCatalog(), own=!!project.audio_own, provider=ownAudioProvider||a.provider, row=catalog[provider]||{};
+  const options=isEleven(provider)?elevenOptions(provider===a.provider?a.voices:{}):(row.voices||[]).map(v=>[v,v]);
+  const pick=(id,role,index)=>settingSelect(id,options,(provider===a.provider?a.voices[role]:row.defaults?.[role])
+    ||((elevenVoices||[]).filter(v=>v.category!=="premade")[index]?.voice_id)||options[index]?.[0]);
+  return `<details class="panel own-audio"${own||ownAudioProvider?" open":""}><summary>${t("audio.own.title")}</summary>
+    <p class="hint">${t(own?"audio.own.own":"audio.own.workspace",{choice:escape(audioLabel(a))})}</p>
+    ${settingField("own-audio-provider",tp("settings.audio.provider"),settingSelect("own-audio-provider",Object.entries(catalog).map(([id,r])=>[id,audioProviderLabel(id,r)]),provider))}
+    <div class="row">${settingField("own-voice-a",tp("settings.voice.a_google"),pick("own-voice-a","host_a",0))}${settingField("own-voice-b",tp("settings.voice.b_google"),pick("own-voice-b","host_b",1))}</div>
+    ${isEleven(provider)?elevenVoiceHint():""}
+    <label class="approval"><input id="own-alternate" type="checkbox" ${provider===a.provider&&a.alternate_roles?"checked":""}><span>${t("settings.alternate")}</span></label>
+    <p class="hint">${t("audio.own.hint")}</p>
+    <div class="actions"><button class="secondary small" data-action="own-audio-save" ${disabled()}>${t("audio.own.save")}</button>${own?`<button class="quiet small" data-action="own-audio-clear" ${disabled()}>${t("audio.own.clear")}</button>`:""}</div></details>`;
+}
+async function saveOwnAudio(clear=false) {
+  const a=currentAudio(), provider=$("own-audio-provider")?.value||a.provider, row=audioCatalog()[provider]||{};
+  const audio=clear?null:{...a,provider,model:provider===a.provider?a.model:row.default_model,
+    voices:{host_a:$("own-voice-a")?.value,host_b:$("own-voice-b")?.value},alternate_roles:!!$("own-alternate")?.checked,
+    ...(isPassage(provider)&&!isPassage(a.provider)?{styles:{...(row.default_styles||{})}}:{})};
+  if(audio&&!isPassage(provider))delete audio.styles;
+  const result=await api(`/api/projects/${encodeURIComponent(project.id)}/audio_own`,{audio});
+  project.audio_own=result.audio_own;project.audio_settings=result.audio_settings;ownAudioProvider=null;
+  // The episodes' recordings are current or not against the new choice, so the page is fetched again.
+  project=await api("/api/projects/"+encodeURIComponent(project.id));
+  render();
+  notice(tp(clear?"audio.own.cleared":"audio.own.saved"),"ok");
+}
 function renderSpeechSettings(a) {
   const names=project.config?.host_names||{};
   return `<details class="panel speech-settings"><summary>${t("speech.title")}</summary>
@@ -1519,7 +1582,7 @@ function pendingRecordings() {
 // What an audio approval confirms and who then speaks, in one plain sentence (D-155); an API voice adds that the key
 // pays for it, Qwen on this computer does not.
 function audioSentence(a,voices,count) {
-  return t(isGemini(a.provider)?"audio.sentence.api":"audio.sentence.local",{count,provider:audioLabel(a),voices:fmt.list([voices.host_a,voices.host_b])});
+  return t(isRemote(a.provider)?"audio.sentence.api":"audio.sentence.local",{count,provider:audioLabel(a),voices:fmt.list([voiceName(voices.host_a),voiceName(voices.host_b)])});
 }
 function renderApproveAll(remote) {
   const rows=pendingRecordings();
@@ -1541,13 +1604,13 @@ function renderApprovalCard(e,a,remote) {
   const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
   const pace=paceOf(a,project.config.language);
   const pronunciation=renderPronunciation(e);
-  const google=a.provider==="google_gemini_tts", voiced=episodeVoices(a,e.script.episode_id), key=keyOf(a.provider);
-  const voices=google?`${t("approval.voices_google",{explains:voiced.host_a,asks:voiced.host_b})}${a.alternate_roles?` · ${t("approval.alternating")}`:""}`:`${escape(a.voices.host_a)} & ${escape(a.voices.host_b)}`;
+  const google=isPassage(a.provider), voiced=episodeVoices(a,e.script.episode_id), key=keyOf(a.provider);
+  const voices=google?`${t("approval.voices_google",{explains:voiceName(voiced.host_a),asks:voiceName(voiced.host_b)})}${a.alternate_roles?` · ${t("approval.alternating")}`:""}`:`${escape(voiceName(a.voices.host_a))} & ${escape(voiceName(a.voices.host_b))}`;
   return `<div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${escape(audioLabel(a))}</span></div>
     <dl>
     <dt>${t("approval.text")}</dt><dd>${e.audio?.length?(e.audio_current?t("approval.text.current"):t("approval.text.outdated",{changes:staleText(e.audio_stale)||tp("approval.text.changes_default")})):t("approval.text.unvoiced")} <button class="quiet small" data-step="4">${t("approval.read_script")}</button></dd>
     <dt>${t("summary.voices")}</dt><dd>${voices} · ${languageName(project.config.language)} <button class="quiet small" data-action="open-settings">${t("approval.change_voices")}</button></dd>
-    <dt>${t("settings.audio.provider")}</dt><dd class="hint">${t(google?"approval.provider.google":remote?"approval.provider.openrouter":"approval.provider.qwen")} ${t("approval.provider.tail")}</dd>
+    <dt>${t("settings.audio.provider")}</dt><dd class="hint">${t(isEleven(a.provider)?"approval.provider.elevenlabs":google?"approval.provider.google":remote?"approval.provider.openrouter":"approval.provider.qwen")} ${t("approval.provider.tail")}</dd>
     ${remote&&speechSize([e])?`<dt>${t("approval.size")}</dt><dd>${escape(speechSize([e]))} <span class="hint">${SPEECH_SIZE_NOTE}</span></dd>`:""}
     ${remote&&!keyAvailable(key)?`<dt>${t("approval.access")}</dt><dd>${inlineKey("audio-key",false,"",key)}</dd>`:""}
     <dt>${t("approval.pronunciation")}</dt><dd>${pronunciation||`<span class="hint">${t("approval.pronunciation_none")}</span>`}</dd>
@@ -1593,21 +1656,22 @@ function refreshAudioPanel() {
   const panel=$("audio-panel");
   if(!panel||!project?.episodes?.length)return;
   const a=currentAudio();
-  panel.innerHTML=renderApprovalCard(project.episodes[Math.min(episodeIndex,project.episodes.length-1)],a,isGemini(a.provider));
+  panel.innerHTML=renderApprovalCard(project.episodes[Math.min(episodeIndex,project.episodes.length-1)],a,isRemote(a.provider));
 }
 function renderAudio() {
   let html=heading(6);
   if(!project?.episodes?.length) return html+empty(t("audio.empty.title"),t("audio.empty.text"),t("audio.empty.button"),PAGE.scripts,pageIntros.audio);
   episodeIndex=Math.min(episodeIndex,project.episodes.length-1);
   const e=project.episodes[episodeIndex];
-  const a=currentAudio(),remote=isGemini(a.provider);
+  const a=currentAudio(),remote=isRemote(a.provider);
+  if((isEleven(a.provider)||isEleven(ownAudioProvider))&&!elevenVoices)loadElevenVoices();
   const hasAudio=project.episodes.some(row=>row.audio?.length);
   const facts=audioFacts(project);
   const capacity=remote?(boot.capabilities?.parallel_audio?`<p class="hint">${t(project.execution?.audio==="parallel"?"execution.parallel":"execution.sequential")} · ${t("audio.capacity",{active:project.audio_capacity?.active||0,limit:project.audio_capacity?.limit||1})}</p>`:`<p class="note">${t("audio.capacity_restart")}</p>`):"";
   // Older recordings stay playable; the page says once what they differ in instead of nineteen times (D-160).
   const outdated=facts.outdated?`<p class="note">${t(facts.outdated===facts.voiced?"audio.outdated.all":"audio.outdated.some",{count:facts.outdated})}${facts.reasons.length?` (${t("audio.outdated.changed",{reasons:staleText(facts.reasons)})})`:""}. ${t("audio.outdated.tail")}</p>`:"";
   // The recordings come before the per-episode extras: listening is what the page is visited for most.
-  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}${renderPublishKit(e)}${renderPodcastKit()}</div><aside class="split-rail">${capacity}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
+  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}${renderPublishKit(e)}${renderPodcastKit()}</div><aside class="split-rail">${capacity}${renderOwnAudio(a)}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
   return html;
 }
 // The card's one line, from the same facts the steps and the header use (D-160).
@@ -2256,6 +2320,19 @@ const STOP_RULES={
   invalid_google_key:rule("invalid_google_key","fix",{actions:["google_key"]}),
   google_unavailable:rule("google_unavailable","retry"),
   google_connection:rule("google_connection","retry"),
+  // ElevenLabs (elevenlabs_speech): its own key, and ElevenLabs' own reasons.
+  elevenlabs_key_required:rule("elevenlabs_key_required","fix",{actions:["elevenlabs_key"]}),
+  invalid_elevenlabs_key:rule("invalid_elevenlabs_key","fix",{actions:["elevenlabs_key"]}),
+  elevenlabs_unavailable:rule("elevenlabs_unavailable","retry"),
+  elevenlabs_connection:rule("elevenlabs_connection","retry"),
+  elevenlabs_authentication:rule("elevenlabs_authentication","fix",{actions:["elevenlabs_key"],
+    text:c=>tp("stop.elevenlabs_authentication.text",{message:googleReason(c,"stop.elevenlabs_authentication.fallback"),resume:c.resume})}),
+  elevenlabs_credits:rule("elevenlabs_credits","fix",{
+    text:c=>tp("stop.elevenlabs_credits.text",{message:googleReason(c,"stop.elevenlabs_credits.fallback"),resume:c.resume})}),
+  elevenlabs_busy:rule("elevenlabs_busy","wait",{
+    text:c=>tp("stop.elevenlabs_busy.text",{message:googleReason(c,"stop.elevenlabs_busy.fallback"),resume:c.resume})}),
+  elevenlabs_speech_request:rule("elevenlabs_speech_request","fix",{actions:["open_settings"],
+    text:c=>tp("stop.elevenlabs_speech_request.text",{message:googleReason(c,"stop.elevenlabs_speech_request.fallback"),resume:c.resume})}),
   ffmpeg_missing:rule("ffmpeg_missing","fix"),
   ffprobe_missing:rule("ffprobe_missing","fix"),
   research_plan_review:rule("research_plan_review","decision",{card:true}),
@@ -2479,6 +2556,7 @@ function stopButton(action,job,info,target) {
     }
     case "key":return inlineKey("stop-key",!!job.run,target||`data-run-id="${runId}"`);
     case "google_key":return inlineKey("stop-google-key",!!job.run,target||`data-run-id="${runId}"`,"google");
+    case "elevenlabs_key":return inlineKey("stop-elevenlabs-key",!!job.run,target||`data-run-id="${runId}"`,"elevenlabs");
     case "anthropic_key":return inlineKey("stop-anthropic-key",!!job.run,target||`data-run-id="${runId}"`,"anthropic");
     case "perplexity_key":return inlineKey("stop-perplexity-key",!!job.run,target||`data-run-id="${runId}"`,"perplexity");
     case "approve_cost":{
@@ -2963,7 +3041,8 @@ function sharedAudioStop(p=project) {
 }
 // A stopped recording "Alle fortsetzen" may resume: one whose card offers to resume it, or a key stop once a key is there.
 const resumableAudio=j=>canResume(j)||(!!stopInfo(j)?.actions.includes("key")&&keyAvailable("openrouter"))
-  ||(!!stopInfo(j)?.actions.includes("google_key")&&keyAvailable("google"));
+  ||(!!stopInfo(j)?.actions.includes("google_key")&&keyAvailable("google"))
+  ||(!!stopInfo(j)?.actions.includes("elevenlabs_key")&&keyAvailable("elevenlabs"));
 function audioJobSummary() {
   const jobs=project?.audio_jobs||[], active=jobs.filter(j=>j.status==="running");
   const title=id=>project.episodes?.find(e=>e.script.episode_id===id)?.script.title||id;
@@ -3000,7 +3079,7 @@ async function resumeStoppedAudio() {
 }
 // The connection check in the page's language, with the fix next to every failed item: check.<name>.label and .fix
 // (doctor's check names; two older ones carry a key's name).
-const CHECK_IDS={"Gemini-TTS-Key":"gemini_tts_key","Google-Key":"google_key"};
+const CHECK_IDS={"Gemini-TTS-Key":"gemini_tts_key","Google-Key":"google_key","ElevenLabs-Key":"elevenlabs_key"};
 function checkLabel(name) {
   const id=CHECK_IDS[name]||name;
   if(!hasText(`check.${id}.label`))return [name,""];
@@ -3093,7 +3172,7 @@ function renderServerNote() {
 // The reminder of a missing key on every page (studio.key_reminder): the Studio keeps its keys in memory only, so they
 // are gone after every restart, and a fresh page said nothing of it (2026-10-04: Jev went without it unseen). It names
 // each missing key, what needs it, in which projects, and what happens without it.
-const KEY_NEED_TEXT=Object.fromEntries(["google_audio","gemini_audio","jev","openrouter_text","anthropic_text","perplexity_search"]
+const KEY_NEED_TEXT=Object.fromEntries(["google_audio","elevenlabs_audio","gemini_audio","jev","openrouter_text","anthropic_text","perplexity_search"]
   .map(need=>[need,[tp(`key_need.${need}.what`),tp(`key_need.${need}.without`)]]));
 function keyReminderRows() {
   const data=overviewPage?overviewData:settingsPage?settingsData:project;
@@ -3107,7 +3186,7 @@ function keyNote() {
   if(!rows.length)return "";
   const where=row=>row.projects.length>2?` (${t("key_note.projects",{count:row.projects.length})})`
     :` (${row.projects.map(topic=>escape(quoted(shortText(topic,48)))).join(", ")})`;
-  const keys=["google","openrouter","anthropic","perplexity"].filter(key=>rows.some(row=>(row.key||"openrouter")===key));
+  const keys=["google","elevenlabs","openrouter","anthropic","perplexity"].filter(key=>rows.some(row=>(row.key||"openrouter")===key));
   const mine=key=>rows.filter(row=>(row.key||"openrouter")===key);
   const summary=keys.map(key=>`${KEY_NAMES[key]} (${[...new Set(mine(key).map(row=>KEY_NEED_TEXT[row.need][0]))].map(escape).join(", ")})`).join(" · ");
   const details=keys.map(key=>`<p><strong>${t(`key.missing.${key}`)}.</strong> ${t("key_note.needed",{uses:asHtml(mine(key).map(row=>escape(KEY_NEED_TEXT[row.need][0])+where(row)).join(" · "))})} `+
@@ -3498,14 +3577,21 @@ document.addEventListener("change",event=>attempt(async()=>{
     const provider=event.target.value, draft=settingsFromForm(), row=audioCatalog()[provider]||{};
     const {styles,alternate_roles,...rest}=draft.audio;
     settingsDraft={...draft,audio:{...rest,provider,voices:{...(row.defaults||draft.audio.voices)},
-      ...(provider==="google_gemini_tts"?{styles:{...(row.default_styles||styles)},alternate_roles:!!row.alternate_roles}:{})}};
+      ...(isPassage(provider)?{styles:{...(row.default_styles||styles)},alternate_roles:!!row.alternate_roles}:{})}};
+    if(isEleven(provider)){
+      // The account's voices: the first two of the user's own stand until two are picked.
+      await loadElevenVoices();
+      const own=(elevenVoices||[]).filter(v=>v.category!=="premade");
+      if(own.length>1)settingsDraft.audio.voices={host_a:own[0].voice_id,host_b:own[1].voice_id};
+    }
     render();
   }
   if(event.target.id==="settings-style-preset"&&event.target.value){
-    const preset=audioCatalog().google_gemini_tts?.style_presets?.[event.target.value], draft=settingsFromForm();
+    const preset=(audioCatalog()[settingsFromForm().audio.provider]||audioCatalog().google_gemini_tts)?.style_presets?.[event.target.value], draft=settingsFromForm();
     if(preset){settingsDraft={...draft,audio:{...draft.audio,styles:{host_a:preset.host_a,host_b:preset.host_b}}};render();}
   }
   if(event.target.id==="settings-alternate"){settingsDraft=settingsFromForm();render();}
+  if(event.target.id==="own-audio-provider"){ownAudioProvider=event.target.value;if(isEleven(ownAudioProvider))await loadElevenVoices();render();}
   if(event.target.hasAttribute?.("data-ui-language"))await chooseLanguage(event.target.value);
 }));
 document.addEventListener("click",event=>{
@@ -3585,6 +3671,9 @@ document.addEventListener("click",event=>{
     if(action==="resume-stopped-audio"){await resumeStoppedAudio();return;}
     if(action==="save-settings"){await saveSettings();return;}
     if(action==="pair-sample"){await pairSample(button);return;}
+    if(action==="load-eleven-voices"){await loadElevenVoices(true);return;}
+    if(action==="own-audio-save"){await saveOwnAudio();return;}
+    if(action==="own-audio-clear"){await saveOwnAudio(true);return;}
     if(action==="store-key"){
       const kind=button.dataset.keyKind||"openrouter";
       if(!await storeKey(button.dataset.keyField||"api-key",kind))throw new Error(tp("act.key_missing",{key:KEY_NAMES[kind]}));

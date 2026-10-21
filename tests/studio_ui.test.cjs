@@ -691,10 +691,10 @@ test('the Google route offers styles, alternating roles, its key and a conversat
   // Both keys' state at the top and on their panels (the user's wish of 2026-10-06).
   assert.ok(html.includes('<p class="key-states">Keys: ')&&(html.match(/✓ hinterlegt/g)||[]).length===4);
   // The Anthropic key (Claude on the user's API key) and the Perplexity key (web search) have chips too (2026-10-07).
-  // CORE's key joined them with the credential store (D-167).
-  app.run(`settingsData.google_key_available=false;settingsData.anthropic_key_available=true;settingsData.perplexity_key_available=true;settingsData.core_key_available=true;render();`);
+  // CORE's key joined them with the credential store (D-167), ElevenLabs' with its route (D-176).
+  app.run(`settingsData.google_key_available=false;settingsData.anthropic_key_available=true;settingsData.perplexity_key_available=true;settingsData.core_key_available=true;settingsData.elevenlabs_key_available=true;render();`);
   const missing=app.elements.get('content').innerHTML;
-  assert.equal((missing.match(/✓ hinterlegt/g)||[]).length,8);
+  assert.equal((missing.match(/✓ hinterlegt/g)||[]).length,10);
   assert.equal((missing.match(/<span class="chip decision">fehlt<\/span>/g)||[]).length,2);
   app.run(`$('settings-audio-provider').value='google_gemini_tts';$('settings-voice-a').value='Erinome';$('settings-voice-b').value='Sadachbia';
     $('settings-style-a').value='calm';$('settings-style-b').value='';$('settings-alternate').checked=true;$('settings-pair-language').value='en-US';`);

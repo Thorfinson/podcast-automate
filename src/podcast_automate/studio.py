@@ -42,8 +42,9 @@ from .run_budget import (approve_criterion_gap, approve_model_call_limit, approv
 from .subscriptions import parse_iso
 from .scripting import outline_hash, script_metrics, style_notes
 from .script_pipeline import failed_teaching
-from .speech import (AudioChoice, GEMINI_PROVIDERS, GEMINI_VOICES, QWEN_VOICES, audio_catalog, audio_generation_record, selected_audio,
-                     same_audio_generation)
+from .elevenlabs_speech import account_voices
+from .speech import (OWN_AUDIO, AudioChoice, GEMINI_VOICES, PASSAGE_PROVIDERS, QWEN_VOICES, REMOTE_PROVIDERS,
+                     audio_catalog, audio_generation_record, own_audio, selected_audio, same_audio_generation)
 from .storage import (atomic_text, digest, file_hash, file_lock, init_project, inside, load_project, project_hash,
                       project_lock, read_text, read_yaml, write_json, write_yaml)
 from .publish_kit import PODCAST_FILES, PODCAST_FOLDER, saved_kit, saved_podcast_kit
@@ -610,14 +611,17 @@ def queue_error(row):
 
 
 # What of a project can need a key, in the order the reminder names them (web/app.js KEY_NEED_TEXT), and which key.
-KEY_NEEDS = ("google_audio", "gemini_audio", "jev", "openrouter_text", "anthropic_text", "perplexity_search")
-NEED_KEYS = {"google_audio": "google", "gemini_audio": "openrouter", "jev": "openrouter", "openrouter_text": "openrouter",
-             "anthropic_text": "anthropic", "perplexity_search": "perplexity"}
+KEY_NEEDS = ("google_audio", "elevenlabs_audio", "gemini_audio", "jev", "openrouter_text", "anthropic_text",
+             "perplexity_search")
+NEED_KEYS = {"google_audio": "google", "elevenlabs_audio": "elevenlabs", "gemini_audio": "openrouter",
+             "jev": "openrouter", "openrouter_text": "openrouter", "anthropic_text": "anthropic",
+             "perplexity_search": "perplexity"}
 
 
 def audio_key(audio):
-    """The key a recording with ``audio`` speaks with: "google", "openrouter", or None for local Qwen."""
-    return {"google_gemini_tts": "google", "openrouter_gemini_tts": "openrouter"}.get(audio.provider)
+    """The key a recording with ``audio`` speaks with: "google", "elevenlabs", "openrouter", or None for local Qwen."""
+    return {"google_gemini_tts": "google", "elevenlabs_tts": "elevenlabs",
+            "openrouter_gemini_tts": "openrouter"}.get(audio.provider)
 
 
 def key_needs(root, config):
@@ -627,6 +631,8 @@ def key_needs(root, config):
     provider = selected_audio(root, config).provider
     if provider == "google_gemini_tts":
         needs.append("google_audio")
+    if provider == "elevenlabs_tts":
+        needs.append("elevenlabs_audio")
     if provider == "openrouter_gemini_tts":
         needs.append("gemini_audio")
     if jev_probe_enabled(root):
@@ -774,9 +780,9 @@ def episode_view(folder, table, table_key, language):
 
 # Each key's attribute on the Studio, and the environment variable a server may carry it in instead (D-167).
 KEY_ATTRIBUTES = {"openrouter": "key", "google": "google_key", "anthropic": "anthropic_key",
-                  "perplexity": "perplexity_key", "core": "core_key"}
+                  "perplexity": "perplexity_key", "core": "core_key", "elevenlabs": "elevenlabs_key"}
 KEY_VARIABLES = {"openrouter": "OPENROUTER_API_KEY", "google": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
-                 "perplexity": "PERPLEXITY_API_KEY", "core": "PLA_CORE_API_KEY"}
+                 "perplexity": "PERPLEXITY_API_KEY", "core": "PLA_CORE_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY"}
 
 
 def valid_key(value) -> bool:
@@ -794,6 +800,7 @@ class Studio:
         self.anthropic_key = ""  # The Anthropic key: Claude on the user's API key (claude_api, D-145).
         self.perplexity_key = ""  # The Perplexity key: the web search through Perplexity (D-151).
         self.core_key = ""  # CORE's free key: free copies of blocked sources (sources.core_copies, D-167).
+        self.elevenlabs_key = ""  # The ElevenLabs key: speech through ElevenLabs (elevenlabs_speech, D-176).
         # The credential store that keeps the keys across restarts (key_store.Vault, D-167): only ``pla studio`` opens
         # it; without one, and on a system without a store, the keys stay in memory only.
         self.vault, self.vault_ready = vault, False
@@ -864,6 +871,28 @@ class Studio:
                 files += [path, path.with_suffix(".json")]
         return memo(("samples", str(self.projects)), files, lambda: sample_inventory(self.projects))
 
+    def elevenlabs_voices(self):
+        """The voices of the ElevenLabs account, the account's own first, for choosing two of them (D-176)."""
+        if not self.elevenlabs_key_available():
+            raise AppError(t("server.elevenlabs.key_required"), code="elevenlabs_key_required")
+        return {"voices": account_voices(self.elevenlabs_key or None)}
+
+    def audio_own(self, project, data):
+        """Give a project its own audio choice, which holds over the settings page's, or remove it again with
+        ``audio`` null (D-177): one podcast spoken by ElevenLabs while the others keep the workspace's route."""
+        root = self.root(project)
+        config = load_project(root)
+        if data.get("audio") is None:
+            (root / OWN_AUDIO).unlink(missing_ok=True)
+        else:
+            raw = dict(data["audio"]) if isinstance(data.get("audio"), dict) else {}
+            if raw.get("provider") in REMOTE_PROVIDERS:
+                raw.setdefault("expression", True)
+            choice = AudioChoice.model_validate(raw)
+            write_json(root / OWN_AUDIO, choice.model_dump())
+        return {"audio_own": own_audio(root) is not None,
+                "audio_settings": selected_audio(root, config).model_dump()}
+
     def pair_sample(self, data):
         """The conversation sample of a Google selection on the settings page (voice_samples.pair_view): its URL and
         whether it exists, made first when ``generate`` asks for it, with one short request on the Google key. ``pace``
@@ -932,10 +961,13 @@ class Studio:
     def core_key_available(self):
         return bool(self.core_key or os.environ.get("PLA_CORE_API_KEY"))
 
+    def elevenlabs_key_available(self):
+        return bool(self.elevenlabs_key or os.environ.get("ELEVENLABS_API_KEY"))
+
     def stored_keys(self):
         """Every key this server holds, for redaction."""
-        return tuple(key for key in (self.key, self.google_key, self.anthropic_key, self.perplexity_key, self.core_key)
-                     if key)
+        return tuple(key for key in (self.key, self.google_key, self.anthropic_key, self.perplexity_key, self.core_key,
+                                     self.elevenlabs_key) if key)
 
     def load_stored_keys(self):
         """Take every key the credential store holds (D-167); a missing or refusing store gives none."""
@@ -969,12 +1001,14 @@ class Studio:
                 "anthropic_key_available": self.anthropic_key_available(),
                 "perplexity_key_available": self.perplexity_key_available(),
                 "core_key_available": self.core_key_available(),
+                "elevenlabs_key_available": self.elevenlabs_key_available(),
                 "key_sources": {kind: self.key_source(kind) for kind in KEY_ATTRIBUTES}, "key_vault": self.vault_ready}
 
     def audio_key_available(self, audio):
         """Whether the key a recording with ``audio`` needs is there; local Qwen needs none."""
         key = audio_key(audio)
-        return key is None or (self.google_key_available() if key == "google" else self.key_available())
+        return key is None or {"google": self.google_key_available, "elevenlabs": self.elevenlabs_key_available}.get(
+            key, self.key_available)()
 
     def key_reminder(self):
         """What needs a key while that key is missing, as ``[{"need", "projects", "key"}]`` over every project
@@ -983,6 +1017,7 @@ class Studio:
         unnoticed, and a fresh page after a restart said nothing)."""
         missing = {key for key, available in (("openrouter", self.key_available()),
                                               ("google", self.google_key_available()),
+                                              ("elevenlabs", self.elevenlabs_key_available()),
                                               ("anthropic", self.anthropic_key_available()),
                                               ("perplexity", self.perplexity_key_available())) if not available}
         if not missing:
@@ -1661,7 +1696,7 @@ class Studio:
             if full:
                 row["review_notes"] = review_notes((reported or {}).get(folder.name))
                 row["expression"] = reading_expression(root, folder.name, row["hash"],
-                                                       backchannels=audio.provider == "google_gemini_tts")
+                                                       backchannels=audio.provider in PASSAGE_PROVIDERS)
                 row["publish_kit"] = publish_view(root, folder)
             rows.append(row)
         return rows
@@ -1738,6 +1773,8 @@ class Studio:
                 # The settings page's values hold for every project (studio_settings); the page links there.
                 "settings_global": studio_settings.load(root) is not None,
                 "audio_settings": audio.model_dump(), "audio_hash": digest(audio.model_dump()),
+                # Whether this project speaks with its own audio choice instead of the settings page's (D-177).
+                "audio_own": own_audio(root) is not None,
                 "style_notes": style_notes(root), "style_notes_hash": digest(style_notes(root)),
                 "spoken_forms": table.model_dump(),
                 "spoken_forms_hash": digest(table.model_dump()),
@@ -2195,6 +2232,9 @@ class Studio:
             raise AppError(t("server.start.credential.perplexity"), code="credential_in_prompt")
         if self.core_key and self.core_key in payload["message"]:
             raise AppError(t("server.start.credential.core"), code="credential_in_prompt")
+        if ((self.elevenlabs_key and self.elevenlabs_key in payload["message"]) or
+                re.search(r"sk_[0-9a-f]{40,}", payload["message"])):
+            raise AppError(t("server.start.credential.elevenlabs"), code="credential_in_prompt")
         text_provider = (studio_settings.text_data(root, TextChoice().model_dump()) or {}).get("provider")
         if (action in {"assistant", "research", "plan", "script", "revise", "expression", "publish_kit"}
                 and billed_text(text_provider, action, studio_settings.web_search(root))
@@ -2273,7 +2313,7 @@ class Studio:
                     # "Ausdruck neu setzen" a re-render spoke tags nobody had read).
                     # A reading placed for another route or an earlier script counts as none, as on the reader's page.
                     if data.get("expression_hash", "") != reading_hash(root, episode, payload["script_hash"],
-                                                                       backchannels=audio.provider == "google_gemini_tts"):
+                                                                       backchannels=audio.provider in PASSAGE_PROVIDERS):
                         raise AppError(t("server.audio.expression_changed"), code="script_edited")
                     payload["expression_hash"] = data.get("expression_hash", "")
                 if audio.remote:
@@ -2287,7 +2327,7 @@ class Studio:
             saved_run = read_yaml(path) if path.is_file() else {}
             if saved_run.get("kind") == "episode_audio":
                 saved_inputs = read_json(path.parent / "inputs.json")
-                if saved_inputs.get("audio_generation", {}).get("provider") in GEMINI_PROVIDERS:
+                if saved_inputs.get("audio_generation", {}).get("provider") in REMOTE_PROVIDERS:
                     remote_episode = saved_inputs["episode_id"]
                     remote_provider = saved_inputs["audio_generation"]["provider"]
             payload["run_id"] = run_id
@@ -2325,8 +2365,9 @@ class Studio:
         # The worker hands it only to the search for free copies (sources.use_core_key).
         payload["core_key"] = self.core_key or None
         if action in {"audio", "resume", "check"}:
-            # The Google key reaches only the steps that can speak through Google.
+            # The Google and ElevenLabs keys reach only the steps that can speak through them.
             payload["google_key"] = self.google_key or None
+            payload["elevenlabs_key"] = self.elevenlabs_key or None
         # The interface language the worker writes its texts in (D-152): the request's; without a request, as the
         # scheduler starts a resume or a queued recording, the language its job or approval was made in, else the
         # saved choice or German.
@@ -2567,8 +2608,9 @@ class StudioHandler(BaseHTTPRequestHandler):
                 data = json.loads(raw)
                 if not isinstance(data, dict):
                     raise AppError(t("server.request.invalid"), code="invalid_request")
-                # A conversation sample may speak through Google for some seconds; it never holds the Studio's lock.
-                with nullcontext() if path == "/api/pair-sample" else app.mutex:
+                # A conversation sample may speak through Google for some seconds, and the list of ElevenLabs voices
+                # asks ElevenLabs; neither holds the Studio's lock.
+                with nullcontext() if path in {"/api/pair-sample", "/api/elevenlabs/voices"} else app.mutex:
                     if path == "/api/quit":
                         app.stop_all()
                         self.send_data(200, b'{"stopped":true}')
@@ -2576,6 +2618,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                         return
                     elif path == "/api/pair-sample":
                         result = app.pair_sample(data)
+                    elif path == "/api/elevenlabs/voices":
+                        result = app.elevenlabs_voices()
                     elif path == "/api/key":
                         value, kind = data.get("key", ""), data.get("kind", "openrouter")
                         if kind not in KEY_ATTRIBUTES or not valid_key(value):
@@ -2598,7 +2642,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
                                              r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
-                                             r"|audio_queue|allowances|reader_state|new_version)", path)
+                                             r"|audio_queue|allowances|reader_state|new_version|audio_own)", path)
                         if not match:
                             raise AppError(t("server.not_found"), code="not_found")
                         project, action = match.groups()

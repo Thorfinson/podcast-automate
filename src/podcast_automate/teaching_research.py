@@ -120,7 +120,9 @@ def named_question(text, questions):
     """The question an answer or ``remaining_gaps`` entry names, with the reason written after it, else
     ``(None, None)``. The entry must hold the question verbatim; quotation marks around it and a reason
     after it are tolerated (Ontologies, 2026-09-27: every confirmed gap came back as "'question' reason",
-    and none of the sixteen counted)."""
+    and none of the sixteen counted). An entry that quotes a question only up to the end of one of its sentences
+    names it too when no other question starts that way (D-174; Orlagau ep_009, 2026-10-09: a 2,115-character
+    research limit came back three times cut after its first question mark, and the run stopped)."""
     stripped = text.strip()
     known = {question.strip(): question for question in questions}
     if stripped in known:
@@ -130,6 +132,10 @@ def named_question(text, questions):
         rest = body[len(key):] if body.startswith(key) else None
         if rest is not None and (not rest or rest[0] in QUOTES or rest[0].isspace()):
             return known[key], rest.lstrip(QUOTES).strip()
+    cut = body.rstrip(QUOTES).rstrip()
+    starting = [key for key in known if len(cut) < len(key) and key.startswith(cut)]
+    if cut and cut[-1] in ".?!" and len(starting) == 1 and starting[0][len(cut)].isspace():
+        return known[starting[0]], ""
     return None, None
 
 

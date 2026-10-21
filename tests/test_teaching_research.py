@@ -482,6 +482,21 @@ class FoundationResearchTests(unittest.TestCase):
         with self.assertRaises(AppError):
             self.apply()
 
+    def test_a_long_question_cut_after_one_of_its_sentences_names_it_when_no_other_starts_so(self):
+        """Orlagau ep_009, 2026-10-09: a 2,115-character research limit came back three times cut after its first
+        question mark, and the run stopped although the supplement had answered or named every question (D-174)."""
+        first = "Die Besitzkette ist durch Regest Opll belegt. Wie ließ sich Saalfeld 1208 verpfänden?"
+        whole = first + " Ein Anhalt wäre die Parteistellung des Kölner Erzbischofs im Thronstreit."
+        other = "Die Besitzkette ist durch MGH-Urkunde Ottos IV. belegt. Das Warum bleibt offen."
+        self.assertEqual(named_question(first, [whole, other]), (whole, ""))
+        self.assertEqual(named_question(f"„{first}“", [whole, other]), (whole, ""))
+        self.assertEqual(named_question(first[:30], [whole, other]), (None, None), "cut inside a sentence")
+        self.assertEqual(named_question(first, [whole, whole + " Und mehr."]), (None, None), "two questions start so")
+        probes = [{"question": whole, "references": ["src_a#sec_1"]}]
+        context = [{"source_id": "src_a", "sections": [{"reference": "src_a#sec_1", "text": "Read."}]}]
+        cut = FoundationSupplement(explanations=[], remaining_gaps=[first])
+        self.assertEqual(validate_supplement(cut, [whole], self.entry, context, self.dossier, probes), [])
+
     def test_a_quoted_gap_with_a_reason_after_it_still_names_its_question(self):
         """Ontologies, 2026-09-27: the supplement wrote every confirmed gap as "'question' reason", and the
         exact-text check counted none of them. The question must still stand in the entry verbatim."""

@@ -11,6 +11,8 @@ from .audio import PAUSE_TAGS, assemble, run_tts, worker_path
 from .content_text import text as wording, transparency_lines
 from .errors import AppError
 from .expression import BACKCHANNELS, EXPRESSION_VERSION, plan_expression, untagged
+from .elevenlabs_speech import (ELEVENLABS_SPEECH_VERSION, PASSAGE_RULE as ELEVENLABS_PASSAGE_RULE,
+                                check_elevenlabs_rows, run_elevenlabs_tts)
 from .google_speech import GOOGLE_SPEECH_VERSION, PASSAGE_RULE, check_google_rows, passage_units, run_google_tts
 from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels
 from .provider_pool import AdapterPool
@@ -22,8 +24,8 @@ from .runner import execute_stages, manifest_path, outputs_valid
 from .script_models import SeriesPlan
 from .series_review import load_series_review, require_passing_series, reviewed_scripts
 from .scripting import load_research, validate_script
-from .speech import (AudioChoice, SPEECH_VERSION, audio_generation_record, check_gemini_rows,
-                     run_gemini_tts, same_audio_generation, selected_audio)
+from .speech import (AudioChoice, ELEVENLABS_PROVIDER, PASSAGE_PROVIDERS, SPEECH_VERSION, audio_generation_record,
+                     check_gemini_rows, run_gemini_tts, same_audio_generation, selected_audio)
 from .spoken_forms import SpokenForms, load_forms, report as pronunciation_report, spoken_text
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash,
                       project_lock, read_yaml, write_json, write_yaml)
@@ -245,8 +247,9 @@ def expression_invoke(pool, work, limits):
 
 
 def backchannels_for(choice, language):
-    """The listener reactions a recording with ``choice`` can speak: only Google's two-host passages (google_speech)."""
-    return BACKCHANNELS[language] if choice.provider == "google_gemini_tts" else ()
+    """The listener reactions a recording with ``choice`` can speak: only two-host passages (google_speech,
+    elevenlabs_speech), where the other host is there to speak them."""
+    return BACKCHANNELS[language] if choice.provider in PASSAGE_PROVIDERS else ()
 
 
 def saved_expression(root, episode, script_hash, *, backchannels=False):
@@ -309,9 +312,10 @@ def script_text_generation(root, config, script_run_id):
 def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval_note="",
                       resume=False, run_id=None, expected_script_hash=None, expected_readable_hash=None,
                       expected_config_hash=None, audio_choice=None, api_key=None, expected_audio_hash=None,
-                      parallel_remote=False, expected_expression_hash=None, speech_key=None):
+                      parallel_remote=False, expected_expression_hash=None, speech_key=None, elevenlabs_key=None):
     """``api_key`` is the OpenRouter key (OpenRouter speech, and the expression layer's text model when it is an
-    OpenRouter one); ``speech_key`` is the Google key a Google recording speaks with."""
+    OpenRouter one); ``speech_key`` is the Google key a Google recording speaks with, ``elevenlabs_key`` the
+    ElevenLabs key an ElevenLabs recording speaks with."""
     root = root.resolve()
     with project_lock(root, shared=parallel_remote), ExitStack() as locks:
         config = load_project(root)
@@ -371,13 +375,18 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
         if audio_choice is not None:
             inputs["audio_generation"] = audio_generation_record(choice)
         google = choice.provider == "google_gemini_tts"
+        eleven = choice.provider == ELEVENLABS_PROVIDER
+        passages = google or eleven
         if choice.remote:
             inputs["speech_model"] = choice.model
-            inputs["speech_version"] = GOOGLE_SPEECH_VERSION if google else SPEECH_VERSION
-            # The engine's own file: a Google recording binds google_speech.py, an OpenRouter one speech.py.
-            inputs["worker_sha256"] = file_hash(Path(__file__).with_name("google_speech.py" if google else "speech.py"))
-            if google:
-                inputs["passages"] = PASSAGE_RULE
+            inputs["speech_version"] = (GOOGLE_SPEECH_VERSION if google else ELEVENLABS_SPEECH_VERSION if eleven
+                                        else SPEECH_VERSION)
+            # The engine's own file: a Google recording binds google_speech.py, an ElevenLabs one elevenlabs_speech.py,
+            # an OpenRouter one speech.py.
+            engine_file = "google_speech.py" if google else "elevenlabs_speech.py" if eleven else "speech.py"
+            inputs["worker_sha256"] = file_hash(Path(__file__).with_name(engine_file))
+            if passages:
+                inputs["passages"] = PASSAGE_RULE if google else ELEVENLABS_PASSAGE_RULE
             if choice.expression:
                 inputs["expression_version"] = EXPRESSION_VERSION
         # The voices this episode is spoken in: swapped in an even-numbered one when the roles alternate.
@@ -394,6 +403,9 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             if google:
                 return check_google_rows(root, batch, report, voiced, config.language, table=table, overrides=overrides,
                                          expression=expression_tags())
+            if eleven:
+                return check_elevenlabs_rows(root, batch, report, voiced, config.language, table=table,
+                                             overrides=overrides, expression=expression_tags())
             return (check_gemini_rows(root, batch, report, voiced, config.language, table=table, overrides=overrides,
                                       expression=expression_tags())
                     if choice.remote
@@ -479,7 +491,9 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             return [work / "expression.json"]
 
         def synthesis():
-            outputs, rows, unit = [], [], "passages" if google else "segments"
+            outputs, rows, unit = [], [], "passages" if passages else "segments"
+            # Segments of the finished chapters: a passage row holds several of them.
+            done = 0
             for number, chapter in enumerate(script.chapters, 1):
                 batch = select_script(script, [s for s in script.segments if s.chapter_id == chapter.chapter_id])
                 folder = work / "synthesis" / chapter.chapter_id
@@ -487,7 +501,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 signature = digest({"inputs": manifest.input_hash, "batch": batch.model_dump()})
                 write_json(work / "progress.json", {"status": "synthesis", "chapter": number,
                     "chapters": len(script.chapters), "chapter_title": chapter.title,
-                    "completed_segments": len(rows), "total_segments": len(script.segments),
+                    "completed_segments": done, "total_segments": len(script.segments),
                     "chapter_progress": (folder / "tts_progress.json").relative_to(root).as_posix()})
                 report = None
                 if stamp_file.exists() and report_file.exists():
@@ -507,6 +521,14 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                         else:
                             run_google_tts(config, batch, root, folder, voiced, speech_key,
                                            table=table, overrides=overrides, expression=expression_tags())
+                    elif eleven:
+                        if parallel_remote:
+                            from .parallel_speech import run_parallel_elevenlabs_tts
+                            run_parallel_elevenlabs_tts(config, batch, root, folder, voiced, elevenlabs_key,
+                                                        table=table, overrides=overrides, expression=expression_tags())
+                        else:
+                            run_elevenlabs_tts(config, batch, root, folder, voiced, elevenlabs_key,
+                                               table=table, overrides=overrides, expression=expression_tags())
                     elif choice.remote:
                         if parallel_remote:
                             from .parallel_speech import run_parallel_gemini_tts
@@ -522,6 +544,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                     write_json(stamp_file, {"input_hash": signature, "sha256": file_hash(report_file)})
                 # A Google recording reports passages of several segments, the others one row per segment.
                 rows.extend(report[unit])
+                done += len(batch.segments)
                 outputs.extend([report_file, stamp_file])
             report = {unit: rows, "script_sha256": script_hash, "voices": voiced.voices}
             paths = validate_audio(script, report)
@@ -548,7 +571,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             whole = select_script(script, list(script.segments), title=script.title)
             outputs = assemble(whole, paths, destination, language=config.language, labels=host_labels(config),
                                pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused,
-                               units=passage_units(report) if google else None,
+                               units=passage_units(report) if passages else None,
                                tempo=choice.pace_for(config.language).tempo)
             audio_report = json.loads((destination / "audio_report.json").read_text(encoding="utf-8"))
             parts = [{"part": 1, "audio": (destination / "audio.mp3").relative_to(root).as_posix(),

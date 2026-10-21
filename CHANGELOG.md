@@ -8,6 +8,8 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-10-19 · ElevenLabs as a speech route: „ElevenLabs · v4“ in the settings' „Audio“, with the voices of your own ElevenLabs account (your own first, „Stimmen neu laden“), a style per role and alternating roles as for Google, and the „ElevenLabs-Key“ in the settings, kept in the credential store. A passage of dialogue goes to ElevenLabs' Text to Dialogue with both voices; the expression tags and listener reactions are spoken in ElevenLabs' words. Own stop cards for a missing or refused key, used-up credits, a busy ElevenLabs and a refused request (D-176).
+- 2026-10-19 · A project's own speech choice: „Sprachanbieter dieses Projekts“ on the recording page gives one project its own route and voices over the settings, „Wieder wie Einstellungen“ removes it (D-177).
 - 2026-10-08 · Studio overview: a research or script run's card shows its numbers under its state, such as „49 von 74 geprüft · 6 in Arbeit · 6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500“, and in the overall review its round and the reworked sub-questions done („Gesamtprüfung Runde 2 · 10 von 10 nachgebesserten Teilfragen fertig“).
 - 2026-10-08 · „Weiter mit …“: „Nur Claude“ and Claude on the Anthropic API key name their model in a „Claude-Modell“ list (`pla approve --text-switch claude-only --switch-model claude-sonnet-5-5`), so one run can continue on Sonnet 5.5 at high while the default stays Haiku 5.5 (D-170).
 - 2026-10-08 · Studio overview: a stopped project's card offers the step its page recommends as one click, without opening the project — „Fortsetzen“, „Mit neuen Anläufen fortsetzen“, „Empfehlungen übernehmen und fortsetzen“, „Limits anheben und Empfehlungen übernehmen“ or the call limit's raise; „Ansehen“ stays beside it (D-169).
@@ -137,6 +139,10 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Fixed
 
+- 2026-10-19 · A Google or ElevenLabs recording's progress counts the segments of its finished chapters: it showed their passages against all segments, „9 von 240“ for an episode that was at 138.
+- 2026-10-19 · A project copied or moved to another folder no longer stops its scripts and recordings with „Lokale Quelle seit der Recherche geändert“: a local source is recognized by the content the research read (D-178).
+- 2026-10-19 · Script review: a teaser that names a fact a later scene explains no longer stops the review. The review asked to attach the later scene's evidence, which the script check rejects, so every repair failed; it now asks to move the fact to its scene or to keep it as that scene's open question (D-175).
+- 2026-10-09 · Script run: a supplementary research no longer stops with „Erklärgrundlagen fehlen“ when the model quotes a long question only up to the end of one of its sentences; the cut quote counts when no other question starts the same way (D-174).
 - 2026-10-09 · Script run: a research limit with unread passages in the sources is now read by the episode that states the limit, not by the first episode whose sources hold a passage. Before, one episode citing large editions read the limits of the whole series (Orlagau ep_001: 19 gaps, 16 of them other episodes'), and a limit it resolved left its own episode with neither the limit nor the answer (D-173).
 - 2026-10-07 · Studio: the overview said „Podcast verfügbar“ while the same project's steps showed two decisions; the header said „Arbeitsschritt abgeschlossen“ after a companion kit; ages beyond an hour read „vor 7475 Min.“; a stopped run's status brief read „wird gerade erstellt“; the reader's sticky bar hid the first chapter and the top of the margin; the settings page showed a new project's steps in the sidebar (D-160, D-161, D-164).
 

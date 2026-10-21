@@ -2,7 +2,7 @@
 title: Security
 doc_type: security
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-19
 covers:
   - src/podcast_automate/google_speech.py
   - src/podcast_automate/studio.py
@@ -154,6 +154,20 @@ The Google key serves Gemini audio through Google and the conversation samples (
   use, whose requests it does not (as known when this was written; not re-checked on 2026-10-06). The key's tier is
   set in Google AI Studio, not here.
 
+### ElevenLabs key in the Studio
+
+The ElevenLabs key serves recordings through ElevenLabs and the list of the account's voices (why: D-176):
+
+- It is entered under **„ElevenLabs-Key“** on the settings page or in a hold card that asks for it, kept in the
+  credential store under the kind `elevenlabs` and the Studio server's memory (or read from `ELEVENLABS_API_KEY` in
+  its environment), and handled like the Google key: standard input to a worker, never in project files or browser
+  storage. A worker receives it only for audio, resume and the connection check.
+- The Studio server itself asks ElevenLabs for the account's voices (`POST /api/elevenlabs/voices`, the token-guarded
+  route, `elevenlabs_speech.account_voices`); the answer carries ids, names, labels and collections, no key.
+- Every recorded character is billed to the ElevenLabs account's credits; the cache record keeps the credits each
+  passage cost, never the key. A key pasted into the editorial chat is refused (`credential_in_prompt`), and
+  `sk_` followed by hex digits is removed from traces and logs.
+
 ### Anthropic key in the Studio
 
 The Anthropic key serves Claude on your API key (`claude_api`) and nothing else (why: D-145):
@@ -212,7 +226,8 @@ else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-arc
 
 - OpenRouter text, Gemini speech and Jev requests keep the key in memory and in the `Authorization` header only, and
   follow no redirects (`openrouter.NoRedirect`). Gemini speech through Google sends its key only in the
-  `x-goog-api-key` header, never in the URL, and follows no redirects either.
+  `x-goog-api-key` header, never in the URL, and follows no redirects either. ElevenLabs gets its key only in the
+  `xi-api-key` header, follows no redirects, and an answer that contains the key is not used.
 - A Perplexity search request keeps its key in the `Authorization` header only and follows no redirects
   (`openrouter.NoRedirect`); an answer that contains the key is not used (`credential_in_response`).
 - Claude on the API key hands the key to the Claude Code process only in its environment, never as an argument; an

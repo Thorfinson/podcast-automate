@@ -2,7 +2,7 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-09
+last_reviewed: 2026-10-19
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
@@ -415,12 +415,15 @@ The review compares each segment that cites findings with the cited source secti
   `script_review.v12-source-corrected`): no objection, but a note in the review limitations that the dossier
   finding is inaccurate, shown in the Studio when reading (why: D-085). A deviation therefore does not enter the
   follow-up review as a previous objection; that review judges each segment afresh.
-- Today's version is `script_review.v14-listenability` (`script_checks.SCRIPT_REVIEW_VERSION`). A
-  `script_review.v11-core-limits`, `script_review.v12-source-corrected`, `script_review.v13-reviewer-advisories` or
-  `script_review.v14-listenability` (v15 only loosens its dialogue point: chapter endings vary by design, D-143)
-  verdict that blocked nothing stays valid on resume (`script_checks.RELAXED_REVIEW_VERSIONS`), so an episode in flight
-  is not reworked for the listenability point; a blocking one is reviewed again before the next correction, also when
-  its repairs are spent.
+- Today's version is `script_review.v17-scene-order` (`script_checks.SCRIPT_REVIEW_VERSION`). A verdict of
+  `script_review.v11-core-limits` through `script_review.v16-breathers` that blocked nothing stays valid on resume
+  (`script_checks.RELAXED_REVIEW_VERSIONS`): v14 to v16 add or loosen only dialogue points (D-142, D-143, D-144), and
+  v17 changes only the correction asked for a statement that blocks already. So an episode in flight is not reworked
+  for them; a blocking one is reviewed again before the next correction, also when its repairs are spent.
+- A segment may cite the findings of its own scene and of earlier scenes, besides supporting and recalled ones
+  (`script_checks.validate_script`). For a statement whose finding a later scene introduces, as an opening teaser
+  can make, the review asks to move it to that scene or to turn it into the open question that scene answers, never
+  to add the later finding's ID; the repair prompt says the same (why: D-175).
 
 ### Reader, editorial and teaching reviews
 

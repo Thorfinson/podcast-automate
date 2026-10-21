@@ -949,9 +949,11 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         # v13 since 2026-10-06: v14 adds only a dialogue point (listenability), which stops nothing once repairs are spent.
         # v14 the same evening: v15 only loosens that point (chapter endings vary by the design's dramaturgy, D-143).
         # v15 on 2026-10-07: v16 adds breathers, again a dialogue point only (D-144).
+        # v16 on 2026-10-19: v17 changes only the correction asked for a statement that already blocks (D-175).
         self.assertEqual(RELAXED_REVIEW_VERSIONS, {"script_review.v11-core-limits", "script_review.v12-source-corrected",
                                                    "script_review.v13-reviewer-advisories",
-                                                   "script_review.v14-listenability", "script_review.v15-dramaturgy"})
+                                                   "script_review.v14-listenability", "script_review.v15-dramaturgy",
+                                                   "script_review.v16-breathers"})
         passed = ScriptReview(issues=[ScriptIssue(category="clarity", segment_ids=["seg_001"], reason="Noted.")], limitations=[])
         blocking = ScriptReview(issues=[ScriptIssue(category="grounding", segment_ids=["seg_001"], reason="Drift.")], limitations=[])
         self.assertTrue(saved_verdict_stands(SCRIPT_REVIEW_VERSION, blocking))

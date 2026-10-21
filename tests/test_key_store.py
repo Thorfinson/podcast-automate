@@ -36,7 +36,8 @@ class VaultTests(unittest.TestCase):
         backend = MemoryKeyring()
         vault = Vault(backend)
         self.assertTrue(vault.available())
-        self.assertEqual(KINDS, ("openrouter", "google", "anthropic", "perplexity", "core"))
+        # ElevenLabs since D-176 (2026-10-19): its key under its own kind, as the user stored it before the Studio knew it.
+        self.assertEqual(KINDS, ("openrouter", "google", "anthropic", "perplexity", "core", "elevenlabs"))
         self.assertTrue(vault.save("core", "core-key-1"))
         self.assertTrue(vault.save("openrouter", "sk-or-key-1"))
         self.assertEqual(backend.entries, {(SERVICE, "core"): "core-key-1", (SERVICE, "openrouter"): "sk-or-key-1"})

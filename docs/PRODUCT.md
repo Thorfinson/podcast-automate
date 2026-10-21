@@ -2,7 +2,7 @@
 title: Product
 doc_type: product
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-19
 covers:
   - src/podcast_automate/text_settings.py
   - src/podcast_automate/speech.py
@@ -93,7 +93,7 @@ subscription bills individual calls. OpenRouter serves text models with structur
 OpenRouter credit. **Claude on the API key** (`claude_api`) is the Claude Code CLI on your own Anthropic API key, for
 use without a subscription: every call, web research included, is billed to your Anthropic account, and a run needs a
 money limit ([Claude on your own API key](BUSINESS_LOGIC.md#claude-on-your-own-api-key)). Codex on an OpenAI API key
-is not offered (why: D-150). ElevenLabs is not connected.
+is not offered (why: D-150). **ElevenLabs** records speech on your own ElevenLabs key and credits (why: D-176).
 
 **The web search** runs with the text model's own tools (the default), or through the
 [Perplexity Search API](https://docs.perplexity.ai/api-reference/search-post) on your Perplexity key: the run's model
@@ -164,13 +164,17 @@ through the CLI option `--model` ([Commands](#commands)).
 | --- | --- | --- | --- |
 | Local Qwen3-TTS (tested on Windows with an AMD GPU) | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` (default of `runtime.tts_model`) | 9 voices: Aiden, Vivian, Ryan, Serena, Uncle_Fu, Ono_Anna, Sohee, Eric, Dylan; Studio default Aiden and Vivian | `models.RuntimeSettings.tts_model`, `speech.QWEN_VOICES`, `speech.audio_catalog` |
 | Gemini TTS via Google (the Gemini default since 2026-10-06, why: D-133) | `gemini-3.8-flash-tts` (Google's id of `speech.GEMINI_MODEL`); the Lite model as on OpenRouter, unverified on Google | the same 30 voices; Studio default Erinome and Sadachbia, swapping roles from episode to episode; a style per role (`speech.STYLE_PRESETS`) | `google_speech.py`, `speech.audio_catalog` |
+| ElevenLabs (why: D-176) | `eleven_v4` (`speech.ELEVENLABS_MODELS`), through Text to Dialogue | the voices of your own ElevenLabs account, by their ids; listed in the Studio, your own voices first; a style per role as a leading tag | `elevenlabs_speech.py`, `speech.audio_catalog` |
 | Gemini TTS via OpenRouter | `google/gemini-3.8-flash-tts` (default, `speech.GEMINI_MODEL`); `google/gemini-3.8-flash-lite-tts` as the alternative on the settings page (`speech.GEMINI_MODELS`) | 30 voices valid for both models, checked against OpenRouter's models API on 2026-09-26 (`speech.VOICES_VERIFIED_ON`); Studio default Sadaltager and Aoede; shared [voice-sample library](OPERATIONS.md#voice-samples) | `speech.GEMINI_VOICES`, `speech.audio_catalog` |
 
 The Gemini speech model is chosen with the audio provider and needs no manual model ID. With Gemini the GPU
-installation is not needed: the connection check then checks the stored key of the route (Google or OpenRouter) and
+installation is not needed, nor with ElevenLabs: the connection check then checks the stored key of the route (Google,
+ElevenLabs or OpenRouter) and
 skips the local Qwen check. A stored key is not yet a successful API voice test. Google's voice library has further
 voices (215 for English, 87 for German, read on 2026-10-06); they are not offered yet. Recording with each provider:
-[Qwen](AUDIO.md#qwen), [Gemini via Google](AUDIO.md#gemini-via-google), [Gemini via OpenRouter](AUDIO.md#gemini-via-openrouter).
+[Qwen](AUDIO.md#qwen), [Gemini via Google](AUDIO.md#gemini-via-google), [ElevenLabs](AUDIO.md#elevenlabs),
+[Gemini via OpenRouter](AUDIO.md#gemini-via-openrouter). A project may speak with a provider of its own
+([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice), why: D-177).
 
 ## Commands
 
