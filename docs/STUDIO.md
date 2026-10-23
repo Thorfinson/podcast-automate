@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-10-19
+last_reviewed: 2026-10-23
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -120,12 +120,14 @@ A project runs through six steps, each a page in the navigation:
    table of contents appears only when its draft is finished: while a new draft or a revision runs, the previous plan is
    hidden, and a stopped draft shows only its hold card (why: D-100). Only a finished draft can be revised or approved;
    after a stopped draft, continue with **„Neues Inhaltsverzeichnis entwerfen“** (draft a new table of contents).
-4. **„Ausarbeitung“** (script work): teaching plan, script draft, dialogue polishing, quality review and publishing are
-   automatic phases of one job, with no extra click between them. The page shows the current episode, finished results
+4. **„Ausarbeitung“** (script work): teaching plan, script draft, narration review („Narrationsprüfung“, in a run
+   started from 2026-10-23), dialogue polishing, quality review and publishing are automatic phases of one job, with no
+   extra click between them. The page shows the current episode, finished results
    and concrete open points; reviewed teaching plans can be read while work continues. Supplementary research and
    internal corrections belong here.
 5. **„Skripte lesen“** (read scripts): each episode becomes readable once its complete draft is saved. Its review state
-   reads „Entwurf“ (draft), „Dialog überarbeitet“ (dialogue revised) or „Prüfungen bestanden“ (reviews passed), after
+   reads „Entwurf“ (draft), „Erzählweise geprüft“ (storytelling checked, the narrated draft), „Dialog überarbeitet“
+   (dialogue revised) or „Prüfungen bestanden“ (reviews passed), after
    publishing „Fertig zur Durchsicht“ (ready for review). Further episodes appear in the selection automatically. An
    opened version stays in place while you read; when a newer text or review state exists, **„Aktuellen Stand laden“**
    (load current state) loads it. Previews get no audio approval. After the script work, the published versions can be
@@ -745,6 +747,13 @@ what the reviews said but did not block: the limitations each review gives its o
 reviewers classified as not necessary, with their reasoning, and the deterministic notes about repeated definitions,
 repeated references to invented examples, a long cold open and excess length. None of this prevents publishing; it is
 reading material for your review.
+
+An episode of a narrated run leads with the narration review's scores („Spannung 6/10 · Interesse 7/10 · Erzählweise
+5/10“) and lists under **„Narrationsprüfung“** what it left open and the stories the material does not hold, each with
+its category („Geschichte zu knapp erzählt“, „Erzählstoff fehlt im Material“, „Recherchebericht statt Gewissheit“ …),
+problem, correction and segments (`studio_scripts.review_notes`: `narration` and `narration_scores`;
+[Narration review](SCRIPTS.md#narration-review)). A story missing from the material is your decision about further
+research; nothing researches it on its own.
 
 ## Downloads
 

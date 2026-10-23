@@ -37,7 +37,8 @@ from .storage import (bound_brief, digest, file_hash, load_project, project_hash
 from .teaching import DESIGN_VERSION, TEACHING_VERSION
 
 SCRIPT_VERSION = "script.v5-dialogue-polish"
-STAGES = ("planning", "teaching", "writing", "polishing", "review", "publish")
+# "narration" since 2026-10-23 (D-180): a run started before keeps its manifest's stage list and runs without it.
+STAGES = ("planning", "teaching", "writing", "narration", "polishing", "review", "publish")
 
 
 def local_source_paths(root: Path, config):

@@ -592,6 +592,17 @@ class FoundationResearchTests(unittest.TestCase):
         fits.explanations[0].explanation = " ".join(["word"] * (190 - used))
         self.assertEqual(validate_supplement(fits, ["How are scores compared?"], self.entry, context, self.dossier), [])
 
+    def test_a_story_request_may_leave_every_question_open(self):
+        """D-180: the story research of a narrated run asks for a story the sections only point to. Not finding it is a
+        result, so its questions may stand as remaining gaps without a corpus probe; any other request still fails."""
+        story = "Was erzählt Thietmar über die Gefolgschaft des Kuchavez?"
+        open_answer = FoundationSupplement(explanations=[], remaining_gaps=[story])
+        self.assertEqual(validate_supplement(open_answer, [story], self.entry, [], self.dossier, optional=True), [])
+        self.assertTrue(validate_supplement(open_answer, [story], self.entry, [], self.dossier))
+        stray = FoundationSupplement(explanations=[], remaining_gaps=["Eine ganz andere Frage?"])
+        self.assertTrue(validate_supplement(stray, [story], self.entry, [], self.dossier, optional=True),
+                        "a gap no question names still fails")
+
     def test_a_supplement_to_an_assembled_dossier_counts_only_its_own_words(self):
         """An assembled dossier holds every verified answer without word limits per source (2026-10-01): the limits
         of a supplement then count only what it adds, and its writer is told so."""

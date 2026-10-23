@@ -1319,6 +1319,26 @@ test('the reading page shows every recorded review caveat under one collapsible 
   assert.ok(!html.includes('Dialogvergleich</h3>'));
 });
 
+test('the narration review leads the notes with its scores and names each open point by its category',()=>{
+  // D-180: what the narration review left open, and the story the material does not hold, reach the reader.
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[publishedEpisode({narration_scores:{tension:5,interest:6,storytelling:4},
+    narration:[{category:'missing_story',fix:'research',problem:'Kuchavez steht nur in einem Satz.',
+                correction:'Thietmars Bericht lesen.',segment_ids:['seg_001']}]})];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+  const html=app.run('renderScript()');
+  assert.ok(html.includes('Hinweise der Prüfungen'));
+  assert.ok(html.includes('Spannung 5/10 · Interesse 6/10 · Erzählweise 4/10'));
+  assert.ok(html.includes('<h3>Narrationsprüfung</h3>'));
+  assert.ok(html.includes('Erzählstoff fehlt im Material'));
+  assert.ok(html.includes('Kuchavez steht nur in einem Satz. Thietmars Bericht lesen. (seg_001)'));
+  // Scores alone still open the panel.
+  p.episodes=[publishedEpisode({narration_scores:{tension:7,interest:7,storytelling:8}})];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
+  assert.ok(app.run('renderScript()').includes('Erzählweise 8/10'));
+});
+
 test('a script without recorded caveats and an unpublished preview render no panel',()=>{
   const app=studio(), p=workflowProject(app);
   p.job.status='completed';p.job.run.status='completed';

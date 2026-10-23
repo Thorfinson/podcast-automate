@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-09
+last_reviewed: 2026-10-23
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -98,7 +98,7 @@ No dossier is composed, closed or published while a sub-question has neither a v
    Every reason is one sentence of at most about 300 characters. Passed answers are stored with source and answer checksums and survive an interruption.
 
    The review of a reworked answer sees its earlier rejecting verdict (failed criteria, blocking findings, source suitability). Before the call, code fixes what may still fail (`review_scope`, stored at the sub-question): the points objected to earlier, new or changed findings, and every criterion resting on one of them or on another set of findings than before (for example after the rework removed one). Anything the review newly objects to in unchanged, previously passed material keeps the earlier verdict and is listed as a note among the limitations.
-6. **Dossier and overall review:** The dossier is built only from the verified answers. For runs of prompt generation 3 it is assembled without a model call from every finding of every verified answer, unchanged, plus each answer's summary and limits ([Assembled dossier](#assembled-dossier)). An independent assessment of all original guiding questions remains required. Concrete objections go to the affected sub-questions; answers that together serve one guiding question are not reopened wholesale.
+6. **Dossier and overall review:** The dossier is built only from the verified answers. From prompt generation 3 on it is assembled without a model call from every finding of every verified answer, unchanged, plus each answer's summary and limits ([Assembled dossier](#assembled-dossier)). An independent assessment of all original guiding questions remains required. Concrete objections go to the affected sub-questions; answers that together serve one guiding question are not reopened wholesale.
 7. **Export:** Dossier and companion files become the current project state only after the individual and overall reviews passed, never with an open sub-question ([Revalidation instead of a stop](#revalidation-instead-of-a-stop)). Research artefacts and raw sources stay local and are excluded from Git.
 
 ### Assessment of the guiding questions
@@ -138,6 +138,16 @@ Missing questions, unreadable texts and bare tables of contents fail this check.
 **Verbatim quotes.** Verbatim means the same letters in the same order; spaces and hyphenation do not count, because the text layer of scanned books tears words apart ("human p otential"). Typographic variants count as equal (`research_evidence.TYPOGRAPHY`): ligatures, hyphens and dashes, soft hyphens and all quotation marks, including the guillemets » « › ‹ that German books quote with while the model types straight quotes.
 
 **Missing evidence type as a result.** If a criterion demands a particular kind of evidence (independent, from the recency window, several studies, measured figures) and the web search finds none either, the reader answers with what the read passages show and names the missing evidence type in the answer's limits. After a web search of this sub-question (`web_attempts` ≥ 1, checked in code), the review rates such a criterion as met as long as the answer claims nothing beyond the passages (`question_answering.EVIDENCE_ABSENCE_REVIEW`); explanation, mechanism and definition are reviewed as usual. (why: D-042)
+
+### Story rules (prompt generation 4)
+
+A run started on or after 23 October 2026 (prompt generation 4, `question_answering.STORY_GENERATION`) also researches the story a listener follows (why: D-180). The runs of 7 October kept the number a criterion asked for and left the scene beside it in the same read passage, and none of their planned questions asked for events or people.
+
+- **Plan** (`prompts/story_plan.txt`): where the subject has a story (what happened, who acted and why, how an idea or result came about, a case that shows a mechanism, what followed), the plan puts it into the acceptance criteria of the task it belongs to, or plans a task of kind `example` for an event, a course of life or a case that carries a requirement on its own, and asks for the account of the source that tells it, not only a later summary. No new topics.
+- **Reader** (`prompts/story_reader.txt`): keeps the story its passages tell about the question's subject (events, people and their reasons as the source gives them, a scene, a surprising result, a telling phrase, the consequence) in the finding it belongs to or in a finding of kind `example`, says whose account it is, and states a limit by the kind and distance of the evidence („only a later summary“, „a partisan account“), never by what was or was not read and never in the first person.
+- **Answer review** (`prompts/story_verify.txt`): such a finding belongs to the answer and is no broadening of scope; its support is checked like any other.
+- The call tags carry `.story` (`….deps.story.plan`, `….story.reader`, the review's `.story`).
+- **Earlier runs keep their prompts and receipts.** The generation is fixed before the first planning call in `question_research/plan_generation.json` (`QuestionResearch.plan_generation`), since the ledger saves `prompt_generation` only after planning. A run stopped during planning whose plan receipt exists without that file was made before the story rules and resumes with generation 3, so its receipt still matches; a re-cut plan (`replan`) uses the generation of the ledger.
 
 ### Finding ownership
 
@@ -286,7 +296,7 @@ If an address refuses the download (HTTP 401, 402, 403, 451), answers with a bot
 
 ### Composition
 
-A run started on or after 1 October 2026 (prompt generation 3, `prompt_generation` in the question state) assembles its dossier from the verified answers instead of having a model write it (`question_synthesis.assemble_dossier`). (why: D-048)
+A run started on or after 1 October 2026 (prompt generation 3 or later, `prompt_generation` in the question state) assembles its dossier from the verified answers instead of having a model write it (`question_synthesis.assemble_dossier`). (why: D-048)
 
 - It holds every finding of every verified answer unchanged. The finding ID is joined with the sub-question (`<task_id>__<finding>`), because IDs are unique only within one answer.
 - Under `answers` each sub-question lists question, summary, limits and its finding IDs.

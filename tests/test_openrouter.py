@@ -264,7 +264,7 @@ class OpenRouterScriptTests(unittest.TestCase):
              patch("podcast_automate.cli.getpass.getpass", return_value=KEY), contextlib.redirect_stdout(output):
             code = main(["script", str(self.root), "--backend", "openrouter", "--model", "vendor/test-model", "--api-key", "--json"])
         self.assertEqual(code, 0)
-        self.assertEqual(len(self.fixture.calls), 11)
+        self.assertEqual(len(self.fixture.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
         self.assertEqual(before, file_hash(self.root / "project.yaml"))
         self.assertNotIn(KEY, output.getvalue())
         for path in self.root.rglob("*"):

@@ -1,0 +1,10 @@
+Rework the draft below by its narration_points and return the whole episode. Change only the
+segments the points name; you may add new segments next to them with new unique segment IDs, and
+leave out a named segment where its point asks to cut it. Every other segment stays exactly as it
+is, in its order. Tell a story as a story: who, where, what they did and why as the source tells it,
+the moment it turns and what followed, in the order it happened, before the hosts weigh how far the
+source carries it. Take every event, person and detail from story_material, the findings and the
+supplied sections, cite in knowledge_refs the findings whose sections tell it, and add nothing the
+material does not hold. Make room by cutting detours and repeated caveats; stay within the episode's
+word budget. Say how certain a statement is by the kind of its evidence, never by what was or was
+not read. Every rule of the writing prompt above still holds.

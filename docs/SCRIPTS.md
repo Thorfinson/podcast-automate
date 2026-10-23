@@ -2,10 +2,11 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-19
+last_reviewed: 2026-10-23
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
+  - src/podcast_automate/narration.py
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_evidence.py
   - src/podcast_automate/script_artifacts.py
@@ -21,8 +22,13 @@ covers:
 # Scripts
 
 `pla script` turns a finished research run into a series draft (table of contents), source-checked teaching plans
-and reviewed, readable dialogue scripts, in the stages `planning`, `teaching`, `writing`, `polishing`, `review` and
-`publish`. It produces no audio. Teaching plans and the binding editorial reviews: [Teaching design](TEACHING.md).
+and reviewed, readable dialogue scripts, in the stages `planning`, `teaching`, `writing`, `narration`, `polishing`,
+`review` and `publish`. It produces no audio. Teaching plans and the binding editorial reviews: [Teaching
+design](TEACHING.md).
+
+A run started before 23 October 2026 has no `narration` stage in its manifest and resumes without it: no core limit,
+no story material, no story rules, no narration review, and polishing starts from the writer's draft (why: D-180). Only
+a run with the stage is called *narrated* below.
 
 ## Running a script job
 
@@ -160,6 +166,12 @@ The plan assigns findings at two levels (`EpisodePlan` in `script_models.py`) (w
 - Every finding gets a place, as core or support in at least one episode, or a reasoned omission, never both
   (`script_checks.validate_plan`).
 - Where the series goal weights *understanding*, the core stays with what the theories explain in their own logic.
+- **Core limit in a narrated run** (why: D-180): at most one core finding per `CORE_MINUTES` = 4 planned minutes and
+  never fewer than `MIN_CORE` = 4 in an episode (`script_checks.core_limit`, 11 for 45 minutes), checked by
+  `validate_plan(density=True)` and repaired like every plan defect; a side case or another example of the same point
+  goes into the supporting findings, and a story the dossier holds goes into the core of its episode
+  (`prompts/series_plan_density.txt`). Orlagau's episodes held 13 to 26 core findings, about 300
+  spoken words each, and their stories got one or two sentences. An inherited plan (`--revise`) is not checked again.
 - Teaching planning, writing and reviews see core, supporting and recapped findings; the show notes name the sources
   of core and supporting findings.
 - A plan without these fields counts as before: every assigned finding is core, and stored form and hash stay
@@ -235,9 +247,18 @@ is at stake, not the answer, which the episode earns at its end
   (`editorial.episode_series_context`), also when only one episode is generated.
 - The framing rules are one shared prompt block (`prompts/episode_framing.txt`) for the teaching plan and its review,
   writing, polishing and its comparison, the script review, and the editorial and teaching reviews.
-- The listenability rules are another (`prompts/listenability.txt`), for writing, polishing and its comparison and the
-  script review; the teaching plan plans the arc in its own fields
+- The listenability rules are another (`prompts/listenability.txt`), for writing, the narration review, polishing and
+  its comparison and the script review; the teaching plan plans the arc in its own fields
   ([Listenability and narrative arc](TEACHING.md#listenability-and-narrative-arc)).
+- **Story rules in a narrated run** (`prompts/write_episode_story.txt`; why: D-180): writing gets
+  the episode's `story_material` ([Story material and core story](TEACHING.md#story-material-and-core-story)) and tells
+  the design's `core_story` in its scene as a story before checking it: who, where, what they did and why as the source
+  tells it, the moment it turns and what followed, with room to unfold. Other items make points concrete instead of a
+  constructed example. Every detail comes from the material and cites the findings the item names. A statement's
+  certainty is said by the kind of its evidence (charter, later chronicle, single report, a scholar's reading, a
+  reference work without sources), never by how the research went (what was read, OCR, only an abstract, which
+  edition). The first answer is voiced as the design's `first_answer_voice` says, and the episode ends on its payoff;
+  an outlook is one sentence that makes the listener curious, not the formula that announces the next topic.
 - Writing gets only the plan's `scope_note` and the dependencies between the episode's findings, not the whole series
   plan; order, roles and questions come from the series context (why: D-073).
 - Writing gets its word budget computed, as `length` in the payload (`script_checks.word_budget`,
@@ -263,10 +284,57 @@ the current script state with `audio_approved: false`; a model review grants no 
 ([Human approvals](BUSINESS_LOGIC.md#human-approvals)). The voices in the Windows pilot are Aiden (`host_a`) and
 Vivian (`host_b`).
 
+## Narration review
+
+In a narrated run the `narration` stage reviews each draft for tension, interest and storytelling between writing and
+polishing, reworks the segments it names from the episode's material, and reviews the rework once more
+(`narration.narrate_episode`, `ScriptRun.narrate`; why: D-180). The listener's verdict on Orlagau was that the striking
+stories were told in one or two sentences, and no review asked whether an episode tells: the polishing comparison
+checks meaning, completeness, roles, spoken language and framing, the script review the evidence.
+
+- **Why before polishing.** The narrated draft becomes the baseline of polishing (`script_checkpoints.baseline_path`):
+  its comparison then protects the expanded story under `completeness`, so polishing cannot shrink it to two sentences
+  again, and a rework is polished once instead of twice. The evidence review still comes after both and checks every
+  word against the cited sections, so a rework cannot bring in a detail its source does not carry.
+- **What the review gets** (`prompts/narration_review.txt` with the terminology, spoken-dialogue and listenability
+  blocks): the draft, the teaching design, the story material, the episode's findings (statement and illustration), the
+  sections they cite, the series context, the opening, ending and devices of up to three episodes before
+  (`narration.compared_episodes`), and figures counted in code (`narration.narration_metrics`): phrases that report the
+  research instead of the evidence, how often something „bleibt offen“, two questions of one host in a row, each
+  chapter's words, host_b's share and the core story's chapter share.
+- **What it returns** (`NarrationReview`): a score from 1 to 10 for tension, interest and storytelling, each with a
+  reason (5 a correct episode that lists its points, 8 one a listener would recommend), up to three strengths and up to
+  eight points. Each point has a category (`compressed_story`, `unused_material`, `missing_story`, `workshop_talk`,
+  `predictable_shape`, `unpaid_hook`, `flat_ending`, `detour`, `name_confusion`), its segments, the problem, the
+  correction, the story items it draws on and a fix: `rewrite` (the material holds it), `research` (the material does
+  not, so it never asks for an invented story) or `note`. The answer is never asked again for its shape: unknown
+  segments and items are dropped from a point, and a rewrite point left without segments becomes a note
+  (`narration.sanitized`).
+- **Rework** (`prompts/narration_repair.txt` after the whole writing prompt, `narration_repair.v1`): only when there are
+  rewrite points. It changes only the segments they name, may add segments next to them and leave out a named one;
+  every other segment must stay exactly as it was, in its order (`narration.scope_errors`). It must pass the structure
+  and quotation checks of a draft, and stay within `NARRATION_GROWTH` = 1.15 times the draft's words or the word budget's
+  target, whichever is larger (`narration.length_errors`): room comes from cutting detours and repeated caveats. A
+  rework refused after its corrections (`narration_rework_refused`) keeps the draft, with its points reported and
+  `repair_errors.json` beside it; a stop for quota or budget ends the call as everywhere else and asks again on resume.
+- **Review after the rework** (`prompts/narration_review_followup.txt`), by the rule for repeated reviews: it gets its
+  earlier review and the segments the rework changed or added, scores the episode again, and lists only an earlier
+  point left unresolved or a new defect in a changed segment. There is no further round.
+- **Never blocks.** What stays open goes into the episode's report and the reading page's review notes
+  ([Review notes on the reading page](STUDIO.md#review-notes-on-the-reading-page)): the final scores, the first
+  scores, the open points and, separately, the research points.
+- **Calls.** One review per episode at least (`script_budget.STAGE_CALLS`), three when it names rewrite points, plus the
+  rework's corrections.
+- **Files** under `runs/<run_id>/narration/<episode_id>/`: `script.json` (the narrated draft, the writer's when nothing
+  changed), `result.json` (`status` `unchanged`, `repaired` or `kept_draft`, the scores, notes and `research_points`,
+  and the digests of draft and narrated draft that mark the episode finished), `checkpoint.json` (each step saved
+  before the next call, bound to the draft, the prompts and the run inputs) and, after a refused rework,
+  `repair_errors.json`.
+
 ## Dialogue polishing
 
-After `writing`, a separate call processes the complete draft with the teaching plan, the audience and the role
-split. Its task is linguistic and dramaturgical: understandable sentences, fitting reactions, transitions that arise
+After `writing`, or after `narration` in a narrated run, a separate call processes the complete draft with the
+teaching plan, the audience and the role split. Its task is linguistic and dramaturgical: understandable sentences, fitting reactions, transitions that arise
 from the line of thought. It must not invent facts, numbers or examples, nor delete a necessary derivation or
 qualification.
 
@@ -317,7 +385,8 @@ new point on unchanged text is a note in `polishing/<episode>/accepted_notes.jso
 ### Files
 
 `runs/<run_id>/polishing/<episode_id>/` holds `before.md`, `after.md`, `script.json`, `review.json`, `result.json`
-and `checkpoint.json`; the original draft stays under `drafts/`. `reports/script_quality.yaml` takes the comparison
+and `checkpoint.json`; the original draft stays under `drafts/`, a narrated one under `narration/`, and `before.md` and
+the comparison's original are the narrated draft where there is one. `reports/script_quality.yaml` takes the comparison
 into `episodes.<episode_id>.dialogue_polish` and names the roles. Its evidence applies to the version right after
 polishing, which later subject repairs can still change; for audio, only the finally reviewed `script.yaml` the user
 approved counts.
@@ -562,6 +631,8 @@ reads its key from `ANTHROPIC_API_KEY`), `--model` and `--reasoning-effort`.
 - A revision starts a new run with the previous series plan and the existing canonical script. Old text and feedback
   are stored as inputs and the research is kept, so no new planning or search calls are needed.
 - Style changes in `project.yaml` are applied; the teaching plan is created and reviewed anew.
+- A revision started from 2026-10-23 is a narrated run: story material, core story, story rules and the narration
+  review apply to the episode, while the inherited plan keeps its core findings (no core limit).
 - The revised script must pass the source, structure and explanation reviews again; then the new text, with its own
   hash, waits again for the reading review before audio, which none of these reviews replaces.
 - If the previous order itself is unsuitable, the research job changed or the plan is damaged, start a regular
@@ -587,7 +658,8 @@ names) on the audio page: both or none (`TopicBrief.host_names`).
 
 `projects/<id>/style_notes.md` holds the operator's standing editorial corrections, edited in the Studio panel
 **„Redaktionelle Notizen“** (editorial notes). It enters a script run's inputs as `style_notes` and reaches writing,
-dialogue polishing, the polishing comparison and the script review; the evidence rules take precedence. A change
+the narration review, dialogue polishing, the polishing comparison and the script review, not the series plan or the
+teaching design; the evidence rules take precedence. A change
 changes the input hash and so leads to a new run.
 
 ## Outputs
@@ -602,7 +674,7 @@ changes the input hash and so leads to a new run.
 | `episodes/ep_001/script.yaml` | Canonical speaker segments with knowledge references |
 | `episodes/ep_001/script.md` | The same dialogue as readable text, labelled with the host names or roles, never the voice |
 | `episodes/ep_001/show_notes.md` | Chapters, source links and open topics for further study |
-| `reports/script_quality.yaml` | Source and structure check, reader answers, evidenced teaching review, word count and estimated speaking time per episode; each episode entry names under `run_id` the run that wrote it |
+| `reports/script_quality.yaml` | Source and structure check, reader answers, evidenced teaching review, word count and estimated speaking time per episode, and in a narrated run the narration review's `result.json` under `narration`; each episode entry names under `run_id` the run that wrote it |
 | `episodes/audio_review.yaml` | Script hashes and the pending reading review before audio |
 
 The files lie in the private project folder and are excluded from Git. `runs/<run_id>/` keeps inputs, model answers,

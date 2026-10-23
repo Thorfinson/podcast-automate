@@ -21,15 +21,28 @@ from .storage import digest, file_hash, write_json
 from .teaching import prerequisite_context
 
 MAX_PLAN_REPAIRS = 3
+# Planned minutes per core finding in a run with the narration stage, and the floor (D-180). Orlagau's episodes held 13
+# to 26 core findings in 38 to 56 minutes, about 300 spoken words each with every question, caveat and transition, and
+# its most striking stories got one or two sentences; in the Transformer series the episodes with 8 to 10 core findings
+# developed their mechanism in full, the one with 23 toured it.
+CORE_MINUTES = 4
+MIN_CORE = 4
 # v7: core and supporting findings, research limits placed in episodes, the final episode as a whole the synthesis.
 SERIES_PLAN_VERSION = "series_plan.v7-core-limits"
 # The repair call repeats the planning prompt, so its meaning changed with it.
 SERIES_PLAN_REPAIR_VERSION = "series_plan_repair.v3-core-limits"
 
 
-def validate_plan(plan: SeriesPlan, dossier: ResearchDossier, *, limit_ids=None) -> list[str]:
+def core_limit(episode: EpisodePlan) -> int:
+    """The most core findings an episode of a narrated run may have: one per CORE_MINUTES planned minutes, at least
+    MIN_CORE (prompt series_plan_density)."""
+    return max(MIN_CORE, math.floor(episode.target_minutes / CORE_MINUTES))
+
+
+def validate_plan(plan: SeriesPlan, dossier: ResearchDossier, *, limit_ids=None, density=False) -> list[str]:
     """``limit_ids`` are the ids of the research limits the planner was given; without them a plan's
-    research_limit_ids are not checked (an inherited plan, a plan made before research limits reached it)."""
+    research_limit_ids are not checked (an inherited plan, a plan made before research limits reached it). ``density``
+    holds each episode to core_limit, in a run with the narration stage (D-180)."""
     errors = []
     known = {f.id for f in dossier.findings}
     episode_ids = [e.episode_id for e in plan.episodes]
@@ -46,6 +59,10 @@ def validate_plan(plan: SeriesPlan, dossier: ResearchDossier, *, limit_ids=None)
         selected = set(episode.finding_ids)
         if not selected <= known:
             errors.append(f"{episode.episode_id}: unknown finding IDs.")
+        if density and len(selected) > core_limit(episode):
+            errors.append(f"{episode.episode_id}: {len(selected)} core findings for {episode.target_minutes:g} planned "
+                          f"minutes; keep at most {core_limit(episode)} as core (one per {CORE_MINUTES} minutes) and move "
+                          "the rest to supporting_finding_ids, so the episode can tell its story instead of listing.")
         scene_findings = {f for scene in episode.scenes for f in scene.finding_ids}
         if scene_findings != selected:
             errors.append(f"{episode.episode_id}: scenes must cover exactly the episode's core finding_ids.")
@@ -166,12 +183,12 @@ def load_plan_checkpoint(work, signature, *, allow_legacy=False):
 
 
 def checked_series_plan(work, prompt, invoke, dossier, central_question, signature, *, allow_legacy=False,
-                        limit_ids=None):
+                        limit_ids=None, density=False):
     plan, repairs = load_plan_checkpoint(work, signature, allow_legacy=allow_legacy)
     if plan is None:
         plan = invoke(prompt, SeriesPlan, SERIES_PLAN_VERSION)
     while True:
-        errors = validate_plan(plan, dossier, limit_ids=limit_ids)
+        errors = validate_plan(plan, dossier, limit_ids=limit_ids, density=density)
         if plan.central_question != central_question:
             errors.append("Keep the project's central_question unchanged.")
         conflicts = plan_dependency_conflicts(plan, dossier)

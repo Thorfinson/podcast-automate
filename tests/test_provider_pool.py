@@ -88,11 +88,11 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
                 patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
             run = run_script(self.root, backend="auto")
         self.assertEqual(run.status, "completed")
-        self.assertEqual(len(self.calls), 11)
+        self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
         self.assertEqual([c[0] for c in claude_calls], ["call_001", "call_002", "call_003"])
         self.assertEqual(claude_calls[0][1:], ("claude-haiku-5-5", "xhigh"))
         self.assertEqual(codex_calls[0], ("call_003", "gpt-6-astra", "xhigh"))
-        self.assertEqual(len(codex_calls), 9)
+        self.assertEqual(len(codex_calls), 11)  # +2 since 2026-10-23: story material and narration review (D-180)
         work = self.root / "runs" / run.run_id
         self.assertEqual(json.loads((work / "budget.json").read_text())["model_calls"], 1 + calls_per_episode() + 1)
         first = json.loads((work / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))

@@ -16,6 +16,7 @@ from podcast_automate.series_review import SeriesReview
 from podcast_automate.storage import init_project
 from podcast_automate.teaching import (TeachingPlan, TeachingPlanReview, TeachingPlanRepair,
     ListenerReadback, TeachingReview, EditorialReview)
+from tests.narration_fixtures import narration_response
 from tests.polishing_fixtures import polish_review
 from tests.question_fixtures import question_response, script_checks
 from tests.series_fixtures import series_response
@@ -88,6 +89,9 @@ class ScriptProjectCase(unittest.TestCase):
             return example_plan(), {}
         if output_type is EpisodeScript:
             return example_script(), {}
+        narration = narration_response(output_type)
+        if narration is not None:
+            return narration, {}
         return ScriptReview(issues=[], limitations=["A fixture is not a real editorial review."], claim_checks=script_checks(prompt)), {}
 
 

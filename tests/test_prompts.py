@@ -89,10 +89,12 @@ class PromptFileTests(unittest.TestCase):
                 self.assertNotIn("monologues are", text)
                 self.assertNotIn("monologues can work", text)
                 self.assertNotIn("target ratio", text)
-        # The design plans the arc in its own fields, and its review checks every one of them.
+        # The design plans the arc in its own fields, and its review checks every one of them; a narrated run's core
+        # story and first-answer voice are explained by the story rules both prompts add (D-180).
         for name in ("teaching_design", "teaching_design_review"):
             with self.subTest(prompt=name):
-                self.assertTrue(all(field in prompts.text(name) for field in TeachingPlan.LATER))
+                text = prompts.text(name) + " " + prompts.text(name + "_story")
+                self.assertTrue(all(field in text for field in TeachingPlan.LATER))
 
     def test_pilot_specific_examples_no_longer_live_in_the_general_rules(self):
         self.assertNotIn("tokenizer", prompts.text("continuity"))

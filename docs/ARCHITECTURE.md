@@ -2,7 +2,7 @@
 title: Architecture
 doc_type: architecture
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-23
 covers:
   - src/podcast_automate/claude_code.py
   - src/podcast_automate/codex.py
@@ -74,7 +74,7 @@ review and two probes complement them:
 | Run kind | Command | Stages in the manifest | Covers |
 | --- | --- | --- | --- |
 | `research` | `pla research` | `discovery`, `retrieval`, `dossier`, `review`, `completeness`, `publish` | Topic planning, research, ingestion, synthesis up to the reviewed dossier |
-| `script` | `pla script` | `planning`, `teaching`, `writing`, `polishing`, `review`, `publish` | Compact knowledge model, series plan, teaching plans, scripts and their reviews |
+| `script` | `pla script` | `planning`, `teaching`, `writing`, `narration`, `polishing`, `review`, `publish` (a run started before 2026-10-23 without `narration`) | Compact knowledge model, series plan, teaching plans, scripts and their reviews |
 | `series_review` | `pla series-review` | `review` | Review of a published script run as a series |
 | `episode_audio` | `pla audio` | `expression`, `synthesis`, `assembly`, `publish` | Recording, assembly, checks and export of one episode |
 | `text_probe` | `pla text-probe` | `codex_probe` | Technical text probe |
@@ -378,9 +378,9 @@ result.
 
 The task families are: research search, with the Perplexity search split into planning the queries and selecting
 from the results; question plan and scope check; reading decision and answer review per
-sub-question; dossier composition with overall review and objection routing; series plan; teaching plan with its
-review; script draft; dialogue polishing with comparison; source, reading, editorial and teaching reviews; and the
-series review. Details and the composition rules: [prompts/README.md](../src/podcast_automate/prompts/README.md).
+sub-question; dossier composition with overall review and objection routing; series plan; story material; teaching
+plan with its review; script draft; narration review with its rework; dialogue polishing with comparison; source,
+reading, editorial and teaching reviews; and the series review. Details and the composition rules: [prompts/README.md](../src/podcast_automate/prompts/README.md).
 
 ## Languages
 
@@ -533,6 +533,7 @@ src/podcast_automate/
   prompts/                all model instructions as text files (see prompts/README.md)
   research.py, question_*.py            research: flow, sub-questions, synthesis
   scripting.py, script_pipeline.py      script run: preparation and stages
+  narration.py                          story material and the narration review
   studio.py, studio_worker.py           local server and job processes
 ```
 

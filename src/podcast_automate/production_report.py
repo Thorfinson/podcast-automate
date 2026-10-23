@@ -21,7 +21,9 @@ STAGE_LABELS = {
     "dialogue_polish": "Dialogschliff", "dialogue_polish_review": "Dialogschliff · Prüfung",
     "dialogue_polish_repair": "Dialogschliff · Korrektur", "script_review": "Belegprüfung",
     "script_review_repair": "Belegprüfung · Korrektur", "listener_readback": "Hörerprobe", "editorial_review": "Redaktion",
-    "teaching_review": "Lehrprüfung", "series_review": "Serienprüfung", "audio_expression": "Ausdruck für die Vertonung"}
+    "teaching_review": "Lehrprüfung", "series_review": "Serienprüfung", "audio_expression": "Ausdruck für die Vertonung",
+    "story_material": "Erzählstoff", "narration_review": "Narrationsprüfung",
+    "narration_repair": "Narrationsprüfung · Überarbeitung"}
 
 
 def minutes_between(start, end):

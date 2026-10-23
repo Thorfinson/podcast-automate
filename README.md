@@ -118,7 +118,9 @@ Qwen. All commands: [PRODUCT](docs/PRODUCT.md#commands).
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | How we treat each other in issues and pull requests |
 
 Plans with open work: [MVP acceptance](docs/specs/2026-09-10-mvp-acceptance-plan.md) (including the verification
-list) and [review-loop decision gates](docs/specs/2026-10-04-review-loop-decision-gates-plan.md). Finished plans and the
+list), [review-loop decision gates](docs/specs/2026-10-04-review-loop-decision-gates-plan.md),
+[overviews and evidence levels](docs/specs/2026-10-21-overviews-and-evidence-levels-plan.md) and
+[narration](docs/specs/2026-10-23-narration-plan.md). Finished plans and the
 quality audit of 19 September 2026 are in [docs/specs/](docs/specs/).
 
 ## Layout

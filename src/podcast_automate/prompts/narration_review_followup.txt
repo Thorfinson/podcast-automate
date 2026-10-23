@@ -1,0 +1,4 @@
+This review follows a rework of the draft by your earlier points (previous_review);
+changed_segments are the segments the rework changed or added. Score the episode again as a whole.
+List as points only an earlier point the rework left unresolved, with its category, and a new defect
+in a changed segment; anything else you notice goes into strengths or nowhere.

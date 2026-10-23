@@ -6,9 +6,11 @@ from types import SimpleNamespace
 from podcast_automate.errors import AppError
 from podcast_automate.models import ResearchLimits, RunManifest, StageRecord
 from podcast_automate.script_budget import STAGE_CALLS, budget_projection, calls_per_episode, ensure_script_budget
-from podcast_automate.storage import file_hash, write_json, write_yaml
+from podcast_automate.storage import digest, file_hash, write_json, write_yaml
 
+# The stage list of a run started before the narration stage; most tests here keep it, its numbers stay what they were.
 STAGES = ("planning", "teaching", "writing", "polishing", "review", "publish")
+NARRATED_STAGES = ("planning", "teaching", "writing", "narration", "polishing", "review", "publish")
 
 
 class ScriptBudgetTests(unittest.TestCase):
@@ -23,12 +25,37 @@ class ScriptBudgetTests(unittest.TestCase):
         self.folder.cleanup()
 
     def test_fresh_run_needs_planning_plus_nine_calls_per_episode_and_series_review(self):
-        self.assertEqual(calls_per_episode(), 9)
+        # A run with the narration stage (D-180) adds the story material and the narration review per episode; this
+        # manifest is one started before it, which counts the nine calls it always did.
+        self.assertEqual(calls_per_episode(), 11)
+        self.assertEqual(calls_per_episode(STAGES), 9)
         projection = budget_projection(self.work, self.manifest, ResearchLimits(model_calls=20), self.entries,
                                        series_review=True)
         self.assertEqual(projection["minimum_remaining_calls"], 1 + 2 * 9 + 1)
         self.assertEqual(projection["breakdown"]["review"], 2 * STAGE_CALLS["review"])
         self.assertTrue(projection["feasible"])
+
+    def test_a_narrated_run_counts_story_material_and_the_narration_review(self):
+        """D-180: the stage list of a run started now has the narration stage; the minimum counts its review, not the
+        rework and the review after it, which follow only when the review names points."""
+        manifest = RunManifest(run_id="run_x", kind="script", project_hash="a", input_hash="b",
+                               stages={name: StageRecord() for name in NARRATED_STAGES})
+        projection = budget_projection(self.work, manifest, ResearchLimits(model_calls=30), self.entries,
+                                       series_review=True)
+        self.assertEqual(projection["breakdown"], {"planning": 1, "teaching": 6, "writing": 2, "narration": 2,
+                                                   "polishing": 4, "review": 8, "series_review": 1})
+        self.assertEqual((projection["minimum_remaining_calls"], projection["calls_per_episode"]), (1 + 2 * 11 + 1, 11))
+        write_json(self.work / "narration/ep_001/script.json", {"episode_id": "ep_001"})
+        write_json(self.work / "drafts/ep_001.json", {"episode_id": "ep_001"})
+        write_json(self.work / "narration/ep_001/result.json",
+                   {"narrated_digest": digest({"episode_id": "ep_001"}), "draft_digest": digest({"episode_id": "ep_001"})})
+        projection = budget_projection(self.work, manifest, ResearchLimits(model_calls=30), self.entries,
+                                       series_review=True)
+        self.assertEqual(projection["breakdown"]["narration"], 1, "a narrated episode is finished")
+        write_json(self.work / "drafts/ep_001.json", {"episode_id": "ep_001", "title": "rewritten"})
+        projection = budget_projection(self.work, manifest, ResearchLimits(model_calls=30), self.entries,
+                                       series_review=True)
+        self.assertEqual(projection["breakdown"]["narration"], 2, "a narration of another draft is not")
 
     def test_finished_checkpoints_and_completed_stages_are_not_counted(self):
         self.manifest.stages["planning"].status = "completed"

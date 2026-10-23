@@ -12,7 +12,7 @@ from pydantic import Field
 
 from .prompts import instructions
 from .content_text import catalog_label, text as wording
-from .dramaturgy import (DRAMATURGIES, DRAMATURGY_DISTANCE, ENDINGS, OPENINGS, STANCES, catalog, label,
+from .dramaturgy import (DRAMATURGIES, DRAMATURGY_DISTANCE, ENDINGS, OPENINGS, STANCES, VOICES, catalog, label,
                          variety_defects)
 from .errors import AppError
 from .editorial import TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING, terminology
@@ -134,6 +134,17 @@ class TeachingPlan(LaterFields):
         "How the first minute catches the listener, from storytelling.openings; not the one the episode before used."))
     partner_stance: Literal[tuple(["", *STANCES])] = Field(default="", description=(
         "How host_b takes part, from storytelling.stances; not the one the episode before used."))
+    # The story the episode tells first and who voices the first answer (D-180, a run with the narration stage).
+    # Optional and left out of the dump at their defaults, like the arc.
+    core_story: str = Field(default="", description=(
+        "The one story from story_material the episode tells before it checks it, in one or two sentences: who, what "
+        "happened, the moment it turns. Empty when story_material holds none."))
+    story_item_ids: list[Identifier] = Field(default_factory=list, description=(
+        "The story_material items core_story is told from; empty exactly when core_story is empty."))
+    story_scene_id: str = Field(default="", description=(
+        "The scene that tells core_story; empty exactly when core_story is empty."))
+    first_answer_voice: Literal[tuple(["", *VOICES])] = Field(default="", description=(
+        "Who voices first_answer: host_a, host_b or common (a belief most listeners share); empty when there is none."))
     objectives: list[LearningObjective] = Field(min_length=1)
     concepts: list[Concept] = Field(min_length=2)
     scenes: list[TeachingScene] = Field(min_length=1)
@@ -142,7 +153,8 @@ class TeachingPlan(LaterFields):
     research_gaps: list[ResearchGap]
 
     LATER = {"big_idea": "", "hook_question": "", "first_answer": "", "turning_point": "", "turning_finding_ids": [],
-             "payoff": "", "callback": "", "dramaturgy": "", "opening": "", "partner_stance": ""}
+             "payoff": "", "callback": "", "dramaturgy": "", "opening": "", "partner_stance": "", "core_story": "",
+             "story_item_ids": [], "story_scene_id": "", "first_answer_voice": ""}
 
 
 class GapAssessment(Contract):
@@ -227,10 +239,22 @@ TEACHING_SCHEMAS = {"teaching_plan": TeachingPlan, "teaching_plan_review": Teach
                     "teaching_review": TeachingReview, "editorial_review": EditorialReview}
 
 
-def validate_teaching_plan(design, entry, previous=()):
-    """``previous`` are the storytelling devices of the episodes before this one (previous_devices), nearest last."""
-    errors = variety_defects(design, list(previous))
+def validate_teaching_plan(design, entry, previous=(), story=None):
+    """``previous`` are the storytelling devices of the episodes before this one (previous_devices), nearest last.
+    ``story`` are the ids of the episode's story material in a run with the narration stage (narration.StoryMaterial),
+    None in a run without it, whose designs validate as before."""
+    narrated = story is not None
+    errors = variety_defects(design, list(previous), narrated=narrated, story=bool(story))
     scene_ids = [s.scene_id for s in entry.scenes]
+    if not (bool(design.core_story) == bool(design.story_item_ids) == bool(design.story_scene_id)):
+        errors.append("Give core_story together with its story_item_ids and story_scene_id, or none of them.")
+    if design.story_item_ids and not set(design.story_item_ids) <= set(story or ()):
+        errors.append("story_item_ids must name items of story_material.")
+    if design.story_scene_id and design.story_scene_id not in scene_ids:
+        errors.append("story_scene_id must name one of the episode's scenes.")
+    if story and not design.core_story:
+        errors.append("story_material holds story: choose the one the episode tells first as core_story, with its "
+                      "story_item_ids and story_scene_id.")
     positions = {key: i for i, key in enumerate(scene_ids)}
     findings = set(episode_findings(entry))
     concepts = [c.concept_id for c in design.concepts]
@@ -391,7 +415,8 @@ def previous_devices(plan, entry, work, root=None):
             design = published_design(root, candidate)
         if design is not None:
             rows.append({"episode_id": candidate.episode_id, "dramaturgy": design.dramaturgy,
-                         "opening": design.opening, "partner_stance": design.partner_stance})
+                         "opening": design.opening, "partner_stance": design.partner_stance,
+                         **({"first_answer_voice": design.first_answer_voice} if design.first_answer_voice else {})})
     return rows
 
 
@@ -482,13 +507,15 @@ def storytelling(devices):
 
 
 def design_prompt(config, entry, dossier, sources, continuity=None, *, series_context=None, editor_note=None,
-                  devices=()):
+                  devices=(), story=None):
     """``editor_note`` is the editor's instruction for a new design after the corrections failed
     (run_budget.request_teaching_redesign); without it the prompt is exactly what it was before. ``devices`` are the
-    storytelling devices of the episodes before (previous_devices)."""
+    storytelling devices of the episodes before (previous_devices). ``story`` is the episode's story material in a run
+    with the narration stage (D-180); without it the prompt is what it was before."""
     return (
         project_terminology(config) + TEACHING_SCOPE + (CONTINUITY if continuity else "") + EPISODE_FRAMING +
-        instructions("teaching_design") + (" " + instructions("teaching_editor_note") if editor_note else "") + "\n" + json.dumps({
+        instructions("teaching_design") + (" " + instructions("teaching_design_story") if story is not None else "") +
+        (" " + instructions("teaching_editor_note") if editor_note else "") + "\n" + json.dumps({
             "brief": {"language": config.language, "audience": config.audience_level,
                       "prior_knowledge": config.prior_knowledge, "depth": config.depth_request,
                       **series_goal_field(config)},
@@ -497,6 +524,7 @@ def design_prompt(config, entry, dossier, sources, continuity=None, *, series_co
             "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
             "sources": sources, **({"prerequisite_context": continuity} if continuity else {}),
             "storytelling": storytelling(devices),
+            **({"story_material": story} if story is not None else {}),
             **({"editor_note": editor_note} if editor_note else {})}, ensure_ascii=False))
 
 
@@ -509,7 +537,8 @@ def render_teaching_plan(design, *, language):
              "", design.opening_problem, "", design.relevance, "", design.destination, ""]
     # The arc since 2026-10-06; a plan without it renders as before.
     arc = [f"{say(key)}: {text}" for key, text in (
-        ("plan_big_idea", design.big_idea), ("plan_hook_question", design.hook_question),
+        ("plan_big_idea", design.big_idea), ("plan_core_story", design.core_story),
+        ("plan_hook_question", design.hook_question),
         ("plan_first_answer", design.first_answer), ("plan_turning_point", design.turning_point),
         ("plan_payoff", design.payoff), ("plan_callback", design.callback)) if text]
     # The storytelling devices since 2026-10-06 (D-143), in the reader's words.
@@ -554,9 +583,12 @@ def render_research_resolved(questions, *, language):
 
 
 def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, continuity=None, series_context=None,
-                        editor_note=None, devices=()):
+                        editor_note=None, devices=(), story=None):
+    """``story`` is the episode's story material (narration.story_material, as dicts) in a run with the narration
+    stage; None in a run without it."""
     prompt = design_prompt(config, entry, dossier, sources, continuity, series_context=series_context,
-                           editor_note=editor_note, devices=devices)
+                           editor_note=editor_note, devices=devices, story=story)
+    story_ids = None if story is None else [item["item_id"] for item in story]
     noted = "+note" if editor_note else ""
     signature = digest({"version": DESIGN_VERSION, "prompt": prompt})
     checkpoint = work / "checkpoint.json"
@@ -591,7 +623,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
     elif reused_draft:
         save()
     while True:
-        errors = validate_teaching_plan(design, entry, devices)
+        errors = validate_teaching_plan(design, entry, devices, story_ids)
         if review is not None:
             try:
                 validate_design_review(review, design, review_previous)
@@ -606,6 +638,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
             review = corrected_call(invoke,
                 project_terminology(config) + TEACHING_SCOPE + CONTINUITY + EPISODE_FRAMING +
                 instructions("teaching_design_review") +
+                (" " + instructions("teaching_design_review_story") if story is not None else "") +
                 (" " + instructions("teaching_editor_note_review") if editor_note else "") +
                 (" " + instructions("teaching_design_review_followup") if review_previous else "") + "\n" +
                 json.dumps({"brief": {"audience": config.audience_level,
@@ -615,6 +648,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
                     "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
                     "sources": sources, "prerequisite_context": continuity or [],
                     "storytelling": storytelling(devices),
+                    **({"story_material": story} if story is not None else {}),
                     **({"editor_note": editor_note} if editor_note else {}),
                     **({"previous_issues": review_previous} if review_previous else {})}, ensure_ascii=False),
                 TeachingPlanReview, DESIGN_REVIEW_VERSION + noted + followup,

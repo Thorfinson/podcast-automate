@@ -484,6 +484,56 @@ class QuestionResearchTests(unittest.TestCase):
         engine.state["prompt_generation"] = 1
         self.assertEqual((engine.synthesis_rule(), engine.prompt_tag), ("", ""))
 
+    def test_a_run_started_now_asks_for_the_story_and_an_earlier_one_keeps_its_prompts(self):
+        """D-180: the runs of 2026-10-07 kept the number a criterion asked for and left the scene beside it in the same
+        read passage. From prompt generation 4 the plan asks for the story, the reader keeps it and states a limit by
+        the kind of evidence, and the review counts such a finding as part of the answer; an earlier run keeps its
+        prompts, so its saved receipts stay valid."""
+        from podcast_automate import prompts as prompt_texts
+        rules = {QuestionPlan: prompt_texts.text("story_plan"), ResearchDecision: prompt_texts.text("story_reader"),
+                 AnswerReview: prompt_texts.text("story_verify")}
+        seen = {schema: [] for schema in rules}
+
+        def capture(prompt, schema, payload, kwargs):
+            if schema in seen:
+                seen[schema].append(prompt)
+        self.hook = capture
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["prompt_generation"], 4)
+        marker = json.loads((self.work / "question_research/plan_generation.json").read_text(encoding="utf-8"))
+        self.assertEqual(marker, {"prompt_generation": 4})
+        for schema, rule in rules.items():
+            with self.subTest(schema=schema.__name__):
+                self.assertTrue(seen[schema] and all(rule in prompt for prompt in seen[schema]))
+        self.assertTrue(any(version.endswith(".deps.story.plan") for _, version in self.calls))
+        self.assertTrue(any(".story" in version and version.endswith(".reader") for _, version in self.calls))
+
+    @patch("podcast_automate.question_research.PROMPT_GENERATION", 3)
+    def test_a_run_of_the_generation_before_keeps_its_prompts_without_the_story_rules(self):
+        from podcast_automate import prompts as prompt_texts
+        rules = [prompt_texts.text(name) for name in ("story_plan", "story_reader", "story_verify")]
+        prompts = []
+        self.hook = lambda prompt, schema, payload, kwargs: prompts.append(prompt)
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        self.assertEqual(engine.state["prompt_generation"], 3)
+        self.assertTrue(prompts)
+        self.assertFalse(any(rule in prompt for rule in rules for prompt in prompts))
+        self.assertFalse(any(".story" in version for _, version in self.calls))
+
+    def test_a_run_stopped_during_planning_keeps_the_generation_of_its_plan_receipt(self):
+        """The ledger saves the prompt generation only after planning. A plan receipt without plan_generation.json was
+        made by a run before the story rules, so its resume plans with generation 3 and the receipt still matches."""
+        engine = self.engine()
+        folder = self.work / "question_research"
+        write_json(folder / "plan.json", {"value": {"tasks": []}})
+        self.assertEqual(engine.plan_generation(), 3)
+        (folder / "plan.json").unlink()
+        self.assertEqual(engine.plan_generation(), 3, "the generation is fixed once chosen")
+        (folder / "plan_generation.json").unlink()
+        self.assertEqual(engine.plan_generation(), 4)
+
     def test_compact_assessment_material_keeps_verdicts_and_one_row_per_source(self):
         dossier = self.seed_dossier()
         sources = [{"source_id": s.id, "sections": [{"reference": f"{s.id}#{x.id}", "text": x.text} for x in s.sections]}
@@ -1817,7 +1867,7 @@ class QuestionResearchTests(unittest.TestCase):
         self.assertIn("one sentence that names the passage and the defect, at most 300 characters", prompts[AnswerReview])
         self.assertIn("at most 300 characters", prompts[ResearchDecision])
         self.assertIn("allowed_actions", prompts[ResearchDecision])
-        self.assertIn((ResearchDecision, "question_research.v3-clauses.view.absence.reader"), self.calls)
+        self.assertIn((ResearchDecision, "question_research.v3-clauses.view.absence.story.reader"), self.calls)
         self.assertNotIn("demands a kind of evidence", prompts[AnswerReview], "no web search, no absence rule")
 
     def test_a_second_web_search_in_one_step_keeps_its_own_receipts(self):
@@ -1899,7 +1949,7 @@ class QuestionResearchTests(unittest.TestCase):
         row.update(status="reviewing", step=row["step"] + 1, web_attempts=1)
         engine.verify(spec, row)
         self.assertIn("demands a kind of evidence", reviews[-1])
-        self.assertIn((AnswerReview, f"question_research.v3-clauses.absence.review_{row['step']:03d}"), self.calls)
+        self.assertIn((AnswerReview, f"question_research.v3-clauses.absence.story.review_{row['step']:03d}"), self.calls)
         self.assertEqual(row["status"], "verified")
 
     def test_the_reader_sees_what_it_read_earlier_for_this_question(self):
@@ -1917,7 +1967,7 @@ class QuestionResearchTests(unittest.TestCase):
         with patch("podcast_automate.question_answering.visible_refs", wraps=question_answering.visible_refs) as seen:
             self.engine().run(self.discovery, self.index)
         self.assertTrue(seen.called, "the reader prompt takes its passages from visible_refs")
-        self.assertTrue(any(s is AnswerReview and v.startswith("question_research.v3-clauses.review_") for s, v in self.calls))
+        self.assertTrue(any(s is AnswerReview and v.startswith("question_research.v3-clauses.story.review_") for s, v in self.calls))
 
     def failing_review(self, reason):
         return AnswerReview(criteria=[dict(index=0, passed=False, reason=reason)],
@@ -2213,7 +2263,7 @@ class QuestionResearchTests(unittest.TestCase):
         schemas = [schema for schema, _ in self.calls]
         self.assertEqual([s for s in schemas if s in (ResearchDossier, DossierPatch, SourceReview)], [])
         self.assertEqual(schemas.count(ResearchAssessment), 1)
-        self.assertEqual(engine.state["prompt_generation"], 3)
+        self.assertEqual(engine.state["prompt_generation"], 4)
         answer = engine.state["tasks"]["task_definition"]["answer"]
         dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
         self.assertTrue(dossier.assembled)

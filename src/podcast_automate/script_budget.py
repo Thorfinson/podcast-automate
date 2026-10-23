@@ -17,18 +17,27 @@ from .script_checkpoints import finished
 
 # Mandatory calls per episode and stage when nothing is checkpointed yet.
 STAGE_CALLS = {
-    "teaching": 2,   # teaching design + independent design review
+    "teaching": 3,   # story material + teaching design + independent design review
     "writing": 1,    # dialogue draft
+    "narration": 1,  # narration review; its rework and the review after it only when it names points
     "polishing": 2,  # spoken-language pass + before/after comparison
     "review": 4,     # source review, listener readback, editorial review, teaching review
 }
+# A run without the narration stage (D-180) collects no story material.
+STORY_CALLS = 1
 LABELS = {"planning": "Inhaltsverzeichnis", "teaching": "Lehrkonzept", "writing": "Skriptentwurf",
-          "polishing": "Dialog-Polishing", "review": "Prüfungen", "series_review": "Serienprüfung"}
+          "narration": "Narrationsprüfung", "polishing": "Dialog-Polishing", "review": "Prüfungen",
+          "series_review": "Serienprüfung"}
 MINIMUM_NOTE = "Mindestwerte ohne Reparaturen; jede Korrektur oder erneute Prüfung benötigt weitere Aufrufe."
 
 
-def calls_per_episode() -> int:
-    return sum(STAGE_CALLS.values())
+def calls_per_episode(stages=None) -> int:
+    """The mandatory calls per episode; for ``stages``, a run's stage names, those of that run: one without the
+    narration stage (D-180) neither collects story material nor reviews its narration."""
+    if stages is None:
+        return sum(STAGE_CALLS.values())
+    total = sum(calls for stage, calls in STAGE_CALLS.items() if stage in stages)
+    return total - (STORY_CALLS if "teaching" in stages and "narration" not in stages else 0)
 
 
 def remaining_calls(work, manifest, entries, *, series_review: bool) -> tuple[int, dict]:
@@ -39,6 +48,8 @@ def remaining_calls(work, manifest, entries, *, series_review: bool) -> tuple[in
     for stage, calls in STAGE_CALLS.items():
         if stage not in stages or stages[stage].status == "completed":
             continue
+        if stage == "teaching" and "narration" not in stages:
+            calls -= STORY_CALLS
         pending = [entry.episode_id for entry in entries if not finished(work, entry.episode_id, stage)]
         if pending:
             breakdown[stage] = calls * len(pending)
@@ -58,8 +69,9 @@ def read_json(path, default):
 def last_script_run(root, current=None):
     """What the project's last completed script run spent per episode, or None.
 
-    The minimum counts 9 calls per episode; the completed Asimov and Ontologies runs needed 31 and 42.5 (measured
-    2026-10-02), because repairs, re-reviews, supplementary research and series corrections come on top. Its calls
+    The minimum counts 11 calls per episode (9 before the narration stage, D-180); the completed Asimov and Ontologies
+    runs needed 31 and 42.5 (measured 2026-10-02), because repairs, re-reviews, supplementary research and series
+    corrections come on top. Its calls
     are the charged model calls in its budget.json; its episodes are the one it was asked for or its plan's."""
     rows = []
     for path in (root / "runs").glob("run_*/run_manifest.yaml"):
@@ -92,8 +104,9 @@ def budget_projection(work, manifest, limits, entries, *, series_review: bool, r
     minimum, breakdown = remaining_calls(work, manifest, entries, series_review=series_review)
     remaining = max(0, limits.model_calls - used)
     calibration = last_script_run(root, work.name) if root is not None else None
+    per_episode = calls_per_episode(manifest.stages)
     # Each episode stage scaled by the measured calls per episode; planning and the series review stay single calls.
-    factor = max(1.0, calibration["calls_per_episode"] / calls_per_episode()) if calibration else 1.0
+    factor = max(1.0, calibration["calls_per_episode"] / per_episode) if calibration else 1.0
     expected_breakdown = {stage: math.ceil(count * factor) if stage in STAGE_CALLS else count
                           for stage, count in breakdown.items()}
     expected = sum(expected_breakdown.values())
@@ -102,13 +115,13 @@ def budget_projection(work, manifest, limits, entries, *, series_review: bool, r
     return {**({"cost": money} if money else {}), "used": used, "limit": limits.model_calls, "remaining": remaining,
             "minimum_remaining_calls": minimum, "breakdown": breakdown,
             "shortfall": max(0, minimum - remaining), "feasible": minimum <= remaining,
-            "calls_per_episode": calls_per_episode(), "stage_calls": STAGE_CALLS,
+            "calls_per_episode": per_episode, "stage_calls": STAGE_CALLS,
             "note": MINIMUM_NOTE,
             "minimum_label": "Untergrenze: Pflichtaufrufe ohne Korrekturen. Reicht das Limit nicht einmal dafür, hält "
                              "der Lauf vor dem nächsten Schritt an.",
             "expected_remaining_calls": expected, "expected_breakdown": expected_breakdown,
             "expected_shortfall": max(0, expected - remaining),
-            "expected_calls_per_episode": calibration["calls_per_episode"] if calibration else calls_per_episode(),
+            "expected_calls_per_episode": calibration["calls_per_episode"] if calibration else per_episode,
             "expected_source": "project" if calibration else "minimum", "calibration": calibration,
             "expected_label": (f"Erwartung nach dem letzten abgeschlossenen Skriptlauf des Projekts "
                                f"({calibration['run_id']}: {calibration['model_calls']} Aufrufe für "

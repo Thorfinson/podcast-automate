@@ -1,0 +1,6 @@
+Keep each episode's core small enough to tell rather than list: at most one core finding per four
+planned minutes, and never fewer than four in an episode. A finding that only backs a statement,
+adds a side case or another example of the same point goes into supporting_finding_ids, where the
+writer may still draw on it. Where the dossier holds a story, such as an event and the people who
+acted, a discovery, a case or a course of life, give the episode it belongs to that story in its core,
+so the episode can tell it rather than mention it.

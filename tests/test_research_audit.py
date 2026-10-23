@@ -188,7 +188,7 @@ class ScopedRoutingTests(AuditCase):
         self.assertEqual(payload["objection_scopes"], [{"index": 0, "task_ids": ["task_definition"], "requirement_id": None,
                                                         "finding_ids": [], "remedy": "research"}])
         self.assertIn("objection_scopes lists", prompt)
-        self.assertTrue(version.endswith(".g3.scoped.routes"), version)
+        self.assertTrue(version.endswith(".g4.scoped.routes"), version)
         # The router reads each answer's findings with their statements.
         self.assertEqual(payload["answers"]["task_empirical"]["findings"],
                          [{"id": "task_empirical__f_energy", "statement": "Configurations are assigned energies."}])

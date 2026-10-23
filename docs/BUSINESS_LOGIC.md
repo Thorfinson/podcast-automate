@@ -2,7 +2,7 @@
 title: Business logic
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-08
+last_reviewed: 2026-10-23
 covers:
   - src/podcast_automate/provider_pool.py
   - src/podcast_automate/subscriptions.py
@@ -305,18 +305,25 @@ and stored fields: [RESEARCH](RESEARCH.md#scope-check-and-plan-approval)).
 
 ### Script lower bound and expected calls
 
-Without repairs a script run needs at least one call for the table of contents, nine per episode
-(`script_budget.STAGE_CALLS`) and, for a complete series, one for the series review:
+Without repairs a script run needs at least one call for the table of contents, eleven per episode
+(`script_budget.STAGE_CALLS`, `script_budget.calls_per_episode`) and, for a complete series, one for the series
+review:
 
 | Stage | Calls per episode | Purpose |
 | --- | --- | --- |
-| `teaching` | 2 | teaching plan and independent review of the plan |
+| `teaching` | 3 | story material, teaching plan and independent review of the plan |
 | `writing` | 1 | dialogue draft |
+| `narration` | 1 | narration review; its rework and the review after it only when it names rewrite points |
 | `polishing` | 2 | spoken-language pass and before/after comparison |
 | `review` | 4 | source review, listener readback, editorial review, teaching review |
 
-- Every rejected version costs more: up to three script repairs with a new review, two polishing corrections, two
-  teaching-plan revisions, one targeted correction round, and up to three supplementary research runs per episode. A
+A run started before 23 October 2026 has no `narration` stage and collects no story material
+(`script_budget.STORY_CALLS`), so its minimum stays nine per episode; the projection and the calibration factor use the
+run's own stage list (why: D-180).
+
+- Every rejected version costs more: a narration rework with its review (two calls, plus up to two corrections), up to
+  three script repairs with a new review, two polishing corrections, two teaching-plan revisions, one targeted
+  correction round, and up to three supplementary research runs per episode. A
   series repair costs three calls per affected episode, up to five with its second attempt
   ([SCRIPTS](SCRIPTS.md#series-review)).
 - **Lower bound.** Before every paid stage the run computes the minimum of remaining calls from the unfinished
@@ -328,7 +335,8 @@ Without repairs a script run needs at least one call for the table of contents, 
   bound. They are a hint; only the lower bound stops a run. The Studio shows the lower bound next to the call counter
   and, once calibrated, the expectation; a stop card suggests a new limit from the expectation, without a calibration
   from the lower bound plus a quarter for corrections.
-- **What 750 calls carry.** Arithmetically 83 episodes without repairs (1 + 83 × 9 + 1 = 749). The completed runs
+- **What 750 calls carry.** Arithmetically 68 narrated episodes without repairs (1 + 68 × 11 + 1 = 750; 83 at nine per
+  episode before the narration stage). The completed runs
   Asimov and Ontologies actually needed 31 and 42.5 calls per episode (measured on 2026-10-02), because repairs, new
   reviews, supplementary research and series corrections come on top; at that rate 750 calls cover about 17 to 24
   episodes. Longer series or many corrections need a higher limit.

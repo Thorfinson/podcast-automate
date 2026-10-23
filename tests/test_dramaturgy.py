@@ -39,6 +39,24 @@ class VarietyTests(unittest.TestCase):
     def test_a_design_without_devices_validates_as_before(self):
         self.assertEqual(variety_defects(design(), self.previous), [])
 
+    def test_a_narrated_run_varies_who_guesses_and_leaves_two_tests_in_a_row_for_a_story(self):
+        """D-180: Orlagau's designs varied the labels, yet 13 of 15 set a guess against the evidence and 14 let host_b
+        guess; a listener heard one pattern. Only a run with the narration stage is held to this."""
+        def voiced(dramaturgy, voice, answer="A plausible guess."):
+            return SimpleNamespace(**vars(design(dramaturgy)), first_answer=answer, first_answer_voice=voice)
+        previous = [{"episode_id": "ep_002", "dramaturgy": "debate", "first_answer_voice": "host_b"}]
+        defects = variety_defects(voiced("mystery", "host_b"), previous, narrated=True, story=True)
+        self.assertEqual(len(defects), 2)
+        self.assertIn("host_b voiced the first answer", defects[0])
+        self.assertIn("sets a guess against the evidence", defects[1])
+        self.assertEqual(variety_defects(voiced("discovery", "common"), previous, narrated=True, story=True), [])
+        # Without story material a test may follow a test; without the stage nothing here is checked.
+        self.assertEqual(variety_defects(voiced("mystery", "host_a"), previous, narrated=True, story=False), [])
+        self.assertEqual(variety_defects(voiced("mystery", "host_b"), previous), [])
+        unnamed = variety_defects(voiced("discovery", ""), [], narrated=True)
+        self.assertEqual(unnamed, ["Name in first_answer_voice who voices first_answer: host_a, host_b or common."])
+        self.assertEqual(variety_defects(voiced("discovery", "", answer=""), [], narrated=True), [])
+
     def test_the_catalogs_are_labelled_in_german_and_offered_to_the_model(self):
         offered = catalog()
         for name, table in (("dramaturgies", DRAMATURGIES), ("openings", OPENINGS), ("stances", STANCES),

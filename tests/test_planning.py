@@ -158,6 +158,29 @@ class TwoTierPlanTests(unittest.TestCase):
         omitted.episodes[1].supporting_finding_ids = []
         self.assertEqual(validate_plan(omitted, dossier), [])
 
+    def test_a_narrated_run_keeps_each_core_small_enough_to_tell(self):
+        """D-180: Orlagau's episodes held 13 to 26 core findings, about 300 spoken words each, and its stories got one or
+        two sentences. A run with the narration stage holds an episode to one core finding per four planned minutes,
+        at least four; the rest is supporting detail. A plan of a run without the stage validates as before."""
+        from podcast_automate.script_checks import core_limit
+        ids = [f"f_{number:02d}" for number in range(14)]
+        plan = example_plan()
+        episode = plan.episodes[0]
+        episode.target_minutes = 45
+        episode.finding_ids = episode.scenes[0].finding_ids = ids[:12]
+        episode.supporting_finding_ids = ids[12:]
+        dossier = dossier_of(*ids)
+        self.assertEqual((core_limit(episode), validate_plan(plan, dossier)), (11, []))
+        errors = validate_plan(plan, dossier, density=True)
+        self.assertEqual(errors, ["ep_001: 12 core findings for 45 planned minutes; keep at most 11 as core (one per 4 "
+                                  "minutes) and move the rest to supporting_finding_ids, so the episode can tell its "
+                                  "story instead of listing."])
+        episode.finding_ids = episode.scenes[0].finding_ids = ids[:11]
+        episode.supporting_finding_ids = ids[11:]
+        self.assertEqual(validate_plan(plan, dossier, density=True), [])
+        episode.target_minutes = 10
+        self.assertEqual(core_limit(episode), 4, "never fewer than four")
+
     def test_a_supporting_finding_never_satisfies_a_dependency(self):
         plan = two_episodes()
         plan.episodes[0].finding_ids = plan.episodes[0].scenes[0].finding_ids = ["f_use"]

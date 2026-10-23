@@ -54,9 +54,9 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
             self.assertEqual(stale.exception.code, "plan_changed")
             completed = run_script(self.root, resume=True, approved_plan_hash=outline_hash(work))
             self.assertEqual(completed.status, "completed")
-            self.assertEqual(len(self.calls), 11)
+            self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
             run_script(self.root, resume=True)
-            self.assertEqual(len(self.calls), 11)
+            self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
 
     def test_outline_feedback_changes_reviewed_hash_without_writing(self):
         def revised(prompt, output_type, directory, **kwargs):

@@ -45,8 +45,8 @@ const PAGE = Object.fromEntries(pageKeys.map((key,index)=>[key,index]));
 // The editorial framing of a step introduces a page that has nothing to show yet. A working page
 // opens with its name, its state and its action instead.
 const pageIntros = Object.fromEntries(pageKeys.map(key=>[key,[tp(`page.intro.${key}.title`),tp(`page.intro.${key}.text`)]]));
-const productionStages = ["teaching","writing","polishing","review","publish"].map(id=>[id,tp(`production.stage.${id}.name`),tp(`production.stage.${id}.text`)]);
-const stageNames = Object.fromEntries(["discovery","retrieval","dossier","completeness","planning","teaching","writing","polishing",
+const productionStages = ["teaching","writing","narration","polishing","review","publish"].map(id=>[id,tp(`production.stage.${id}.name`),tp(`production.stage.${id}.text`)]);
+const stageNames = Object.fromEntries(["discovery","retrieval","dossier","completeness","planning","teaching","writing","narration","polishing",
   "review","publish","expression","synthesis","assembly"].map(id=>[id,tp(`stage.${id}`)]));
 const actionNames = Object.fromEntries(["assistant","research","plan","replan","expression","publish_kit","script","revise","audio",
   "audio_sample","audio_samples","resume","check"].map(id=>[id,tp(`action.${id}`)]));
@@ -88,7 +88,7 @@ const STALE_LABELS=Object.fromEntries(["script","voices","provider","model","pau
   .map(id=>[id,tp(`stale.${id}`)]));
 const staleText=reasons=>(reasons||[]).map(r=>STALE_LABELS[r]||r).join(", ");
 const minutesText=seconds=>{const m=Math.round(Number(seconds)/60);return m>=60?tp("time.hours_minutes",{hours:Math.floor(m/60),minutes:m%60}):tp("time.minutes",{minutes:m});};
-const scriptStateLabels=Object.fromEntries(["draft","polished","reviewed","published"].map(id=>[id,tp(`script_state.${id}`)]));
+const scriptStateLabels=Object.fromEntries(["draft","narrated","polished","reviewed","published"].map(id=>[id,tp(`script_state.${id}`)]));
 const voiceSamples = () => project?.voice_samples || boot.voice_samples || {};
 const savedSample = (voice, language) => voiceSamples()[language]?.[voice];
 // Gemini speaks through Google's own API (two hosts per request, the Google key) or through OpenRouter (each segment on
@@ -1232,10 +1232,10 @@ function renderReaderControls() {
   return `<div class="reader-nav">${neighbour(-1,t("reader.previous"))}<div class="field"><label for="script-select">${t("reader.position",{index:index+1,total:entries.length})}${read?` · ${t("reader.read_count",{count:read})}`:""}</label><select id="script-select">${entries.map((row,i)=>`<option value="${escape(row.script.episode_id)}" ${row.script.episode_id===e.script.episode_id?"selected":""}>${label(row,i)}</option>`).join("")}</select></div>${neighbour(1,t("reader.next"))}</div>
     ${e.preview?`<p><span class="tag">${t("reader.opened",{state:scriptStateLabels[e.state]})}</span></p>`:""}
     ${updated?`<p class="note">${t("reader.updated")}</p><button class="secondary small" data-action="refresh-script">${t("reader.load_current")}</button>`:""}
-    ${e.preview?`<p class="note">${t(e.state==="draft"?"reader.preview.draft":e.state==="polished"?"reader.preview.polished":"reader.preview.reviewed")} ${t("reader.preview.tail")}</p>`:""}
+    ${e.preview?`<p class="note">${t(e.state==="draft"?"reader.preview.draft":e.state==="narrated"?"reader.preview.narrated":e.state==="polished"?"reader.preview.polished":"reader.preview.reviewed")} ${t("reader.preview.tail")}</p>`:""}
     ${scriptsFinished()?"":`<p class="hint">${t("reader.more")}</p>`}`;
 }
-const reviewNoteLabels=Object.fromEntries(["script_review","teaching_review","editorial_review","dialogue_polish","dismissed_gaps","advisories"].map(id=>[id,tp(`review_note.${id}`)]));
+const reviewNoteLabels=Object.fromEntries(["narration","script_review","teaching_review","editorial_review","dialogue_polish","dismissed_gaps","advisories"].map(id=>[id,tp(`review_note.${id}`)]));
 // Inline audio tags a Gemini recording speaks (episode_audio.tag_episode), shown where the reader reads the script.
 function expressionActive() {
   const a=currentAudio();
@@ -1301,12 +1301,16 @@ function renderReviewNotes(entry) {
   // The published report is the only source; a preview has been through no full review yet.
   const notes=entry.preview?null:project.episodes.find(row=>row.script.episode_id===entry.script.episode_id)?.review_notes;
   const groups=Object.keys(reviewNoteLabels).filter(name=>notes?.[name]?.length);
-  if(!groups.length) return "";
-  const line=(name,row)=>name==="dismissed_gaps"?`<strong>${escape(row.gap)}</strong><p>${escape(row.reason)}</p>`
+  // The narration review's scores (D-180) lead the notes; an episode published before it has none.
+  const scores=notes?.narration_scores&&Object.keys(notes.narration_scores).length?`<p>${["tension","interest","storytelling"]
+    .filter(key=>Number.isFinite(notes.narration_scores[key])).map(key=>t(`review_note.narration_score.${key}`,{score:Number(notes.narration_scores[key])})).join(" · ")}</p>`:"";
+  if(!groups.length&&!scores) return "";
+  const line=(name,row)=>name==="narration"?`<strong>${escape(tp(`review_note.narration_category.${row.category}`))}</strong><p>${escape(row.problem)}${row.correction?` ${escape(row.correction)}`:""}${row.segment_ids?.length?` (${row.segment_ids.map(escape).join(", ")})`:""}</p>`
+    :name==="dismissed_gaps"?`<strong>${escape(row.gap)}</strong><p>${escape(row.reason)}</p>`
     :name==="advisories"?`<strong>${escape(row.code)}</strong><p>${escape(advisoryText(row))}${row.segment_ids?.length?` (${row.segment_ids.map(escape).join(", ")})`:""}</p>`
     :`<p>${escape(row)}</p>`;
   return `<details class="panel review-notes"><summary>${t("review_notes.title")}</summary>
-    <p class="hint">${t("review_notes.hint")}</p>
+    <p class="hint">${t("review_notes.hint")}</p>${scores}
     ${groups.map(name=>`<h3>${escape(reviewNoteLabels[name])}</h3><ul>${notes[name].map(row=>`<li>${line(name,row)}</li>`).join("")}</ul>`).join("")}</details>`;
 }
 // The speakers as the reader hears them: the host names when set, otherwise the voice each host speaks with in this
@@ -2075,7 +2079,7 @@ function renderScriptProgress(p, active) {
   const inWork=active?(p.episodes||[]).filter(running):[], parallel=inWork.length>1;
   // An episode that finished its step in this pass is done, also where an older server's check disagrees
   // (2026-09-29: episodes accepted with notes stayed "open" for hours).
-  const done=e=>e.completed||(["teaching","writing","polishing","review"].includes(p.stage)&&e.stage_status==="completed");
+  const done=e=>e.completed||(["teaching","writing","narration","polishing","review"].includes(p.stage)&&e.stage_status==="completed");
   const finished=Math.max(Number(p.completed_segments)||0,(p.episodes||[]).filter(done).length);
   // Every episode passed its own review: what runs is the series review or its one correction round.
   const series=p.stage==="review"&&Number(p.total_segments)>0&&finished===Number(p.total_segments);

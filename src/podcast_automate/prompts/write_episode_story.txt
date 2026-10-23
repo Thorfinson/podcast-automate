@@ -1,0 +1,15 @@
+story_material lists what the episode's cited source sections tell as story, each item anchored in
+one section and tied to the findings citing it. Where teaching_design.core_story names a story, tell
+it in story_scene_id as a story before the hosts check it: who, where, what they did and why as the
+source tells it, the moment it turns, what followed, in the order it happened, with room to unfold
+rather than a sentence that sums it up. Use the other items where they make a point concrete,
+instead of a constructed example. Take every event, person and detail from story_material, the
+findings and the supplied sections, cite in knowledge_refs the findings the item names, and add
+nothing they do not hold; say whose account a story is where it matters, such as a chronicle written
+decades later or the beneficiary's own house tradition. Say how certain a statement is by the kind of
+its evidence, such as a charter, a later chronicle, a single report, a scholar's reading or a
+reference work without sources, never by how the research went: what was or was not read, an OCR
+text, only an abstract, which edition was at hand. Let teaching_design.first_answer_voice voice the
+first answer. End on the payoff; an outlook on the next episode is one sentence that makes the
+listener curious, such as a person, a moment or a question, never the formula that announces its
+topic.

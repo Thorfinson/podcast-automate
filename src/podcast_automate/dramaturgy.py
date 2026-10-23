@@ -63,6 +63,14 @@ ENDINGS = {
 # How many earlier episodes a design must differ from in its dramaturgy; its opening and stance differ from the one
 # just before. Eight dramaturgies leave enough room to also fit the material.
 DRAMATURGY_DISTANCE = 2
+# The kind of telling behind each dramaturgy (D-180). Orlagau's 15 designs varied the labels as the rule asked, yet 13
+# of them set a guess against the evidence (mystery, debate, myth_check, thought_experiment), and a listener heard one
+# pattern: host_b guesses, host_a takes the guess apart. A narrated run's episode with story material leaves the
+# family of the episode before when that was a test.
+FAMILIES = {"mystery": "test", "debate": "test", "myth_check": "test", "thought_experiment": "test",
+            "discovery": "story", "in_medias_res": "story", "case_autopsy": "story", "build_along": "build"}
+# Who voices a design's first_answer (TeachingPlan.first_answer_voice): one host, or a belief most listeners share.
+VOICES = ("host_a", "host_b", "common")
 
 
 def catalog():
@@ -78,17 +86,30 @@ def label(table, key):
     return table.get(key, (key, ""))[0]
 
 
-def variety_defects(design, previous):
+def variety_defects(design, previous, *, narrated=False, story=False):
     """Why the devices of ``design`` repeat what ``previous`` (the earlier episodes' choices, nearest last, as dicts
-    with dramaturgy, opening and partner_stance) or its own chapters already use; empty when varied. An unset field is
-    not checked, so a design saved before the catalogs validates as before."""
+    with dramaturgy, opening, partner_stance and first_answer_voice) or its own chapters already use; empty when varied.
+    An unset field is not checked, so a design saved before the catalogs validates as before. ``narrated`` holds a run
+    with the narration stage to who voices the first answer (D-180); ``story`` says its episode has story material, so
+    it may not follow a test dramaturgy with another."""
     errors = []
+    last = previous[-1] if previous else {}
+    if narrated:
+        if design.first_answer and not design.first_answer_voice:
+            errors.append("Name in first_answer_voice who voices first_answer: host_a, host_b or common.")
+        if design.first_answer_voice == "host_b" and last.get("first_answer_voice") == "host_b":
+            errors.append(f"host_b voiced the first answer that the evidence overturns in the episode before "
+                          f"({last.get('episode_id')}); let host_a or a belief most listeners share carry the guess "
+                          "(first_answer_voice host_a or common), or tell this episode without a first answer.")
+        if story and FAMILIES.get(design.dramaturgy) == "test" and FAMILIES.get(last.get("dramaturgy")) == "test":
+            errors.append(f"dramaturgy {design.dramaturgy} sets a guess against the evidence, as {last.get('episode_id')} "
+                          "did; this episode has story material: tell it as a story (discovery, in_medias_res or "
+                          "case_autopsy) built on its core_story.")
     recent = [row for row in previous if row.get("dramaturgy")][-DRAMATURGY_DISTANCE:]
     if design.dramaturgy and design.dramaturgy in {row["dramaturgy"] for row in recent}:
         errors.append(f"dramaturgy {design.dramaturgy} was used by an episode just before ("
                       + ", ".join(row["episode_id"] for row in recent if row["dramaturgy"] == design.dramaturgy)
                       + "); choose another that fits this material.")
-    last = previous[-1] if previous else {}
     for field in ("opening", "partner_stance"):
         value = getattr(design, field)
         if value and value == last.get(field):

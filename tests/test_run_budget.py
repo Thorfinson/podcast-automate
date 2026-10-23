@@ -77,10 +77,10 @@ class RunBudgetTests(unittest.TestCase):
         self.assertTrue(json.loads((self.work / "budget_projection.json").read_text(encoding="utf-8"))["feasible"])
 
     def test_running_worker_reads_a_raised_allowance_before_its_next_call(self):
-        # 30 of 40 used leaves exactly the projected minimum (one episode plus the series review), so the
-        # pre-stage gate passes. One review repair then needs more calls than the projection promised;
+        # 28 of 40 used leaves exactly the projected minimum (one episode of 11 calls since D-180, plus the series
+        # review), so the pre-stage gate passes. One review repair then needs more calls than the projection promised;
         # the allowance raised during the first teaching call must be honoured without a restart.
-        write_json(self.work / "budget.json", {"model_calls": 30, "search_rounds": 0})
+        write_json(self.work / "budget.json", {"model_calls": 28, "search_rounds": 0})
         reviews = []
         def model(prompt, schema, directory, **kwargs):
             if schema is TeachingPlan:

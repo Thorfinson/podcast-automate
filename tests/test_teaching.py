@@ -352,7 +352,7 @@ class TeachingTests(unittest.TestCase):
                     result.issues = [new]  # a new, non-critical point without a basis: corrected, not accepted
                 else:
                     result.issues, result.advisories = [], [new]
-            if output_type is EpisodeScript and kwargs.get("prompt_version") == WRITE_EPISODE_VERSION:
+            if output_type is EpisodeScript and kwargs.get("prompt_version", "").startswith(WRITE_EPISODE_VERSION):
                 writing.append(prompt)
             return result, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
@@ -476,8 +476,10 @@ class TeachingTests(unittest.TestCase):
                "first_answer": "A higher score sounds better.", "turning_point": "The energy convention turns it around.",
                "turning_finding_ids": ["f_energy"], "payoff": "Lower energy means a better fit.",
                "callback": "The two candidates from the opening."}
-        # The storytelling devices (D-143) are the other optional fields; the next test covers them.
-        self.assertEqual(set(arc) | {"dramaturgy", "opening", "partner_stance"}, set(TeachingPlan.LATER))
+        # The storytelling devices (D-143) and the core story with the first answer's voice (D-180) are the other
+        # optional fields; later tests cover them.
+        self.assertEqual(set(arc) | {"dramaturgy", "opening", "partner_stance"} |
+                         {"core_story", "story_item_ids", "story_scene_id", "first_answer_voice"}, set(TeachingPlan.LATER))
         planned = TeachingPlan.model_validate({**saved, **arc})
         self.assertEqual(validate_teaching_plan(planned, entry), [])
         self.assertEqual({key: planned.model_dump()[key] for key in arc}, arc)
@@ -491,6 +493,38 @@ class TeachingTests(unittest.TestCase):
             with self.subTest(broken=broken):
                 errors = validate_teaching_plan(planned.model_copy(update=broken), entry)
                 self.assertTrue(any(message in error for error in errors), errors)
+
+    def test_a_narrated_design_chooses_a_core_story_from_its_material_and_names_who_guesses(self):
+        """D-180: with story material the design names the story it tells first, the items it is told from and the
+        scene that tells it; a design of a run without the narration stage validates as before."""
+        from podcast_automate.teaching import design_prompt, render_teaching_plan
+        from podcast_automate import prompts
+        entry = fixtures.example_plan().episodes[0]
+        plain = self.design()
+        self.assertEqual(validate_teaching_plan(plain, entry), [])
+        self.assertEqual(validate_teaching_plan(plain, entry, (), []), [], "no material, no core story needed")
+        errors = validate_teaching_plan(plain, entry, (), ["story_01"])
+        self.assertTrue(any("choose the one the episode tells first" in error for error in errors), errors)
+        told = plain.model_copy(update={"core_story": "Two candidates meet a judge who prefers the lower score.",
+                                        "story_item_ids": ["story_01"], "story_scene_id": "scene_example"})
+        self.assertEqual(validate_teaching_plan(told, entry, (), ["story_01"]), [])
+        for broken, message in (({"story_item_ids": ["story_09"]}, "items of story_material"),
+                                ({"story_scene_id": "scene_unknown"}, "one of the episode's scenes"),
+                                ({"story_item_ids": []}, "or none of them")):
+            with self.subTest(broken=broken):
+                errors = validate_teaching_plan(told.model_copy(update=broken), entry, (), ["story_01"])
+                self.assertTrue(any(message in error for error in errors), errors)
+        self.assertIn("Kerngeschichte: Two candidates meet a judge", render_teaching_plan(told, language="de-DE"))
+        # The story rules and the material reach the design prompt only in a narrated run.
+        from types import SimpleNamespace
+        config, dossier = load_project(self.root), SimpleNamespace(findings=[], synthesis=[])
+        story = [{"item_id": "story_01", "text": "A judge prefers the lower score."}]
+        narrated = design_prompt(config, entry, dossier, [], story=story)
+        self.assertIn(prompts.text("teaching_design_story"), narrated)
+        self.assertEqual(json.loads(narrated.splitlines()[-1])["story_material"], story)
+        before = design_prompt(config, entry, dossier, [])
+        self.assertNotIn(prompts.text("teaching_design_story"), before)
+        self.assertNotIn("story_material", json.loads(before.splitlines()[-1]))
 
     def test_each_episode_tells_its_story_differently_from_the_episodes_just_before(self):
         """The user (2026-10-06): after two episodes a listener should not be able to guess the structure. The design

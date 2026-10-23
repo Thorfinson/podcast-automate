@@ -38,8 +38,17 @@ def review_notes(episode):
         "dialogue_polish": _strings(((episode.get("dialogue_polish") or {}).get("review") or {}).get("limitations") or []),
         "dismissed_gaps": _rows(episode.get("dismissed_gaps") or [], ("stage", "objective_id", "gap", "reason")),
         "advisories": _rows(episode.get("advisories") or [], ("code", "count", "detail", "segment_ids", "params")),
+        # What the narration review (D-180) left open, and the story the material does not hold.
+        "narration": _rows([*((episode.get("narration") or {}).get("notes") or []),
+                            *((episode.get("narration") or {}).get("research_points") or [])],
+                           ("category", "fix", "problem", "correction", "segment_ids")),
     }
-    return {name: rows for name, rows in groups.items() if rows}
+    notes = {name: rows for name, rows in groups.items() if rows}
+    scores = (episode.get("narration") or {}).get("scores")
+    if isinstance(scores, dict) and scores:
+        notes["narration_scores"] = {key: value.get("score") for key, value in scores.items()
+                                     if isinstance(value, dict) and isinstance(value.get("score"), int)}
+    return notes
 
 
 def script_previews(root, run):
@@ -74,6 +83,15 @@ def script_previews(root, run):
                 continue
             original = json.loads(raw)
             candidate, state = original, "draft"
+            try:
+                # The narrated draft (D-180) is the baseline of polishing once the narration stage finished it.
+                narrated = read(f"narration/{identifier}/script.json")
+                outcome = read(f"narration/{identifier}/result.json")
+                if (outcome.get("draft_digest") == digest(original)
+                        and outcome.get("narrated_digest") == digest(narrated)):
+                    original, candidate, state = narrated, narrated, "narrated"
+            except (OSError, ValueError, AppError):
+                pass
             try:
                 polished = read(f"polishing/{identifier}/script.json")
                 result = read(f"polishing/{identifier}/result.json")

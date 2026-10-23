@@ -24,6 +24,13 @@ def series_adoption(work, episode, draft):
     return None
 
 
+def baseline_path(work, episode):
+    """The draft polishing and the reviews start from: the narrated draft once the narration stage wrote one (D-180),
+    else the writer's. A run without the narration stage never has the folder."""
+    narrated = work / "narration" / episode / "script.json"
+    return narrated if narrated.is_file() else work / "drafts" / f"{episode}.json"
+
+
 def teaching_ready(folder):
     checkpoint = read(folder / "checkpoint.json", {})
     review = read(folder / "review.json")
@@ -39,6 +46,12 @@ def finished(work, episode, stage):
         path = work / "drafts" / f"{episode}.json"
         stamp = read(path.with_suffix(".checkpoint.json"), {})
         return bool(path.is_file() and stamp.get("sha256") == file_hash(path))
+    if stage == "narration":
+        result = read(work / "narration" / episode / "result.json", {}) or {}
+        script = read(work / "narration" / episode / "script.json")
+        draft = read(work / "drafts" / f"{episode}.json")
+        return bool(script and draft and result.get("narrated_digest") == digest(script)
+                    and result.get("draft_digest") == digest(draft))
     if stage == "polishing":
         folder = work / "polishing" / episode
         result = read(folder / "result.json", {}) or {}
@@ -47,7 +60,7 @@ def finished(work, episode, stage):
             # The polish kept the checked draft (polishing.polish_dialogue): finished when its script is that draft.
             # Counted as open, it added two polishing calls per such episode to the budget projection and left the
             # Studio's polishing row unfinished (finding of 2026-10-02).
-            return bool(script and script == read(work / "drafts" / f"{episode}.json")
+            return bool(script and script == read(baseline_path(work, episode))
                         and digest(script) == result.get("original_digest") == result.get("polished_digest"))
         checkpoint = read(folder / "checkpoint.json", {}) or {}
         return bool(result.get("status") == "passed" and script and script == checkpoint.get("candidate"))

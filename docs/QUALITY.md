@@ -2,7 +2,7 @@
 title: Quality
 doc_type: quality
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-23
 covers:
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_advisories.py
@@ -203,6 +203,11 @@ The cases under `evals/`, each with a README on how to run it:
 - [`jev_decisions/`](../evals/jev_decisions/README.md): whether Jev (`typesafe/jev-1.13` on OpenRouter) can take over
   two narrow yes/no checks (`claim`, `section`), labelled by the pipeline's own verdicts, not by humans; paid
   OpenRouter requests, capped by `--max-usd`.
+- [`narration/`](../evals/narration/README.md): the narration stage (D-180) in three parts: whether story material
+  keeps the scene a read section holds and its finding leaves out (`recall`, 8 known cases), whether the narration
+  review rates the published Orlagau episodes as the user heard them (`calibrate`), and revisions of Orlagau episodes
+  without and with the new parts in copies of the project, with a negative control for the evidence review and the
+  scripts for a blind reading (`compare`); subscription calls with `--live`.
 - [`research_evidence/`](../evals/research_evidence/README.md): an offline contract check of the evidence gate on 14
   fixed, fictional cases (eight with seeded defects, six clean controls), labelled by the implementation agent (see
   V-5).

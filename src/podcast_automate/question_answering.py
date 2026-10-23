@@ -69,6 +69,12 @@ REVIEW_MEMORY = ("previous_review is your earlier verdict on this question's pre
                  "still unresolved, or a new defect in a changed finding or in a criterion resting on one, fails the "
                  "answer now; anything else you notice belongs in issues or limitations.")
 UNREVIEWED_CRITERION = "The review returned no verdict on this criterion."
+# From this prompt generation on (question_synthesis.PROMPT_GENERATION) the plan asks for the story a listener follows,
+# the reader keeps the story its passages tell and states a limit by the kind of evidence, and the review counts such
+# a finding as part of the answer (D-180: in the runs of 2026-10-07 the reader kept the number a criterion asked for and
+# left the scene beside it, Milgram's sweating subjects or the Mule's unmasking, in no finding). A run started earlier
+# keeps its prompts and its receipts.
+STORY_GENERATION = 4
 
 
 def normalise_criteria(rows, *, worse=None):
@@ -536,6 +542,9 @@ class TaskResearchMixin:
         passages = read_context(self.reader, refs)
         prerequisites = prerequisite_digests(spec, self.state)
         text = TERMINOLOGY + EVIDENCE_INSTRUCTIONS + instructions("question_verify")
+        story = self.prompt_generation >= STORY_GENERATION
+        if story:
+            text += " " + instructions("story_verify")
         payload = {"task": spec.model_dump(), "answer": answer.model_dump(), "evidence_profile": evidence_profile(spec),
                    "prerequisite_answers": prerequisites, "sources": passages}
         if prerequisites:
@@ -578,8 +587,9 @@ class TaskResearchMixin:
 
         # ".absence": a demanded kind of evidence the web search did not find is a result (2026-10-01); ".digest":
         # prerequisites as digests; ".memory": the earlier failed verdict and the code-set scope (both 2026-10-02).
+        # ".story": the story rule of prompt generation 4 (STORY_GENERATION).
         tag = "".join(part for part, used in ((".absence", searched), (".digest", bool(prerequisites)),
-                                              (".memory", bool(scope))) if used)
+                                              (".memory", bool(scope)), (".story", story)) if used)
         raw = self.call(self.task_folder(spec, row), f"review_{row['step']:03d}", AnswerReview, prompt,
                         validate=well_formed, tag=tag)
         # A review that passed its checks comes through the normalisation unchanged; only a final attempt is settled.
@@ -928,6 +938,9 @@ class TaskResearchMixin:
             else:
                 text = (TERMINOLOGY + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
                         instructions("question_reader", language=self.config.language))
+                story = self.prompt_generation >= STORY_GENERATION
+                if story:
+                    text += " " + instructions("story_reader")
                 prerequisites = prerequisite_digests(spec, self.state)
                 if prerequisites:
                     text += " " + PREREQUISITE_DIGEST_READER
@@ -966,8 +979,10 @@ class TaskResearchMixin:
                 # ".view": the reader sees this question's earlier passages too (VIEW_CHARS, 2026-09-30);
                 # ".absence": a demanded kind of evidence the web search did not find is answered as a result (2026-10-01);
                 # ".digest": verified prerequisites as digests, not whole answers (prerequisite_digests, 2026-10-02).
+                # ".story": the story rule of prompt generation 4 (STORY_GENERATION).
                 decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked,
-                                     tag=".view.absence" + (".digest" if prerequisites else ""))
+                                     tag=".view.absence" + (".digest" if prerequisites else "") +
+                                     (".story" if story else ""))
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
                 self.save(f"{spec.question} · {decision.reason}")

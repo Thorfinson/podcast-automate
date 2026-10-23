@@ -202,6 +202,10 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
             "dismissed_gaps": [*design_dismissals(work, entry), *teaching_report.get("dismissed_gaps", [])],
             "advisories": advisories(script, entry, metrics, language=config.language,
                                      terms=established_terms(episode_continuity(work, entry)))}
+        narration = work / "narration" / entry.episode_id / "result.json"
+        if narration.is_file():
+            # The narration review's scores and what it left open (D-180); a run without the stage has none.
+            episode_reports[entry.episode_id]["narration"] = json.loads(narration.read_text(encoding="utf-8"))
         outputs.extend(folder / name for name in ("episode_plan.yaml", "teaching_plan.yaml", "teaching_plan.md", "script.yaml", "script.md", "show_notes.md", "latest.json"))
     quality_path = root / "reports/script_quality.yaml"
     previous = read_yaml(quality_path) if quality_path.is_file() else {}

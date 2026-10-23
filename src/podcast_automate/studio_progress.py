@@ -94,7 +94,9 @@ def state_facts(work):
 # interface language (D-152).
 ACTIVITIES = ("SeriesPlan", "TeachingPlan", "TeachingPlanReview", "TeachingPlanRepair", "ResearchDiscovery",
               "FoundationSupplement", "FoundationReview", "DialoguePolishReview", "ScriptReview", "SeriesReview",
-              "ListenerReadback", "EditorialReview", "TeachingReview")
+              "ListenerReadback", "EditorialReview", "TeachingReview", "StoryMaterial", "NarrationReview")
+# The stages whose episodes the Studio counts one by one (script_checkpoints.finished).
+EPISODE_STAGES = {"teaching", "writing", "narration", "polishing", "review"}
 _PIPELINE = {"catalog": None, "patterns": []}
 
 
@@ -260,13 +262,13 @@ def script_progress(root, run, since=None, light=False):
     rows = []
     for entry in entries:
         identifier = entry["episode_id"]
-        ready = finished(work, identifier, stage) if stage in {"teaching", "writing", "polishing", "review"} else stages.get(stage, {}).get("status") == "completed"
+        ready = finished(work, identifier, stage) if stage in EPISODE_STAGES else stages.get(stage, {}).get("status") == "completed"
         folder = work / "teaching" / identifier
         rows.append({"episode_id": identifier, "title": entry["title"], "completed": ready,
                      "teaching_preview": text_at(folder / "plan.md") if teaching_ready(folder) else ""})
     # Each episode's state in this stage; several are running at once in parallel mode.
     stage_rows = {row["episode_id"]: read(work / "stage_activity" / stage / (row["episode_id"] + ".json"), {}) or {}
-                  for row in rows} if stage in {"teaching", "writing", "polishing", "review"} else {}
+                  for row in rows} if stage in EPISODE_STAGES else {}
     running = run.get("status") == "running"
     for row in rows:
         record = stage_rows.get(row["episode_id"], {})
@@ -283,7 +285,7 @@ def script_progress(root, run, since=None, light=False):
     if schema == "TeachingPlan" and current and (work / "teaching" / current["episode_id"] / "checkpoint.json").exists():
         activity = t("progress.activity.teaching_revision")
     if schema == "EpisodeScript":
-        activity = t({"polishing": "progress.activity.script_polishing",
+        activity = t({"narration": "progress.activity.script_narration", "polishing": "progress.activity.script_polishing",
                       "review": "progress.activity.script_review"}.get(stage, "progress.activity.script_writing"))
     plan_repair = None
     if stage == "planning" and schema == "SeriesPlan":

@@ -42,7 +42,8 @@ from .editorial import TERMINOLOGY, TEACHING_SCOPE
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
-from .question_answering import ACCESS_GAP_READER, TaskResearchMixin, answer_errors, read_context, review_passes
+from .question_answering import (ACCESS_GAP_READER, STORY_GENERATION, TaskResearchMixin, answer_errors, read_context,
+                                 review_passes)
 from .trial import plan_cap
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
                               plan_projection, plan_review_message, run_timings)
@@ -802,11 +803,12 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             # A pre-ledger planning receipt has no binding for the new schema. Retain it and
             # make a separately budgeted plan; do not overwrite or mislabel the old receipt.
             suffix = "_evidence_v1"
-        plan, groups, note = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
+        generation = self.plan_generation()
+        plan, groups, note = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix, generation=generation)
         tasks = {t.id: pending_task() for t in plan.tasks}
         self.state = {"version": VERSION, "input_hash": binding, "plan": plan.model_dump(), "tasks": tasks,
                       **({"scope_unresolved": note} if note else {}),
-                      "evidence_version": EVIDENCE_VERSION, "prompt_generation": PROMPT_GENERATION,
+                      "evidence_version": EVIDENCE_VERSION, "prompt_generation": generation,
                       "discovery": discovery.model_dump(), "seed_dossier": dossier.model_dump() if dossier else None,
                       "migration": migration, "gaps": gaps, "phase": "questions", "audit_round": 0,
                       "task_groups": groups,
@@ -826,6 +828,19 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         # No task call before the projected cost was seen and approved (plan_approval.json).
         self.state["phase"] = "awaiting_plan_approval"
         self.save("Rechercheplan gespeichert – wartet auf Freigabe")
+
+    def plan_generation(self):
+        """The prompt generation this run plans with, fixed before its first planning call (plan_generation.json). The
+        ledger saves it only after planning, so a run stopped during planning resumes with the generation its saved
+        plan receipt was made with: a plan made before this file existed is of the generation before the story rules."""
+        path = self.folder / "plan_generation.json"
+        saved = read_optional_json(path)
+        if isinstance(saved, dict) and isinstance(saved.get("prompt_generation"), int):
+            return saved["prompt_generation"]
+        generation = PROMPT_GENERATION if not (self.folder / "plan.json").exists() else min(
+            PROMPT_GENERATION, STORY_GENERATION - 1)
+        write_json(path, {"prompt_generation": generation})
+        return generation
 
     def planning_allowance(self, path, *, cap=None):
         """The allowance the planner sees, saved once so replays judge a plan by the same rule. A trial project plans
@@ -887,7 +902,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.progress(f"Der Rechercheplan wird auf höchstens {cap} Teilfragen neu zugeschnitten")
         suffix = f"_cap{cap}"
         planning_budget = self.planning_allowance(self.folder / f"planning_budget{suffix}.json", cap=cap)
-        plan, groups, note = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix)
+        plan, groups, note = self.plan_tasks(discovery, dossier, gaps, planning_budget, suffix,
+                                             generation=self.prompt_generation)
         self.state.pop("scope_unresolved", None)
         if note:
             self.state["scope_unresolved"] = note
@@ -900,11 +916,14 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         self.state["gap_probes"] = probe(self.index, gaps, gap_terms=coverage_terms(dossier) if dossier else {})
         self.save(f"Rechercheplan mit {len(plan.tasks)} Teilfragen gespeichert – wartet auf Freigabe")
 
-    def plan_tasks(self, discovery, dossier, gaps, planning_budget, suffix=""):
+    def plan_tasks(self, discovery, dossier, gaps, planning_budget, suffix="", *, generation):
         """One planning call, then the scope review in at most two passes; returns the plan, its split groups and the
-        note of a second pass that still split a larger share (None when the review converged)."""
+        note of a second pass that still split a larger share (None when the review converged). ``generation`` is the
+        run's prompt generation: from STORY_GENERATION on the plan also asks for the story a listener follows."""
+        story = generation >= STORY_GENERATION
         prompt = (TERMINOLOGY + TEACHING_SCOPE +
-            instructions("question_plan", language=self.config.language) + "\n" + json.dumps({
+            instructions("question_plan", language=self.config.language) +
+            (" " + instructions("story_plan") if story else "") + "\n" + json.dumps({
                 "brief": quality_brief(self.config), **research_day(self.config, self.work),
                 "questions": [q.model_dump() for q in discovery.questions],
                 "gaps": gaps, "existing_findings": [f.model_dump() for f in dossier.findings] if dossier else []}, ensure_ascii=False))
@@ -939,8 +958,9 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             within_cap(candidate, final, max_tasks)
             spread(candidate, final)
 
-        # ".deps": the plan prompt that sets prerequisites only for content (2026-09-30).
-        plan = self.call(self.folder, "plan" + suffix, QuestionPlan, prompt, validate=check_plan, tag=".deps")
+        # ".deps": the plan prompt that sets prerequisites only for content (2026-09-30); ".story": the story rule.
+        plan = self.call(self.folder, "plan" + suffix, QuestionPlan, prompt, validate=check_plan,
+                         tag=".deps" + (".story" if story else ""))
         validate_plan(plan, self.config, discovery, dossier, gaps)
         groups, note = {}, None
         # Separate model calls, bounded to two passes; no source-reading budget is

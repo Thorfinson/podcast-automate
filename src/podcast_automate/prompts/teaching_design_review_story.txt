@@ -1,0 +1,9 @@
+story_material lists what the cited source sections of this episode tell as story. Check that the
+design tells a story the listener wants to follow: where story_material holds one, core_story names
+the story the episode tells first, story_item_ids name the items it rests on, story_scene_id the
+scene that tells it, and that scene's reasoning steps tell it in its order with its people and their
+reasons before they check it. A core_story that only restates a finding, or a scene that gives the
+story one step among many checks, is a design issue. first_answer_voice names who voices
+first_answer: host_a, host_b or common; code checks that host_b does not guess wrong in two
+episodes in a row, so do not raise that yourself. Flag any event, person or detail the design adds
+beyond story_material and the findings.

@@ -2,10 +2,11 @@
 title: Teaching design
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-23
 covers:
   - src/podcast_automate/teaching.py
   - src/podcast_automate/teaching_research.py
+  - src/podcast_automate/dramaturgy.py
   - src/podcast_automate/editorial.py
   - src/podcast_automate/script_advisories.py
   - src/podcast_automate/polishing.py
@@ -178,6 +179,50 @@ asking „is that one anecdote, or has someone measured it?“. Since then:
   devices; a chapter may end on another handover than a recap. The readable plan names the devices under
   „Spannungsbogen“ and each chapter's ending. Devices frame the findings and add no claims of their own; a plan saved
   before has none and validates as before.
+
+### Story material and core story
+
+The rule above varied the labels, not what a listener hears: in Orlagau 13 of 15 designs set a guess against the
+evidence, none told a discovery, and 14 let host_b voice the first answer the evidence overturns. A dramaturgy may only
+reorder its findings, and findings are claims with evidence and limits, so a story had nothing to be told from. In a
+narrated script run ([Scripts](SCRIPTS.md), why: D-180):
+
+- **Story material.** Before each design, one call collects what the episode's cited sections tell as story
+  (`narration.story_material`, `prompts/story_material.txt`): events and who acted, scenes, surprising results,
+  telling phrases, consequences, cases, at most 12 items (`StoryItem`: kind, text of at most 60 words told as the
+  source tells it, the section, a verbatim anchor of at most 25 words, the findings that cite the section, and whether
+  a finding already tells it). It reads only the sections a finding of the episode cites
+  (`narration.allowed_sections`), since every later selection of the episode's sources keeps them and the evidence
+  review always sees where an item comes from; no such section, no call. Code drops an item whose section, anchor or
+  findings do not hold; when more than half are dropped, the call is asked once more with the rejected items. The
+  result is saved per prompt in `teaching/<episode_id>/story_material.json`, an output of the teaching stage, and never
+  stops the run: an empty list leaves the episode without a core story.
+- **Story research.** The same call names in `missing` at most two stories the sections only point to, such as a
+  chronicle a scholar summarises or a case named in passing, each with the account to read and the episode's core
+  findings it belongs to (`narration.MissingStory`). Before the design, `ScriptRun.research_story` reads them once per
+  episode through the supplementary research ([below](#supplementary-research-for-the-teaching-plan)): it writes them as the episode's
+  `research_needed.json` with `story: true` and asks `teaching_research.research_foundations` with `optional`, where
+  every question may stand as a remaining gap, since not finding a story is a result. A supplement that adds
+  explanations extends the core findings with the new sections, and the material is collected again from them; one
+  that finds nothing, is refused after its corrections or has no supplement left (`narration.STORY_RESEARCH_SETTLED`)
+  is recorded and the episode goes on with the material it has. `story_research.json` holds the outcome (`added`,
+  `not_found`, `refused`) and keeps the research to one attempt; a stop for quota or budget resumes it. An open teaching
+  gap of the episode comes first. The research uses one of the episode's three supplements.
+- **Core story.** The design gets the material and the story rules (`prompts/teaching_design_story.txt`, its review
+  `teaching_design_review_story.txt`; the call tags stay as they are, since the run's stage list already tells it) and names the story it tells first: `core_story` (who, what
+  happened, the moment it turns), `story_item_ids` and `story_scene_id`, the scene that tells it in its order with its
+  people and their reasons before checking how far the source carries it. Code checks that the three come together,
+  name items of the material and a scene of the episode, and that a design with material has a core story
+  (`teaching.validate_teaching_plan` with the material's ids); the review flags a core story that only restates a
+  finding and any detail beyond the material. The readable plan shows it as „Kerngeschichte“ under „Spannungsbogen“.
+- **Who guesses.** `first_answer_voice` names who voices `first_answer`: `host_a`, `host_b` or `common` (a belief most
+  listeners share). Code requires it for a design with a first answer and refuses host_b as the voice when the episode
+  before let host_b guess (`dramaturgy.variety_defects` with `narrated`; `teaching.previous_devices` carries the voice).
+- **Dramaturgy families** (`dramaturgy.FAMILIES`): mystery, debate, myth check and thought experiment are `test`,
+  discovery, in medias res and case autopsy `story`, build along `build`. An episode with story material may not follow
+  a test with a test.
+- The four fields are optional and left out of the dump at their defaults like the arc; a design of a run without the
+  narration stage gets no material, no story rules and none of these checks, and validates as before.
 
 ## What the application enforces
 
@@ -468,3 +513,7 @@ to its stored inputs do not switch it to a new version.
   prompts, also for the episodes it had done: a saved teaching plan is reviewed again and gets its arc in a correction,
   a draft is written and polished anew. A script review an earlier version passed stands. A published series gets the
   new rules only through a new `pla script` run or `--revise`.
+- The [story material and core story](#story-material-and-core-story) of 2026-10-23 come only with the narration stage,
+  which only a run started from that day has ([Narration review](SCRIPTS.md#narration-review)); an earlier run resumes
+  with its prompts unchanged. A published series gets them through a new `pla script` run or, keeping its plan,
+  `--revise`.

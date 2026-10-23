@@ -37,7 +37,7 @@ class PolishingTests(unittest.TestCase):
         with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
             run = run_script(self.root)
         self.assertEqual(run.status, 'completed')
-        self.assertEqual(list(run.stages), ['planning', 'teaching', 'writing', 'polishing', 'review', 'publish'])
+        self.assertEqual(list(run.stages), ['planning', 'teaching', 'writing', 'narration', 'polishing', 'review', 'publish'])
         folder = self.root / 'runs' / run.run_id / 'polishing/ep_001'
         # The before/after views name the role; the speaker swap below is what is being checked.
         self.assertIn('**Host A:** What', (folder / 'before.md').read_text(encoding='utf-8'))

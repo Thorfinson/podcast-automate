@@ -20,6 +20,8 @@ from podcast_automate.script_checks import (SCRIPT_REVIEW_VERSION, SERIES_PLAN_V
 from podcast_automate.scripting import run_script, validate_plan, validate_script
 from podcast_automate.storage import file_hash, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
+from tests.narration_fixtures import narration_response
+from podcast_automate.narration import NarrationReview, StoryMaterial
 from tests.script_fixtures import example_plan, example_script
 from tests.research_fixtures import TEXT
 from tests.teaching_fixtures import teaching_response
@@ -46,7 +48,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual(second.status, "completed")
         self.assertEqual(changed.exception.code, "inputs_changed")
         # The run's level for every call, except the listener, whose stage asks at most at medium (STAGE_EFFORT_CAPS).
-        self.assertEqual(len(selections), 11)
+        self.assertEqual(len(selections), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
         self.assertEqual({(model, effort) for model, effort, version in selections if not version.startswith("listener_readback")},
                          {("gpt-6-astra", "xhigh")})
         self.assertEqual({effort for _, effort, version in selections if version.startswith("listener_readback")}, {"medium"})
@@ -77,9 +79,9 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             resumed = run_script(self.root, resume=True)
         self.assertEqual(first.status, "completed")
         self.assertEqual(resumed.run_id, first.run_id)
-        self.assertEqual(self.calls, [SeriesPlan, TeachingPlan, TeachingPlanReview, EpisodeScript,
-                                     EpisodeScript, DialoguePolishReview, ScriptReview, ListenerReadback, EditorialReview, TeachingReview,
-                                     SeriesReview])
+        self.assertEqual(self.calls, [SeriesPlan, StoryMaterial, TeachingPlan, TeachingPlanReview, EpisodeScript,
+                                     NarrationReview, EpisodeScript, DialoguePolishReview, ScriptReview, ListenerReadback,
+                                     EditorialReview, TeachingReview, SeriesReview])
         self.assertEqual(status(self.root)["invalid_completed_stages"], [])
         self.assertTrue(all(s.attempts == 1 for s in resumed.stages.values()))
         text = (self.root / "episodes/ep_001/script.md").read_text(encoding="utf-8")
@@ -450,8 +452,8 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertNotEqual(second.run_id, first.run_id)
         after = json.loads((self.root / "runs" / second.run_id / "inputs.json").read_text(encoding="utf-8"))
         self.assertEqual(after["style_notes"], "Keine Wiederholungen am Kapitelende.")
-        # Writing, the dialogue pass and both reviews see the operator's standing corrections.
-        self.assertEqual(len(briefs), 4)
+        # Writing, the narration review (D-180), the dialogue pass and both reviews see the operator's standing corrections.
+        self.assertEqual(len(briefs), 5)
         self.assertTrue(all(note == "Keine Wiederholungen am Kapitelende." for _, note in briefs))
 
     def test_single_group_findings_reach_writing_and_the_script_review_without_unknown_groups(self):
@@ -720,6 +722,9 @@ class ScriptingTests(fixtures.ScriptProjectCase):
                                     limitations=[], claim_checks=script_checks(prompt)), {}
             if output_type is SeriesReview:
                 return series_response(prompt), {}
+            narration = narration_response(output_type)
+            if narration is not None:
+                return narration, {}
             return (example_plan() if output_type is SeriesPlan else example_script()), {}
         return model
 
@@ -1104,7 +1109,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             (self.root / "episodes/ep_001/script.md").write_text("broken", encoding="utf-8")
             resumed = run_script(self.root, resume=True)
         self.assertEqual(resumed.status, "completed")
-        self.assertEqual(len(self.calls), 11)
+        self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
         self.assertIn("**Host A:**", (self.root / "episodes/ep_001/script.md").read_text(encoding="utf-8"))
 
     def test_resume_preserves_manual_changes_to_canonical_script(self):
@@ -1119,7 +1124,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
                 run_script(self.root, resume=True)
         self.assertEqual(raised.exception.code, "script_edited")
         self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(len(self.calls), 11)
+        self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
 
     def test_revision_keeps_plan_and_snapshots_feedback_then_resumes(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
@@ -1149,7 +1154,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             with self.assertRaises(AppError) as raised:
                 run_script(self.root, revise="ep_001", feedback="Tighter.")
         self.assertEqual(raised.exception.code, "invalid_revision")
-        self.assertEqual(len(self.calls), 11)
+        self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
 
     def test_plan_rejects_cycles_and_forward_prerequisites(self):
         dossier = ResearchDossier.model_validate(read_yaml(self.root / "research/dossier.yaml"))
@@ -1172,7 +1177,7 @@ class ScriptingTests(fixtures.ScriptProjectCase):
             revised = run_script(self.root, revise="ep_001", feedback="Develop the missing explanation.")
         self.assertEqual(revised.status, "completed")
         self.assertNotIn(SeriesPlan, self.calls)
-        self.assertEqual(len(self.calls), 10)
+        self.assertEqual(len(self.calls), 12)  # +2 since 2026-10-23: story material and narration review (D-180)
 
 
 class ScriptValidationTests(unittest.TestCase):

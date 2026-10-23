@@ -196,17 +196,18 @@ def short(text, limit=90):
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
-def validate_supplement(supplement, questions, entry, context, dossier, probes=()):
+def validate_supplement(supplement, questions, entry, context, dossier, probes=(), *, optional=False):
     """``probes`` are the routed corpus-probe gaps. Such a gap may stand in ``remaining_gaps``,
     but only when every section the probe found was in the supplement's context: the reader
-    must demonstrably have seen them before confirming the gap. Any other remaining gap fails.
+    must demonstrably have seen them before confirming the gap. Any other remaining gap fails, except in an
+    ``optional`` request, the story research of a narrated run (D-180), where not finding a story is a result.
     A defect names what is missing or too long, so a correction attempt knows what to change."""
     errors = []
     expected = set(questions)
     sections = {s["reference"]: s["text"] for source in context for s in source["sections"]}
     routed = {row["question"]: row["references"] for row in probes}
     answered = [named_question(q, expected)[0] or q for answer in supplement.explanations for q in answer.questions]
-    named = [(gap, named_question(gap, routed)[0]) for gap in supplement.remaining_gaps]
+    named = [(gap, named_question(gap, expected if optional else routed)[0]) for gap in supplement.remaining_gaps]
     confirmed = [question for _, question in named if question]
     # Every question at least once. One answered only in part may also stand as a remaining gap: a question that
     # states what is known and what stays open cannot be put one way only (Asimov ep_014, 2026-09-29: the same
@@ -220,7 +221,7 @@ def validate_supplement(supplement, questions, entry, context, dossier, probes=(
                          if missing else "")
                       + (" Keiner offenen Frage zuzuordnen: " + "; ".join(f"„{short(q)}“" for q in unknown) + "."
                          if unknown else ""))
-    if any(not set(routed[gap]) <= sections.keys() for gap in confirmed):
+    if not optional and any(not set(routed[gap]) <= sections.keys() for gap in confirmed):
         errors.append("Eine Lücke darf erst bestätigt werden, wenn alle Treffer der Korpusprobe im Quellenkontext gelesen wurden.")
     quotes, words = {}, {}
     for answer in supplement.explanations:
@@ -275,13 +276,15 @@ def saved_supplement(directory):
     return FoundationSupplement.model_validate(json.loads((directory / "evidence.json").read_text(encoding="utf-8"))["value"])
 
 
-def research_foundations(root, work, config, entry, dossier, invoke, *, current_dossier=None, pinned=(), known_sources=None):
+def research_foundations(root, work, config, entry, dossier, invoke, *, current_dossier=None, pinned=(), known_sources=None,
+                         optional=False):
     """Run or reload one supplement for the episode's open questions; returns the verified supplement.
-    ``known_sources`` is the run's source index: a candidate it already holds is reused, not fetched again."""
+    ``known_sources`` is the run's source index: a candidate it already holds is reused, not fetched again.
+    ``optional`` marks the story research of a narrated run (D-180), whose questions may all stand as remaining gaps."""
     questions = list(dict.fromkeys(g["question"] for g in gaps_in(work) if g["episode_id"] == entry.episode_id))
     if not questions:
         raise AppError("Die offene Erklärfrage fehlt im gespeicherten Auftrag.", code="invalid_research_gap", status="blocked")
-    request = {"binding": binding(config, entry, dossier), "questions": questions}
+    request = {"binding": binding(config, entry, dossier), "questions": questions, **({"optional": True} if optional else {})}
     probes = probe_questions(work, entry)
     if probes:
         request["probes"] = probes
@@ -403,7 +406,7 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
             prompt = (text + (" " + instructions("foundation_supplement_retry") if rejected else "") + "\n" +
                       json.dumps(payload, ensure_ascii=False))
             supplement = cached("evidence", FoundationSupplement, prompt)
-            errors = validate_supplement(supplement, questions, entry, context, known, probes)
+            errors = validate_supplement(supplement, questions, entry, context, known, probes, optional=optional)
             if not errors:
                 break
             if spent_corrections(rejected, review=False) >= MAX_SUPPLEMENT_REJECTIONS:
@@ -500,7 +503,7 @@ def apply_foundations(root, work, config, entries, dossier, context, sources):
         review = FoundationReview.model_validate(json.loads((directory / "review.json").read_text(encoding="utf-8"))["value"])
         if (request.get("binding") != receipt["binding"] or review.issues or review.scope_change_required or
                 validate_supplement(supplement, request["questions"], entry, extra_context, augmented,
-                                    request.get("probes", []))):
+                                    request.get("probes", []), optional=bool(request.get("optional")))):
             raise AppError("Die Nachrecherche hat ihre Belegprüfung nicht bestanden.", code="invalid_supplement", status="blocked")
         if dossier.evidence_version and support_errors(supplement_findings(supplement), review, extra_context):
             raise AppError("Supplement semantic support check failed.", code="invalid_supplement", status="blocked")

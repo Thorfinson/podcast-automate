@@ -1,0 +1,15 @@
+story_material lists what the cited source sections of this episode tell as story: events and who
+acted, scenes, surprising results, telling phrases, consequences, cases, each told as its source
+tells it and anchored in one section. Plan the episode around a story the listener wants to follow,
+not around a list of claims. Where story_material holds one, choose the story the episode tells first
+as core_story (who, what happened, the moment it turns), name the items it is told from in
+story_item_ids and the scene that tells it in story_scene_id, and give that scene room: the story is
+told as a story, in its order, with its people and their reasons as the source gives them, before
+the episode checks how far the source carries it. A dramaturgy that tells (discovery, in_medias_res,
+case_autopsy) fits such an episode better than one that sets a guess against the evidence; use other
+items where they make a point concrete instead of a constructed example. Leave core_story,
+story_item_ids and story_scene_id empty only when story_material is empty. first_answer_voice names
+who voices first_answer: host_a, host_b, or common for a belief most listeners share. host_b is not
+the one whose guess the evidence overturns in every episode: when the episode before let host_b guess
+wrong, let host_a or a common belief carry this guess, or tell the episode without one. The design
+adds no story of its own: every event, person and detail comes from story_material or the findings.

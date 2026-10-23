@@ -1,0 +1,23 @@
+{
+  "origin": "Reading of the 15 published Orlagau transcripts on 2026-10-21 by five model readers with one rubric (scores 1-10), and the user's listening note of 2026-10-23. The model scores are one reading, not a measured listener test.",
+  "listener_note": "Heard episodes 1 to 4 and fell asleep; only the beginning of episode 2 was quite good; none was really good.",
+  "expectations": {
+    "storytelling_at_most": 6,
+    "story_points_per_episode": 1,
+    "story_categories": ["compressed_story", "unused_material", "missing_story"]
+  },
+  "episodes": {
+    "ep_001": {"reader_scores": {"tension": 5, "interest": 6, "storytelling": 4},
+               "missed": "Ezzo's revolt and reconciliation, Richeza's marriage to Mieszko, told late and buried under qualifications."},
+    "ep_002": {"reader_scores": {"tension": 5, "interest": 7, "storytelling": 4},
+               "missed": "Kuchavez's warriors at the Lechfeld, accused of plundering the dead duke, losing the judicial duel and hanged; in the dossier only as a one-sentence illustration from Billig's paraphrase of Thietmar."},
+    "ep_003": {"reader_scores": {"tension": 7, "interest": 7, "storytelling": 6},
+               "missed": "Richeza's life: queen of Poland, driven out with her son, her last years in Saalfeld, the dispute over her body."},
+    "ep_004": {"reader_scores": {"tension": 3, "interest": 5, "storytelling": 3},
+               "missed": "The Brauweiler forgers of 1255-1272, disguised hands and imperial charters made against the monastery's own advocates."},
+    "ep_009": {"reader_scores": {"tension": 6, "interest": 7, "storytelling": 6},
+               "missed": "Adolf of Altena crowning two rival kings, banned and deposed; Saalfeld as his reward."},
+    "ep_014": {"reader_scores": {"tension": 6, "interest": 6, "storytelling": 5},
+               "missed": "Heinrich IV of Weida: divorced before the bishop at Mildenfurth, Jutta becomes prioress at Cronschwitz, he joins the Order, fights the Prussians and offers Lübeck a town at the Pregel mouth."}
+  }
+}

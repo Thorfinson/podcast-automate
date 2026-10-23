@@ -2,7 +2,7 @@
 title: Gotchas
 doc_type: gotchas
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-23
 ---
 
 # Gotchas
@@ -143,6 +143,11 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ⚠ **A trial project stops at 110 calls although the settings page allows more:** a trial keeps each limit at the
   lower of the settings and its trial value (`storage.load_project`), so the settings page never lifts it. Raise the
   limit for the one run in its stop card or with `pla approve`. ([Trial project](BUSINESS_LOGIC.md#trial-project))
+- ⚠ **A stopped research run fails on resume with `invalid_research_checkpoint` after a research prompt was edited:**
+  stored receipts are bound to the exact prompt text (`research_patches.cached_call`), so a changed plan, reader or
+  review prompt breaks every run that replays such a call. Add a rule as a new prompt generation
+  (`question_synthesis.PROMPT_GENERATION`, gated as `question_answering.STORY_GENERATION` is) instead of editing the
+  text in place. ([Story rules](RESEARCH.md#story-rules-prompt-generation-4))
 - ✓ **A research run stops on a text-call timeout:** the call time limit (`runtime.text_timeout_seconds`, default
   1800) is too low for the call. Raise it on the settings page, or in `project.yaml` without workspace settings, and
   resume the same run; it does not bind the run (`storage.bound_brief`). ([Time limits and stalls](RESEARCH.md#time-limits-and-stalls))
@@ -154,6 +159,11 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   still open asks its calls again (more calls against `research_limits.model_calls`); finished stages and passed
   script reviews stay. To give a published series the new style, start a new `pla script` run or `--revise`.
   ([Existing projects](TEACHING.md#existing-projects))
+- ✓ **A resumed script run has no „Narrationsprüfung“, plans episodes with 20 core findings and writes without story
+  material (after 2026-10-23):** the narration stage and everything that comes with it apply only to a run whose
+  manifest has the stage, which a run started before does not; it resumes with its prompts and checkpoints unchanged
+  (`ScriptRun.narrated`). Start a new `pla script` run, or `--revise` an episode to keep its plan.
+  ([Narration review](SCRIPTS.md#narration-review))
 - ✓ **Publishing a new table of contents stops with `episodes_locked`:** a file in an earlier series' episode folder is
   open (for example during a recording), so the folder cannot move to `episodes/archive/`. Close or finish what holds
   it, then resume (`script_artifacts.py`). ([Earlier series](SCRIPTS.md#earlier-series))

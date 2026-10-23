@@ -127,9 +127,9 @@ class WorkflowTests(unittest.TestCase):
                 unrelated, _ = captured[(schema, "task_definition")]
                 self.assertNotIn("prerequisite_answers gives", unrelated, "a task without prerequisites keeps its prompt")
         versions = {version for _, version in self.fixture.calls}
-        self.assertIn(f"{CALL}.view.absence.digest.reader", versions)
-        self.assertIn(f"{CALL}.view.absence.reader", versions)
-        self.assertTrue(any(v.startswith(f"{CALL}.digest.review_") for v in versions))
+        self.assertIn(f"{CALL}.view.absence.digest.story.reader", versions)
+        self.assertIn(f"{CALL}.view.absence.story.reader", versions)
+        self.assertTrue(any(v.startswith(f"{CALL}.digest.story.review_") for v in versions))
         self.assertEqual(engine.state["tasks"]["task_synthesis"]["verification"]["prerequisite_hashes"],
                          {"task_definition": digest(definition)})
 
@@ -167,7 +167,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual((payload["previous_review"]["changed_finding_ids"], payload["previous_review"]["may_fail"]),
                          ([], {"finding_ids": [], "criteria": [0], "source_adequacy": False}))
         self.assertEqual(saved_scope[0]["may_fail"], payload["previous_review"]["may_fail"], "saved before the call")
-        self.assertTrue(any(version.startswith(f"{CALL}.memory.review_") for _, version in self.fixture.calls))
+        self.assertTrue(any(version.startswith(f"{CALL}.memory.story.review_") for _, version in self.fixture.calls))
         # The unchanged finding passed before: the new objection is an advisory, its earlier receipt stands.
         self.assertEqual(row["status"], "verified")
         verification = row["verification"]

@@ -37,8 +37,9 @@ from .storage import atomic_text, digest, write_json
 # model with a larger window (claude_code.prompt_limit) takes the part reviews that outgrow it.
 PROMPT_BUDGET_CHARS = 240_000
 # The generation of the composing prompts a run was started with. A rule added to those prompts
-# applies from the next generation on; earlier runs keep their prompt text and their receipts.
-PROMPT_GENERATION = 3
+# applies from the next generation on; earlier runs keep their prompt text and their receipts. 4: the story rules of
+# the plan, the reader and the answer review (question_answering.STORY_GENERATION, D-180).
+PROMPT_GENERATION = 4
 # From this generation on the dossier is assembled from the verified answers without a model call
 # (assemble_dossier). A composed dossier kept at most MAX_FINDINGS findings and, under the source-wide
 # word limits, about a third of the verified research; every audit round then asked for the rest again
