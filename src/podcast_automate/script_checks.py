@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from .errors import AppError
-from .models import EpisodeScript
+from .models import TWO_HOSTS, EpisodeScript
 from .prompts import instructions
 from .research_models import ResearchDossier
 from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, script_metrics
@@ -248,7 +248,10 @@ def word_budget(episode: EpisodePlan, factor=1.0) -> dict:
                             for scene, count in zip(episode.scenes, steps)}}
 
 
-def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_duration=True) -> list[str]:
+def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_duration=True,
+                    roles: tuple[str, ...] = TWO_HOSTS) -> list[str]:
+    """Every defect of ``script`` against its plan. ``roles`` are the project's hosts (models.host_roles_of): each
+    speaks, and no other does."""
     errors = []
     if script.episode_id != episode.episode_id or script.purpose != "deep_dive":
         errors.append("Keep the requested episode ID and deep_dive purpose.")
@@ -276,8 +279,10 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
         errors.append("The dialogue must cover every planned finding.")
         errors.append("Core findings (finding_ids) not yet cited: " + ", ".join(missing) +
                       ". Supporting and recalled findings need not be cited.")
-    if {s.speaker_id for s in script.segments} != {"host_a", "host_b"}:
-        errors.append("Use both hosts in the dialogue.")
+    if {s.speaker_id for s in script.segments} != set(roles):
+        # Two hosts keep the wording the writer has been told since the start; a third host is named (D-179).
+        errors.append("Use both hosts in the dialogue." if set(roles) == set(TWO_HOSTS) else
+                      "Use exactly the hosts " + ", ".join(roles) + " in the dialogue, each of them.")
     metrics = script_metrics(script)
     if check_duration and metrics["estimated_minutes"] > MAX_EPISODE_MINUTES:
         errors.append(f"The planned speech estimate exceeds {MAX_EPISODE_MINUTES} minutes; shorten without losing "

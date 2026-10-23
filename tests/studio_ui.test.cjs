@@ -2883,6 +2883,35 @@ test('the Google route shows who explains in this episode and the key it needs',
   assert.equal(app.run('audioBlockReason("ep_001")'),'Zuerst den Google-Key hinterlegen.');
 });
 
+test('a third host on ElevenLabs needs a voice of its own: the selects, the approval card and the block say so',()=>{
+  // The Geld podcast's Ea-nasir (D-179): ElevenLabs speaks the account's voices and has no third one to fall back on.
+  const app=studio();
+  const eleven={provider:'elevenlabs_tts',voices:{host_a:'S87WJpstXs0Ge2ukRiXJ',host_b:'VHYWoxffK1pFlM1dtRb0'}};
+  app.run(`boot.audio_catalog={elevenlabs_tts:{label:'ElevenLabs · v4',voices:[],account_voices:true,third_voices:[]},
+    google_gemini_tts:{label:'Gemini TTS · Google',voices:['Erinome','Sadachbia','Charon','Algenib'],third_voices:['Charon','Algenib','Puck']}};
+    boot.elevenlabs_key_available=true;
+    project={id:'p',config:{language:'de-DE',third_host:{name:'Ea-nasir',role:'Kupferhändler aus Ur'}},audio_settings:${JSON.stringify(eleven)},episodes:[]};`);
+  const card=()=>app.run(`renderApprovalCard({script:{episode_id:'ep_001',title:'T'},expression:{tags:0,backchannels:0}},currentAudio(),true)`);
+  assert.ok(app.run(`renderThirdVoice(currentAudio(),audioCatalog().elevenlabs_tts,[])`).includes('Bitte wählen (ElevenLabs hat keine voreingestellte)'));
+  assert.match(app.run('audioBlockReason("ep_001")'),/^Für Ea-nasir zuerst eine Stimme wählen/);
+  assert.ok(card().includes('Ea-nasir: noch keine Stimme gewählt'));
+  assert.ok(app.run(`renderOwnAudio(currentAudio())`).includes('id="own-voice-c"'),'the project\'s own choice takes the third voice too');
+  // A chosen account voice stays selectable before the account's list is loaded, so saving the page keeps it.
+  app.run(`project.audio_settings.third_voice='LeoVoice0123456789ab';`);
+  assert.ok(app.run(`renderThirdVoice(currentAudio(),audioCatalog().elevenlabs_tts,[])`).includes('<option value="LeoVoice0123456789ab" selected>'));
+  assert.equal(app.run('audioBlockReason("ep_001")'),'');
+  assert.ok(card().includes('Ea-nasir: LeoVoice0123456789ab'));
+  // On Google the third host speaks the route's first free voice unless one is chosen.
+  app.run(`project.audio_settings={provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Charon'}};boot.google_key_available=true;`);
+  assert.ok(app.run(`renderThirdVoice(currentAudio(),audioCatalog().google_gemini_tts,[])`).includes('Automatisch (Algenib)'));
+  assert.ok(card().includes('Ea-nasir: Algenib'));
+  // A project of two hosts shows none of it.
+  app.run(`project.config={language:'de-DE'};project.audio_settings=${JSON.stringify(eleven)};`);
+  assert.equal(app.run('audioBlockReason("ep_001")'),'');
+  assert.ok(!card().includes('Ea-nasir'));
+  assert.ok(!app.run(`renderOwnAudio(currentAudio())`).includes('own-voice-c'));
+});
+
 test('the server note offers a restart once the code changed and can take it back',()=>{
   const app=studio();
   app.run(`overviewPage=false;project={id:'p',server:{stale:false,restart_requested:false}}`);

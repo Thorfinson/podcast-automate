@@ -653,6 +653,26 @@ names) on the audio page: both or none (`TopicBrief.host_names`).
 - The names are stored in `project.yaml` and are part of the project hash. Changed names apply to new script runs;
   existing audio approvals stay valid, being bound to script hash and voices.
 - A project without names keeps the project hash its earlier runs carry.
+- A third host is named in its own field (`third_host.name`, [Three hosts](#three-hosts)); the panel shows it and
+  keeps it when the two names are saved.
+
+### Three hosts
+
+A project may have a third host, `host_c` (`TopicBrief.third_host`: name, role and Qwen voice; why: D-179). It is set
+in `project.yaml`; [examples/geld-podcast](../examples/geld-podcast/README.md) is such a project.
+
+- Every model call of a script run that is no search starts with the cast (`polishing.cast_note`): the rule for three
+  hosts (`prompts/third_host.txt`) and a JSON line with the third host's speaker ID, name and role. The prompts
+  themselves are unchanged, so a project of two hosts sends exactly what it sent before.
+- The host roles the writer, polishing, review and run inputs carry (`polishing.host_roles`) add host_c's role to
+  `HOST_ROLES`; the expert and the partner keep theirs.
+- `validate_script` holds a script to the project's hosts (`models.host_roles_of`): all three speak in every episode,
+  and host_c in a project of two hosts is a defect the writer corrects.
+- `partner_share` counts every word host_a does not speak, so with three hosts host_b's and host_c's together; under
+  the floor the advisory is `low_partners_share`.
+- Transcript, reading page, show notes and export name host_c by its `name` (`models.host_labels`).
+- The third host's role is what the project says it is; a role that asks for facts the research does not hold is
+  still bound by the evidence rules.
 
 ### Style notes
 

@@ -889,6 +889,8 @@ class Studio:
             if raw.get("provider") in REMOTE_PROVIDERS:
                 raw.setdefault("expression", True)
             choice = AudioChoice.model_validate(raw)
+            # A third host on ElevenLabs needs its voice chosen: refused here, not at the recording (D-179).
+            choice.for_hosts(config)
             write_json(root / OWN_AUDIO, choice.model_dump())
         return {"audio_own": own_audio(root) is not None,
                 "audio_settings": selected_audio(root, config).model_dump()}
@@ -1884,7 +1886,8 @@ class Studio:
 
     @staticmethod
     def validate_voices(config):
-        if any(v not in VOICES for v in config.voice_profile.values()):
+        third = getattr(config, "third_host", None)
+        if any(v not in VOICES for v in [*config.voice_profile.values(), *([third.voice] if third else [])]):
             raise AppError(t("server.voice.qwen"), code="invalid_voice")
 
     def save_text(self, root, data):

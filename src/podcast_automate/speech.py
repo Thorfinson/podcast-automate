@@ -19,7 +19,7 @@ from pydantic import ConfigDict, Field, SecretStr, field_validator, model_serial
 from . import studio_settings
 from .audio import PAUSE_TAGS, silent_runs
 from .errors import AppError
-from .models import Contract, HostVoices
+from .models import THIRD_HOST, Contract, HostVoices
 from .openrouter import NoRedirect, api_failure, refusal_reason
 from .qwen_worker import spoken_settings
 from .spoken_forms import SpokenForms, spoken_text
@@ -81,6 +81,11 @@ STYLE_PRESETS = {
 }
 DEFAULT_STYLES = {role: STYLE_PRESETS["neugierig"][role] for role in ("host_a", "host_b")}
 MAX_STYLE_CHARACTERS = 80
+# The third host's voice when a project has one and the choice names none (D-179): the first of these its two hosts
+# do not already speak in. Dylan is also TopicBrief.third_host's default Qwen voice.
+THIRD_VOICES = {"qwen3_local": ("Dylan", "Eric", "Ryan"),
+                "google_gemini_tts": ("Charon", "Algenib", "Puck"),
+                "openrouter_gemini_tts": ("Charon", "Algenib", "Puck")}
 # The languages a project speaks (TopicBrief.language), each with a pace of its own (LanguagePace).
 SPEECH_LANGUAGES = ("de-DE", "en-US")
 # The word a calm pace adds to both roles' styles of a Google recording (AudioChoice.spoken_styles).
@@ -128,6 +133,11 @@ class AudioChoice(Contract):
     # Each language's pace; a language without an entry is spoken as recorded. The user's choice of 2026-10-07:
     # English slower, German as it is.
     pace: LanguagePaces = Field(default_factory=dict)
+    # The voice of a project's third host (D-179); unset, the provider's first free voice in THIRD_VOICES. It speaks
+    # only in a project whose brief has a third host, and alternating roles never move it.
+    third_voice: str | None = None
+    # The third host's style on Google, like ``styles``; unset, it speaks without one.
+    third_style: str | None = Field(default=None, max_length=MAX_STYLE_CHARACTERS, pattern=r"^[^\n<>|]*$")
 
     @model_validator(mode="after")
     def validate_voices(self):
@@ -139,6 +149,8 @@ class AudioChoice(Contract):
         if (set(self.voices) != {"host_a", "host_b"} or len(set(self.voices.values())) != 2 or
                 not all(valid(voice) for voice in self.voices.values())):
             raise ValueError("Zwei unterschiedliche Stimmen des gewählten Audioanbieters auswählen.")
+        if self.third_voice is not None and (not valid(self.third_voice) or self.third_voice in self.voices.values()):
+            raise ValueError("Die dritte Stimme muss eine eigene Stimme des gewählten Audioanbieters sein.")
         if self.provider == ELEVENLABS_PROVIDER:
             # A choice switched over from Gemini keeps no Gemini model.
             if self.model not in ELEVENLABS_MODELS:
@@ -152,6 +164,7 @@ class AudioChoice(Contract):
             raise ValueError("Ein Gemini-Sprachmodell aus der Liste wählen.")
         if self.provider not in PASSAGE_PROVIDERS:
             self.styles = RoleStyles()
+            self.third_style = None
             # Only Google and ElevenLabs take a style; the montage tempo holds for every route.
             self.pace = {language: pace.model_copy(update={"unhurried": False}) for language, pace in self.pace.items()}
         self.pace = {language: pace for language, pace in sorted(self.pace.items()) if pace != LanguagePace()}
@@ -172,6 +185,9 @@ class AudioChoice(Contract):
             data.pop("styles", None)  # And the default styles as before they were selectable.
         if not data.get("pace"):
             data.pop("pace", None)  # And every language at its recorded pace as before the pace existed.
+        for key in ("third_voice", "third_style"):
+            if data.get(key) is None:
+                data.pop(key, None)  # And without a third host's voice or style as before there was one (D-179).
         return data
 
     @property
@@ -190,6 +206,9 @@ class AudioChoice(Contract):
         """The style each role is asked for in ``language``: its own, with UNHURRIED added where that language's
         pace asks for a calm delivery."""
         styles = self.styles.model_dump()
+        if THIRD_HOST in self.voices or self.third_style:
+            # A choice that speaks a third host (for_hosts, D-179) gives it its style; two hosts keep the two styles.
+            styles[THIRD_HOST] = self.third_style or ""
         if not self.pace_for(language).unhurried:
             return styles
         return {role: f"{style}, {UNHURRIED}" if style else UNHURRIED for role, style in styles.items()}
@@ -200,7 +219,31 @@ class AudioChoice(Contract):
         number = re.fullmatch(r"ep_0*(\d+)", episode_id or "")
         if not self.alternate_roles or not number or int(number[1]) % 2:
             return self
-        return self.model_copy(update={"voices": {"host_a": self.voices["host_b"], "host_b": self.voices["host_a"]}})
+        return self.model_copy(update={"voices": {"host_a": self.voices["host_b"], "host_b": self.voices["host_a"],
+                                                  **({THIRD_HOST: self.voices[THIRD_HOST]}
+                                                     if THIRD_HOST in self.voices else {})}})
+
+    def third_voice_for(self):
+        """The third host's voice in this choice: ``third_voice``, else the provider's first voice in THIRD_VOICES
+        that neither of the two hosts speaks in. ElevenLabs speaks the account's voices and has none to fall back on, so
+        a third host there needs its voice chosen (D-179)."""
+        if self.third_voice:
+            return self.third_voice
+        if self.provider not in THIRD_VOICES:
+            raise AppError("Für den dritten Host eine eigene Stimme wählen: ElevenLabs spricht die Stimmen deines Kontos "
+                           "und hat keine voreingestellte („Stimme Host C“).", code="third_voice_required",
+                           status="blocked")
+        return next(voice for voice in THIRD_VOICES[self.provider]
+                    if voice not in (self.voices["host_a"], self.voices["host_b"]))
+
+    def for_hosts(self, config):
+        """The choice with a voice for every host of ``config``: a project with a third host (D-179) adds host_c to
+        ``voices``. Every engine looks a segment's voice up by its speaker, so this is the choice a recording speaks;
+        approvals, inputs and hashes keep the choice itself. Not validated again, since ``voices`` holds two roles
+        everywhere else."""
+        if not getattr(config, "third_host", None) or THIRD_HOST in self.voices:
+            return self
+        return self.model_copy(update={"voices": {**self.voices, THIRD_HOST: self.third_voice_for()}})
 
 
 # A project's own audio choice, which holds over the workspace settings' (D-177): one podcast spoken by ElevenLabs
@@ -229,12 +272,19 @@ def selected_audio(root, config):
     if not isinstance(data, dict):
         path = root / "studio/audio.json"
         if not path.exists():
-            return AudioChoice(voices=config.voice_profile)
+            # The CLI's defaults: voice_profile, and the third host's own Qwen voice (D-179).
+            third = getattr(config, "third_host", None)
+            return AudioChoice(voices=config.voice_profile, third_voice=third.voice if third else None)
         data = json.loads(path.read_text(encoding="utf-8"))
     data = dict(data) if isinstance(data, dict) else data
     if isinstance(data, dict) and data.get("provider") in REMOTE_PROVIDERS:
         data.setdefault("expression", True)
-    return AudioChoice.model_validate(data)
+    choice = AudioChoice.model_validate(data)
+    if not getattr(config, "third_host", None) and (choice.third_voice or choice.third_style):
+        # The workspace's third voice speaks only in a project with a third host (D-179): for every other project the
+        # choice is the one it was, so its approvals and recordings stay current.
+        choice = choice.model_copy(update={"third_voice": None, "third_style": None})
+    return choice
 
 
 def audio_catalog():
@@ -242,19 +292,22 @@ def audio_catalog():
     sample 5): Erinome explains and Sadachbia asks in episode 1, and the roles swap from episode to episode."""
     return {
         "qwen3_local": {"label": "Qwen · auf diesem Computer", "voices": QWEN_VOICES,
-                        "defaults": {"host_a": "Aiden", "host_b": "Vivian"}},
+                        "defaults": {"host_a": "Aiden", "host_b": "Vivian"}, "third_voices": THIRD_VOICES["qwen3_local"]},
         "google_gemini_tts": {"label": "Gemini TTS · Google", "models": GEMINI_MODELS, "default_model": GEMINI_MODEL,
                               "voices": GEMINI_VOICES, "defaults": {"host_a": "Erinome", "host_b": "Sadachbia"},
+                              "third_voices": THIRD_VOICES["google_gemini_tts"],
                               "alternate_roles": True, "style_presets": STYLE_PRESETS, "default_styles": DEFAULT_STYLES,
                               "unhurried": UNHURRIED,
                               "max_style_characters": MAX_STYLE_CHARACTERS},
         "openrouter_gemini_tts": {"label": "Gemini TTS · OpenRouter (Abschnitt für Abschnitt)", "models": GEMINI_MODELS,
                                   "default_model": GEMINI_MODEL, "voices": GEMINI_VOICES,
-                                  "defaults": {"host_a": "Sadaltager", "host_b": "Aoede"}},
-        # The voices are the account's (the Studio's /api/elevenlabs/voices), so none are listed or preset here.
+                                  "defaults": {"host_a": "Sadaltager", "host_b": "Aoede"},
+                                  "third_voices": THIRD_VOICES["openrouter_gemini_tts"]},
+        # The voices are the account's (the Studio's /api/elevenlabs/voices), so none are listed or preset here, and a
+        # third host's voice has no default either (D-179).
         ELEVENLABS_PROVIDER: {"label": "ElevenLabs · v4", "models": ELEVENLABS_MODELS, "default_model": ELEVENLABS_MODEL,
-                              "voices": (), "account_voices": True, "defaults": None, "alternate_roles": True,
-                              "style_presets": STYLE_PRESETS, "default_styles": DEFAULT_STYLES,
+                              "voices": (), "account_voices": True, "defaults": None, "third_voices": (),
+                              "alternate_roles": True, "style_presets": STYLE_PRESETS, "default_styles": DEFAULT_STYLES,
                               "unhurried": UNHURRIED, "max_style_characters": MAX_STYLE_CHARACTERS},
     }
 

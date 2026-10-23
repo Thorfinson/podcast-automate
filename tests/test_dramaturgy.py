@@ -54,7 +54,7 @@ class VarietyTests(unittest.TestCase):
         self.assertEqual(variety_defects(voiced("mystery", "host_a"), previous, narrated=True, story=False), [])
         self.assertEqual(variety_defects(voiced("mystery", "host_b"), previous), [])
         unnamed = variety_defects(voiced("discovery", ""), [], narrated=True)
-        self.assertEqual(unnamed, ["Name in first_answer_voice who voices first_answer: host_a, host_b or common."])
+        self.assertEqual(unnamed, ["Name in first_answer_voice who voices first_answer: one of the hosts or common."])
         self.assertEqual(variety_defects(voiced("discovery", "", answer=""), [], narrated=True), [])
 
     def test_the_catalogs_are_labelled_in_german_and_offered_to_the_model(self):

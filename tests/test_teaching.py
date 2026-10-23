@@ -515,6 +515,11 @@ class TeachingTests(unittest.TestCase):
                 errors = validate_teaching_plan(told.model_copy(update=broken), entry, (), ["story_01"])
                 self.assertTrue(any(message in error for error in errors), errors)
         self.assertIn("Kerngeschichte: Two candidates meet a judge", render_teaching_plan(told, language="de-DE"))
+        # A third host (D-179) may voice the first answer, in a project that has one.
+        guessed = told.model_copy(update={"first_answer": "The higher score wins.", "first_answer_voice": "host_c"})
+        errors = validate_teaching_plan(guessed, entry, (), ["story_01"], ("host_a", "host_b"))
+        self.assertTrue(any("no host of this project" in error for error in errors), errors)
+        self.assertEqual(validate_teaching_plan(guessed, entry, (), ["story_01"], ("host_a", "host_b", "host_c")), [])
         # The story rules and the material reach the design prompt only in a narrated run.
         from types import SimpleNamespace
         config, dossier = load_project(self.root), SimpleNamespace(findings=[], synthesis=[])

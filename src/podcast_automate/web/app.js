@@ -105,6 +105,9 @@ const episodeVoices = (a, id) => {
   return a.alternate_roles&&number&&Number(number[1])%2===0?{host_a:a.voices.host_b,host_b:a.voices.host_a}:a.voices;
 };
 const keyOf = provider => provider === "google_gemini_tts" ? "google" : isEleven(provider) ? "elevenlabs" : "openrouter";
+// The voice a project's third host speaks in (AudioChoice.third_voice_for, D-179): its own, else the route's first
+// third voice neither host speaks in; empty on ElevenLabs while none is chosen.
+const thirdVoiceOf = a => a.third_voice||((audioCatalog()[a.provider]||{}).third_voices||[]).find(v=>v!==a.voices.host_a&&v!==a.voices.host_b)||"";
 const KEY_NAMES = Object.fromEntries(["openrouter","google","elevenlabs","anthropic","perplexity"].map(key=>[key,tp(`key.name.${key}`)]));
 // The field of the bootstrap and the settings view that says whether a key is there.
 const KEY_FLAGS = {openrouter:"key_available", google:"google_key_available", anthropic:"anthropic_key_available",
@@ -171,6 +174,9 @@ function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.epi
   // Gemini fails at its first request without a key; the approval card offers the key field instead.
   const provider=currentAudio().provider;
   if(isRemote(provider)&&!keyAvailable(keyOf(provider)))return tp(`audio.block.key.${keyOf(provider)}`);
+  // ElevenLabs has no voice to fall back on for a third host (third_voice_required, D-179).
+  const third=project?.config?.third_host;
+  if(third&&!thirdVoiceOf(currentAudio()))return tp("audio.block.third_voice",{name:third.name});
   if(!boot.capabilities?.parallel_audio||!isRemote(provider))
     return running()?tp("audio.block.running"):"";
   const active=(project.audio_jobs||[]).filter(j=>j.status==="running");
@@ -728,6 +734,7 @@ function renderSettings() {
       ${isRemote(a.provider)&&gemini?.models?settingField("settings-audio-model",tp("settings.audio.model"),settingSelect("settings-audio-model",Object.entries(gemini.models),a.model||gemini.default_model)):""}</div>
       <div class="row">${settingField("settings-voice-a",tp(isPassage(a.provider)?"settings.voice.a_google":"settings.voice.a"),settingSelect("settings-voice-a",voices,a.voices.host_a))}${settingField("settings-voice-b",tp(isPassage(a.provider)?"settings.voice.b_google":"settings.voice.b"),settingSelect("settings-voice-b",voices,a.voices.host_b))}</div>
       ${isEleven(a.provider)?elevenVoiceHint():""}
+      ${renderThirdVoice(a,catalog[a.provider]||{},voices)}
       ${isPassage(a.provider)?renderGoogleAudio(a,gemini):""}
       <div class="row">${settingField("settings-pause-same",tp("settings.pause.same"),settingNumber("settings-pause-same",pauses.same_speaker_ms,0,10000,50))}${settingField("settings-pause-change",tp("settings.pause.change"),settingNumber("settings-pause-change",pauses.speaker_change_ms,0,10000,50))}${settingField("settings-pause-chapter",tp("settings.pause.chapter"),settingNumber("settings-pause-chapter",pauses.chapter_break_ms,0,10000,50))}</div>
       ${isPassage(a.provider)?`<p class="hint">${t(isEleven(a.provider)?"settings.pause.elevenlabs_hint":"settings.pause.google_hint")}</p>`:""}
@@ -779,6 +786,7 @@ function renderGoogleAudio(a,gemini) {
   const limit=gemini?.max_style_characters||80, field=(id,value)=>`<input id="${id}" maxlength="${limit}" value="${escape(value)}">`;
   return `<div class="row">${settingField("settings-style-preset",tp("settings.style"),settingSelect("settings-style-preset",[...presets.map(([id,p])=>[id,serverLabel(`style.${id}`,p.label)]),...(preset?[]:[["",tp("settings.style_own")]])],preset))}</div>
     <div class="row">${settingField("settings-style-a",tp("settings.style_a"),field("settings-style-a",styles.host_a))}${settingField("settings-style-b",tp("settings.style_b"),field("settings-style-b",styles.host_b))}</div>
+    <div class="row">${settingField("settings-style-c",tp("settings.style_c"),field("settings-style-c",a.third_style||""))}</div>
     <p class="hint">${t("settings.style_hint")}</p>
     <label class="approval"><input id="settings-alternate" type="checkbox" ${a.alternate_roles?"checked":""}><span>${t("settings.alternate")}</span></label>
     ${isEleven(a.provider)?"":`<div class="actions"><label class="sr-only" for="settings-pair-language">${t("pair.language_label")}</label>${settingSelect("settings-pair-language",[["de-DE",languageName("de-DE")],["en-US",languageName("en-US")]],pairLanguage)}<button type="button" class="secondary small" data-action="pair-sample">${t("pair.play")}</button>${a.alternate_roles?`<button type="button" class="secondary small" data-action="pair-sample" data-swap="1">${t("pair.play_swapped")}</button>`:""}</div>
@@ -788,6 +796,16 @@ function renderGoogleAudio(a,gemini) {
 function elevenVoiceHint() {
   const state=!keyAvailable("elevenlabs")?"settings.voice.none":elevenVoices===null?"settings.voice.loading":"settings.voice.loaded";
   return `<p class="hint">${t(state,{count:(elevenVoices||[]).length})} <button type="button" class="quiet small" data-action="load-eleven-voices">${t("settings.voice.load")}</button></p>`;
+}
+// The voice of a project's third host (D-179), for every provider: unset, the first of the provider's third voices that
+// neither host speaks in; ElevenLabs has none, so there it is chosen. It speaks only in a project whose brief has a
+// third host.
+function renderThirdVoice(a,row,voices) {
+  const used=[a.voices.host_a,a.voices.host_b], automatic=(row.third_voices||[]).find(v=>!used.includes(v))||"";
+  const options=[["",automatic?tp("settings.voice.c_auto",{voice:automatic}):tp("settings.voice.c_choose")],
+    ...voices.filter(([v])=>!used.includes(v))];
+  if(a.third_voice&&!options.some(([v])=>v===a.third_voice))options.push([a.third_voice,voiceName(a.third_voice)]);
+  return `<div class="row">${settingField("settings-voice-c",tp("settings.voice.c"),settingSelect("settings-voice-c",options,a.third_voice||""),t("settings.voice.c_hint"))}</div>`;
 }
 async function pairSample(button) {
   const a=settingsFromForm().audio, language=$("settings-pair-language")?.value||"de-DE";
@@ -831,6 +849,10 @@ function settingsFromForm() {
   if($("settings-expression"))d.audio.expression=!!$("settings-expression").checked;
   // Styles and alternating roles are Google's and ElevenLabs' only; the other routes keep their choice as before.
   if(isPassage(provider)&&$("settings-style-a"))d.audio.styles={host_a:value("settings-style-a")||"",host_b:value("settings-style-b")||""};
+  // The third host's voice and, on Google and ElevenLabs, its style (D-179); unset, they are left out as the server
+  // stores them.
+  if($("settings-voice-c")){const third=value("settings-voice-c");if(third&&third!==d.audio.voices.host_a&&third!==d.audio.voices.host_b)d.audio.third_voice=third;else delete d.audio.third_voice;}
+  if(isPassage(provider)&&$("settings-style-c")){const style=value("settings-style-c")||"";if(style)d.audio.third_style=style;else delete d.audio.third_style;}
   if(isPassage(provider)&&$("settings-alternate"))d.audio.alternate_roles=!!$("settings-alternate").checked;
   // The pace of each language; one at full speed and without a calm delivery is left out, as the server stores it.
   if($("settings-tempo-de-DE")){
@@ -1319,7 +1341,10 @@ function hostLabels(episodeId=null) {
   const names=project?.config?.host_names||{}, a=currentAudio();
   const voices=a?.voices?(episodeId?episodeVoices(a,episodeId):a.voices):{};
   const fallback=(role,letter)=>voices?.[role]?`${voices[role]} · Host ${letter}`:`Host ${letter}`;
-  return {host_a:names.host_a||fallback("host_a","A"),host_b:names.host_b||fallback("host_b","B")};
+  // A third host (D-179) is always named by the brief.
+  const third=project?.config?.third_host;
+  return {host_a:names.host_a||fallback("host_a","A"),host_b:names.host_b||fallback("host_b","B"),
+    ...(third?{host_c:third.name||"Host C"}:{})};
 }
 // The same boundary rule as spoken_forms.apply: a hyphen, en dash or slash separates tokens,
 // a dot between word characters does not; the longest written form wins in one pass.
@@ -1503,6 +1528,7 @@ function renderOwnAudio(a) {
     <p class="hint">${t(own?"audio.own.own":"audio.own.workspace",{choice:escape(audioLabel(a))})}</p>
     ${settingField("own-audio-provider",tp("settings.audio.provider"),settingSelect("own-audio-provider",Object.entries(catalog).map(([id,r])=>[id,audioProviderLabel(id,r)]),provider))}
     <div class="row">${settingField("own-voice-a",tp("settings.voice.a_google"),pick("own-voice-a","host_a",0))}${settingField("own-voice-b",tp("settings.voice.b_google"),pick("own-voice-b","host_b",1))}</div>
+    ${project.config?.third_host?renderThirdVoice({...a,provider,voices:provider===a.provider?a.voices:{},third_voice:provider===a.provider?a.third_voice:null},row,options).replaceAll("settings-voice-c","own-voice-c"):""}
     ${isEleven(provider)?elevenVoiceHint():""}
     <label class="approval"><input id="own-alternate" type="checkbox" ${provider===a.provider&&a.alternate_roles?"checked":""}><span>${t("settings.alternate")}</span></label>
     <p class="hint">${t("audio.own.hint")}</p>
@@ -1513,7 +1539,12 @@ async function saveOwnAudio(clear=false) {
   const audio=clear?null:{...a,provider,model:provider===a.provider?a.model:row.default_model,
     voices:{host_a:$("own-voice-a")?.value,host_b:$("own-voice-b")?.value},alternate_roles:!!$("own-alternate")?.checked,
     ...(isPassage(provider)&&!isPassage(a.provider)?{styles:{...(row.default_styles||{})}}:{})};
-  if(audio&&!isPassage(provider))delete audio.styles;
+  if(audio&&!isPassage(provider)){delete audio.styles;delete audio.third_style;}
+  if(audio){
+    // The third host's voice belongs to its route (D-179): chosen here, or left to the route's default.
+    const third=$("own-voice-c")?.value;
+    if(third&&third!==audio.voices.host_a&&third!==audio.voices.host_b)audio.third_voice=third;else delete audio.third_voice;
+  }
   const result=await api(`/api/projects/${encodeURIComponent(project.id)}/audio_own`,{audio});
   project.audio_own=result.audio_own;project.audio_settings=result.audio_settings;ownAudioProvider=null;
   // The episodes' recordings are current or not against the new choice, so the page is fetched again.
@@ -1529,6 +1560,7 @@ function renderSpeechSettings(a) {
     <p class="hint">${t("speech.forms_hint")}</p>
     <div class="row">${textInput("host-name-a",t("speech.host_a"),names.host_a||"")}${textInput("host-name-b",t("speech.host_b"),names.host_b||"")}</div>
     <p class="hint">${t("speech.hosts_hint")}</p>
+    ${project.config?.third_host?`<p class="note">${t("speech.third_host",{name:project.config.third_host.name})}</p>`:""}
     ${pausedHint(["config","audio"])}
     <div class="actions"><button class="secondary" data-action="save-speech" ${disabled()}>${t("speech.save")}</button></div></details>`;
 }
@@ -1613,7 +1645,7 @@ function renderApprovalCard(e,a,remote) {
   return `<div class="panel-title"><h2>${escape(e.script.title)}</h2><span class="tag">${escape(audioLabel(a))}</span></div>
     <dl>
     <dt>${t("approval.text")}</dt><dd>${e.audio?.length?(e.audio_current?t("approval.text.current"):t("approval.text.outdated",{changes:staleText(e.audio_stale)||tp("approval.text.changes_default")})):t("approval.text.unvoiced")} <button class="quiet small" data-step="4">${t("approval.read_script")}</button></dd>
-    <dt>${t("summary.voices")}</dt><dd>${voices} · ${languageName(project.config.language)} <button class="quiet small" data-action="open-settings">${t("approval.change_voices")}</button></dd>
+    <dt>${t("summary.voices")}</dt><dd>${voices}${project.config.third_host?` · ${t("approval.third_voice",{name:project.config.third_host.name,voice:thirdVoiceOf(a)?voiceName(thirdVoiceOf(a)):tp("approval.third_voice_missing")})}`:""} · ${languageName(project.config.language)} <button class="quiet small" data-action="open-settings">${t("approval.change_voices")}</button></dd>
     <dt>${t("settings.audio.provider")}</dt><dd class="hint">${t(isEleven(a.provider)?"approval.provider.elevenlabs":google?"approval.provider.google":remote?"approval.provider.openrouter":"approval.provider.qwen")} ${t("approval.provider.tail")}</dd>
     ${remote&&speechSize([e])?`<dt>${t("approval.size")}</dt><dd>${escape(speechSize([e]))} <span class="hint">${SPEECH_SIZE_NOTE}</span></dd>`:""}
     ${remote&&!keyAvailable(key)?`<dt>${t("approval.access")}</dt><dd>${inlineKey("audio-key",false,"",key)}</dd>`:""}
@@ -3579,7 +3611,7 @@ document.addEventListener("change",event=>attempt(async()=>{
     // Another provider has other voices: its defaults stand until the user picks two of them. Google brings its own
     // defaults for the styles and the alternating roles; the other routes have neither.
     const provider=event.target.value, draft=settingsFromForm(), row=audioCatalog()[provider]||{};
-    const {styles,alternate_roles,...rest}=draft.audio;
+    const {styles,alternate_roles,third_voice,third_style,...rest}=draft.audio;
     settingsDraft={...draft,audio:{...rest,provider,voices:{...(row.defaults||draft.audio.voices)},
       ...(isPassage(provider)?{styles:{...(row.default_styles||styles)},alternate_roles:!!row.alternate_roles}:{})}};
     if(isEleven(provider)){

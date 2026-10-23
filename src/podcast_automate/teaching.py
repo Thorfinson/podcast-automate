@@ -16,7 +16,7 @@ from .dramaturgy import (DRAMATURGIES, DRAMATURGY_DISTANCE, ENDINGS, OPENINGS, S
                          variety_defects)
 from .errors import AppError
 from .editorial import TEACHING_SCOPE, CONTINUITY, EPISODE_FRAMING, terminology
-from .models import Contract, Identifier, LaterFields, NonEmpty
+from .models import Contract, Identifier, LaterFields, NonEmpty, host_roles_of
 from .research_patches import corrected_call
 from .script_advisories import humanised
 from .script_models import ScriptIssue, episode_findings
@@ -144,7 +144,8 @@ class TeachingPlan(LaterFields):
     story_scene_id: str = Field(default="", description=(
         "The scene that tells core_story; empty exactly when core_story is empty."))
     first_answer_voice: Literal[tuple(["", *VOICES])] = Field(default="", description=(
-        "Who voices first_answer: host_a, host_b or common (a belief most listeners share); empty when there is none."))
+        "Who voices first_answer: host_a, host_b, host_c in a project with a third host, or common (a belief most "
+        "listeners share); empty when there is none."))
     objectives: list[LearningObjective] = Field(min_length=1)
     concepts: list[Concept] = Field(min_length=2)
     scenes: list[TeachingScene] = Field(min_length=1)
@@ -239,12 +240,16 @@ TEACHING_SCHEMAS = {"teaching_plan": TeachingPlan, "teaching_plan_review": Teach
                     "teaching_review": TeachingReview, "editorial_review": EditorialReview}
 
 
-def validate_teaching_plan(design, entry, previous=(), story=None):
+def validate_teaching_plan(design, entry, previous=(), story=None, roles=None):
     """``previous`` are the storytelling devices of the episodes before this one (previous_devices), nearest last.
     ``story`` are the ids of the episode's story material in a run with the narration stage (narration.StoryMaterial),
-    None in a run without it, whose designs validate as before."""
+    None in a run without it, whose designs validate as before. ``roles`` are the project's hosts (models.host_roles_of):
+    a first answer is voiced by one of them or by a common belief."""
     narrated = story is not None
     errors = variety_defects(design, list(previous), narrated=narrated, story=bool(story))
+    if roles is not None and design.first_answer_voice.startswith("host_") and design.first_answer_voice not in roles:
+        errors.append(f"first_answer_voice {design.first_answer_voice} is no host of this project; use "
+                      + ", ".join(roles) + " or common.")
     scene_ids = [s.scene_id for s in entry.scenes]
     if not (bool(design.core_story) == bool(design.story_item_ids) == bool(design.story_scene_id)):
         errors.append("Give core_story together with its story_item_ids and story_scene_id, or none of them.")
@@ -623,7 +628,7 @@ def build_teaching_plan(config, entry, dossier, sources, invoke, work, *, contin
     elif reused_draft:
         save()
     while True:
-        errors = validate_teaching_plan(design, entry, devices, story_ids)
+        errors = validate_teaching_plan(design, entry, devices, story_ids, host_roles_of(config))
         if review is not None:
             try:
                 validate_design_review(review, design, review_previous)

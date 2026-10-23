@@ -9,7 +9,8 @@ the episode checks how far the source carries it. A dramaturgy that tells (disco
 case_autopsy) fits such an episode better than one that sets a guess against the evidence; use other
 items where they make a point concrete instead of a constructed example. Leave core_story,
 story_item_ids and story_scene_id empty only when story_material is empty. first_answer_voice names
-who voices first_answer: host_a, host_b, or common for a belief most listeners share. host_b is not
+who voices first_answer: host_a, host_b, host_c where the project has a third host, or common for a
+belief most listeners share. host_b is not
 the one whose guess the evidence overturns in every episode: when the episode before let host_b guess
 wrong, let host_a or a common belief carry this guess, or tell the episode without one. The design
 adds no story of its own: every event, person and detail comes from story_material or the findings.

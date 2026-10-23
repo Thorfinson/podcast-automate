@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from .content_text import text as wording, transparency_lines
 from .errors import AppError
 from .models import EpisodeScript, host_labels
-from .polishing import HOST_ROLES, POLISH_VERSION
+from .polishing import POLISH_VERSION, host_roles
 from .research_gap_probe import statuses
 from .script_advisories import advisories, established_terms
 from .script_models import KnowledgeModel
@@ -222,7 +222,7 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
               "model_notes": "A model review can miss errors; durations are estimates until audio is measured."}
     report["teaching_version"] = TEACHING_VERSION
     report["text_generation"] = text_generation
-    report["host_roles"] = HOST_ROLES
+    report["host_roles"] = host_roles(config)
     report["polish_version"] = POLISH_VERSION
     report["foundation_research"] = [p.relative_to(root).as_posix()
         for p in sorted((work / "teaching").glob("ep_*/supplement*/receipt.json"))]

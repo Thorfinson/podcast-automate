@@ -70,7 +70,8 @@ DRAMATURGY_DISTANCE = 2
 FAMILIES = {"mystery": "test", "debate": "test", "myth_check": "test", "thought_experiment": "test",
             "discovery": "story", "in_medias_res": "story", "case_autopsy": "story", "build_along": "build"}
 # Who voices a design's first_answer (TeachingPlan.first_answer_voice): one host, or a belief most listeners share.
-VOICES = ("host_a", "host_b", "common")
+# host_c only in a project with a third host (D-179; teaching.validate_teaching_plan's roles).
+VOICES = ("host_a", "host_b", "host_c", "common")
 
 
 def catalog():
@@ -96,7 +97,7 @@ def variety_defects(design, previous, *, narrated=False, story=False):
     last = previous[-1] if previous else {}
     if narrated:
         if design.first_answer and not design.first_answer_voice:
-            errors.append("Name in first_answer_voice who voices first_answer: host_a, host_b or common.")
+            errors.append("Name in first_answer_voice who voices first_answer: one of the hosts or common.")
         if design.first_answer_voice == "host_b" and last.get("first_answer_voice") == "host_b":
             errors.append(f"host_b voiced the first answer that the evidence overturns in the episode before "
                           f"({last.get('episode_id')}); let host_a or a belief most listeners share carry the guess "

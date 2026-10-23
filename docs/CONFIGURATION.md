@@ -2,7 +2,7 @@
 title: Configuration
 doc_type: configuration
 status: current
-last_reviewed: 2026-10-19
+last_reviewed: 2026-10-21
 covers:
   - src/podcast_automate/studio_settings.py
   - src/podcast_automate/studio_text.py
@@ -59,6 +59,7 @@ creates a [trial project](BUSINESS_LOGIC.md#trial-project), where `--topic` is o
 | `tts_backend` | `qwen3_local` | CLI default speech adapter; the Studio's audio choice is in the [Studio settings](#studio-settings) |
 | `voice_profile` | `{"host_a": "Ryan", "host_b": "Serena"}` | The persistent Qwen voices of the two hosts; two different voices are required |
 | `host_names` | `null` | Optional names the hosts use for each other ([Host names and style notes](SCRIPTS.md#host-names-and-style-notes)) |
+| `third_host` | unset | Optional third host (`models.ThirdHost`): `name` (what the others call it, at most 60 characters), `role` (who it is and how it takes part, at most 2,000 characters) and `voice` (the CLI's Qwen voice, default Dylan, not one of `voice_profile`'s). Unset, the project has two hosts. Set by hand in `project.yaml`; effect: [Three hosts](SCRIPTS.md#three-hosts), [Audio](AUDIO.md#three-hosts) |
 | `style_profile_id` | `de_calm_deep` | The speaking-style profile ([Editorial standard](TEACHING.md#editorial-standard)) |
 | `export_context` | `private_learning` | The only allowed value; public export stays outside the MVP ([Source rights and privacy](SECURITY.md#source-rights-and-privacy)) |
 | `series_goal` | unset | Weights 0 (not wanted) to 3 (main aim) for `understand`, `evaluate` and `apply`, at least one above 0; unset means the evaluating default. Studio: **„Ziel der Serie“** (goal of the series); effect: [Series goal, task aims and source types](RESEARCH.md#series-goal-task-aims-and-source-types) |
@@ -66,9 +67,10 @@ creates a [trial project](BUSINESS_LOGIC.md#trial-project), where `--topic` is o
 | `trial` | `false` | A trial project: small limits per run, one short episode ([Trial project](BUSINESS_LOGIC.md#trial-project); why: D-157). Strictly a boolean; set by `pla init --trial` or the Studio (`POST /api/projects` with `"trial": true`) |
 | `runtime` | see below | Operational settings |
 
-Unset, `series_goal`, `recency_months` and `research_limits.cost_usd` are left out of `project.yaml` and every run
-snapshot (`models.LaterFields`), and so is `trial` while it is `false` (`TopicBrief.omit_unset_later_fields`), so an
-unchanged brief keeps its hash.
+Unset, `series_goal`, `recency_months`, `third_host` and `research_limits.cost_usd` are left out of `project.yaml` and
+every run snapshot (`models.LaterFields`), and so is `trial` while it is `false` (`TopicBrief.omit_unset_later_fields`),
+so an unchanged brief keeps its hash. The research lane binds `third_host` like the host names
+(`storage.RESEARCH_OPERATIONAL_FIELDS`), so adding a third host keeps a research run resumable.
 
 `runtime` (`models.RuntimeSettings`):
 
@@ -98,7 +100,7 @@ OpenRouter, Google, Anthropic and Perplexity keys; they apply to all projects (w
 | Section | Replaces in each project | Details |
 | --- | --- | --- |
 | `text` | `studio/text.json` | Preset, reasoning level and the OpenRouter output limit `max_output_tokens` (1 024 to 200 000, default 32 768); [Providers and models](PRODUCT.md#providers-and-models) |
-| `audio` | `studio/audio.json` | Provider, speech model, both voices (for ElevenLabs the account's voice ids), the pause minimums ([Pause minimums](AUDIO.md#pause-minimums)), for Gemini and ElevenLabs whether [expression tags](AUDIO.md#expression-tags) are set, and for Gemini through Google and ElevenLabs each role's style (`styles`) and whether the roles swap from episode to episode (`alternate_roles`; [Style and roles](AUDIO.md#style-and-roles)) |
+| `audio` | `studio/audio.json` | Provider, speech model, both voices (for ElevenLabs the account's voice ids), the pause minimums ([Pause minimums](AUDIO.md#pause-minimums)), for Gemini and ElevenLabs whether [expression tags](AUDIO.md#expression-tags) are set, and for Gemini through Google and ElevenLabs each role's style (`styles`) and whether the roles swap from episode to episode (`alternate_roles`; [Style and roles](AUDIO.md#style-and-roles)); the voice and, on Google and ElevenLabs, the style of a third host (`third_voice`, `third_style`; left out while unset, [Three hosts](AUDIO.md#three-hosts)) |
 | `execution` | `studio/execution.json` | Sequential or parallel, separately for text work and recording ([Sequential or parallel](STUDIO.md#sequential-or-parallel)) |
 | `allowances` | `studio/allowances.json` | Pre-approvals ([Budgets](BUSINESS_LOGIC.md#budgets)) |
 | `research_limits` | `research_limits` in `project.yaml` | Model calls, sources, search rounds and the money limit `cost_usd`; a billed text model is refused without it ([Budgets](BUSINESS_LOGIC.md#budgets)) |

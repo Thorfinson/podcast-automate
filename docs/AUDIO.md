@@ -2,7 +2,7 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-19
+last_reviewed: 2026-10-21
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
@@ -165,6 +165,10 @@ characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAG
   passage rule (`passages`) in its inputs. The cache lies in `cache/audio/google/`.
 - The [plausibility check](#plausibility-check-of-gemini-takes) judges a passage as a whole; a failure names its
   first and last segment.
+- A passage holds at most two hosts (`MAX_PASSAGE_SPEAKERS`), since Google's speech takes at most two speakers per
+  request. Only a script of [three hosts](#three-hosts) has more: its scenes are first cut where a third host would
+  join (`google_speech.speaker_runs`), then by the bounds above. Such a recording binds the rule with
+  `max_speakers: 2` (`google_speech.passage_rule`); a script of two hosts is cut and bound exactly as before.
 
 ### Style and roles
 
@@ -178,6 +182,8 @@ characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAG
   (`AudioChoice.for_episode`). The roles in the script stay host_a explains and host_b asks; only the voices swap.
   The approval and the run inputs hold the choice itself, the report and the show notes the episode's voices.
 - Default voices of the route: Erinome (explains in episode 1) and Sadachbia (asks).
+- A third host has a style of its own, **„Stil von Host C“** (`AudioChoice.third_style`); unset, it speaks without one.
+  Alternating roles never move the third voice.
 - **„▶ Gesprächsprobe“** (conversation sample) on the settings page plays a short conversation of four turns with
   exactly the selected voices and styles and the pace of the sample's language
   ([Speaking pace per language](#speaking-pace-per-language)), with a pause tag and a listener reaction, in German or English;
@@ -413,6 +419,30 @@ endpoint does not pass a speaking style outside the text (`speech_metadata`) was
 2026-10-06 did not run (the test asked OpenRouter for MP3, which its Gemini speech refuses), so it stays unverified.
 `scripts/gemini-tags-test.py` makes short comparison recordings with and without tags for listening; with `--neu`
 only the further tags from line 07 on.
+
+## Three hosts
+
+A project whose brief has a third host (`TopicBrief.third_host`, [Three hosts](SCRIPTS.md#three-hosts); why: D-179)
+is recorded with three voices on every route:
+
+- **„Stimme Host C“** on the settings page (`AudioChoice.third_voice`) sets the third voice; on automatic, the first
+  voice of `speech.THIRD_VOICES` that neither host speaks in (Qwen: Dylan, Eric, Ryan; Gemini: Charon, Algenib,
+  Puck). ElevenLabs has no such default: its voices are the account's, so there the third voice is chosen, on the
+  settings page or in a project's own choice (**„Sprachanbieter dieses Projekts“**, [A project's own speech
+  choice](#a-projects-own-speech-choice)); without it the recording stops with `third_voice_required`, saving the
+  own choice is refused the same way, and the recording page starts none. Without the Studio's audio choice, the
+  CLI speaks the brief's `third_host.voice`.
+- The setting is the workspace's, but it speaks only in a project with a third host: `speech.selected_audio` leaves
+  the third voice and style out of every other project's choice, so their approvals and recordings stay current.
+- A recording looks every segment's voice up by its speaker in `AudioChoice.for_hosts`, the choice with host_c
+  added; approvals, run inputs and hashes keep the choice itself with its two `voices`. Report, show notes and
+  README name all three voices („Stimmen: … und Dylan (Ea-nasir).“).
+- Google speaks at most two of them per passage ([Passages](#passages)); its speaker name for host_c is Sam.
+  ElevenLabs speaks all three in one passage, since Text to Dialogue takes up to ten voices per request (checked
+  2026-10-21), and its passage rule stays as it is. Qwen and OpenRouter record segment by segment and need no
+  change.
+- The approval card names the third host's voice beside the two others, as the approval is bound to all of them.
+- The conversation sample („▶ Gesprächsprobe“) stays a sample of the two hosts.
 
 ## Take checks, pauses and loudness
 

@@ -1446,6 +1446,19 @@ class OwnAudioTests(unittest.TestCase):
         self.assertEqual((self.detail()["audio_own"], self.detail()["audio_settings"]["provider"]),
                          (False, "google_gemini_tts"))
 
+    def test_a_three_host_project_on_elevenlabs_needs_its_third_voice_chosen(self):
+        # ElevenLabs speaks the account's voices and has no third one to fall back on (D-179): the Geld podcast's
+        # Ea-nasir, 2026-10-21, on a project's own ElevenLabs choice.
+        config = read_yaml(self.root / "project.yaml")
+        write_yaml(self.root / "project.yaml", {**config, "third_host": {"name": "Ea-nasir", "role": "A copper trader."}})
+        status, body, _ = self.request("/api/projects/example/audio_own", {"audio": self.eleven})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "third_voice_required"))
+        self.assertFalse(self.detail()["audio_own"], "a refused choice is not stored")
+        third = "LeoVoice0123456789ab"
+        status, body, _ = self.request("/api/projects/example/audio_own", {"audio": {**self.eleven, "third_voice": third}})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.detail()["audio_settings"]["third_voice"], third)
+
     def test_the_elevenlabs_key_is_stored_under_its_kind_and_lists_the_accounts_voices(self):
         status, body, _ = self.request("/api/elevenlabs/voices", {})
         self.assertEqual((status, json.loads(body)["code"]), (400, "elevenlabs_key_required"))

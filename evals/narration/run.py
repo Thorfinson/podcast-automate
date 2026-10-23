@@ -46,7 +46,7 @@ from podcast_automate.models import EpisodeScript, host_labels  # noqa: E402
 from podcast_automate.narration import (NARRATION_REVIEW_VERSION, NarrationReview, NarrationScores, Score,  # noqa: E402
                                         allowed_sections, compared_episodes, narrate_episode, review_payload,
                                         review_task, sanitized, story_material)
-from podcast_automate.polishing import HOST_ROLES  # noqa: E402
+from podcast_automate.polishing import host_roles  # noqa: E402
 from podcast_automate.prompts import text as prompt_text  # noqa: E402
 from podcast_automate.provider_pool import text_generation_settings  # noqa: E402
 from podcast_automate.script_artifacts import render_script  # noqa: E402
@@ -184,7 +184,7 @@ def review_script_narration(root, config, research, work, episode, script, invok
         story = story_material(config, entry, dossier, sources, invoke, folder)
     brief = {"language": config.language, "audience": config.audience_level, "style": config.depth_request,
              "style_notes": ""}
-    payload = review_payload(script, brief=brief, host_roles=HOST_ROLES, entry=entry,
+    payload = review_payload(script, brief=brief, host_roles=host_roles(config), entry=entry,
                              series_context=episode_series_context(plan, entry), design=design, story=story,
                              dossier=dossier, sections=allowed_sections(entry, dossier, sources),
                              compared=compared_episodes(plan, entry, work), language=config.language)

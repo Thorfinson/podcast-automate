@@ -40,15 +40,32 @@ class SeriesGoal(TypedDict):
 
 # Fields added to the brief after runs were recorded; while unset they are left out of every dump, so the hash
 # of an unchanged project.yaml, and every binding built from the brief, stays what it was.
-LATER_BRIEF_FIELDS = ("series_goal", "recency_months")
+LATER_BRIEF_FIELDS = ("series_goal", "recency_months", "third_host")
 
+# The two hosts every project has, and the third an optional TopicBrief.third_host adds (D-179).
+TWO_HOSTS = ("host_a", "host_b")
+THIRD_HOST = "host_c"
 ROLE_LABELS = {"host_a": "Host A", "host_b": "Host B"}
+THIRD_ROLE_LABEL = "Host C"
+
+
+def host_roles_of(config) -> tuple[str, ...]:
+    """The speaker IDs of a project: host_a and host_b, and host_c when the brief has a third host."""
+    return (*TWO_HOSTS, THIRD_HOST) if getattr(config, "third_host", None) else TWO_HOSTS
+
+
+def host_voices(config) -> dict:
+    """The CLI's Qwen voice of every host: voice_profile, and the third host's voice when there is one."""
+    third = getattr(config, "third_host", None)
+    return {**config.voice_profile, THIRD_HOST: third.voice} if third else dict(config.voice_profile)
 
 
 def host_labels(config):
     """Spoken-role labels for transcripts and the reading page, never the voice preset."""
     names = getattr(config, "host_names", None) or {}
-    return {role: (names.get(role) or ROLE_LABELS[role]) for role in ROLE_LABELS}
+    labels = {role: (names.get(role) or ROLE_LABELS[role]) for role in ROLE_LABELS}
+    third = getattr(config, "third_host", None)
+    return {**labels, THIRD_HOST: third.name} if third else labels
 
 
 def now() -> str:
@@ -57,6 +74,18 @@ def now() -> str:
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
+
+
+class ThirdHost(Contract):
+    """A third voice in the dialogue (D-179, 2026-10-12): who it is and how it takes part. Every script prompt of a
+    project with one gets its name and role, and every recording speaks it in a voice of its own."""
+
+    # What the other hosts call it; also its label in transcript, reading page and show notes.
+    name: Annotated[str, Field(min_length=1, max_length=60, pattern=r"^[^\n<>|{}]*$")]
+    # Who the third host is and how it takes part, in the project's own words; the writer and the reviews read it.
+    role: Annotated[str, Field(min_length=1, max_length=2000)]
+    # The Qwen voice of the CLI default (like voice_profile); the Studio's audio choice sets its own third voice.
+    voice: NonEmpty = "Dylan"
 
 
 class LaterFields(Contract):
@@ -154,6 +183,9 @@ class TopicBrief(Contract):
     # every dump while false, so every other brief keeps its hash.
     trial: bool = Field(default=False, strict=True,
         description="Trial project: small limits per run, one short episode (trial.py); false for every other project.")
+    # A third host (D-179, 2026-10-12): unset, the project has the two hosts it always had and hashes as before.
+    third_host: ThirdHost | None = Field(default=None,
+        description="Optional third host: name, role and the CLI's Qwen voice; unset means two hosts.")
 
     @model_serializer(mode="wrap")
     def omit_unset_later_fields(self, handler):
@@ -177,6 +209,12 @@ class TopicBrief(Contract):
             raise ValueError("voice_profile benötigt host_a und host_b")
         if len(set(self.voice_profile.values())) != 2:
             raise ValueError("Die Hörprobe benötigt zwei unterschiedliche Stimmen")
+        if self.third_host is not None:
+            if self.third_host.voice in self.voice_profile.values():
+                raise ValueError("Der dritte Host braucht eine eigene Stimme, die keiner der beiden anderen gehört")
+            names = {(name or "").casefold() for name in (self.host_names or {}).values()}
+            if self.third_host.name.casefold() in names:
+                raise ValueError("Der dritte Host braucht einen eigenen Namen")
         return self
 
 
@@ -184,7 +222,8 @@ class Segment(Contract):
     segment_id: Identifier
     scene_id: Identifier
     chapter_id: Identifier
-    speaker_id: Literal["host_a", "host_b"]
+    # host_c only in a project with a third host (validate_script holds a script to the project's hosts).
+    speaker_id: Literal["host_a", "host_b", "host_c"]
     text: NonEmpty
     knowledge_refs: list[Identifier] = Field(default_factory=list)
     pause_after_ms: int = Field(default=400, ge=0, le=10000)

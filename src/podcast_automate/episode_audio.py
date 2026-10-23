@@ -13,8 +13,8 @@ from .errors import AppError
 from .expression import BACKCHANNELS, EXPRESSION_VERSION, plan_expression, untagged
 from .elevenlabs_speech import (ELEVENLABS_SPEECH_VERSION, PASSAGE_RULE as ELEVENLABS_PASSAGE_RULE,
                                 check_elevenlabs_rows, run_elevenlabs_tts)
-from .google_speech import GOOGLE_SPEECH_VERSION, PASSAGE_RULE, check_google_rows, passage_units, run_google_tts
-from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels
+from .google_speech import GOOGLE_SPEECH_VERSION, check_google_rows, passage_rule, passage_units, run_google_tts
+from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels, host_roles_of
 from .provider_pool import AdapterPool
 from .research import refund_call, reserve_call, settle_call, unanswered
 from .research_patches import MAX_REJECTIONS
@@ -67,7 +67,7 @@ def reviewed_episode(root, config, episode):
     script = EpisodeScript.model_validate(read_yaml(folder / "script.yaml"))
     reviewed = EpisodeScript.model_validate_json((work / "reviewed" / f"{episode}.json").read_text(encoding="utf-8"))
     research_id, *_ = load_research(root, config)
-    if inputs["research_run"] != research_id or script != reviewed or validate_script(script, entry):
+    if inputs["research_run"] != research_id or script != reviewed or validate_script(script, entry, roles=host_roles_of(config)):
         raise AppError("Skript und geprüfte Recherche passen nicht zusammen.", code="invalid_script", status="blocked")
     return manifest, script, file_hash(folder / "script.yaml")
 
@@ -120,6 +120,11 @@ def episode_chapters(root, destination, parts):
 
 
 def voices_line(voices, labels, language):
+    if "host_c" in voices and "host_c" in labels:
+        # A third host (D-179) is named with its voice; two hosts keep the line they always had.
+        return wording(language, "export_voices_three", voice_a=voices["host_a"], host_a=labels["host_a"],
+                       voice_b=voices["host_b"], host_b=labels["host_b"], voice_c=voices["host_c"],
+                       host_c=labels["host_c"])
     return wording(language, "export_voices", voice_a=voices["host_a"], host_a=labels["host_a"],
                 voice_b=voices["host_b"], host_b=labels["host_b"])
 
@@ -129,7 +134,9 @@ def render_export_notes(script, chapters, choice, overrides, labels=None, *, lan
     language (D-153), ending with the transparency note (D-154)."""
     labels = labels or host_labels(None)
     lines = [f"# {script.title}", "",
-             wording(language, "export_version", host_a=labels["host_a"], host_b=labels["host_b"]),
+             (wording(language, "export_version_three", host_a=labels["host_a"], host_b=labels["host_b"],
+                      host_c=labels["host_c"]) if "host_c" in labels and "host_c" in choice.voices else
+              wording(language, "export_version", host_a=labels["host_a"], host_b=labels["host_b"])),
              voices_line(choice.voices, labels, language), "",
              f"## {wording(language, 'export_chapters')}", ""]
     if chapters:
@@ -329,7 +336,10 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                     saved_choice, AudioChoice.model_validate(audio_choice).for_language(config.language).model_dump()):
                 raise AppError("Audioanbieter oder Stimmen geändert. Fortsetzen nutzt die gespeicherte Auswahl.", code="inputs_changed", status="blocked")
             audio_choice = saved_choice
-        choice = AudioChoice.model_validate(audio_choice) if audio_choice is not None else AudioChoice(voices=config.voice_profile)
+        # The command line records with the brief's Qwen voices, a third host's own included (D-179).
+        choice = (AudioChoice.model_validate(audio_choice) if audio_choice is not None else
+                  AudioChoice(voices=config.voice_profile,
+                              third_voice=config.third_host.voice if config.third_host else None))
         if parallel_remote and not choice.remote:
             raise AppError("Lokales Qwen wird einzeln ausgeführt.", code="invalid_parallel_audio", status="blocked")
         episode_folder = inside(root / "episodes", episode)
@@ -386,11 +396,14 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             engine_file = "google_speech.py" if google else "elevenlabs_speech.py" if eleven else "speech.py"
             inputs["worker_sha256"] = file_hash(Path(__file__).with_name(engine_file))
             if passages:
-                inputs["passages"] = PASSAGE_RULE if google else ELEVENLABS_PASSAGE_RULE
+                # A Google script in which a third host speaks binds the speaker bound too (google_speech.passage_rule);
+                # ElevenLabs speaks every host of a passage in one request and keeps its rule.
+                inputs["passages"] = passage_rule(script) if google else ELEVENLABS_PASSAGE_RULE
             if choice.expression:
                 inputs["expression_version"] = EXPRESSION_VERSION
-        # The voices this episode is spoken in: swapped in an even-numbered one when the roles alternate.
-        voiced = choice.for_episode(episode)
+        # The voices this episode is spoken in: swapped in an even-numbered one when the roles alternate, and with the
+        # third host's voice in a project that has one (D-179).
+        voiced = choice.for_episode(episode).for_hosts(config)
         audio_config = config.model_copy(update={"voice_profile": voiced.voices})
         reactions = backchannels_for(choice, config.language)
 

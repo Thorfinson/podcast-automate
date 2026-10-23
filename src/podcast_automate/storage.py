@@ -12,14 +12,15 @@ import yaml
 
 from . import studio_settings
 from .errors import AppError
-from .models import ResearchLimits, RuntimeSettings, TopicBrief
+from .models import ResearchLimits, RuntimeSettings, ThirdHost, TopicBrief
 from .trial import capped_limits
 
 # Brief fields that steer how a run works, not what it says: deadlines, CLI paths and limits. A resumed run hashes
 # them as its saved snapshot recorded them (bound_brief).
 OPERATIONAL_FIELDS = ("runtime", "research_limits")
-# Fields the research lane never reads (checked with grep on 2026-10-02): voices, audio and text defaults, host names.
-RESEARCH_OPERATIONAL_FIELDS = ("voice_profile", "tts_backend", "text_backend", "host_names")
+# Fields the research lane never reads (checked with grep on 2026-10-02): voices, audio and text defaults, host names;
+# the third host (D-179) since 2026-10-12.
+RESEARCH_OPERATIONAL_FIELDS = ("voice_profile", "tts_backend", "text_backend", "host_names", "third_host")
 
 
 def digest(data: object) -> str:
@@ -45,6 +46,12 @@ def bound_brief(config: TopicBrief, snapshot: dict | None, lane: str = "script")
             # Unset names are left out of the hash, so a snapshot from before the field binds them as unset.
             value = snapshot.get(key)
             update[key] = dict(value) if isinstance(value, dict) else None
+        elif key == "third_host":
+            # Likewise an unset third host; a snapshot that names one binds it as recorded.
+            try:
+                update[key] = ThirdHost.model_validate(snapshot[key]) if isinstance(snapshot.get(key), dict) else None
+            except ValueError:
+                continue
         elif key not in snapshot:
             continue
         elif key in {"runtime", "research_limits"}:
