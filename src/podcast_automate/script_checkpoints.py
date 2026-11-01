@@ -41,8 +41,10 @@ def teaching_ready(folder):
 
 def finished(work, episode, stage):
     if stage == "teaching":
-        return teaching_ready(work / "teaching" / episode)
-    if stage == "writing":
+        # A run written by the story agent (D-181) ends its teaching with the story material and the orientation sheet.
+        folder = work / "teaching" / episode
+        return teaching_ready(folder) or bool(read(folder / "orientation.json") and read(folder / "story_material.json"))
+    if stage in ("writing", "story"):
         path = work / "drafts" / f"{episode}.json"
         stamp = read(path.with_suffix(".checkpoint.json"), {})
         return bool(path.is_file() and stamp.get("sha256") == file_hash(path))

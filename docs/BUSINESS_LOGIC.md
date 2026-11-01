@@ -2,7 +2,7 @@
 title: Business logic
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/provider_pool.py
   - src/podcast_automate/subscriptions.py
@@ -286,7 +286,15 @@ and stored fields: [RESEARCH](RESEARCH.md#scope-check-and-plan-approval)).
 - **Sub-questions the limit carries** = (limit − used − closing reserve) ÷ calls per sub-question, rounded down, at
   least 1 (`question_budget.affordable_tasks`; closing reserve `question_budget.CLOSING_RESERVE`, currently 4): 46
   for the default 750 calls at 16 per sub-question when few calls are used ((750 − 4) ÷ 16, rounded down).
-- Planning receives this number. A larger plan is requested again up to twice with this hint; then the minimum
+- **Sub-questions the brief carries** = 2 per focus question of the brief, at least 4
+  (`question_budget.content_tasks`, `CONTENT_TASKS_PER_FOCUS`, `MIN_CONTENT_TASKS`). A new plan without a requested
+  cap is bounded by the smaller of the two, since the planner fills whatever cap it is given: a new project's 750
+  calls planned 40 and 41 sub-questions for one fifteen-minute episode, and in the comparison of 2026-10-30
+  ([research_lean](../evals/research_lean/README.md)) four sub-questions for three focus questions gave the story
+  agent an episode as good as twelve did at half the research calls. A higher cap at the approval plans again
+  ([RESEARCH](RESEARCH.md#re-cutting-the-plan-to-n-sub-questions)). A trial's own cap and a requested cap replace
+  this bound; a plan saved before keeps its allowance. (why: D-183)
+- Planning receives the smaller number. A larger plan is requested again up to twice with this hint; then the minimum
   projection decides. The Studio and the question report show this experience value next to the minimum need.
 - **Sources and search rounds** are projected for the run's end the same way: used so far plus the open sub-questions
   times the sources (or search rounds) per sub-question, rounded up (`question_budget.plan_projection`). The rates are
@@ -320,6 +328,12 @@ review:
 A run started before 23 October 2026 has no `narration` stage and collects no story material
 (`script_budget.STORY_CALLS`), so its minimum stays nine per episode; the projection and the calibration factor use the
 run's own stage list (why: D-180).
+
+A run written by the story agent (`scripting.STORY_STAGES`) needs six per episode (`script_budget.stage_calls`):
+`teaching` 3 (story material, orientation sheet and its check), `story` 2 (the agent's session, counted as one call,
+and its first critique; up to three more critiques on top) and `review` 1 (the script review; no listener readback, editorial or teaching review). Each critique is an
+ordinary call of the run; the session itself runs on the Claude subscription and records the cost the CLI reports
+([SCRIPTS](SCRIPTS.md#story-agent); why: D-181).
 
 - Every rejected version costs more: a narration rework with its review (two calls, plus up to two corrections), up to
   three script repairs with a new review, two polishing corrections, two teaching-plan revisions, one targeted

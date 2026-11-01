@@ -29,15 +29,20 @@ class ExecutionChoice(Contract):
     # On only by the project's default (jev_probe_state), not by the user's switch: without a key the probe
     # runs with the word search alone instead of stopping the run.
     jev_default: bool = False
+    # New script runs are written by the story agent (story_agent.py, D-181) where the project chose it.
+    writer: Literal["prompt", "agent"] = "prompt"
 
     @model_serializer(mode="wrap")
     def omit_default_probe(self, handler):
-        """A choice without the Jev probe dumps as choices did before it existed, so saved hashes stay valid."""
+        """A choice without the Jev probe and with the prompt writer dumps as choices did before either existed, so
+        saved hashes stay valid."""
         data = handler(self)
         if not data.get("jev_probe"):
             data.pop("jev_probe", None)
         if not data.get("jev_default"):
             data.pop("jev_default", None)
+        if data.get("writer") == "prompt":
+            data.pop("writer", None)
         return data
 
     @property
@@ -57,12 +62,29 @@ def selected_execution(root: Path):
     else:
         choice = ExecutionChoice.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else ExecutionChoice()
     enabled, default = jev_probe_state(root)
-    return choice.model_copy(update={"jev_probe": enabled, "jev_default": enabled and default})
+    return choice.model_copy(update={"jev_probe": enabled, "jev_default": enabled and default,
+                                     "writer": writer_choice(root)})
 
 
 def settings_execution(root: Path):
-    """The modes as the Studio's settings and proposals see and hash them: without the Jev probe."""
-    return selected_execution(root).model_copy(update={"jev_probe": False, "jev_default": False})
+    """The modes as the Studio's settings and proposals see and hash them: without the Jev probe and the writer."""
+    return selected_execution(root).model_copy(update={"jev_probe": False, "jev_default": False, "writer": "prompt"})
+
+
+def writer_choice(root: Path) -> str:
+    """Who writes the project's new script runs (``studio/writer.json``): ``prompt`` or the story ``agent``. Its own
+    file, like the Jev probe's, so switching it never touches the hash of the modes."""
+    path = root / "studio/writer.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return "prompt"
+    return "agent" if isinstance(data, dict) and data.get("writer") == "agent" else "prompt"
+
+
+def set_writer(root: Path, writer: str):
+    write_json(root / "studio/writer.json", {"writer": "agent" if writer == "agent" else "prompt",
+                                             "changed_at": now()})
 
 
 def jev_probe_state(root: Path) -> tuple[bool, bool]:

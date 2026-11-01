@@ -37,7 +37,9 @@ NARRATION_VERSION = "narration.v1"
 # v2-missing: also the stories the sections only point to, for the story research (2026-10-23).
 STORY_MATERIAL_VERSION = "story_material.v2-missing"
 NARRATION_REVIEW_VERSION = "narration_review.v1"
-NARRATION_REPAIR_VERSION = "narration_repair.v1"
+# v2-neighbours (2026-10-24): the segment just before and after a named one may change too, and contested deeds are
+# told as their sources' versions.
+NARRATION_REPAIR_VERSION = "narration_repair.v2-neighbours"
 MAX_STORY_ITEMS = 12
 MAX_MISSING_STORIES = 2
 # The ends of a story research that leave the episode with the material it has (ScriptRun.research_story): the
@@ -306,9 +308,21 @@ def sanitized(review, script, story_ids):
     return review.model_copy(update={"points": points})
 
 
+def with_neighbours(script, named):
+    """The segments a rework may change: those its points name and the one just before and after each. A story told
+    more fully needs its handover to the next turn adjusted (Orlagau ep_014 of the narration evaluation, 2026-10-24:
+    every one of three reworks changed the segment after the named one, and each was refused)."""
+    order = [segment.segment_id for segment in script.segments]
+    allowed = set(named)
+    for index, key in enumerate(order):
+        if key in named:
+            allowed.update(order[max(0, index - 1):index + 2])
+    return allowed
+
+
 def scope_errors(original, repaired, allowed):
-    """A rework changes only the segments the points name: every other segment stays as it was, in its order. New
-    segments may come in anywhere, a named one may go."""
+    """A rework changes only the segments it may (``allowed``, with_neighbours): every other segment stays as it was,
+    in its order. New segments may come in anywhere, an allowed one may go."""
     before = {segment.segment_id: segment for segment in original.segments}
     after = {segment.segment_id: segment for segment in repaired.segments}
     errors = [f"{key}: no narration point names this segment; keep it exactly as it was."

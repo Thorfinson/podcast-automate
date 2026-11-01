@@ -16,13 +16,13 @@ from podcast_automate.teaching_research import FoundationExplanation, Foundation
 from podcast_automate.narration import (REWORK_REFUSED, MissingStory, NarrationPoint, NarrationReview, StoryItem,
                                         StoryMaterial,
                                         allowed_sections, length_errors, narrate_episode, narration_metrics, sanitized,
-                                        scope_errors, story_material)
+                                        scope_errors, story_material, with_neighbours)
 from podcast_automate.script_checkpoints import baseline_path, finished
 from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
 from podcast_automate.scripting import run_script
 from podcast_automate.studio_scripts import review_notes
-from podcast_automate.storage import digest
-from podcast_automate.teaching import TeachingPlan
+from podcast_automate.storage import digest, write_json
+from podcast_automate.teaching import TeachingPlan, prerequisite_context, previous_devices
 from tests import script_fixtures as fixtures
 from tests.narration_fixtures import narration_review
 from tests.teaching_fixtures import teaching_response
@@ -168,6 +168,25 @@ class NarrationCheckTests(unittest.TestCase):
         swapped = draft.model_copy(update={"segments": list(reversed(draft.segments))})
         self.assertEqual(scope_errors(draft, swapped, set()), ["Keep the segments no point names in their order."])
 
+    def test_a_rework_may_also_adjust_the_handover_just_before_and_after_a_named_segment(self):
+        """Orlagau ep_014 of the narration evaluation, 2026-10-24: three reworks each changed the segment after the named
+        one, and all were refused. The neighbours may change; a segment two away may not."""
+        def segment(key, text):
+            return Segment(segment_id=key, scene_id="scene_example", chapter_id="scene_example",
+                           speaker_id="host_a" if key in {"seg_001", "seg_003"} else "host_b", text=text,
+                           knowledge_refs=["f_energy"])
+        draft = fixtures.example_script().model_copy(update={"segments": [
+            segment(f"seg_{n:03d}", f"Satz {n}.") for n in range(1, 6)]})
+        self.assertEqual(with_neighbours(draft, {"seg_003"}), {"seg_002", "seg_003", "seg_004"})
+        self.assertEqual(with_neighbours(draft, {"seg_001"}), {"seg_001", "seg_002"})
+        handover = draft.model_copy(update={"segments": [
+            s.model_copy(update={"text": s.text + " Und dann?"}) if s.segment_id in {"seg_002", "seg_004"} else s
+            for s in draft.segments]})
+        self.assertEqual(scope_errors(draft, handover, with_neighbours(draft, {"seg_003"})), [])
+        far = draft.model_copy(update={"segments": [
+            s.model_copy(update={"text": "Anders."}) if s.segment_id == "seg_005" else s for s in draft.segments]})
+        self.assertEqual(len(scope_errors(draft, far, with_neighbours(draft, {"seg_003"}))), 1)
+
     def test_a_rework_may_not_grow_the_episode_beyond_its_room(self):
         draft = fixtures.example_script()
         long = reworked(" ".join(["Wort"] * 60))
@@ -267,6 +286,31 @@ class NarratedRunTests(unittest.TestCase):
         notes = review_notes(report["episodes"]["ep_001"])
         self.assertEqual(notes["narration_scores"], {"tension": 5, "interest": 5, "storytelling": 7})
         self.assertEqual([row["category"] for row in notes["narration"]], ["missing_story"])
+
+    def test_a_later_episode_reads_an_earlier_narrated_design_from_this_run(self):
+        """Orlagau v2, 2026-10-24: the second episode's teaching stopped on invalid_project. The first one's design named
+        story items, the check of a reviewed design did not know them, and the new version had no published plan to
+        fall back on. The design counts as reviewed with the story material saved beside it; an episode with no known
+        design is left out."""
+        plan = fixtures.example_plan()
+        first = plan.episodes[0]
+        second = first.model_copy(update={"episode_id": "ep_002", "prerequisite_episodes": [first.episode_id]})
+        series = plan.model_copy(update={"episodes": [first, second]})
+        design = teaching_response(json.dumps({"episode": first.model_dump()}), TeachingPlan).model_copy(update={
+            "core_story": "Who did what, and the moment it turned.", "story_item_ids": ["story_01"],
+            "story_scene_id": first.scenes[0].scene_id})
+        review = {"issues": [], "research_gaps": [], "gap_assessments": []}
+        work = self.root / "runs" / "run_narrated"
+        folder = work / "teaching" / first.episode_id
+        write_json(folder / "plan.json", design.model_dump())
+        write_json(folder / "review.json", review)
+        write_json(folder / "checkpoint.json", {"design": design.model_dump(), "review": review})
+        self.assertFalse((self.root / "episodes" / first.episode_id / "teaching_plan.yaml").exists())
+        self.assertEqual(previous_devices(series, second, work, self.root), [])
+        self.assertEqual(prerequisite_context(series, second, work)[0]["status"], "outline_only")
+        write_json(folder / "story_material.json", {"items": [{"item_id": "story_01"}], "missing": []})
+        self.assertEqual([row["episode_id"] for row in previous_devices(series, second, work, self.root)], ["ep_001"])
+        self.assertEqual(prerequisite_context(series, second, work)[0]["status"], "reviewed_teaching_plan")
 
     def test_a_review_without_points_costs_one_call_and_the_draft_goes_on_as_written(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model(story=False)):

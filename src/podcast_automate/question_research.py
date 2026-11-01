@@ -45,8 +45,8 @@ from .prompts import instructions
 from .question_answering import (ACCESS_GAP_READER, STORY_GENERATION, TaskResearchMixin, answer_errors, read_context,
                                  review_passes)
 from .trial import plan_cap
-from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, expected_calls_per_task,
-                              plan_projection, plan_review_message, run_timings)
+from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, content_tasks,
+                              expected_calls_per_task, plan_projection, plan_review_message, run_timings)
 from .question_dependencies import (gatekeepers, invalidate_dependents, ordered_tasks, prerequisite_met,
                                     prerequisites_current, revalidate)
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
@@ -815,7 +815,10 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                       "dirty_tasks": [t.id for t in plan.tasks], "active_tasks": [],
                       "limits": {"steps_per_question": MAX_STEPS, "web_attempts": MAX_WEB_ATTEMPTS,
                                  "reopenings": MAX_REOPENINGS},
-                      "call_timings": self.timings, "plan_caps": [], "plan_revisions": []}
+                      "call_timings": self.timings, "plan_caps": [], "plan_revisions": [],
+                      # The brief's focus questions bound this plan (D-183), so the approval may ask for more.
+                      **({"content_cap": planning_budget["content_cap"]}
+                         if planning_budget and planning_budget.get("content_cap") else {})}
         self.set_index(index)
         self.attempts = restore_attempts(self.folder, index)
         # Model-free: a lexical pass that asks whether each declared gap already has
@@ -844,7 +847,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
 
     def planning_allowance(self, path, *, cap=None):
         """The allowance the planner sees, saved once so replays judge a plan by the same rule. A trial project plans
-        at most its own few sub-questions (trial.plan_cap, D-157)."""
+        at most its own few sub-questions (trial.plan_cap, D-157). Without a requested cap, the brief's focus questions
+        bound the plan (question_budget.content_tasks, D-183) where they allow fewer sub-questions than the calls."""
         if path.exists():
             return read_value(path)
         cap = plan_cap(self.config, cap)
@@ -852,12 +856,15 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         limit = self.limits().model_calls
         per_task, source = expected_calls_per_task(self.work, self.root, self.state)
         affordable = affordable_tasks(used, limit, per_task)
+        content = content_tasks(self.config) if cap is None else None
         allowance = {"used": used, "approved_limit": limit, "minimum_calls_per_task": 2,
                      "expected_calls_per_task": per_task, "expected_calls_source": source,
-                     "max_tasks": min(cap, affordable) if cap else affordable,
+                     "max_tasks": min(cap or content or affordable, affordable),
                      "synthesis": "One call for a fresh dossier, or one patch per four tasks for an inherited dossier, plus two final audits."}
         if cap:
             allowance["requested_max_tasks"] = cap
+        elif content < affordable:
+            allowance["content_cap"] = content
         save_value(path, allowance)
         return allowance
 
@@ -871,7 +878,8 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         """Stop before the first task call until the projected plan is approved.
 
         An approval with a cap below the task count plans again under that cap, once per cap, and
-        presents the new plan; the operator always approves the plan that will actually run.
+        presents the new plan; the operator always approves the plan that will actually run. A plan the brief's focus
+        questions bounded (``content_cap``, D-183) is planned again under a higher cap the same way.
         """
         if self.state["phase"] != "awaiting_plan_approval":
             return
@@ -883,10 +891,12 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             projection = self.project_plan()
             approval = self.plan_gate(projection)
             cap = (approval or {}).get("max_tasks")
-            if approval is None or (cap is not None and cap < projection["tasks"] and cap in self.state.get("plan_caps", [])):
+            recut = cap is not None and (cap < projection["tasks"] or
+                                         (projection.get("content_cap") and cap > projection["content_cap"]))
+            if approval is None or (recut and cap in self.state.get("plan_caps", [])):
                 self.save("Der Rechercheplan wartet auf Freigabe")
                 raise AppError(plan_review_message(projection, self.work.name), code="research_plan_review", status="blocked")
-            if cap is not None and cap < projection["tasks"]:
+            if recut:
                 self.replan(cap)
                 continue
             self.state.update(phase="questions", plan_approval=approval)

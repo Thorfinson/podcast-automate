@@ -1,0 +1,7 @@
+A story agent wrote this episode and also read the project's research corpus. A segment may cite, in
+source_refs, corpus sections (src_…#sec_…) beside or instead of findings; those sections are among the
+sources you are given. Judge such a statement against its cited sections as you judge a finding against
+its evidence: it is grounded when a cited section holds it, attributed as the section attributes it, and
+a missing knowledge_ref is no defect when source_refs name a section that holds the statement. In its
+claim check, a segment that cites only sections is preserved or drift against them, with finding_ids
+empty and the sections you compared in source_refs, never no_research_claim.

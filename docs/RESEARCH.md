@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -203,7 +203,7 @@ Who writes the receipt `runs/<run_id>/plan_approval.json`, and how `--approve-pl
 
 ### Re-cutting the plan to N sub-questions
 
-With `--max-tasks N` (Studio: number field **„Höchstens N Teilfragen“**, at most N sub-questions) below the planned number, the next run plans once more:
+With `--max-tasks N` (Studio: number field **„Höchstens N Teilfragen“**, at most N sub-questions) below the planned number, the next run plans once more. A plan the brief's focus questions bounded ([Research projection](BUSINESS_LOGIC.md#research-projection); `content_cap` in the projection) is planned again the same way with an N above that bound: its card says so, and its field takes more (**„Plan mit so vielen Teilfragen neu zuschneiden, auch mehr“**; why: D-183).
 
 - Planning gets `max_tasks: N` as a cap, bundles commitments and is requested again up to twice if it exceeds the cap; the scope check follows with the same cap.
 - The scope check can only split tasks, never merge them, so the cut goes through planning and costs those planning calls.

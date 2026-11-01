@@ -218,7 +218,7 @@ class TopicBrief(Contract):
         return self
 
 
-class Segment(Contract):
+class Segment(LaterFields):
     segment_id: Identifier
     scene_id: Identifier
     chapter_id: Identifier
@@ -227,6 +227,12 @@ class Segment(Contract):
     text: NonEmpty
     knowledge_refs: list[Identifier] = Field(default_factory=list)
     pause_after_ms: int = Field(default=400, ge=0, le=10000)
+    # Corpus sections (``src_…#sec_…``) a story agent's segment tells from beside its findings (D-182); only a run
+    # written by the story agent may set them (ScriptRun.script_errors). Empty, they are left out of every dump, so
+    # every script written before keeps its bytes and hashes.
+    source_refs: list[NonEmpty] = Field(default_factory=list)
+
+    LATER: ClassVar[dict] = {"source_refs": []}
 
 
 class Chapter(Contract):

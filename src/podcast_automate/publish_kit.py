@@ -260,16 +260,19 @@ def title_key(title):
 
 
 def episode_sources(script, refs, documents, works):
-    """The sources behind the findings the script cites, in the order of their first use. Two copies of one work (the
-    research's ``work_id``, else the same normalised title) are one source. An idea source (research_models.is_idea:
-    the user's notes, LLM-written maps, social posts) is never evidence and never named publicly."""
+    """The sources behind the findings the script cites and the corpus sections it cites (D-182), in the order of their
+    first use. Two copies of one work (the research's ``work_id``, else the same normalised title) are one source. An
+    idea source (research_models.is_idea: the user's notes, LLM-written maps, social posts) is never evidence and never
+    named publicly."""
     cited = list(dict.fromkeys(ref for segment in script.segments for ref in segment.knowledge_refs))
+    # The corpus sections a story agent's segments cite (D-182) are sources too, with no finding of their own.
+    sections = list(dict.fromkeys(ref for segment in script.segments for ref in segment.source_refs))
     rows, identities, omitted, missing_findings, missing_references = [], {}, {}, [], []
-    for finding_id in cited:
-        if finding_id not in refs:
+    for finding_id in [*cited, *([None] if sections else [])]:
+        if finding_id is not None and finding_id not in refs:
             missing_findings.append(finding_id)
             continue
-        for reference in refs[finding_id]:
+        for reference in (refs[finding_id] if finding_id is not None else sections):
             source_id = reference.split("#")[0]
             source = documents.get(source_id)
             if source is None:
@@ -291,7 +294,7 @@ def episode_sources(script, refs, documents, works):
                 row["url"] = row["url"] or public_url(source)
                 if source_id not in row["source_ids"]:
                     row["source_ids"].append(source_id)
-            if finding_id not in row["finding_ids"]:
+            if finding_id is not None and finding_id not in row["finding_ids"]:
                 row["finding_ids"].append(finding_id)
     return rows, list(omitted.values()), {"findings": missing_findings, "references": missing_references}
 

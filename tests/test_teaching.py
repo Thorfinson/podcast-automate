@@ -307,7 +307,8 @@ class TeachingTests(unittest.TestCase):
             work = self.root / "runs" / run.run_id
             plan_before = (work / "series_plan.json").read_bytes()
             self.assertEqual(run.stages["teaching"].error.code, "teaching_design_failed")
-            self.assertEqual(failed_teaching(work), {"episode_id": "ep_001", "title": fixtures.example_plan().episodes[0].title})
+            self.assertEqual(failed_teaching(work), {"episode_id": "ep_001", "title": fixtures.example_plan().episodes[0].title,
+                                                     "issues": ["Scene 4 reads raw SPARQL keywords aloud."]})
             for episode, text in (("ep_999", note), ("ep_001", "  ")):
                 with self.assertRaises(AppError) as refused:
                     request_teaching_redesign(self.root, run.run_id, episode, text)

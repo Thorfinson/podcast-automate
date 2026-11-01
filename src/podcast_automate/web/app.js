@@ -45,7 +45,10 @@ const PAGE = Object.fromEntries(pageKeys.map((key,index)=>[key,index]));
 // The editorial framing of a step introduces a page that has nothing to show yet. A working page
 // opens with its name, its state and its action instead.
 const pageIntros = Object.fromEntries(pageKeys.map(key=>[key,[tp(`page.intro.${key}.title`),tp(`page.intro.${key}.text`)]]));
-const productionStages = ["teaching","writing","narration","polishing","review","publish"].map(id=>[id,tp(`production.stage.${id}.name`),tp(`production.stage.${id}.text`)]);
+const productionStages = ["teaching","writing","story","narration","polishing","review","publish"].map(id=>[id,tp(`production.stage.${id}.name`),tp(`production.stage.${id}.text`)]);
+// A run written by the story agent (D-181) has its stage in place of draft, narration review and polishing.
+const AGENT_RUN_STAGES = new Set(["teaching","story","review","publish"]);
+const runStages = run => productionStages.filter(([id])=>run?.stages?.story?AGENT_RUN_STAGES.has(id):id!=="story");
 const stageNames = Object.fromEntries(["discovery","retrieval","dossier","completeness","planning","teaching","writing","narration","polishing",
   "review","publish","expression","synthesis","assembly"].map(id=>[id,tp(`stage.${id}`)]));
 const actionNames = Object.fromEntries(["assistant","research","plan","replan","expression","publish_kit","script","revise","audio",
@@ -538,6 +541,7 @@ function setupSummary() {
     <dt>${t("summary.voices")}</dt><dd>${escape(audioLabel(a))} · ${escape(voiceName(a.voices.host_a))} &amp; ${escape(voiceName(a.voices.host_b))}</dd>
     <dt>${t("summary.text_execution")}</dt><dd>${mode(x.text,tp("summary.text_parallel"))}</dd><dt>${t("summary.recording")}</dt><dd>${a.provider==="qwen3_local"?t("summary.recording_qwen"):mode(x.audio,tp("summary.recording_parallel"))}</dd>
     <dt>${t("summary.gap_probe")}</dt><dd>${project.jev_probe?`${t("summary.jev_on")}${project.jev_default?` · ${t("summary.jev_default")}`:""}`:t("summary.jev_off")} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${t(project.jev_probe?"summary.jev_switch_off":"summary.jev_switch_on")}</button></dd>
+    <dt>${t("summary.writer")}</dt><dd>${t(project.writer==="agent"?"summary.writer_agent":"summary.writer_prompt")} <button type="button" class="secondary small" data-action="toggle-writer" data-writer="${project.writer==="agent"?"prompt":"agent"}">${t(project.writer==="agent"?"summary.writer_use_prompt":"summary.writer_use_agent")}</button></dd>
     <dt>${t("summary.allowances")}</dt><dd>${escape(allowanceSummary(project.allowances))}</dd></dl>
     <p class="hint">${t("summary.settings_hint")}</p>
     <div class="actions"><button type="button" class="secondary small" data-action="open-settings">${t("common.open_settings")}</button></div>
@@ -1216,7 +1220,7 @@ function renderProductionDetails() {
   const active=project?.job?.status==="running"&&jobPage()===PAGE.production;
   const finished=scriptsFinished();
   const labels=Object.fromEntries(["completed","running","pending","blocked","failed","waiting_for_quota","interrupted"].map(id=>[id,t(`production.status.${id}`)]));
-  let html=`<section class="panel"><div class="panel-title"><h2>${t("production.title")}</h2><span class="tag">${t(active?"nav.state.running":finished?"production.ready":"production.saved_state")}</span></div><ol class="production-stages">${productionStages.map(([key,title,description])=>{
+  let html=`<section class="panel"><div class="panel-title"><h2>${t("production.title")}</h2><span class="tag">${t(active?"nav.state.running":finished?"production.ready":"production.saved_state")}</span></div><ol class="production-stages">${runStages(run).map(([key,title,description])=>{
     const record=run?.stages?.[key];
     // A stopped stage goes back to pending with the interruption noted; it resumes, it does not simply follow.
     const status=record?.status==="pending"&&record?.error?.code==="interrupted"?"interrupted":record?.status||(finished?"completed":"pending");
@@ -2611,7 +2615,7 @@ function stopButton(action,job,info,target) {
       const failed=job.teaching_failure;
       if(!failed?.episode_id)return "";
       // The note starts with the open points the stop names, for the editor to keep, shorten or replace (D-155).
-      const points=String(info.message||"").replace(/^.*?(?:offene Punkte|open points):\s*/,"").trim();
+      const points=failed.issues?.length?failed.issues.join("\n\n"):String(info.message||"").replace(/^.*?(?:offene Punkte|open points):\s*/,"").trim();
       return `<div class="stop-feedback">${area("redesign-note",t("stop_button.redesign_label",{episode:quoted(failed.title||failed.episode_id)}),points,3)}<button data-action="redesign-teaching" data-run-id="${runId}" data-teaching-episode="${escape(failed.episode_id)}" ${disabled()}>${t("stop_button.redesign")}</button></div>`;
     }
     case "replan_feedback":return `<div class="stop-feedback">${area("stop-feedback",t("stop_button.replan_label"),info.message||"",3)}<button data-action="replan" data-feedback="stop-feedback" ${disabled()}>${t("stop_button.replan")}</button></div>`;
@@ -2711,8 +2715,24 @@ function stopBody(job,info,{target="",blocked=null}={}) {
   const fresh=freshRecommended(job,info);
   const resume=canResume(job,info)?`<button ${fresh?'class="secondary" ':""}data-action="resume" ${target||`data-run-id="${escape(job.run?.run_id||"")}"`} ${reason?"disabled":""}>${t("button.resume")}</button>`:"";
   // The step's own message stands beside the card's text in the page's language; another language goes to the details.
-  const message=info.message&&info.message!==info.text&&sameLanguage(info)?`<p class="stop-message">${t("chat.message",{message:info.message})}</p>`:"";
+  // A teaching design's open points come as a list instead (2026-10-25: two review points made one wall of text).
+  const message=openPoints(job)||(info.message&&info.message!==info.text&&sameLanguage(info)?`<p class="stop-message">${t("chat.message",{message:info.message})}</p>`:"");
   return `<p>${escape(info.text)}</p>${message}${waitNote(job)}${resume||buttons?`<div class="actions">${fresh?buttons+resume:resume+buttons}</div>`:""}${reason&&(resume||buttons)?`<p class="hint">${escape(reason)}</p>`:""}${techDetails(info)}`;
+}
+// One line per open point: its first sentence, the rest on opening it.
+function openPoints(job) {
+  const issues=(job?.teaching_failure?.issues||[]).map(String).filter(Boolean);
+  if(!issues.length)return "";
+  const items=issues.map(issue=>{
+    const [head,rest]=pointParts(issue);
+    return `<li>${rest?`<details><summary>${escape(head)}</summary><p>${escape(rest)}</p></details>`:escape(head)}</li>`;
+  }).join("");
+  return `<p class="stop-message">${t("stop.open_points",{count:issues.length})}</p><ul class="stop-points">${items}</ul>`;
+}
+function pointParts(text) {
+  const end=text.slice(20).search(/[.:!?]\s/);
+  if(end>=0&&end+21<=160)return [text.slice(0,end+21).replace(/:$/,"").trim(),text.slice(end+21).trim()];
+  return text.length<=160?[text,""]:[`${text.slice(0,140).replace(/\s+\S*$/,"")} …`,text];
 }
 function otherJobText() {
   const voicing=(project?.audio_jobs||[]).filter(j=>j.status==="running").length;
@@ -2852,8 +2872,11 @@ function renderPlanReview(job, runId) {
   // tenth more for reading and correction steps. One with raise_to raises its limits in the approval's own click.
   const raise=!current&&p.within_limit===false?Number(p.used)+Math.ceil(Number(p.projected_calls)*11/10):0;
   const attributes=raising?[["calls","model_calls"],["rounds","search_rounds"],["sources","sources"]].filter(([,key])=>rising[key]).map(([name,key])=>` data-raise-${name}="${Number(rising[key])}"`).join(""):"";
-  return `<section class="plan-review"><strong>${t("research_q.phase.awaiting_plan_approval")}</strong><p>${planSentence(p)}</p>${cost}${basis}${capNote}
-    <div class="field"><label for="plan-max-tasks">${t("plan.cap_label")}</label><input id="plan-max-tasks" type="number" inputmode="numeric" min="1" max="${Number(p.tasks)}" step="1" placeholder="${Number(p.tasks)}"></div>
+  // A plan the brief's focus questions bounded may be planned again with more sub-questions too (D-183).
+  const content=Number(p.content_cap)>0;
+  const contentNote=content?`<p class="hint">${t("plan.content_cap",{cap:Number(p.content_cap)})}</p>`:"";
+  return `<section class="plan-review"><strong>${t("research_q.phase.awaiting_plan_approval")}</strong><p>${planSentence(p)}</p>${cost}${basis}${capNote}${contentNote}
+    <div class="field"><label for="plan-max-tasks">${t(content?"plan.cap_label_content":"plan.cap_label")}</label><input id="plan-max-tasks" type="number" inputmode="numeric" min="1"${content?"":` max="${Number(p.tasks)}"`} step="1" placeholder="${Number(p.tasks)}"></div>
     <div class="actions"><button data-action="approve-plan" data-run-id="${escape(runId)}"${attributes} data-then-resume="1" ${running()?"disabled":""}>${t(raising?"plan.approve_raise":"plan.approve")}</button>${raise>Number(p.approved_limit)?`<button class="secondary" data-action="approve-calls" data-run-id="${escape(runId)}" data-model-calls="${raise}">${t("research_q.raise",{count:raise})}</button>`:""}</div>
     <p class="hint">${t("plan.hint")}${raising?` ${t("plan.cap_no_raise")}`:""}</p></section>`;
 }
@@ -3759,6 +3782,11 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/jev_probe`,{enabled});
       project=await api(`/api/projects/${project.id}`);render();
       notice(tp(enabled?(boot.key_available?"act.jev_on":"act.jev_on_key"):"act.jev_off"),"ok");return;
+    }
+    if(action==="toggle-writer"){
+      await api(`/api/projects/${project.id}/writer`,{writer:button.dataset.writer});
+      project=await api(`/api/projects/${project.id}`);render();
+      notice(tp(button.dataset.writer==="agent"?"act.writer_agent":"act.writer_prompt"),"ok");return;
     }
     if(action==="unqueue"){
       await api(`/api/projects/${project.id}/audio_queue`,{episode:button.dataset.episode});

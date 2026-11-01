@@ -6,10 +6,11 @@ rather than a sentence that sums it up. Use the other items where they make a po
 instead of a constructed example. Take every event, person and detail from story_material, the
 findings and the supplied sections, cite in knowledge_refs the findings the item names, and add
 nothing they do not hold; say whose account a story is where it matters, such as a chronicle written
-decades later or the beneficiary's own house tradition. Say how certain a statement is by the kind of
-its evidence, such as a charter, a later chronicle, a single report, a scholar's reading or a
-reference work without sources, never by how the research went: what was or was not read, an OCR
-text, only an abstract, which edition was at hand. Let teaching_design.first_answer_voice voice the
-first answer. End on the payoff; an outlook on the next episode is one sentence that makes the
-listener curious, such as a person, a moment or a question, never the formula that announces its
-topic.
+decades later or the beneficiary's own house tradition. Where the sources disagree about who did
+something or why, tell the story as the versions they give, each with whose account it is, and never
+merge them into one. Say how certain a statement is by the kind of its evidence, such as a charter,
+a later chronicle, a single report, a scholar's reading or a reference work without sources, never
+by how the research went: what was or was not read, an OCR text, only an abstract, which edition was
+at hand. Let teaching_design.first_answer_voice voice the first answer. End on the payoff; an
+outlook on the next episode is one sentence that makes the listener curious, such as a person, a
+moment or a question, never the formula that announces its topic.

@@ -1,0 +1,103 @@
+{
+  "id": "heinrich2",
+  "project": "orlagau-und-oberland-899-bis-um-1400-her-v2-5bb92a",
+  "outline_run": "run_20261024_043539_166616_6a97bd2d",
+  "elements": "heinrich2.md",
+  "episode": {
+    "episode_id": "ep_012",
+    "title": "Heinrich IV. von Weida: Vom Vogt zum Landmeister",
+    "central_question": "Wie wurde Heinrich IV. vom Vogt zum Landmeister in Preußen, und was belegen Urkunden gegenüber Dusburg?",
+    "target_minutes": 10,
+    "prerequisite_episodes": [
+      "ep_011"
+    ],
+    "finding_ids": [
+      "heinrich_iv_weida_laufbahn_a__familie_erbe_ehe_eintritt",
+      "heinrich_iv_weida_laufbahn_a__aemterlaufbahn_bis_landmeister",
+      "heinrich_urkunden_vs_dusburg__amtszeit_dusburg_gegen_urkunden",
+      "heinrich_urkunden_vs_dusburg__nur_dusburg"
+    ],
+    "scenes": [
+      {
+        "scene_id": "ep_012_s1",
+        "title": "Vom Vogt zum Ordensbruder",
+        "question": "Wer war Heinrich, und wie kam er in den Deutschen Orden?",
+        "purpose": "orientation",
+        "finding_ids": [
+          "heinrich_iv_weida_laufbahn_a__familie_erbe_ehe_eintritt"
+        ],
+        "explanation_steps": [
+          "Heinrich als Vogt, der Bruder im Orden, das Patronat in Plauen 1224.",
+          "Scheidung in Mildenfurth, Teilung der Herrschaften unter den Söhnen, 1238 Ordensbruder; Jutta in Cronschwitz."
+        ]
+      },
+      {
+        "scene_id": "ep_012_s2",
+        "title": "Landmeister in Preußen",
+        "question": "Wie verlief die Laufbahn im Orden?",
+        "purpose": "worked_example",
+        "finding_ids": [
+          "heinrich_iv_weida_laufbahn_a__aemterlaufbahn_bis_landmeister"
+        ],
+        "explanation_steps": [
+          "Mergentheim 1240 im Gefolge des Hochmeisters, ab 1242 Landmeister in Preußen.",
+          "Fünfzig Krieger, Kämpfe gegen Pruzzen und Swantopolk, Christburg; der Lübecker Vertrag und das Krakauer Bündnis."
+        ]
+      },
+      {
+        "scene_id": "ep_012_s3",
+        "title": "Chronik gegen Urkunde",
+        "question": "Was belegen die Urkunden gegenüber Dusburg?",
+        "purpose": "synthesis",
+        "finding_ids": [
+          "heinrich_urkunden_vs_dusburg__amtszeit_dusburg_gegen_urkunden",
+          "heinrich_urkunden_vs_dusburg__nur_dusburg"
+        ],
+        "explanation_steps": [
+          "Dusburg: dritter Landmeister ab 1247, acht Jahre; Urkunden: 1242 bis 1244, 1246 schon früherer Landmeister.",
+          "Was nur Dusburg erzählt und was nur Urkunden zeigen; Tod auf der Reise und Grab in Cronschwitz."
+        ]
+      }
+    ],
+    "deferred_questions": [],
+    "series_role": "Zeigt am Fall Heinrichs IV. die Verbindung von Vogtland, Orden und Preußen und vergleicht Urkunde und Chronik.",
+    "supporting_finding_ids": [
+      "heinrich_iv_weida_laufbahn_a__heinrich_iv_abgrenzung",
+      "heinrich_iv_weida_laufbahn_a__amtszeit_datierung_streit",
+      "dusburg_quellenkritik__dusburg_auftrag_zweck",
+      "dusburg_quellenkritik__dusburg_tendenz_ordensperspektive",
+      "dusburg_quellenkritik__dusburg_chronologie_fehler",
+      "heinrich_urkunden_vs_dusburg__urkunden_liste",
+      "heinrich_urkunden_vs_dusburg__offene_vizelandmeister_frage"
+    ]
+  },
+  "oracle": {
+    "sections": {
+      "heinrich_iv_weida_laufbahn_a__familie_erbe_ehe_eintritt": [
+        "src_986d79422af2e45c#sec_a96f2a908d956ba5",
+        "src_3cf8aae1447c130d#sec_cbcbe4385505057c",
+        "src_3cf8aae1447c130d#sec_a27fbcdee2e5e337"
+      ],
+      "heinrich_iv_weida_laufbahn_a__aemterlaufbahn_bis_landmeister": [
+        "src_986d79422af2e45c#sec_a96f2a908d956ba5",
+        "src_3cf8aae1447c130d#sec_cbcbe4385505057c",
+        "src_3cf8aae1447c130d#sec_a27fbcdee2e5e337",
+        "src_7d9c495eddbffe85#sec_1a7a696978d6570c",
+        "src_3cf8aae1447c130d#sec_670ddf06dc297249",
+        "src_3cf8aae1447c130d#sec_b97fb5e8d8a08e18",
+        "src_3cf8aae1447c130d#sec_636e33bd937c7ec4",
+        "src_3cf8aae1447c130d#sec_d066f442aaa67f62"
+      ],
+      "heinrich_urkunden_vs_dusburg__amtszeit_dusburg_gegen_urkunden": [
+        "src_986d79422af2e45c#sec_9053ca49fd4c58b2",
+        "src_3cf8aae1447c130d#sec_e5f89e075ea9f0c4",
+        "src_3cf8aae1447c130d#sec_f80716d9d3f8c30d"
+      ],
+      "heinrich_urkunden_vs_dusburg__nur_dusburg": [
+        "src_3cf8aae1447c130d#sec_cbcbe4385505057c",
+        "src_986d79422af2e45c#sec_9053ca49fd4c58b2"
+      ]
+    },
+    "documents": []
+  }
+}

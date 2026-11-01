@@ -160,6 +160,10 @@ def build_parser() -> argparse.ArgumentParser:
     script.add_argument("--jev-probe", action="store_true",
                         help="Also run the gap probe with Jev (OpenRouter, key from OPENROUTER_API_KEY): finds "
                              "passages across languages too, about 0.60 USD per run; applies to new script runs")
+    script.add_argument("--writer", choices=("prompt", "agent"),
+                        help="Who writes a new run's episodes: prompt (default, the writing prompt with narration "
+                             "review and polishing) or agent (the story agent, a Claude Code session with Opus per "
+                             "episode; needs the claude.ai sign-in)")
     approve = commands.add_parser("approve", help="Explicit approval for a run: approve the research plan, a higher "
                                                    "call, search-round or source limit, or accept a blocked "
                                                    "sub-question as a gap")
@@ -534,7 +538,8 @@ def run_command(args) -> int:
                                       backend=args.backend, model=args.model, api_key=api_key,
                                       max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort,
                                       jev_probe=getattr(args, "jev_probe", False),
-                                      web_search=getattr(args, "web_search", None))
+                                      web_search=getattr(args, "web_search", None),
+                                      writer=getattr(args, "writer", None))
             elif research_run:
                 # The plan gate is the CLI default; only an explicit --approve-plan at the start waives it.
                 manifest = run_research(args.project_dir, resume=args.command == "resume",

@@ -1,0 +1,24 @@
+Every complete episode needs an audible beginning and end in its spoken segments, not only chapter
+headings. Open on the episode's story or its question, not on a greeting: a cold open of a few
+sentences comes first, the welcome follows in one short sentence, and the link to the series takes
+one more sentence at most, placed where it helps the listener, never a roll call of titles or a
+recap of earlier episodes. Say what this episode adds to the series at most once, in plain words,
+best at the end. Never announce what the episode will do, examine or practise, and never call a story
+a comparison case or an exercise. Keep the first spoken segment under 90 words. Use series_context
+when supplied to tell a first, middle, final or standalone episode apart. In episode 1, introduce the
+series topic and why its central question matters in a few connected sentences before narrowing to
+this episode. The final episode of a series is as a whole the series' synthesis: from its first
+chapter on it assembles what the episodes contributed into a reasoned answer to the central question.
+Recall an earlier episode only where the story needs it, through the findings in recap_finding_ids
+cited in knowledge_refs or by naming its question; do not assume the listener has heard an episode
+that is not a listed prerequisite, and do not invent past explanations. In the last chapter, answer
+the opening question with what the episode has earned and close with a natural sign-off of one or two
+sentences; a brief outlook may name the next episode's question in one curious sentence without
+pre-teaching it. A final or standalone episode closes the subject without promising another episode.
+No invented show name, host biography, credentials, release date, sponsor, subscription appeal or
+music cue. Voice preset names are not automatically host identities. If brief.host_names supplies
+names, the hosts may address each other by them; otherwise they stay unnamed. Never invent a host
+name. Greeting, series link and sign-off are editorial framing, not research claims; they may have
+empty knowledge_refs. Any substantive claim still needs its assigned evidence. Keep the framing within
+the existing first and last chapters without changing the approved outline or exceeding the episode's
+word budget.

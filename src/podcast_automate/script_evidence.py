@@ -24,7 +24,14 @@ def settle_receipts(review, script, anchors=None):
     settled = []
     for check in review.claim_checks:
         segment = segments.get(check.segment_id)
-        if segment is None or not segment.knowledge_refs:
+        if segment is None:
+            continue
+        if not segment.knowledge_refs:
+            # A story agent's segment that cites only corpus sections (D-182) is read against them the same way.
+            if segment.source_refs and check.verdict == "no_research_claim":
+                check.verdict, check.finding_ids, check.changed_fields = "preserved", [], []
+                check.source_refs = check.source_refs or list(segment.source_refs)
+                settled.append(check.segment_id)
             continue
         refs = list(segment.knowledge_refs)
         if check.verdict == "no_research_claim":
@@ -45,6 +52,8 @@ def receipt_defects(check, segment, known, sections=None):
     """Why one claim check does not fit its segment, one sentence per broken rule. ``sections`` are the source
     section references the review was given; a preserved segment names those it was compared with."""
     refs, sid = sorted(segment.knowledge_refs), check.segment_id
+    # The corpus sections a story agent's segment cites besides or instead of findings (D-182).
+    cited = sorted(segment.source_refs)
     defects = []
     if clean(check.quote) not in clean(segment.text):
         defects.append(f"{sid}: the quote must be a verbatim excerpt of the segment's text.")
@@ -55,14 +64,17 @@ def receipt_defects(check, segment, known, sections=None):
     if check.verdict == "no_research_claim" and refs:
         defects.append(f"{sid}: no_research_claim is only for a segment without knowledge_refs; this segment cites "
                        f"{refs}, so judge it preserved or drift against those findings.")
+    elif check.verdict == "no_research_claim" and cited:
+        defects.append(f"{sid}: no_research_claim is only for a segment that cites nothing; this segment cites the "
+                       f"sections {cited}, so judge it preserved or drift against them.")
     if check.verdict == "preserved" and check.changed_fields:
         defects.append(f"{sid}: preserved takes no changed_fields; use drift when a field changed.")
-    if check.verdict == "preserved" and not refs:
+    if check.verdict == "preserved" and not refs and not cited:
         defects.append(f"{sid}: preserved needs findings; a segment without knowledge_refs is no_research_claim, or "
                        "drift when it asserts a research fact.")
     if check.verdict == "drift" and not check.changed_fields:
         defects.append(f"{sid}: drift must name its changed_fields.")
-    if check.verdict == "source_corrected" and not refs:
+    if check.verdict == "source_corrected" and not refs and not cited:
         defects.append(f"{sid}: source_corrected is for a segment that cites the finding its section corrects; a segment "
                        "without knowledge_refs is no_research_claim, or drift when it asserts a research fact.")
     if check.verdict == "source_corrected" and not set(check.changed_fields) <= {"source"}:
@@ -70,7 +82,7 @@ def receipt_defects(check, segment, known, sections=None):
                        "changed a field against its section.")
     if check.verdict == "source_corrected" and not check.source_refs:
         defects.append(f"{sid}: source_corrected must name in source_refs the section the segment follows.")
-    if sections and check.verdict in {"preserved", "source_corrected"} and refs:
+    if sections and check.verdict in {"preserved", "source_corrected"} and (refs or cited):
         if check.verdict == "preserved" and not check.source_refs:
             defects.append(f"{sid}: name in source_refs the supplied source sections you compared the segment with, "
                            "not only its findings.")

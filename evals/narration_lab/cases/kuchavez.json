@@ -1,0 +1,77 @@
+{
+  "id": "kuchavez",
+  "project": "orlagau-und-oberland-899-bis-um-1400-her-v2-5bb92a",
+  "outline_run": "run_20261024_043539_166616_6a97bd2d",
+  "elements": "kuchavez.md",
+  "episode": {
+    "episode_id": "ep_002",
+    "title": "Cuchaviz in Zwenkau: ein Zweikampf und zwei Lesarten",
+    "central_question": "Was verrät Thietmars Bericht über Cuchaviz und die Slawen von Zwenkau über das Verhältnis der Ottonen zum slawischen Adel?",
+    "target_minutes": 10,
+    "prerequisite_episodes": ["ep_001"],
+    "finding_ids": [
+      "slawen_burgward_b__adel_abhaengigkeit",
+      "slawen_burgward_a_a__burgward_kontinuitaet_strittig",
+      "slawen_burgward_a_a__burgward_abgaben_dienste"
+    ],
+    "scenes": [
+      {
+        "scene_id": "ep_002_s1",
+        "title": "Die Rüstung Herzog Konrads",
+        "question": "Was berichtet Thietmar über die Slawen von Zwenkau und ihren Führer Cuchaviz?",
+        "purpose": "worked_example",
+        "finding_ids": ["slawen_burgward_b__adel_abhaengigkeit"],
+        "explanation_steps": [
+          "Thietmars Bericht über Cuchaviz, die Rüstung und den gerichtlichen Zweikampf.",
+          "Was Thietmar selbst über die Schuld der Gehängten sagt."
+        ]
+      },
+      {
+        "scene_id": "ep_002_s2",
+        "title": "Zusammenarbeit oder Feindschaft?",
+        "question": "Belegt die Episode einen slawischen Adel im Dienst des Königs oder seine Entmachtung?",
+        "purpose": "explanation",
+        "finding_ids": ["slawen_burgward_a_a__burgward_kontinuitaet_strittig"],
+        "explanation_steps": [
+          "Hengsts und Billigs Lesart der Episode.",
+          "Wie weit Thietmars Wortlaut jede Lesart trägt."
+        ]
+      },
+      {
+        "scene_id": "ep_002_s3",
+        "title": "Zwenkau wird Burgward",
+        "question": "Was wurde aus Zwenkau, und was heißt das für die Leitfrage?",
+        "purpose": "synthesis",
+        "finding_ids": ["slawen_burgward_a_a__burgward_abgaben_dienste"],
+        "explanation_steps": [
+          "Die Schenkung Zwenkaus an Merseburg 974 und die Pflichten der Burgwardleute.",
+          "Was die Episode über das Verhältnis zum slawischen Adel zeigt und was offen bleibt."
+        ]
+      }
+    ],
+    "deferred_questions": [],
+    "series_role": "Zeigt an einer einzelnen überlieferten Geschichte, wie umstritten das Verhältnis der Ottonen zum slawischen Adel ist."
+  },
+  "oracle": {
+    "sections": {
+      "slawen_burgward_b__adel_abhaengigkeit": [
+        "src_b9d027ec0c07be3d#sec_8dd7e985b0b1d8a5",
+        "src_b9d027ec0c07be3d#sec_bad3aabc9d25d07c",
+        "src_b9d027ec0c07be3d#sec_ee9ff3dcfc065d03",
+        "src_b9d027ec0c07be3d#sec_8a5bd279a1b8af86",
+        "src_5a39a7d8a10f157a#sec_c91e5141d6b0b775",
+        "src_5a39a7d8a10f157a#sec_dfebf402a734ddc6",
+        "src_5a39a7d8a10f157a#sec_883d481b70082769",
+        "src_5647a58e9c608b68#sec_f19bb8eee3397c13",
+        "src_8494a381741a8b1b#sec_4498a58603d9df3e"
+      ],
+      "slawen_burgward_a_a__burgward_abgaben_dienste": [
+        "src_8494a381741a8b1b#sec_bdeb50369e83266d",
+        "src_5647a58e9c608b68#sec_ad021e6eddbb7ea2"
+      ]
+    },
+    "documents": [
+      {"run": "run_20261024_043539_166616_6a97bd2d", "folder": "teaching/ep_002/supplement", "source_id": "src_b9d027ec0c07be3d"}
+    ]
+  }
+}

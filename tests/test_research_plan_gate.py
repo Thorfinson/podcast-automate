@@ -11,7 +11,8 @@ from podcast_automate.cli import main
 from podcast_automate.errors import AppError
 from podcast_automate.models import RunManifest
 from podcast_automate.question_budget import (DEFAULT_CALLS_PER_TASK, DEFAULT_SEARCH_ROUNDS_PER_TASK, DEFAULT_SECONDS_PER_CALL,
-                                              DEFAULT_SOURCES_PER_TASK, affordable_tasks, expected_calls_per_task,
+                                              DEFAULT_SOURCES_PER_TASK, affordable_tasks, content_tasks,
+                                              expected_calls_per_task,
                                               plan_review_message, review_parts_per_round, search_rates, seconds_per_call,
                                               write_calibration)
 from podcast_automate.question_scope import QuestionScopeReview
@@ -366,6 +367,30 @@ class PlanGateTests(fixtures.ResearchProjectCase):
         self.assertFalse((work / "plan_approval.json").exists())
         self.assertEqual(json.loads((work / "research_request.json").read_text(encoding="utf-8"))["plan_review"], "required")
 
+    def test_the_focus_questions_bound_the_plan_and_an_approval_may_ask_for_more(self):
+        """D-183: the planner fills its cap, so a new project's calls planned about forty sub-questions for one
+        fifteen-minute episode (evals/research_lean, 2026-10-30). The brief's focus questions bound the plan instead,
+        and the approval may plan it again with more, once per cap, as it may with fewer."""
+        self.assertEqual(content_tasks(self.config), 4, "a brief without focus questions")
+        self.assertEqual(content_tasks(self.config.model_copy(update={"focus_questions": ["a", "b", "c"]})), 6)
+        model = self.planner(lambda cap: cap)
+        with patch(MODEL, side_effect=model):
+            first = run_research(self.root, plan_review="required")
+        work = self.work(first)
+        allowance = read_value(work / "question_research/planning_budget.json")
+        self.assertEqual((allowance["max_tasks"], allowance["content_cap"]), (4, 4))
+        projection = self.projection(first)
+        self.assertEqual((projection["tasks"], projection["content_cap"]), (4, 4))
+        self.assertIn("nach den Fokusfragen der Vorgabe auf 4 Teilfragen begrenzt", first.stages["dossier"].error.message)
+        approve_research_plan(self.root, first.run_id, max_tasks=6)
+        with patch(MODEL, side_effect=model):
+            second = run_research(self.root, resume=True, plan_review="required")
+        self.assertEqual((second.status, second.stages["dossier"].error.code), ("blocked", "research_plan_review"))
+        state = read_value(work / "question_research/state.json")
+        self.assertEqual((len(state["plan"]["tasks"]), state["plan_caps"]), (6, [6]))
+        self.assertEqual(read_value(work / "question_research/planning_budget_cap6.json")["max_tasks"], 6)
+        self.assertNotIn("content_cap", self.projection(first), "a plan cut to an asked cap is no longer bounded")
+
     def test_planning_and_the_question_report_use_the_calibrated_rate(self):
         write_json(self.root / "research/calibration.json", {"calls_per_task": 6.4, "seconds_per_call": 300, "tasks": 12})
         with patch(MODEL, side_effect=self.model):
@@ -373,7 +398,9 @@ class PlanGateTests(fixtures.ResearchProjectCase):
         work = self.work(first)
         allowance = read_value(work / "question_research/planning_budget.json")
         self.assertEqual((allowance["expected_calls_per_task"], allowance["expected_calls_source"]), (6, "project"))
-        self.assertEqual(allowance["max_tasks"], affordable_tasks(1, self.config.research_limits.model_calls, 6))
+        # The calibrated rate sets what the calls carry; the brief's focus questions bound the plan below that (D-183).
+        self.assertEqual(allowance["max_tasks"], min(content_tasks(self.config),
+                                                     affordable_tasks(1, self.config.research_limits.model_calls, 6)))
         projection = self.projection(first)
         self.assertEqual((projection["expected_calls_per_task"], projection["expected_calls_source"], projection["projected_calls"]), (6, "project", 9))
         self.assertIn("(6 je offener Teilfrage, Erfahrungswert des Projekts)", (work / "research_questions.md").read_text(encoding="utf-8"))

@@ -158,6 +158,19 @@ class SourceResolutionTests(unittest.TestCase):
         self.assertEqual(omitted, [{"source_id": "src_c", "reason": "idea_source", "finding_ids": ["f_two"]}])
         self.assertEqual(unresolved, {"findings": ["f_missing"], "references": ["src_x#sec_0001"]})
 
+    def test_a_story_agents_corpus_sections_name_their_sources_after_the_findings_sources(self):
+        """D-182: a scene told from a corpus section cites it in source_refs; its source belongs to the episode's list."""
+        documents = {"src_a": document("src_a", "Attention is All you Need", url="https://a.org/a",
+                                       final_url="https://a.org/a", published="2017"),
+                     "src_e": document("src_e", "Eine Chronik", url="https://e.org/e", final_url="https://e.org/e",
+                                       published="1310")}
+        script = script_with(["A", "B"], refs=[["f_one"], []])
+        script.segments[1].source_refs = ["src_e#sec_0002", "src_a#sec_0003"]
+        rows, _, unresolved = episode_sources(script, {"f_one": ["src_a#sec_0001"]}, documents, {})
+        self.assertEqual([(row["source_ids"], row["finding_ids"]) for row in rows],
+                         [(["src_a"], ["f_one"]), (["src_e"], [])])
+        self.assertEqual(unresolved, {"findings": [], "references": []})
+
     def test_author_lists_from_pdf_metadata_and_titles_that_end_in_a_question_read_cleanly(self):
         """As the Transformer research stored them on 2026-09-30."""
         self.assertEqual(author_names(["Mor Geva ; Roei Schuster ; Jonathan Berant"]),

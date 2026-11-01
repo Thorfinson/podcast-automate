@@ -1,0 +1,40 @@
+{
+  "episode_id": "ep_002",
+  "title": "Die Rüstung des Herzogs",
+  "central_question": "Warum half ein slawischer Fürst, den der Kaiser schätzte, die Slawen seines eigenen Ortes an den Galgen zu bringen, und was verrät das über die Herrschaft der Ottonen im Osten?",
+  "target_minutes": 10,
+  "prerequisite_episodes": ["ep_001"],
+  "finding_ids": ["slawen_burgward_b__adel_abhaengigkeit"],
+  "supporting_finding_ids": [
+    "slawen_burgward_a_a__burgward_kontinuitaet_strittig",
+    "slawen_burgward_a_a__burgward_abgaben_dienste"
+  ],
+  "scenes": [
+    {
+      "scene_id": "ep_002_s1",
+      "title": "Die Rüstung des Herzogs",
+      "question": "Was geschah mit den Slawen von Zwenkau, und wie erzählt Thietmar es?",
+      "purpose": "worked_example",
+      "finding_ids": ["slawen_burgward_b__adel_abhaengigkeit"],
+      "explanation_steps": [
+        "Der Hintergrund: die Schlacht am Lech und der Tod Herzog Konrads, des Schwiegersohns des Kaisers.",
+        "Lange danach: der Kaiser in Merseburg und die Meldung des Angebers über die Rüstung in Zwenkau.",
+        "Cuchaviz, der gerichtliche Zweikampf und der Galgen.",
+        "Der Satz, mit dem Thietmar an der Schuld der Gehängten zweifelt."
+      ]
+    },
+    {
+      "scene_id": "ep_002_s2",
+      "title": "Partner oder Werkzeug?",
+      "question": "Was verrät die Rolle des Cuchaviz über das Verhältnis der Ottonen zum slawischen Adel?",
+      "purpose": "synthesis",
+      "finding_ids": [],
+      "explanation_steps": [
+        "Die eine Deutungsfrage an dieser Geschichte: war Cuchaviz ein Partner der Ottonen oder ein Werkzeug gegen den eigenen Adel, wie Hengst und Billig sie verschieden beantworten.",
+        "Was die Geschichte zeigt, und das Bild, das bleibt."
+      ]
+    }
+  ],
+  "deferred_questions": [],
+  "series_role": "Zeigt an einer einzelnen überlieferten Geschichte, wie die Ottonen mit dem slawischen Adel umgingen und wie umstritten das Bild ist."
+}

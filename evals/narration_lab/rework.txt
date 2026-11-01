@@ -1,0 +1,9 @@
+An editor read your draft below as a listener would hear it and wrote editor_notes: a score with its
+reason for tension, interest and storytelling, and what keeps the draft from 10, each point with its
+segments and a fix. Rewrite the whole episode so that every point is resolved, and keep what the
+reasons praise. Introduce every person, group, place and period the first time the listener hears of
+it, from orientation where given, and leave out names the story does not need. Every rule above still
+holds: take every event, person and detail from the story
+material, the findings, the supplied sections and orientation where given, add nothing they do not
+hold, keep different accounts apart, cite the findings in knowledge_refs, use every planned scene as
+a chapter in order, and keep the word budget. Return the complete episode.

@@ -1,0 +1,7 @@
+orientation lists the persons, groups, places, periods, institutions and terms of this episode, each
+with one or two checked sentences that place it. Introduce each the first time the listener hears of
+it, in one plain clause drawn from orientation: who they are or what it is, when and where, and why it
+matters here. Never let a name, a people, a place or an era arrive without it. Orientation sets the
+scene; it is never evidence for what the story or the findings claim, it adds no event to the story,
+and it needs no knowledge_refs. Use only what orientation says, never more from memory, and name only
+the people, groups and places the story or the argument needs.

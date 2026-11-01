@@ -1,0 +1,15 @@
+{
+ "topic": "Das Stanford-Prison-Experiment: was im August 1971 in Stanford geschah und was davon bleibt",
+ "central_question": "Wie lief Zimbardos Gefängnisexperiment ab, was zeigen das Archiv und die spätere Kritik über sein Zustandekommen, und was erklärt es über Machtmissbrauch?",
+ "language": "de-DE",
+ "audience_level": "Neugierige Erwachsene ohne spezielles Vorwissen; fachlich anspruchsvoll und auf Augenhöhe",
+ "prior_knowledge": "Fachliche Vorkenntnisse sind noch nicht angegeben. Allgemeine Auffassungsgabe voraussetzen und benötigte Grundlagen im Zusammenhang entwickeln.",
+ "depth_request": "Das Experiment zuerst als Geschichte seiner sechs Tage erzählen, mit den Menschen, die es erlebt haben, dann klären, was die Quellen davon tragen. Belegte Abläufe, Erinnerungen der Beteiligten, Zimbardos eigene Deutung und die spätere Kritik hörbar unterscheiden. Nötige Fachbegriffe knapp im Zusammenhang einführen.",
+ "focus_questions": [
+  "Wie lief das Experiment im August 1971 Tag für Tag ab, wer waren Wärter, Gefangene und Versuchsleiter, und warum wurde es nach sechs Tagen abgebrochen?",
+  "Was zeigen die Archivunterlagen, Tonaufnahmen und späteren Interviews über die Anweisungen an die Wärter, Zimbardos Doppelrolle und die berühmten Zusammenbrüche?",
+  "Was folgt aus der Kritik und aus Nachfolgestudien wie der BBC Prison Study für die Erklärung von Machtmissbrauch, und wie verhält sich das zu Zimbardos späterer Deutung etwa im Fall Abu Ghraib?"
+ ],
+ "target_total_minutes": 15,
+ "voice_profile": {"host_a": "Aiden", "host_b": "Vivian"}
+}

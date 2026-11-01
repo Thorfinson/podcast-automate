@@ -19,15 +19,32 @@ from .script_checkpoints import finished
 STAGE_CALLS = {
     "teaching": 3,   # story material + teaching design + independent design review
     "writing": 1,    # dialogue draft
+    "story": 2,      # the story agent's session + its first critique; up to three more critiques (D-181)
     "narration": 1,  # narration review; its rework and the review after it only when it names points
     "polishing": 2,  # spoken-language pass + before/after comparison
     "review": 4,     # source review, listener readback, editorial review, teaching review
 }
 # A run without the narration stage (D-180) collects no story material.
 STORY_CALLS = 1
+# A run written by the story agent has no teaching design, so its review stage has no teaching assessment (listener
+# readback, editorial review, teaching review: teaching.assess_teaching); its teaching stage makes the orientation
+# sheet and its check instead of the design and its review (D-181).
+TEACHING_REVIEW_CALLS = 3
 LABELS = {"planning": "Inhaltsverzeichnis", "teaching": "Lehrkonzept", "writing": "Skriptentwurf",
-          "narration": "Narrationsprüfung", "polishing": "Dialog-Polishing", "review": "Prüfungen",
-          "series_review": "Serienprüfung"}
+          "story": "Erzähl-Agent", "narration": "Narrationsprüfung", "polishing": "Dialog-Polishing",
+          "review": "Prüfungen", "series_review": "Serienprüfung"}
+
+
+def stage_calls(stage, stages) -> int:
+    """The mandatory calls per episode of ``stage`` in a run with ``stages``."""
+    calls = STAGE_CALLS[stage]
+    if stage == "teaching" and "narration" not in stages and "story" not in stages:
+        calls -= STORY_CALLS
+    if stage == "review" and "story" in stages:
+        calls -= TEACHING_REVIEW_CALLS
+    return calls
+
+
 MINIMUM_NOTE = "Mindestwerte ohne Reparaturen; jede Korrektur oder erneute Prüfung benötigt weitere Aufrufe."
 
 
@@ -35,9 +52,8 @@ def calls_per_episode(stages=None) -> int:
     """The mandatory calls per episode; for ``stages``, a run's stage names, those of that run: one without the
     narration stage (D-180) neither collects story material nor reviews its narration."""
     if stages is None:
-        return sum(STAGE_CALLS.values())
-    total = sum(calls for stage, calls in STAGE_CALLS.items() if stage in stages)
-    return total - (STORY_CALLS if "teaching" in stages and "narration" not in stages else 0)
+        return sum(calls for stage, calls in STAGE_CALLS.items() if stage != "story")
+    return sum(stage_calls(stage, stages) for stage in STAGE_CALLS if stage in stages)
 
 
 def remaining_calls(work, manifest, entries, *, series_review: bool) -> tuple[int, dict]:
@@ -45,11 +61,10 @@ def remaining_calls(work, manifest, entries, *, series_review: bool) -> tuple[in
     breakdown = {}
     if stages["planning"].status != "completed" and not (work / "planning_checkpoint.json").exists():
         breakdown["planning"] = 1
-    for stage, calls in STAGE_CALLS.items():
+    for stage in STAGE_CALLS:
         if stage not in stages or stages[stage].status == "completed":
             continue
-        if stage == "teaching" and "narration" not in stages:
-            calls -= STORY_CALLS
+        calls = stage_calls(stage, stages)
         pending = [entry.episode_id for entry in entries if not finished(work, entry.episode_id, stage)]
         if pending:
             breakdown[stage] = calls * len(pending)

@@ -94,9 +94,10 @@ def state_facts(work):
 # interface language (D-152).
 ACTIVITIES = ("SeriesPlan", "TeachingPlan", "TeachingPlanReview", "TeachingPlanRepair", "ResearchDiscovery",
               "FoundationSupplement", "FoundationReview", "DialoguePolishReview", "ScriptReview", "SeriesReview",
-              "ListenerReadback", "EditorialReview", "TeachingReview", "StoryMaterial", "NarrationReview")
+              "ListenerReadback", "EditorialReview", "TeachingReview", "StoryMaterial", "NarrationReview",
+              "OrientationSheet", "OrientationReview", "StorySession", "StoryCritique")
 # The stages whose episodes the Studio counts one by one (script_checkpoints.finished).
-EPISODE_STAGES = {"teaching", "writing", "narration", "polishing", "review"}
+EPISODE_STAGES = {"teaching", "writing", "story", "narration", "polishing", "review"}
 _PIPELINE = {"catalog": None, "patterns": []}
 
 

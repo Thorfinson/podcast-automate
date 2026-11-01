@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-10-27
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -450,7 +450,7 @@ unanswered message is replaced, not repeated. When the conversation has used up 
 **„Neue Version anlegen“** (start a new version) in an overview card's **⋯** menu makes a podcast again from its
 inputs with the current pipeline (`pla new-version <project>` from the command line; why: D-168). After a confirmation a
 new project opens beside the old one, with the old one's brief, attachments, provided works (their old questions
-cleared), other local sources, style notes, spoken forms and text, audio, execution and Jev choices; a German project
+cleared), other local sources, style notes, spoken forms and text, audio, execution, Jev and writer choices; a German project
 without a Jev choice gets today's default. Runs, research, scripts, recordings, exports, the setup conversation and the
 project's own pre-approvals stay behind. The old version stays as it was and may keep running.
 
@@ -554,7 +554,9 @@ yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_L
   objections, teaching redesign, table of contents, audio approval) opens with one plain sentence on what the choice
   means and highlights the recommended button; the alternative stays beside it, nothing is preselected and nothing runs
   on a timer, so the decision stays yours (why: D-155). An access gap recommends **„Werk hochladen“** (upload the work)
-  when the work is on the list of missing works.
+  when the work is on the list of missing works. The teaching redesign card lists the last review's open points under
+  „Offene Punkte“, one line each that opens to the full point, and starts the note with them, one paragraph each
+  (`script_pipeline.failed_teaching` reads them from the episode's checkpoint).
 - **Raising limits for blocked questions.** When the source limit is reached or the search rounds run out, the card
   proposes a raise sized to the open questions: open questions times the higher of the plan's and the run's measured
   sources or rounds per sub-question (the measured rate from three verified questions on), a quarter more, at least one
@@ -565,6 +567,14 @@ yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_L
 - **Jev.** Under „Lückenprobe“ (gap probe) in the job summary on „Auftrag“, **„Jev dazunehmen“** (add Jev)
   and **„Jev ausschalten“** (switch Jev off) switch Jev in this project's gap probe on and off; see
   [Gap probe](RESEARCH.md#gap-probe).
+- **Writer.** Under „Schreiber“ (writer) in the same summary, **„Erzähl-Agent verwenden“** (use the story agent) and
+  **„Schreib-Prompt verwenden“** (use the writing prompt) choose who writes this project's new script runs
+  (`studio/writer.json`, route `/api/projects/<id>/writer`; why: D-181). The choice is the project's own, not a
+  workspace setting, and stays out of the hash of the execution modes; a running or stopped run keeps the writer it
+  started with. The story agent needs the Claude subscription's sign-in; see [Story agent](SCRIPTS.md#story-agent).
+  While it works, the progress names its steps („Orientierungsblatt wird erstellt“, „Der Erzähl-Agent plant und
+  schreibt die Folge“, „Ein Lektor liest die Fassung des Erzähl-Agenten“), and the production view shows the stage
+  „Erzähl-Agent“ in place of draft, narration review and polishing.
 - **Starting library.** „Recherche neu beginnen“ (start research anew) preselects offering the previous research's
   sources as a starting library, and so does the first research start of a [new version](#new-versions) for the old
   version's sources; see [Starting and resuming](RESEARCH.md#starting-and-resuming).

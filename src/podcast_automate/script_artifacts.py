@@ -37,6 +37,24 @@ def episode_continuity(work, entry):
         return []
 
 
+def story_report(folder):
+    """What the episode's story agent did, for the quality report: its critiques' scores, the corpus sections it
+    used beyond the material and the session's turns, duration and cost by the CLI's count (D-181)."""
+    def read(path, default):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return default
+    session = read(folder / "session.json", {})
+    critiques = [read(path, {}) for path in sorted((folder / "requests").glob("critique_*.answer.json"))]
+    return {"critiques": [{key: value["score"] for key, value in answer["scores"].items()}
+                          for answer in critiques if "scores" in answer],
+            "corpus_sections": [row.get("reference") for row in read(folder / "sources_used.json", [])],
+            "chapters_replanned": (folder / "outline.json").is_file(),
+            "num_turns": session.get("num_turns"), "duration_ms": session.get("duration_ms"),
+            "reported_cost_usd": session.get("total_cost_usd")}
+
+
 def design_dismissals(work, entry):
     """Gaps the design review dropped; absent on work folders from before they were recorded."""
     try:
@@ -111,12 +129,18 @@ def render_show_notes(script, entry, dossier, source_map, *, research_id, run_id
     # The supporting findings an episode may cite are its sources too; a plan without them lists as before.
     listed_findings = {*entry.finding_ids, *entry.supporting_finding_ids}
     used = {e.reference.split("#")[0] for f in dossier.findings if f.id in listed_findings for e in f.evidence}
+    # The corpus sections a story agent's segments cite are sources the episode tells from (D-182).
+    used |= {ref.split("#")[0] for segment in script.segments for ref in segment.source_refs}
     # Two URLs of the same work are one source for a listener; the assessment's work_id
     # says which those are, and a normalised title covers the sources without one.
     works = {a.source_id: a.work_id for a in dossier.source_assessments if a.work_id}
     listed = set()
     for source_id in sorted(used):
-        source = source_map[source_id]
+        source = source_map.get(source_id)
+        if source is None:
+            # Only a cited corpus section could name a source outside the run's index, and ScriptRun.script_errors
+            # refuses that before publishing; a listener's notes are not worth a crash over it.
+            continue
         identity = works.get(source_id) or re.sub(r"\W+", " ", source.title).strip().casefold()
         if identity in listed:
             continue
@@ -185,9 +209,16 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
         write_yaml(folder / "script.yaml", script.model_dump())
         write_json(folder / "latest.json", {"run_id": manifest.run_id, "episode_ids": [entry.episode_id]})
         atomic_text(folder / "script.md", render_script(script, host_labels(config)))
-        design = teaching_for(entry)
-        write_yaml(folder / "teaching_plan.yaml", design.model_dump())
-        atomic_text(folder / "teaching_plan.md", (work / "teaching" / entry.episode_id / "plan.md").read_text(encoding="utf-8"))
+        # A story agent's episode has no teaching design but the agent's own plan (D-181).
+        story = work / "story" / entry.episode_id
+        designed = (work / "teaching" / entry.episode_id / "plan.json").is_file()
+        if designed:
+            design = teaching_for(entry)
+            write_yaml(folder / "teaching_plan.yaml", design.model_dump())
+            atomic_text(folder / "teaching_plan.md",
+                        (work / "teaching" / entry.episode_id / "plan.md").read_text(encoding="utf-8"))
+        else:
+            atomic_text(folder / "story_plan.md", (story / "plan.md").read_text(encoding="utf-8"))
         atomic_text(folder / "show_notes.md", render_show_notes(script, entry, dossier, source_map,
                                                                 research_id=research_id, run_id=manifest.run_id,
                                                                 language=config.language))
@@ -198,7 +229,9 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
             "run_id": manifest.run_id,
             "structure_check": "passed", "model_review": json.loads((work / "reviews" / f"{entry.episode_id}.json").read_text(encoding="utf-8")),
             "teaching_review": teaching_report,
-            "dialogue_polish": json.loads((work / "polishing" / entry.episode_id / "result.json").read_text(encoding="utf-8")),
+            **({"dialogue_polish": json.loads((work / "polishing" / entry.episode_id / "result.json").read_text(
+                encoding="utf-8"))} if (work / "polishing" / entry.episode_id / "result.json").is_file() else {}),
+            **({"story_agent": story_report(story)} if not designed else {}),
             "dismissed_gaps": [*design_dismissals(work, entry), *teaching_report.get("dismissed_gaps", [])],
             "advisories": advisories(script, entry, metrics, language=config.language,
                                      terms=established_terms(episode_continuity(work, entry)))}
@@ -206,7 +239,9 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
         if narration.is_file():
             # The narration review's scores and what it left open (D-180); a run without the stage has none.
             episode_reports[entry.episode_id]["narration"] = json.loads(narration.read_text(encoding="utf-8"))
-        outputs.extend(folder / name for name in ("episode_plan.yaml", "teaching_plan.yaml", "teaching_plan.md", "script.yaml", "script.md", "show_notes.md", "latest.json"))
+        plans = ("teaching_plan.yaml", "teaching_plan.md") if designed else ("story_plan.md",)
+        outputs.extend(folder / name for name in ("episode_plan.yaml", *plans, "script.yaml", "script.md",
+                                                  "show_notes.md", "latest.json"))
     quality_path = root / "reports/script_quality.yaml"
     previous = read_yaml(quality_path) if quality_path.is_file() else {}
     # The top-level ``run_id`` is this run; each episode entry names the run that judged its text.

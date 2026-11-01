@@ -2,11 +2,13 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
   - src/podcast_automate/narration.py
+  - src/podcast_automate/story_agent.py
+  - src/podcast_automate/data/story_agent_task.md
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_evidence.py
   - src/podcast_automate/script_artifacts.py
@@ -30,6 +32,9 @@ A run started before 23 October 2026 has no `narration` stage in its manifest an
 no story material, no story rules, no narration review, and polishing starts from the writer's draft (why: D-180). Only
 a run with the stage is called *narrated* below.
 
+A run written by the [story agent](#story-agent) has the stages `planning`, `teaching`, `story`, `review` and
+`publish` instead (`scripting.STORY_STAGES`; why: D-181).
+
 ## Running a script job
 
 ```powershell
@@ -50,6 +55,11 @@ a run with the stage is called *narrated* below.
 - The research run must be complete and its stored files must match their checksums. Sources are not downloaded
   again.
 - Local sources (`local_sources`) must lie inside the project folder ([Local files](SECURITY.md#local-files)).
+- `--writer agent` has a new run's episodes written by the [story agent](#story-agent); without the flag a new run
+  takes the project's choice (`studio/writer.json`, set in the Studio), else the writing prompt. A resume keeps the
+  writer the run started with and refuses a different `--writer` (`invalid_request`). A revision (`--revise`) is
+  always written by the writing prompt, which reads its feedback; `--revise` with `--writer agent` is refused
+  (`invalid_revision`).
 - Every model call counts against the run's call limit (`research_limits.model_calls`). Lower bound per episode
   (`script_budget.STAGE_CALLS`), projection (`runs/<run_id>/budget_projection.json`), expected calls and the stop
   `script_budget_insufficient`: [Budgets](BUSINESS_LOGIC.md#budgets). Input binding: [Runs, resume and input
@@ -284,6 +294,73 @@ the current script state with `audio_approved: false`; a model review grants no 
 ([Human approvals](BUSINESS_LOGIC.md#human-approvals)). The voices in the Windows pilot are Aiden (`host_a`) and
 Vivian (`host_b`).
 
+## Story agent
+
+A project may have its new script runs written by the story agent instead of the writing prompt
+(`story_agent.py`; why: D-181). Per episode one Claude Code session (`claude -p`, `story_agent.AGENT_MODEL` Opus 5.5,
+effort `xhigh`) reads the episode's material, plans its own chapters, writes the dialogue, checks it and revises it
+after an editor's critique. In the narration lab (`evals/narration_lab`, 2026-10-27) its drafts of three ten-minute
+cases averaged 8.0 to 8.1 on the lab's judge, where today's writing prompt stack averaged 5.5 on the same inputs.
+
+- **Teaching stage.** No teaching design and no design review. The stage collects the story material and runs the
+  story research as a narrated run does, then drafts an orientation sheet (`prompts/orientation_sheet.txt`: the
+  people, places, periods, institutions and terms a listener needs placed, at most 25, from general knowledge rather
+  than the episode's sources) and has a second call check every entry
+  (`prompts/orientation_check.txt`). Only the entries found correct reach the agent; the others are kept under
+  `dropped` in `teaching/<episode_id>/orientation.json`.
+- **Story stage.** `story_agent.write_episode` prepares `runs/<run_id>/story/<episode_id>/` with `material.json` (the
+  outline entry, the series context, the word budget at the plan's length (`story_agent.TARGET_FACTOR`; the
+  writing prompt's 1.3 for Sonnet would make the agent, which counts its words, write a quarter too long), the
+  story material, the findings with
+  their limits, the sections they cite, the checked orientation, the brief, the core findings no story item tells and
+  the rule for opening and ending the review checks ([Intro and outro](#intro-and-outro), `editorial.EPISODE_FRAMING`;
+  the task's „Opening and ending“ points to it, and a short cold open may still come first),
+  `TASK.md` (from `data/story_agent_task.md`) and four command scripts. The folder is the session's working
+  directory; besides the file tools (Read, Write, Edit, Glob, Grep) it may run only these commands:
+  - `check.py`: the run's script checks on the draft (structure and finding references; the quotation limit over the
+    given passages where the run applies it, for an assembled dossier, and always over the corpus sections in
+    `sources_used.json`), echo lines (a turn that opens with only the other host's last words) and the length cap of
+    1.1 times the target;
+  - `critique.py`: an editor's verdict on tension, interest and storytelling with what keeps the draft from 10
+    (`prompts/story_critique.txt`), at most four times per session (`story_agent.CRITIQUES`). The request goes to the
+    run as a file and the run makes the call, so the budget, the receipts and the provider choice apply;
+  - `search.py` and `read.py`: the project's own research corpus, every section of every source the research
+    stored, so the agent finds the scenes a finding only names.
+- **What the session leaves.** `plan.md`, `draft.json`, optionally `outline.json` (its own two to four chapters,
+  which must hold every core finding in exactly one chapter; core findings are never demoted) and
+  `sources_used.json` (every corpus section used beyond the material). Code checks the draft again when the session
+  ends; a draft that fails stops the episode with `story_agent_failed` and the defects in `errors.json`. A missing
+  claude.ai sign-in stops with `authentication_required`, a session over its time limit with `story_agent_timeout`
+  (eight minutes per planned minute, at least two hours: `story_agent.session_timeout`; the lab's ten-minute sessions
+  took 31 to 60 minutes).
+  `story/<episode_id>/entry.json` holds the episode with the agent's chapters, which this run's review and
+  publishing use; the series plan is unchanged. A repeated session moves the earlier one's files to `attempts/NN/`.
+- **No narration review, no polishing.** The agent's own critiques take the narration review's place; in the lab,
+  polishing made narrative drafts 14 % longer without making them better.
+- **Citing corpus sections.** A segment that tells something no finding holds, such as a scene the agent found in the
+  corpus, names its section in `source_refs` (`Segment.source_refs`, `src_…#sec_…`; why: D-182). `check.py` accepts
+  only a section of `material.json` or one listed in `sources_used.json`, and the run only one its review is given
+  (`ScriptRun.script_errors`); a writing-prompt run refuses `source_refs`. Empty, the field is left out of every
+  dump, so scripts written before keep their bytes and hashes. Show notes and companion kits list the cited
+  sections' sources beside the findings' (`script_artifacts.render_show_notes`, `publish_kit.episode_sources`).
+- **Review.** The [script review](#script-review) reads the draft as the agent wrote it, with the corpus sections of
+  `sources_used.json` added to the episode's passages (`ScriptRun.review_sources`), and is told that a segment may
+  cite them (`prompts/script_review_corpus.txt`, version suffix `+corpus`): such a statement is grounded when a cited
+  section holds it, and its receipt is `preserved` or `drift` against those sections, never `no_research_claim`
+  (`script_evidence.receipt_defects`). A verdict saved without this rule is reviewed again on resume. There is no
+  listener readback, editorial or teaching review. Only
+  a blocking issue (grounding, scope, structure) is repaired (`prompts/story_review_repair.txt`), from the agent's
+  material and its corpus sections, changing only the segments the issues name and their neighbours (`narration.with_neighbours`,
+  `scope_errors`), or any segment when a blocking issue names none because it concerns the whole episode, such as
+  its length (`story_review_repair.v3-source-refs`); clarity, depth and dialogue points stay notes for the reader.
+- **Calls.** The session counts as one call of the run (`calls/call_NNN`, title `StorySession`, with the usage, the
+  turns and the cost the CLI reports); each critique is a call of its own. Per episode at least 3 calls in teaching,
+  2 in the story stage and 1 in review (`script_budget.stage_calls`). A session runs on the Claude subscription,
+  whatever the run's text provider; the critiques and every other call follow the run's provider choice.
+- **Outputs.** Publishing writes `story_plan.md` (the agent's plan) in place of the teaching plan, and the quality
+  report's episode entry gains `story_agent`: the critique scores in order, the corpus sections used, whether the
+  agent set its own chapters, and the session's turns, duration and reported cost.
+
 ## Narration review
 
 In a narrated run the `narration` stage reviews each draft for tension, interest and storytelling between writing and
@@ -310,9 +387,13 @@ checks meaning, completeness, roles, spoken language and framing, the script rev
   not, so it never asks for an invented story) or `note`. The answer is never asked again for its shape: unknown
   segments and items are dropped from a point, and a rewrite point left without segments becomes a note
   (`narration.sanitized`).
-- **Rework** (`prompts/narration_repair.txt` after the whole writing prompt, `narration_repair.v1`): only when there are
-  rewrite points. It changes only the segments they name, may add segments next to them and leave out a named one;
-  every other segment must stay exactly as it was, in its order (`narration.scope_errors`). It must pass the structure
+- **Rework** (`prompts/narration_repair.txt` after the whole writing prompt, `narration_repair.v2-neighbours`): only
+  when there are rewrite points. It changes the segments they name and, for the handover, the one just before and after
+  each (`narration.with_neighbours`; in the evaluation of 2026-10-24 every rework of Orlagau ep_014 adjusted the next
+  turn and was refused while only the named segments could change), may add segments next to them and leave out a
+  named one; every other segment must stay exactly as it was, in its order (`narration.scope_errors`). Where the
+  sources disagree about who did something or why, the rework, like the writer and the design, tells their versions
+  and never merges them. It must pass the structure
   and quotation checks of a draft, and stay within `NARRATION_GROWTH` = 1.15 times the draft's words or the word budget's
   target, whichever is larger (`narration.length_errors`): room comes from cutting detours and repeated caveats. A
   rework refused after its corrections (`narration_rework_refused`) keeps the draft, with its points reported and

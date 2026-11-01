@@ -1,0 +1,38 @@
+{
+  "episode_id": "ep_002",
+  "title": "Die Rüstung des Herzogs",
+  "central_question": "Ein Mann, den der Kaiser schätzt, hilft, die Männer seines Ortes an den Galgen zu bringen, und der Chronist weiß nicht einmal, ob sie schuldig waren. Was erzählt diese Geschichte über die Herrschaft der Ottonen im Osten?",
+  "target_minutes": 10,
+  "prerequisite_episodes": ["ep_001"],
+  "finding_ids": ["slawen_burgward_b__adel_abhaengigkeit"],
+  "supporting_finding_ids": [],
+  "scenes": [
+    {
+      "scene_id": "ep_002_s1",
+      "title": "Die Rüstung des Herzogs",
+      "question": "Was geschah, vom Lech bis zum Galgen von Zwenkau, so wie Thietmar es erzählt?",
+      "purpose": "worked_example",
+      "finding_ids": ["slawen_burgward_b__adel_abhaengigkeit"],
+      "explanation_steps": [
+        "Der Morgen am Lech nach Thietmar: Ottos Gelübde, in Merseburg ein Bistum zu stiften.",
+        "Die Schlacht: Otto stürmt mit der heiligen Lanze voran und schlägt die Ungarn.",
+        "Am Abend auf dem Lagerplatz: die Nachricht, dass sein Schwiegersohn Konrad gefallen ist.",
+        "Lange danach in Merseburg: der Angeber und die Rüstung in Zwenkau, bei den Slawen unter Cuchaviz, dem Mann, den der Kaiser schätzt.",
+        "Mit Hilfe des Cuchaviz: der gerichtliche Zweikampf, die Niederlage, der Galgen, die zurückgeholte Beute; wie so ein Zweikampf aussah, zeigt Thietmar im selben Kapitel an einem anderen Fall, Cono gegen Graf Burchard, ausdrücklich als anderer Fall erzählt.",
+        "Thietmars Satz: Er weiß nicht, ob sie schuldig waren, und hält sie trotzdem für todeswürdig, weil sie es geheim halten wollten."
+      ]
+    },
+    {
+      "scene_id": "ep_002_s2",
+      "title": "Mit ihnen und über sie",
+      "question": "Was erzählt der Galgen von Zwenkau über die Herrschaft der Ottonen?",
+      "purpose": "synthesis",
+      "finding_ids": [],
+      "explanation_steps": [
+        "Das Urteil aus Thietmars eigenen Details, ohne Forscherstreit: Der Kaiser richtet mit einem slawischen Herrn über Slawen, und schon das Verschweigen gilt als todeswürdig; dass Forscher das verschieden gewichten, höchstens in einem Satz; das letzte Bild der Männer am Galgen."
+      ]
+    }
+  ],
+  "deferred_questions": [],
+  "series_role": "Zeigt an einer einzelnen überlieferten Geschichte, dass die Ottonen im Osten mit den Einheimischen und zugleich über sie herrschten."
+}

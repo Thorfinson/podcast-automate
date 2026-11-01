@@ -1,0 +1,55 @@
+{
+  "episode_id": "ep_007",
+  "title": "Gehorsam: Der Mann am Schalter",
+  "central_question": "Was hielt die Männer in Milgrams Versuch an den Schaltern, obwohl es sie sichtbar quälte?",
+  "target_minutes": 10,
+  "prerequisite_episodes": ["ep_006"],
+  "finding_ids": [
+    "milgram_modell__milgram_aufbau",
+    "milgram_modell__milgram_aufforderungen",
+    "milgram_modell__milgram_anteil",
+    "milgram_modell__milgram_erklaerung_1963"
+  ],
+  "supporting_finding_ids": [
+    "milgram_modell__agentischer_zustand",
+    "milgram_pruefung_b__engaged_followership_kritik",
+    "milgram_pruefung_b__prod_kritik"
+  ],
+  "scenes": [
+    {
+      "scene_id": "ep007_s1",
+      "title": "Ein Inserat in New Haven",
+      "question": "Was erlebt ein Mann, der sich für Milgrams Studie meldet?",
+      "purpose": "worked_example",
+      "finding_ids": ["milgram_modell__milgram_aufbau", "milgram_modell__milgram_aufforderungen"],
+      "explanation_steps": [
+        "Wie ein Teilnehmer den Versuch erlebt: das Inserat, Yale, das Los, der Lerner im Nebenraum, der Generator.",
+        "Die Sitzung: Schalter für Schalter, das Hämmern an der Wand, die Sätze des Versuchsleiters."
+      ]
+    },
+    {
+      "scene_id": "ep007_s2",
+      "title": "26 von 40",
+      "question": "Wie viele gingen bis zum Ende, und was kostete es sie?",
+      "purpose": "worked_example",
+      "finding_ids": ["milgram_modell__milgram_anteil"],
+      "explanation_steps": [
+        "Was Fachleute vorhergesagt hatten, und was dann geschah.",
+        "Wie die Männer dabei litten: der Geschäftsmann hinter dem Spiegel, das Lachen, der Lexikonverkäufer."
+      ]
+    },
+    {
+      "scene_id": "ep007_s3",
+      "title": "Was ihn hielt",
+      "question": "Was hielt den Mann am Schalter?",
+      "purpose": "synthesis",
+      "finding_ids": ["milgram_modell__milgram_erklaerung_1963"],
+      "explanation_steps": [
+        "Die eine Erklärungsfrage am Mann gezeigt: Werkzeug einer Autorität oder Diener einer Sache, an die er glaubte.",
+        "Was davon bleibt, und das Bild, das bleibt."
+      ]
+    }
+  ],
+  "deferred_questions": ["Wie wirken Normen, die niemand befiehlt?"],
+  "series_role": "Zeigt am Experiment, wie tief eine Situation Menschen binden kann, und dass die Erklärung dafür bis heute umstritten ist."
+}

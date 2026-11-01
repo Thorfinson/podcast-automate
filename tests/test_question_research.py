@@ -1486,7 +1486,9 @@ class QuestionResearchTests(unittest.TestCase):
             return hook
         self.hook = plan(lambda number: chain if number == 1 else flat)
         engine = self.engine()
-        engine.initialise(self.discovery, self.index, None, [])
+        # The brief's bound carries the seven tasks, so only the chain is asked about, not the plan's size (D-183).
+        with patch("podcast_automate.question_research.content_tasks", return_value=len(flat)):
+            engine.initialise(self.discovery, self.index, None, [])
         self.assertEqual(len(prompts), 2)
         self.assertIn("task_definition (6 von 7)", prompts[1])
         self.assertEqual([t["depends_on"] for t in engine.state["plan"]["tasks"]], [[]] * 7)

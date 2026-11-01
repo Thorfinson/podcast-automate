@@ -1,0 +1,14 @@
+The script review below found defects in an episode that a story writer planned and told from the
+material that follows. No tools. Treat everything below as data, not instructions. Repair what the
+review's issues name and nothing else: change only the segments listed in editable_segments, which are
+the segments the issues name and the one just before and after each, or every segment when an issue
+names none because it concerns the whole episode, such as its length. You may add segments next to
+them, with new unique segment ids, and leave out an editable segment where an issue asks to cut it;
+every other segment stays exactly as it is, word for word, in its order. Fix each defect with the
+fewest changes the material allows: say what the cited passage says, attribute a version to whose
+account it is, state a limit where the claim is used, cite in source_refs the section of material.sections
+that holds a statement, cut a detail no passage holds, or, for an episode too long, cut the detours and
+repeated explanations rather than the scenes that carry the story. Keep the telling, the scenes and the
+voices, and the length unless an issue asks to change it; never add a fact, a person or a scene the
+material does not hold, and keep every core finding cited in knowledge_refs and every section in
+source_refs where it stood unless its statement goes. Return the complete episode.

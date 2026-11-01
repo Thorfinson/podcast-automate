@@ -2,7 +2,7 @@
 title: Security
 doc_type: security
 status: current
-last_reviewed: 2026-10-19
+last_reviewed: 2026-10-27
 covers:
   - src/podcast_automate/google_speech.py
   - src/podcast_automate/studio.py
@@ -48,6 +48,7 @@ the processing you commissioned:
 | The spoken text of approved scripts and of voice samples | OpenRouter (Gemini TTS) | only for a Gemini recording through OpenRouter or a new Gemini voice sample |
 | Reported gaps and corpus sections of the research | OpenRouter (Jev, TypeSafe) | only when the gap probe with Jev is on ([RESEARCH](RESEARCH.md#gap-probe)) |
 | Requests for source documents; title or DOI lookups for free copies | the public servers of the sources; OpenAlex, Semantic Scholar and Europe PMC, and Unpaywall or CORE only when you set their contact address or key | during research ([RESEARCH](RESEARCH.md#pipeline)) |
+| An episode's material (outline, story material, findings, cited sections, orientation sheet, brief) and the research corpus sections the agent reads | Anthropic (Claude Code CLI, your claude.ai login) | only when the project's writer is the story agent, whatever the run's text provider ([SCRIPTS](SCRIPTS.md#story-agent)) |
 | Quota and login queries | the Codex app server (`account/rateLimits/read`) and `claude auth status` | before model calls, `pla doctor`, `pla quota` |
 
 What never leaves the computer, or never gets in:
@@ -274,6 +275,14 @@ else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-arc
   (`studio.kept_local_sources`).
 - **Uploads are copies** under names the server creates itself; the original files on your computer stay unchanged
   (storage, limits and formats: [STUDIO](STUDIO.md#attachments-and-provided-works)).
+- **The story agent works in its run folder** (`runs/<run_id>/story/<episode_id>/`, the session's working
+  directory; why: D-181). Its Claude Code session gets the file tools Read, Write, Edit, Glob and Grep, and Bash only
+  for the four command scripts the run writes into that folder (`story_agent.ALLOWED_TOOLS`); every other tool, web
+  search and web fetch included, is not offered, and it runs with `--permission-mode dontAsk`, no MCP servers
+  (`--strict-mcp-config`), no setting sources, no slash commands and no saved session. Claude Code's own rules decide
+  how far the file tools reach beyond the working directory; the run takes only `draft.json`, `outline.json`,
+  `sources_used.json` and `plan.md` from the folder, and checks the draft in code before it counts. It needs the
+  claude.ai login and never runs on an API key (`authentication_required`).
 - **Artifact paths stay inside the project.** Every artifact path the Studio reads or serves, downloads included, is
   resolved inside the project folder; a path that leaves it is refused with `invalid_path` (`storage.inside`).
 

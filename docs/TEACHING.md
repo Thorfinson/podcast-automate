@@ -2,7 +2,7 @@
 title: Teaching design
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-10-27
 covers:
   - src/podcast_automate/teaching.py
   - src/podcast_automate/teaching_research.py
@@ -19,7 +19,9 @@ Every series follows one editorial standard. A source list and a correct dossier
 teaching episode, so every new `pla script` run plans the lessons between research and dialogue, for every topic:
 after the series plan come a teaching plan per episode with its own source review, a subject draft, dialogue
 polishing with a before/after comparison, and separate source, reading and teaching reviews
-([Scripts](SCRIPTS.md)).
+([Scripts](SCRIPTS.md)). A run written by the story agent makes no teaching plan and has no teaching review: the
+agent's own plan takes the plan's place, and its teaching stage collects the story material and a checked orientation
+sheet instead ([Story agent](SCRIPTS.md#story-agent); why: D-181).
 
 ## Editorial standard
 
@@ -214,7 +216,12 @@ narrated script run ([Scripts](SCRIPTS.md), why: D-180):
   people and their reasons before checking how far the source carries it. Code checks that the three come together,
   name items of the material and a scene of the episode, and that a design with material has a core story
   (`teaching.validate_teaching_plan` with the material's ids); the review flags a core story that only restates a
-  finding and any detail beyond the material. The readable plan shows it as „Kerngeschichte“ under „Spannungsbogen“.
+  finding and any detail beyond the material. The scenes stay the outline's: where the story's scene carries more,
+  design and review move that material into a later scene, where its findings may be taught (`script_checks` lets a
+  segment cite the findings of its own and earlier scenes), and never ask for a new or split scene. Orlagau v2 ep_002
+  stopped on 2026-10-25 after its focused repair had tried to add a scene `s4b`. A design of an earlier episode that
+  names story items counts as reviewed with the material saved beside it (`teaching.reviewed_design`), so the next
+  episode sees its devices and established terms. The readable plan shows it as „Kerngeschichte“ under „Spannungsbogen“.
 - **Who guesses.** `first_answer_voice` names who voices `first_answer`: `host_a`, `host_b` or `common` (a belief most
   listeners share). Code requires it for a design with a first answer and refuses host_b as the voice when the episode
   before let host_b guess (`dramaturgy.variety_defects` with `narrated`; `teaching.previous_devices` carries the voice).

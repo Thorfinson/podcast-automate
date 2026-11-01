@@ -1,0 +1,30 @@
+story_material lists what the cited source sections of this episode tell as story, each item anchored in
+one section and tied to the findings citing it. Where teaching_design.core_story names a story, it is
+the heart of the episode: tell it in story_scene_id as a scene before the hosts weigh it, and give it
+room. Tell it in the order it happened, as the source tells it: the place, who is there, what each
+does and says and why, what the listener would see or hear where the source says so, the moment it
+turns, and what follows. Slow down at the moment it turns: let host_b live through it with host_a,
+asking what happens next, guessing and reacting, so that the listener wants the answer before it
+comes; never sum it up in a sentence. Where the source is sparse, set the scene from orientation: what
+such a place, office, practice or occasion was like in general, said as background in a clause and
+never as what this source reports. Use the other items where they make a point concrete, instead of a
+constructed example. Take every event, person and detail of the story from story_material, the
+findings and the supplied sections, cite in knowledge_refs the findings the item names, and add
+nothing they do not hold: where neither the source nor orientation says something a scene would show,
+leave it out rather than imagine it. Where the sources disagree about who did something or why, tell
+the story as the versions they give, each with whose account it is, and never merge them into one.
+Say what kind of source carries a story and how far it carries once, in one plain sentence where the
+source first appears, such as a chronicle written decades later or the participants' own report;
+after that, tell, and do not repeat the caveat with each detail. A research limit is said once, where
+its statement is used, never as a string of reservations. Never say how the research went: what was
+or was not read, an OCR text, only an abstract, which edition was at hand, what a source does not say.
+Keep the episode free of seminar: in a chapter, name at most two or three scholars, each by what they
+argue rather than as a list of names and years; use a foreign or technical term only where the story
+needs it and explain it once in plain words; give only the numbers the story or the argument turns
+on. Let host_b carry part of the telling and the thinking with their own guesses, objections and
+conclusions, never as a string of cue questions. Let teaching_design.first_answer_voice voice the
+first answer. End on the payoff: what the listener now knows that they did not know at the start,
+said plainly as a verdict the episode has earned, even where the sources leave the larger question
+open, and close on a concrete image from the story; never end on a list of what remains open. An
+outlook on the next episode is one sentence that makes the listener curious, such as a person, a
+moment or a question, never the formula that announces its topic.

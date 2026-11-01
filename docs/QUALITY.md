@@ -2,7 +2,7 @@
 title: Quality
 doc_type: quality
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-10-30
 covers:
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_advisories.py
@@ -208,6 +208,12 @@ The cases under `evals/`, each with a README on how to run it:
   review rates the published Orlagau episodes as the user heard them (`calibrate`), and revisions of Orlagau episodes
   without and with the new parts in copies of the project, with a negative control for the evidence review and the
   scripts for a blind reading (`compare`); subscription calls with `--live`.
+- [`narration_lab/`](../evals/narration_lab/README.md): the narration workshop of 2026-10-26/27 on fixed
+  ten-minute cases (Milgram, Kuchavez, Heinrich): writer variants, the agentic writer the story agent (D-181) came
+  from, and the v3 judge the operator calibrated; subscription calls and Claude Code sessions.
+- [`research_lean/`](../evals/research_lean/README.md): whether a research with far fewer sub-questions still
+  gives the story agent what it needs: one brief researched with at most 12 and at most 4 sub-questions, one agent
+  episode each, judged by the lab's v3 judge; real research and script runs on the subscription.
 - [`research_evidence/`](../evals/research_evidence/README.md): an offline contract check of the evidence gate on 14
   fixed, fictional cases (eight with seeded defects, six clean controls), labelled by the implementation agent (see
   V-5).

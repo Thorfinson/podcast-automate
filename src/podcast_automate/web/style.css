@@ -388,6 +388,10 @@ dd{margin:0;overflow-wrap:anywhere}
 .stop-card .panel-title h2{margin:0}
 .stop-card p{overflow-wrap:anywhere}
 .stop-message{font-size:14px;color:var(--muted)}
+.stop-points{margin:4px 0 0;padding-left:20px;font-size:14px}
+.stop-points li{margin-bottom:6px}
+.stop-points summary{cursor:pointer}
+.stop-points details p{margin:6px 0 0;color:var(--muted)}
 .stop-feedback{flex:1 1 100%}
 .note-card{border-left:4px solid var(--amber);background:var(--amber-soft);border-color:#ecd4a8}
 .tech-details{margin-top:12px;font-size:14px}

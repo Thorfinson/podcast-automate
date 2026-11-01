@@ -39,6 +39,10 @@ from .teaching import DESIGN_VERSION, TEACHING_VERSION
 SCRIPT_VERSION = "script.v5-dialogue-polish"
 # "narration" since 2026-10-23 (D-180): a run started before keeps its manifest's stage list and runs without it.
 STAGES = ("planning", "teaching", "writing", "narration", "polishing", "review", "publish")
+# A run written by the story agent (D-181): its "story" stage plans and writes each episode in one Claude Code
+# session, which also reviews its own telling, so it has no narration and no polishing stage.
+STORY_STAGES = ("planning", "teaching", "story", "review", "publish")
+WRITERS = ("prompt", "agent")
 
 
 def local_source_paths(root: Path, config):
@@ -220,12 +224,14 @@ def bind_manifest(root, work, state, config, config_hash, inputs, input_hash, re
                                    "der Text wird nicht mit dem gespeicherten Entwurf überschrieben.",
                                    code="script_edited", status="blocked")
         return manifest
+    stages = STORY_STAGES if state.get("writer") == "agent" else STAGES
     manifest = RunManifest(run_id=work.name, kind="script", project_hash=config_hash,
-                           input_hash=input_hash, stages={name: StageRecord() for name in STAGES})
+                           input_hash=input_hash, stages={name: StageRecord() for name in stages})
     write_json(work / "script_request.json", {"research_run": research_id, "episode": state["episode"],
                                              "execution": state["execution"].model_dump(),
                                              "text_generation": text_generation,
-                                             "require_plan_approval": plan_only})
+                                             "require_plan_approval": plan_only,
+                                             **({"writer": "agent"} if stages is STORY_STAGES else {})})
     write_json(work / "inputs.json", inputs)
     write_yaml(work / "project_snapshot.yaml", config.model_dump(mode="json"))
     if state["inherited_plan"]:
@@ -276,10 +282,11 @@ def require_plan_approval(root, work, manifest, plan_only, approved_plan_hash):
 def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=None,
                revise: str | None = None, feedback="", backend=None, model=None, api_key=None,
                max_output_tokens=None, reasoning_effort=None, plan_only=False, outline_feedback="", approved_plan_hash=None,
-               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None):
+               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None, writer=None):
     """``jev_probe`` asks Jev in the gap probe of a new run (jev.py); ``probe_key`` is the OpenRouter key for it,
     otherwise OPENROUTER_API_KEY. ``web_search`` "perplexity" sends a new run's supplementary searches through
-    Perplexity (D-151), with ``perplexity_key`` or PERPLEXITY_API_KEY. A resumed run keeps the choices it started with."""
+    Perplexity (D-151), with ``perplexity_key`` or PERPLEXITY_API_KEY. ``writer`` "agent" writes a new run's episodes
+    with the story agent (story_agent.py, D-181). A resumed run keeps the choices it started with."""
     root = root.resolve()
     with project_lock(root):
         config = load_project(root)
@@ -288,6 +295,10 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             raise AppError("Inhaltsverzeichnis zum Überarbeiten im Planungsmodus fortsetzen.", code="invalid_plan")
         if (revise and (resume or (episode and episode != revise))) or (feedback and not revise):
             raise AppError("--revise mit einer passenden Folge und optional --feedback verwenden.", code="invalid_revision")
+        if revise and writer == "agent":
+            # The story agent has no revision task: the feedback is read only by the writing prompt (D-181).
+            raise AppError("Eine Überarbeitung schreibt der Schreib-Prompt; der Erzähl-Agent kennt keine Rückmeldung.",
+                           code="invalid_revision")
         state = resumed_run(root, run_id) if resume else new_run(root, research_id, dossier,
                                                                  episode=episode, revise=revise, feedback=feedback,
                                                                  roles=host_roles_of(config))
@@ -296,6 +307,20 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                            code="invalid_request", status="blocked")
         if jev_probe:
             state["execution"] = state["execution"].model_copy(update={"jev_probe": True})
+        if writer not in (None, *WRITERS):
+            raise AppError(f"Unbekannter Schreiber: {writer}.", code="invalid_request", status="blocked")
+        if writer is None and not resume:
+            # A new run takes the project's choice (studio/writer.json), as it takes its modes and the Jev probe; a
+            # revision keeps the writing prompt, which reads its feedback.
+            writer = "prompt" if revise else state["execution"].writer
+        if writer and resume:
+            started = "agent" if "story" in state["manifest"].stages else "prompt"
+            if writer != started:
+                raise AppError("Ein laufender Skriptlauf behält seinen Schreiber; für den anderen einen neuen Lauf "
+                               "starten.", code="invalid_request", status="blocked")
+        state["writer"] = writer
+        if writer and not resume:
+            state["execution"] = state["execution"].model_copy(update={"writer": writer})
         text_generation = text_generation_settings(config, backend=backend, model=model, max_output_tokens=max_output_tokens,
                                                    reasoning_effort=reasoning_effort, saved=state["saved_backend"],
                                                    web_search=web_search)

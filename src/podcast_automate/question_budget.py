@@ -41,6 +41,19 @@ SOURCE_LABELS = {"run": "in diesem Lauf gemessen", "project": "Erfahrungswert de
 # later from these two limits (D-155).
 DEFAULT_SOURCES_PER_TASK = 5
 DEFAULT_SEARCH_ROUNDS_PER_TASK = 2
+# Sub-questions a plan may hold per focus question of the brief, at least MIN_CONTENT_TASKS, where the approved calls
+# would allow more (D-183). The planner fills whatever cap it is given: a new project's 750 calls planned 40 and 41
+# sub-questions for one fifteen-minute episode (evals/research_lean, 2026-10-30), and the 2026-10 series 74 each.
+# There four sub-questions for three focus questions gave the story agent an episode as good as twelve did (v3 8.50
+# against 8.33) at half the research calls; two per focus question stays above that.
+CONTENT_TASKS_PER_FOCUS = 2
+MIN_CONTENT_TASKS = 4
+
+
+def content_tasks(config):
+    """The sub-questions the brief's scope carries: CONTENT_TASKS_PER_FOCUS per focus question, at least
+    MIN_CONTENT_TASKS (D-183)."""
+    return max(MIN_CONTENT_TASKS, CONTENT_TASKS_PER_FOCUS * len(config.focus_questions))
 
 
 def affordable_tasks(used, limit, calls_per_task=DEFAULT_CALLS_PER_TASK):
@@ -320,6 +333,8 @@ def plan_projection(work, root, state, limits):
             "seconds_per_call": seconds, "seconds_per_call_source": seconds_source,
             "projected_hours": round(projected * seconds / 3600, 1),
             "plan_hash": digest(state["plan"]), "plan_caps": list(state.get("plan_caps", [])),
+            # The brief's focus questions bound this plan, not the calls (D-183); left out once a cap was asked for.
+            **({"content_cap": state["content_cap"]} if state.get("content_cap") and not state.get("plan_caps") else {}),
             # The scope review still split tasks in its last pass; the plan stands as it left it (plan_tasks).
             **({"scope_note": state["scope_unresolved"]["note"]} if state.get("scope_unresolved") else {}),
             "projected_at": datetime.now(timezone.utc).isoformat()}
@@ -374,6 +389,10 @@ def plan_review_message(projection, run_id=None):
                  "Gesamtprüfung laufen in Teilen, und jede Prüfrunde prüft das ganze Dossier neu, hier etwa "
                  f"{projection.get('review_parts_per_round')} Prüfteile je Runde zu je etwa 4 Minuten, zusätzlich zu Bewertung "
                  "und Zuordnung der Einwände; jede Nachbesserung wiederholt die Runde. Weniger Teilfragen je Lauf halten das im Rahmen.")
+    if projection.get("content_cap"):
+        text += (f" Der Plan ist nach den Fokusfragen der Vorgabe auf {projection['content_cap']} Teilfragen begrenzt "
+                 f"({CONTENT_TASKS_PER_FOCUS} je Fokusfrage, mindestens {MIN_CONTENT_TASKS}), nicht nach dem "
+                 "Aufruflimit; eine höhere Obergrenze bei der Freigabe plant ihn neu.")
     caps = projection.get("plan_caps") or []
     if caps and projection["tasks"] > min(caps):
         text += (f" Eine Obergrenze von {min(caps)} Teilfragen wurde bereits angefordert; die Planung konnte den Plan "

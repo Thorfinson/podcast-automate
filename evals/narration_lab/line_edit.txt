@@ -1,0 +1,8 @@
+An editor read your episode below as a listener would hear it and wrote editor_notes: what still keeps
+it from 10, each point with the segments it concerns and a fix. This is a line edit, not a rewrite:
+change only the segments listed in editable_segments, which are the segments the points name and the one
+just before and after each. You may add new segments next to them with new unique segment ids and leave
+out an editable segment where a point asks to cut it. Every other segment stays exactly as it is, word for
+word, in its order. Resolve each point with the fewest changes that do it, and keep what works. Every rule
+above still holds: add nothing the material does not hold, keep different accounts apart, cite the
+findings in knowledge_refs, keep the word budget. Return the complete episode.

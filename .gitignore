@@ -59,6 +59,13 @@ runs/
 *.m4a
 *.flac
 
+# Narration lab: the experimental variants stay local; versioned are the ones the work builds on (2026-10-27):
+# agent6 (the agentic writer), narrative13 (the best single-call writer) and craft, whose design run it writes on.
+evals/narration_lab/variants/*
+!evals/narration_lab/variants/agent6/
+!evals/narration_lab/variants/narrative13/
+!evals/narration_lab/variants/craft/
+
 # Large or private source material
 sources/raw/
 project/sources/raw/

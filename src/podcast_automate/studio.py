@@ -27,8 +27,8 @@ from pydantic import Field
 from .errors import AppError
 from . import attachments
 from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_probe_enabled, jev_probe_state,
-                        selected_execution, set_jev_probe,
-                        settings_execution)
+                        selected_execution, set_jev_probe, set_writer,
+                        settings_execution, writer_choice)
 from .logs import add_secret, configure_logging, logger, scrub
 from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManifest, RuntimeSettings, SeriesGoal,
                      TopicBrief, host_labels, now)
@@ -1783,6 +1783,7 @@ class Studio:
                 "voice_samples": self.voice_samples(),
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
                 "jev_probe": jev_probe_enabled(root), "jev_default": jev_probe_state(root)[1],
+                "writer": writer_choice(root),
                 "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
                 "audio_queue": queue_view(read_queue(root), self.audio_key_available(audio), audio_key(audio) or "openrouter"),
@@ -2044,6 +2045,15 @@ class Studio:
             raise AppError(t("server.jev.switch"), code="invalid_request")
         set_jev_probe(self.root(project), enabled)
         return {"jev_probe": enabled}
+
+    def writer(self, project, data):
+        """Who writes this project's new script runs: the writing ``prompt`` or the story ``agent`` (story_agent.py,
+        D-181). A running job keeps its writer; the switch applies from the next new script run."""
+        chosen = data.get("writer")
+        if chosen not in ("prompt", "agent"):
+            raise AppError(t("server.writer.switch"), code="invalid_request")
+        set_writer(self.root(project), chosen)
+        return {"writer": chosen}
 
     def spoken_override(self, project, data):
         """A per-segment spoken form. It changes only how a segment is read aloud."""
@@ -2644,7 +2654,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = app.restore(data)
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
-                                             r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
+                                             r"|remove_attachment|approve|spoken_override|listening_review|jev_probe|writer"
                                              r"|audio_queue|allowances|reader_state|new_version|audio_own)", path)
                         if not match:
                             raise AppError(t("server.not_found"), code="not_found")

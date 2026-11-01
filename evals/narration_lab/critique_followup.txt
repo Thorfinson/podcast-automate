@@ -1,0 +1,4 @@
+previous_notes are an earlier editor's notes on an earlier version of this script, and the script below
+was rewritten to answer them. Judge the script as it is now. Do not ask to undo what the earlier notes
+asked for unless the change made the episode worse, and then say how; do not repeat a point the script
+has resolved. Name what still keeps it from 10, most important first.

@@ -31,6 +31,7 @@ import os
 import random
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +55,7 @@ from podcast_automate.script_checks import episode_sources  # noqa: E402
 from podcast_automate.script_models import EpisodePlan, SeriesPlan  # noqa: E402
 from podcast_automate.scripting import build_adapter, load_research, run_script  # noqa: E402
 from podcast_automate.storage import digest, load_project, read_yaml, write_json  # noqa: E402
+from podcast_automate.subscriptions import parse_iso, quota_retry_at  # noqa: E402
 from podcast_automate.teaching import TeachingPlan  # noqa: E402
 
 PROJECTS = REPO / "projects"
@@ -82,11 +84,27 @@ def adapter_for(config, args):
     return pool
 
 
+def wait_for_quota(error=None, attempt=0):
+    """Sleep until the subscription's quota is back, as the Studio waits before it resumes a paused run: the reset the
+    error or the quota store names, else a wait that doubles (subscriptions.quota_retry_at), plus two minutes."""
+    retry = parse_iso(quota_retry_at(error or SimpleNamespace(details={"provider": "claude_code"}), attempt=attempt))
+    print(json.dumps({"waiting_for_quota_until": retry.isoformat()}), flush=True)
+    time.sleep(max(60.0, retry.timestamp() - time.time() + 120))
+
+
 def invoker(adapter, folder):
     def invoke(prompt, output_type, version):
-        number = len(list((folder / "calls").glob("call_*"))) + 1
-        return adapter.structured(prompt, output_type, folder / "calls" / f"call_{number:03d}",
-                                  prompt_version=version)[0]
+        attempt = 0
+        while True:
+            number = len(list((folder / "calls").glob("call_*"))) + 1
+            try:
+                return adapter.structured(prompt, output_type, folder / "calls" / f"call_{number:03d}",
+                                          prompt_version=version)[0]
+            except AppError as exc:
+                if exc.status != "waiting_for_quota":
+                    raise
+                wait_for_quota(exc, attempt)
+                attempt += 1
     return invoke
 
 
@@ -309,9 +327,17 @@ def run_variant(root, episode, variant, args, record):
         previous = json.loads(started.read_text(encoding="utf-8"))["run_id"] if started.is_file() else None
         if previous:
             # The copy's own revision, stopped before (quota, budget) or already finished.
-            return run_script(root, resume=True, run_id=previous)
-        return run_script(root, revise=episode, feedback=FEEDBACK_B if variant == "B" else "",
-                          backend=args.backend, model=args.model, reasoning_effort=args.effort)
+            run = run_script(root, resume=True, run_id=previous)
+        else:
+            run = run_script(root, revise=episode, feedback=FEEDBACK_B if variant == "B" else "",
+                             backend=args.backend, model=args.model, reasoning_effort=args.effort)
+        attempt = 0
+        while run.status == "waiting_for_quota":
+            # The podcasts share the subscription: a paused revision waits for the reset and goes on.
+            wait_for_quota(attempt=attempt)
+            attempt += 1
+            run = run_script(root, resume=True, run_id=run.run_id)
+        return run
 
 
 def compare(args, output):
@@ -349,7 +375,8 @@ def compare(args, output):
             print(json.dumps({key: value for key, value in record.items() if key not in {"reviews", "narration"}},
                              ensure_ascii=False), flush=True)
         if args.live:
-            blind(source, config, output, episode, [v for v in variants if v != "N"], args)
+            # Every finished variant of the episode, also those of an earlier call with other --variants.
+            blind(source, config, output, episode, ["B", "C", "D"], args)
     return {"rows": rows, "summary": {"variants": variants, "episodes": episodes,
                                       "negative_control_caught": [r.get("caught") for r in rows if r["variant"] == "N"]}}
 
@@ -359,7 +386,12 @@ def blind(source, config, output, episode, variants, args):
     scores of each, asked as the pipeline asks them, with the published run's design and the D run's story material."""
     scripts = {"A": source / "episodes" / episode / "script.yaml"}
     for variant in variants:
-        scripts[variant] = output / "projects" / f"{variant}_{episode}" / "episodes" / episode / "script.yaml"
+        copy = output / "projects" / f"{variant}_{episode}"
+        # Only a finished revision published its own script; an unfinished copy still holds A's.
+        started = copy / "runs" / "latest.json"
+        run_id = json.loads(started.read_text(encoding="utf-8"))["run_id"] if started.is_file() else None
+        if run_id and read_yaml(copy / "runs" / run_id / "run_manifest.yaml").get("status") == "completed":
+            scripts[variant] = copy / "episodes" / episode / "script.yaml"
     present = {name: path for name, path in scripts.items() if path.is_file()}
     letters = list("WXYZV"[:len(present)])
     random.Random(f"{episode}:{sorted(present)}").shuffle(letters)

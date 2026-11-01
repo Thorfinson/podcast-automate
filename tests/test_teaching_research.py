@@ -592,6 +592,25 @@ class FoundationResearchTests(unittest.TestCase):
         fits.explanations[0].explanation = " ".join(["word"] * (190 - used))
         self.assertEqual(validate_supplement(fits, ["How are scores compared?"], self.entry, context, self.dossier), [])
 
+    def test_a_question_answered_in_part_may_name_its_open_part_as_a_remaining_gap(self):
+        """The prompt asks for it (foundation_supplement.txt): a question the passages answer in part is explained and
+        also named in remaining_gaps. Until 2026-10-24 only a routed probe gap could stand there, and Orlagau ep_014 of
+        the narration evaluation was refused three times for doing what the prompt says. A remaining gap that names a
+        question no explanation answers still fails outside the probe and story rules."""
+        question = "How are scores compared?"
+        cited = self.dossier.findings[0].evidence[0].reference
+        text = next(s["text"] for src in self.context for s in src["sections"] if s["reference"] == cited)
+        context = [{"source_id": cited.split("#")[0], "sections": [{"reference": cited, "text": text}]}]
+        answer = {"questions": [question], "finding_ids": ["f_energy"], "explanation": "Scores are compared.",
+                  "claim_contract": claim_contract(),
+                  "evidence": [{"reference": cited, "excerpt": self.dossier.findings[0].evidence[0].excerpt}]}
+        partial = FoundationSupplement(explanations=[answer], remaining_gaps=[f"'{question}'"])
+        self.assertEqual(validate_supplement(partial, [question], self.entry, context, self.dossier), [])
+        other = "Why does a lower score win?"
+        unanswered = FoundationSupplement(explanations=[answer], remaining_gaps=[other])
+        errors = validate_supplement(unanswered, [question, other], self.entry, context, self.dossier)
+        self.assertTrue(errors and "Keiner offenen Frage zuzuordnen" in errors[0], errors)
+
     def test_a_story_request_may_leave_every_question_open(self):
         """D-180: the story research of a narrated run asks for a story the sections only point to. Not finding it is a
         result, so its questions may stand as remaining gaps without a corpus probe; any other request still fails."""

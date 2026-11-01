@@ -207,13 +207,23 @@ def validate_supplement(supplement, questions, entry, context, dossier, probes=(
     sections = {s["reference"]: s["text"] for source in context for s in source["sections"]}
     routed = {row["question"]: row["references"] for row in probes}
     answered = [named_question(q, expected)[0] or q for answer in supplement.explanations for q in answer.questions]
-    named = [(gap, named_question(gap, expected if optional else routed)[0]) for gap in supplement.remaining_gaps]
+    named = []
+    for gap in supplement.remaining_gaps:
+        question = named_question(gap, expected if optional else routed)[0]
+        part = named_question(gap, expected)[0] if question is None else None
+        if part is not None and part in answered:
+            # A question the answer explains in part names the part that stays open as a remaining gap, as the prompt
+            # asks (foundation_supplement.txt). Until 2026-10-24 only a routed probe gap could stand there: Orlagau ep_014
+            # of the narration evaluation answered both design gaps in part, named their open parts, and was refused
+            # three times for following the prompt, which stopped the run.
+            continue
+        named.append((gap, question))
     confirmed = [question for _, question in named if question]
     # Every question at least once. One answered only in part may also stand as a remaining gap: a question that
     # states what is known and what stays open cannot be put one way only (Asimov ep_014, 2026-09-29: the same
     # correct answer rejected three times, with no defect named).
     if (set(answered) | set(confirmed) != expected or not set(answered) <= expected
-            or len(confirmed) < len(supplement.remaining_gaps)):
+            or len(confirmed) < len(named)):
         missing = [q for q in questions if q not in answered and q not in confirmed]
         unknown = [gap for gap, question in named if not question] + [q for q in answered if q not in expected]
         errors.append("Die zusätzlichen Belege beantworten noch nicht alle offenen Erklärfragen."

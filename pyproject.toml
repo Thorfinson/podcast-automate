@@ -58,4 +58,5 @@ pla = "podcast_automate.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-podcast_automate = ["data/*.json", "locales/*.json", "prompts/*.txt", "web/*.html", "web/*.css", "web/*.js"]
+podcast_automate = ["data/*.json", "data/*.md", "locales/*.json", "prompts/*.txt", "web/*.html", "web/*.css",
+                    "web/*.js"]

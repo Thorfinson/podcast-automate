@@ -1,0 +1,79 @@
+{
+  "id": "milgram",
+  "project": "auf-den-spuren-von-asimovs-psychohistori-v2-1f66fe",
+  "outline_run": "run_20261025_182003_335297_5efe1a9a",
+  "elements": "milgram.md",
+  "episode": {
+    "episode_id": "ep_007",
+    "title": "Gehorsam: Milgrams Experiment",
+    "central_question": "Warum gingen in Milgrams Versuch 26 von 40 Männern bis zum letzten Schalter, und was erklärt das?",
+    "target_minutes": 10,
+    "prerequisite_episodes": ["ep_006"],
+    "finding_ids": [
+      "milgram_modell__milgram_aufbau",
+      "milgram_modell__milgram_aufforderungen",
+      "milgram_modell__milgram_anteil",
+      "milgram_modell__milgram_erklaerung_1963"
+    ],
+    "supporting_finding_ids": [
+      "milgram_modell__agentischer_zustand",
+      "milgram_pruefung_b__prod_kritik",
+      "milgram_pruefung_b__engaged_followership_kritik",
+      "milgram_pruefung_b__situative_erklaerung_kritik",
+      "milgram_pruefung_a__burger_gehorsam_150_volt"
+    ],
+    "scenes": [
+      {
+        "scene_id": "ep007_s1",
+        "title": "Lehrer, Lerner, Schockgenerator",
+        "question": "Wie war Milgrams Versuch aufgebaut?",
+        "purpose": "orientation",
+        "finding_ids": ["milgram_modell__milgram_aufbau", "milgram_modell__milgram_aufforderungen"],
+        "explanation_steps": [
+          "Der Versuchsaufbau, wie ein Teilnehmer ihn erlebt.",
+          "Die Aufforderungen des Versuchsleiters."
+        ]
+      },
+      {
+        "scene_id": "ep007_s2",
+        "title": "26 von 40",
+        "question": "Wie viele gingen bis zum Ende, und wie reagierten sie dabei?",
+        "purpose": "worked_example",
+        "finding_ids": ["milgram_modell__milgram_anteil"],
+        "explanation_steps": [
+          "Das Ergebnis der Grundversion.",
+          "Wie die Teilnehmer dabei reagierten."
+        ]
+      },
+      {
+        "scene_id": "ep007_s3",
+        "title": "Warum gehorchten sie?",
+        "question": "Wie erklärt Milgram 1963 den Gehorsam, und was ist daran bis heute strittig?",
+        "purpose": "synthesis",
+        "finding_ids": ["milgram_modell__milgram_erklaerung_1963"],
+        "explanation_steps": [
+          "Milgrams situative Erklärung von 1963.",
+          "Spätere Deutungen und Einwände."
+        ]
+      }
+    ],
+    "deferred_questions": ["Wie wirken Normen, die niemand befiehlt?"],
+    "series_role": "Die Folge zeigt, dass Autorität Verhalten tief bindet, die Erklärung dafür aber bis heute offen ist."
+  },
+  "oracle": {
+    "sections": {
+      "milgram_modell__milgram_aufbau": [
+        "src_8165f480f1f75e63#sec_2fbd1e339059122d",
+        "src_8165f480f1f75e63#sec_95cacf2a60cb30f9",
+        "src_8165f480f1f75e63#sec_9866cb641cf2e121",
+        "src_8165f480f1f75e63#sec_a391e51700f515cf"
+      ],
+      "milgram_modell__milgram_anteil": [
+        "src_8165f480f1f75e63#sec_8d7751811ff0093d",
+        "src_8165f480f1f75e63#sec_e9957932f707b2ed",
+        "src_8165f480f1f75e63#sec_f9caf5318d90f4dc"
+      ]
+    },
+    "documents": []
+  }
+}

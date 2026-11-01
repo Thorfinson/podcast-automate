@@ -393,9 +393,14 @@ def reviewed_design(folder, earlier):
         design = TeachingPlan.model_validate_json((folder / "plan.json").read_text(encoding="utf-8"))
         review = TeachingPlanReview.model_validate_json((folder / "review.json").read_text(encoding="utf-8"))
         saved = json.loads((folder / "checkpoint.json").read_text(encoding="utf-8"))
+        # A design of a run with the narration stage names items of the story material saved beside it (D-180).
+        material = folder / "story_material.json"
+        story = ([item["item_id"] for item in json.loads(material.read_text(encoding="utf-8"))["items"]]
+                 if material.is_file() else None)
         if (TeachingPlan.model_validate(saved["design"]) == design and
             TeachingPlanReview.model_validate(saved["review"]) == review and
-            not validate_teaching_plan(design, earlier) and not review.issues and not review.research_gaps and
+            not validate_teaching_plan(design, earlier, story=story) and
+            not review.issues and not review.research_gaps and
             not any(g.required_for_objective for g in review.gap_assessments)):
             return design
     except (OSError, ValueError, KeyError, TypeError):
@@ -429,7 +434,8 @@ def published_design(root, entry):
     """The teaching plan an episode's last script run published (episodes/<episode>/teaching_plan.yaml), or None."""
     try:
         design = TeachingPlan.model_validate(read_yaml(root / "episodes" / entry.episode_id / "teaching_plan.yaml"))
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (AppError, ValueError, TypeError, AttributeError):
+        # read_yaml reports a missing or unreadable file as AppError: a new project has no published episode yet.
         return None
     return design if design.episode_id == entry.episode_id else None
 

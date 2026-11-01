@@ -851,6 +851,27 @@ test('script progress shows the active episode and readable results without audi
   assert.ok(!html.includes('Sprechabschnitten'));
   assert.ok(!app.elements.get('job-status').innerHTML.includes('Lehrkonzept lesen'));
 });
+test('a run written by the story agent shows its stage in place of draft, narration review and polishing',()=>{
+  const app=studio();
+  app.run(`project={id:'test',job:{status:'running',action:'resume',started_at:new Date().toISOString(),progress:{phase:'script',stage:'story',episodes:[]},run:{kind:'script',stages:{planning:{status:'completed'},teaching:{status:'completed'},story:{status:'running'},review:{status:'pending'},publish:{status:'pending'}}}}};step=PAGE.production;renderJob();`);
+  const html=app.elements.get('production-progress').innerHTML;
+  assert.ok(html.includes('Erzähl-Agent'));
+  for(const missing of ['Dialogschliff','Narrationsprüfung'])assert.ok(!html.includes(missing),missing);
+  app.run(`project.job.run.stages={teaching:{status:'completed'},writing:{status:'running'}};renderJob();`);
+  const prompt=app.elements.get('production-progress').innerHTML;
+  assert.ok(prompt.includes('Dialogschliff'));
+  assert.ok(!prompt.includes('Erzähl-Agent'));
+});
+test('the job summary switches the project between the writing prompt and the story agent',async()=>{
+  const app=studio();
+  await app.run(`selectProject('p',{id:'p',config:boot.defaults,chat:[],writer:'prompt'})`);
+  let html=app.run('setupSummary()');
+  assert.ok(html.includes('data-action="toggle-writer" data-writer="agent"'));
+  app.run(`project.writer='agent';`);
+  html=app.run('setupSummary()');
+  assert.ok(html.includes('Erzähl-Agent · Claude Opus'));
+  assert.ok(html.includes('data-writer="prompt"'));
+});
 test('choosing a project keeps its identity in the URL for reloads without browser storage',async()=>{
   const app=studio();
   app.run(`window.history={replaceState(state,title,url){window.savedProjectUrl=url;}};`);
@@ -954,6 +975,20 @@ test('a teaching design that keeps its defects offers a new design with the edit
   assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/start').options.body),{action:'resume',run_id:'run_s'});
   // A job without the episode (an older server) shows no redesign control rather than a broken one.
   assert.equal(app.run(`stopButton('redesign_teaching',{run:{run_id:'run_s'}},{},'')`),'');
+});
+
+test('a stopped teaching design lists its open points one line each instead of one paragraph',()=>{
+  const app=studio();
+  const long='Erzählkern sitzt nicht im Zentrum (Design behebbar): Die Geschichte ist in s4 nur Schritt 1 von 4, danach folgen <Widukind> und die Namenzählung.';
+  const short='Szene 5 liest mehr in die Quelle, als sie sagt';
+  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j1',status:'blocked',action:'resume',message:${JSON.stringify(`Offene Punkte: ${long} ${short}`)},stop:{code:'teaching_design_failed',stage:'teaching',run_kind:'script'},teaching_failure:{episode_id:'ep_002',title:'Burgward',issues:${JSON.stringify([long,short])}},started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{teaching:{status:'blocked',error:{code:'teaching_design_failed'}}}}}};overviewPage=false;step=PAGE.production;render();`);
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(card.includes('Offene Punkte (2):'));
+  assert.ok(card.includes('<li><details><summary>Erzählkern sitzt nicht im Zentrum (Design behebbar)</summary><p>Die Geschichte ist in s4 nur Schritt 1 von 4, danach folgen &lt;Widukind&gt; und die Namenzählung.</p></details></li>'));
+  assert.ok(card.includes(`<li>${short}</li>`),'a short point stands as it is');
+  assert.ok(!card.includes('Meldung: Offene Punkte'),'the joined message is not repeated beside the list');
+  assert.ok(card.includes(`<textarea id="redesign-note" rows="3">${long.replace('<','&lt;').replace('>','&gt;')}\n\n${short}</textarea>`),
+    'the note starts with the points, one paragraph each');
 });
 
 test('a supplementary research that spent its corrections offers fresh attempts in a script run',()=>{
@@ -3648,6 +3683,18 @@ test('the plan card says in one sentence what the plan takes and whether it fits
   assert.deepEqual(germanLeft(english),[]);
 });
 
+test('a plan the focus questions bounded may be planned again with more sub-questions, a plan the calls bounded only with fewer',()=>{
+  const app=studio();
+  const bounded=planCard(app,{...PLAN,content_cap:12});
+  assert.ok(bounded.includes('nach den Fokusfragen der Vorgabe auf 12 Teilfragen begrenzt'));
+  assert.ok(bounded.includes('Plan mit so vielen Teilfragen neu zuschneiden, auch mehr (optional)'));
+  assert.ok(!/id="plan-max-tasks"[^>]*max="/.test(bounded),'no upper bound on the field');
+  const plain=planCard(app,PLAN);
+  assert.ok(/id="plan-max-tasks"[^>]*max="12"/.test(plain));
+  assert.ok(!plain.includes('Fokusfragen'));
+  const en=studio({language:'en'});
+  assert.deepEqual(germanLeft(planCard(en,{...PLAN,content_cap:12})),[]);
+});
 test('a plan over its limits raises only those that do not fit, then approves the plan and starts, in one click',async()=>{
   const app=studio();
   await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set

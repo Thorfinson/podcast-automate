@@ -445,6 +445,14 @@ class StudioHttpTests(unittest.TestCase):
                                           "run": {"run_id": "run_teach", "kind": "script",
                                                   "stages": {"teaching": stopped.model_dump(mode="json")}}})
         self.assertEqual(job["teaching_failure"], {"episode_id": "ep_001", "title": example_plan().episodes[0].title})
+        # The last review's open points come one by one, for the card's list (2026-10-25).
+        issues = ["Scene 4 reads SPARQL aloud.", "Scene 5 reads more into the source than it says."]
+        write_json(work / "teaching/ep_001/checkpoint.json", {"focused_repair": True, "repairs": 2,
+                                                              "review": {"issues": issues}})
+        job = Studio.readable(self.root, {"status": "blocked", "message": " ".join(issues),
+                                          "run": {"run_id": "run_teach", "kind": "script",
+                                                  "stages": {"teaching": stopped.model_dump(mode="json")}}})
+        self.assertEqual(job["teaching_failure"]["issues"], issues)
         for payload in ({"episode_id": "ep_001"}, {"episode_id": "ep_404", "note": "Plain words."}):
             self.assertEqual(self.request("/api/projects/example/approve",
                                           {"kind": "teaching_redesign", "run_id": "run_teach", **payload})[0], 400)
@@ -1110,6 +1118,26 @@ class StudioHttpTests(unittest.TestCase):
         write_json(self.root / "runs/run_jev/script_request.json", {"execution": {"text": "sequential", "jev_probe": True}})
         self.request("/api/projects/example/jev_probe", {"enabled": False})
         self.assertEqual(probe_key(self.root, {"api_key": "test-key"}, "run_jev"), "test-key")
+
+    def test_the_writer_switch_is_the_projects_own_and_keeps_the_settings_hash(self):
+        """D-181: the story agent is chosen per project in its own file; new script runs take it, and saving the
+        settings, as a proposal does, neither needs nor changes it."""
+        from podcast_automate.execution import selected_execution
+        before = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(before["writer"], "prompt")
+        status, body, _ = self.request("/api/projects/example/writer", {"writer": "agent"})
+        self.assertEqual(status, 200, body)
+        after = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual(after["writer"], "agent")
+        self.assertEqual((after["execution"], after["execution_hash"]), (before["execution"], before["execution_hash"]))
+        self.assertEqual(selected_execution(self.root).writer, "agent")
+        self.assertEqual(self.request("/api/projects/example/writer", {"writer": "opus"})[0], 400)
+        data = {"config": after["config"], "config_hash": after["config_hash"], "text": after["text"],
+                "execution": after["execution"], "execution_hash": after["execution_hash"]}
+        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["writer"], "agent")
+        self.request("/api/projects/example/writer", {"writer": "prompt"})
+        self.assertEqual(selected_execution(self.root).writer, "prompt")
 
     def test_gemini_audio_can_be_selected_without_changing_script_inputs(self):
         detail = json.loads(self.request("/api/projects/example")[1])

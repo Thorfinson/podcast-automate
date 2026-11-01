@@ -210,6 +210,8 @@ def checked_series_plan(work, prompt, invoke, dossier, central_question, signatu
 
 # The share of its planned minutes a script must reach (validate_script).
 MIN_DURATION_SHARE = 0.85
+# A corpus section a story agent's segment cites (Segment.source_refs, D-182).
+SECTION_REFERENCE = re.compile(r"src_[a-z0-9_]+#sec_[a-z0-9_]+")
 # How far above the plan the writer's target is set, per writing model. ONLY Claude Sonnet 5.5 is measured: at high it
 # wrote 71 % of the target it was shown (Transformer ep_012, 2026-10-04, each scene 64 to 75 % of its share), so a draft
 # like that lands at 92 % of the plan; at 1.35 a 60-minute episode written at 75 % would already pass the hour, which
@@ -270,6 +272,9 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
             errors.append(f"{segment.segment_id}: scene/chapter does not match the plan.")
         elif not set(segment.knowledge_refs) <= available_findings[scene.scene_id]:
             errors.append(f"{segment.segment_id}: use only current or previously introduced finding IDs.")
+        # Which sections a story agent may cite is checked where the corpus is known (ScriptRun.script_errors).
+        if any(not SECTION_REFERENCE.fullmatch(ref) for ref in segment.source_refs):
+            errors.append(f"{segment.segment_id}: source_refs takes section references as src_…#sec_….")
         covered.update(segment.knowledge_refs)
         if re.search(r"https?://|source_id|knowledge_refs|src_[a-f0-9]+|\[[^\]]+\]\(", segment.text):
             errors.append(f"{segment.segment_id}: citations or internal metadata must not be spoken.")

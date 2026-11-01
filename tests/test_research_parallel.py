@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from podcast_automate.errors import AppError
 from podcast_automate.execution import MAX_PARALLEL_TEXT
+from podcast_automate.question_budget import content_tasks
 from podcast_automate.question_research import QuestionResearch
 from podcast_automate.question_scope import QuestionScopeReview, pending_task
 from podcast_automate.research import run_research
@@ -20,7 +21,7 @@ from podcast_automate.research_tasks import AnswerReview, QuestionPlan, Research
 from podcast_automate.run_budget import approve_research_plan
 from podcast_automate.sources import import_source
 from podcast_automate.status_summary import evidence_snapshot
-from podcast_automate.storage import digest, init_project, write_json
+from podcast_automate.storage import digest, init_project, write_json, write_yaml
 from podcast_automate.studio_progress import research_progress
 from tests import research_fixtures as fixtures
 from tests.question_fixtures import decision, task_value
@@ -79,6 +80,10 @@ class ParallelResearchCase(fixtures.ResearchProjectCase):
         # The plan is sized to the worker cap: a rendezvous of every task needs a worker each, and a cap
         # that no longer matches must fail here, not as a barrier timeout five seconds into a test.
         self.assertEqual(len(TASKS), MAX_PARALLEL_TEXT, "resize TASKS together with MAX_PARALLEL_TEXT")
+        # A brief whose focus questions carry a plan of that many tasks (question_budget.content_tasks, D-183).
+        self.config = self.config.model_copy(update={"focus_questions": ["Wie?", "Warum?", "Was folgt?"]})
+        write_yaml(self.root / "project.yaml", self.config.model_dump(mode="json"))
+        self.assertGreaterEqual(content_tasks(self.config), len(TASKS))
         write_json(self.root / "studio/execution.json", PARALLEL)
         self.work = self.root / "runs/run_test"
         self.index = None
