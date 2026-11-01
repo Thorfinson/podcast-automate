@@ -15,5 +15,6 @@ corpus sections the published episode used. These steps replace "How to work":
    newly use to sources_used.json.
 4. Run `python check.py` until it passes.
 5. Run `python critique.py` only where the change touched the telling, at most {critiques} times, and change only
-   what a point names within what the feedback asked for.
+   what a point names within what the feedback asked for. Its points block only in the segments you changed from
+   published.json; stop when it answers `ready`.
 6. Finish when check.py passes and no fact doubt is left. Say in one line what you changed.

@@ -856,7 +856,7 @@ test('a run written by the story agent shows its stage in place of draft, narrat
   const html=app.elements.get('production-progress').innerHTML;
   assert.ok(html.includes('Erzähl-Agent'));
   for(const missing of ['Dialogschliff','Narrationsprüfung'])assert.ok(!html.includes(missing),missing);
-  app.run(`project.job.run.stages={teaching:{status:'completed'},writing:{status:'running'}};renderJob();`);
+  app.run(`project.job.run.stages={teaching:{status:'completed'},writing:{status:'running'}};project.job.progress.stage='writing';renderJob();`);
   const prompt=app.elements.get('production-progress').innerHTML;
   assert.ok(prompt.includes('Dialogschliff'));
   assert.ok(!prompt.includes('Erzähl-Agent'));
@@ -866,7 +866,7 @@ test('choosing a project keeps its identity in the URL for reloads without brows
   app.run(`window.history={replaceState(state,title,url){window.savedProjectUrl=url;}};`);
   await app.run(`selectProject('example',{id:'example',config:boot.defaults,text:{provider:'codex_cli',model:null,max_output_tokens:32768},chat:[]})`);
   assert.equal(app.run('window.savedProjectUrl'),'/?project=example&step=brief');
-  assert.equal(app.elements.get('project-select').value,'example');
+  assert.ok(app.elements.get('steps').innerHTML.includes('class="sidebar-label sidebar-project" title="New project">New project<'),'the sidebar names the open project');
 });
 test('script progress displays the approved run call limit',()=>{
   const app=studio();
@@ -1111,7 +1111,7 @@ test('first draft becomes readable during polling and never enables preview audi
   assert.ok(html.includes('Die Prüfung steht noch aus'));
   assert.ok(!html.includes('data-action="audio"'));
   assert.ok(!html.includes('data-action="revise"'));
-  assert.ok(app.elements.get('steps').innerHTML.includes('1 Folge lesbar'));
+  assert.ok(app.run('heading(PAGE.scripts+1)').includes('1 Folge lesbar'));
   assert.ok(!app.run('renderAudio()').includes('id="audio-approval"'));
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
@@ -1299,7 +1299,7 @@ test('the reading page shows every recorded review caveat under one collapsible 
     dismissed_gaps:[{stage:'teaching_review',objective_id:'goal_one',gap:'Wie wird trainiert?',reason:'Für das Lernziel nicht nötig.'}],
     advisories:[{code:'long_cold_open',count:157,detail:'Der erste Abschnitt hat 157 Wörter.',segment_ids:['seg_001']}]})];
   app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
-  const html=app.run('renderScript()');
+  const html=app.run("episodeTab='notes';renderScript()");
   assert.ok(html.includes('Hinweise der Prüfungen'));
   assert.equal((html.match(/<li>/g)||[]).length,8);
   assert.ok(html.includes('Eine Modellprüfung kann Fehler übersehen.'));
@@ -1317,7 +1317,7 @@ test('the narration review leads the notes with its scores and names each open p
     narration:[{category:'missing_story',fix:'research',problem:'Kuchavez steht nur in einem Satz.',
                 correction:'Thietmars Bericht lesen.',segment_ids:['seg_001']}]})];
   app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
-  const html=app.run('renderScript()');
+  const html=app.run("episodeTab='notes';renderScript()");
   assert.ok(html.includes('Hinweise der Prüfungen'));
   assert.ok(html.includes('Spannung 5/10 · Interesse 6/10 · Erzählweise 4/10'));
   assert.ok(html.includes('<h3>Narrationsprüfung</h3>'));
@@ -1326,7 +1326,7 @@ test('the narration review leads the notes with its scores and names each open p
   // Scores alone still open the panel.
   p.episodes=[publishedEpisode({narration_scores:{tension:7,interest:7,storytelling:8}})];
   app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
-  assert.ok(app.run('renderScript()').includes('Erzählweise 8/10'));
+  assert.ok(app.run("episodeTab='notes';renderScript()").includes('Erzählweise 8/10'));
 });
 
 test('a script without recorded caveats and an unpublished preview render no panel',()=>{
@@ -1348,7 +1348,7 @@ test('a caveat containing markup is escaped before it reaches the reading page',
   p.episodes=[publishedEpisode({script_review:['<script>alert(1)</script>'],
     advisories:[{code:'<img src=x>',count:1,detail:'Ein "gefährlicher" Hinweis.',segment_ids:["<b>"]}]})];
   app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
-  const html=app.run('renderScript()');
+  const html=app.run("episodeTab='notes';renderScript()");
   assert.ok(!html.includes('<script>alert(1)'));
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(html.includes('&lt;img src=x&gt;'));
@@ -1400,11 +1400,14 @@ test('navigation distinguishes approved, automatic, reading and audio steps',()=
   const app=studio(), p=workflowProject(app);
   app.run(`project=${JSON.stringify(p)};step=PAGE.production;renderNavigation();`);
   const html=app.elements.get('steps').innerHTML;
-  assert.equal((html.match(/class="step /g)||[]).length,6);
-  assert.ok(html.includes('Freigegeben'));
-  assert.ok(html.includes('Läuft automatisch'));
-  assert.ok(html.includes('Sobald ein Entwurf fertig ist'));
-  assert.ok(html.includes('aria-current="page"'));
+  assert.equal((html.match(/class="step place /g)||[]).length,3,'three places: Serie, Folgen, Grundlagen');
+  assert.ok(html.includes('data-place="series" aria-current="page"'));
+  assert.ok(html.includes('class="step place running" data-step="3"'),'the running series opens on its production page');
+  const series=app.run('heading(PAGE.production+1)'), episodes=app.run('heading(PAGE.scripts+1)');
+  assert.ok(series.includes('Freigegeben'));
+  assert.ok(series.includes('Läuft automatisch'));
+  assert.ok(series.includes('data-step="3" aria-current="page"'));
+  assert.ok(episodes.includes('Sobald ein Entwurf fertig ist'));
   assert.ok(app.run('renderScript()').includes('Zur Ausarbeitung'));
   assert.ok(!app.run('renderScript()').includes('Gib zuerst das Inhaltsverzeichnis frei'));
   assert.ok(app.run('renderAudio()').includes('data-step="4"'));
@@ -1667,7 +1670,8 @@ test('the overview lists projects as pipeline rows while the recordings list kee
   assert.ok(html.includes('Audio entsteht'));
   assert.ok(html.includes('data-open-project="test"'));
   assert.ok(html.includes('data-delete-project="test" disabled'));
-  assert.ok(html.includes('class="pipe"'));
+  assert.ok(html.includes('<span class="chip running" id="pipe-test" title="Auftrag: erledigt'),'one state badge; its tooltip names every step');
+  assert.ok(!html.includes('pipe-legend'),'no bar that needs a legend (D-186)');
   assert.ok(!html.includes('<audio '),'players belong to the audio page, not the overview');
   const recordings=app.run('renderRecordings(overviewData.projects[0])');
   assert.equal((recordings.match(/data-play-episode=/g)||[]).length,2);
@@ -1965,7 +1969,7 @@ test('finished scripts stay visible on the production page and in the stepper af
   assert.ok(page.includes('Dialogschliff'));
   assert.ok(page.includes('Die Skripte sind bereit'));
   assert.ok(!page.includes('Folgt automatisch'));
-  assert.ok(app.elements.get('steps').innerHTML.includes('Ausarbeitung<small>Abgeschlossen'));
+  assert.ok(app.run('heading(PAGE.production+1)').includes('<span>Ausarbeitung</span><small>Abgeschlossen'));
   assert.ok(app.elements.get('job-bar').innerHTML.includes('Podcast verfügbar · 1 Folge'));
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
@@ -2897,7 +2901,7 @@ test('a third host on ElevenLabs needs a voice of its own: the selects, the appr
   app.run(`project.audio_settings.third_voice='LeoVoice0123456789ab';`);
   assert.ok(app.run(`renderThirdVoice(currentAudio(),audioCatalog().elevenlabs_tts,[])`).includes('<option value="LeoVoice0123456789ab" selected>'));
   assert.equal(app.run('audioBlockReason("ep_001")'),'');
-  assert.ok(card().includes('Ea-nasir: LeoVoice0123456789ab'));
+  assert.ok(card().includes('Ea-nasir: ElevenLabs-Stimme')&&!card().includes('Ea-nasir: LeoVoice'),'an account voice is never named by its id before the list is loaded (D-186)');
   // On Google the third host speaks the route's first free voice unless one is chosen.
   app.run(`project.audio_settings={provider:'google_gemini_tts',voices:{host_a:'Erinome',host_b:'Charon'}};boot.google_key_available=true;`);
   assert.ok(app.run(`renderThirdVoice(currentAudio(),audioCatalog().google_gemini_tts,[])`).includes('Automatisch (Algenib)'));
@@ -3469,7 +3473,7 @@ test('the static page text follows the interface language and the German catalog
       if(node.dataset.i18nLabel)assert.equal(node.attributes['aria-label'],locales[language][node.dataset.i18nLabel]);
     }
     if(language==='en'){
-      assert.ok(nodes.some(node=>node.textContent==='Settings'),'the English settings link says "Settings"');
+      assert.ok(nodes.some(node=>node.textContent==='Like the device'),'the English theme choice says "Like the device"');
       assert.deepEqual(germanLeft(nodes.map(node=>`<p>${node.textContent}</p><p>${node.attributes['aria-label']||''}</p>`).join('')),[]);
     }
   }
@@ -3921,7 +3925,7 @@ test('a new project can start as a trial: never ticked by the page, it says what
   assert.equal(app.run('trialChecked'),false);
   // The trial says so on its pages and its card.
   assert.ok(app.run('heading(1)').includes('<span class="chip trial">Probelauf</span>'));
-  assert.ok(app.run(`overviewCardInner({id:'t',topic:'Regenbogen',trial:true,episodes:[]})`).includes('Regenbogen</button> <span class="chip trial">Probelauf</span></h2>'));
+  assert.ok(app.run(`overviewCardInner({id:'t',topic:'Regenbogen',trial:true,episodes:[]})`).includes('<p class="card-meta"><span class="chip trial">Probelauf</span>'),'the trial chip stands in the meta line of the card');
   assert.ok(!app.run(`overviewCardInner({id:'u',topic:'Serie',episodes:[]})`).includes('chip trial'));
   // A typed topic stays the topic of the trial.
   const en=studio({language:'en'});
@@ -3966,7 +3970,7 @@ test('deterministic advisories read in the page language from their values, olde
     p.job.status='completed';p.job.run.status='completed';
     p.episodes=[publishedEpisode({advisories:rows})];
     app.run(`project=${JSON.stringify(p)};readingSnapshot=null;`);
-    const html=app.run('renderScript()');
+    const html=app.run("episodeTab='notes';renderScript()");
     for(const text of texts)assert.ok(html.includes(text),`${language}: ${text}`);
     assert.ok(html.includes('4 Hinweise darauf, dass ein Beispiel erfunden ist (gespeichert vor dem 7. Oktober).'),`${language}: a row without values keeps its German sentence`);
   }
@@ -4031,7 +4035,7 @@ test('a podcast gets a new version from its card menu, opens it, and offers the 
   assert.equal(app.requests.filter(r=>r.path==='/api/projects/a/new_version'&&r.options?.method==='POST').length,1);
   assert.equal(app.run('project.id'),'c');
   assert.equal(app.elements.get('notice').textContent,'Version 3 angelegt. Sie beginnt mit dem Auftrag der bisherigen Version.');
-  assert.ok(app.elements.get('project-select').innerHTML.includes('Topic · Version 3'));
+  assert.ok(app.elements.get('steps').innerHTML.includes('New project · Version 3'),'the sidebar names the new version');
   // The first research of the new version offers the old sources; the start sends that choice like a restart does.
   const page=app.run('renderResearch()');
   assert.ok(page.includes('id="seed-corpus" checked')&&page.includes('Die 42 Quellen aus Version 1 als Startbibliothek anbieten'));
@@ -4120,4 +4124,31 @@ test('in the overall review the card names its round and the reworked sub-questi
     {status:'reviewing',reopened:1},{status:'blocked',outcome:'search_block',reopened:1}];
   assert.equal(card({phase:'questions',audit_round:1,closed:70,blocked:1,questions:rework}),
     'Nachbesserung nach der Gesamtprüfung · 6 von 10 nachgebesserten Teilfragen fertig · 3 in Arbeit · 1 blockiert · Aufrufe 1305 von 2000');
+});
+
+test('a card shows the first sentence of a long stop message, the page keeps all of it (D-185)',()=>{
+  // 2026-11-01: an overview card held a stop message of twelve lines.
+  const app=studio();
+  assert.equal(app.run(`firstSentence('Das Lehrkonzept hat noch offene Punkte. Synthese und Payoff überziehen die Rechtsform.')`),'Das Lehrkonzept hat noch offene Punkte.');
+  assert.ok(app.run(`firstSentence('${'x'.repeat(300)}')`).endsWith('…'));
+});
+test('one episode is one page: reading, review notes, hearing and companion material are its tabs (D-185)',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.job.status='completed';p.job.run.status='completed';
+  p.episodes=[publishedEpisode({script_review:['Eine Modellprüfung kann Fehler übersehen.']})];
+  app.run(`project=${JSON.stringify(p)};readingSnapshot=null;step=PAGE.scripts;episodeTab=null;`);
+  const read=app.run('renderScript()');
+  for(const tab of ['Lesen','Prüfhinweise','Hören','Begleitmaterial'])assert.ok(read.includes(`<span>${tab}</span>`),tab);
+  assert.ok(read.includes('data-episode-tab="read" aria-current="page"'));
+  assert.ok(read.includes('<h1>ep_001 Dialogue</h1>')&&read.includes('Folge 1 von 1'),'the head names the episode and its place in the series');
+  assert.ok(read.includes('<div class="page-actions"><button data-step="5" data-episode-tab="listen">Weiter zur Audio-Freigabe →</button>'),'going on is the head\'s primary action');
+  assert.ok(!read.includes('Hinweise der Prüfungen'),'the notes are their own tab');
+  app.run("episodeTab='notes'");
+  assert.ok(app.run('renderScript()').includes('<details class="panel review-notes" open>'));
+  app.run("step=PAGE.audio;episodeTab='kit'");
+  const kit=app.run('renderAudio()');
+  assert.ok(kit.includes('data-action="publish_kit" data-episode="ep_001"')&&!kit.includes('id="audio-approval"'),'the companion material without the approval');
+  app.run('episodeTab=null');
+  const listen=app.run('renderAudio()');
+  assert.ok(listen.includes('id="audio-approval"')&&!listen.includes('data-action="publish_kit" data-episode'),'hearing without the companion material');
 });

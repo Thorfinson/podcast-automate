@@ -50,8 +50,9 @@ def episode_continuity(work, entry):
 
 
 def story_report(folder):
-    """What the episode's story agent did, for the quality report: its critiques' scores, the corpus sections it
-    used beyond the material and the session's turns, duration and cost by the CLI's count (D-181)."""
+    """What the episode's story agent did, for the quality report: its critiques' scores with the blocking severe
+    points each left open (D-187), the corpus sections it used beyond the material and the session's turns, duration
+    and cost by the CLI's count (D-181)."""
     def read(path, default):
         try:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -59,7 +60,8 @@ def story_report(folder):
             return default
     session = read(folder / "session.json", {})
     critiques = [read(path, {}) for path in sorted((folder / "requests").glob("critique_*.answer.json"))]
-    return {"critiques": [{key: value["score"] for key, value in answer["scores"].items()}
+    return {"critiques": [{**{key: value["score"] for key, value in answer["scores"].items()},
+                           **({"severe_open": answer["severe_open"]} if "severe_open" in answer else {})}
                           for answer in critiques if "scores" in answer],
             "corpus_sections": [row.get("reference") for row in read(folder / "sources_used.json", [])],
             "chapters_replanned": (folder / "outline.json").is_file(),

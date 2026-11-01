@@ -172,10 +172,6 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
                 second.episode_id = "ep_002"
                 second.title = "Further consequences"
                 value.episodes.append(second)
-            if output_type is EpisodeScript:
-                payload = json.loads(prompt.splitlines()[-1])
-                # Both writing and polishing receive the selected episode as structured data.
-                value.episode_id = payload.get("episode", payload.get("original_script"))["episode_id"]
             return value, metadata
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=multi_model):
             first = run_script(self.root)
@@ -570,6 +566,15 @@ class StudioHttpTests(unittest.TestCase):
         started.assert_not_called()
         opened.assert_not_called()
         self.assertIn("nur auf diesem Computer", output.getvalue())
+
+    def test_the_studio_serves_its_own_fonts_and_nothing_else_under_fonts(self):
+        # The page's CSP takes fonts from the Studio only (D-186): IBM Plex comes from the package.
+        status, body, headers = self.request("/fonts/ibm-plex-sans-400.woff2")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "font/woff2")
+        self.assertEqual(body[:4], b"wOF2")
+        for path in ("/fonts/missing.woff2", "/fonts/../app.js", "/fonts/OFL.txt", "/fonts/IBM.woff2"):
+            self.assertNotEqual(self.request(path)[0], 200, path)
 
     def test_local_page_and_project_are_real_and_mutations_need_csrf_token(self):
         status, body, headers = self.request("/")
@@ -1991,9 +1996,6 @@ class PublishedReportTests(fixtures.ScriptProjectCase):
             second = value.episodes[0].model_copy(deep=True)
             second.episode_id, second.title = "ep_002", "Further consequences"
             value.episodes.append(second)
-        if output_type is EpisodeScript:
-            payload = json.loads(prompt.splitlines()[-1])
-            value.episode_id = (payload.get("episode") or payload.get("original_script"))["episode_id"]
         return value, metadata
 
     def test_revising_one_episode_keeps_the_other_episodes_report_entries(self):

@@ -54,6 +54,67 @@ If the Studio started by double-click on Windows does not find Codex, see
 [Check the subscriptions](OPERATIONS.md#check-the-subscriptions). Once that is fixed, **„Fortsetzen“** (resume)
 continues the saved job; a table-of-contents draft still waits for your review before the scripts are written.
 
+## Look and layout
+
+The Studio's look is called Sendestudio (why: D-186):
+- a dark console on the left;
+- yellow for the one thing to do on a page;
+- IBM Plex Sans for text and IBM Plex Mono for numbers and times. The Studio serves both fonts itself (`/fonts/`),
+  because the page takes nothing from other servers.
+
+**„Darstellung“** (appearance) at the foot of the sidebar, and on the settings page under „Sprache / Language“,
+switches between three choices:
+- **„Wie das Gerät“** (like the device), the default;
+- **„Hell“** (light);
+- **„Dunkel“** (dark).
+
+The choice is kept per device in a cookie, never in the browser's storage.
+
+A project has three places (why: D-185):
+- **„Serie“**: the outline and the production;
+- **„Folgen“**: reading and recording;
+- **„Grundlagen“**: the brief and the research.
+
+Each place opens on the page where its work waits. Its pages stand as tabs below the title, each with its state. The
+running or stopped job stands in one strip at the top of the page, and only while there is one.
+
+Five state badges mean the same everywhere:
+- läuft (cyan);
+- wartet auf dich (orange);
+- angehalten or braucht Hilfe (rose);
+- erledigt (green);
+- geplant or bereit (grey).
+
+A button that cannot be used now is dashed.
+
+An ElevenLabs voice is named by the account's list. Until the list is loaded the page says „ElevenLabs-Stimme“, never
+the voice's id.
+
+**„Serie“** shows an approved outline as one row per episode. A row holds:
+- the episode's number, title and chapters (folded);
+- its way in four marks: Plan, Text, Prüfung, Ton;
+- its next step: „Lesen“, „Anhören“, „schreibt“ or „als Nächste“.
+
+„Nächste Folge schreiben“ and „Alle … restlichen nacheinander“ stand in the page head. Once every episode is written,
+the series review stands above the rows. An outline that waits for approval is shown in full, as before.
+
+**„Folgen“** is one page per episode. Its head names the episode's place in the series („Folge 7 von 20“) and its
+title. It has four tabs:
+- **„Lesen“**: the script. „Weiter zur Audio-Freigabe →“ is the head's action.
+- **„Prüfhinweise“**: the review's notes, with their number on the tab.
+- **„Hören“**: the approval, the recordings and the listening check.
+- **„Begleitmaterial“**: the episode's and the podcast's companion kit.
+
+Both pickers number episodes by the outline („7.“) and choose the same episode.
+
+Explanations that stood open under a control are folded under **„Wie das funktioniert“** (how it works):
+- what the speech provider does;
+- what a revision does;
+- what the production steps include.
+
+A production step shows its description only while it runs or stopped. A stopped project's card shows the first
+sentence of the stop message; the whole message stands on the project's page.
+
 ## Using it from a phone
 
 On Windows, **`Podcast-Studio-WLAN.cmd`** (or `pla studio --lan`) makes the Studio reachable from your home network,
@@ -64,6 +125,12 @@ example `http://192.168.178.75:8765`; open it in the phone's browser. Who can co
 On the first start, Windows Firewall asks whether Python may be reachable on the network; allow only private networks.
 If the Studio already runs for this computer only, the Wi-Fi launch file does not open it again but asks you to close it
 first with „Studio beenden“ once no job is running, because a running job would be paused.
+
+On a phone the layout changes (why: D-185):
+- The places and the settings become a tab bar at the foot of the screen.
+- The page head is one line.
+- The job strip keeps its first line and the stop.
+- On the reading page the decision („Deine Rückmeldung“) stands above the script.
 
 ## Interface language
 
@@ -89,7 +156,8 @@ that had projects before the choice existed stays German until you change it. Wh
 
 ## The guided flow
 
-A project runs through six steps, each a page in the navigation:
+A project runs through six steps. The navigation groups their pages into the three places of
+[Look and layout](#look-and-layout); each place shows its pages as tabs:
 
 1. **„Auftrag“** (brief): a single editorial partner asks in the chat for what it needs and proposes
    a brief. It asks early what the series is for (**„Ziel der Serie“** (series goal): „Verstehen“, „Bewerten“,
@@ -281,7 +349,7 @@ names its missing key („Anthropic-Key fehlt“). What each costs folds under *
 its foot, which reads **„Ungespeicherte Änderungen“** (unsaved changes) after an edit and **„Alles gespeichert“**
 (everything saved) otherwise; leaving the page with unsaved edits asks first. Storing or removing a key acts at once
 and is no unsaved edit. On the settings page and the overview, the sidebar lists the projects instead of a project's
-steps, and the project picker reads **„Projekt wählen …“** (choose a project). The chip at the top
+places. The chip at the top
 reads **„Gilt für alle Projekte“** (applies to all projects) once the workspace settings are saved, **„Noch je
 Projekt“** (still per project) before. Storage, the values shown before the first save, and when running jobs pick up a
 change: [Studio settings](CONFIGURATION.md#studio-settings) (why: D-108). The project page only shows the settings,
@@ -348,8 +416,11 @@ exhausted, the hold card offers the other one: **„Mit Astra (xhigh) fortsetzen
 ## Overview, navigation and hold cards
 
 The overview lists each project once, as a card: those waiting for you first, then running ones, then the rest. A
-card holds the bar of the six steps, whose segments name their step and state (a legend above the cards: erledigt,
-läuft, wartet auf dich, angehalten, braucht Hilfe), one line of state (for a research or script run a second line with its numbers: „49 von 74 geprüft · 6 in Arbeit ·
+card holds:
+- the project's state as one badge (läuft, wartet auf dich, angehalten, braucht Hilfe, erledigt or bereit; its tooltip
+  names every step's state);
+- the episodes planned, written and recorded, with one mark per planned episode;
+- one line of state (for a research or script run a second line with its numbers: „49 von 74 geprüft · 6 in Arbeit ·
 6 blockiert, 4 davon nur wegen Vorfragen · Aufrufe 1119 von 1500“, or the segments done; in the overall review the round and the sent-back
 sub-questions done again instead, as in „Gesamtprüfung Runde 2 · 10 von 10 nachgebesserten Teilfragen fertig“;
 `cardProgress`), and its next
@@ -361,18 +432,28 @@ fortsetzen“** or **„Limits anheben und Empfehlungen übernehmen“** for the
 question's hint and the decision card's sized limits), the raise of the call limit the advice needs, and the call or
 search limit a stop names as its way on. „Ansehen“ or „Entscheiden“ stays beside it; a key, a money limit, a note, a
 dispute or a choice per question still opens the page (why: D-169). Clicking the title or the card opens the
-project where its work waits. Once takes are finished, „Podcast anhören“ and **„Podcast herunterladen“** (download
-podcast, ZIP) follow; **„Projekt löschen“** sits in the card's „⋯“ menu (why: D-161).
+project where its work waits. Once takes are finished, „Podcast anhören“ stands beside it. The card's „⋯“ menu holds:
+- **„Podcast herunterladen“** (download podcast, ZIP);
+- „Neue Version anlegen“;
+- **„Projekt löschen“**.
+
+Why: D-161, D-185.
 
 The card, the navigation and the header take a project's state from the same facts (why: D-160). Recordings made for
 an earlier script, voice or audio setting stay playable and ask for nothing: the card reads „Podcast verfügbar · 19
 Folgen · 19 von einem früheren Stand“ and the step „Vertonung“ „Aufnahmen vorhanden · 19 älter“. Only a published
 episode without any recording asks for an audio approval („1 Folge hat noch keine Aufnahme.“, ▲ on „Vertonung“).
 
-The navigation shows each area's state: present, to approve (▲), in progress or pending. The running step shows its
-elapsed time; a research plan waiting for approval shows the projection in hours. The header names the job or its stop
-reason in one line, with stop, resume (only where it can help) and the jump to the page where something is to be
-decided; running recordings are listed beside it. The header keeps one line on every page. Where the hold card
+The sidebar marks each place with the most urgent state of its pages:
+- ● running;
+- ! needs help;
+- ‖ paused;
+- ▲ to approve;
+- ✓ done.
+
+The page tabs give each page's state; a research plan waiting for approval shows its projection in hours there. The
+strip at the top of the page names the job or its stop reason in one line, with stop, resume (only where it can help) and the jump to the page where something is to be
+decided; running recordings are listed beside it. The strip keeps one line on every page. Where the hold card
 recommends fresh attempts, the header offers no plain „Fortsetzen“ but the jump to the card. After a finished job of
 its own (a chat, a check, a companion kit, recordings) the header names the project's state instead, such as „Podcast
 verfügbar · 14 Folgen“. While a job runs, the line adds its time since the start, the calls
@@ -488,7 +569,7 @@ without a Jev choice gets today's default. Runs, research, scripts, recordings, 
 project's own pre-approvals stay behind. The old version stays as it was and may keep running.
 
 Versions are numbered per podcast in the project's `version.json`; from version 2 on the number stands beside the topic
-in the overview, the sidebar and the project picker (**„Version 2“**). The newest completed research run's sources come
+in the overview, the sidebar and the page head (**„Version 2“**). The newest completed research run's sources come
 along: until the new version has research of its own, its research page offers them as a starting library
 (**„Die … Quellen aus Version 1 als Startbibliothek anbieten“**, preselected); see
 [Starting library](RESEARCH.md#starting-library).

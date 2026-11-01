@@ -94,7 +94,8 @@ class PassageTests(unittest.TestCase):
                             "google/gemini-3.8-flash-tts")
         self.assertEqual(body["model"], "gemini-3.8-flash-tts")
         config = body["generation_config"]["speech_config"]
-        self.assertEqual(config["mode"], "conversational")
+        # Google refuses "mode" since 2026-10-23: the speakers alone make the conversation.
+        self.assertNotIn("mode", config)
         self.assertEqual(config["speakers"], [{"speaker": "Robin", "voice": "Sadachbia"},
                                               {"speaker": "Alex", "voice": "Erinome"}])
         items = body["input"][0]["content"]
@@ -297,15 +298,22 @@ class GoogleEpisodeTests(unittest.TestCase):
                 result.episodes[0].scenes.append(ScenePlan(scene_id="scene_two", title="Second",
                     question="What follows?", purpose="synthesis", finding_ids=["f_energy"],
                     explanation_steps=["Apply the comparison."]))
-            if output_type is EpisodeScript:
-                result.chapters.append(Chapter(chapter_id="scene_two", title="Second"))
-                result.segments.append(Segment(segment_id="seg_003", scene_id="scene_two", chapter_id="scene_two",
-                                               speaker_id="host_a", text="So the lower score wins.",
-                                               knowledge_refs=["f_energy"]))
+                # Room for three segments: 0.16 minutes target 21 words, which the agent must reach to 95 %.
+                result.episodes[0].target_minutes = 0.16
             return result, meta
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=two_chapters):
-            run_script(self.root, episode="ep_001")
+        # The story agent writes the episode in the outline's two chapters (D-184): the fixture's two segments, then a
+        # third in the second chapter.
+        draft = fixtures.example_script()
+        draft.chapters.append(Chapter(chapter_id="scene_two", title="Second"))
+        draft.segments.append(Segment(segment_id="seg_003", scene_id="scene_two", chapter_id="scene_two",
+                                      speaker_id="host_a", text="So the lower score wins.", knowledge_refs=["f_energy"]))
+        agent = fixtures.fake_agent(Path(tempfile.mkdtemp(dir=self.root.parent)), draft)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=two_chapters), \
+                patch("podcast_automate.claude_code.claude_command", return_value=agent):
+            written = run_script(self.root, episode="ep_001")
+        self.assertEqual(written.status, "completed", {k: v.error for k, v in written.stages.items() if v.error})
         script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
+        self.assertEqual([chapter.chapter_id for chapter in script.chapters], ["scene_example", "scene_two"])
         record, seen = episode_audio.run_google_tts, []
 
         def chapter_start(config, batch, root, folder, *args, **kwargs):
@@ -394,7 +402,8 @@ class PairSampleTests(unittest.TestCase):
                 body = json.loads(build.return_value.open.call_args.args[0].data)
             self.assertTrue(first["ready"])
             self.assertEqual(first, again)
-            self.assertEqual(body["generation_config"]["speech_config"]["mode"], "conversational")
+            self.assertNotIn("mode", body["generation_config"]["speech_config"])
+            self.assertEqual(len(body["generation_config"]["speech_config"]["speakers"]), 2)
             self.assertTrue(any("|mhm|" in item["text"] for item in body["input"][0]["content"]))
             # Another style is another sample.
             self.assertFalse(pair_view(projects, voices, {"host_a": "", "host_b": ""}, "de-DE")["ready"])

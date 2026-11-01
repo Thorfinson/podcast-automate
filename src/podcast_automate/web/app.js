@@ -42,6 +42,11 @@ const fmt = {
 const pageKeys = ["brief", "research", "outline", "production", "scripts", "audio"];
 const steps = pageKeys.map(key=>tp(`nav.step.${key}`));
 const PAGE = Object.fromEntries(pageKeys.map((key,index)=>[key,index]));
+// Three places instead of six step pages (D-185): the series, its episodes and the basics. The six steps stay the pages
+// inside them, so links, the URL and the agent tool keep their step numbers.
+const PLACES = [["series",["outline","production"]],["episodes",["scripts","audio"]],["basics",["brief","research"]]];
+const placeOf = page => PLACES.findIndex(([,keys])=>keys.includes(pageKeys[page]));
+const placePages = place => PLACES[place][1].map(key=>PAGE[key]);
 // The editorial framing of a step introduces a page that has nothing to show yet. A working page
 // opens with its name, its state and its action instead.
 const pageIntros = Object.fromEntries(pageKeys.map(key=>[key,[tp(`page.intro.${key}.title`),tp(`page.intro.${key}.text`)]]));
@@ -49,7 +54,7 @@ const productionStages = ["teaching","writing","story","narration","polishing","
 // A run written by the story agent (D-181) has its stage in place of draft, narration review and polishing.
 const AGENT_RUN_STAGES = new Set(["teaching","story","review","publish"]);
 const runStages = run => productionStages.filter(([id])=>run?.stages?.story?AGENT_RUN_STAGES.has(id):id!=="story");
-const stageNames = Object.fromEntries(["discovery","retrieval","dossier","completeness","planning","teaching","writing","narration","polishing",
+const stageNames = Object.fromEntries(["discovery","retrieval","dossier","completeness","planning","teaching","writing","story","narration","polishing",
   "review","publish","expression","synthesis","assembly"].map(id=>[id,tp(`stage.${id}`)]));
 const actionNames = Object.fromEntries(["assistant","research","plan","replan","expression","publish_kit","script","episode",
   "episodes","series_review","revise","audio",
@@ -156,7 +161,15 @@ const audioLabel = a => {
 // The voices of the ElevenLabs account (Studio.elevenlabs_voices), loaded once a page needs them; a voice id is shown by
 // its name where it is known.
 let elevenVoices=null, elevenLoading=false;
-const voiceName = id => { const row=(elevenVoices||[]).find(v=>v.voice_id===id); return row?row.name.split(" - ")[0].trim():id; };
+// An ElevenLabs voice is named by the account's list. Until the list is there, or without a key, the page says
+// "ElevenLabs voice", never the voice's id (D-186: no raw ids on a page); asking for the name loads the list once.
+const ELEVEN_ID=/^[A-Za-z0-9]{20}$/;
+const voiceName = id => {
+  const row=(elevenVoices||[]).find(v=>v.voice_id===id);
+  if(row)return row.name.split(" - ")[0].trim();
+  if(ELEVEN_ID.test(String(id||""))){loadElevenVoices();return tp("voice.eleven_unnamed");}
+  return id;
+};
 // The account's voices as a select's options, the current ones kept even before the list is there.
 const elevenOptions = voices => {
   const rows=(elevenVoices||[]).map(v=>[v.voice_id,`${v.name.split(" - ")[0].trim()}${v.labels?.gender?` · ${v.labels.gender}`:""}${v.german?" · DE":""}${v.category==="premade"?` · ${tp("settings.voice.premade")}`:""}`]);
@@ -228,17 +241,50 @@ async function api(path, data, renewed=false) {
   return result;
 }
 async function attempt(action) { try { notice(""); await action(); } catch(error) { notice(errorText(error),"error"); } }
+// An explanation folded under „Wie das funktioniert“ (D-185): the page shows the state and the control, the how on
+// request.
+const howItWorks = html => html?`<details class="hint-toggle"><summary>${t("how_it_works")}</summary><p class="hint">${html}</p></details>`:"";
 function textInput(id,label,value,type="text") { return `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${escape(value)}"></div>`; }
 function area(id,label,value,rows=3) { return `<div class="field"><label for="${id}">${label}</label><textarea id="${id}" rows="${rows}">${escape(value)}</textarea></div>`; }
-// Compact page head: step number and name, then the step's state as a chip.
-function heading(n) {
-  const state=project?navigationStates()[n-1]:null;
-  return `<header class="page-head"><div class="page-title"><span class="eyebrow">${String(n).padStart(2,"0")} / 06</span><h1>${steps[n-1]}</h1></div>${project?.config?.trial?trialChip():""}${state?`<span class="chip ${state[1]}">${escape(state[0])}</span>`:""}</header>`;
+// The page head (D-185): the project as eyebrow, the place as title, then the place's pages as tabs, each with its
+// state. A running page shows only its dot; the job itself stands in the strip at the top.
+let episodeTab=null;
+const EPISODE_TABS=[["read",PAGE.scripts],["notes",PAGE.scripts],["listen",PAGE.audio],["kit",PAGE.audio]];
+// The tab a page shows: the chosen one where it is that page's, else the page's first.
+const tabOn=page=>EPISODE_TABS.some(([key,p])=>key===episodeTab&&p===page)?episodeTab:page===PAGE.audio?"listen":"read";
+// The episode both pages show: the one being read, else the one picked on the recording page.
+function currentEpisodeEntry() {
+  const rows=readableScripts(), published=project?.episodes||[];
+  const id=step===PAGE.audio?published[episodeIndex]?.script.episode_id:scriptEpisodeId||published[episodeIndex]?.script.episode_id;
+  return rows.find(e=>e.script.episode_id===id)||(step===PAGE.audio?published[episodeIndex]:rows[0])||null;
+}
+// The head of the place „Folgen“ (D-185): the episode's number and title, its primary action, and its four tabs.
+function episodeHeading(page, action="") {
+  const entry=currentEpisodeEntry(), states=navigationStates(), tab=tabOn(page);
+  if(!entry)return null;
+  const id=entry.script.episode_id, number=episodeNumber(id), total=seriesTotal(readableScripts());
+  const notes=project.episodes.find(e=>e.script.episode_id===id)?.review_notes||{};
+  const count=Object.keys(reviewNoteLabels).reduce((sum,name)=>sum+(notes[name]?.length||0),0);
+  const small={read:states[PAGE.scripts][0],notes:count?tp("episode.notes_count",{count}):"",listen:states[PAGE.audio][0],kit:""};
+  const tone={read:states[PAGE.scripts][1],listen:states[PAGE.audio][1]};
+  const tabs=EPISODE_TABS.map(([key,page])=>`<button class="page-tab ${tone[key]||"pending"}" data-step="${page}" data-episode-tab="${key}"${key===tab?' aria-current="page"':""}><span>${t(`episode.tab.${key}`)}</span>${small[key]?`<small>${escape(small[key])}</small>`:""}</button>`).join("");
+  return `<header class="page-head"><div class="page-title"><span class="eyebrow">${number?t("episode.position",{number,total}):""}${project?.config?.topic?` · ${escape(shortText(project.config.topic,70))}`:""}</span><h1>${escape(entry.script.title)}</h1></div>${action?`<div class="page-actions">${action}</div>`:""}</header>`+
+    `<nav class="page-tabs" aria-label="${t("nav.place_pages",{place:tp("nav.place.episodes")})}">${tabs}</nav>`;
+}
+function heading(n, action="") {
+  if(project&&placeOf(n-1)===1){const head=episodeHeading(n-1,action);if(head)return head;}
+  const page=n-1, place=placeOf(page), states=project?navigationStates():null, hints=project?stepTimeHints():[];
+  const topic=project?.config?.topic?escape(shortText(project.config.topic,90))+(versionText(project)?` · ${escape(versionText(project))}`:""):"";
+  const tab=i=>{const state=states?.[i], tone=state?.[1]||"pending";
+    return `<button class="page-tab ${tone}" data-step="${i}"${i===page?' aria-current="page"':""}><span>${steps[i]}</span>${state&&tone!=="running"?`<small>${escape(state[0])}${hints[i]||""}</small>`:tone==="running"?`<small><span class="job-dot running" aria-hidden="true"></span>${escape(state[0])}</small>`:""}</button>`;};
+  return `<header class="page-head"><div class="page-title">${topic?`<span class="eyebrow">${topic}</span>`:""}<h1>${t(`nav.place.${PLACES[place][0]}`)}</h1></div>${project?.config?.trial?trialChip():""}${action?`<div class="page-actions">${action}</div>`:""}</header>`+
+    `<nav class="page-tabs" aria-label="${t("nav.place_pages",{place:tp(`nav.place.${PLACES[place][0]}`)})}">${placePages(place).map(tab).join("")}</nav>`;
 }
 // A trial project („Probelauf“, D-157) says so on its card and on every page of it.
 const trialChip=()=>`<span class="chip trial">${t("trial.chip")}</span>`;
 // A later version of a podcast (D-168) carries its number wherever the topic names the project; a first one none.
-const versionText=p=>p?.version>1?tp("version.label",{n:p.version}):"";
+const versionOf=p=>Number(typeof p?.version==="object"?p.version?.version:p?.version)||1;
+const versionText=p=>versionOf(p)>1?tp("version.label",{n:versionOf(p)}):"";
 const versionChip=p=>p?.version>1?` <span class="chip">${escape(versionText(p))}</span>`:"";
 // What a trial is limited to, from the server's facts (trial.trial_facts in /api/bootstrap); nothing without them.
 function trialNote() {
@@ -374,16 +420,27 @@ const stopTone=info=>info?.kind==="decision"?"decision":["retry","wait"].include
 function sidebarProjects() {
   const rows=(overviewPage?overviewData.projects:boot?.projects)||[];
   const mark=p=>!overviewPage?"":runningOf(p)?"●":attentionOf(p)?"▲":"";
-  return `<p class="sidebar-label">${t("sidebar.projects")}</p>${rows.map(p=>`<button class="step project-link" data-open-project="${escape(p.id)}" title="${escape(p.topic)}"><span class="step-number" aria-hidden="true">${mark(p)}</span><span class="step-label">${escape(shortText(p.topic,70))}${p.version>1?` · ${escape(versionText(p))}`:""}</span></button>`).join("")}
-    <button class="step project-link" data-new-project><span class="step-number" aria-hidden="true">＋</span><span class="step-label">${t("project.new")}</span></button>`;
+  return `<button class="step" data-action="overview"${overviewPage?' aria-current="page"':""}><span class="step-number" aria-hidden="true">≡</span><span class="step-label">${t("overview.title")}</span></button>
+    <p class="sidebar-label">${t("sidebar.projects")}</p>${rows.map(p=>`<button class="step project-link" data-open-project="${escape(p.id)}" title="${escape(p.topic)}"><span class="step-number" aria-hidden="true">${mark(p)}</span><span class="step-label">${escape(shortText(p.topic,70))}${p.version>1?` · ${escape(versionText(p))}`:""}</span></button>`).join("")}
+    <button class="step project-link" data-new-project><span class="step-number" aria-hidden="true">＋</span><span class="step-label">${t("project.new")}</span></button>`+settingsLink();
 }
-// The project picker offers "Neues Projekt" only where it means one; on the overview and the settings it asks for a choice.
-function syncProjectSelect() {
-  const first=$("project-select")?.options?.[0], browsing=overviewPage||settingsPage;
-  if(first){first.textContent=browsing?tp("project.choose"):tp("project.new");first.disabled=browsing;}
+// The settings hold for every project; their link closes the list in the sidebar, in and outside a project.
+const settingsLink=()=>`<button class="step settings-link" data-action="open-settings"${settingsPage?' aria-current="page"':""}><span class="step-number" aria-hidden="true">⚙</span><span class="step-label">${t("settings.title")}</span></button>`;
+// A place's mark in the sidebar is the most urgent state of its pages; the text stands on the page's tabs.
+const PLACE_URGENCY=["running","blocked","paused","decision","done"];
+function placeState(states, place) {
+  const tones=placePages(place).map(i=>states[i][1]);
+  return PLACE_URGENCY.find(tone=>tone==="done"?tones.every(t=>t==="done"):tones.includes(tone))||"pending";
+}
+// A place opens on the page its work waits on, else on the page last shown there, else on its first page.
+const lastPlacePage=new Map();
+function placeTarget(place) {
+  const pages=placePages(place), recommended=project?recommendedPage():null;
+  if(pages.includes(step))return step;
+  if(pages.includes(recommended))return recommended;
+  return lastPlacePage.get(place)??pages[0];
 }
 function renderNavigation() {
-  syncProjectSelect();
   if(overviewPage||settingsPage){
     $("steps").hidden=false;$("steps").setAttribute?.("aria-label",tp("sidebar.projects"));$("steps").innerHTML=sidebarProjects();
     $("project-title").textContent=settingsPage?tp("settings.title"):tp("overview.title");
@@ -391,12 +448,32 @@ function renderNavigation() {
     document.title=settingsPage?`${tp("settings.title")} · Podcast Studio`:waiting?`(${waiting}) Podcast Studio`:"Podcast Studio";return;
   }
   $("steps").hidden=false;$("steps").setAttribute?.("aria-label",tp("nav.steps_label"));
-  const states=navigationStates(), hints=stepTimeHints();
+  const states=navigationStates(), current=placeOf(step);
+  lastPlacePage.set(current,step);
   const glyph=state=>state==="done"?"✓":state==="running"?"●":state==="blocked"?"!":state==="paused"?"‖":state==="decision"?"▲":null;
-  $("steps").innerHTML = steps.map((name,i)=>`<button class="step ${states[i][1]}" data-step="${i}" ${i===step?'aria-current="page"':""}><span class="step-number" aria-hidden="true">${glyph(states[i][1])??i+1}</span><span class="step-label">${name}<small>${escape(states[i][0])}${hints[i]}</small></span></button>`).join("");
   const title=project?.config?.topic || tp("project.new_title");
+  const places=PLACES.map(([key],place)=>{const tone=placeState(states,place);
+    return `<button class="step place ${tone}" data-step="${placeTarget(place)}" data-place="${key}"${place===current?' aria-current="page"':""}><span class="step-number" aria-hidden="true">${glyph(tone)??place+1}</span><span class="step-label">${t(`nav.place.${key}`)}</span></button>`;}).join("");
+  $("steps").innerHTML=`<button class="step back-link" data-action="overview"><span class="step-number" aria-hidden="true">←</span><span class="step-label">${t("nav.all_projects")}</span></button>
+    <p class="sidebar-label sidebar-project" title="${escape(title)}">${escape(shortText(title,80))}${versionText(project)?` · ${escape(versionText(project))}`:""}</p>${places}`+settingsLink();
   $("project-title").textContent = title;
   document.title=project?`${statusGlyph(project.job)}${title} · Podcast Studio`:"Podcast Studio";
+}
+// The look (D-186): System follows the device; Hell or Dunkel is kept per device in a cookie, never in browser storage.
+const THEMES=["system","light","dark"];
+function themeChoice() {
+  const match=/(?:^|;\s*)studio_theme=(light|dark)(?:;|$)/.exec(String(document.cookie||""));
+  return match?match[1]:"system";
+}
+function applyTheme(choice=themeChoice()) {
+  const root=document.documentElement;
+  if(root){if(choice==="system")root.removeAttribute?.("data-theme");else root.setAttribute?.("data-theme",choice);}
+  for(const node of document.querySelectorAll("select[data-ui-theme]"))node.value=choice;
+}
+function chooseTheme(choice) {
+  const value=THEMES.includes(choice)?choice:"system";
+  document.cookie=value==="system"?"studio_theme=; Max-Age=0; Path=/; SameSite=Strict":`studio_theme=${value}; Max-Age=31536000; Path=/; SameSite=Strict`;
+  applyTheme(value);
 }
 const languageName = language => tp(`project_language.${language==="en-US"?"en-US":"de-DE"}`);
 function renderVoiceLibrary(language) {
@@ -536,9 +613,9 @@ function setupSummary() {
     <dt>${t("summary.knowledge")}</dt><dd>${escape(c.prior_knowledge||tp("summary.knowledge_none"))} · ${escape(c.depth_request)}</dd>
     <dt>${t("summary.goal")}</dt><dd>${escape(goalSummary(c.series_goal))}</dd>
     <dt>${t("summary.recency")}</dt><dd>${c.recency_months?t("summary.recency_months",{months:Number(c.recency_months)}):t("summary.recency_none")}</dd>
-    ${c.focus_questions?.length?`<dt>${t("summary.focus")}</dt><dd>${c.focus_questions.map(escape).join(" · ")}</dd>`:""}
-    ${c.excluded_topics?.length?`<dt>${t("summary.excluded")}</dt><dd>${c.excluded_topics.map(escape).join(" · ")}</dd>`:""}
-    ${c.seed_urls?.length?`<dt>${t("summary.seed_urls")}</dt><dd>${c.seed_urls.map(escape).join(" · ")}</dd>`:""}
+    ${c.focus_questions?.length?`<dt>${t("summary.focus")}</dt><dd><ul class="plain-list">${c.focus_questions.map(item=>`<li>${escape(item)}</li>`).join("")}</ul></dd>`:""}
+    ${c.excluded_topics?.length?`<dt>${t("summary.excluded")}</dt><dd><ul class="plain-list">${c.excluded_topics.map(item=>`<li>${escape(item)}</li>`).join("")}</ul></dd>`:""}
+    ${c.seed_urls?.length?`<dt>${t("summary.seed_urls")}</dt><dd><ul class="plain-list">${c.seed_urls.map(item=>`<li>${escape(item)}</li>`).join("")}</ul></dd>`:""}
     <dt>${t("summary.text_model")}</dt><dd>${textChoiceSummary(choice)}</dd>
     ${choice.provider==="openrouter"?`<dt>${t("summary.live_research")}</dt><dd>${t("summary.live_research_openrouter")}</dd>`:""}
     <dt>${t("summary.voices")}</dt><dd>${escape(audioLabel(a))} · ${escape(voiceName(a.voices.host_a))} &amp; ${escape(voiceName(a.voices.host_b))}</dd>
@@ -759,7 +836,7 @@ function renderSettings() {
       <p class="hint">${t("settings.claude.hint")}</p></section>
     <p class="note" id="key-storage">${t(data.key_vault?"key.storage.vault":"key.storage.memory")}</p>
     ${["openrouter","perplexity","anthropic","google","elevenlabs","core"].map(key=>keyPanel(key,data)).join("\n    ")}
-    <section class="panel" id="settings-section-language"><h2>${t("settings.section.language")}</h2><div class="field"><label for="ui-language-settings">${t("language.select.label")}</label>${languageSelect("ui-language-settings")}</div>
+    <section class="panel" id="settings-section-language"><h2>${t("settings.section.language")}</h2><div class="field"><label for="ui-language-settings">${t("language.select.label")}</label>${languageSelect("ui-language-settings")}</div><div class="field"><label for="ui-theme-settings">${t("theme.label")}</label><select id="ui-theme-settings" data-ui-theme>${THEMES.map(value=>`<option value="${value}" ${themeChoice()===value?"selected":""}>${t(`theme.${value}`)}</option>`).join("")}</select><p class="hint">${t("theme.hint")}</p></div>
       <p class="hint">${t("settings.language.hint")}</p></section>
     <div class="action-bar settings-save"><p id="settings-dirty" class="hint${settingsDirty?" dirty":""}">${t(settingsDirty?"settings.dirty":"settings.clean")}</p><button data-action="save-settings">${t("settings.save")}</button></div>`;
 }
@@ -1203,11 +1280,11 @@ function renderOutline() {
     return html+empty(t("outline.empty.title"),t("outline.empty.text"),t("outline.empty.button"),PAGE.research,pageIntros.outline);
   }
   const p=outline.plan, approved=outline.approval?.plan_hash===outline.hash;
+  if(approved)return renderSeries(outline,p);
   html+=`<section class="panel tinted"><h2 class="outline-question">${escape(p.central_question)}</h2><p>${escape(p.explanation_path)}</p><div class="outline-summary"><span>${t("outline.episodes",{count:asHtml(`<strong>${p.episodes.length}</strong>`)})}</span><span>${t("outline.minutes",{minutes:asHtml(`<strong>${Math.round(p.episodes.reduce((s,e)=>s+e.target_minutes,0))}</strong>`)})}</span><span>${t(approved?"outline.approved_state":"outline.awaiting")}</span></div><p class="hint">${escape(p.scope_note)}</p></section>`;
   html+=p.episodes.map((e,i)=>`<section class="panel"><div class="episode-head"><span class="episode-num">${String(i+1).padStart(2,"0")}</span><div><h2>${escape(e.title)}</h2><p>${escape(e.central_question)}</p></div><span class="tag">${t("outline.episode_minutes",{minutes:Math.round(e.target_minutes)})}</span>${episodeState(e)}</div><ol class="chapters">${e.scenes.map((s,n)=>`<li><span>${String(n+1).padStart(2,"0")}</span><div><strong>${escape(s.title)}</strong><p>${escape(s.question)}</p><details><summary>${t("outline.explained")}</summary>${s.explanation_steps.map(x=>`<p>${escape(x)}</p>`).join("")}</details></div></li>`).join("")}</ol>${e.deferred_questions.length?`<details><summary>${t("outline.deferred")}</summary>${e.deferred_questions.map(q=>`<p>${escape(q)}</p>`).join("")}</details>`:""}</section>`).join("");
   const canReplan = !Object.entries(project.job?.run?.stages || {}).some(([n,r])=>n!=="planning"&&r.attempts>0);
-  html+=approved?(outline.next_episode?writingPanel(outline,p):seriesReviewPanel(outline,p)):
-    `<div class="action-bar"><details class="action-note"><summary>${t("outline.feedback.summary")}</summary>${area("outline-feedback",t("outline.feedback.label"),"",3)}</details><div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>${t("outline.replan")}</button><button data-action="script" ${disabled()}>${t("outline.approve")}</button></div><p class="hint">${outlineSentence(p)}</p><p class="hint">${t("outline.approve_hint")}</p></div>`;
+  html+=`<div class="action-bar"><details class="action-note"><summary>${t("outline.feedback.summary")}</summary>${area("outline-feedback",t("outline.feedback.label"),"",3)}</details><div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>${t("outline.replan")}</button><button data-action="script" ${disabled()}>${t("outline.approve")}</button></div><p class="hint">${outlineSentence(p)}</p><p class="hint">${t("outline.approve_hint")}</p></div>`;
   if(!canReplan)html+=`<details class="restart-options"><summary>${t("outline.new.summary")}</summary><p>${t("outline.new.text")}</p><button class="secondary" data-action="plan" ${disabled()}>${t("button.new_outline")}</button></details>`;
   return html;
 }
@@ -1220,10 +1297,40 @@ function episodeState(e) {
   if(row?.run_id)return `<span class="tag ok">${t("outline.episode_written")}</span>`;
   return e.episode_id===outline.next_episode?`<span class="tag">${t("outline.episode_next")}</span>`:"";
 }
-function writingPanel(outline,p) {
+// Serie (D-185): the approved outline as the series' board. The page head writes the next episode or all remaining
+// ones; every episode is one row with its way (plan, text, check, sound) and its next step, its chapters on request.
+function renderSeries(outline,p) {
   const total=p.episodes.length, written=(outline.episodes||[]).filter(r=>r.run_id).length;
   const index=p.episodes.findIndex(e=>e.episode_id===outline.next_episode);
-  return `<section class="panel tinted"><h2>${t("outline.writing.title")}</h2><p>${t("outline.writing.text",{written,total})}</p><p>${t("outline.writing.next",{number:index+1,title:quoted(p.episodes[index].title)})}</p><div class="actions"><button data-action="episode" ${disabled()}>${t("outline.writing.next_button")}</button>${total-written>1?`<button class="secondary" data-action="episodes" ${disabled()}>${t("outline.writing.all_button",{count:total-written})}</button>`:""}</div><p class="hint">${t("outline.writing.hint")}</p></section>`;
+  const action=outline.next_episode?`<button data-action="episode" ${disabled()}>${t("outline.writing.next_button")}</button>${total-written>1?`<button class="secondary" data-action="episodes" ${disabled()}>${t("outline.writing.all_button",{count:total-written})}</button>`:""}`:"";
+  const minutes=Math.round(p.episodes.reduce((sum,e)=>sum+Number(e.target_minutes||0),0));
+  let html=heading(3,action)+'<div id="stop-card"></div>';
+  html+=`<section class="series-summary"><p class="series-lead">${escape(p.central_question)}</p>
+    <p class="series-state">${t("outline.episodes",{count:asHtml(`<strong>${total}</strong>`)})} · ${t("outline.minutes",{minutes:asHtml(`<strong>${minutes}</strong>`)})} · ${t("outline.writing.text",{written,total})}${outline.next_episode?` ${t("outline.writing.next",{number:index+1,title:quoted(p.episodes[index].title)})}`:""}</p>
+    <details class="hint-toggle"><summary>${t("series.structure")}</summary><p>${escape(p.explanation_path)}</p><p>${t("series.order")} ${t("outline.writing.hint")}</p><p class="hint">${escape(p.scope_note)}</p></details></section>`;
+  if(!outline.next_episode)html+=seriesReviewPanel(outline,p);
+  html+=`<section class="series-board" aria-label="${t("nav.place.series")}"><div class="series-columns" aria-hidden="true"><span>${t("series.col.episode")}</span><span class="lifeline-key">${["plan","text","check","sound"].map(key=>`<span>${t(`series.col.${key}`)}</span>`).join("")}</span><span></span></div>
+    <ol class="series-rows">${p.episodes.map((e,i)=>seriesRow(e,i,outline)).join("")}</ol></section>`;
+  return html;
+}
+function seriesRow(e,i,outline) {
+  const row=(outline.episodes||[]).find(r=>r.episode_id===e.episode_id), id=escape(e.episode_id);
+  const published=(project.episodes||[]).find(x=>x.script?.episode_id===e.episode_id);
+  const job=project.job, progress=job?.progress||{};
+  const writing=job?.status==="running"&&(job.run?.kind==="script"||["script","episode","episodes","revise"].includes(job.action))&&
+    (progress.current_episode?progress.current_episode===e.episode_id:outline.next_episode===e.episode_id);
+  const written=!!row?.run_id, voiced=!!published?.audio?.length;
+  const marks=["done",writing?"running":written?"done":"",written&&!writing?"done":"",voiced?"done":""];
+  const words={done:tp("series.mark.done"),running:tp("series.mark.running"),"":tp("series.mark.open")};
+  const label=["plan","text","check","sound"].map((key,n)=>`${tp(`series.col.${key}`)} ${words[marks[n]]}`).join(", ");
+  const action=writing?`<span class="chip running">${t("series.row.writing")}</span>`:
+    voiced?`<button class="secondary small" data-open-episode="${id}" data-open-page="${PAGE.audio}">${t("series.row.listen")}</button>`:
+    published?`<button class="secondary small" data-open-episode="${id}" data-open-page="${PAGE.scripts}">${t("series.row.read")}</button>`:"";
+  const chapters=e.scenes.length?`<details class="episode-chapters"><summary>${t("series.chapters",{count:e.scenes.length})}</summary><ol class="chapters">${e.scenes.map((sc,n)=>`<li><span>${String(n+1).padStart(2,"0")}</span><div><strong>${escape(sc.title)}</strong><p>${escape(sc.question)}</p><details><summary>${t("outline.explained")}</summary>${sc.explanation_steps.map(x=>`<p>${escape(x)}</p>`).join("")}</details></div></li>`).join("")}</ol>${e.deferred_questions.length?`<details><summary>${t("outline.deferred")}</summary>${e.deferred_questions.map(q=>`<p>${escape(q)}</p>`).join("")}</details>`:""}</details>`:"";
+  return `<li class="series-row${writing?" running":""}" id="episode-row-${id}"><span class="episode-num">${String(i+1).padStart(2,"0")}</span>
+    <div class="episode-main"><strong>${escape(published?.script?.title||e.title)}</strong><span class="hint">${t("outline.episode_minutes",{minutes:Math.round(e.target_minutes)})} · ${escape(e.central_question)}</span>${chapters}</div>
+    <span class="lifeline" role="img" aria-label="${escape(label)}">${marks.map(m=>`<span${m?` class="${m}"`:""}></span>`).join("")}</span>
+    <span class="episode-act">${episodeState(e)}${action}</span></li>`;
 }
 function seriesReviewPanel(outline,p) {
   const review=outline.series_review, total=p.episodes.length;
@@ -1258,8 +1365,8 @@ function renderProductionDetails() {
     const record=run?.stages?.[key];
     // A stopped stage goes back to pending with the interruption noted; it resumes, it does not simply follow.
     const status=record?.status==="pending"&&record?.error?.code==="interrupted"?"interrupted":record?.status||(finished?"completed":"pending");
-    return `<li class="${escape(status)}"><span class="phase-marker" aria-hidden="true">${status==="completed"?"✓":status==="running"?"●":status==="pending"?"○":"!"}</span><div><strong>${title}</strong><p>${description}</p></div><span class="phase-status">${labels[status]||t("production.status.open")}</span></li>`;
-  }).join("")}${renderExpressionStage(finished)}</ol><p class="hint">${t("production.hint")}</p></section>`;
+    return `<li class="${escape(status)}"><span class="phase-marker" aria-hidden="true">${status==="completed"?"✓":status==="running"?"●":status==="pending"?"○":"!"}</span><div><strong>${title}</strong>${["completed","pending"].includes(status)?"":`<p>${description}</p>`}</div><span class="phase-status">${labels[status]||t("production.status.open")}</span></li>`;
+  }).join("")}${renderExpressionStage(finished)}</ol>${howItWorks(t("production.hint"))}</section>`;
   html+=renderScriptProgress(project?.job?.progress,active);
   const readable=readableScripts().length;
   if(!finished&&readable)html+=`<section class="panel tinted"><h2>${t("production.readable",{count:readable})}</h2><p>${t("production.readable_text")}</p><button data-step="${PAGE.scripts}">${t("production.read_now")}</button></section>`;
@@ -1271,7 +1378,16 @@ function renderProductionDetails() {
   else if(active)html+=`<p class="hint">${t("production.active_hint")}</p>`;
   return html;
 }
-function episodePicker() { return `<div class="field"><label for="episode-select">${t("audio.pick_episode")}</label><select id="episode-select">${project.episodes.map((e,i)=>`<option value="${i}" ${i===episodeIndex?"selected":""}>${i+1}. ${escape(e.script.title)}</option>`).join("")}</select></div>`; }
+// An episode's number in its series (D-185): its place in the outline, else its id's number. The reader, the recording
+// page and the player all call episode 7 "7" (2026-11-01: the reader called it "Folge 1 von 1", the picker "1.").
+function episodeNumber(id) {
+  const plan=project?.outline?.plan?.episodes||[], index=plan.findIndex(e=>e.episode_id===id);
+  if(index>=0)return index+1;
+  const match=/^ep_0*(\d+)$/.exec(id||"");
+  return match?Number(match[1]):0;
+}
+const seriesTotal=rows=>Math.max(project?.outline?.plan?.episodes?.length||0,rows.length,...rows.map(row=>episodeNumber(row.script.episode_id)));
+function episodePicker() { return `<div class="field"><label for="episode-select">${t("audio.pick_episode")}</label><select id="episode-select">${project.episodes.map((e,i)=>`<option value="${i}" ${i===episodeIndex?"selected":""}>${episodeNumber(e.script.episode_id)||i+1}. ${escape(e.script.title)}</option>`).join("")}</select></div>`; }
 function readerEntries() {
   const entries=readableScripts();
   if(readingSnapshot?.projectId===project?.id&&!entries.some(e=>e.script.episode_id===readingSnapshot.entry.script.episode_id))entries.push(readingSnapshot.entry);
@@ -1287,9 +1403,9 @@ function renderReaderControls() {
   const latest=readableScripts().find(row=>row.script.episode_id===e.script.episode_id);
   const updated=latest&&readerVersion(latest)!==readerVersion(e);
   const read=entries.filter(isRead).length;
-  const label=(row,i)=>`${i+1}. ${escape(row.script.title)}${row.preview?` · ${scriptStateLabels[row.state]}`:""}${isRead(row)?` · ${t("reader.read_mark")}`:""}`;
+  const label=(row,i)=>`${episodeNumber(row.script.episode_id)||i+1}. ${escape(row.script.title)}${row.preview?` · ${scriptStateLabels[row.state]}`:""}${isRead(row)?` · ${t("reader.read_mark")}`:""}`;
   const neighbour=(delta,text)=>{const row=entries[index+delta];return `<button type="button" class="secondary small" data-reader-episode="${row?escape(row.script.episode_id):""}" ${row?"":"disabled"}>${text}</button>`;};
-  return `<div class="reader-nav">${neighbour(-1,t("reader.previous"))}<div class="field"><label for="script-select">${t("reader.position",{index:index+1,total:entries.length})}${read?` · ${t("reader.read_count",{count:read})}`:""}</label><select id="script-select">${entries.map((row,i)=>`<option value="${escape(row.script.episode_id)}" ${row.script.episode_id===e.script.episode_id?"selected":""}>${label(row,i)}</option>`).join("")}</select></div>${neighbour(1,t("reader.next"))}</div>
+  return `<div class="reader-nav">${neighbour(-1,t("reader.previous"))}<div class="field"><label for="script-select">${t("reader.position",{index:episodeNumber(e.script.episode_id)||index+1,total:seriesTotal(entries)})}${read?` · ${t("reader.read_count",{count:read})}`:""}</label><select id="script-select">${entries.map((row,i)=>`<option value="${escape(row.script.episode_id)}" ${row.script.episode_id===e.script.episode_id?"selected":""}>${label(row,i)}</option>`).join("")}</select></div>${neighbour(1,t("reader.next"))}</div>
     ${e.preview?`<p><span class="tag">${t("reader.opened",{state:scriptStateLabels[e.state]})}</span></p>`:""}
     ${updated?`<p class="note">${t("reader.updated")}</p><button class="secondary small" data-action="refresh-script">${t("reader.load_current")}</button>`:""}
     ${e.preview?`<p class="note">${t(e.state==="draft"?"reader.preview.draft":e.state==="narrated"?"reader.preview.narrated":e.state==="polished"?"reader.preview.polished":"reader.preview.reviewed")} ${t("reader.preview.tail")}</p>`:""}
@@ -1357,7 +1473,7 @@ function advisoryText(row) {
   if(!row.params||typeof row.params!=="object"||!hasText(key))return String(row.detail??"");
   return tp(key,Object.fromEntries(Object.entries(row.params).map(([name,value])=>[name,typeof value==="number"?fmt.number(value,{maximumFractionDigits:1}):String(value??"")])));
 }
-function renderReviewNotes(entry) {
+function renderReviewNotes(entry, open=false) {
   // The published report is the only source; a preview has been through no full review yet.
   const notes=entry.preview?null:project.episodes.find(row=>row.script.episode_id===entry.script.episode_id)?.review_notes;
   const groups=Object.keys(reviewNoteLabels).filter(name=>notes?.[name]?.length);
@@ -1369,7 +1485,7 @@ function renderReviewNotes(entry) {
     :name==="dismissed_gaps"?`<strong>${escape(row.gap)}</strong><p>${escape(row.reason)}</p>`
     :name==="advisories"?`<strong>${escape(row.code)}</strong><p>${escape(advisoryText(row))}${row.segment_ids?.length?` (${row.segment_ids.map(escape).join(", ")})`:""}</p>`
     :`<p>${escape(row)}</p>`;
-  return `<details class="panel review-notes"><summary>${t("review_notes.title")}</summary>
+  return `<details class="panel review-notes"${open?" open":""}><summary>${t("review_notes.title")}</summary>
     <p class="hint">${t("review_notes.hint")}</p>${scores}
     ${groups.map(name=>`<h3>${escape(reviewNoteLabels[name])}</h3><ul>${notes[name].map(row=>`<li>${line(name,row)}</li>`).join("")}</ul>`).join("")}</details>`;
 }
@@ -1378,7 +1494,8 @@ function renderReviewNotes(entry) {
 function hostLabels(episodeId=null) {
   const names=project?.config?.host_names||{}, a=currentAudio();
   const voices=a?.voices?(episodeId?episodeVoices(a,episodeId):a.voices):{};
-  const fallback=(role,letter)=>voices?.[role]?`${voices[role]} · Host ${letter}`:`Host ${letter}`;
+  const named=role=>{const name=voices?.[role]?voiceName(voices[role]):"";return name&&name!==tp("voice.eleven_unnamed")?name:"";};
+  const fallback=(role,letter)=>named(role)?`${named(role)} · Host ${letter}`:`Host ${letter}`;
   // A third host (D-179) is always named by the brief.
   const third=project?.config?.third_host;
   return {host_a:names.host_a||fallback("host_a","A"),host_b:names.host_b||fallback("host_b","B"),
@@ -1456,8 +1573,9 @@ function refreshScriptReader() {
 }
 // Reading: a sticky reader bar, chapters as a table of contents, the text in a measured column, notes in the margin.
 function renderScript() {
-  let html=heading(5);
   const entries=readerEntries();
+  const toAudio=entries.some(e=>!e.preview)?`<button data-step="${PAGE.audio}" data-episode-tab="listen">${t("reader.to_audio")}</button>`:"";
+  let html=heading(5,toAudio);
   if(!entries.length) return html+(approvedOutline()||hasProduction(currentRun())?
     empty(t("script.empty.waiting.title"),t("script.empty.waiting.text"),t("script.empty.waiting.button"),PAGE.production,pageIntros.scripts):
     empty(t("script.empty.outline.title"),t("script.empty.outline.text"),t("production.empty.button"),PAGE.outline,pageIntros.scripts));
@@ -1471,7 +1589,8 @@ function renderScript() {
   const expression=expressionActive()?published?.expression:null;
   const toc=s.chapters.map((chapter,i)=>({level:1,id:`ch-${chapter.chapter_id}`,html:`${i+1}. ${escape(chapter.title)}`}));
   const speakers=hostLabels(s.episode_id);
-  let text=`<h2 class="reader-title">${escape(s.title)}</h2>`;
+  // The episode's title stands in the page head (D-185); the text starts with its first chapter.
+  let text="";
   for(const chapter of s.chapters) text+=`<span class="doc-anchor" id="ch-${escape(chapter.chapter_id)}"></span><h3>${escape(chapter.title)}</h3>`+s.segments.filter(x=>x.chapter_id===chapter.chapter_id).map(x=>`<div class="utterance ${x.speaker_id}"><strong>${escape(speakers[x.speaker_id])}</strong>${expressiveText(x,expression)}${spoken?renderSpokenOverride(s.episode_id,x,spoken):""}</div>`).join("");
   // The end of an episode marks it read and leads to the next one.
   const entries2=readerEntries(), next=entries2[entries2.findIndex(row=>row.script.episode_id===s.episode_id)+1];
@@ -1480,8 +1599,12 @@ function renderScript() {
   // What the editor decides stands first in the margin, above the facts and the review notes (D-161): before, the
   // approval sat at the foot of a panel that scrolled on its own.
   const feedback=e.preview?`<section class="panel"><p class="hint">${t("reader.preview_feedback")}</p><button class="secondary" data-step="${PAGE.production}">${t("reader.follow_production")}</button></section>`
-    :`<section class="panel"><h2>${t("reader.feedback.title")}</h2><div class="actions"><button data-step="${PAGE.audio}">${t("reader.to_audio")}</button>${readButton}</div>${area("script-feedback",t("reader.feedback.label"),"",3)}<div class="actions"><button class="secondary" data-action="revise" ${disabled()}>${t("reader.revise")}</button></div><p class="hint">${t("reader.revise_hint")}</p></section>`;
-  html+=`<div id="script-reader-controls" class="reader-bar">${renderReaderControls()}</div><div class="doc reader-doc">${tocMarkup(toc,t("reader.chapters"))}<article id="script-text" class="panel reader doc-main">${text}</article><aside class="doc-rail">${feedback}<div class="outline-summary"><span>${t("reader.words",{words:fmt.number(e.metrics.words)})}</span><span>${t("reader.minutes",{minutes:Math.round(e.metrics.estimated_minutes)})}</span><span>${t("reader.chapter_count",{count:s.chapters.length})}</span></div>${published?renderExpressionPanel(published):""}${renderReviewNotes(e)}</aside></div>`;
+    :`<section class="panel"><h2>${t("reader.feedback.title")}</h2><div class="actions">${readButton}</div>${area("script-feedback",t("reader.feedback.label"),"",3)}<div class="actions"><button class="secondary" data-action="revise" ${disabled()}>${t("reader.revise")}</button></div>${howItWorks(t("reader.revise_hint"))}</section>`;
+  if(tabOn(PAGE.scripts)==="notes"){
+    const notes=renderReviewNotes(e,true);
+    return html+`<div id="script-reader-controls" class="reader-bar">${renderReaderControls()}</div><div class="form-page">${notes||`<section class="panel"><p>${t(e.preview?"episode.notes_preview":"episode.notes_none")}</p></section>`}${published?renderExpressionPanel(published):""}</div>`;
+  }
+  html+=`<div id="script-reader-controls" class="reader-bar">${renderReaderControls()}</div><div class="doc reader-doc">${tocMarkup(toc,t("reader.chapters"))}<article id="script-text" class="panel reader doc-main">${text}</article><aside class="doc-rail">${feedback}<div class="outline-summary"><span>${t("reader.words",{words:fmt.number(e.metrics.words)})}</span><span>${t("reader.minutes",{minutes:Math.round(e.metrics.estimated_minutes)})}</span><span>${t("reader.chapter_count",{count:s.chapters.length})}</span></div>${published?renderExpressionPanel(published):""}</aside></div>`;
   return html;
 }
 // The sticky reader bar's height, so the chapter list and the margin stick below it instead of under it.
@@ -1684,7 +1807,7 @@ function renderApprovalCard(e,a,remote) {
     <dl>
     <dt>${t("approval.text")}</dt><dd>${e.audio?.length?(e.audio_current?t("approval.text.current"):t("approval.text.outdated",{changes:staleText(e.audio_stale)||tp("approval.text.changes_default")})):t("approval.text.unvoiced")} <button class="quiet small" data-step="4">${t("approval.read_script")}</button></dd>
     <dt>${t("summary.voices")}</dt><dd>${voices}${project.config.third_host?` · ${t("approval.third_voice",{name:project.config.third_host.name,voice:thirdVoiceOf(a)?voiceName(thirdVoiceOf(a)):tp("approval.third_voice_missing")})}`:""} · ${languageName(project.config.language)} <button class="quiet small" data-action="open-settings">${t("approval.change_voices")}</button></dd>
-    <dt>${t("settings.audio.provider")}</dt><dd class="hint">${t(isEleven(a.provider)?"approval.provider.elevenlabs":google?"approval.provider.google":remote?"approval.provider.openrouter":"approval.provider.qwen")} ${t("approval.provider.tail")}</dd>
+    <dt>${t("settings.audio.provider")}</dt><dd>${escape(audioLabel(a))}${howItWorks(`${t(isEleven(a.provider)?"approval.provider.elevenlabs":google?"approval.provider.google":remote?"approval.provider.openrouter":"approval.provider.qwen")} ${t("approval.provider.tail")}`)}</dd>
     ${remote&&speechSize([e])?`<dt>${t("approval.size")}</dt><dd>${escape(speechSize([e]))} <span class="hint">${SPEECH_SIZE_NOTE}</span></dd>`:""}
     ${remote&&!keyAvailable(key)?`<dt>${t("approval.access")}</dt><dd>${inlineKey("audio-key",false,"",key)}</dd>`:""}
     <dt>${t("approval.pronunciation")}</dt><dd>${pronunciation||`<span class="hint">${t("approval.pronunciation_none")}</span>`}</dd>
@@ -1745,7 +1868,8 @@ function renderAudio() {
   // Older recordings stay playable; the page says once what they differ in instead of nineteen times (D-160).
   const outdated=facts.outdated?`<p class="note">${t(facts.outdated===facts.voiced?"audio.outdated.all":"audio.outdated.some",{count:facts.outdated})}${facts.reasons.length?` (${t("audio.outdated.changed",{reasons:staleText(facts.reasons)})})`:""}. ${t("audio.outdated.tail")}</p>`:"";
   // The recordings come before the per-episode extras: listening is what the page is visited for most.
-  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}${renderPublishKit(e)}${renderPodcastKit()}</div><aside class="split-rail">${capacity}${renderOwnAudio(a)}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
+  if(tabOn(PAGE.audio)==="kit")return html+`<div class="form-page">${episodePicker()}${renderPublishKit(e)}${renderPodcastKit()}</div>`;
+  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}</div><aside class="split-rail">${capacity}${renderOwnAudio(a)}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
   return html;
 }
 // The card's one line, from the same facts the steps and the header use (D-160).
@@ -1895,7 +2019,7 @@ function attentionOf(p) {
   if(review?.awaiting&&!review.approved)return {text:tp("attention.plan.text"),button:tp("attention.plan.button"),page:PAGE.research};
   if(j?.status==="review_ready")return {text:tp("attention.outline_ready"),button:tp("attention.outline_button"),page:PAGE.outline};
   const info=stopInfo(j);
-  if(info)return {text:info.message&&info.message!==info.text&&sameLanguage(info)?`${info.title}: ${info.message}`:info.title,
+  if(info)return {text:info.message&&info.message!==info.text&&sameLanguage(info)?`${info.title}: ${firstSentence(info.message)}`:info.title,
     button:tp(info.kind==="decision"?"attention.decide":"attention.view"),page:jobPage(p)??PAGE.brief};
   const halted=stoppedAudio(p).filter(a=>a.id!==j?.id);
   if(halted.length){
@@ -1912,6 +2036,13 @@ function attentionOf(p) {
   // Recordings from an earlier state stay playable and ask for nothing; an episode without any recording does.
   if(p.script_count&&audio.unvoiced)return {text:tp("attention.unvoiced",{count:audio.unvoiced}),button:tp("attention.view_audio"),page:PAGE.audio};
   return null;
+}
+// A stop message on a card is its first sentence, at most about two lines (D-185); the whole message stands on the
+// project's page (2026-11-01: a card held a stop message of twelve lines).
+function firstSentence(text, max=150) {
+  const value=String(text??"").trim(), end=value.search(/[.!?](\s|$)/);
+  const sentence=end>=0?value.slice(0,end+1):value;
+  return sentence.length>max?sentence.slice(0,max-1).trimEnd()+"…":sentence;
 }
 // The one step a stopped project's page recommends, offered on its overview card as one click (the user's wish,
 // 2026-10-08: each stop took "Ansehen", then "Fortsetzen"). Only steps that need no input on the page: the header's
@@ -1979,6 +2110,31 @@ const PIPE_WORDS=Object.fromEntries(["done","running","decision","paused","block
 const pipeMarkup = states => states.map((s,i)=>`<span class="${s}" title="${steps[i]}: ${PIPE_WORDS[s]||s}"></span>`).join("");
 const pipeLabel = states => states.map((s,i)=>`${steps[i]}: ${PIPE_WORDS[s]||s}`).join(", ");
 const cardClass = p => `pipeline${runningOf(p)?" running":attentionOf(p)?" waiting":""}`;
+// A card's state as one of the five badges (D-186): running, waiting for the editor, stopped, done or ready. Its
+// tooltip still names every step, as the six-part bar with its legend did before.
+function cardTone(p) {
+  if(p.unavailable)return "blocked";
+  if(runningOf(p))return "running";
+  const info=stopInfo(p.job);
+  if(info)return stopTone(info);
+  if(attentionOf(p))return "decision";
+  const audio=audioFacts(p);
+  return audio.voiced&&!audio.unvoiced&&audio.voiced>=(Number(p.episode_count)||0)?"done":"ready";
+}
+// One mark per planned episode: recorded, written, or still to come. The episodes of a series are ep_001 onwards.
+function episodeStrip(p) {
+  const total=Number(p.episode_count)||0;
+  if(total<2)return "";
+  const rows=new Map((p.episodes||[]).map(e=>[e.episode_id,e]));
+  const marks=Array.from({length:total},(_,i)=>{const row=rows.get(`ep_${String(i+1).padStart(3,"0")}`);
+    return row?.audio?.length?"done":row?"written":"";});
+  const voiced=marks.filter(m=>m==="done").length, written=marks.filter(Boolean).length;
+  return `<div class="episode-strip" role="img" aria-label="${t("card.strip",{total,written,voiced})}">${marks.map(m=>`<span${m?` class="${m}"`:""}></span>`).join("")}</div>`;
+}
+function cardCounts(p) {
+  const total=Number(p.episode_count)||0, written=Number(p.script_count)||0, voiced=audioFacts(p).voiced;
+  return total?t("card.counts",{count:total,written,voiced}):"";
+}
 // The numbers a running or stopped text run reached, in one line under the card's state (the user's wish, 2026-10-08:
 // "49 von 74 geprüft, 5 in Arbeit …" took asking each time): sub-questions verified, in work and blocked (and how many
 // of those only wait for a prerequisite), else the segments done, and the calls of the run's limit.
@@ -2017,11 +2173,13 @@ function overviewCardInner(p) {
   const nextButton=next?`<button class="small" data-card-action="${escape(next.kind)}" data-card-project="${id}" data-run-id="${escape(next.runId)}">${escape(next.label)}</button>`:"";
   const open=nextButton+(a?`<button class="${next?"secondary ":""}small" data-open-project="${id}" data-open-step="${a.page}">${escape(a.button)}</button>`
     :`<button class="secondary small" data-open-project="${id}">${t("overview.open")}</button>`);
-  return `<div class="pipeline-main"><h2><button type="button" class="card-title" data-open-project="${id}" title="${escape(p.topic)}">${escape(p.topic)}</button>${p.trial?` ${trialChip()}`:""}${versionChip(p)}</h2>
-    <div class="pipe" id="pipe-${id}" role="img" aria-label="${escape(pipeLabel(states))}">${pipeMarkup(states)}</div>
+  const tone=cardTone(p), counts=cardCounts(p);
+  return `<div class="pipeline-main"><div class="card-head"><h2><button type="button" class="card-title" data-open-project="${id}" title="${escape(p.topic)}">${escape(p.topic)}</button></h2>
+    <span class="chip ${tone}" id="pipe-${id}" title="${escape(pipeLabel(states))}">${escape(PIPE_WORDS[tone])}</span></div>
+    ${counts||p.trial||versionChip(p)?`<p class="card-meta">${p.trial?`${trialChip()} `:""}${versionChip(p)}${counts?` <span class="card-counts">${counts}</span>`:""}</p>`:""}${episodeStrip(p)}
     <p class="card-state" id="project-state-${id}">${a?`<strong>${escape(a.text)}</strong>`:escape(overviewStatus(p))}</p>${numbers?`<p class="card-progress" id="project-progress-${id}">${escape(numbers)}</p>`:""}</div>
-    <div class="actions">${open}${hasAudio?`<button class="secondary small" data-open-project="${id}" data-open-step="${PAGE.audio}">${t("overview.listen")}</button>`:""}<span id="overview-download-${id}">${overviewDownload(p)}</span>
-    <details class="card-menu"><summary aria-label="${t("overview.more_label",{topic:shortText(p.topic,40)})}">⋯</summary><div class="card-menu-list">${boot.capabilities?.project_versions?`<button class="quiet small" data-new-version="${id}" ${p.unavailable?"disabled":""}>${t("version.new")}</button>`:""}<button class="quiet small danger-text" data-delete-project="${id}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>${t("overview.delete")}</button></div></details></div>`;
+    <div class="actions">${hasAudio?`<button class="quiet small" data-open-project="${id}" data-open-step="${PAGE.audio}">${t("overview.listen")}</button>`:""}${open}
+    <details class="card-menu"><summary aria-label="${t("overview.more_label",{topic:shortText(p.topic,40)})}">⋯</summary><div class="card-menu-list"><span id="overview-download-${id}">${overviewDownload(p)}</span>${boot.capabilities?.project_versions?`<button class="quiet small" data-new-version="${id}" ${p.unavailable?"disabled":""}>${t("version.new")}</button>`:""}<button class="quiet small danger-text" data-delete-project="${id}" ${p.unavailable||busy||!boot.capabilities?.project_overview?"disabled":""}>${t("overview.delete")}</button></div></details></div>`;
 }
 function overviewCard(p) {
   return `<article class="${cardClass(p)}" id="project-card-${escape(p.id)}" data-project-card="${escape(p.id)}">${overviewCardInner(p)}</article>`;
@@ -2049,10 +2207,9 @@ function trashMarkup() {
   return overviewData.trash?.length?`<details class="panel"><summary>${t("overview.trash",{count:overviewData.trash.length})}</summary>${overviewData.trash.map(p=>`<div class="sample-row"><span>${escape(p.topic)}</span><button class="secondary small" data-restore-project="${escape(p.id)}">${t("overview.restore")}</button></div>`).join("")}</details>`:"";
 }
 function renderOverview() {
-  const legend=["done","running","decision","paused","blocked"].map(s=>`<span class="${s}"></span>${PIPE_WORDS[s]}`).join(" ");
   return `<header class="page-head"><div class="page-title"><span class="eyebrow">${t("overview.eyebrow")}</span><h1>${escape(tp("overview.heading"))}</h1></div><button data-new-project>＋ ${t("project.new")}</button></header>
-    <section class="projects" aria-label="${t("sidebar.projects")}"><div class="projects-head"><h2>${t("sidebar.projects")}</h2>${overviewData.projects.length?`<p class="pipe-legend" aria-hidden="true">${legend}</p>`:""}</div>
-    <div id="overview-projects">${overviewData.projects.length?sortedProjects().map(overviewCard).join(""):`<p id="overview-empty" class="hint">${t("overview.empty")}</p>`}</div></section><div id="overview-trash">${trashMarkup()}</div>`;
+    <section class="projects" aria-label="${t("sidebar.projects")}">
+    <div id="overview-projects" class="project-cards">${overviewData.projects.length?sortedProjects().map(overviewCard).join(""):`<p id="overview-empty" class="hint">${t("overview.empty")}</p>`}</div></section><div id="overview-trash">${trashMarkup()}</div>`;
 }
 async function loadOverview() {
   if(boot.capabilities?.project_overview)return await api("/api/projects");
@@ -2065,14 +2222,14 @@ async function showOverview() {
   if(!leaveSettings())return;
   const epoch=++navigationEpoch,data=await loadOverview();if(epoch!==navigationEpoch)return;
   overviewData=data;overviewPage=true;settingsPage=false;project=null;followWorkflow=false;pendingAttachments=[];
-  $("project-select").value="";updatePageUrl();render();
+  updatePageUrl();render();
 }
 async function showSettings(push=true) {
   if(setupSending)throw new Error(tp("chat.sending_wait"));
   const epoch=++navigationEpoch,data=await api("/api/settings");if(epoch!==navigationEpoch)return;
   settingsData=data;settingsDraft=structuredClone(data.settings);settingsPage=true;overviewPage=false;project=null;settingsDirty=false;
   followWorkflow=false;pendingAttachments=[];drawerOpen=false;
-  $("project-select").value="";updatePageUrl(push);render();
+  updatePageUrl(push);render();
 }
 function refreshOverview() {
   renderKeyNote();
@@ -3270,19 +3427,13 @@ function clearKeyReminder(key="openrouter") {
     if(data)data.key_reminder=(data.key_reminder||[]).filter(row=>(row.key||"openrouter")!==key);
   renderKeyNote();
 }
-function renderJob() {
+function renderJobView() {
   renderServerNote();
   const j=project?.job, box=$("job-status"), bar=$("job-bar");
   const clear=()=>{box.hidden=true;box.innerHTML="";bar.hidden=true;bar.innerHTML="";lastJobView="";dock(false);};
   if(overviewPage||!project){clear();return;}
   const details=step===PAGE.production?$("production-progress"):null;
-  if(details) {
-    const opened=new Set(Array.from(details.querySelectorAll?.("details[open][data-progress-episode]")||[],el=>el.dataset.progressEpisode));
-    const scrolls=new Map(Array.from(details.querySelectorAll?.("[data-progress-preview]")||[],el=>[el.dataset.progressPreview,el.scrollTop]));
-    details.innerHTML=renderProductionDetails();
-    for(const detail of details.querySelectorAll?.("[data-progress-episode]")||[])detail.open=opened.has(detail.dataset.progressEpisode);
-    for(const preview of details.querySelectorAll?.("[data-progress-preview]")||[])preview.scrollTop=scrolls.get(preview.dataset.progressPreview)||0;
-  }
+  if(details)replaceKeeping(details,renderProductionDetails());
   const audioPanel=step===PAGE.audio?$("audio-jobs"):null;
   if(audioPanel){const cards=renderAudioJobs();replaceKeeping(audioPanel,cards?`<section class="panel audio-jobs"><h2>${t("audio_jobs.title")}</h2>${cards}</section>`:"");}
   // A run recorded without a Studio job (an older project) still shows its stop and its resume.
@@ -3378,6 +3529,14 @@ function renderJob() {
   const traceList=box.querySelector?.(".trace-lines");
   if(traceList)traceList.scrollTop=traceAtEnd?traceList.scrollHeight:traceScroll;
 }
+// The strip at the top (D-185) is the one place for the running or stopped job; it is there only while the bar has
+// something to say, and the sticky parts of the page sit below it.
+function renderJob() {
+  renderJobView();
+  const shown=!$("job-bar").hidden, strip=$("topbar");
+  if(strip)strip.hidden=!shown;
+  document.body?.classList?.toggle?.("has-strip",shown);
+}
 // The dock opens only with something to show; its head is the one toggle (D-164).
 function showDrawer(summary, body) {
   const box=$("job-status");
@@ -3453,13 +3612,10 @@ function studioPlace(b) {
 async function refreshProjects() {
   boot=await api("/api/bootstrap");
   $("studio-place").innerHTML=studioPlace(boot);
-  $("project-select").innerHTML=`<option value="">${t("project.new")}</option>`+boot.projects.map(p=>`<option value="${escape(p.id)}">${escape(p.topic)}${p.version>1?` · ${escape(versionText(p))}`:""}</option>`).join("");
-  $("project-select").value=project?.id||"";
-  syncProjectSelect();
 }
 async function selectProject(id, loaded=null, requestedPage=null) {
   if(setupSending)throw new Error(tp("chat.sending_wait"));
-  if(!leaveSettings()){$("project-select").value="";return;}
+  if(!leaveSettings())return;
   const epoch=++navigationEpoch;
   const selected=id?(loaded||await api("/api/projects/"+encodeURIComponent(id))):null;
   if(epoch!==navigationEpoch)return;
@@ -3467,7 +3623,6 @@ async function selectProject(id, loaded=null, requestedPage=null) {
   pendingAttachments=[];drawerOpen=false;trialChecked=false;
   for(const key of Object.keys(accessChoices))delete accessChoices[key];
   project=selected;
-  $("project-select").value=id||"";
   episodeIndex=0;scriptEpisodeId=null;readingSnapshot=null;followWorkflow=requestedPage===null;briefChatOpen=false;
   step=requestedPage===null?recommendedPage():requestedPage;
   lastJobSignature=projectJobSignature(project);updatePageUrl();render();
@@ -3604,6 +3759,12 @@ async function approvePlan(button) {
   project=await api(`/api/projects/${project.id}`);lastJobView="";render();
   return {payload,raised,resumed:false};
 }
+// An episode opened from the series board: its script on the reading page, or its recording on the audio page.
+function openEpisode(id, page) {
+  if(page===PAGE.audio){const index=(project?.episodes||[]).findIndex(e=>e.script.episode_id===id);if(index>=0)episodeIndex=index;}
+  else{scriptEpisodeId=id;readingSnapshot=null;}
+  navigatePage(page===PAGE.audio?PAGE.audio:PAGE.scripts);
+}
 async function resumeFrom(button) {
   await start("resume",{run_id:button.dataset.runId||project.job?.run?.run_id||project.run?.run_id,...(button.dataset.episode?{episode:button.dataset.episode}:{})});
 }
@@ -3618,11 +3779,10 @@ document.addEventListener("change",event=>attempt(async()=>{
   markSettingsDirty(event.target);
   if(event.target.id==="chat-files")await queueAttachments(event.target.files);
   if(event.target.id==="trial-option"){trialChecked=!!event.target.checked;refreshAttachmentComposer();}
-  if(event.target.id==="project-select")await selectProject(event.target.value);
   if(event.target.id==="text-switch-choice"&&$("text-switch-model"))$("text-switch-model").hidden=event.target.value!=="openrouter";
   if(event.target.id==="text-switch-choice"&&$("text-switch-claude-model"))$("text-switch-claude-model").hidden=!CLAUDE_SWITCHES.has(event.target.value);
   if(event.target.id==="text-switch-choice"&&$("text-switch-cost"))$("text-switch-cost").hidden=!billedProvider(event.target.value);
-  if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);render();}
+  if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);scriptEpisodeId=project.episodes[episodeIndex]?.script.episode_id||scriptEpisodeId;readingSnapshot=null;render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
   if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason();
   // An access gap is accepted only for a refused source the editor chose (accessGapForm).
@@ -3652,6 +3812,7 @@ document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="settings-alternate"){settingsDraft=settingsFromForm();render();}
   if(event.target.id==="own-audio-provider"){ownAudioProvider=event.target.value;if(isEleven(ownAudioProvider))await loadElevenVoices();render();}
   if(event.target.hasAttribute?.("data-ui-language"))await chooseLanguage(event.target.value);
+  if(event.target.hasAttribute?.("data-ui-theme"))chooseTheme(event.target.value);
 }));
 document.addEventListener("click",event=>{
   const zip=event.target.closest?.("a.download-all");
@@ -3701,7 +3862,8 @@ document.addEventListener("click",event=>{
     if(button.dataset.newVersion){await newVersion(button.dataset.newVersion);return;}
     if(button.dataset.restoreProject){await api("/api/restore",{trash_id:button.dataset.restoreProject});await refreshProjects();overviewData=await loadOverview();refreshOverview();return;}
     if(button.dataset.setupReply){await sendSetupMessage(button.dataset.setupReply);return;}
-    if(button.dataset.step!==undefined){navigatePage(Number(button.dataset.step));$("main").focus();window.scrollTo(0,0);return;}
+    if(button.dataset.openEpisode){openEpisode(button.dataset.openEpisode,Number(button.dataset.openPage));$("main").focus();window.scrollTo(0,0);return;}
+    if(button.dataset.step!==undefined){episodeTab=button.dataset.episodeTab||null;navigatePage(Number(button.dataset.step));$("main").focus();window.scrollTo(0,0);return;}
     if(button.dataset.previewVoice){
       const voice=button.dataset.previewVoice,language=button.dataset.language,provider=button.dataset.previewProvider;
       if(isGemini(provider)&&!savedSample(voice,language)){
@@ -3983,6 +4145,7 @@ function localizePage() {
   for(const node of document.querySelectorAll("select[data-ui-language]"))node.value=LOCALE.setting;
 }
 localizePage();
+applyTheme();
 wirePlayer();
 window.addEventListener("resize",syncReaderOffset);
 window.addEventListener("beforeunload",event=>{if(settingsPage&&settingsDirty){event.preventDefault();event.returnValue="";}});

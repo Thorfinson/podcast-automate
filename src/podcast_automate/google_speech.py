@@ -163,9 +163,11 @@ def passage_settings(segments, spoken, voices, language, model=GEMINI_MODEL, sty
 
 
 def request_body(turns, voices, model, styles=None):
-    """The interactions request of one passage: one item per turn with its speaker and style; Google's conversational
-    mode when both hosts speak, else the one voice. A listener reaction needs the other host, so a passage of one host
-    speaks without its reactions."""
+    """The interactions request of one passage: one item per turn with its speaker and style; both hosts' speakers when
+    both speak, else the one voice. A listener reaction needs the other host, so a passage of one host speaks without
+    its reactions. Until 2026-10-23 the speakers came with ``"mode": "conversational"``; since then Google refuses the
+    field ("Unknown parameter 'mode'"), and its staff advised leaving it out (forum, 2026-10-29). The cache key stays:
+    the request asks for the same conversation."""
     styles = styles if styles is not None else DEFAULT_STYLES
     roles = list(dict.fromkeys(role for role, _ in turns))
     two = len(roles) > 1
@@ -175,8 +177,7 @@ def request_body(turns, voices, model, styles=None):
                     **({"style": styles.get(role, "")} if styles.get(role) else {})}
         content.append({"type": "text", "text": text if two else " ".join(BACKCHANNEL.sub(" ", text).split()),
                         **({"annotations": [{"type": "speech_metadata", **metadata}]} if metadata else {})})
-    speech = ({"mode": "conversational", "speakers": [{"speaker": SPEAKER_NAMES[role], "voice": voices[role]}
-                                                      for role in roles]}
+    speech = ({"speakers": [{"speaker": SPEAKER_NAMES[role], "voice": voices[role]} for role in roles]}
               if two else [{"voice": voices[roles[0]]}])
     return {"model": google_model(model), "input": [{"type": "user_input", "content": content}],
             "response_format": {"type": "audio"}, "generation_config": {"speech_config": speech}}

@@ -73,7 +73,7 @@ The other top-level folders are in the [README](README.md#layout). `projects/`, 
 | Suite | Command | Size | Needs |
 | --- | --- | --- | --- |
 | Python | `python -m unittest discover -s tests` | about 1,250 tests, about 20 minutes (each script run starts the fake story agent as a process) | `ffmpeg` and `ffprobe` on PATH |
-| Browser logic | `node --test tests/studio_ui.test.cjs` | 220 tests, under 1 s | Node 22 |
+| Browser logic | `node --test tests/studio_ui.test.cjs` | 222 tests, under 1 s | Node 22 |
 
 Model calls, downloads and speech synthesis are simulated in both suites; FFmpeg assembly is real.
 No account, API key, GPU or network is needed. Never add a test that performs a real model call.

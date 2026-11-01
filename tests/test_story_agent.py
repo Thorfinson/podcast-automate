@@ -21,11 +21,11 @@ from podcast_automate.storage import read_yaml, write_json, write_yaml
 from podcast_automate.errors import AppError
 from podcast_automate.models import ResearchLimits
 from podcast_automate.scripting import STARTING_RATES, measured_rate, speaking_rate
-from podcast_automate.story_agent import (ALLOWED_TOOLS, TARGET_SHARE, CritiqueScores, OrientationCheck,
-                                          OrientationItem, OrientationReview, OrientationSheet, Scale, StoryCritique,
-                                          draft_errors, earlier_episodes, echo_errors, planned_entry, prepare,
-                                          run_agent, session_command, session_files, session_timeout, task_text,
-                                          used_documents)
+from podcast_automate.story_agent import (ALLOWED_TOOLS, TARGET_SHARE, CritiquePoint, CritiqueScores, EarlierPoint,
+                                          OrientationCheck, OrientationItem, OrientationReview, OrientationSheet,
+                                          Scale, StoryCritique, draft_errors, earlier_episodes, echo_errors,
+                                          planned_entry, prepare, request_critique, run_agent, serve_critiques,
+                                          session_command, session_files, session_timeout, task_text, used_documents)
 from tests.script_fixtures import ScriptProjectCase, fake_agent
 
 # A stand-in for a session on an Anthropic key: it records the key, the dropped login token and the money cap it was
@@ -360,6 +360,107 @@ class StoryAgentChecksTests(unittest.TestCase):
                          repaired.model_dump())
 
 
+class StoryCritiqueTests(unittest.TestCase):
+    """D-187: all five critiques of 2026-11-01 named exactly the eight points the prompt allowed, whatever their scores,
+    and each began afresh, so a passage the agent had fixed made room for the next weakest one. The editor now names
+    as many points as there are, each with its severity, and from the second critique on gets the points still open
+    and the segments changed since; only an open blocking point, a worse one and a new one in changed segments block."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name)
+        write_json(self.folder / "context.json", {"critiques": 4})
+        self.answers, self.asked = [], []
+
+        def invoke(prompt, schema, version):
+            self.asked.append(json.loads(prompt.splitlines()[-1]))
+            return self.answers.pop(0)
+        self.pipeline = SimpleNamespace(invoke=invoke)
+
+    @staticmethod
+    def draft(**texts):
+        lines = {key: texts.get(key, f"Satz {key}.") for key in "abcd"}
+        return EpisodeScript(episode_id="ep_001", title="Probe", purpose="deep_dive",
+                             chapters=[Chapter(chapter_id="s1", title="Eins")],
+                             segments=[segment(f"ep_001_s1_{key}", "s1", "host_a" if key in "ac" else "host_b", text)
+                                       for key, text in lines.items()])
+
+    @staticmethod
+    def critique(scores, earlier=(), points=()):
+        scale = lambda score: Scale(score=score, reason="Weil.")  # noqa: E731
+        return StoryCritique(scores=CritiqueScores(tension=scale(scores[0]), interest=scale(scores[1]),
+                                                   storytelling=scale(scores[2])),
+                             earlier=[EarlierPoint(point=number, status=status, note="So.")
+                                      for number, status in earlier],
+                             keeps_from_10=[CritiquePoint(severity=severity, scale="interest", segment_ids=ids,
+                                                          problem="Zäh.", fix="Kürzen.") for severity, ids in points])
+
+    def ask(self, draft, answer, replies=None):
+        """critique.py as the session runs it, with the run answering while it waits."""
+        (self.folder / "draft.json").write_text(draft.model_dump_json(), encoding="utf-8")
+        if replies:
+            write_json(self.folder / "replies.json", replies)
+        self.answers.append(answer)
+        with patch("podcast_automate.story_agent.time.sleep", side_effect=lambda _: serve_critiques(self.pipeline,
+                                                                                                 self.folder)):
+            return request_critique(self.folder, "draft.json")
+
+    def test_points_block_by_severity_until_the_editor_finds_them_resolved(self):
+        first = self.ask(self.draft(), self.critique((8, 7, 8), points=[("severe", ["s1_b"]),
+                                                                        ("minor", ["ep_001_s1_d"])]))
+        self.assertEqual(set(self.asked[0]), {"script"})
+        self.assertEqual([(p["point"], p["blocking"]) for p in first["open_points"]], [(1, True), (2, True)])
+        self.assertEqual((first["severe_open"], first["ready"]), (1, False))
+        # The agent rewrote c only and answers point 2; the editor keeps point 1 open, skips point 2 and finds two
+        # severe ones: in c, which changed (named in short, as the critics of 2026-11-01 did), and in a, which it read
+        # before.
+        second = self.ask(self.draft(c="Neu c."), self.critique((8, 8, 8), earlier=[(1, "open")],
+                                                                points=[("severe", ["s1_c"]),
+                                                                        ("severe", ["ep_001_s1_a"])]),
+                          replies={"2": "Bleibt, die Zahl trägt die Wende."})
+        sent = self.asked[1]
+        self.assertEqual([(p["point"], p["segment_ids"]) for p in sent["earlier_points"]],
+                         [(1, ["s1_b"]), (2, ["ep_001_s1_d"])])
+        self.assertNotIn("blocking", sent["earlier_points"][0])
+        self.assertEqual(sent["changed_segments"], ["ep_001_s1_c"])
+        self.assertEqual(sent["replies"], {"2": "Bleibt, die Zahl trägt die Wende."})
+        self.assertFalse((self.folder / "replies.json").exists(), "the replies answer one critique only")
+        self.assertEqual([(p["status"], p["blocking"]) for p in second["earlier"]], [("open", True), ("open", True)])
+        self.assertEqual([p["blocking"] for p in second["keeps_from_10"]], [True, False])
+        self.assertEqual([(p["point"], p["segment_ids"]) for p in second["open_points"]],
+                         [(1, ["s1_b"]), (2, ["ep_001_s1_d"]), (3, ["s1_c"]), (4, ["ep_001_s1_a"])])
+        self.assertEqual((second["severe_open"], second["ready"]), (2, False), "8 throughout is not enough")
+        # Both blocking severe points resolved: a 7 still keeps it from ready, the severe advice in a does not.
+        third = self.ask(self.draft(b="Neu b.", c="Neu c, kürzer."),
+                         self.critique((8, 7, 9), earlier=[(1, "resolved"), (2, "open"), (3, "resolved"), (4, "open")]))
+        self.assertEqual(self.asked[2]["changed_segments"], ["ep_001_s1_b", "ep_001_s1_c"])
+        self.assertEqual([(p["segment_ids"], p["blocking"]) for p in third["open_points"]],
+                         [(["ep_001_s1_d"], True), (["ep_001_s1_a"], False)])
+        self.assertEqual((third["severe_open"], third["ready"]), (0, False))
+        fourth = self.ask(self.draft(b="Neu b.", c="Neu c, kürzer."),
+                          self.critique((8, 8, 9), earlier=[(1, "open"), (2, "worse")]))
+        self.assertEqual(self.asked[3]["changed_segments"], [])
+        # Advice that got worse blocks, though nothing changed where it stands; this one is severe.
+        self.assertEqual([p["blocking"] for p in fourth["open_points"]], [True, True])
+        self.assertEqual((fourth["severe_open"], fourth["ready"]), (1, False))
+        self.assertEqual(self.ask(self.draft(), self.critique((9, 9, 9)))["refused"], "critique.py runs at most 4 times.")
+
+    def test_a_revision_blocks_only_where_it_changed_the_published_episode(self):
+        (self.folder / "published.json").write_text(self.draft().model_dump_json(), encoding="utf-8")
+        answer = self.ask(self.draft(b="Neu b."), self.critique((8, 8, 8), points=[("severe", ["ep_001_s1_b"]),
+                                                                                   ("severe", ["ep_001_s1_a"])]))
+        self.assertEqual(self.asked[0]["changed_segments"], ["ep_001_s1_b"])
+        self.assertEqual([p["blocking"] for p in answer["open_points"]], [True, False])
+        self.assertEqual((answer["severe_open"], answer["ready"]), (1, False))
+
+    def test_unparsable_replies_cost_no_critique(self):
+        (self.folder / "draft.json").write_text(self.draft().model_dump_json(), encoding="utf-8")
+        (self.folder / "replies.json").write_text("{1: nein", encoding="utf-8")
+        self.assertIn("replies.json does not parse", request_critique(self.folder, "draft.json")["error"])
+        self.assertFalse((self.folder / "requests" / "critique_1.json").exists())
+
+
 class SpeakingRateTests(unittest.TestCase):
     """D-184: a new script run writes and checks its lengths at the words a minute its voices speak."""
 
@@ -464,7 +565,9 @@ class StoryRunTests(ScriptProjectCase):
         # The agent's commands ran: the check passed and the critique came back from a call of the run.
         log = json.loads((folder / "agent_log.json").read_text(encoding="utf-8"))
         self.assertTrue(json.loads(log["check"])["passed"], log["check"])
-        self.assertEqual(json.loads(log["critique"])["scores"]["tension"]["score"], 8)
+        critique = json.loads(log["critique"])
+        self.assertEqual(critique["scores"]["tension"]["score"], 8)
+        self.assertEqual((critique["open_points"], critique["ready"]), ([], True))
         self.assertIn(StoryCritique, self.calls)
         # The review knows that a story agent's segments may cite corpus sections (D-182).
         self.assertTrue(self.reviews)
@@ -488,7 +591,8 @@ class StoryRunTests(ScriptProjectCase):
         self.assertTrue((episode / "story_plan.md").is_file())
         self.assertFalse((episode / "teaching_plan.yaml").exists())
         report = read_yaml(self.root / "reports" / "script_quality.yaml")["episodes"]["ep_001"]
-        self.assertEqual(report["story_agent"]["critiques"], [{"tension": 8, "interest": 8, "storytelling": 8}])
+        self.assertEqual(report["story_agent"]["critiques"],
+                         [{"tension": 8, "interest": 8, "storytelling": 8, "severe_open": 0}])
         self.assertEqual(report["story_agent"]["reported_cost_usd"], 1.5)
         self.assertNotIn("dialogue_polish", report)
         # The recording takes the agent's episode as reviewed: it has a story stage instead of writing and polishing

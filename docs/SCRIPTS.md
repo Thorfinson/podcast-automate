@@ -314,12 +314,32 @@ drafts 14 % longer without making them better.
     `sources_used.json`), echo lines (a turn that opens with only the other host's last words) and the word budget;
   - `critique.py`: an editor's verdict on tension, interest and storytelling with what keeps the draft from 10
     (`prompts/story_critique.txt`), at most four times per session (`story_agent.CRITIQUES`). The request goes to the
-    run as a file and the run makes the call, so the budget, the receipts and the provider choice apply;
+    run as a file and the run makes the call, so the budget, the receipts and the provider choice apply. See
+    [The editor's critique](#the-editors-critique);
   - `search.py` and `read.py`: the project's own research corpus, every section of every source the research
     stored, so the agent finds the scenes a finding only names.
 
 A session's draft stands on resume while its material and task are unchanged; a repeated session moves the earlier
 one's files to `attempts/NN/`.
+
+### The editor's critique
+
+The critique names as many points as it finds, none if there are none, each with its segments, the scale it costs, the
+problem, a fix and a severity: `severe` (the listener loses the thread, the question or a person here; this passage
+alone costs its scale a point), `moderate` (noticed, costs a point only together with others) or `minor` (better so,
+but no listener would miss it). Why: D-187.
+
+- **Memory.** From the second critique on the request carries the points the last answered critique left open
+  (`open_points`, numbered), the segments changed since the draft it read (`changed_segments`, by speaker and text)
+  and the agent's `replies.json` to those points, which `critique.py` takes along once. The editor marks each earlier
+  point `resolved`, `open` or `worse` (`story_agent.critique_memory`, `critique_answer`). A revision's first critique
+  compares with `published.json` instead.
+- **Blocking.** Every point of a first critique blocks. Later, a blocking point blocks while it is open, a point that
+  got worse blocks, and a new point blocks where it names a changed segment (a short id like `c1_05` counts for
+  `ep_001_c1_05`); a new point elsewhere is advice.
+- **Ready.** The answer says `ready` when all three scales are 8 or more (`story_agent.READY_SCORE`) and no blocking
+  severe point is open (`severe_open`). The agent fixes every blocking severe point, a moderate one where a few changes
+  do it, and stops when a critique is ready or it has used every critique.
 
 ### Opening and ending
 
@@ -392,7 +412,8 @@ and hashes. Show notes and companion kits list the cited sections' sources besid
 ### Outputs of an agent episode
 
 Publishing writes `story_plan.md` (the agent's plan) beside the script, and the quality report's episode entry gains
-`story_agent`: the critique scores in order, the corpus sections used, whether the agent set its own chapters, and the
+`story_agent`: the critique scores in order, each with the blocking severe points it left open (`severe_open`, since
+D-187), the corpus sections used, whether the agent set its own chapters, and the
 session's turns, duration and reported cost (`script_artifacts.story_report`). Its `teaching_review` reads
 `not_applicable`.
 
@@ -667,7 +688,8 @@ A revision is a story agent session given the published episode and the feedback
   the corpus sections the published episode used (its run's `sources_used.json`), which the draft may keep citing.
   `TASK.md` adds the revision's steps (`data/story_agent_revision.md`): copy the published episode, change what the
   feedback asks and what the change touches, keep every other segment as it was, check the changed facts, and use at
-  most two critiques (`story_agent.REVISION_CRITIQUES`) only where the telling changed.
+  most two critiques (`story_agent.REVISION_CRITIQUES`) only where the telling changed; their points block only in
+  the segments changed from the published episode ([The editor's critique](#the-editors-critique)).
 - An episode the writing prompt wrote can be revised the same way, from the outline's scenes.
 - The revised script must pass the structure checks and the script review again; then the new text, with its own
   hash, waits again for the reading review before audio, which no review replaces.

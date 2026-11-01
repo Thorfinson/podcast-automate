@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <meta name="description" data-i18n-content="page.meta_description" content="Dein lokaler Arbeitsraum für recherchierte Podcasts: Idee, Inhaltsverzeichnis, Skript und Audio.">
   <title>Podcast Studio</title>
   <link rel="stylesheet" href="/style.css">
@@ -16,22 +17,18 @@
     <a class="brand" href="/" aria-label="Podcast Studio Startseite" data-i18n-label="page.home_label"><span class="brand-mark">p<span>●</span></span><span>podcast<br><strong>studio</strong></span></a>
     <nav id="steps" aria-label="Arbeitsschritte" data-i18n-label="nav.steps_label"></nav>
     <div class="sidebar-bottom"><span id="studio-place"><span class="live-dot"></span><span data-i18n="place.local">Lokal auf diesem Computer</span></span>
-      <label class="sr-only" for="ui-language">Sprache / Language</label><select id="ui-language" class="language-select" data-ui-language><option value="auto">Automatisch / Automatic</option><option value="de">Deutsch</option><option value="en">English</option></select>
+      <div class="sidebar-settings">
+        <label class="sr-only" for="ui-theme" data-i18n="theme.label">Darstellung</label><select id="ui-theme" data-ui-theme><option value="system" data-i18n="theme.system">Wie das Gerät</option><option value="light" data-i18n="theme.light">Hell</option><option value="dark" data-i18n="theme.dark">Dunkel</option></select>
+        <label class="sr-only" for="ui-language">Sprache / Language</label><select id="ui-language" class="language-select" data-ui-language><option value="auto">Automatisch / Automatic</option><option value="de">Deutsch</option><option value="en">English</option></select>
+      </div>
       <button class="quiet small" data-action="quit" data-i18n="page.quit">Studio beenden</button></div>
   </aside>
   <div class="workspace">
-    <header class="topbar">
-      <div class="project-switch">
-        <button id="project-overview" class="quiet small" data-i18n="page.overview">Übersicht</button>
-        <button class="quiet small" data-action="open-settings" data-i18n="settings.title">Einstellungen</button>
-        <label class="sr-only" for="project-select" data-i18n="page.project_select_label">Projekt auswählen</label>
-        <select id="project-select"><option value="" data-i18n="project.new">Neues Projekt</option></select>
-        <button id="new-project" class="quiet small" aria-label="Neues Projekt anlegen" data-i18n-label="page.new_project_label" data-i18n="page.new_short">＋ Neu</button>
-        <h2 id="project-title" class="sr-only" data-i18n="project.new_title">Neues Podcast-Projekt</h2>
-      </div>
+    <header id="topbar" class="topbar" hidden>
       <div id="job-bar" class="job-bar" role="status" aria-live="polite" hidden></div>
     </header>
     <main id="main" tabindex="-1">
+      <h2 id="project-title" class="sr-only" data-i18n="project.new_title">Neues Podcast-Projekt</h2>
       <div id="key-note" class="note key-note" role="status" hidden></div>
       <div id="server-note" class="note server-note" role="status" hidden></div>
       <div id="notice" role="status" aria-live="polite" hidden></div>

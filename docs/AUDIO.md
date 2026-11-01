@@ -2,7 +2,7 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-10-21
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
@@ -137,8 +137,9 @@ the **„Google-Key“** there; the OpenRouter key stays for OpenRouter text, Je
   key only in the `x-goog-api-key` header, never in the URL. The model is the chosen `speech.GEMINI_MODELS` entry
   without OpenRouter's `google/` prefix (`gemini-3.8-flash-tts`).
 - One `text` item per turn (consecutive segments of one host joined), each with `speech_metadata` naming its
-  speaker and its role's style; `generation_config.speech_config` is `{"mode": "conversational", "speakers": [...]}`
-  with the two voices. A passage where only one host speaks uses the single voice (`[{"voice": ...}]`) and leaves out
+  speaker and its role's style; `generation_config.speech_config` is `{"speakers": [...]}` with the two voices.
+  Until 2026-10-23 it also carried `"mode": "conversational"`, which Google refuses since („Unknown parameter
+  'mode'“); the request without it asks for the same conversation, so cached passages stay valid. A passage where only one host speaks uses the single voice (`[{"voice": ...}]`) and leaves out
   the listener reactions, which need the other host.
 - The answer carries a base64 WAV (24 kHz, mono, 16 bit) in the audio item of its `model_output` step; another
   format, a text-only answer or an empty one stops with `invalid_audio` and stores nothing.

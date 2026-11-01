@@ -59,4 +59,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 podcast_automate = ["data/*.json", "data/*.md", "locales/*.json", "prompts/*.txt", "web/*.html", "web/*.css",
-                    "web/*.js"]
+                    "web/*.js", "web/fonts/*.woff2", "web/fonts/*.txt"]

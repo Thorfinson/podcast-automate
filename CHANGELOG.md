@@ -74,6 +74,18 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-11-01 · The story agent's editor names as many points as it finds, each severe, moderate or minor, instead of always eight, and from its second critique on checks whether its earlier points were resolved instead of starting afresh; a new point blocks only where the agent changed the script. The agent stops once a critique gives every scale 8 or more and no blocking severe point is open, and fixes severe points before the rest. The quality report shows each critique's open severe points (`severe_open`) beside its scores (D-187).
+- 2026-11-01 · Studio redesign (D-185, D-186). A project has three places instead of six step pages: „Serie“, „Folgen“ and „Grundlagen“. Each place shows its pages as tabs that say their state.
+  - „Serie“ shows an approved outline as one row per episode, with its way (Plan, Text, Prüfung, Ton) and its next step; „Nächste Folge schreiben“ stands in the page head.
+  - Episodes are numbered by the outline everywhere („Folge 7 von 20“).
+  - „Folgen“ is one page per episode, with the tabs „Lesen“, „Prüfhinweise“, „Hören“ and „Begleitmaterial“.
+  - Explanations under the controls fold under „Wie das funktioniert“.
+  - A stopped project's card shows the first sentence of its stop message.
+  - The running job stands in one strip at the top of the page.
+  - Each card on the overview has one state badge and one mark per episode; the download is in the ⋯ menu.
+  - The new look „Sendestudio“ uses IBM Plex, in light and dark. „Darstellung“ in the sidebar and in the settings chooses „Wie das Gerät“, „Hell“ or „Dunkel“, per device.
+  - On a phone the places become a tab bar at the foot, and the reading page shows „Deine Rückmeldung“ above the script.
+  - Voices are shown by name, never as ElevenLabs ids.
 - 2026-11-01 · The story agent writes every script (D-184). The writing prompt is gone, and with it:
   - the teaching plan, the narration review and dialogue polish;
   - „Schreiber“ in the job summary and `pla script --writer`;
@@ -183,6 +195,13 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Fixed
 
+- 2026-11-01 · Studio:
+  - A long URL in a script segment no longer widens the page on a phone.
+  - Long file names of source materials stay inside the research page's margin.
+  - The numbers of „Leitfragen und Abdeckung“ stand at the first line of each question.
+  - „geschrieben“ looks different from „als Nächste“.
+- 2026-11-01 · Recording with Gemini through Google works again. Since 2026-10-23 Google refused every request with
+  two voices („Unknown parameter 'mode'“). Recordings already made keep their passages.
 - 2026-11-01 · When the series review of a story agent's run asked for corrections, the run stopped with a file error.
   It now corrects as the episode review does.
 - 2026-11-01 · The reading preview of a running story agent's episode shows the reviewed text once its review passed. It

@@ -51,10 +51,12 @@ TARGET_FACTOR = 1.0
 # The share of its target the agent's draft must reach. Ep_007 of Asimov v2 (2026-11-01) stopped at 89 % of its target,
 # inside the old window of validate_script's 85 % floor, and ran 35:47 for 45 planned minutes (D-184).
 TARGET_SHARE = 0.95
-SESSION_VERSION = "story_agent.v4-series"
+SESSION_VERSION = "story_agent.v5-severity"
 ORIENTATION_VERSION = "orientation_sheet.v1"
 ORIENTATION_CHECK_VERSION = "orientation_check.v1"
-CRITIQUE_VERSION = "story_critique.v1"
+CRITIQUE_VERSION = "story_critique.v2-severity"
+# A critique is ready when every scale reaches this and no blocking severe point is open (D-187).
+READY_SCORE = 8
 # How long a critique request waits for its answer, and how often the run looks for requests.
 CRITIQUE_WAIT = 30 * 60
 POLL_SECONDS = 2
@@ -107,14 +109,26 @@ class CritiqueScores(Contract):
 
 
 class CritiquePoint(Contract):
+    severity: Literal["severe", "moderate", "minor"]
+    scale: Literal["tension", "interest", "storytelling"]
     segment_ids: list[NonEmpty]
     problem: NonEmpty
     fix: NonEmpty
 
 
+class EarlierPoint(Contract):
+    point: int = Field(ge=1)
+    status: Literal["resolved", "open", "worse"]
+    note: NonEmpty
+
+
 class StoryCritique(Contract):
     scores: CritiqueScores
-    keeps_from_10: list[CritiquePoint] = Field(max_length=8)
+    # What became of each point the critiques before left open; empty in the first (D-187).
+    earlier: list[EarlierPoint]
+    # As many points as there are. Up to D-187 the prompt allowed at most eight, and all five critiques of 2026-11-01
+    # named exactly eight, whatever their scores.
+    keeps_from_10: list[CritiquePoint] = Field(max_length=20)
 
 
 def task_text(language: str, minutes: float, critiques: int = CRITIQUES, *, cast: str = "",
@@ -489,9 +503,67 @@ def script_text(script: EpisodeScript) -> str:
     return "\n".join(f"[{s.segment_id}] {s.speaker_id}: {s.text}" for s in script.segments)
 
 
+def critique_number(path: Path) -> int:
+    """N of requests/critique_N.json and of its answer."""
+    return int(path.name.split("_", 1)[1].split(".", 1)[0])
+
+
+def changed_segments(before: EpisodeScript | None, after: EpisodeScript) -> list[str] | None:
+    """The segments of ``after`` that ``before`` lacks or gives another speaker or text; None without ``before``."""
+    if before is None:
+        return None
+    old = {s.segment_id: (s.speaker_id, s.text) for s in before.segments}
+    return [s.segment_id for s in after.segments if old.get(s.segment_id) != (s.speaker_id, s.text)]
+
+
+def critique_memory(folder: Path, number: int) -> tuple[list[dict], EpisodeScript | None]:
+    """What critique ``number`` starts from: the points the latest answered critique before it left open and the draft
+    that critique read; before any, a revision's published episode, so its points block only where it changed (D-187)."""
+    requests = folder / "requests"
+    for path in sorted(requests.glob("critique_*.answer.json"), key=critique_number, reverse=True):
+        if critique_number(path) >= number:
+            continue
+        answer = json.loads(path.read_text(encoding="utf-8"))
+        if "scores" in answer:
+            sent = json.loads((requests / f"critique_{critique_number(path)}.json").read_text(encoding="utf-8"))
+            return answer.get("open_points", []), EpisodeScript.model_validate_json(sent["draft"])
+    published = folder / "published.json"
+    return [], (EpisodeScript.model_validate_json(published.read_text(encoding="utf-8")) if published.is_file()
+                else None)
+
+
+def cites(segment_ids, changed) -> bool:
+    """Whether a point names a changed segment. Critics shorten ids (c1_05 for ep_001_c1_05, 2026-11-01)."""
+    return any(c == s or c.endswith("_" + s) for s in segment_ids for c in changed)
+
+
+def critique_answer(critique: StoryCritique, earlier: list[dict], changed: list[str] | None) -> dict:
+    """The critique as the agent reads it (D-187). Only an earlier blocking point the rework left open, an earlier
+    point it made worse and a new point in the segments changed since the last critique block (every point of a first
+    critique); a new point elsewhere is advice. ``open_points`` carries what is still open, numbered, to the next
+    critique; ``ready`` says every scale reached READY_SCORE and no blocking severe point is open."""
+    statuses = {e.point: e for e in critique.earlier}
+    judged = []
+    for number, point in enumerate(earlier, 1):
+        found = statuses.get(number)
+        status = found.status if found else "open"
+        judged.append({**point, "status": status, "note": found.note if found else "Not judged again; still open.",
+                       "blocking": point["blocking"] or status == "worse"})
+    new = [{**point.model_dump(), "blocking": changed is None or cites(point.segment_ids, changed)}
+           for point in critique.keeps_from_10]
+    still = [{key: value for key, value in point.items() if key not in ("point", "status", "note")}
+             for point in judged if point["status"] != "resolved"] + new
+    open_points = [{"point": number, **point} for number, point in enumerate(still, 1)]
+    severe = sum(1 for point in open_points if point["blocking"] and point["severity"] == "severe")
+    scores = critique.scores.model_dump()
+    return {"scores": scores, "earlier": judged, "keeps_from_10": new, "open_points": open_points,
+            "severe_open": severe, "ready": not severe and all(s["score"] >= READY_SCORE for s in scores.values())}
+
+
 def serve_critiques(pipeline, folder: Path) -> None:
     """Answer the critique requests the session left (requests/critique_N.json) with a call of the run, so the
-    budget, the receipts and the provider choice apply as to every other call."""
+    budget, the receipts and the provider choice apply as to every other call. From the second critique on the editor
+    gets the points still open, the segments changed since and the agent's replies (critique_memory, D-187)."""
     from .prompts import instructions
     requests = folder / "requests"
     if not requests.is_dir():
@@ -505,17 +577,28 @@ def serve_critiques(pipeline, folder: Path) -> None:
             if answered >= allowed:
                 answer = {"refused": f"critique.py runs at most {allowed} times."}
             else:
-                draft = EpisodeScript.model_validate_json(json.loads(request.read_text(encoding="utf-8"))["draft"])
-                prompt = instructions("story_critique") + "\n" + json.dumps({"script": script_text(draft)},
-                                                                           ensure_ascii=False)
-                answer = pipeline.invoke(prompt, StoryCritique, CRITIQUE_VERSION).model_dump()
+                sent = json.loads(request.read_text(encoding="utf-8"))
+                draft = EpisodeScript.model_validate_json(sent["draft"])
+                earlier, before = critique_memory(folder, critique_number(request))
+                changed = changed_segments(before, draft)
+                payload = {"script": script_text(draft)}
+                if earlier:
+                    payload["earlier_points"] = [{key: value for key, value in point.items() if key != "blocking"}
+                                                 for point in earlier]
+                if changed is not None:
+                    payload["changed_segments"] = changed
+                if sent.get("replies"):
+                    payload["replies"] = sent["replies"]
+                prompt = instructions("story_critique") + "\n" + json.dumps(payload, ensure_ascii=False)
+                answer = critique_answer(pipeline.invoke(prompt, StoryCritique, CRITIQUE_VERSION), earlier, changed)
         except (AppError, ValidationError, ValueError, KeyError) as exc:
             answer = {"error": str(exc), "code": getattr(exc, "code", "invalid_request")}
         write_json(request.with_suffix(".answer.json"), answer)
 
 
 def request_critique(folder: Path, name: str) -> dict:
-    """critique.py: the draft goes to the run as a request; the answer comes back when the run has made the call."""
+    """critique.py: the draft, with the agent's replies.json to the open points, goes to the run as a request; the
+    answer comes back when the run has made the call."""
     requests = folder / "requests"
     requests.mkdir(exist_ok=True)
     number = len([p for p in requests.glob("critique_*.json") if not p.name.endswith(".answer.json")]) + 1
@@ -524,7 +607,16 @@ def request_critique(folder: Path, name: str) -> dict:
         draft = (folder / name).read_text(encoding="utf-8")
     except OSError as exc:
         return {"error": f"{name} cannot be read: {exc}"}
-    write_json(request, {"draft": draft})
+    replies = folder / "replies.json"
+    try:
+        said = json.loads(replies.read_text(encoding="utf-8")) if replies.is_file() else {}
+    except (OSError, ValueError) as exc:
+        return {"error": f"replies.json does not parse: {exc}"}
+    if not isinstance(said, dict):
+        return {"error": 'replies.json must be an object: {"<point number>": "what you changed or why it does not hold"}'}
+    write_json(request, {"draft": draft, **({"replies": said} if said else {})})
+    # The request keeps the replies; they answer this critique's open points, never the next one's.
+    replies.unlink(missing_ok=True)
     deadline = time.monotonic() + CRITIQUE_WAIT
     while time.monotonic() < deadline:
         answer = request.with_suffix(".answer.json")

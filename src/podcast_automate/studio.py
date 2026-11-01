@@ -2681,6 +2681,13 @@ class StudioHandler(BaseHTTPRequestHandler):
                 body = files("podcast_automate").joinpath("web", name).read_bytes()
                 self.send_data(200, body, {"index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css"}[name] + "; charset=utf-8")
                 return
+            elif (match := re.fullmatch(r"/fonts/([a-z0-9-]+\.woff2)", path)):
+                # The Studio's own fonts (IBM Plex, D-186): the page's CSP takes fonts from the Studio only.
+                font = files("podcast_automate").joinpath("web", "fonts", match[1])
+                if not font.is_file():
+                    raise AppError(t("server.not_found"), code="not_found")
+                self.send_data(200, font.read_bytes(), "font/woff2")
+                return
             elif path == "/locale.js":
                 # The interface language and its catalog over English (studio_text.locale_script); the answer differs
                 # by Accept-Language while the choice is "auto".
