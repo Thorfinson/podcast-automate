@@ -1127,6 +1127,7 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(before["writer"], "prompt")
         status, body, _ = self.request("/api/projects/example/writer", {"writer": "agent"})
         self.assertEqual(status, 200, body)
+        self.assertIsNone(json.loads(body)["adopted_run"], "no outline waits for its approval here")
         after = json.loads(self.request("/api/projects/example")[1])
         self.assertEqual(after["writer"], "agent")
         self.assertEqual((after["execution"], after["execution_hash"]), (before["execution"], before["execution_hash"]))

@@ -773,6 +773,7 @@
  "outline.replan": "Have the plan revised",
  "outline.approve": "Approve plan & write scripts",
  "outline.approve_hint": "Your approval starts the automatic drafting. You then read the finished scripts before the recording.",
+ "outline.writer": "Writer of these episodes: {writer}",
  "outline.sentence": {
   "one": "1 episode of about {minutes} minutes, {opening}; approving starts the writing (about {calls} calls).",
   "other": "{count} episodes of about {minutes} minutes each, from {opening} to the synthesis; approving starts the writing (about {calls} calls)."
@@ -2072,6 +2073,8 @@
  "act.jev_off": "Jev is off: new script runs search for gaps with the word search only.",
  "act.writer_agent": "The story agent writes the episodes of new script runs: one Claude Opus agent per episode, with the Claude subscription sign-in.",
  "act.writer_prompt": "New script runs write with the writing prompt again.",
+ "act.writer_agent_run": "The story agent also writes the episodes of this outline: after the approval it plans and writes each episode.",
+ "act.writer_prompt_run": "The episodes of this outline are written with the writing prompt again too.",
  "act.unqueued": "Removed from the queue.",
  "act.confirm_read": "Please confirm that you have read these scripts.",
  "act.audio_all": {

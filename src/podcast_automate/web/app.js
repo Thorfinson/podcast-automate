@@ -1204,8 +1204,11 @@ function renderOutline() {
   html+=`<section class="panel tinted"><h2 class="outline-question">${escape(p.central_question)}</h2><p>${escape(p.explanation_path)}</p><div class="outline-summary"><span>${t("outline.episodes",{count:asHtml(`<strong>${p.episodes.length}</strong>`)})}</span><span>${t("outline.minutes",{minutes:asHtml(`<strong>${Math.round(p.episodes.reduce((s,e)=>s+e.target_minutes,0))}</strong>`)})}</span><span>${t(approved?"outline.approved_state":"outline.awaiting")}</span></div><p class="hint">${escape(p.scope_note)}</p></section>`;
   html+=p.episodes.map((e,i)=>`<section class="panel"><div class="episode-head"><span class="episode-num">${String(i+1).padStart(2,"0")}</span><div><h2>${escape(e.title)}</h2><p>${escape(e.central_question)}</p></div><span class="tag">${t("outline.episode_minutes",{minutes:Math.round(e.target_minutes)})}</span></div><ol class="chapters">${e.scenes.map((s,n)=>`<li><span>${String(n+1).padStart(2,"0")}</span><div><strong>${escape(s.title)}</strong><p>${escape(s.question)}</p><details><summary>${t("outline.explained")}</summary>${s.explanation_steps.map(x=>`<p>${escape(x)}</p>`).join("")}</details></div></li>`).join("")}</ol>${e.deferred_questions.length?`<details><summary>${t("outline.deferred")}</summary>${e.deferred_questions.map(q=>`<p>${escape(q)}</p>`).join("")}</details>`:""}</section>`).join("");
   const canReplan = !Object.entries(project.job?.run?.stages || {}).some(([n,r])=>n!=="planning"&&r.attempts>0);
+  // Who writes these episodes, switchable until the outline is approved (D-181: the waiting run takes the switch).
+  const agent=outline.writer==="agent";
+  const writer=`<p class="hint outline-writer">${t("outline.writer",{writer:t(agent?"summary.writer_agent":"summary.writer_prompt")})} <button type="button" class="secondary small" data-action="toggle-writer" data-writer="${agent?"prompt":"agent"}" ${disabled()}>${t(agent?"summary.writer_use_prompt":"summary.writer_use_agent")}</button></p>`;
   html+=approved?`<section class="panel tinted"><h2>${t("outline.approved.title")}</h2><p>${t("outline.approved.text")}</p><button data-step="${PAGE.production}">${t("outline.approved.button")}</button></section>`:
-    `<div class="action-bar"><details class="action-note"><summary>${t("outline.feedback.summary")}</summary>${area("outline-feedback",t("outline.feedback.label"),"",3)}</details><div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>${t("outline.replan")}</button><button data-action="script" ${disabled()}>${t("outline.approve")}</button></div><p class="hint">${outlineSentence(p)}</p></div>`;
+    `<div class="action-bar"><details class="action-note"><summary>${t("outline.feedback.summary")}</summary>${area("outline-feedback",t("outline.feedback.label"),"",3)}</details><div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>${t("outline.replan")}</button><button data-action="script" ${disabled()}>${t("outline.approve")}</button></div><p class="hint">${outlineSentence(p)}</p>${writer}</div>`;
   if(!canReplan)html+=`<details class="restart-options"><summary>${t("outline.new.summary")}</summary><p>${t("outline.new.text")}</p><button class="secondary" data-action="plan" ${disabled()}>${t("button.new_outline")}</button></details>`;
   return html;
 }
@@ -3784,9 +3787,11 @@ document.addEventListener("click",event=>{
       notice(tp(enabled?(boot.key_available?"act.jev_on":"act.jev_on_key"):"act.jev_off"),"ok");return;
     }
     if(action==="toggle-writer"){
-      await api(`/api/projects/${project.id}/writer`,{writer:button.dataset.writer});
+      const switched=await api(`/api/projects/${project.id}/writer`,{writer:button.dataset.writer});
       project=await api(`/api/projects/${project.id}`);render();
-      notice(tp(button.dataset.writer==="agent"?"act.writer_agent":"act.writer_prompt"),"ok");return;
+      // The run waiting for its outline's approval took the switch too (scripting.adopt_writer).
+      const agent=button.dataset.writer==="agent";
+      notice(tp(switched?.adopted_run?(agent?"act.writer_agent_run":"act.writer_prompt_run"):(agent?"act.writer_agent":"act.writer_prompt")),"ok");return;
     }
     if(action==="unqueue"){
       await api(`/api/projects/${project.id}/audio_queue`,{episode:button.dataset.episode});

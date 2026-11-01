@@ -1540,6 +1540,20 @@ test('a plan is readable and approval is an explicit action, with hostile model 
   assert.ok(!html.includes('<script>bad()'));
   assert.ok(html.includes('&lt;script&gt;'));
 });
+test('an outline waiting for its approval names who writes its episodes and switches it there',()=>{
+  const app=studio();
+  const plan="{central_question:'Why?',explanation_path:'Path',scope_note:'Scope',episodes:[{title:'One',central_question:'Why?',target_minutes:20,scenes:[],deferred_questions:[]}]}";
+  app.run(`project={id:'p',config:boot.defaults,outline:{hash:'h',writer:'prompt',plan:${plan}}}`);
+  let html=app.run('renderOutline()');
+  assert.ok(html.includes('Schreiber dieser Folgen: Schreib-Prompt mit Narrationsprüfung und Dialogschliff'));
+  assert.ok(html.includes('data-action="toggle-writer" data-writer="agent"'));
+  app.run(`project.outline.writer='agent';`);
+  html=app.run('renderOutline()');
+  assert.ok(html.includes('Schreiber dieser Folgen: Erzähl-Agent · Claude Opus'));
+  assert.ok(html.includes('data-writer="prompt"'));
+  app.run(`project.outline.approval={plan_hash:'h'};`);
+  assert.ok(!app.run('renderOutline()').includes('toggle-writer'),'an approved outline keeps its writer');
+});
 test('audio starts disabled, names selected voices and marks an old recording',()=>{
   const app=studio();
   app.run(`project={config:boot.defaults,id:'test',episodes:[{script:{title:'A useful episode',episode_id:'ep_001'},audio:['exports/ep_001/run_test/audio.mp3'],audio_current:false}]}`);

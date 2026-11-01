@@ -8,12 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from podcast_automate.editorial import EPISODE_FRAMING
+from podcast_automate.episode_audio import reviewed_episode
 from podcast_automate.models import Chapter, EpisodeScript, RunManifest, Segment
 from podcast_automate.script_budget import calls_per_episode
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION, word_budget
 from podcast_automate.script_models import EpisodePlan, ScenePlan, ScriptIssue, ScriptReview, SeriesPlan
 from podcast_automate.script_pipeline import ScriptRun
-from podcast_automate.scripting import STORY_STAGES, run_script
+from podcast_automate.script_checks import outline_hash
+from podcast_automate.scripting import STORY_STAGES, adopt_writer, run_script
 from podcast_automate.storage import read_yaml, write_json
 from podcast_automate.story_agent import (ALLOWED_TOOLS, CritiqueScores, OrientationCheck, OrientationItem,
                                           OrientationReview, OrientationSheet, Scale, StoryCritique, draft_errors,
@@ -351,6 +353,57 @@ class StoryRunTests(ScriptProjectCase):
         self.assertEqual(report["story_agent"]["critiques"], [{"tension": 8, "interest": 8, "storytelling": 8}])
         self.assertEqual(report["story_agent"]["reported_cost_usd"], 1.5)
         self.assertNotIn("dialogue_polish", report)
+        # The recording takes the agent's episode as reviewed: it has a story stage instead of writing and polishing
+        # (2026-11-01: Asimov v2 ep_007 stopped there with invalid_script).
+        _, script, _ = reviewed_episode(self.root, self.config, "ep_001")
+        self.assertEqual(script.model_dump(), json.loads((work / "reviewed" / "ep_001.json").read_text(encoding="utf-8")))
+
+    def test_a_run_waiting_for_its_outline_takes_the_writer_switch(self):
+        """The Studio's outline card offers the writer until the outline is approved (2026-11-01: the operator saw only
+        approve or revise for a run planned with the writing prompt). Only stages change, so the approval's binding
+        holds, and after the approval the agent writes."""
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model):
+            planned = run_script(self.root, plan_only=True)
+        work = self.root / "runs" / planned.run_id
+        before = outline_hash(work)
+        self.assertEqual(adopt_writer(self.root, "agent", planned.run_id), planned.run_id)
+        manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
+        self.assertEqual(tuple(manifest.stages), STORY_STAGES)
+        self.assertEqual(manifest.stages["planning"].status, "completed")
+        self.assertEqual(outline_hash(work), before)
+        self.assertEqual(json.loads((work / "writer_switch.json").read_text(encoding="utf-8"))["writer"], "agent")
+        self.assertIsNone(adopt_writer(self.root, "agent", planned.run_id), "it already has the writer")
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model),              patch("podcast_automate.claude_code.claude_command", return_value=fake_agent(self.root.parent)):
+            done = run_script(self.root, resume=True, run_id=planned.run_id, approved_plan_hash=before)
+        self.assertEqual(done.status, "completed", {k: v.error for k, v in done.stages.items() if v.error})
+        self.assertTrue((work / "story" / "ep_001" / "draft.json").is_file())
+        self.assertIsNone(adopt_writer(self.root, "prompt", planned.run_id), "a run past its outline keeps its writer")
+
+    def test_one_episode_of_an_approved_outline_is_written_without_planning_again(self):
+        """2026-11-01: approving Asimov v2's outline would have started 20 agent sessions at once; the operator wanted
+        one episode first. A new run takes the approved outline of the series run and writes that episode only."""
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model):
+            planned = run_script(self.root, plan_only=True)
+        work = self.root / "runs" / planned.run_id
+        with self.assertRaises(Exception) as caught:
+            run_script(self.root, episode="ep_001", outline_run=planned.run_id, writer="agent")
+        self.assertEqual(caught.exception.code, "plan_approval_required")
+        write_json(work / "plan_approval.json", {"plan_hash": outline_hash(work), "approved_at": "2026-11-01T00:00:00+00:00"})
+        with self.assertRaises(Exception) as caught:
+            run_script(self.root, outline_run=planned.run_id, writer="agent")
+        self.assertEqual(caught.exception.code, "invalid_request", "an outline's episode is named")
+        self.calls.clear()
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model),              patch("podcast_automate.claude_code.claude_command", return_value=fake_agent(self.root.parent)):
+            probe = run_script(self.root, episode="ep_001", outline_run=planned.run_id, writer="agent")
+        self.assertEqual(probe.status, "completed", {k: v.error for k, v in probe.stages.items() if v.error})
+        self.assertNotEqual(probe.run_id, planned.run_id)
+        self.assertEqual(tuple(probe.stages), STORY_STAGES)
+        self.assertNotIn(SeriesPlan, self.calls, "the outline is not planned again")
+        probe_work = self.root / "runs" / probe.run_id
+        self.assertEqual((probe_work / "series_plan.json").read_bytes(), (work / "series_plan.json").read_bytes())
+        self.assertTrue((self.root / "episodes" / "ep_001" / "script.yaml").is_file())
+        series = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
+        self.assertEqual(series.stages["teaching"].status, "pending", "the series run waits as it was")
 
     def test_a_resumed_run_keeps_its_writer(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model):

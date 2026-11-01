@@ -773,6 +773,7 @@
  "outline.replan": "Plan überarbeiten lassen",
  "outline.approve": "Plan freigeben & Skripte schreiben",
  "outline.approve_hint": "Deine Freigabe startet die automatische Ausarbeitung. Die fertigen Skripte liest du anschließend vor der Vertonung.",
+ "outline.writer": "Schreiber dieser Folgen: {writer}",
  "outline.sentence": {
   "one": "1 Folge von etwa {minutes} Minuten, {opening}; die Freigabe startet das Schreiben (etwa {calls} Aufrufe).",
   "other": "{count} Folgen zu je etwa {minutes} Minuten, von {opening} bis zur Synthese; die Freigabe startet das Schreiben (etwa {calls} Aufrufe)."
@@ -2072,6 +2073,8 @@
  "act.jev_off": "Jev ist aus: Neue Skriptläufe suchen Lücken nur mit der Wortsuche.",
  "act.writer_agent": "Der Erzähl-Agent schreibt die Folgen neuer Skriptläufe: ein Claude-Opus-Agent pro Folge, mit der Claude-Abo-Anmeldung.",
  "act.writer_prompt": "Neue Skriptläufe schreiben wieder mit dem Schreib-Prompt.",
+ "act.writer_agent_run": "Der Erzähl-Agent schreibt auch die Folgen dieses Inhaltsverzeichnisses: nach der Freigabe plant und schreibt er jede Folge.",
+ "act.writer_prompt_run": "Auch die Folgen dieses Inhaltsverzeichnisses schreibt wieder der Schreib-Prompt.",
  "act.unqueued": "Aus der Warteschlange genommen.",
  "act.confirm_read": "Bitte bestätigen, dass du diese Skripte gelesen hast.",
  "act.audio_all": {

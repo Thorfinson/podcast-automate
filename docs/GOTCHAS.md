@@ -2,7 +2,7 @@
 title: Gotchas
 doc_type: gotchas
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-11-01
 ---
 
 # Gotchas
@@ -182,6 +182,15 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   with `invalid_run`:** a review run is not resumable, and `runs/latest.json` keeps pointing at the last pipeline run.
   View it with `pla status <project> --run-id <id>`; start a new `pla series-review` for a new verdict (`cli.py`).
   ([Standalone `pla series-review`](SCRIPTS.md#standalone-pla-series-review))
+- ✓ **On Windows the story agent's critique arrives garbled or empty:** a Python script printing into a pipe uses
+  the console code page (cp1252). Umlauts turn into other bytes, and a name like „Doliński“ breaks the print. The
+  agent's commands (`check.py`, `critique.py`, `search.py`, `read.py`) set their output to UTF-8 since 2026-11-01
+  (`story_agent.COMMAND_SCRIPT`). A test that reads a subprocess's output fails the same way without
+  `PYTHONIOENCODING=utf-8`. ([Story agent](SCRIPTS.md#story-agent))
+- ✓ **The recording of a story agent's episode stops with `invalid_script` („Ein vollständig geprüftes Skript wird
+  benötigt“):** until 2026-11-01 the recording asked every script run for the stages writing and polishing and for the
+  planned scenes. A story run has the story stage and the agent's own chapters (`episode_audio.reviewed_episode`).
+  Resume the recording.
 - ⚠ **`scripts/audit-counts.py` counts no redefined terms on an old project:** teaching plans written before
   `Concept.terms` carry opaque concept IDs (`c01`, `c07_kv_cache`). Pass the spoken terms with
   `--terms "Token,Query,…"`; a regenerated series needs no flag.

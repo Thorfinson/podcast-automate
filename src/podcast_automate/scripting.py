@@ -153,11 +153,41 @@ def revision_inputs(root, revise, feedback, research_id, dossier, roles=None):
     return inherited_plan, inherited_knowledge, revision
 
 
-def new_run(root, research_id, dossier, *, episode, revise, feedback, roles=None):
+def outline_inputs(root, run_id, research_id, dossier, episode):
+    """The approved outline of script run ``run_id`` for a new run that writes ``episode`` of it without planning again
+    (``--from-outline``): one episode first, before the series run writes them all (2026-11-01: an approved outline of
+    20 episodes would have started 20 story agent sessions at once). The outline must be complete, approved as it
+    stands, and made from today's research."""
+    work = manifest_path(root, run_id).parent
+    if not (work / "run_manifest.yaml").is_file():
+        raise AppError(f"Skriptlauf {run_id} nicht gefunden.", code="unknown_run", status="blocked")
+    manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
+    if manifest.kind != "script" or not outputs_valid(root, manifest.stages["planning"]):
+        raise AppError("Das Inhaltsverzeichnis dieses Laufs ist nicht vollständig oder wurde verändert.",
+                       code="invalid_plan", status="blocked")
+    approval = json.loads((work / "plan_approval.json").read_text(encoding="utf-8")) \
+        if (work / "plan_approval.json").is_file() else {}
+    if approval.get("plan_hash") != outline_hash(work):
+        raise AppError("Das Inhaltsverzeichnis dieses Laufs ist noch nicht freigegeben.", code="plan_approval_required",
+                       status="blocked")
+    previous_inputs = json.loads((work / "inputs.json").read_text(encoding="utf-8"))
+    if previous_inputs["research_run"] != research_id or ResearchDossier.model_validate(previous_inputs["dossier"]) != dossier:
+        raise AppError("Recherche seit dem Inhaltsverzeichnis geändert; einen neuen script-Lauf planen.",
+                       code="inputs_changed", status="blocked")
+    plan = SeriesPlan.model_validate_json((work / "series_plan.json").read_text(encoding="utf-8"))
+    if episode not in {entry.episode_id for entry in plan.episodes}:
+        raise AppError("Folge im freigegebenen Inhaltsverzeichnis nicht gefunden.", code="unknown_episode",
+                       status="blocked")
+    return plan, json.loads((work / "knowledge_model.json").read_text(encoding="utf-8"))
+
+
+def new_run(root, research_id, dossier, *, episode, revise, feedback, roles=None, outline_run=None):
     inherited_plan = inherited_knowledge = revision = None
     if revise:
         inherited_plan, inherited_knowledge, revision = revision_inputs(root, revise, feedback, research_id, dossier, roles)
         episode = revise
+    elif outline_run:
+        inherited_plan, inherited_knowledge = outline_inputs(root, outline_run, research_id, dossier, episode)
     identifier = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
     return {"path": manifest_path(root, identifier), "manifest": None, "saved_backend": None,
             "execution": selected_execution(root), "episode": episode, "saved_inputs": None, "revision": revision,
@@ -207,6 +237,33 @@ def run_inputs(config, research_id, dossier, discovery, sources, context, state,
             if previous is not None and type(value).model_validate(previous) == value:
                 inputs[key] = previous
     return config_hash, inputs, digest(inputs)
+
+
+def adopt_writer(root: Path, writer: str, run_id: str) -> str | None:
+    """The script run ``run_id`` takes ``writer`` while it has only its outline and waits for its approval (D-181): no
+    stage after planning has begun, so its stage list can change without losing a step, and the outline approval binds
+    the outline and its inputs (outline_hash), not the stages. Returns the run id, or None when the run is past that
+    point or already has the writer; the switch is recorded in writer_switch.json."""
+    path = manifest_path(root, run_id)
+    if not path.is_file():
+        return None
+    manifest = RunManifest.model_validate(read_yaml(path))
+    work, planning = path.parent, manifest.stages.get("planning")
+    request = json.loads((work / "script_request.json").read_text(encoding="utf-8")) \
+        if (work / "script_request.json").is_file() else {}
+    # Only a run that stopped for its outline's approval; a revision never waits so, and keeps the prompt.
+    waiting = (manifest.kind == "script" and request.get("require_plan_approval") is True and planning is not None
+               and planning.status == "completed" and manifest.status != "running"
+               and not (work / "plan_approval.json").exists()
+               and all(record.status == "pending" and not record.attempts and not record.outputs
+                       for name, record in manifest.stages.items() if name != "planning"))
+    stages = STORY_STAGES if writer == "agent" else STAGES
+    if not waiting or tuple(manifest.stages) == stages:
+        return None
+    manifest.stages = {name: manifest.stages.get(name, StageRecord()) for name in stages}
+    write_yaml(path, manifest.model_dump(mode="json"))
+    write_json(work / "writer_switch.json", {"writer": writer, "switched_at": datetime.now(timezone.utc).isoformat()})
+    return manifest.run_id
 
 
 def bind_manifest(root, work, state, config, config_hash, inputs, input_hash, research_id, text_generation, plan_only):
@@ -282,11 +339,12 @@ def require_plan_approval(root, work, manifest, plan_only, approved_plan_hash):
 def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=None,
                revise: str | None = None, feedback="", backend=None, model=None, api_key=None,
                max_output_tokens=None, reasoning_effort=None, plan_only=False, outline_feedback="", approved_plan_hash=None,
-               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None, writer=None):
+               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None, writer=None, outline_run=None):
     """``jev_probe`` asks Jev in the gap probe of a new run (jev.py); ``probe_key`` is the OpenRouter key for it,
     otherwise OPENROUTER_API_KEY. ``web_search`` "perplexity" sends a new run's supplementary searches through
     Perplexity (D-151), with ``perplexity_key`` or PERPLEXITY_API_KEY. ``writer`` "agent" writes a new run's episodes
-    with the story agent (story_agent.py, D-181). A resumed run keeps the choices it started with."""
+    with the story agent (story_agent.py, D-181). ``outline_run`` with ``episode`` writes that episode of another run's
+    approved outline without planning again (outline_inputs). A resumed run keeps the choices it started with."""
     root = root.resolve()
     with project_lock(root):
         config = load_project(root)
@@ -299,9 +357,12 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             # The story agent has no revision task: the feedback is read only by the writing prompt (D-181).
             raise AppError("Eine Überarbeitung schreibt der Schreib-Prompt; der Erzähl-Agent kennt keine Rückmeldung.",
                            code="invalid_revision")
+        if outline_run and (resume or revise or plan_only or not episode):
+            raise AppError("--from-outline schreibt eine Folge (--episode) eines freigegebenen Inhaltsverzeichnisses in "
+                           "einem neuen Lauf.", code="invalid_request", status="blocked")
         state = resumed_run(root, run_id) if resume else new_run(root, research_id, dossier,
                                                                  episode=episode, revise=revise, feedback=feedback,
-                                                                 roles=host_roles_of(config))
+                                                                 roles=host_roles_of(config), outline_run=outline_run)
         if jev_probe and resume and not state["execution"].jev_probe:
             raise AppError("Die Jev-Lückenprobe gilt nur für neue Skriptläufe; ein laufender behält seine Lückenproben.",
                            code="invalid_request", status="blocked")

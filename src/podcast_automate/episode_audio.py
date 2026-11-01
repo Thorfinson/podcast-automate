@@ -27,6 +27,7 @@ from .scripting import load_research, validate_script
 from .speech import (AudioChoice, ELEVENLABS_PROVIDER, PASSAGE_PROVIDERS, SPEECH_VERSION, audio_generation_record,
                      check_gemini_rows, run_gemini_tts, same_audio_generation, selected_audio)
 from .spoken_forms import SpokenForms, load_forms, report as pronunciation_report, spoken_text
+from .story_agent import story_entry
 from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash,
                       project_lock, read_yaml, write_json, write_yaml)
 
@@ -38,10 +39,13 @@ def reviewed_episode(root, config, episode):
     work = manifest_path(root, latest["run_id"]).parent
     manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
     inputs = json.loads((work / "inputs.json").read_text(encoding="utf-8"))
-    required_stages = ["planning", "writing", "review"]
+    # A story agent's run writes in its story stage and has no polishing (D-181), although its inputs name the polish
+    # version every script run records; until 2026-11-01 its episodes were refused here as unreviewed.
+    story = "story" in manifest.stages
+    required_stages = ["planning", "story" if story else "writing", "review"]
     if "teaching" in manifest.stages:
         required_stages.append("teaching")
-    if "polishing" in manifest.stages or inputs.get("polish_version"):
+    if "polishing" in manifest.stages or (inputs.get("polish_version") and not story):
         required_stages.append("polishing")
     if manifest.kind != "script" or manifest.status != "completed" or any(
         name not in manifest.stages or not outputs_valid(root, manifest.stages[name]) for name in required_stages
@@ -55,6 +59,8 @@ def reviewed_episode(root, config, episode):
     entry = next((e for e in plan.episodes if e.episode_id == episode), None)
     if entry is None or episode not in latest["episode_ids"]:
         raise AppError("Für diese Folge fehlt ein geprüftes Skript.", code="unknown_episode", status="blocked")
+    # The agent's own chapters are what the script was checked against (story/<episode>/entry.json).
+    entry = story_entry(work, entry) if story else entry
     folder = root / "episodes" / entry.episode_id
     required_outputs = [f"episodes/{episode}/script.yaml", f"episodes/{episode}/script.md",
                         f"episodes/{episode}/episode_plan.yaml"]

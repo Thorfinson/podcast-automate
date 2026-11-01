@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-10-27
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -570,8 +570,11 @@ yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_L
 - **Writer.** Under „Schreiber“ (writer) in the same summary, **„Erzähl-Agent verwenden“** (use the story agent) and
   **„Schreib-Prompt verwenden“** (use the writing prompt) choose who writes this project's new script runs
   (`studio/writer.json`, route `/api/projects/<id>/writer`; why: D-181). The choice is the project's own, not a
-  workspace setting, and stays out of the hash of the execution modes; a running or stopped run keeps the writer it
-  started with. The story agent needs the Claude subscription's sign-in; see [Story agent](SCRIPTS.md#story-agent).
+  workspace setting, and stays out of the hash of the execution modes. The outline page names it under the outline
+  that waits for approval („Schreiber dieser Folgen: …“) with the same button, and that outline's run takes the
+  switch: it has nothing after planning yet, so only its stages change, and the approval's binding stays
+  (`scripting.adopt_writer`, `writer_switch.json` in the run folder). A run past its outline approval keeps the
+  writer it started with. The story agent needs the Claude subscription's sign-in; see [Story agent](SCRIPTS.md#story-agent).
   While it works, the progress names its steps („Orientierungsblatt wird erstellt“, „Der Erzähl-Agent plant und
   schreibt die Folge“, „Ein Lektor liest die Fassung des Erzähl-Agenten“), and the production view shows the stage
   „Erzähl-Agent“ in place of draft, narration review and polishing.

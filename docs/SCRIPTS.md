@@ -57,7 +57,12 @@ A run written by the [story agent](#story-agent) has the stages `planning`, `tea
 - Local sources (`local_sources`) must lie inside the project folder ([Local files](SECURITY.md#local-files)).
 - `--writer agent` has a new run's episodes written by the [story agent](#story-agent); without the flag a new run
   takes the project's choice (`studio/writer.json`, set in the Studio), else the writing prompt. A resume keeps the
-  writer the run started with and refuses a different `--writer` (`invalid_request`). A revision (`--revise`) is
+  writer the run started with and refuses a different `--writer` (`invalid_request`); only a run that waits for
+  its outline's approval with nothing after planning takes the Studio's switch (`scripting.adopt_writer`).
+- `--episode ep_007 --from-outline <run_id>` writes one episode of another script run's approved outline in a new
+  run, without planning again (`scripting.outline_inputs`): the outline must be complete, approved as it stands
+  (`plan_approval_required` otherwise) and made from today's research (`inputs_changed`). The series run stays as it
+  was. One episode first, before an approved series of 20 starts 20 story agent sessions (2026-11-01). A revision (`--revise`) is
   always written by the writing prompt, which reads its feedback; `--revise` with `--writer agent` is refused
   (`invalid_revision`).
 - Every model call counts against the run's call limit (`research_limits.model_calls`). Lower bound per episode

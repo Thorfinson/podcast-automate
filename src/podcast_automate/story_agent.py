@@ -253,6 +253,8 @@ arguments = sys.argv[1:] or (["draft.json"] if {command!r} in ("check", "critiqu
 result = subprocess.run([{python!r}, "-m", "podcast_automate.story_agent", {command!r}, "--folder",
                          os.path.dirname(os.path.abspath(__file__)), *arguments],
                         capture_output=True, text=True, encoding="utf-8", env={{**os.environ, "PYTHONIOENCODING": "utf-8"}})
+# Passed on as UTF-8: a Windows pipe's own code page garbles the critique's umlauts and cannot hold a name like Doliński.
+sys.stdout.reconfigure(encoding="utf-8")
 print(result.stdout)
 if result.returncode:
     print(result.stderr[-4000:])

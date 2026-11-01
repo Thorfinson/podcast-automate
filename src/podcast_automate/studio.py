@@ -40,7 +40,7 @@ from .run_budget import (approve_criterion_gap, approve_model_call_limit, approv
                          decide_review_disagreement, fresh_attempts_available, request_teaching_redesign, switch_choice,
                          text_switch)
 from .subscriptions import parse_iso
-from .scripting import outline_hash, script_metrics, style_notes
+from .scripting import adopt_writer, outline_hash, script_metrics, style_notes
 from .script_pipeline import failed_teaching
 from .elevenlabs_speech import account_voices
 from .speech import (OWN_AUDIO, AudioChoice, GEMINI_VOICES, PASSAGE_PROVIDERS, QWEN_VOICES, REMOTE_PROVIDERS,
@@ -1810,8 +1810,11 @@ class Studio:
             ("proposal_hash", "config_hash")))
         work = self.outline_work(root)
         if work is not None:
+            stages = (read_yaml(work / "run_manifest.yaml") or {}).get("stages") or {}
             data["outline"] = {"run_id": work.name, "plan": read_json(work / "series_plan.json"),
-                               "hash": self.outline_hash(work), "approval": read_json(work / "plan_approval.json")}
+                               "hash": self.outline_hash(work), "approval": read_json(work / "plan_approval.json"),
+                               # Who writes this outline's episodes: its run's own stages (D-181).
+                               "writer": "agent" if "story" in stages else "prompt"}
         data["research"] = self.research_text(root)
         if (root / "runs/latest.json").exists():
             data["run"] = read_yaml(manifest_path(root))
@@ -2047,13 +2050,25 @@ class Studio:
         return {"jev_probe": enabled}
 
     def writer(self, project, data):
-        """Who writes this project's new script runs: the writing ``prompt`` or the story ``agent`` (story_agent.py,
-        D-181). A running job keeps its writer; the switch applies from the next new script run."""
+        """Who writes this project's script runs: the writing ``prompt`` or the story ``agent`` (story_agent.py, D-181).
+        It holds for new runs and for the run that waits for its outline's approval (scripting.adopt_writer); a run
+        past that point keeps its writer."""
         chosen = data.get("writer")
         if chosen not in ("prompt", "agent"):
             raise AppError(t("server.writer.switch"), code="invalid_request")
-        set_writer(self.root(project), chosen)
-        return {"writer": chosen}
+        root = self.root(project)
+        set_writer(root, chosen)
+        adopted = None
+        work = self.outline_work(root)
+        if work is not None and root not in self.active_workers():
+            # The lock keeps a run from starting while its stages change; a run that holds it keeps its writer.
+            try:
+                with project_lock(root):
+                    adopted = adopt_writer(root, chosen, run_id=work.name)
+            except AppError as exc:
+                if exc.code != "project_busy":
+                    raise
+        return {"writer": chosen, "adopted_run": adopted}
 
     def spoken_override(self, project, data):
         """A per-segment spoken form. It changes only how a segment is read aloud."""

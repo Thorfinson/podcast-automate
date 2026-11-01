@@ -164,6 +164,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Who writes a new run's episodes: prompt (default, the writing prompt with narration "
                              "review and polishing) or agent (the story agent, a Claude Code session with Opus per "
                              "episode; needs the claude.ai sign-in)")
+    script.add_argument("--from-outline", metavar="RUN_ID", dest="from_outline",
+                        help="With --episode: write that episode of this script run's approved outline in a new "
+                             "run, without planning again (one episode first, before the series run)")
     approve = commands.add_parser("approve", help="Explicit approval for a run: approve the research plan, a higher "
                                                    "call, search-round or source limit, or accept a blocked "
                                                    "sub-question as a gap")
@@ -539,7 +542,8 @@ def run_command(args) -> int:
                                       max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort,
                                       jev_probe=getattr(args, "jev_probe", False),
                                       web_search=getattr(args, "web_search", None),
-                                      writer=getattr(args, "writer", None))
+                                      writer=getattr(args, "writer", None),
+                                      outline_run=getattr(args, "from_outline", None))
             elif research_run:
                 # The plan gate is the CLI default; only an explicit --approve-plan at the start waives it.
                 manifest = run_research(args.project_dir, resume=args.command == "resume",

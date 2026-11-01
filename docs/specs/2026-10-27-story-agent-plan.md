@@ -102,9 +102,21 @@ A narrated script run gets the **story agent** as its writer, chosen per project
 
 ## 5. Verification list
 
-- V-64: a real agent session in a Studio run writes a passing draft for Asimov v2 ep_007 (step 4). Partly seen on
+- V-64: a real agent session in a Studio run writes a passing draft for Asimov v2 ep_007 (step 4). Started on
+  2026-11-01 as `pla script … --episode ep_007 --from-outline run_20261025_182003_335297_5efe1a9a` after the operator
+  switched the waiting series run to the agent and stopped it after approval (one episode first); a Studio button
+  for one episode follows once this episode reads well. Partly seen on
   2026-10-30/11-01 in the CLI runs of the [lean research test](../../evals/research_lean/README.md): four sessions of
   47 to 61 minutes each wrote drafts that passed the code checks; the review then stopped one (below).
+  ep_007 ran through on 2026-11-01 (`run_20261101_132556_067674_ed3b4560`, 1 h 43 min):
+  - the session took 48 minutes and 125 turns, asked for 3 critiques and used 17 corpus sources;
+  - the draft has 138 segments and 5,212 words (about 40 of 45 planned minutes), 75 of them citing sections;
+  - the review passed after two repairs: three overstated conclusions, then two small citation points.
+
+  The reading by the operator is open.
+  - Five of the eight review answers were rejected and asked again (about 22 minutes, 6.5 USD). In four of them a
+    partner's echo of a fact without refs was judged `preserved`. In four, a quote differed from the text only in
+    the case of its first letter, or misquoted it.
 - V-65: the scoped script review keeps the agent draft's judge-v3 score within 0.3 (lab `post` measured polish plus
   review at the old judge only). Open, and the first real reviews show why it must be settled before a series:
   - Length: the agent was given 1.3 times the plan and reached it (55 minutes for a planned 44); the review blocked it
@@ -119,6 +131,11 @@ A narrated script run gets the **story agent** as its writer, chosen per project
     reviews raised them as structure issues. Since 2026-11-01 the agent gets the rule itself in `material.json`
     (`framing`) and a task section on it (`story_agent.v3-framing`).
 - V-66: cost per episode by the CLI's count (the lab: about 7 USD per session at list prices; subscription use).
-  Measured on 2026-10-30: 11.6 to 16.0 USD per session for episodes of 34 to 44 planned minutes.
+  Measured on 2026-10-30: 11.6 to 16.0 USD per session for episodes of 34 to 44 planned minutes. Asimov v2 ep_007
+  (45 minutes, 2026-11-01), as subscription equivalent, 28.56 USD in all:
+  - teaching: 2.95 USD;
+  - session: 12.39 USD;
+  - critiques: 0.40 USD;
+  - review and repairs: 12.83 USD.
 - V-67: the corpus search never brings a fact into a draft that its section does not hold (spot check of
   `sources_used.json` against the draft).
