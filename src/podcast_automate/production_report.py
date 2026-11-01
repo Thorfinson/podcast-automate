@@ -23,7 +23,9 @@ STAGE_LABELS = {
     "script_review_repair": "Belegprüfung · Korrektur", "listener_readback": "Hörerprobe", "editorial_review": "Redaktion",
     "teaching_review": "Lehrprüfung", "series_review": "Serienprüfung", "audio_expression": "Ausdruck für die Vertonung",
     "story_material": "Erzählstoff", "narration_review": "Narrationsprüfung",
-    "narration_repair": "Narrationsprüfung · Überarbeitung"}
+    "narration_repair": "Narrationsprüfung · Überarbeitung", "orientation_sheet": "Orientierung",
+    "orientation_check": "Orientierung · Prüfung", "story_agent": "Erzähl-Agent", "story_critique": "Erzähl-Agent · Kritik",
+    "story_review_repair": "Belegprüfung · Korrektur"}
 
 
 def minutes_between(start, end):

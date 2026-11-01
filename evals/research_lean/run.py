@@ -3,7 +3,7 @@ agent (D-181) what it needs?
 
 The same brief (brief.json, one episode of about 15 minutes) is researched twice: ``normal`` with at most NORMAL_TASKS
 sub-questions and ``lean`` with at most LEAN_TASKS (the plan approval's own cap, ``pla approve --research-plan
---max-tasks``). Each research is written as one episode by a script run with ``--writer agent``. The two published
+--max-tasks``). Each research is written as one episode by a script run by the story agent. The two published
 scripts are then judged blind by the narration lab's v3 judge (Sonnet and Opus, judge_quality.txt) and its pair judge
 in both orders, and the report puts beside them what each side cost: sub-questions, sources, findings, calls, model
 hours, the reported cost and the wall clock, and what the script review still found.
@@ -14,7 +14,7 @@ this is the check of that against a smaller research, on a topic whose popular v
     python evals/research_lean/run.py setup
     pla research .studio/evals/research_lean/normal --backend claude_code --model claude-sonnet-5-5 --reasoning-effort high
     pla approve .studio/evals/research_lean/normal --research-plan --max-tasks 12   (lean: 4), then resume and approve
-    pla script .studio/evals/research_lean/normal --writer agent --backend claude_code --model claude-sonnet-5-5 ...
+    pla script .studio/evals/research_lean/normal --backend claude_code --model claude-sonnet-5-5 ...
     python evals/research_lean/run.py judge --live
     python evals/research_lean/run.py report
 

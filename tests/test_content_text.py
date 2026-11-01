@@ -9,16 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from podcast_automate.errors import AppError
 from podcast_automate.evidence_models import ClaimContract, SynthesisRelation
 from podcast_automate.models import Chapter, EpisodeScript, Segment, TopicBrief
 from podcast_automate.research_models import (Evidence, Finding, QuestionCoverage, ResearchDiscovery, ResearchDossier,
                                               ResearchQuestion, SourceCandidate, SourceDocument, SourceIndex,
                                               SourceSection)
 from podcast_automate.scripting import run_script
-from podcast_automate.teaching import ResearchGap, TeachingPlan, TeachingPlanReview
 from tests import script_fixtures as fixtures
-from tests.teaching_fixtures import teaching_response
 
 
 def episode_script():
@@ -37,18 +34,6 @@ ONE_PART = [{"part": 1, "timestamp": "0:00", "title": "Erstes Kapitel"},
 VOICES = SimpleNamespace(voices={"host_a": "Erinome", "host_b": "Sadachbia"})
 OVERRIDES = {"seg_002": "Zwei Moeglichkeiten.", "seg_001": "Was vergleicht das Modell"}
 HOSTS = {"host_a": "Mara", "host_b": "Jonas"}
-
-
-def told_design():
-    """The fixture design with every optional part: the arc, the storytelling devices and the chapter endings."""
-    saved = teaching_response(json.dumps({"episode": fixtures.example_plan().episodes[0].model_dump()}),
-                              TeachingPlan).model_dump()
-    return TeachingPlan.model_validate({
-        **saved, "big_idea": "A score decides between candidates.", "hook_question": "Why would lower be better?",
-        "first_answer": "A higher score sounds better.", "turning_point": "The energy convention turns it around.",
-        "turning_finding_ids": ["f_energy"], "payoff": "Lower energy means a better fit.",
-        "callback": "The two candidates from the opening.", "dramaturgy": "discovery", "opening": "anecdote",
-        "partner_stance": "skeptic", "scenes": [{**scene, "ending": "conclusion"} for scene in saved["scenes"]]})
 
 
 def kit_rows():
@@ -105,38 +90,6 @@ def dossier_inputs():
                                      explanation="Beide gelten.", basis="source_comparison")])
     context = [{"sections": [1, 2]}, {"sections": [3]}]
     return dossier, discovery, index, context
-
-
-def run_teaching_gaps(folder):
-    """build_teaching_plan as a run that first needs research and then accepts the plan with one research limit:
-    returns research_needed.md as written while blocked, then plan.md and research_needed.md after acceptance."""
-    from podcast_automate.teaching import build_teaching_plan
-    config, entry = TopicBrief(topic="Test topic"), fixtures.example_plan().episodes[0]
-    gap = ResearchGap(question="Wie wird gelernt?", why_needed="Der Mechanismus fehlt.")
-    required = {"value": True}
-
-    def invoke(prompt, schema, version):
-        result = teaching_response(prompt, schema)
-        if schema is TeachingPlan:
-            result.research_gaps = [gap]
-        if schema is TeachingPlanReview:
-            result = TeachingPlanReview(issues=[], gap_assessments=[{
-                "gap": gap.question, "required_for_objective": required["value"],
-                "reason": "Für das Lernziel nicht nötig."}],
-                research_gaps=[ResearchGap(question="Woher kommen die Werte?", why_needed="Belege fehlen.")]
-                if required["value"] else [])
-        return result
-    empty = SimpleNamespace(findings=[], synthesis=[])
-    try:
-        build_teaching_plan(config, entry, empty, [], invoke, folder)
-        raise AssertionError("the first build needs research")
-    except AppError as exc:
-        assert exc.code == "teaching_research_required", exc.code
-    needed = (folder / "research_needed.md").read_text(encoding="utf-8")
-    (folder / "checkpoint.json").unlink()
-    required["value"] = False
-    build_teaching_plan(config, entry, empty, [], invoke, folder)
-    return needed, (folder / "plan.md").read_text(encoding="utf-8"), (folder / "research_needed.md").read_text(encoding="utf-8")
 
 
 def quality_report(**flags):
@@ -232,13 +185,15 @@ def render_ledger(folder, language="de-DE", **options):
 
 
 def published_files(fixture, root):
-    """series_outline.md, the episode's show_notes.md and teaching_plan.md of a fixture script run, run ids named."""
+    """series_outline.md and the episode's show_notes.md of a fixture script run, run ids named. Since D-184 an
+    episode publishes the story agent's plan (story_plan.md, the agent's own text) in place of a teaching plan."""
     with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
         run = run_script(root)
     assert run.status == "completed", run.status
     research = json.loads((root / "research/latest.json").read_text(encoding="utf-8"))["run_id"]
     texts = {}
-    for name in ("research/series_outline.md", "episodes/ep_001/show_notes.md", "episodes/ep_001/teaching_plan.md"):
+    assert not (root / "episodes/ep_001/teaching_plan.md").exists()
+    for name in ("research/series_outline.md", "episodes/ep_001/show_notes.md"):
         text = (root / name).read_text(encoding="utf-8")
         texts[name] = text.replace(research, "<research_run>").replace(run.run_id, "<script_run>")
     return texts
@@ -346,157 +301,6 @@ GOLDEN = {
         'Ashish Vaswani, Noam Shazeer (2017): Attention is All you Need. https://arxiv.org/abs/1706.03762\n'
         'Ein Buch [Band 2]?'
     ),
-    'teaching_plan': (
-        '# Lehrplan: ep_001\n'
-        '\n'
-        '## Ausgangspunkt\n'
-        '\n'
-        'No specialist knowledge.\n'
-        '\n'
-        'How does a model compare candidates?\n'
-        '\n'
-        'Choose a compatible outcome.\n'
-        '\n'
-        'Explain which candidate is preferred and why.\n'
-        '\n'
-        '## Spannungsbogen\n'
-        '\n'
-        'Dramaturgie: Entdeckungsgeschichte\n'
-        '\n'
-        'Einstieg: Anekdote\n'
-        '\n'
-        'Rolle der fragenden Stimme: Skeptisch\n'
-        '\n'
-        'Große Idee: A score decides between candidates.\n'
-        '\n'
-        'Leitfrage: Why would lower be better?\n'
-        '\n'
-        'Naheliegende erste Antwort: A higher score sounds better.\n'
-        '\n'
-        'Wendepunkt: The energy convention turns it around.\n'
-        '\n'
-        'Auflösung: Lower energy means a better fit.\n'
-        '\n'
-        'Rückgriff auf den Anfang: The two candidates from the opening.\n'
-        '\n'
-        '## Lernziele\n'
-        '\n'
-        '### goal_compare: Compare a new pair of candidates.\n'
-        '\n'
-        'Which candidate is preferred and why?\n'
-        '\n'
-        '- Each candidate receives a score.\n'
-        '- The lower score indicates the better fit.\n'
-        '\n'
-        '## Gedankengang\n'
-        '\n'
-        '### scene_example: What is scored?\n'
-        '\n'
-        '- Compare two possibilities.\n'
-        '- Explain the limit.\n'
-        '\n'
-        'Compare the alternatives.\n'
-        '\n'
-        'Kapitelende: Abschluss\n'
-        '\n'
-        '## Durchgearbeitetes Beispiel\n'
-        '\n'
-        'Two candidate outcomes have different scores.\n'
-        '\n'
-        '- Compare their scores.\n'
-        '- Select the lower one because it indicates fit.\n'
-        '\n'
-        'Mögliche Fehlvorstellung: Lower is always worse.\n'
-        '\n'
-        'This score uses the lower-is-better convention.\n'
-        '\n'
-        'Grenze: Scores alone do not provide probabilities.\n'
-        '\n'
-        '## Synthese und Übertragung\n'
-        '\n'
-        '- Assess each possible outcome.\n'
-        '- Use the comparison to choose an outcome.\n'
-        '\n'
-        'Assessment can guide a decision.\n'
-        '\n'
-        'Compare two new outcomes.\n'
-    ),
-    'research_needed': (
-        '# Recherche für die Erklärung ergänzen\n'
-        '\n'
-        '- Wie wird gelernt?\n'
-        '\n'
-        '  Der Mechanismus fehlt.\n'
-        '\n'
-        '- Woher kommen die Werte?\n'
-        '\n'
-        '  Belege fehlen.\n'
-    ),
-    'plan_with_limits': (
-        '# Lehrplan: ep_001\n'
-        '\n'
-        '## Ausgangspunkt\n'
-        '\n'
-        'No specialist knowledge.\n'
-        '\n'
-        'How does a model compare candidates?\n'
-        '\n'
-        'Choose a compatible outcome.\n'
-        '\n'
-        'Explain which candidate is preferred and why.\n'
-        '\n'
-        '## Lernziele\n'
-        '\n'
-        '### goal_compare: Compare a new pair of candidates.\n'
-        '\n'
-        'Which candidate is preferred and why?\n'
-        '\n'
-        '- Each candidate receives a score.\n'
-        '- The lower score indicates the better fit.\n'
-        '\n'
-        '## Gedankengang\n'
-        '\n'
-        '### scene_example: What is scored?\n'
-        '\n'
-        '- Compare two possibilities.\n'
-        '- Explain the limit.\n'
-        '\n'
-        'Compare the alternatives.\n'
-        '\n'
-        '## Durchgearbeitetes Beispiel\n'
-        '\n'
-        'Two candidate outcomes have different scores.\n'
-        '\n'
-        '- Compare their scores.\n'
-        '- Select the lower one because it indicates fit.\n'
-        '\n'
-        'Mögliche Fehlvorstellung: Lower is always worse.\n'
-        '\n'
-        'This score uses the lower-is-better convention.\n'
-        '\n'
-        'Grenze: Scores alone do not provide probabilities.\n'
-        '\n'
-        '## Synthese und Übertragung\n'
-        '\n'
-        '- Assess each possible outcome.\n'
-        '- Use the comparison to choose an outcome.\n'
-        '\n'
-        'Assessment can guide a decision.\n'
-        '\n'
-        'Compare two new outcomes.\n'
-        '\n'
-        '## Eingeordnete Forschungsgrenzen\n'
-        '\n'
-        '- Für das Lernziel nicht nötig.\n'
-    ),
-    'research_resolved': (
-        '# Recherchefragen geklärt\n'
-        '\n'
-        'Die Lehrplanung wurde mit den verfügbaren Quellen erneut geprüft und angenommen.\n'
-        '\n'
-        '- Wie wird gelernt?\n'
-        '- Woher kommen die Werte?\n'
-    ),
     'dossier': (
         '# Recherchedossier: Testthema\n'
         '\n'
@@ -594,59 +398,6 @@ GOLDEN = {
         '\n'
         'Recherchelauf: `<research_run>`. Skriptlauf: `<script_run>`.\n'
         'Wissensreferenzen stehen im kanonischen Skript und führen über das Wissensmodell zu den Quellenabschnitten.\n'
-    ),
-    'published_teaching_plan': (
-        '# Lehrplan: ep_001\n'
-        '\n'
-        '## Ausgangspunkt\n'
-        '\n'
-        'No specialist knowledge.\n'
-        '\n'
-        'How does a model compare candidates?\n'
-        '\n'
-        'Choose a compatible outcome.\n'
-        '\n'
-        'Explain which candidate is preferred and why.\n'
-        '\n'
-        '## Lernziele\n'
-        '\n'
-        '### goal_compare: Compare a new pair of candidates.\n'
-        '\n'
-        'Which candidate is preferred and why?\n'
-        '\n'
-        '- Each candidate receives a score.\n'
-        '- The lower score indicates the better fit.\n'
-        '\n'
-        '## Gedankengang\n'
-        '\n'
-        '### scene_example: What is scored?\n'
-        '\n'
-        '- Compare two possibilities.\n'
-        '- Explain the limit.\n'
-        '\n'
-        'Compare the alternatives.\n'
-        '\n'
-        '## Durchgearbeitetes Beispiel\n'
-        '\n'
-        'Two candidate outcomes have different scores.\n'
-        '\n'
-        '- Compare their scores.\n'
-        '- Select the lower one because it indicates fit.\n'
-        '\n'
-        'Mögliche Fehlvorstellung: Lower is always worse.\n'
-        '\n'
-        'This score uses the lower-is-better convention.\n'
-        '\n'
-        'Grenze: Scores alone do not provide probabilities.\n'
-        '\n'
-        '## Synthese und Übertragung\n'
-        '\n'
-        '- Assess each possible outcome.\n'
-        '- Use the comparison to choose an outcome.\n'
-        '\n'
-        'Assessment can guide a decision.\n'
-        '\n'
-        'Compare two new outcomes.\n'
     ),
 }
 
@@ -1319,18 +1070,6 @@ class GermanGoldenTests(unittest.TestCase):
         self.assertEqual(compose_description(KIT_LONG, kit_chapters(), kit_rows(), "de-DE"),
                          (GOLDEN["kit_description"] + f"\n\n{NOTE_DE}\n{AI_DE}", 2))
 
-    def test_teaching_plan(self):
-        from podcast_automate.teaching import render_teaching_plan
-        self.assertEqual(render_teaching_plan(told_design(), language="de-DE"), GOLDEN["teaching_plan"])
-
-    def test_research_needed_and_plan_with_limits(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as temporary:
-            needed, plan, resolved = run_teaching_gaps(Path(temporary).resolve() / "teaching")
-        self.assertEqual(needed, GOLDEN["research_needed"])
-        self.assertEqual(plan, GOLDEN["plan_with_limits"])
-        self.assertEqual(resolved, GOLDEN["research_resolved"])
-
     def test_research_dossier(self):
         from podcast_automate.research import render_dossier
         dossier, discovery, index, context = dossier_inputs()
@@ -1342,7 +1081,6 @@ class GermanGoldenTests(unittest.TestCase):
         self.assertEqual(texts["research/series_outline.md"], GOLDEN["series_outline"])
         # D-154: the script run's show notes end with the transparency note.
         self.assertEqual(texts["episodes/ep_001/show_notes.md"], GOLDEN["script_show_notes"] + MARKED_DE)
-        self.assertEqual(texts["episodes/ep_001/teaching_plan.md"], GOLDEN["published_teaching_plan"])
 
 
 class ContentTableTests(unittest.TestCase):
@@ -1351,7 +1089,6 @@ class ContentTableTests(unittest.TestCase):
         for that language's projects."""
         import string
         from podcast_automate.content_text import CATALOG_LABELS, TEXT
-        from podcast_automate.dramaturgy import DRAMATURGIES, ENDINGS, OPENINGS, STANCES
         from podcast_automate.question_budget import SOURCE_LABELS
         from podcast_automate.research_quality import CRITERIA, PROBE_LABELS
         fields = lambda entry: {name for _, name, _, _ in string.Formatter().parse(entry) if name}
@@ -1361,8 +1098,7 @@ class ContentTableTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(fields(german), fields(TEXT["en-US"][key]))
                 self.assertTrue(TEXT["en-US"][key].strip())
-        catalogs = {"dramaturgy": DRAMATURGIES, "opening": OPENINGS, "partner_stance": STANCES, "ending": ENDINGS,
-                    "criterion": CRITERIA, "probe_status": PROBE_LABELS, "call_source": SOURCE_LABELS}
+        catalogs = {"criterion": CRITERIA, "probe_status": PROBE_LABELS, "call_source": SOURCE_LABELS}
         self.assertEqual({name: set(table) for name, table in catalogs.items()},
                          {name: set(table) for name, table in CATALOG_LABELS["en-US"].items()})
 
@@ -1555,29 +1291,6 @@ class EnglishExportTests(unittest.TestCase):
                          "**Host A:** Was vergleicht das Modell?\n\n### Zweites Kapitel\n\n**Host B:** Zwei Möglichkeiten."
                          f"\n\n## Transparency note\n\n{NOTE_EN}\n\n{ai}\n")
 
-    def test_teaching_plan_and_research_questions(self):
-        from podcast_automate.teaching import render_research_needed, render_research_resolved, render_teaching_plan
-        rendered = render_teaching_plan(told_design(), language="en-US")
-        for line in ("# Teaching plan: ep_001", "## Starting point", "## Narrative arc",
-                     "Dramaturgy: Story of a discovery", "Opening: Anecdote", "Role of the questioning voice: Skeptical",
-                     "Big idea: A score decides between candidates.", "Guiding question: Why would lower be better?",
-                     "Obvious first answer: A higher score sounds better.",
-                     "Turning point: The energy convention turns it around.",
-                     "Payoff: Lower energy means a better fit.", "Callback to the opening: The two candidates from the "
-                     "opening.", "## Learning objectives", "## Line of reasoning", "Chapter ending: Conclusion",
-                     "## Worked example", "Possible misconception: Lower is always worse.",
-                     "Limit: Scores alone do not provide probabilities.", "## Synthesis and transfer"):
-            self.assertIn(f"\n{line}\n" if not line.startswith("# ") else f"{line}\n", rendered)
-        german = GOLDEN["teaching_plan"]
-        # The same lines in the same places: only the fixed words differ.
-        self.assertEqual(len(rendered.splitlines()), len(german.splitlines()))
-        gap = ResearchGap(question="How is it learned?", why_needed="The mechanism is missing.")
-        self.assertEqual(render_research_needed([gap], language="en-US"),
-                         "# Research to add for the explanation\n\n- How is it learned?\n\n  The mechanism is missing.\n")
-        self.assertEqual(render_research_resolved(["How is it learned?"], language="en-US"),
-                         "# Research questions resolved\n\nThe teaching plan was checked again with the available "
-                         "sources and accepted.\n\n- How is it learned?\n")
-
     def test_research_dossier(self):
         from podcast_automate.research import render_dossier
         dossier, discovery, index, context = dossier_inputs()
@@ -1598,7 +1311,7 @@ class EnglishExportTests(unittest.TestCase):
         self.assertEqual(len(rendered.splitlines()), len(GOLDEN["dossier"].splitlines()))
 
     def test_an_english_script_run_publishes_english_files(self):
-        """The wiring: publish_scripts and the teaching stage pass the project's language to the renderers."""
+        """The wiring: publish_scripts passes the project's language to the renderers."""
         from podcast_automate.storage import write_yaml
         fixture = fixtures.script_project(self)
         root = fixture.root.resolve()
@@ -1610,8 +1323,6 @@ class EnglishExportTests(unittest.TestCase):
         self.assertTrue(notes.startswith("# Sources and notes: A model compares possibilities\n"), notes)
         self.assertIn("\nResearch run: `<research_run>`. Script run: `<script_run>`.\n", notes)
         self.assertTrue(notes.endswith(MARKED_EN), notes)
-        self.assertTrue(texts["episodes/ep_001/teaching_plan.md"].startswith(
-            "# Teaching plan: ep_001\n\n## Starting point\n"), texts["episodes/ep_001/teaching_plan.md"])
 
     def test_script_run_files(self):
         from podcast_automate.research_models import SourceIndex

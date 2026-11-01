@@ -55,7 +55,6 @@ class VersionCase(unittest.TestCase):
                                                      "sha256": "b" * 64, "bytes": 13, "added_at": "2026-10-01T00:00:00+00:00",
                                                      "tasks": ["task_old"], "run_id": COMPLETED}])
         write_json(self.root / "studio/text.json", {"provider": "claude_code", "model": "claude-haiku-5-5"})
-        write_json(self.root / "studio/writer.json", {"writer": "agent"})
         write_json(self.root / "studio/allowances.json", {"fresh_attempts": 2, "extra_calls": 250})
         research_run(self.root, COMPLETED, "completed")
         research_run(self.root, STOPPED, "blocked")
@@ -68,8 +67,7 @@ class CreateVersionTests(VersionCase):
         self.assertEqual(target.parent, self.projects)
         self.assertTrue(target.name.startswith("a-podcast-v2-"), target.name)
         self.assertEqual(read_yaml(target / "project.yaml"), read_yaml(self.root / "project.yaml"))
-        for relative in (UPLOAD, WORK, "inputs/attachments.json", "notes/own.txt", "style_notes.md", "studio/text.json",
-                         "studio/writer.json"):
+        for relative in (UPLOAD, WORK, "inputs/attachments.json", "notes/own.txt", "style_notes.md", "studio/text.json"):
             self.assertEqual((target / relative).read_bytes(), (self.root / relative).read_bytes(), relative)
         # A provided work was named for the old research's questions; the new research plans its own.
         works = json.loads((target / "inputs/works.json").read_text(encoding="utf-8"))

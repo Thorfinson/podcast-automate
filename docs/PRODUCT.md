@@ -2,7 +2,7 @@
 title: Product
 doc_type: product
 status: current
-last_reviewed: 2026-10-19
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/text_settings.py
   - src/podcast_automate/speech.py
@@ -42,7 +42,8 @@ uses the existing subscriptions (ChatGPT/Codex and Claude Max) through the offic
 automatic audio assembly are part of the MVP. Additional paid APIs and manual audio editing are not required.
 
 Version 0.1 implements project management, the browser Studio, question-driven research up to the reviewed dossier,
-series planning, teaching plans, dialogue scripts with polishing and reviews, and the recording of approved scripts
+series planning, dialogue scripts written episode by episode by a Claude Code agent and reviewed against the sources,
+and the recording of approved scripts
 with local Qwen or with Gemini through Google or OpenRouter. The [Roadmap](#roadmap) lists what is not built yet, the
 [MVP acceptance plan](specs/2026-09-10-mvp-acceptance-plan.md) the acceptance criteria.
 
@@ -73,8 +74,10 @@ steps once with small limits ([Trial project](BUSINESS_LOGIC.md#trial-project)).
    criteria, independent answer review and an overall review up to an evidenced dossier ([Research](RESEARCH.md#pipeline)).
 3. **„Inhaltsverzeichnis“** (table of contents): a source-bound series plan that you read and approve explicitly
    ([Series plan](SCRIPTS.md#series-plan), [Human approvals](BUSINESS_LOGIC.md#human-approvals)).
-4. **„Ausarbeitung“** (drafting): per episode a teaching plan, a dialogue draft, dialogue polishing and four separate
-   reviews; missing foundations are researched again automatically ([Scripts](SCRIPTS.md#writing-and-framing)).
+4. **„Ausarbeitung“** (drafting): the episodes in order, one at a time: the story material of its sources, a story
+   agent that plans, writes and checks the episode knowing the episodes before it, and a review against the sources;
+   missing foundations are researched again automatically, and a series review reads the finished series
+   ([Story agent](SCRIPTS.md#story-agent), [Writing a series in order](SCRIPTS.md#writing-a-series-in-order)).
 5. **„Skripte lesen“** (read scripts): you check every episode as text before any audio is made
    ([Review notes on the reading page](STUDIO.md#review-notes-on-the-reading-page)).
 6. **„Vertonung“** (recording): only after you approve the script you read; produces MP3 with chapters, transcript
@@ -86,8 +89,8 @@ Every model answer must satisfy a strict JSON schema and is checked deterministi
 
 ## Providers and models
 
-**Text and audio are chosen independently**, for example Codex writes the script and Gemini records it through
-Google. **Codex** is the locally installed Codex CLI with a ChatGPT subscription login, **Claude** the Claude Code
+**Text and audio are chosen independently**, for example Codex plans and reviews the script and Gemini records it
+through Google; the script itself is always written by the story agent, Claude Opus 5.5 (below). **Codex** is the locally installed Codex CLI with a ChatGPT subscription login, **Claude** the Claude Code
 CLI with a claude.ai login (Claude Max subscription). The text models do not run offline on the PC, and neither
 subscription bills individual calls. OpenRouter serves text models with structured JSON answers, paid from your
 OpenRouter credit. **Claude on the API key** (`claude_api`) is the Claude Code CLI on your own Anthropic API key, for
@@ -157,6 +160,7 @@ through the CLI option `--model` ([Commands](#commands)).
 | Status brief (**„Kurzbericht“**) during research and drafting, at `low` | `gpt-5.6-luna` for Codex jobs, `claude-haiku-4-5` for Claude subscription jobs, `deepseek/deepseek-v4.1-flash` for OpenRouter jobs; none for jobs on the Anthropic API key (why: D-149) | `status_summary.STATUS_MODELS`, [Progress and telemetry](STUDIO.md#progress-and-telemetry) |
 | Advisor for blocked sub-questions | `claude-opus-5-5` at `xhigh` when the run uses the fixed Claude subscription; other selections, Claude on the API key included, keep their own | `research_advisor.ADVISOR_MODEL`, `ADVISOR_EFFORT`, [Blocked sub-questions and decisions](RESEARCH.md#blocked-sub-questions-and-decisions) |
 | Gap probe with Jev | `typesafe/jev-1.13` via OpenRouter | `jev.JEV_MODEL`, [Gap probe](RESEARCH.md#gap-probe) |
+| Story agent, the writer of every script | `claude-opus-5-5` at `xhigh` through Claude Code, on the Claude subscription, or on your Anthropic key when the run's text model is Claude on the API key (why: D-181, D-184) | `story_agent.AGENT_MODEL`, `AGENT_EFFORT`, [Story agent](SCRIPTS.md#story-agent) |
 
 ### Speech
 
@@ -192,7 +196,7 @@ messages of the pipeline modules that `pla status`, `pla quota` and `pla approve
 | `pla doctor [<project>]` | Check installation, Codex and Claude login, subscription quota, Claude on the API key (`ANTHROPIC_API_KEY` set and Claude Code recent enough), the Perplexity search (`PERPLEXITY_API_KEY` set; informational), TTS environment and catalog age; no model call | `--skip-tts` checks without local Qwen |
 | `pla quota` | Show the quota of both subscriptions without a model call | |
 | `pla research <project>` | Run kind `research`: live search, source import, dossier and source review up to the reviewed dossier | `--backend codex_cli\|claude_code\|claude_api\|auto`, or `openrouter` with `--web-search perplexity`, `--web-search model\|perplexity` (web search of a new run; the Perplexity key from `PERPLEXITY_API_KEY`), `--api-key` (hidden prompt for the Anthropic key of `claude_api` or the OpenRouter key, else `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`), `--model`, `--reasoning-effort`, `--approve-plan`, `--reuse-sources RUN_ID`, `--seed-corpus RUN_ID`; [Starting and resuming](RESEARCH.md#starting-and-resuming) |
-| `pla script <project>` | Run kind `script`: compact knowledge model, series plan, teaching plans and reviewed dialogue scripts for reading | `--episode ep_001` (bring one episode forward; without it all planned scripts are written), `--revise EPISODE_ID` with `--feedback`, `--backend codex_cli\|openrouter\|claude_code\|claude_api\|auto`, `--model`, `--reasoning-effort`, `--api-key` (hidden prompt for the OpenRouter or Anthropic key), `--max-output-tokens`, `--jev-probe`, `--web-search model\|perplexity` (supplementary research of a new run; the Perplexity key from `PERPLEXITY_API_KEY`); [Running a script job](SCRIPTS.md#running-a-script-job) |
+| `pla script <project>` | Run kind `script`: compact knowledge model, series plan and dialogue scripts written by the story agent and reviewed, for reading | `--episode ep_001` (bring one episode forward; without it all planned scripts are written), `--from-outline RUN_ID` with `--episode` (write that episode of an approved outline without planning again), `--revise EPISODE_ID` with `--feedback` (the story agent revises the published episode), `--backend codex_cli\|openrouter\|claude_code\|claude_api\|auto`, `--model`, `--reasoning-effort`, `--api-key` (hidden prompt for the OpenRouter or Anthropic key), `--max-output-tokens`, `--jev-probe`, `--web-search model\|perplexity` (supplementary research of a new run; the Perplexity key from `PERPLEXITY_API_KEY`); [Running a script job](SCRIPTS.md#running-a-script-job) |
 | `pla series-review <project>` | Run kind `series_review`: review the scripts of a published script run as a series, without changing that run | `--run <run_id>` (default: the last published), `--backend codex_cli\|claude_code\|claude_api\|auto` (`claude_api` takes its key from `ANTHROPIC_API_KEY`), `--model`, `--reasoning-effort`; [Series review](SCRIPTS.md#series-review) |
 | `pla audio <project> --episode ep_001 --approve-audio` | Run kind `episode_audio`: record one read and approved episode with local Qwen, assemble it and export MP3, chapters, transcript and show notes. Gemini via OpenRouter is chosen in the Studio | `--approval-note` |
 | `pla publish-kit <project> --episode ep_001` | Companion kit of one published episode for uploading it to a podcast platform: a short description, an episode description of at most 4,000 characters with chapter marks (`00:00 Title`) and sources appended, and the source list. One call of the script run's text model writes the two descriptions and is reused while the script is unchanged; chapters and sources are built from the recording and the research without a model. Writes `publish/` next to the recording, or `episodes/<ep>/publish/` without one; publishes nothing | `--fresh` asks for new descriptions; an OpenRouter script run takes its key from `OPENROUTER_API_KEY`, a `claude_api` one from `ANTHROPIC_API_KEY` |
@@ -202,7 +206,7 @@ messages of the pipeline modules that `pla status`, `pla quota` and `pla approve
 | `pla approve <project>` | Explicit approval for one run (options below) | `--run-id` (default: the project's last run) |
 | `pla text-probe <project>` | Structured subscription connection probe; writes to `probes/text/<run_id>/` | `--backend codex_cli\|claude_code\|auto` (default `codex_cli`) |
 | `pla audio-probe <project> --approve-audio` | Assemble a German or English Qwen voice sample; writes to `probes/audio/<run_id>/` | |
-| `pla schemas <folder>` | Export all 21 implemented data contracts as JSON Schema ([Data contracts](ARCHITECTURE.md#data-contracts)) | |
+| `pla schemas <folder>` | Export all 14 implemented data contracts as JSON Schema ([Data contracts](ARCHITECTURE.md#data-contracts)) | |
 
 `pla approve` options; each takes effect on the next call of the run or with `pla resume`:
 
@@ -213,7 +217,6 @@ messages of the pipeline modules that `pla status`, `pla quota` and `pla approve
 | `--cost-usd N` | Set or raise the money limit in USD of a run billed to a key (`claude_api`, OpenRouter, the Perplexity search); it can only rise | [Money limit](BUSINESS_LOGIC.md#money-limit) |
 | `--accept-gap TASK_ID [--reason "…"]`, `--retry TASK_ID [--hint "…"]`, `--access-gap TASK_ID CRITERION --blocked-source URL`, `--dispute OBJECTION_ID SIDE` (`SIDE` is `reviewer` or `objection`), `--finish-with-residuals`, `--rebuild-dossier` | Decisions on blocked sub-questions and on the overall review | [Blocked sub-questions and decisions](RESEARCH.md#blocked-sub-questions-and-decisions) |
 | `--fresh-attempts` | Repeat steps that used up their repair attempts with fresh attempts on the next resume; the rejected answers stay readable | [Stopping and resuming](STUDIO.md#stopping-and-resuming) |
-| `--redesign-teaching EPISODE_ID --hint "…"` | Redesign the stopped teaching plan of this episode on the next resume; the hint is binding | [Overview, navigation and hold cards](STUDIO.md#overview-navigation-and-hold-cards) |
 | `--text-switch [claude\|astra\|claude-only\|astra-only\|openrouter\|claude-api]`, `--switch-model` | Continue a script or research job with another text provider from the next resume; `--switch-model` names the OpenRouter model or, for `claude-api`, a Claude model ID; a billed provider needs `--cost-usd` unless the run has a money limit | [Switching a job to another provider](BUSINESS_LOGIC.md#switching-a-job-to-another-provider) |
 
 There is no overall `run` command; the Studio runs the run kinds one after the other (why: D-002). Their order and

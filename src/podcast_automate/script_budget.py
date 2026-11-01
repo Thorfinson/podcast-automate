@@ -1,6 +1,6 @@
 """Remaining model calls of a script run: a fail-fast minimum before each paid stage, and the expected count.
 
-The minimum is a lower bound without repairs: every rejected draft, design or review costs further calls. It
+The minimum is a lower bound without repairs: every rejected draft or review costs further calls. It
 alone gates a stage. The expectation scales it by what the project's last completed script run needed per
 episode, as research/calibration.json does for research. Both are written to
 ``runs/<run_id>/budget_projection.json`` so the Studio can show them.
@@ -15,45 +15,28 @@ from .cost_estimate import money_view
 from .storage import read_yaml, write_json
 from .script_checkpoints import finished
 
-# Mandatory calls per episode and stage when nothing is checkpointed yet.
+# Mandatory calls per episode and stage when nothing is checkpointed yet, for the story agent's stages (D-181, the only
+# writer since D-184).
 STAGE_CALLS = {
-    "teaching": 3,   # story material + teaching design + independent design review
-    "writing": 1,    # dialogue draft
-    "story": 2,      # the story agent's session + its first critique; up to three more critiques (D-181)
-    "narration": 1,  # narration review; its rework and the review after it only when it names points
-    "polishing": 2,  # spoken-language pass + before/after comparison
-    "review": 4,     # source review, listener readback, editorial review, teaching review
+    "teaching": 3,   # story material + orientation sheet + its check
+    "story": 2,      # the story agent's session + its first critique; up to three more critiques
+    "review": 1,     # the script review with the corpus sections the agent used
 }
-# A run without the narration stage (D-180) collects no story material.
-STORY_CALLS = 1
-# A run written by the story agent has no teaching design, so its review stage has no teaching assessment (listener
-# readback, editorial review, teaching review: teaching.assess_teaching); its teaching stage makes the orientation
-# sheet and its check instead of the design and its review (D-181).
-TEACHING_REVIEW_CALLS = 3
-LABELS = {"planning": "Inhaltsverzeichnis", "teaching": "Lehrkonzept", "writing": "Skriptentwurf",
-          "story": "Erzähl-Agent", "narration": "Narrationsprüfung", "polishing": "Dialog-Polishing",
+LABELS = {"planning": "Inhaltsverzeichnis", "teaching": "Erzählmaterial", "story": "Erzähl-Agent",
           "review": "Prüfungen", "series_review": "Serienprüfung"}
 
 
 def stage_calls(stage, stages) -> int:
-    """The mandatory calls per episode of ``stage`` in a run with ``stages``."""
-    calls = STAGE_CALLS[stage]
-    if stage == "teaching" and "narration" not in stages and "story" not in stages:
-        calls -= STORY_CALLS
-    if stage == "review" and "story" in stages:
-        calls -= TEACHING_REVIEW_CALLS
-    return calls
+    """The mandatory calls per episode of ``stage``; ``stages`` are the run's stage names."""
+    return STAGE_CALLS[stage]
 
 
 MINIMUM_NOTE = "Mindestwerte ohne Reparaturen; jede Korrektur oder erneute Prüfung benötigt weitere Aufrufe."
 
 
 def calls_per_episode(stages=None) -> int:
-    """The mandatory calls per episode; for ``stages``, a run's stage names, those of that run: one without the
-    narration stage (D-180) neither collects story material nor reviews its narration."""
-    if stages is None:
-        return sum(calls for stage, calls in STAGE_CALLS.items() if stage != "story")
-    return sum(stage_calls(stage, stages) for stage in STAGE_CALLS if stage in stages)
+    """The mandatory calls per episode; for ``stages``, a run's stage names, those of its stages."""
+    return sum(stage_calls(stage, stages) for stage in STAGE_CALLS if stages is None or stage in stages)
 
 
 def remaining_calls(work, manifest, entries, *, series_review: bool) -> tuple[int, dict]:
@@ -84,9 +67,9 @@ def read_json(path, default):
 def last_script_run(root, current=None):
     """What the project's last completed script run spent per episode, or None.
 
-    The minimum counts 11 calls per episode (9 before the narration stage, D-180); the completed Asimov and Ontologies
-    runs needed 31 and 42.5 (measured 2026-10-02), because repairs, re-reviews, supplementary research and series
-    corrections come on top. Its calls
+    The minimum counts 6 calls per episode (the story agent's stages, D-181); the writing prompt's completed Asimov and
+    Ontologies runs needed 31 and 42.5 against its 9 (measured 2026-10-02), because repairs, re-reviews, supplementary
+    research and series corrections come on top. Its calls
     are the charged model calls in its budget.json; its episodes are the one it was asked for or its plan's."""
     rows = []
     for path in (root / "runs").glob("run_*/run_manifest.yaml"):

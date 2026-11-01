@@ -2,12 +2,11 @@
 title: Quality
 doc_type: quality
 status: current
-last_reviewed: 2026-10-30
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_advisories.py
   - src/podcast_automate/series_review.py
-  - scripts/evaluate-teaching.py
   - evals/
 ---
 
@@ -69,7 +68,8 @@ A complete series of six episodes with exported MP3s exists („Die Entwicklung 
 from 13 to 16 September 2026). The audit of 19 September 2026 assessed it: the individual verdicts are in the
 [quality audit](specs/2026-09-19-quality-audit.md), the changes made from it in the
 [status of its implementation plan](specs/2026-09-19-quality-audit-plan.md#status). Source and structure checks still
-do not prove sufficient depth of explanation; that is what the editorial review against the desired standard is for.
+do not prove sufficient depth of explanation; that is what the script review against the
+[editorial standard](TEACHING.md#editorial-standard) and your reading are for.
 
 The human listening acceptance of this series is outstanding (see V-1); every audio report carries
 `human_listening_reviewed: false` until the review is recorded in the Studio.
@@ -186,31 +186,28 @@ Blocking findings must be fixed before the final export ([Quality gates](#qualit
 The fixture projects originally planned for evaluation (`fixtures/simple_topic`, `fixtures/mechanism_series` and
 `fixtures/conflicting_perspectives`) were never created. The evaluation basis instead is:
 
-1. the fixture modules of the test suite under `tests/*_fixtures.py` (research, questions, teaching plan, script,
-   polishing, series) with simulated model responses that run through the complete flow including resume, budget and
-   approvals; which suite to run when is in [AGENTS.md](../AGENTS.md);
+1. the fixture modules of the test suite under `tests/*_fixtures.py` (research, questions, story material, script
+   with a fake story agent, series) with simulated model responses that run through the complete flow including
+   resume, budget and approvals; which suite to run when is in [AGENTS.md](../AGENTS.md);
 2. the cases under `evals/` (list below) with frozen corpora, expected verdicts, deliberately faulty cases and clean
    controls, which run by hand, partly with real model calls and partly as offline replay;
-3. the sample series of September 2026 and the rejected pilot (`evals/teaching_quality/pilot_rejected.json`) as
-   regression cases.
+3. the sample series of September 2026 as a regression case.
+
+The evals that measured only the writing prompt's path (`evals/dialogue_polishing`, `evals/narration`,
+`evals/teaching_quality` with `scripts/evaluate-teaching.py`) were removed with it on 2026-11-01 (why: D-184); they are
+in git history.
 
 The product's main cases ([Subject-matter pilots](#subject-matter-pilots)) are candidates for later pilots.
 
 The cases under `evals/`, each with a README on how to run it:
 
-- [`dialogue_polishing/`](../evals/dialogue_polishing/README.md): whether the production dialogue comparison keeps
-  meaning, completeness, speaker roles and spoken language; one subscription call per case with `--live`.
 - [`jev_decisions/`](../evals/jev_decisions/README.md): whether Jev (`typesafe/jev-1.13` on OpenRouter) can take over
   two narrow yes/no checks (`claim`, `section`), labelled by the pipeline's own verdicts, not by humans; paid
   OpenRouter requests, capped by `--max-usd`.
-- [`narration/`](../evals/narration/README.md): the narration stage (D-180) in three parts: whether story material
-  keeps the scene a read section holds and its finding leaves out (`recall`, 8 known cases), whether the narration
-  review rates the published Orlagau episodes as the user heard them (`calibrate`), and revisions of Orlagau episodes
-  without and with the new parts in copies of the project, with a negative control for the evidence review and the
-  scripts for a blind reading (`compare`); subscription calls with `--live`.
-- [`narration_lab/`](../evals/narration_lab/README.md): the narration workshop of 2026-10-26/27 on fixed
-  ten-minute cases (Milgram, Kuchavez, Heinrich): writer variants, the agentic writer the story agent (D-181) came
-  from, and the v3 judge the operator calibrated; subscription calls and Claude Code sessions.
+- [`narration_lab/`](../evals/narration_lab/README.md): an archive since 2026-11-01: the narration workshop of
+  2026-10-26/27 on fixed ten-minute cases (Milgram, Kuchavez, Heinrich), with its cases, prompts and results as the
+  evidence of D-181: writer variants, the agentic writer the story agent came from, and the v3 judge the operator
+  calibrated. Its `run.py` went with the writing prompt (D-184).
 - [`research_lean/`](../evals/research_lean/README.md): whether a research with far fewer sub-questions still
   gives the story agent what it needs: one brief researched with at most 12 and at most 4 sub-questions, one agent
   episode each, judged by the lab's v3 judge; real research and script runs on the subscription.
@@ -219,11 +216,9 @@ The cases under `evals/`, each with a README on how to run it:
   V-5).
 - [`research_refinement/`](../evals/research_refinement/README.md): targeted research and resume, through regression
   tests of the regular suite and a read-only check of a saved source set; no model calls.
-- [`teaching_quality/`](../evals/teaching_quality/README.md): teaching-quality controls through `assess_teaching`,
-  run by `scripts/evaluate-teaching.py`; subscription calls with `--live`.
 - [`web_search/`](../evals/web_search/README.md): whether the [Perplexity search](ARCHITECTURE.md#web-search-through-perplexity)
   finds what the text model's own search found, on sub-question searches of a finished project (`run.py build`, `run`,
   `score`); the saved search is the baseline, not ground truth; paid OpenRouter and Perplexity requests (see V-36).
 
-No real-model run of the teaching, dialogue-polishing and research-evidence evals is recorded after the prompt changes
-of 19 September 2026 (see V-3).
+No real-model run of the research-evidence eval is recorded after the prompt changes of 19 September 2026 (see V-3,
+which also names the two removed evals).

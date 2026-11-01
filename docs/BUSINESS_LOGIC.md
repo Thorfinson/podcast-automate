@@ -36,18 +36,21 @@ commands: [PRODUCT](PRODUCT.md#commands)).
 | Run kind | Command | Ends with |
 | --- | --- | --- |
 | `research` | `pla research <project>` | the reviewed dossier and its quality report |
-| `script` | `pla script <project> [--episode ep_001]` | series plan, teaching plans, reviewed scripts and the quality report, ready for reading |
+| `script` | `pla script <project> [--episode ep_001]` | series plan, scripts written by the story agent and reviewed, and the quality report, ready for reading |
 | `episode_audio` | `pla audio <project> --episode ep_001 --approve-audio` | recording, assembly, check and export of one episode |
 
 - There is no overall `run` command; the Studio starts the run kinds one after another.
 - `pla doctor` checks the local prerequisites, the CLI logins and the audio backend before a first run.
 - `research` and `script` end at the quality report, without audio approval. A script run without `--episode`
   handles all planned episodes; `--episode ep_001` pulls one script forward for editorial reading. A new `script`
-  call plans anew; `resume` keeps the stored plan and the valid drafts.
+  call plans anew; `resume` keeps the stored plan and the valid drafts. The Studio plans in one run and writes the
+  series one episode per run, in order, from the approved outline
+  ([SCRIPTS](SCRIPTS.md#writing-a-series-in-order); why: D-184).
 - An `episode_audio` run records exactly one episode; only `--approve-audio` starts generation, assembly, check and
   export ([Human approvals](#human-approvals)). Exporting publishes nothing automatically.
-- `series_review`, a fourth run kind (`pla series-review`), reviews the scripts of a published script run afterwards
-  and cannot be resumed ([SCRIPTS](SCRIPTS.md#series-review)).
+- `series_review`, a fourth run kind, reviews the scripts of a published script run afterwards (`pla series-review`)
+  or, started by the Studio, the published episodes of one outline, and cannot be resumed
+  ([SCRIPTS](SCRIPTS.md#series-review)).
 
 ## Text providers and model selection
 
@@ -97,6 +100,9 @@ It is its own provider, so no rule written for the subscription `claude_code` ap
 - It queries no quota and writes nothing to the quota store `~/.podcast-automate/subscriptions.json`; an API rate
   limit never blocks the subscription.
 - Every run on it needs a [money limit](#money-limit).
+- A script run on it also runs the story agent's sessions on the key: each is billed, counts against the money limit
+  and stops at `story_agent.SESSION_BUDGET_USD` = 40 USD (`--max-budget-usd`); on every other text provider the
+  sessions use the Claude subscription ([SCRIPTS](SCRIPTS.md#calls-and-access); why: D-184).
 - Stops: `anthropic_rate_limit` pauses with `waiting_for_quota` and the Studio resumes it like a quota pause;
   `anthropic_credits` (no credit left) also pauses with `waiting_for_quota`, but is never resumed automatically,
   because waiting does not top up the account ([Automatic resume](STUDIO.md#automatic-resume));
@@ -149,12 +155,12 @@ named in the failure, else that provider's stored one. Without a known reset the
 doubling with each further resume up to eight hours (`subscriptions.RETRY_BACKOFF_SECONDS = 1800`). (why: D-027)
 When the Studio resumes by itself: [STUDIO](STUDIO.md#stopping-and-resuming).
 
-### Lower effort for two stages
+### Lower effort for expression tags
 
-Two stages ask at most at `medium`, even when the run is set higher (`text_settings.STAGE_EFFORT_CAPS`): the
-first-time reader (`listener_readback`), which should take in only what the dialogue itself explains, and placing the
-expression tags for the recording (`audio_expression`). Evidence review, teaching review, writing and every correction
-keep the run's level. (why: D-023)
+Placing the expression tags for the recording (`audio_expression`) asks at most at `medium`, even when the run is set
+higher (`text_settings.STAGE_EFFORT_CAPS`). The script review, the series review and every correction keep the run's
+level. (why: D-023) The first-time reader (`listener_readback`), capped as well, ended with the writing prompt
+(D-184).
 
 ### Research runs and their web search
 
@@ -313,47 +319,38 @@ and stored fields: [RESEARCH](RESEARCH.md#scope-check-and-plan-approval)).
 
 ### Script lower bound and expected calls
 
-Without repairs a script run needs at least one call for the table of contents, eleven per episode
-(`script_budget.STAGE_CALLS`, `script_budget.calls_per_episode`) and, for a complete series, one for the series
-review:
+Without repairs a script run needs at least one call for the table of contents, six per episode
+(`script_budget.STAGE_CALLS`, `script_budget.calls_per_episode`) and, for a run that writes its whole series, one for
+the series review:
 
 | Stage | Calls per episode | Purpose |
 | --- | --- | --- |
-| `teaching` | 3 | story material, teaching plan and independent review of the plan |
-| `writing` | 1 | dialogue draft |
-| `narration` | 1 | narration review; its rework and the review after it only when it names rewrite points |
-| `polishing` | 2 | spoken-language pass and before/after comparison |
-| `review` | 4 | source review, listener readback, editorial review, teaching review |
+| `teaching` | 3 | story material, orientation sheet and its check |
+| `story` | 2 | the story agent's session, counted as one call, and its first critique; up to three more critiques on top |
+| `review` | 1 | the script review with the corpus sections the agent used |
 
-A run started before 23 October 2026 has no `narration` stage and collects no story material
-(`script_budget.STORY_CALLS`), so its minimum stays nine per episode; the projection and the calibration factor use the
-run's own stage list (why: D-180).
+Each critique is an ordinary call of the run; the session records the usage and cost the CLI reports
+([SCRIPTS](SCRIPTS.md#calls-and-access); why: D-181). Until 2026-11-01 a run written by the writing prompt needed
+eleven per episode (nine before the narration stage of D-180): teaching design and its review, the draft, the
+narration review, polishing with its comparison and four reviews (why: D-184).
 
-A run written by the story agent (`scripting.STORY_STAGES`) needs six per episode (`script_budget.stage_calls`):
-`teaching` 3 (story material, orientation sheet and its check), `story` 2 (the agent's session, counted as one call,
-and its first critique; up to three more critiques on top) and `review` 1 (the script review; no listener readback, editorial or teaching review). Each critique is an
-ordinary call of the run; the session itself runs on the Claude subscription and records the cost the CLI reports
-([SCRIPTS](SCRIPTS.md#story-agent); why: D-181).
-
-- Every rejected version costs more: a narration rework with its review (two calls, plus up to two corrections), up to
-  three script repairs with a new review, two polishing corrections, two teaching-plan revisions, one targeted
-  correction round, and up to three supplementary research runs per episode. A
-  series repair costs three calls per affected episode, up to five with its second attempt
-  ([SCRIPTS](SCRIPTS.md#series-review)).
+- Every rejected version costs more: up to three script repairs with a new review, the critiques beyond the first,
+  a story research, and up to three supplementary research runs per episode. A series repair costs three calls per
+  affected episode, up to five with its second attempt ([SCRIPTS](SCRIPTS.md#series-review)).
 - **Lower bound.** Before every paid stage the run computes the minimum of remaining calls from the unfinished
-  episodes and saves it in `runs/<run_id>/budget_projection.json`; an episode whose polishing kept the reviewed draft
-  counts as polished. If the approved limit does not cover it, the run stops with `script_budget_insufficient`
-  before any money is spent; finished checkpoints stay, and after an explicit raise `resume` continues.
+  episodes and saves it in `runs/<run_id>/budget_projection.json`. If the approved limit does not cover it, the run
+  stops with `script_budget_insufficient` before any money is spent; finished checkpoints stay, and after an explicit
+  raise `resume` continues.
 - **Expected calls** (`expected_remaining_calls`) scale the episode stages by the actual calls per episode of the
   project's last completed script run (run, calls and episodes under `calibration`); without one they equal the lower
   bound. They are a hint; only the lower bound stops a run. The Studio shows the lower bound next to the call counter
   and, once calibrated, the expectation; a stop card suggests a new limit from the expectation, without a calibration
   from the lower bound plus a quarter for corrections.
-- **What 750 calls carry.** Arithmetically 68 narrated episodes without repairs (1 + 68 × 11 + 1 = 750; 83 at nine per
-  episode before the narration stage). The completed runs
-  Asimov and Ontologies actually needed 31 and 42.5 calls per episode (measured on 2026-10-02), because repairs, new
-  reviews, supplementary research and series corrections come on top; at that rate 750 calls cover about 17 to 24
-  episodes. Longer series or many corrections need a higher limit.
+- **What 750 calls carry.** Arithmetically 124 episodes without repairs (1 + 124 × 6 + 1 = 746). The completed runs
+  Asimov and Ontologies, written by the writing prompt, actually needed 31 and 42.5 calls per episode against its
+  minimum of nine (measured on 2026-10-02), because repairs, new reviews, supplementary research and series
+  corrections come on top; at that rate 750 calls covered about 17 to 24 episodes. No such measurement of agent runs
+  is recorded yet. Longer series or many corrections need a higher limit.
 
 ### Money limit
 
@@ -367,7 +364,9 @@ USD (why: D-146, D-148, D-151):
   or the web search „Über Perplexity“ (through Perplexity) without it (`cost_limit_required`). Subscription runs that
   search through the text model count no money.
 - **Billed calls.** A call is billed when it goes to OpenRouter or to `claude_api`, and a search call when the run
-  searches through Perplexity, whatever its text model (`provider_pool.AdapterPool.billed`). Otherwise the web searches
+  searches through Perplexity, whatever its text model (`provider_pool.AdapterPool.billed`). A story agent session of a
+  `claude_api` run is one billed call too: reserved like the others, one `billing.json` row with the cost the CLI
+  reports (`story_agent.run_agent`). Otherwise the web searches
   of an OpenRouter run go to the subscriptions and bill nothing, so a research job with OpenRouter text and the model's
   search needs no limit.
 - **Stops.** Before every billed call `research.reserve_call` checks the limit: without one the run stops with
@@ -479,11 +478,12 @@ topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a
 - A raise for one run ([Raising a limit](#raising-a-limit), a stop card, a pre-approval) works as for every run.
 - Why these values: the completed runs measured 16.4 to 23.4 calls per sub-question, so three take up to about 70,
   and discovery, planning, an advisor call and the closing calls about 15 more; 110 leaves a margin above that. The
-  same limit carries the one-episode script run: its lower bound is 11 calls, and the completed script runs took 31 to
-  42.5 calls per episode (2026-10-02). 45 USD covers each run of a trial on Sonnet 5.5 at the
-  [measured rates](#money-limit): research about 85 calls at 0.37 USD, the script run about 44 calls at 0.83 USD. On
-  Opus 5.5 a run may reach it and stops with `cost_limit_reached`. Whether a trial ends within its limits is open
-  (see V-48).
+  same limit carries the script work of the one episode: at least eight calls (the table of contents, six for the
+  episode, the series review), and the writing prompt's completed script runs took 31 to 42.5 calls per episode
+  (2026-10-02). 45 USD covers each run of a trial on Sonnet 5.5 at the [measured rates](#money-limit): research about
+  85 calls at 0.37 USD, the writing prompt's script run about 44 calls at 0.83 USD. On Opus 5.5 a run may reach it and
+  stops with `cost_limit_reached`; so may a script run on `claude_api`, whose story agent session is billed to the key
+  too (Asimov v2 ep_007's session reported 12.39 USD). Whether a trial ends within its limits is open (see V-48).
 
 ## Human approvals
 
@@ -511,9 +511,10 @@ topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a
 
 ### Table of contents
 
-**„Plan freigeben & Skripte schreiben“** (approve plan & write scripts) approves exactly the displayed plan state and
-starts the elaboration. Only a finished draft can be revised or approved. An interrupted planning grants no script
-approval.
+**„Freigeben & erste Folge schreiben“** (approve & write the first episode) approves exactly the displayed plan state
+(`plan_approval.json`, bound to the outline and its inputs) and writes its first episode; every further episode is
+written from that approval, one run each, on your click ([SCRIPTS](SCRIPTS.md#writing-a-series-in-order); why: D-184).
+Only a finished draft can be revised or approved. An interrupted planning grants no script approval.
 
 ### Audio
 
@@ -537,8 +538,8 @@ approval.
 
 ### Decisions that stay yours
 
-Accepting a gap, deciding a disputed objection, finishing with remaining objections, requesting a new teaching plan,
-approving plans and audio, raising an exhausted search-round or source limit, setting or raising a money limit, and
+Accepting a gap, deciding a disputed objection, finishing with remaining objections, revising an episode with the
+series review's points, approving plans and audio, raising an exhausted search-round or source limit, setting or raising a money limit, and
 switching to a provider billed to a key are never taken automatically. Pre-approvals cover only fresh attempts and
 call-limit raises ([Pre-approvals](#pre-approvals)). Blocked
 sub-questions and their decisions: [RESEARCH](RESEARCH.md#blocked-sub-questions-and-decisions).
@@ -598,15 +599,23 @@ sub-questions and their decisions: [RESEARCH](RESEARCH.md#blocked-sub-questions-
 
 ### Estimating and checking the duration
 
-- Script duration is estimated from the spoken words, the speaking rate and the planned pauses: 130 words per minute
-  including pauses for planning (`script_artifacts.SPOKEN_WORDS_PER_MINUTE`; the German Transformer recordings of
-  2026-10-02 measured 125 to 131), plus a slow comparison estimate at 100. The check per audio provider is open (see
-  V-16).
+- Script duration is estimated from the spoken words, the speaking rate and the planned pauses, plus a slow
+  comparison estimate at 100 words a minute.
+- **The project's speaking rate** (why: D-184). A new script run writes and checks its lengths at the words a minute
+  of the project's voice engine (`scripting.speaking_rate`): the rate measured on the project's newest completed
+  recording by its current speech provider (`scripting.measured_rate`: the approved script's words over the exported
+  minutes less its planned pauses; a value outside 90 to 220 is ignored), else that engine's starting value
+  (`scripting.STARTING_RATES`: 150 for ElevenLabs, 148 for Gemini through Google), else 130
+  (`script_artifacts.SPOKEN_WORDS_PER_MINUTE`, measured as 125 to 131 on the German Transformer recordings of
+  2026-10-02 and kept for Qwen). ElevenLabs spoke Asimov v2 ep_007 at 150 and Gemini the Orlagau episodes at 137 to
+  151 where every budget assumed 130, so an episode planned at 45 minutes ran 35:47. The run binds the rate in its
+  inputs (`speaking_rate`) only when it differs from 130, so a run started before keeps 130 and its input hash; the
+  word budget, the length checks, the review's metrics, the quality report and the Studio's minutes all use the run's
+  own rate (`script_artifacts.run_rate`). How well the starting values hold per provider is open (see V-16).
 - A script estimated above 60 minutes is returned; one under 85 % of its planned duration is returned for revision of
   its content (`script_checks.MIN_DURATION_SHARE`). This catches a gross miss of the scope, not missing depth of
-  explanation. The slow estimate is no measured duration and does not limit the text further. The writer gets this
-  floor and a target as a computed word budget; only for Claude Sonnet 5.5 is that target above the plan
-  ([SCRIPTS](SCRIPTS.md#what-each-step-receives)).
+  explanation. The slow estimate is no measured duration and does not limit the text further. The story agent gets a
+  word budget at the plan's length with a floor of 95 % of it ([SCRIPTS](SCRIPTS.md#word-budget)).
 - The script check before the recording is the length limit: the montage writes the whole episode as one MP3 and
   stops at no length, and the speaking rate is never raised to shorten an episode. The measured duration is in the
   audio report ([AUDIO](AUDIO.md#output-format-and-chapters)); the gate `duration_check`:

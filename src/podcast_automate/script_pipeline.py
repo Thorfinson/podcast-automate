@@ -1,4 +1,4 @@
-"""Stage implementations of a script run: outline, teaching design, drafting, polishing, reviews, publishing.
+"""Stage implementations of a script run: outline, story material, the story agent's sessions, reviews, publishing.
 
 ``scripting.run_script`` resolves inputs, hashes and approvals, then hands ``ScriptRun.stages()`` to the
 shared stage runner. Every stage first checks that the approved call allowance can still finish the
@@ -16,28 +16,25 @@ from .editorial import CONTINUITY, EPISODE_FRAMING, LISTENABILITY, TEACHING_SCOP
 from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION
 from .execution import run_episode_stage
-from .models import EpisodeScript, host_labels, host_roles_of
-from .narration import (NARRATION_REPAIR_VERSION, NARRATION_REVIEW_VERSION, NARRATION_VERSION, REWORK_REFUSED,
-                        STORY_RESEARCH_SETTLED, NarrationReview, allowed_sections, compared_episodes, length_errors,
-                        missing_stories, narrate_episode, review_payload, review_task, sanitized, scope_errors,
-                        story_material, with_neighbours)
-from .polishing import cast_note, host_roles, polish_dialogue
+from .models import EpisodeScript, host_roles_of
+from .cast import cast_note, host_roles
+from .narration import STORY_RESEARCH_SETTLED, missing_stories, scope_errors, story_material, with_neighbours
 from .prompts import fragment, instructions
 from .research import check_money, refund_call, reserve_call, settle_call, settle_external, unanswered
 from .research_evidence import single_group_findings
 from .research_gap_probe import coverage_terms, gap_id, hit_sources, probe, settle, statuses, unread
 from .research_ledger import read_value
-from .research_patches import MAX_REJECTIONS, corrected_call, re_asked
-from .run_budget import effective_limits, teaching_redesigns
+from .research_patches import corrected_call, re_asked
+from .run_budget import effective_limits
 from .runner import manifest_path, run_observer
 from .script_advisories import dialogue_shape
-from .script_artifacts import publish_scripts, render_script, script_metrics
+from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, publish_scripts, script_metrics
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
-from .script_checkpoints import NOTED_CATEGORIES, baseline_path, series_adoption
-from .script_checks import (RELAXED_REVIEW_VERSIONS, SCRIPT_REVIEW_VERSION, WRITER_TARGET_FACTORS, checked_series_plan,
-                            episode_limits, episode_sources, planning_dossier, quotation_errors, research_limits,
-                            script_review_signature, validate_script, word_budget, writer_target_factor)
+from .script_checkpoints import NOTED_CATEGORIES, series_adoption
+from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_limits, episode_sources,
+                            planning_dossier, quotation_errors, research_limits, script_review_signature,
+                            validate_script)
 from .script_evidence import (SCRIPT_EVIDENCE_INSTRUCTIONS, is_claim_drift, settle_receipts, source_corrections,
                               validate_claim_checks)
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
@@ -45,33 +42,12 @@ from .series_review import assess_series, load_series_review, require_passing_se
 from .storage import atomic_text, digest, file_hash, read_optional_json, write_json
 from .story_agent import orientation, story_entry, used_documents
 from .story_agent import write_episode as story_episode
-from .teaching import (EDITORIAL_REVIEW_VERSION, TeachingPlan, assess_teaching, build_teaching_plan,
-                       prerequisite_context, previous_devices)
+from .teaching import EDITORIAL_REVIEW_VERSION, prerequisite_context
 from .teaching_research import apply_foundations, named_question, research_foundations
 
-SPOKEN_DIALOGUE = fragment("spoken_dialogue")
 # research.PLAIN_LANGUAGE without its terminology rule, which the script lane takes from the project (plain_language).
 PLAIN_WORDING = fragment("plain_language")
-# v9: core and supporting findings, research limits stated where the affected statement is used, the framing duties
-# left to episode_framing (the final episode as a whole is the synthesis), no whole series plan in the payload, and
-# the project's own terminology rule. The series plan, the script review and both repairs changed with it.
-# v10: the computed word budget (script_checks.word_budget) instead of a budget the writer derives itself. v11: for
-# Sonnet 5.5 alone its target set above the plan (script_checks.WRITER_TARGET_FACTORS), since Sonnet wrote 71 % of the
-# plan it was shown. v12 (2026-10-06): the listenability rules (editorial.LISTENABILITY) and the teaching design's arc;
-# chapter-end recaps and reflection beats count toward the length, empty repetition still does not. v13: the design's
-# storytelling devices (dramaturgy, opening, partner_stance, each chapter's ending) instead of one arc for all (D-143).
-# v14 (2026-10-07): breathers where new information has piled up, set by the content, never by a schedule.
-WRITE_EPISODE_VERSION = "write_episode.v14-breathers"
-# The correction of a draft that breaks its plan repeats the writing prompt. v3: each correction carries the latest
-# attempt and its own defects, a short script the words it has and needs (write_episode). v4: the writing prompt v12.
-# v5: the writing prompt v13.
-WRITE_REPAIR_VERSION = "write_episode_repair.v6-breathers"
 MAX_REVIEW_REPAIRS = 3
-# v2: an unbacked claim that the sources lack something is deleted, not reworded (Ontologies, 2026-09-29: each
-# repair restated such claims and the next review flagged them again). v4: a limit research_limits names is kept.
-# v5 (2026-10-06): the writing prompt v12, and a listenability point is fixed in the segments it names. v6: the writing
-# prompt v13; a chapter ends as its scene's ending says.
-REVIEW_REPAIR_VERSION = "script_review_repair.v7-breathers"
 STORY_REPAIR_VERSION = "story_review_repair.v3-source-refs"
 # The script review of a story agent's episode adds the corpus rule (prompts/script_review_corpus.txt, D-182).
 STORY_REVIEW_SUFFIX = "+corpus"
@@ -100,14 +76,10 @@ def review_blocks(review):
     return any(issue.category not in NOTED_CATEGORIES for issue in review.issues)
 
 
-def saved_verdict_stands(version, result, story=False):
-    """Whether a saved script review verdict holds on resume: one of today's review version, or one of a version
-    today's only relaxes (RELAXED_REVIEW_VERSIONS) that blocked nothing. Any other is reviewed again. A story agent's
-    episode is reviewed with the corpus rule (STORY_REVIEW_SUFFIX), and only a verdict given with it stands."""
-    if story:
-        return version == SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX
-    return version == SCRIPT_REVIEW_VERSION or (version in RELAXED_REVIEW_VERSIONS and result is not None
-                                                and not review_blocks(result))
+def saved_verdict_stands(version):
+    """Whether a saved script review verdict holds on resume: a story agent's episode is reviewed with the corpus rule
+    (STORY_REVIEW_SUFFIX), and only a verdict given with today's review and that rule stands."""
+    return version == SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX
 
 
 def changed_segments(before, after):
@@ -146,29 +118,6 @@ def follow_up_scope(review, previous, changed):
     return review.model_copy(update={"issues": issues, "advisories": advisories})
 
 
-def failed_teaching(work):
-    """The episode whose teaching design stopped after its focused repair, as ``{episode_id, title}``, or None.
-    The stop card of ``teaching_design_failed`` offers a new design of exactly this episode. ``issues`` adds the last
-    review's open points where it saved some, so the card lists them one by one instead of the joined message."""
-    try:
-        plan = SeriesPlan.model_validate_json((work / "series_plan.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    for entry in plan.episodes:
-        directory = work / "teaching" / entry.episode_id
-        checkpoint = directory / "checkpoint.json"
-        if (directory / "plan.json").exists() or not checkpoint.exists():
-            continue
-        try:
-            saved = json.loads(checkpoint.read_text(encoding="utf-8"))
-            if saved.get("focused_repair"):
-                issues = [str(issue) for issue in ((saved.get("review") or {}).get("issues") or [])]
-                return {"episode_id": entry.episode_id, "title": entry.title, **({"issues": issues} if issues else {})}
-        except (OSError, ValueError, AttributeError):
-            continue
-    return None
-
-
 def unread_references(row):
     """The hits of a probe row nobody has read yet: all of them until a reader settled some."""
     return row.get("unread_references") or [hit["reference"] for hit in row["hits"]]
@@ -188,7 +137,8 @@ class ScriptRun:
 
     def __init__(self, *, root, work, config, manifest, adapter, input_hash, research_id, dossier, discovery,
                  sources, context, episode, revision, execution, plan_only, previous_outline, outline_feedback,
-                 series_review_version, text_generation, resume, style_notes="", probe_key=None):
+                 series_review_version, text_generation, resume, style_notes="", probe_key=None,
+                 speaking_rate=SPOKEN_WORDS_PER_MINUTE):
         self.root, self.work, self.config, self.manifest, self.adapter = root, work, config, manifest, adapter
         self.input_hash, self.research_id, self.discovery = input_hash, research_id, discovery
         self.base_dossier, self.base_context, self.base_sources = dossier, context, sources
@@ -198,16 +148,11 @@ class ScriptRun:
         self.series_review_version, self.text_generation, self.resume = series_review_version, text_generation, resume
         self.central_question = config.central_question or config.topic
         self.style_notes = style_notes
+        # The words a minute this run's lengths are written and checked at (scripting.speaking_rate, D-184).
+        self.rate = speaking_rate
         # The OpenRouter key for the Jev gap probe; only in memory, and only a run that asked for the probe uses it.
         self.probe_key = probe_key
         self._research_limits = None
-        # A run whose manifest has the narration stage (D-180) also plans with the core limit, collects story material
-        # before each design, writes with the story rules and reviews each draft's narration. A run started before
-        # keeps its stage list, its prompts and its checkpoints.
-        # A run whose manifest has the story stage (D-181) is narrated too: its story agent plans and writes each
-        # episode from the story material, without a teaching design, a narration stage or polishing.
-        self.story_written = "story" in manifest.stages
-        self.narrated = "narration" in manifest.stages or self.story_written
 
     # --- shared helpers -------------------------------------------------------------------------
 
@@ -242,7 +187,7 @@ class ScriptRun:
 
     def invoke(self, prompt, output_type, version, *, search=False, research=False):
         """One validated answer; a parsed answer the contract rejects is re-asked with the defects named. A project
-        with a third host puts its cast before every call that is no search (polishing.cast_note, D-179)."""
+        with a third host puts its cast before every call that is no search (cast.cast_note, D-179)."""
         # The pool applies the saved choice per call; supplementary research follows the subscription rule.
         self.adapter.require_key()
         if not (search or research):
@@ -273,23 +218,16 @@ class ScriptRun:
         the approved outline."""
         plan = SeriesPlan.model_validate_json((self.work / "series_plan.json").read_text(encoding="utf-8"))
         entries = [e for e in plan.episodes if not self.episode or e.episode_id == self.episode]
-        if self.story_written:
-            entries = [story_entry(self.work, entry) for entry in entries]
-        return plan, entries
-
-    def teaching_for(self, entry):
-        return TeachingPlan.model_validate_json(
-            (self.work / "teaching" / entry.episode_id / "plan.json").read_text(encoding="utf-8"))
+        return plan, [story_entry(self.work, entry) for entry in entries]
 
     def refresh_foundations(self, entries):
         """Apply verified supplementary research to the working dossier; returns the receipt files. A supplement is
         bound to its episode as the series plan has it, so an episode the story agent replanned (story_entry) is
         matched by the plan's entry (D-181; the lean research test of 2026-11-01 stopped on resume with
         invalid_supplement)."""
-        if self.story_written:
-            plan = SeriesPlan.model_validate_json((self.work / "series_plan.json").read_text(encoding="utf-8"))
-            planned = {entry.episode_id: entry for entry in plan.episodes}
-            entries = [planned.get(entry.episode_id, entry) for entry in entries]
+        plan = SeriesPlan.model_validate_json((self.work / "series_plan.json").read_text(encoding="utf-8"))
+        planned = {entry.episode_id: entry for entry in plan.episodes}
+        entries = [planned.get(entry.episode_id, entry) for entry in entries]
         self.dossier, self.context, self.sources, supplements = apply_foundations(
             self.root, self.work, self.config, entries, self.base_dossier, self.base_context, self.base_sources)
         return supplements
@@ -300,14 +238,8 @@ class ScriptRun:
                                     and not self.plan_only, root=self.root)
 
     def stages(self):
-        return {"planning": self.planning, "teaching": self.teaching, "writing": self.writing,
-                "story": self.story, "narration": self.narration, "polishing": self.polishing,
-                "review": self.review, "publish": self.publish}
-
-    def baseline_draft(self, entry):
-        """The draft polishing and the reviews start from: the narrated draft in a run with the narration stage, the
-        writer's otherwise (script_checkpoints.baseline_path)."""
-        return baseline_path(self.work, entry.episode_id)
+        return {"planning": self.planning, "teaching": self.teaching, "story": self.story, "review": self.review,
+                "publish": self.publish}
 
     # --- planning -------------------------------------------------------------------------------
 
@@ -317,8 +249,7 @@ class ScriptRun:
         brief = {key: value for key, value in config.model_dump(mode="json").items() if key in PLANNING_BRIEF}
         limits = self.research_limits()
         prompt = (instructions("series_plan", language=config.language) + " " + self.plain_language() +
-                  instructions("series_plan_tail") +
-                  (" " + instructions("series_plan_density") if self.narrated else "") + "\n" +
+                  instructions("series_plan_tail") + " " + instructions("series_plan_density") + "\n" +
                   json.dumps({"brief": {**brief, "central_question": self.central_question},
                               "dossier": planning_dossier(dossier),
                               "research_questions": [q.model_dump() for q in self.discovery.questions],
@@ -330,7 +261,7 @@ class ScriptRun:
                             "feedback": self.outline_feedback})
         plan = checked_series_plan(self.work, prompt, self.invoke, dossier, self.central_question, signature,
                                    allow_legacy=self.resume and self.previous_outline is None,
-                                   limit_ids=[limit["limit_id"] for limit in limits], density=self.narrated)
+                                   limit_ids=[limit["limit_id"] for limit in limits], density=True)
         if self.episode and self.episode not in {e.episode_id for e in plan.episodes}:
             raise AppError("Gewünschte Folge kommt im Serienplan nicht vor.", code="unknown_episode", status="blocked")
         knowledge = KnowledgeModel(research_run_id=self.research_id, topic=dossier.topic,
@@ -354,9 +285,12 @@ class ScriptRun:
         return [self.work / name for name in ("series_plan.json", "knowledge_model.json", "inputs.json",
                                               "script_request.json", "project_snapshot.yaml")]
 
-    # --- teaching design ------------------------------------------------------------------------
+    # --- teaching: story material and orientation -------------------------------------------------
 
     def teaching(self):
+        """The story agent plans each episode itself (D-181): its teaching stage collects the story material of the
+        cited sections, reads a story they only point to (research_story) and checks an orientation sheet; there is
+        no teaching design since D-184."""
         plan, entries = self.selected()
         self.check_budget(entries)
         outputs = []
@@ -364,34 +298,20 @@ class ScriptRun:
             directory = self.work / "teaching" / entry.episode_id
             continuity = prerequisite_context(plan, entry, self.work)
             write_json(directory / "continuity.json", continuity)
-            # What the episodes just before chose, so this one tells its story differently (D-143).
-            devices = previous_devices(plan, entry, self.work, self.root)
             while True:
                 teaching_sources = episode_sources(entry, self.dossier, self.context, self.sources)
                 write_json(directory / "source_context.json", teaching_sources)
                 try:
                     self.route_probe_gaps(entry)
-                    # The story the cited sections tell, collected before the design chooses its core story (D-180).
-                    story = (story_material(self.config, entry, self.dossier, teaching_sources, self.invoke, directory)
-                             if self.narrated else None)
-                    if story is not None and self.research_story(entry, entries, directory):
+                    # The story the cited sections tell (D-180).
+                    story = story_material(self.config, entry, self.dossier, teaching_sources, self.invoke, directory)
+                    if self.research_story(entry, entries, directory):
                         # The story research added sections: the material is collected again from them.
                         continue
-                    if self.story_written:
-                        # The story agent plans the episode itself (D-181): its teaching stage collects the story
-                        # material and a checked orientation sheet, and makes no teaching design.
-                        files = [directory / "story_material.json",
-                                 *([directory / "story_research.json"] if (directory / "story_research.json").exists()
-                                   else []),
-                                 *orientation(self, entry, story, directory)]
-                        break
-                    _, files = build_teaching_plan(self.config, entry, self.dossier, teaching_sources, self.invoke, directory,
-                                                   continuity=continuity, series_context=episode_series_context(plan, entry),
-                                                   editor_note=self.adopt_redesign(entry, directory), devices=devices,
-                                                   story=story)
-                    if story is not None:
-                        files = [*files, directory / "story_material.json",
-                                 *([directory / "story_research.json"] if (directory / "story_research.json").exists() else [])]
+                    files = [directory / "story_material.json",
+                             *([directory / "story_research.json"] if (directory / "story_research.json").exists()
+                               else []),
+                             *orientation(self, entry, story, directory)]
                     break
                 except AppError as exc:
                     if exc.code != "teaching_research_required":
@@ -401,26 +321,6 @@ class ScriptRun:
             outputs.extend([*files, directory / "source_context.json", directory / "continuity.json"])
         supplements = self.refresh_foundations(entries)
         return [*outputs, *supplements, self.probe_path()]
-
-    def adopt_redesign(self, entry, directory):
-        """The editor's note for a new teaching design of this episode (run_budget.request_teaching_redesign), or None.
-
-        Each request is adopted once: the stopped design, its checkpoint and its focused repair move to
-        ``redesign_NN``, so the note starts a fresh design with fresh correction rounds. The note stays part of
-        the design prompt on every later resume, which keeps the new checkpoint valid (``redesign.json``)."""
-        request = teaching_redesigns(self.work, self.input_hash).get(entry.episode_id)
-        if request is None:
-            return None
-        marker = directory / "redesign.json"
-        adopted = json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else []
-        if request["requested_at"] not in {row["requested_at"] for row in adopted}:
-            archive = directory / f"redesign_{len(adopted) + 1:02d}"
-            archive.mkdir(parents=True, exist_ok=True)
-            for name in ("checkpoint.json", "focused_repair.json", "review.json", "plan.md", "dismissed_gaps.json"):
-                if (directory / name).exists():
-                    (directory / name).replace(archive / name)
-            write_json(marker, [*adopted, {**request, "archive": archive.name}])
-        return request["note"]
 
     # --- gap probe ------------------------------------------------------------------------------
 
@@ -738,8 +638,6 @@ class ScriptRun:
         sections it recorded using (story/<episode_id>/sources_used.json), so a scene it found there is checked
         against its section instead of standing as unsupported (D-181)."""
         sources = episode_sources(entry, self.dossier, self.context, self.sources)
-        if not self.story_written:
-            return sources
         given = {document["source_id"]: document for document in sources}
         for document in used_documents(self.work / "story" / entry.episode_id, self.root)[0]:
             known = given.get(document["source_id"])
@@ -751,122 +649,20 @@ class ScriptRun:
                                  *(section for section in document["sections"] if section["reference"] not in present)]
         return sources
 
-    def writing_prompt(self, plan, entry, *, budget=True, factor=None):
-        """The writing prompt; ``budget=False`` leaves out the word budget (``length``), which gives the prompt as it
-        was before 2026-10-04, byte for byte, so write_episode can recognise a draft accepted under it. ``factor`` sets
-        the budget's target above the plan; by default the run's writer's (writer_target_factor)."""
-        config, dossier = self.config, self.dossier
-        if factor is None:
-            factor = writer_target_factor(getattr(self.adapter, "text_generation", None))
-        design_review = json.loads((self.work / "teaching" / entry.episode_id / "review.json").read_text(encoding="utf-8"))
-        # The design review's non-blocking notes (teaching.review_scope); a design without them keeps its prompt.
-        advisories = " " + instructions("write_episode_advisories") if design_review.get("advisories") else ""
-        length = " " + instructions("write_episode_length") if budget else ""
-        cited = set(episode_findings(entry))
-        limits = episode_limits(plan, entry, self.stated_limits())
-        # The story rules of a narrated run (D-180); a run without the stage keeps its prompt byte for byte.
-        story = " " + instructions("write_episode_story") if self.narrated else ""
-        prompt = (instructions("write_episode_opening", language=config.language) + " "
-                  + self.plain_language() + SPOKEN_DIALOGUE + CONTINUITY + EPISODE_FRAMING + LISTENABILITY +
-                  SCRIPT_EVIDENCE_INSTRUCTIONS +
-                  instructions("write_episode") + advisories + length + story + "\n" +
-                  json.dumps({"brief": {"language": config.language, "voices": config.voice_profile,
-                                        "host_names": config.host_names,
-                                        "audience": config.audience_level, "prior_knowledge": config.prior_knowledge,
-                                        "style": config.depth_request, "style_notes": self.style_notes,
-                                        **goal_and_recency(config)},
-                              "host_roles": host_roles(self.config),
-                              # Not the whole plan (2026-10-02: the Asimov finale's writing prompt reached about 780 000
-                              # characters): series_context carries the order, roles and questions the prompt uses, the
-                              # episode entry its own scenes. What remains is the series' scope and the order its
-                              # findings need.
-                              "series": {"scope_note": plan.scope_note,
-                                         "dependencies": [d.model_dump() for d in plan.dependencies
-                                                          if d.before in cited and d.after in cited]},
-                              "episode": entry.model_dump(),
-                              **({"length": word_budget(entry, factor)} if budget else {}),
-                              "series_context": episode_series_context(plan, entry),
-                              "prerequisite_context": prerequisite_context(plan, entry, self.work),
-                              "teaching_design": self.teaching_for(entry).model_dump(),
-                              "teaching_design_review": design_review,
-                              **({"story_material": self.story_for(entry)} if self.narrated else {}),
-                              "findings": [f.model_dump() for f in dossier.findings if f.id in episode_findings(entry)],
-                              "single_group_findings": self.single_group(entry),
-                              "synthesis": [r.model_dump() for r in dossier.synthesis if set(r.finding_ids) & set(episode_findings(entry))],
-                              **({"research_limits": limits} if limits else {}),
-                              "sources": episode_sources(entry, dossier, self.context, self.sources)}, ensure_ascii=False))
-        if self.revision:
-            prompt += ("\n" + instructions("write_episode_revision") + "\n" +
-                       json.dumps(self.revision, ensure_ascii=False))
-        return prompt
-
     def script_errors(self, draft, entry):
         """validate_script, and for an assembled dossier the quotation rule over the passages the writer was given:
         at most 25 words of one source per episode (script_checks.quotation_errors)."""
-        errors = validate_script(draft, entry, roles=host_roles_of(getattr(self, "config", None)))
+        errors = validate_script(draft, entry, roles=host_roles_of(getattr(self, "config", None)),
+                                 rate=getattr(self, "rate", SPOKEN_WORDS_PER_MINUTE))
         if self.dossier.assembled:
             errors += quotation_errors(draft, episode_sources(entry, self.dossier, self.context, self.sources))
         cited = [(segment.segment_id, ref) for segment in draft.segments for ref in segment.source_refs]
-        if cited and not getattr(self, "story_written", False):
-            errors.append("Leave source_refs empty: only a story agent's episode cites corpus sections; cite findings "
-                          "in knowledge_refs.")
-        elif cited:
+        if cited:
             # The sections the review is given: the findings' passages and those the agent recorded using (D-182).
             known = self.source_sections(entry)[0]
             errors += [f"{segment_id}: source_refs names {ref}, which is no section of this episode's passages or of "
                        "sources_used.json." for segment_id, ref in cited if ref not in known]
         return errors
-
-    def script_defects(self, draft, entry, errors_file, message):
-        """Raise for a rewritten script that breaks its plan, naming every defect so the correction can fix it."""
-        errors = self.script_errors(draft, entry)
-        if errors:
-            write_json(errors_file, errors)
-            raise AppError(message + " " + " ".join(errors), code="invalid_script", status="blocked")
-
-    def write_episode(self, plan, entry):
-        destination = self.work / "drafts" / f"{entry.episode_id}.json"
-        stamp = destination.with_suffix(".checkpoint.json")
-        prompt = self.writing_prompt(plan, entry)
-        signature = digest({"input": self.input_hash, "prompt": prompt})
-        if stamp.exists() and destination.exists():
-            saved = json.loads(stamp.read_text(encoding="utf-8"))
-            if saved == {"input_hash": signature, "sha256": file_hash(destination)}:
-                return [destination, stamp]
-            # A draft accepted under another word budget, or before there was one, stands while it passes every check:
-            # the budget only guides the writer toward the length validate_script holds a draft to. So neither the
-            # budget's arrival (the Transformer run had 13 accepted drafts on 2026-10-04) nor a text switch to a writer
-            # with another target writes accepted drafts anew.
-            prompts = [self.writing_prompt(plan, entry, budget=False),
-                       *(self.writing_prompt(plan, entry, factor=f) for f in {1.0, *WRITER_TARGET_FACTORS.values()})]
-            if any(saved == {"input_hash": digest({"input": self.input_hash, "prompt": other}),
-                             "sha256": file_hash(destination)} for other in prompts) and not self.script_errors(
-                    EpisodeScript.model_validate_json(destination.read_text(encoding="utf-8")), entry):
-                return [destination, stamp]
-        draft = self.invoke(prompt, EpisodeScript, WRITE_EPISODE_VERSION)
-        errors, repairs = self.script_errors(draft, entry), 0
-        while errors:
-            # Each correction reworks the latest attempt against its own defects, as corrected_call's re-asks do not:
-            # they repeat the first draft. Transformer, 2026-10-03: ep_005, 40% short, came back 32, 27 and 33% short,
-            # and an ep_006 attempt one finding ID from passing gave way to two that fell short again.
-            if repairs:
-                write_json(self.work / f"{entry.episode_id}_script_errors.json", errors)
-            if repairs > MAX_REJECTIONS:
-                raise AppError("Skript verletzt Struktur- oder Quellenzuordnung. " + " ".join(errors) +
-                               f" Der Aufruf wurde {repairs} Mal mit Korrekturhinweis wiederholt; die "
-                               "abgewiesenen Antworten liegen bei den Aufrufen.", code="invalid_script", status="blocked")
-            draft = self.invoke(prompt + "\n" + instructions("write_episode_repair") + "\n" + json.dumps(
-                {"errors": errors, "draft": draft.model_dump()}, ensure_ascii=False), EpisodeScript, WRITE_REPAIR_VERSION)
-            errors, repairs = self.script_errors(draft, entry), repairs + 1
-        write_json(destination, draft.model_dump())
-        write_json(stamp, {"input_hash": signature, "sha256": file_hash(destination)})
-        return [destination, stamp]
-
-    def writing(self):
-        plan, entries = self.selected()
-        self.check_budget(entries)
-        return run_episode_stage(entries, lambda entry: self.write_episode(plan, entry),
-                                 workers=self.execution.text_workers, work=self.work, stage="writing")
 
     def story(self):
         """The story stage of a run written by the story agent (story_agent.write_episode, D-181): one session per
@@ -877,92 +673,10 @@ class ScriptRun:
         return run_episode_stage(entries, lambda entry: story_episode(self, plan, entry),
                                  workers=self.execution.text_workers, work=self.work, stage="story")
 
-    # --- narration ------------------------------------------------------------------------------
-
     def story_for(self, entry):
         """The episode's story material as the teaching stage collected it (narration.story_material)."""
         path = self.work / "teaching" / entry.episode_id / "story_material.json"
         return json.loads(path.read_text(encoding="utf-8")).get("items", []) if path.is_file() else []
-
-    def narrate(self, plan, entry):
-        """The narration review of one draft, its rework and the scoped review after it (narration.narrate_episode)."""
-        config = self.config
-        draft_file = self.work / "drafts" / f"{entry.episode_id}.json"
-        draft = EpisodeScript.model_validate_json(draft_file.read_text(encoding="utf-8"))
-        design, story = self.teaching_for(entry), self.story_for(entry)
-        story_ids = [item["item_id"] for item in story]
-        folder = self.work / "narration" / entry.episode_id
-        sections = allowed_sections(entry, self.dossier, episode_sources(entry, self.dossier, self.context, self.sources))
-        compared = compared_episodes(plan, entry, self.work)
-        task = review_task(self.terms(), config.language)
-        followup_task = task + " " + instructions("narration_review_followup")
-        repair_task = instructions("narration_repair")
-        brief = {"language": config.language, "audience": config.audience_level, "style": config.depth_request,
-                 "style_notes": self.style_notes, **goal_and_recency(config)}
-
-        def payload(script):
-            return review_payload(script, brief=brief, host_roles=host_roles(config), entry=entry,
-                                  series_context=episode_series_context(plan, entry), design=design, story=story,
-                                  dossier=self.dossier, sections=sections, compared=compared, language=config.language)
-
-        def review(script):
-            answer = self.invoke(task + "\n" + json.dumps(payload(script), ensure_ascii=False), NarrationReview,
-                                 NARRATION_REVIEW_VERSION)
-            return sanitized(answer, script, story_ids)
-
-        def followup(script, previous, changed):
-            prompt = followup_task + "\n" + json.dumps({**payload(script), "previous_review": previous.model_dump(),
-                                                        "changed_segments": changed}, ensure_ascii=False)
-            return sanitized(self.invoke(prompt, NarrationReview, NARRATION_REVIEW_VERSION + "+followup"),
-                             script, story_ids)
-
-        def repair(script, points):
-            allowed = with_neighbours(script, {key for point in points for key in point.segment_ids})
-            target = word_budget(entry, writer_target_factor(getattr(self.adapter, "text_generation", None)))
-            prompt = (self.writing_prompt(plan, entry) + "\n" + repair_task + "\n" + json.dumps(
-                {"draft": script.model_dump(), "narration_points": [point.model_dump() for point in points]},
-                ensure_ascii=False))
-
-            def check(answer):
-                errors = [*self.script_errors(answer, entry), *scope_errors(script, answer, allowed),
-                          *length_errors(script, answer, target["target_words"])]
-                if errors:
-                    write_json(folder / "repair_errors.json", errors)
-                    raise AppError("Die Erzählüberarbeitung verletzt ihre Vorgaben. " + " ".join(errors),
-                                   code=REWORK_REFUSED, status="blocked")
-            return corrected_call(self.invoke, prompt, EpisodeScript, NARRATION_REPAIR_VERSION, check)
-
-        signature = digest({"version": NARRATION_VERSION, "input": self.input_hash, "draft": file_hash(draft_file),
-                            "review": task + "\n" + json.dumps(payload(draft), ensure_ascii=False),
-                            "followup": followup_task, "repair": repair_task, "writing": self.writing_prompt(plan, entry)})
-        narrate_episode(folder, signature, draft, review=review, repair=repair, followup=followup)
-        return [folder / "script.json", folder / "result.json", folder / "checkpoint.json"]
-
-    def narration(self):
-        plan, entries = self.selected()
-        self.check_budget(entries)
-        return run_episode_stage(entries, lambda entry: self.narrate(plan, entry),
-                                 workers=self.execution.text_workers, work=self.work, stage="narration")
-
-    # --- polishing ------------------------------------------------------------------------------
-
-    def polish_episode(self, plan, entry):
-        original = EpisodeScript.model_validate_json(self.baseline_draft(entry).read_text(encoding="utf-8"))
-        folder = self.work / "polishing" / entry.episode_id
-        candidate, files = polish_dialogue(self.config, entry, original, self.teaching_for(entry),
-                                           self.invoke, folder, self.script_errors,
-                                           series_context=episode_series_context(plan, entry),
-                                           prerequisite_context=prerequisite_context(plan, entry, self.work),
-                                           style_notes=self.style_notes)
-        atomic_text(folder / "before.md", render_script(original, host_labels(self.config)))
-        atomic_text(folder / "after.md", render_script(candidate, host_labels(self.config)))
-        return [*files, folder / "before.md", folder / "after.md"]
-
-    def polishing(self):
-        plan, entries = self.selected()
-        self.check_budget(entries)
-        return run_episode_stage(entries, lambda entry: self.polish_episode(plan, entry),
-                                 workers=self.execution.text_workers, work=self.work, stage="polishing")
 
     # --- reviews --------------------------------------------------------------------------------
 
@@ -979,15 +693,14 @@ class ScriptRun:
                            "; ".join(row["text"] for row in blocking),
                            code="research_gap_unread", status="blocked")
         # A story agent's draft is reviewed as written: its run has no polishing (D-181).
-        draft_file = (work / "drafts" / f"{entry.episode_id}.json" if self.story_written
-                      else work / "polishing" / entry.episode_id / "script.json")
-        original_draft = json.loads(self.baseline_draft(entry).read_text(encoding="utf-8"))
+        draft_file = work / "drafts" / f"{entry.episode_id}.json"
+        original_draft = json.loads(draft_file.read_text(encoding="utf-8"))
         draft = EpisodeScript.model_validate_json(draft_file.read_text(encoding="utf-8"))
         checkpoint = work / "reviews" / f"{entry.episode_id}_checkpoint.json"
         signature = script_review_signature(self.input_hash, file_hash(draft_file), plan, entry, work)
         # ``previous``: the draft and review before the last repair, which scope the review after it.
         # ``passed``: the latest draft whose review left nothing blocking, kept if a later repair breaks it.
-        result, repairs, previous, passed, teaching_pending = None, 0, None, None, False
+        result, repairs, previous, passed = None, 0, None, None
         if checkpoint.exists():
             saved = json.loads(checkpoint.read_text(encoding="utf-8"))
             if saved.get("input_hash") == signature:
@@ -995,52 +708,35 @@ class ScriptRun:
                 repairs = saved["repairs"]
                 previous, passed = saved.get("previous"), saved.get("passed")
                 result = ScriptReview.model_validate(saved["review"]) if saved["review"] else None
-                teaching_pending = bool(saved.get("teaching_pending"))
                 # Reassess an older verdict after a review-policy fix, keeping the
                 # latest corrected script and consumed repair allowance intact.
                 if saved.get("editorial_review_version") != EDITORIAL_REVIEW_VERSION:
                     result = None
-                if not saved_verdict_stands(saved.get("script_review_version"), result, story=self.story_written):
+                if not saved_verdict_stands(saved.get("script_review_version")):
                     result = None
                 if dossier.evidence_version and saved.get("evidence_review_version") != EVIDENCE_VERSION:
                     result = None
                 if self.script_errors(draft, entry):
                     raise AppError("Gespeicherter Review-Entwurf ist ungültig.", code="invalid_script", status="blocked")
 
-        def save(pending=False):
+        def save():
             write_json(checkpoint, {"input_hash": signature, "draft": draft.model_dump(),
                                    "review": result.model_dump() if result else None, "repairs": repairs,
                                    "editorial_review_version": EDITORIAL_REVIEW_VERSION,
-                                   "script_review_version": SCRIPT_REVIEW_VERSION + (STORY_REVIEW_SUFFIX
-                                                                                     if self.story_written else ""),
+                                   "script_review_version": SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX,
                                    "evidence_review_version": EVIDENCE_VERSION,
-                                   "previous": previous, "passed": passed,
-                                   **({"teaching_pending": True} if pending else {})})
-
-        def taught(reviewed):
-            """A review that found nothing is joined by the teaching assessment, whose points are repaired alike."""
-            nonlocal passed
-            # A story agent's episode has no teaching design to assess (D-181).
-            if not reviewed.issues and not self.story_written:
-                teaching_issues, _, _ = self.assess_episode_teaching(plan, entry, draft)
-                reviewed.issues.extend(teaching_issues)
-            if not review_blocks(reviewed):
-                passed = {"draft": draft.model_dump(), "review": reviewed.model_dump()}
-            return reviewed
+                                   "previous": previous, "passed": passed})
 
         def check():
-            nonlocal result
+            nonlocal passed
             follow_up = None
             if previous:
                 follow_up = (ScriptReview.model_validate(previous["review"]),
                              changed_segments(EpisodeScript.model_validate(previous["draft"]), draft))
             reviewed = self.review_script(plan, entry, draft, original_draft, probes, follow_up=follow_up)
-            if not reviewed.issues:
-                # Kept before the teaching assessment starts, so a stop during it does not ask this review again
-                # (found by stopping a run at each of its calls, 2026-09-29).
-                result = reviewed
-                save(pending=True)
-            return taught(reviewed.model_copy(deep=True))
+            if not review_blocks(reviewed):
+                passed = {"draft": draft.model_dump(), "review": reviewed.model_dump()}
+            return reviewed
 
         if result is not None:
             try:
@@ -1053,26 +749,15 @@ class ScriptRun:
                 for issue in drift:
                     if issue not in result.issues and issue not in result.advisories:
                         result.issues.append(issue)
-                if teaching_pending:
-                    result = taught(result)
-                    save()
         if result is None:
             result = check()
             save()
         # A story agent's draft is repaired only for what blocks (grounding, scope, structure), and only where the
         # review points (story_repair): clarity, depth and dialogue notes stay notes, so the telling the agent built
         # is not rewritten by a reviewer (D-181).
-        while result.issues and repairs < MAX_REVIEW_REPAIRS and (not self.story_written or review_blocks(result)):
+        while result.issues and repairs < MAX_REVIEW_REPAIRS and review_blocks(result):
             previous = {"draft": draft.model_dump(), "review": result.model_dump()}
-            if self.story_written:
-                draft = self.story_repair(plan, entry, draft, result)
-            else:
-                draft = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
-                    "\n" + instructions("script_review_repair") + "\n" +
-                    json.dumps({"draft": draft.model_dump(), "review": result.model_dump()}, ensure_ascii=False),
-                    EpisodeScript, REVIEW_REPAIR_VERSION,
-                    lambda answer: self.script_defects(answer, entry, work / f"{entry.episode_id}_review_errors.json",
-                                                       "Überarbeitetes Skript verletzt die Quellenzuordnung oder Struktur."))
+            draft = self.story_repair(plan, entry, draft, result)
             repairs += 1
             result = None
             save()
@@ -1093,7 +778,6 @@ class ScriptRun:
         # report, and the user reads them before approving audio. Grounding, scope and structure keep stopping the
         # run (the user's choice, 2026-09-29: Ontologies episodes 2 and 4 held only listener-clarity points).
         # Advisories, the points a follow-up review found outside its scope, are reported the same way.
-        accepted = bool(result.issues) and not review_blocks(result)
         if review_blocks(result):
             raise AppError("Skriptreview meldet weiterhin Einwände; Reviewbericht prüfen.",
                            code="script_review_failed", status="blocked")
@@ -1101,17 +785,11 @@ class ScriptRun:
             write_json(work / "reviews" / f"{entry.episode_id}_accepted_notes.json",
                        [i.model_dump() for i in [*result.issues, *result.advisories]])
         reviewed_file = work / "reviewed" / f"{entry.episode_id}.json"
-        if self.story_written:
-            teaching_issues, teaching_report, teaching_outputs = [], {"status": "not_applicable",
-                                                                       "reason": "story_agent"}, []
-        else:
-            teaching_issues, teaching_report, teaching_outputs = self.assess_episode_teaching(plan, entry, draft)
-        if teaching_issues and not (accepted and all(issue.category in NOTED_CATEGORIES for issue in teaching_issues)):
-            raise AppError("Lehrprüfung nicht bestanden.", code="teaching_review_failed", status="blocked")
+        # A story agent's episode has no teaching design to assess (D-181): its teaching report says so.
         teaching_report_file = work / "reviews" / f"{entry.episode_id}_teaching.json"
-        write_json(teaching_report_file, teaching_report)
+        write_json(teaching_report_file, {"status": "not_applicable", "reason": "story_agent"})
         write_json(reviewed_file, adopted["draft"] if adopted else draft.model_dump())
-        return [reviewed_file, report, teaching_report_file, *teaching_outputs]
+        return [reviewed_file, report, teaching_report_file]
 
     def story_repair(self, plan, entry, draft, review):
         """A story agent's draft repaired for the review's blocking issues, from the agent's material, changing only
@@ -1165,7 +843,7 @@ class ScriptRun:
         payload = {"brief": {"audience": config.audience_level, "depth": config.depth_request,
                              "style_notes": self.style_notes, **goal_and_recency(config)},
                    "host_roles": host_roles(self.config), "original_draft": original_draft,
-                   "metrics": script_metrics(draft), "dialogue_shape": dialogue_shape(draft),
+                   "metrics": script_metrics(draft, self.rate), "dialogue_shape": dialogue_shape(draft),
                    "episode": entry.model_dump(), "script": draft.model_dump(),
                    "series_context": episode_series_context(plan, entry),
                    "prerequisite_context": prerequisite_context(plan, entry, work),
@@ -1178,11 +856,9 @@ class ScriptRun:
         if limits:
             # The limits the writer was asked to state back such a statement, as a gap probe backs an absence claim.
             payload["research_limits"] = limits
-        task, version = instructions("script_review"), SCRIPT_REVIEW_VERSION
-        if self.story_written:
-            # A story agent's segments may cite the corpus sections they tell from (Segment.source_refs, D-182); the
-            # prompt runs' review stays as it was, byte for byte, with its saved verdicts.
-            task, version = task + " " + instructions("script_review_corpus"), version + STORY_REVIEW_SUFFIX
+        # A story agent's segments may cite the corpus sections they tell from (Segment.source_refs, D-182).
+        task = instructions("script_review") + " " + instructions("script_review_corpus")
+        version = SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX
         if follow_up:
             # A drift issue is judged again by this review's claim check of its segment, not handed over to be reported
             # again: copied back as a previous issue, a correct segment stayed blocked round after round (2026-10-03).
@@ -1211,9 +887,8 @@ class ScriptRun:
     def repair_series(self, plan, grouped):
         """Rewrite the segments a failing series check cites, then review the result again.
 
-        Three calls per affected episode: one repair, one script review, and the shared series
-        re-check. Polishing and the teaching review are not repeated because the edit is bounded
-        to named segments within unchanged objectives.
+        Three calls per affected episode: one scoped repair (story_repair), one script review, and the shared series
+        re-check.
 
         An adopted repair replaces both ``reviewed/<ep>.json`` and ``reviews/<ep>.json``; the
         review of the text before the repair is kept as ``reviews/<ep>_before_series_repair.json``,
@@ -1227,6 +902,8 @@ class ScriptRun:
             """One episode's correction and its scoped review; the caller decides whether it is adopted."""
             episode_id = entry.episode_id
             token = CALL_SUBJECT.set(episode_id)
+            # A story agent's episode is held to its own chapters, and corrected as its review repairs are.
+            entry = story_entry(self.work, entry)
             try:
                 reviewed_file = self.work / "reviewed" / f"{episode_id}.json"
                 draft = EpisodeScript.model_validate_json(reviewed_file.read_text(encoding="utf-8"))
@@ -1246,12 +923,9 @@ class ScriptRun:
                     if kept.exists():
                         repaired = EpisodeScript.model_validate_json(kept.read_text(encoding="utf-8"))
                     else:
-                        repaired = corrected_call(self.invoke, self.writing_prompt(plan, entry) +
-                            "\n" + instructions("script_review_repair") + "\n" +
-                            json.dumps({"draft": current.model_dump(), "review": asked.model_dump()}, ensure_ascii=False),
-                            EpisodeScript, REVIEW_REPAIR_VERSION,
-                            lambda answer: self.script_defects(answer, entry, self.work / f"{episode_id}_series_repair_errors.json",
-                                                               "Die Korrektur der Serienprüfung verletzt die Quellenzuordnung oder Struktur."))
+                        # Until 2026-11-01 a story run's correction called the writing prompt, which reads a teaching
+                        # design such a run never has, and stopped with FileNotFoundError (D-184).
+                        repaired = self.story_repair(plan, entry, current, asked)
                         write_json(kept, repaired.model_dump())
                     # Scoped like every review after a repair: the issues it answered and the segments it changed.
                     checked = self.review_script(plan, entry, repaired, draft.model_dump(), probes,
@@ -1315,14 +989,6 @@ class ScriptRun:
                            "Korrektur eine neue Runde.", code="script_review_failed", status="blocked")
         return reviewed_scripts(self.work, plan, self.episode) if changed else None
 
-    def assess_episode_teaching(self, plan, entry, draft):
-        return assess_teaching(draft, self.teaching_for(entry), self.invoke,
-                               self.work / "reviews" / "teaching" / entry.episode_id,
-                               audience=self.config.audience_level, prior_knowledge=self.config.prior_knowledge,
-                               depth=self.config.depth_request, series_context=episode_series_context(plan, entry),
-                               parallel=self.execution.text_workers > 1, series_goal=self.config.series_goal,
-                               language=self.config.language)
-
     def review(self):
         plan, entries = self.selected()
         self.check_budget(entries)
@@ -1344,5 +1010,5 @@ class ScriptRun:
             series_report = load_series_review(self.work, plan, scripts, self.input_hash)
             require_passing_series(series_report)
         return publish_scripts(self.root, self.work, plan=plan, entries=entries, dossier=self.dossier, sources=self.sources,
-            config=self.config, teaching_for=self.teaching_for, research_id=self.research_id, manifest=self.manifest,
+            config=self.config, research_id=self.research_id, manifest=self.manifest,
             input_hash=self.input_hash, text_generation=self.text_generation, series_report=series_report)

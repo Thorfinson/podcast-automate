@@ -11,15 +11,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
 from podcast_automate.episode_audio import run_episode_audio
 from podcast_automate.errors import AppError
 from podcast_automate.execution import run_episode_stage
-from podcast_automate.models import EpisodeScript, ResearchLimits, TopicBrief
+from podcast_automate.models import ResearchLimits, TopicBrief
 from podcast_automate.parallel_speech import LockedGeminiSpeech
 from podcast_automate.research import reserve_call
 from podcast_automate.runner import manifest_path, outputs_valid
-from podcast_automate.script_models import SeriesPlan
+from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.scripting import run_script
 from podcast_automate.storage import digest, file_hash, init_project, project_hash, project_lock, read_yaml, write_json, write_yaml
 from podcast_automate.studio import BriefProposal, Studio, audio_job_path
@@ -77,7 +76,7 @@ class LockAndBudgetTests(unittest.TestCase):
             with mutex:
                 active -= 1
             return [entry.episode_id]
-        result = run_episode_stage(entries, action, workers=3, work=self.root, stage="writing")
+        result = run_episode_stage(entries, action, workers=3, work=self.root, stage="story")
         self.assertEqual(peak, 3)
         self.assertEqual(result, [e.episode_id for e in entries])
 
@@ -91,7 +90,7 @@ class LockAndBudgetTests(unittest.TestCase):
             CallActivity(directory, "EpisodeScript", "model")
             return [directory / "activity.json"]
         for workers in (3, 1):
-            paths = run_episode_stage(entries, action, workers=workers, work=self.root / str(workers), stage="writing")
+            paths = run_episode_stage(entries, action, workers=workers, work=self.root / str(workers), stage="story")
             subjects = [json.loads(path.read_text(encoding="utf-8"))["subject"] for path in paths]
             self.assertEqual(subjects, [entry.episode_id for entry in entries])
             for path in paths:
@@ -334,35 +333,43 @@ class ParallelPipelineTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
+        # The fake story agent without the fixture's draft writes both episodes from their length alone: host_b's line
+        # is the same in both, host_a's differs (see model), so the two recordings share exactly one utterance.
+        folder = self.root.parent / "filler_agent"
+        folder.mkdir()
+        agent = patch("podcast_automate.claude_code.claude_command", return_value=fixtures.fake_agent(folder))
+        agent.start()
+        self.addCleanup(agent.stop)
 
     def model(self, prompt, output_type, directory, **kwargs):
         result, metadata = self.fixture.model(prompt, output_type, directory, **kwargs)
         if output_type is SeriesPlan:
+            # A second episode a little shorter, so the fake story agent gives its host_a a line of its own while
+            # host_b's line is the same in both episodes.
             second = result.episodes[0].model_copy(deep=True)
-            second.episode_id = "ep_002"
+            second.episode_id, second.target_minutes = "ep_002", 0.1
             result.episodes.append(second)
-        if output_type is EpisodeScript:
-            payload = json.loads(prompt.splitlines()[-1])
-            result.episode_id = payload.get("episode", payload.get("original_script"))["episode_id"]
-            if result.episode_id == "ep_002":
-                result.segments[0].text = result.segments[0].text.replace("model", "device")
         return result, metadata
 
-    def test_codex_calls_overlap_within_stage_and_resume_keeps_saved_mode(self):
+    def test_calls_overlap_within_stage_and_resume_keeps_saved_mode(self):
         write_json(self.root / "studio/execution.json", {"text": "parallel", "audio": "sequential"})
         barrier = threading.Barrier(2)
         def model(*args, **kwargs):
-            if kwargs["prompt_version"] == WRITE_EPISODE_VERSION:
+            # Each episode's script review waits for the other's: they are asked at the same time.
+            if args[1] is ScriptReview:
                 barrier.wait(timeout=5)
             return self.model(*args, **kwargs)
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root)
-        self.assertEqual(run.status, "completed")
+        self.assertEqual(run.status, "completed", {k: v.error for k, v in run.stages.items() if v.error})
         work = manifest_path(self.root, run.run_id).parent
         self.assertEqual(json.loads((work / "script_request.json").read_text())["execution"]["text"], "parallel")
         self.assertEqual(len(list((work / "reviewed").glob("*.json"))), 2)
+        # Both episodes were written by a story agent session of their own.
+        self.assertEqual(sorted(path.parent.name for path in (work / "story").glob("*/session.json")), ["ep_001", "ep_002"])
         write_json(self.root / "studio/execution.json", {"text": "sequential", "audio": "sequential"})
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=AssertionError("No repeat calls")):
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=AssertionError("No repeat calls")), \
+                patch("podcast_automate.claude_code.claude_command", side_effect=AssertionError("No repeat session")):
             resumed = run_script(self.root, resume=True, run_id=run.run_id)
         self.assertEqual(resumed.status, "completed")
         self.assertTrue(all(outputs_valid(self.root, stage) for stage in resumed.stages.values()))

@@ -14,7 +14,7 @@ from podcast_automate.google_speech import (MAX_PASSAGE_SPEAKERS, PASSAGE_RULE, 
                                             plan_passages, request_body)
 from podcast_automate.models import (EpisodeScript, Segment, ThirdHost, TopicBrief, host_labels, host_roles_of,
                                      host_voices)
-from podcast_automate.polishing import HOST_ROLES, cast_note, host_roles
+from podcast_automate.cast import HOST_ROLES, cast_note, host_roles
 from podcast_automate.script_advisories import advisories, dialogue_shape, partner_share, turns
 from podcast_automate.script_checks import script_metrics, validate_script
 from podcast_automate.scripting import run_script
@@ -34,6 +34,17 @@ EA_NASIR = {"name": "Ea-nasir", "role": "A copper trader from Ur, 3750 years old
 def three_hosts(**update):
     return TopicBrief(**{"topic": "Geld", "voice_profile": {"host_a": "Ryan", "host_b": "Serena"},
                          "third_host": EA_NASIR, **update})
+
+
+def three_host_draft():
+    """The fixture's episode as the story agent writes it for a brief with a third host: host_c speaks between the
+    other two, and host_b's line is shorter, so the draft keeps the episode's length (16 words for 0.12 minutes)."""
+    script = fixtures.example_script()
+    first, second = script.segments
+    added = Segment(segment_id="seg_c01", scene_id=first.scene_id, chapter_id=first.chapter_id, speaker_id="host_c",
+                    text="Bei uns in Ur: Ton.")
+    return script.model_copy(update={"segments": [first, added,
+                                                  second.model_copy(update={"text": "Lower scores represent a better fit."})]})
 
 
 def with_third(script):
@@ -233,30 +244,45 @@ class ExampleProjectTests(unittest.TestCase):
 
 
 class ThreeHostScriptRunTests(fixtures.ScriptProjectCase):
-    """A whole script run of a project with a third host, with the fixture's model answering."""
+    """A whole script run of a project with a third host, with the fixture's model answering and the story agent
+    writing every host's turns (three_host_draft)."""
 
     def setUp(self):
         super().setUp()
         config = read_yaml(self.root / "project.yaml")
         write_yaml(self.root / "project.yaml", {**config, "third_host": EA_NASIR})
         self.prompts = []
+        folder = self.root.parent / "three_hosts"
+        folder.mkdir()
+        agent = patch("podcast_automate.claude_code.claude_command",
+                      return_value=fixtures.fake_agent(folder, three_host_draft()))
+        agent.start()
+        self.addCleanup(agent.stop)
 
     def model(self, prompt, output_type, directory, **kwargs):
         self.prompts.append(prompt)
-        answer, meta = super().model(prompt, output_type, directory, **kwargs)
-        if output_type is EpisodeScript:
-            answer = with_third(answer)
-        return answer, meta
+        return super().model(prompt, output_type, directory, **kwargs)
 
     def test_every_call_is_told_the_cast_and_the_published_script_speaks_three_hosts(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
             run = run_script(self.root)
-        self.assertEqual(run.status, "completed")
+        self.assertEqual(run.status, "completed", {k: v.error for k, v in run.stages.items() if v.error})
         self.assertTrue(self.prompts)
         for prompt in self.prompts:
             self.assertTrue(prompt.startswith("THREE HOSTS."), prompt[:80])
+        # The story agent is told the cast in its task and finds the third host and its part in its brief.
+        folder = self.root / "runs" / run.run_id / "story" / "ep_001"
+        task = (folder / "TASK.md").read_text(encoding="utf-8")
+        self.assertIn("## Three hosts\n\nTHREE HOSTS.", task)
+        self.assertIn(EA_NASIR["role"], task)
+        brief = json.loads((folder / "material.json").read_text(encoding="utf-8"))["brief"]
+        self.assertEqual(brief["third_host"], {"speaker_id": "host_c", "name": "Ea-nasir", "role": EA_NASIR["role"]})
+        self.assertEqual(brief["host_roles"]["host_c"], EA_NASIR["role"])
+        # The agent's own check held the draft to the three hosts, and passed it.
+        log = json.loads((folder / "agent_log.json").read_text(encoding="utf-8"))
+        self.assertTrue(json.loads(log["check"])["passed"], log["check"])
         script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
-        self.assertIn("host_c", {segment.speaker_id for segment in script.segments})
+        self.assertEqual({segment.speaker_id for segment in script.segments}, {"host_a", "host_b", "host_c"})
         self.assertIn("**Ea-nasir:** Bei uns in Ur", (self.root / "episodes/ep_001/script.md").read_text(encoding="utf-8"))
         quality = read_yaml(self.root / "reports/script_quality.yaml")
         self.assertEqual(quality["host_roles"]["host_c"], EA_NASIR["role"])

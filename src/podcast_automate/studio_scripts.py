@@ -8,9 +8,12 @@ import re
 from .errors import AppError
 from .models import EpisodeScript
 from .runner import manifest_path
+from .script_artifacts import run_rate
 from .scripting import script_metrics, script_review_signature
 from .script_models import SeriesPlan
+from .script_checkpoints import NOTED_CATEGORIES
 from .storage import digest, inside, file_hash
+from .story_agent import story_entry
 
 
 def _strings(values):
@@ -81,56 +84,31 @@ def script_previews(root, run):
             stamp = read(f"drafts/{identifier}.checkpoint.json")
             if stamp.get("sha256") != hashlib.sha256(raw).hexdigest():
                 continue
-            original = json.loads(raw)
-            candidate, state = original, "draft"
+            candidate, state = json.loads(raw), "draft"
             try:
-                # The narrated draft (D-180) is the baseline of polishing once the narration stage finished it.
-                narrated = read(f"narration/{identifier}/script.json")
-                outcome = read(f"narration/{identifier}/result.json")
-                if (outcome.get("draft_digest") == digest(original)
-                        and outcome.get("narrated_digest") == digest(narrated)):
-                    original, candidate, state = narrated, narrated, "narrated"
-            except (OSError, ValueError, AppError):
+                # The story agent's draft is reviewed as written (D-181): "reviewed" once its review left nothing that
+                # blocks. Until 2026-11-01 the state was reachable only after polishing, so an agent's episode stayed
+                # "draft" in the preview.
+                reviewed = read(f"reviewed/{identifier}.json")
+                review = read(f"reviews/{identifier}.json")
+                checkpoint = read(f"reviews/{identifier}_checkpoint.json")
+                series = SeriesPlan.model_validate(plan)
+                selected = story_entry(work, next(e for e in series.episodes if e.episode_id == identifier))
+                signature = script_review_signature(run.get("input_hash"),
+                                                    file_hash(inside(work, f"drafts/{identifier}.json")), series,
+                                                    selected, work)
+                blocking = [issue for issue in review.get("issues") or []
+                            if not isinstance(issue, dict) or issue.get("category") not in NOTED_CATEGORIES]
+                if (not blocking and checkpoint.get("draft") == reviewed and checkpoint.get("review") == review
+                        and checkpoint.get("input_hash") == signature):
+                    candidate, state = reviewed, "reviewed"
+            except (OSError, ValueError, AppError, StopIteration):
                 pass
-            try:
-                polished = read(f"polishing/{identifier}/script.json")
-                result = read(f"polishing/{identifier}/result.json")
-                if result.get("status") == "kept_draft":
-                    # The polish kept the checked draft (script_checkpoints.finished): finished when its script is that
-                    # draft. Read only as "passed", such an episode never showed as polished or reviewed (2026-10-02).
-                    done = (polished == original
-                            and digest(polished) == result.get("original_digest") == result.get("polished_digest"))
-                else:
-                    checkpoint = read(f"polishing/{identifier}/checkpoint.json")
-                    done = (result.get("status") == "passed" and checkpoint.get("candidate") == polished
-                            and result.get("original_digest") == digest(original)
-                            and result.get("polished_digest") == digest(polished))
-                if done:
-                    candidate, state = polished, "polished"
-            except (OSError, ValueError, AppError):
-                pass
-            if state == "polished":
-                try:
-                    reviewed = read(f"reviewed/{identifier}.json")
-                    review = read(f"reviews/{identifier}.json")
-                    checkpoint = read(f"reviews/{identifier}_checkpoint.json")
-                    teaching = read(f"reviews/{identifier}_teaching.json")
-                    series = SeriesPlan.model_validate(plan)
-                    selected = next(e for e in series.episodes if e.episode_id == identifier)
-                    signature = script_review_signature(run.get("input_hash"),
-                        file_hash(inside(work, f"polishing/{identifier}/script.json")), series, selected, work)
-                    if (not review.get("issues") and checkpoint.get("draft") == reviewed
-                            and checkpoint.get("review") == review and teaching.get("status") == "passed"
-                            and teaching.get("script_digest") == digest(reviewed)
-                            and checkpoint.get("input_hash") == signature):
-                        candidate, state = reviewed, "reviewed"
-                except (OSError, ValueError, AppError):
-                    pass
             script = EpisodeScript.model_validate(candidate)
             if script.episode_id != identifier:
                 continue
             rows.append({"script": script.model_dump(), "hash": digest(script.model_dump()),
-                         "metrics": script_metrics(script), "preview": True, "state": state,
+                         "metrics": script_metrics(script, run_rate(work)), "preview": True, "state": state,
                          "run_id": run["run_id"], "episode_number": number})
         except (OSError, ValueError, AppError, KeyError, TypeError):
             # One incomplete checkpoint must not hide the other readable episodes.

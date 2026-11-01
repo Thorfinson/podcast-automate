@@ -6,11 +6,13 @@ from types import SimpleNamespace
 from podcast_automate.errors import AppError
 from podcast_automate.models import ResearchLimits, RunManifest, StageRecord
 from podcast_automate.script_budget import STAGE_CALLS, budget_projection, calls_per_episode, ensure_script_budget
-from podcast_automate.storage import digest, file_hash, write_json, write_yaml
+from podcast_automate.storage import file_hash, write_json, write_yaml
 
-# The stage list of a run started before the narration stage; most tests here keep it, its numbers stay what they were.
-STAGES = ("planning", "teaching", "writing", "polishing", "review", "publish")
-NARRATED_STAGES = ("planning", "teaching", "writing", "narration", "polishing", "review", "publish")
+# The story agent's stages, every script run's since D-184: per episode the teaching stage asks for the story material,
+# the orientation sheet and its check (3), the story stage for the session and its first critique (2), the review for
+# the script review (1).
+STAGES = ("planning", "teaching", "story", "review", "publish")
+PER_EPISODE = 3 + 2 + 1
 
 
 class ScriptBudgetTests(unittest.TestCase):
@@ -24,38 +26,14 @@ class ScriptBudgetTests(unittest.TestCase):
     def tearDown(self):
         self.folder.cleanup()
 
-    def test_fresh_run_needs_planning_plus_nine_calls_per_episode_and_series_review(self):
-        # A run with the narration stage (D-180) adds the story material and the narration review per episode; this
-        # manifest is one started before it, which counts the nine calls it always did.
-        self.assertEqual(calls_per_episode(), 11)
-        self.assertEqual(calls_per_episode(STAGES), 9)
+    def test_fresh_run_needs_planning_plus_six_calls_per_episode_and_series_review(self):
+        self.assertEqual(calls_per_episode(), PER_EPISODE)
+        self.assertEqual(calls_per_episode(STAGES), PER_EPISODE)
         projection = budget_projection(self.work, self.manifest, ResearchLimits(model_calls=20), self.entries,
                                        series_review=True)
-        self.assertEqual(projection["minimum_remaining_calls"], 1 + 2 * 9 + 1)
+        self.assertEqual(projection["minimum_remaining_calls"], 1 + 2 * PER_EPISODE + 1)
         self.assertEqual(projection["breakdown"]["review"], 2 * STAGE_CALLS["review"])
         self.assertTrue(projection["feasible"])
-
-    def test_a_narrated_run_counts_story_material_and_the_narration_review(self):
-        """D-180: the stage list of a run started now has the narration stage; the minimum counts its review, not the
-        rework and the review after it, which follow only when the review names points."""
-        manifest = RunManifest(run_id="run_x", kind="script", project_hash="a", input_hash="b",
-                               stages={name: StageRecord() for name in NARRATED_STAGES})
-        projection = budget_projection(self.work, manifest, ResearchLimits(model_calls=30), self.entries,
-                                       series_review=True)
-        self.assertEqual(projection["breakdown"], {"planning": 1, "teaching": 6, "writing": 2, "narration": 2,
-                                                   "polishing": 4, "review": 8, "series_review": 1})
-        self.assertEqual((projection["minimum_remaining_calls"], projection["calls_per_episode"]), (1 + 2 * 11 + 1, 11))
-        write_json(self.work / "narration/ep_001/script.json", {"episode_id": "ep_001"})
-        write_json(self.work / "drafts/ep_001.json", {"episode_id": "ep_001"})
-        write_json(self.work / "narration/ep_001/result.json",
-                   {"narrated_digest": digest({"episode_id": "ep_001"}), "draft_digest": digest({"episode_id": "ep_001"})})
-        projection = budget_projection(self.work, manifest, ResearchLimits(model_calls=30), self.entries,
-                                       series_review=True)
-        self.assertEqual(projection["breakdown"]["narration"], 1, "a narrated episode is finished")
-        write_json(self.work / "drafts/ep_001.json", {"episode_id": "ep_001", "title": "rewritten"})
-        projection = budget_projection(self.work, manifest, ResearchLimits(model_calls=30), self.entries,
-                                       series_review=True)
-        self.assertEqual(projection["breakdown"]["narration"], 2, "a narration of another draft is not")
 
     def test_finished_checkpoints_and_completed_stages_are_not_counted(self):
         self.manifest.stages["planning"].status = "completed"
@@ -66,7 +44,8 @@ class ScriptBudgetTests(unittest.TestCase):
         write_json(self.work / "budget.json", {"model_calls": 5, "search_rounds": 0})
         projection = budget_projection(self.work, self.manifest, ResearchLimits(model_calls=20), self.entries,
                                        series_review=False)
-        self.assertEqual(projection["breakdown"], {"writing": 1, "polishing": 4, "review": 8})
+        # ep_001's session left its checkpointed draft: only ep_002 still needs one.
+        self.assertEqual(projection["breakdown"], {"story": 2, "review": 2})
         self.assertEqual((projection["used"], projection["remaining"], projection["shortfall"]), (5, 15, 0))
         self.assertTrue(projection["feasible"])
 
@@ -76,11 +55,11 @@ class ScriptBudgetTests(unittest.TestCase):
             ensure_script_budget(self.work, self.manifest, ResearchLimits(model_calls=20), self.entries, series_review=True)
         self.assertEqual(caught.exception.code, "script_budget_insufficient")
         self.assertEqual(caught.exception.status, "blocked")
-        self.assertIn("Mindestens 20 weitere Modellaufrufe", str(caught.exception))
+        self.assertIn("Mindestens 14 weitere Modellaufrufe", str(caught.exception))
         self.assertIn("nur 8 von 20", str(caught.exception))
         saved = __import__("json").loads((self.work / "budget_projection.json").read_text(encoding="utf-8"))
         self.assertFalse(saved["feasible"])
-        self.assertEqual(saved["shortfall"], 12)
+        self.assertEqual(saved["shortfall"], 6)
 
     def project(self):
         """A project folder with earlier runs beside the current one."""
@@ -98,13 +77,13 @@ class ScriptBudgetTests(unittest.TestCase):
         write_json(work / "series_plan.json", {"episodes": [{"episode_id": f"ep_{n:03d}"} for n in range(1, episodes + 1)]})
 
     def test_the_expectation_follows_the_last_completed_script_run_and_the_minimum_still_gates(self):
-        """Finding of 2026-10-02: the projection showed only the mandatory minimum, 9 calls per episode, while the
-        completed runs needed 31 (Asimov) and 42.5 (Ontologies). The expectation now scales by the project's last
-        completed script run; only the minimum decides whether a stage may start."""
+        """Finding of 2026-10-02: the projection showed only the mandatory minimum, then 9 calls per episode, while the
+        completed runs needed 31 (Asimov) and 42.5 (Ontologies). The expectation scales by the project's last completed
+        script run; only the minimum decides whether a stage may start."""
         root, work = self.project()
         self.earlier_run(root, "run_20260930_080000_000000_aaaaaaaa", calls=85, episodes=2,
                          updated_at="2026-09-30T08:00:00+00:00")
-        self.earlier_run(root, "run_20261001_080000_000000_bbbbbbbb", calls=62, episodes=2)
+        self.earlier_run(root, "run_20261001_080000_000000_bbbbbbbb", calls=60, episodes=2)
         # Neither a research run, an unfinished script run nor the current run is a calibration.
         self.earlier_run(root, "run_20261001_120000_000000_dddddddd", kind="research", calls=600,
                          updated_at="2026-10-01T12:00:00+00:00")
@@ -114,23 +93,23 @@ class ScriptBudgetTests(unittest.TestCase):
         write_json(work / "budget.json", {"model_calls": 0, "search_rounds": 0})
         projection = budget_projection(work, self.manifest, ResearchLimits(model_calls=40), self.entries,
                                        series_review=True, root=root)
-        self.assertEqual(projection["calibration"], {"run_id": "run_20261001_080000_000000_bbbbbbbb", "model_calls": 62,
-                                                     "episodes": 2, "calls_per_episode": 31.0})
-        self.assertEqual(projection["minimum_remaining_calls"], 1 + 2 * 9 + 1)
-        # Each episode stage scaled by 31/9; planning and the series review stay single calls.
-        self.assertEqual(projection["expected_breakdown"], {"planning": 1, "teaching": 14, "writing": 7,
-                                                            "polishing": 14, "review": 28, "series_review": 1})
-        self.assertEqual(projection["expected_remaining_calls"], 65)
+        self.assertEqual(projection["calibration"], {"run_id": "run_20261001_080000_000000_bbbbbbbb", "model_calls": 60,
+                                                     "episodes": 2, "calls_per_episode": 30.0})
+        self.assertEqual(projection["minimum_remaining_calls"], 1 + 2 * PER_EPISODE + 1)
+        # Each episode stage scaled by 30/6; planning and the series review stay single calls.
+        self.assertEqual(projection["expected_breakdown"], {"planning": 1, "teaching": 2 * 3 * 5, "story": 2 * 2 * 5,
+                                                            "review": 2 * 1 * 5, "series_review": 1})
+        self.assertEqual(projection["expected_remaining_calls"], 62)
         self.assertEqual((projection["feasible"], projection["shortfall"], projection["expected_shortfall"]),
-                         (True, 0, 25))
-        self.assertIn("62 Aufrufe für 2 Folgen, 31 je Folge", projection["expected_label"])
+                         (True, 0, 22))
+        self.assertIn("60 Aufrufe für 2 Folgen, 30 je Folge", projection["expected_label"])
         self.assertIn("Untergrenze", projection["minimum_label"])
-        write_json(work / "budget.json", {"model_calls": 25, "search_rounds": 0})
+        write_json(work / "budget.json", {"model_calls": 30, "search_rounds": 0})
         with self.assertRaises(AppError) as caught:
             ensure_script_budget(work, self.manifest, ResearchLimits(model_calls=40), self.entries, series_review=True,
                                  root=root)
-        self.assertIn("Mindestens 20 weitere Modellaufrufe", str(caught.exception))
-        self.assertIn("etwa 65 zu erwarten", str(caught.exception))
+        self.assertIn("Mindestens 14 weitere Modellaufrufe", str(caught.exception))
+        self.assertIn("etwa 62 zu erwarten", str(caught.exception))
 
     def test_a_single_episode_run_counts_as_one_episode_and_no_run_means_the_minimum(self):
         root, work = self.project()

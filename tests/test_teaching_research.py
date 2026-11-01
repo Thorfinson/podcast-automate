@@ -2,10 +2,9 @@ import json
 import unittest
 from unittest.mock import patch
 
-from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
 from podcast_automate.editorial import MACHINE_LEARNING_TERMS, TERMINOLOGY, TOPIC_TERMINOLOGY
 from podcast_automate.errors import AppError
-from podcast_automate.models import EpisodeScript
+from podcast_automate.narration import MissingStory, StoryMaterial
 from podcast_automate.research_ledger import read_value, save_value
 from podcast_automate.research_models import (Evidence, Finding, ResearchDiscovery, SourceDocument,
                                               SourceSection)
@@ -13,7 +12,6 @@ from podcast_automate.runner import manifest_path
 from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.scripting import episode_sources, load_research, outline_hash, run_script
 from podcast_automate.storage import digest, file_hash, read_yaml, write_json, write_yaml
-from podcast_automate.teaching import ResearchGap, TeachingPlanReview
 from podcast_automate.text_settings import stage_effort
 from podcast_automate.teaching_research import (ASSEMBLED_ALLOWANCE, FoundationSupplement, FoundationReview,
     apply_foundations, named_question, research_foundations, gaps_in, source_budget, validate_supplement)
@@ -44,13 +42,11 @@ def two_episode_plan(second_findings):
     return plan
 
 
-def script_for(episode):
-    """The fixture script for whichever episode the writing prompt names."""
-    script = fixtures.example_script().model_copy(deep=True, update={
-        "episode_id": episode["episode_id"], "title": episode["title"]})
-    for segment in script.segments:
-        segment.knowledge_refs = list(episode["finding_ids"])
-    return script
+def missing_story(question="How did the first comparison of two scores come about?"):
+    """Story material that names one story the episode's sections only point to (D-180): the story research reads it
+    through the supplementary research once, before the agent writes."""
+    return StoryMaterial(items=[], missing=[MissingStory(question=question, why_needed="It carries the comparison.",
+                                                         finding_ids=["f_energy"])])
 
 
 class FoundationResearchTests(unittest.TestCase):
@@ -160,32 +156,44 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 9)
 
     def test_second_gap_is_researched_in_same_script_job_without_another_approval(self):
-        reviews = 0
+        """The teaching stage researches a reported gap with unread corpus hits, then a story the episode's sections
+        only point to, in the one job the outline's approval started: two supplement rounds, no further approval, and
+        a resume asks nothing again."""
+        self.forget_research_reads()
+        materials = []
+
         def model(prompt, schema, directory, **kwargs):
-            nonlocal reviews
             if schema in (ResearchDiscovery, FoundationSupplement, FoundationReview):
                 value = self.invoke(prompt, schema, kwargs["prompt_version"], research=True, search=kwargs["search"])
                 if schema is FoundationSupplement and len(self.calls) > 3:
                     value.explanations[0].explanation = "This comparison does not establish that every model defines a normalized probability."
                 return value, {}
-            value, meta = self.fixture.model(prompt, schema, directory, **kwargs)
-            if schema is TeachingPlanReview:
-                reviews += 1
-                if reviews <= 2:
-                    value.research_gaps = [ResearchGap(question=f"Missing mechanism {reviews}?", why_needed="A necessary prerequisite.")]
-            return value, meta
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
+            if schema is StoryMaterial:
+                materials.append(prompt)
+                if len(materials) == 1:
+                    return missing_story(), {}
+            return self.fixture.model(prompt, schema, directory, **kwargs)
+        with patch("podcast_automate.script_pipeline.ScriptRun.knowledge_gaps", return_value=self.SEEDED), \
+             patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model), \
              patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
             plan = run_script(self.root, plan_only=True)
             work = self.root / "runs" / plan.run_id
             approved = outline_hash(work)
             run = run_script(self.root, resume=True, run_id=plan.run_id, approved_plan_hash=approved)
-            self.assertEqual(run.status, "completed")
+            self.assertEqual(run.status, "completed", {k: v.error for k, v in run.stages.items() if v.error})
             again = run_script(self.root, resume=True, run_id=plan.run_id)
         self.assertEqual(again.status, "completed")
         self.assertEqual(outline_hash(work), approved)
         self.assertEqual(len(self.calls), 6)
-        self.assertEqual(reviews, 3)
+        self.assertEqual(len(list(work.glob("teaching/ep_001/supplement*/receipt.json"))), 2)
+        self.assertEqual([row["status"] for row in self.probes_of(run)], ["resolved"])
+        self.assertEqual(json.loads((work / "teaching/ep_001/story_research.json").read_text(encoding="utf-8"))["status"],
+                         "added")
+        # The material is collected again from the sources the story research added; the agent writes from both rounds.
+        self.assertEqual(len(materials), 2)
+        written = (work / "story/ep_001/material.json").read_text(encoding="utf-8")
+        self.assertIn("better match", written)
+        self.assertIn("normalized probability", written)
         self.assertEqual(gaps_in(work), [])
         self.assertFalse(read_yaml(self.root / "episodes/audio_review.yaml")["audio_approved"])
 
@@ -680,9 +688,6 @@ class FoundationResearchTests(unittest.TestCase):
             if plan is not None and schema is SeriesPlan:
                 self.fixture.calls.append(schema)
                 return plan, {}
-            if plan is not None and schema is EpisodeScript:
-                self.fixture.calls.append(schema)
-                return script_for(json.loads(prompt.splitlines()[-1])["episode"]), {}
             return self.fixture.model(prompt, schema, directory, **kwargs)
         return model
 
@@ -818,8 +823,9 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual([(row["status"], row["settled_by"], row["owner_episodes"]) for row in probes],
                          [("resolved", "ep_001", ["ep_001", "ep_002"])])
         self.assertFalse((work / "teaching/ep_002/research_needed.json").exists())
-        # Both episodes were written and polished: one EpisodeScript call per stage and episode.
-        self.assertEqual(self.fixture.calls.count(EpisodeScript), 4)
+        # Both episodes were written, each by a story agent session of its own, and reviewed.
+        self.assertEqual(sorted(path.parent.name for path in (work / "story").glob("*/session.json")), ["ep_001", "ep_002"])
+        self.assertEqual(sorted(path.name for path in (work / "reviewed").glob("*.json")), ["ep_001.json", "ep_002.json"])
 
     def test_a_gap_owned_only_by_a_later_episode_never_blocks_the_earlier_one(self):
         """The deadlock case: the hit sits in a source only ep_002 cites. ep_001 must neither route
@@ -1052,25 +1058,26 @@ class FoundationResearchTests(unittest.TestCase):
         return research_id, dossier, discovery, sources, context
 
     def test_approved_script_automatically_recovers_then_resumes_with_same_evidence(self):
-        first_review, paused = True, False
+        """The teaching stage reads a story the sections only point to through the supplementary research; the script
+        review then waits for quota, and the resume reviews the agent's episode with the same supplemented evidence."""
+        first_material, paused = True, False
         captured = []
         def model(adapter, prompt, schema, directory, **kwargs):
-            nonlocal first_review, paused
+            nonlocal first_material, paused
             self.assertEqual(adapter.settings.codex_model, "gpt-5.6-sol")
             # The run's level, lowered only where a stage asks at most at medium (STAGE_EFFORT_CAPS).
             self.assertEqual(adapter.reasoning_effort, stage_effort(kwargs["prompt_version"], "high"))
             if schema in (ResearchDiscovery, FoundationSupplement, FoundationReview):
                 return self.invoke(prompt, schema, kwargs["prompt_version"], research=True, search=kwargs["search"]), {}
-            if schema is EpisodeScript and kwargs["prompt_version"] == WRITE_EPISODE_VERSION:
+            if schema is StoryMaterial and first_material:
+                first_material = False
+                return missing_story("How are scores compared?"), {}
+            if schema is ScriptReview:
                 captured.append(prompt)
                 if not paused:
                     paused = True
                     raise AppError("Quota", code="quota_exhausted", status="waiting_for_quota")
-            value, meta = self.fixture.model(prompt, schema, directory, **kwargs)
-            if schema is TeachingPlanReview and first_review:
-                first_review = False
-                value.research_gaps = [ResearchGap(question="How are scores compared?", why_needed="The comparison needs evidence.")]
-            return value, meta
+            return self.fixture.model(prompt, schema, directory, **kwargs)
         with patch("podcast_automate.scripting.CodexAdapter.structured", autospec=True, side_effect=model), \
              patch("podcast_automate.sources.download", return_value=(HTML, "text/html", "https://example.org/paper0")):
             plan = run_script(self.root, plan_only=True, model="gpt-5.6-sol", reasoning_effort="high")
@@ -1081,14 +1088,16 @@ class FoundationResearchTests(unittest.TestCase):
                         if p.name not in {"budget.json", "budget_projection.json"}}
             first = run_script(self.root, resume=True, run_id=plan.run_id, approved_plan_hash=approved)
             self.assertEqual(first.status, "waiting_for_quota")
-            self.assertEqual(first.stages["teaching"].status, "completed")
+            self.assertEqual((first.stages["teaching"].status, first.stages["story"].status), ("completed", "completed"))
             finished = run_script(self.root, resume=True, run_id=plan.run_id)
         self.assertEqual(finished.status, "completed")
         self.assertEqual(len(self.calls), 3)
         self.assertEqual(outline_hash(work), approved)
         for name, sha in original.items():
             self.assertEqual(file_hash(work / name), sha, name)
+        self.assertEqual(len(captured), 2)
         self.assertTrue(all("better match" in p for p in captured))
+        self.assertIn("better match", (work / "story/ep_001/material.json").read_text(encoding="utf-8"))
         self.assertIn("better match", read_yaml(self.root / "models/knowledge_model.yaml")["claims"][0]["statement"])
         self.assertFalse(read_yaml(self.root / "episodes/audio_review.yaml")["audio_approved"])
 

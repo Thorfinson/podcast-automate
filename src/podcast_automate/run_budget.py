@@ -660,65 +660,6 @@ def approve_research_retry(root, run_id, task_id, hint=""):
     return request
 
 
-class TeachingRedesign(Contract):
-    episode_id: Identifier
-    note: str = Field(min_length=1, max_length=2000)
-    requested_at: datetime
-
-
-class TeachingRedesigns(Contract):
-    run_id: Identifier
-    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    requests: list[TeachingRedesign]
-
-
-def teaching_redesigns(work, input_hash) -> dict[str, dict]:
-    """Requested new teaching designs of this script run keyed by episode id; empty when none was ever written."""
-    path = work / "teaching_redesigns.json"
-    if not path.exists():
-        return {}
-    try:
-        saved = TeachingRedesigns.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise AppError("Die gespeicherten Neuentwürfe des Lehrkonzepts sind ungültig.", code="invalid_redesign_request",
-                       status="blocked") from exc
-    if saved.run_id != work.name or saved.input_hash != input_hash:
-        raise AppError("Die Neuentwürfe des Lehrkonzepts gehören nicht zu diesem Auftrag.", code="invalid_redesign_request",
-                       status="blocked")
-    return {item.episode_id: item.model_dump(mode="json") for item in saved.requests}
-
-
-def request_teaching_redesign(root, run_id, episode_id, note):
-    """Ask for a new teaching design of one episode, with the editor's note, after the user explicitly requested it.
-
-    Only a script run whose teaching stage stopped because the design kept its defects after the focused repair
-    (``teaching_design_failed``) takes it, and only for an episode without an accepted design. The next resume
-    moves the stopped design aside and designs the episode anew with the note and fresh correction rounds
-    (script_pipeline.ScriptRun.adopt_redesign); the approved outline stays. A later request for the same
-    episode replaces the earlier one."""
-    from .script_models import SeriesPlan
-    work, manifest = _text_run(root, run_id)
-    stage = manifest.stages.get("teaching")
-    if manifest.kind != "script" or stage is None or stage.status != "blocked" or (stage.error or None) is None \
-            or stage.error.code != "teaching_design_failed":
-        raise AppError("Ein neues Lehrkonzept mit Hinweis gibt es nur, wenn das Lehrkonzept nach den automatischen "
-                       "Korrekturen offene Punkte behält.", code="invalid_redesign_request")
-    plan = SeriesPlan.model_validate_json((work / "series_plan.json").read_text(encoding="utf-8"))
-    if episode_id not in {entry.episode_id for entry in plan.episodes}:
-        raise AppError("Diese Folge steht nicht im Inhaltsverzeichnis des Laufs.", code="invalid_redesign_request")
-    if (work / "teaching" / episode_id / "plan.json").exists():
-        raise AppError("Das Lehrkonzept dieser Folge ist bereits geprüft.", code="invalid_redesign_request")
-    if not isinstance(note, str) or not note.strip() or len(note) > 2000:
-        raise AppError("Bitte einen kurzen Hinweis für das neue Lehrkonzept angeben.", code="invalid_redesign_request")
-    existing = teaching_redesigns(work, manifest.input_hash)
-    request = TeachingRedesign(episode_id=episode_id, note=note.strip(), requested_at=now())
-    existing[episode_id] = request.model_dump(mode="json")
-    saved = TeachingRedesigns(run_id=manifest.run_id, input_hash=manifest.input_hash,
-                              requests=[TeachingRedesign.model_validate(item) for item in existing.values()])
-    write_json(work / "teaching_redesigns.json", saved.model_dump(mode="json"))
-    return request
-
-
 def approve_research_plan(root, run_id, *, max_tasks=None, source="explicit"):
     """Approve the research plan the run currently holds, after the user read its projection.
 

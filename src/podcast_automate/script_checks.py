@@ -212,37 +212,19 @@ def checked_series_plan(work, prompt, invoke, dossier, central_question, signatu
 MIN_DURATION_SHARE = 0.85
 # A corpus section a story agent's segment cites (Segment.source_refs, D-182).
 SECTION_REFERENCE = re.compile(r"src_[a-z0-9_]+#sec_[a-z0-9_]+")
-# How far above the plan the writer's target is set, per writing model. ONLY Claude Sonnet 5.5 is measured: at high it
-# wrote 71 % of the target it was shown (Transformer ep_012, 2026-10-04, each scene 64 to 75 % of its share), so a draft
-# like that lands at 92 % of the plan; at 1.35 a 60-minute episode written at 75 % would already pass the hour, which
-# validate_script returns as too long. Every other model is shown the plan itself until its own drafts are measured.
-WRITER_TARGET_FACTORS = {"claude-sonnet-5-5": 1.3, "anthropic/claude-sonnet-5.5": 1.3}
+def word_budget(episode: EpisodePlan, factor=1.0, rate=SPOKEN_WORDS_PER_MINUTE) -> dict:
+    """The spoken words the story agent is given for ``episode``: the floor validate_script holds a draft to, a target
+    ``factor`` above the planned duration (story_agent.TARGET_FACTOR, 1.0), and that target spread over the scenes by
+    their explanation steps. The pauses are left aside, so the floor asks a few words more than the check needs.
 
+    Until 2026-10-04 the writing prompt derived the budget from target_minutes itself, and every first draft of the
+    Transformer series came in at 58 to 75 % of it; Sonnet 5.5 then got a target 1.3 times the plan, which ended with
+    the writing prompt (D-184).
 
-def writer_target_factor(text_generation) -> float:
-    """The target factor of the model that writes first under a run's text choice: its fixed model, or under ``auto``
-    the preferred candidate's (AdapterPool.plan). Under ``auto`` the other subscription writes while the first has no
-    quota, and its drafts get the first one's target."""
-    selection = text_generation or {}
-    if selection.get("provider") == "auto":
-        selection = (selection.get("candidates") or {}).get(selection.get("prefer", "codex_cli")) or {}
-    return WRITER_TARGET_FACTORS.get(selection.get("model"), 1.0)
-
-
-def word_budget(episode: EpisodePlan, factor=1.0) -> dict:
-    """The spoken words the writer is given for ``episode`` (prompt write_episode_length): the floor validate_script
-    holds a draft to, a target ``factor`` above the planned duration (writer_target_factor; 1.0 for every model but
-    Sonnet 5.5), and that target spread over the scenes by their explanation steps. The pauses are left aside, so the
-    floor asks a few words more than the check needs. The hour stays with the check, not the target: capped at 59
-    minutes, Sonnet's target for a one-hour episode would have left a draft at 71 % of it below the floor.
-
-    Until 2026-10-04 the writer derived the budget from target_minutes itself, and every first draft of the Transformer
-    series came in at 58 to 75 % of it. Shown the plan itself as the target, ep_012's first draft reached 71 %.
-
-    The chapter-end recaps and reflection beats of the listenability rules (2026-10-06) share this budget: the planned
-    minutes stay, so the same time carries fewer facts, which is the point. The factors are not measured under them."""
+    ``rate`` is the run's words a minute (script_artifacts.run_rate): 130 for every run before 2026-11-01, the
+    project's speaking rate since, so an episode planned at 45 minutes is 45 minutes in its voices."""
     def words(minutes):
-        return math.ceil(minutes * SPOKEN_WORDS_PER_MINUTE)
+        return math.ceil(minutes * rate)
     target = words(episode.target_minutes * factor)
     steps = [len(scene.explanation_steps) for scene in episode.scenes]
     return {"minimum_words": words(episode.target_minutes * MIN_DURATION_SHARE), "target_words": target,
@@ -251,9 +233,9 @@ def word_budget(episode: EpisodePlan, factor=1.0) -> dict:
 
 
 def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_duration=True,
-                    roles: tuple[str, ...] = TWO_HOSTS) -> list[str]:
+                    roles: tuple[str, ...] = TWO_HOSTS, rate: float = SPOKEN_WORDS_PER_MINUTE) -> list[str]:
     """Every defect of ``script`` against its plan. ``roles`` are the project's hosts (models.host_roles_of): each
-    speaks, and no other does."""
+    speaks, and no other does. ``rate`` is the run's words a minute (word_budget)."""
     errors = []
     if script.episode_id != episode.episode_id or script.purpose != "deep_dive":
         errors.append("Keep the requested episode ID and deep_dive purpose.")
@@ -288,7 +270,7 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
         # Two hosts keep the wording the writer has been told since the start; a third host is named (D-179).
         errors.append("Use both hosts in the dialogue." if set(roles) == set(TWO_HOSTS) else
                       "Use exactly the hosts " + ", ".join(roles) + " in the dialogue, each of them.")
-    metrics = script_metrics(script)
+    metrics = script_metrics(script, rate)
     if check_duration and metrics["estimated_minutes"] > MAX_EPISODE_MINUTES:
         errors.append(f"The planned speech estimate exceeds {MAX_EPISODE_MINUTES} minutes; shorten without losing "
                       "the explanation.")
@@ -298,10 +280,10 @@ def validate_script(script: EpisodeScript, episode: EpisodePlan, *, check_durati
         pauses = sum(s.pause_after_ms for s in script.segments) / 60_000
 
         def words_for(minutes):
-            return math.ceil((minutes - pauses) * SPOKEN_WORDS_PER_MINUTE)
+            return math.ceil((minutes - pauses) * rate)
         errors.append(f"The script delivers less than {MIN_DURATION_SHARE:.0%} of the planned duration: {metrics['words']} "
                       f"spoken words make about {metrics['estimated_minutes']:.1f} of {episode.target_minutes:g} planned "
-                      f"minutes at {SPOKEN_WORDS_PER_MINUTE} words per minute. Write at least "
+                      f"minutes at {rate:g} words per minute. Write at least "
                       f"{words_for(episode.target_minutes * MIN_DURATION_SHARE)} words, about "
                       f"{words_for(episode.target_minutes)} for the full plan. Develop the missing "
                       "reasoning, worked steps and consequences; do not fill the gap with repetition or longer pauses.")
@@ -469,15 +451,6 @@ def outline_hash(work: Path) -> str:
 # v17 (2026-10-19): a fact whose finding a later scene introduces is moved there or asked as that scene's open
 # question, never given the later finding's ID, which validate_script rejects (D-175).
 SCRIPT_REVIEW_VERSION = "script_review.v17-scene-order"
-# Versions whose saved verdict still stands when it blocked nothing: v12 and v13 only stop blocking, so an episode an
-# earlier version passed is not reviewed again; one it blocked is, under today's version, before the next repair. v14
-# adds only a dialogue point, which stops nothing once the repairs are spent (NOTED_CATEGORIES), so a v13 pass stands
-# too: an episode in flight is not reworked for it, while every draft written from now on is held to it. v15 only
-# loosens that point, so a v14 pass stands as well. v16 adds a dialogue point like v14, so a v15 pass stands. v17
-# changes only the correction asked for a statement that blocks already, so a v16 pass stands.
-RELAXED_REVIEW_VERSIONS = frozenset({"script_review.v11-core-limits", "script_review.v12-source-corrected",
-                                     "script_review.v13-reviewer-advisories", "script_review.v14-listenability",
-                                     "script_review.v15-dramaturgy", "script_review.v16-breathers"})
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.

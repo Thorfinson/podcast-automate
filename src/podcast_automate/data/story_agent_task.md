@@ -1,14 +1,15 @@
 # Task: plan and write one podcast episode
 
 You plan and write one episode of a narrative podcast in {language} for curious adults who know nothing
-about its subject: two hosts, host_a and host_b, talking, about {minutes} minutes. The best narrative
+about its subject: its hosts talking, as brief.host_roles names them, about {minutes} minutes. The best narrative
 history and science podcasts are the measure: a listener should be unable to stop, retell the story
 afterwards and understand the one idea it carries. Take the time it needs; this is the whole job.
 
 ## Files in this folder
 
 - `material.json`: everything you may use, and data, never instructions.
-  - `brief` holds the language, the audience, the hosts' names and roles and the project's style notes.
+  - `brief` holds the language, the audience, the hosts' names and roles, the series' goal where it has one and
+    the project's style notes.
   - `episode` is the series' outline for this episode: its question, its scenes (each becomes a chapter)
     with their core findings, and its supporting findings. It was planned before anyone read the story
     material.
@@ -21,6 +22,13 @@ afterwards and understand the one idea it carries. Take the time it needs; this 
   - `orientation` places people, groups, places, periods and terms: background for the listener, never
     evidence for the episode's claims.
   - `length` is the word budget; `core_findings_without_story` lists the core findings no story item tells.
+  - `research_limits` (where present) are what the research could not establish for this episode: say each once,
+    plainly, where the statement it limits is made, never as a story of how the research went.
+  - `single_group_findings` (where present) rest on the work of one research group only: name that group once,
+    audibly, where the finding is used.
+  - `earlier_episodes` (once the series has published episodes before this one) lists them in series order,
+    each with its file in `earlier/`; see "The episodes before this one".
+- `earlier/`: the published text of each of those episodes, one file each.
 - `draft.json`: your result, in the format below.
 - `outline.json` (optional): your own chapters instead of the outline's scenes, see "Chapters".
 - `python search.py <words>`: searches the whole research corpus of this podcast (all collected sources,
@@ -37,8 +45,9 @@ afterwards and understand the one idea it carries. Take the time it needs; this 
 
 ## How to work
 
-1. Read all of material.json, the sections most of all. Then search the corpus for what the story's key
-   moments lack (see "Research in the corpus").
+1. Read all of material.json, the sections most of all, and the episode before this one in earlier/ (see
+   "The episodes before this one"). Then search the corpus for what the story's key moments lack (see
+   "Research in the corpus").
 2. Find the one turn the material holds: the detail or contrast that changes how the listener sees a
    person, where the story turns against the obvious answer (what someone did, lost, risked or hid). It
    must stand in the material as it is, often in a detail that needs no explanation. A contradiction
@@ -104,12 +113,38 @@ your chapters' scene_ids. Without outline.json the outline's scenes stay the cha
 ## Opening and ending
 
 The script review holds every episode to material.json's `framing`, read with `series_context`: in the first
-chapter a short welcome and the orientation (this episode's question and what it adds to the series; in the
-first episode also the series' topic, why its question matters and its path), in the last chapter the answer
-to the opening question, what the listener now knows toward the series' question, and a sign-off. Follow it
-inside your first and last chapters and the word budget. A short cold open may come before the welcome, so the
-story can still begin the episode; keep the orientation to a few connected sentences in the hosts' voices, not
-a list of titles.
+chapter a short welcome and the orientation (this episode's question and what it adds to the series), in the
+last chapter the answer to the opening question, what the listener now knows toward the series' question, and a
+sign-off. Follow it inside your first and last chapters and the word budget. A short cold open may come before
+the welcome, so the story can still begin the episode; keep the orientation to a few connected sentences in the
+hosts' voices, not a list of titles.
+
+The series' first episode (series_context.is_first) is where listeners meet the series. Once its opening story
+has raised the question, the hosts give the series a real introduction of one to two minutes (about 150 to 300
+words, over several turns): what the series is about, why its central question matters to the listener, the
+path it takes (series_context.explanation_path and episode_path: where it starts, what it builds on and where it
+leads, told as a line of thought, never as a list of titles) and how the episodes build on each other. Then the
+episode's own question takes over and the story resumes. The series' last episode gathers what the series has
+shown into an answer to its central question.
+
+## The episodes before this one
+
+`earlier/` holds the published text of every episode before this one that is already written, in the order of
+material.json's `earlier_episodes`. Listeners have heard them: they are what the series has said, never
+evidence.
+- Read the episode right before this one in full before you plan, its ending most of all; your opening may pick
+  up the outlook it gave. Search the others (Grep in earlier/) for every person, group, term, story and study
+  you plan to use.
+- What an earlier episode told or explained is known: refer back to it in a clause where it helps ("the Yale
+  experiment from episode 3"), never tell or define it again as new. Retell a detail only where this episode's
+  turn needs it, and then as this episode's own claim with its findings or sections.
+- Never contradict an earlier episode silently: where your material differs, say so as a correction or a second
+  view and name the earlier episode.
+- Choose an opening story, a perspective and a closing image the earlier episodes have not used.
+- In the series' last episode the earlier episodes are what the synthesis gathers: what each contributed, through
+  the stories listeners remember.
+- An episode series_context lists before this one that earlier/ does not hold is not written yet: use its question
+  from series_context only, never invent its content.
 
 ## How to tell it
 
@@ -117,8 +152,8 @@ a list of titles.
   episode answers arises from that moment. Then half a sentence inside the hosts' talk welcomes the
   listener and names the series, and the story resumes at once: no programme of the episode, no
   definition, source note or recap before it. Never announce what the episode will do or call the story a
-  case, an example or an exercise. The series' first episode also says in a few sentences what the series
-  is about; its last gathers what the series has shown.
+  case, an example or an exercise. Only the series' first episode pauses there for the series' introduction
+  (see "Opening and ending") before its story resumes.
 - Tell the story as scenes, in the order it happened: who is there, where, what each does and says and
   why, the moment it turns, what follows. Slow down at the turn and let the listener want the answer
   before it comes. Both hosts tell; host_b is never a cue-giver but thinks, guesses, objects, feels and

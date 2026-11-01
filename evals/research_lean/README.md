@@ -16,7 +16,7 @@ new project's 750 calls, whatever the topic).
   - `lean`: at most 4.
   The cap is the plan approval's own (`pla approve --research-plan --max-tasks N`): the planner cuts its plan once and
   presents it again. Everything else is the product's default.
-- Each research is written by one script run with `--writer agent` (Opus 5.5 xhigh, critiques by Sonnet 5.5 high).
+- Each research is written by one script run of the story agent (Opus 5.5 xhigh, critiques by Sonnet 5.5 high).
 - The two published scripts are judged blind by the narration lab's v3 judge (Sonnet and Opus, mean of both, the judge
   the operator calibrated on 2026-10-27) and by its pair judge in both orders; a side wins a scale only when both orders
   agree.
@@ -40,7 +40,7 @@ about half a point says nothing on its own; the operator's reading decides.
 .\.venv\Scripts\pla.exe resume .studio\evals\research_lean\normal          # plans again under the cap and stops
 .\.venv\Scripts\pla.exe approve .studio\evals\research_lean\normal --research-plan
 .\.venv\Scripts\pla.exe resume .studio\evals\research_lean\normal
-.\.venv\Scripts\pla.exe script .studio\evals\research_lean\normal --episode ep_001 --writer agent --backend claude_code --model claude-sonnet-5-5 --reasoning-effort high
+.\.venv\Scripts\pla.exe script .studio\evals\research_lean\normal --episode ep_001 --backend claude_code --model claude-sonnet-5-5 --reasoning-effort high
 # the same for lean with --max-tasks 4
 .\.venv\Scripts\python.exe evals\research_lean\run.py judge --live
 .\.venv\Scripts\python.exe evals\research_lean\run.py report

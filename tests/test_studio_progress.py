@@ -29,14 +29,11 @@ class StudioProgressTests(unittest.TestCase):
                     "stages": {"planning": {"status": "completed"}, "teaching": {"status": "running"}}}
         write_json(self.work / "series_plan.json", {"episodes": [
             {"episode_id": "ep_001", "title": "First lesson"}, {"episode_id": "ep_002", "title": "Second lesson"}]})
+        # ep_001's teaching stage is finished: its story material and its checked orientation sheet (D-181).
         folder = self.work / "teaching/ep_001"
-        review = {"issues": [], "research_gaps": []}
-        plan = {"episode_id": "ep_001"}
-        write_json(folder / "plan.json", plan)
-        write_json(folder / "review.json", review)
-        write_json(folder / "checkpoint.json", {"design": plan, "review": review})
-        (folder / "plan.md").write_text("# First lesson\nAn accepted teaching design.", encoding="utf-8")
-        write_json(self.work / "calls/call_004/output_schema.json", {"title": "TeachingPlanReview"})
+        write_json(folder / "story_material.json", {"items": [{"item_id": "story_01"}], "missing": []})
+        write_json(folder / "orientation.json", {"items": [{"name": "Probe", "orientation": "Ein Begriff."}]})
+        write_json(self.work / "calls/call_004/output_schema.json", {"title": "OrientationReview"})
         write_json(self.work / "budget.json", {"model_calls": 4})
 
     def test_reports_real_current_episode_and_readable_completed_result(self):
@@ -44,9 +41,7 @@ class StudioProgressTests(unittest.TestCase):
         self.assertEqual(progress["current_episode"], "ep_002")
         self.assertEqual(progress["completed_segments"], 1)
         self.assertEqual(progress["total_segments"], 2)
-        self.assertIn("geprüft", progress["activity"])
-        self.assertIn("accepted teaching design", progress["episodes"][0]["teaching_preview"])
-        self.assertEqual(progress["episodes"][1]["teaching_preview"], "")
+        self.assertEqual(progress["activity"], "Orientierungsblatt wird geprüft")
 
     def test_research_progress_exposes_quality_and_preserves_real_call_timing(self):
         write_json(self.work / "research_activity.json", {"phase": "research", "activity": "Read new evidence",
@@ -95,16 +90,16 @@ class StudioProgressTests(unittest.TestCase):
     def test_parallel_episodes_are_listed_with_their_open_calls_and_a_failure_winds_down(self):
         write_json(self.work / "series_plan.json", {"episodes": [{"episode_id": f"ep_00{i}", "title": title}
                    for i, title in enumerate(("Eins", "Zwei", "Drei"), 1)]})
-        run = {**self.run, "stages": {"planning": {"status": "completed"}, "writing": {"status": "running"}}}
+        run = {**self.run, "stages": {"planning": {"status": "completed"}, "story": {"status": "running"}}}
         since = "2026-09-26T10:00:00+00:00"
-        write_json(self.work / "calls/call_004/response.json", {"issues": []})  # the fixture's teaching review has answered
+        write_json(self.work / "calls/call_004/response.json", {"checks": []})  # the orientation check has answered
         for episode, status in (("ep_001", "running"), ("ep_002", "running"), ("ep_003", "interrupted")):
-            write_json(self.work / "stage_activity/writing" / f"{episode}.json", {"episode_id": episode, "status": status,
+            write_json(self.work / "stage_activity/story" / f"{episode}.json", {"episode_id": episode, "status": status,
                        "started_at": "2026-09-26T10:01:00+00:00", "finished_at": "2026-09-26T10:05:00+00:00"})
         for number, episode, started in ((5, "ep_001", "2026-09-26T10:02:00+00:00"), (6, "ep_002", "2026-09-26T10:03:00+00:00"),
                                          (7, None, "2026-09-26T09:00:00+00:00")):
             directory = self.work / f"calls/call_00{number}"
-            write_json(directory / "output_schema.json", {"title": "EpisodeScript"})
+            write_json(directory / "output_schema.json", {"title": "StorySession"})
             write_json(directory / "activity.json", {"status": "running", "started_at": started, **({"subject": episode} if episode else {})})
         progress = safe_script_progress(self.root, run, since)
         # call_007 is older than this worker: a call an earlier, stopped worker left open.
@@ -113,7 +108,7 @@ class StudioProgressTests(unittest.TestCase):
         self.assertEqual(progress["active_episodes"], ["ep_001", "ep_002"])
         self.assertEqual([row["stage_status"] for row in progress["episodes"]], ["running", "running", "interrupted"])
         self.assertEqual(progress["stopping"], {"episodes": ["Drei"]})
-        stopped = safe_script_progress(self.root, {**run, "status": "blocked", "stages": {"writing": {"status": "blocked"}}})
+        stopped = safe_script_progress(self.root, {**run, "status": "blocked", "stages": {"story": {"status": "blocked"}}})
         self.assertEqual((stopped["open_calls"], stopped["stopping"]), ([], None))
         self.assertEqual(stopped["active_episodes"], [])
 
@@ -361,11 +356,10 @@ class StudioProgressTests(unittest.TestCase):
         write_json(self.root / "studio/expression/progress.json", {"status": "running", "run_id": "run_other", "done": 3, "total": 14})
         self.assertNotIn("Ausdruck", script_progress(self.root, run)["activity"], "another run's tagging is not this run's")
 
-    def test_stale_accepted_file_does_not_mark_pending_review_complete(self):
-        write_json(self.work / "teaching/ep_001/checkpoint.json", {"design": {"episode_id": "ep_001"}, "review": None})
+    def test_story_material_without_its_checked_orientation_is_not_finished(self):
+        (self.work / "teaching/ep_001/orientation.json").unlink()
         progress = script_progress(self.root, self.run)
         self.assertEqual(progress["completed_segments"], 0)
-        self.assertEqual(progress["episodes"][0]["teaching_preview"], "")
 
     def test_respects_single_episode_selection_and_ignores_non_script_jobs(self):
         write_json(self.work / "script_request.json", {"episode": "ep_002"})
@@ -376,13 +370,12 @@ class StudioProgressTests(unittest.TestCase):
         write_json(self.work / "series_plan.json", {"episodes": [{"episode_id": "../../private", "title": "Untrusted"}]})
         self.assertEqual(script_progress(self.root, self.run)["episodes"], [])
 
-    def test_blocked_job_retains_completed_results_and_explains_the_remaining_review(self):
-        write_json(self.work / "teaching/ep_002/checkpoint.json", {"review": {"issues": ["Explain the missing mechanism."]}})
-        run = {**self.run, "status": "blocked", "stages": {"teaching": {"status": "blocked", "error": {"code": "teaching_design_failed"}}}}
+    def test_blocked_job_retains_completed_results(self):
+        run = {**self.run, "status": "blocked", "stages": {"teaching": {"status": "blocked",
+                                                                        "error": {"code": "teaching_research_required"}}}}
         progress = script_progress(self.root, run)
         self.assertEqual(progress["completed_segments"], 1)
-        self.assertEqual(progress["review_issues"], ["Explain the missing mechanism."])
-        self.assertTrue(progress["episodes"][0]["teaching_preview"])
+        self.assertEqual(progress["review_issues"], [], "only a blocked script review names its points")
 
     def test_blocked_final_review_exposes_actual_issues(self):
         issues = [{"category": "depth", "segment_ids": ["seg_001"], "reason": "Explain the conclusion."}]

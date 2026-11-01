@@ -8,6 +8,9 @@ from unittest.mock import patch
 
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
+from podcast_automate.models import SCHEMAS
+from podcast_automate.research_models import RESEARCH_SCHEMAS
+from podcast_automate.script_models import SCRIPT_SCHEMAS
 
 
 class CliTests(unittest.TestCase):
@@ -28,19 +31,12 @@ class CliTests(unittest.TestCase):
             schemas = Path(temporary) / "schemas"
             code, _ = self.invoke("schemas", str(schemas), "--json")
             self.assertEqual(code, 0)
-            self.assertEqual(len(list(schemas.glob("*.schema.json"))), 21)
+            # The project, research and script contracts and the series review; the teaching design's and the dialogue
+            # polish's went with the writing prompt (D-184).
+            self.assertEqual(len(list(schemas.glob("*.schema.json"))),
+                             len(SCHEMAS | RESEARCH_SCHEMAS | SCRIPT_SCHEMAS) + 1)
             self.assertTrue((schemas / "series_review.schema.json").is_file())
-            self.assertTrue((schemas / "teaching_plan_repair.schema.json").is_file())
-
-    def test_a_teaching_redesign_is_requested_with_its_hint(self):
-        with tempfile.TemporaryDirectory() as root, \
-             patch("podcast_automate.run_budget.request_teaching_redesign") as request:
-            request.return_value.model_dump.return_value = {"episode_id": "ep_001", "note": "Plain words."}
-            code, data = self.invoke("approve", root, "--run-id", "run_teach", "--redesign-teaching", "ep_001",
-                                     "--hint", "Plain words.", "--json")
-        self.assertEqual(code, 0)
-        self.assertEqual(request.call_args[0][1:], ("run_teach", "ep_001", "Plain words."))
-        self.assertEqual(data["teaching_redesign"]["episode_id"], "ep_001")
+            self.assertFalse((schemas / "teaching_plan_repair.schema.json").exists())
 
     def test_the_studio_opens_for_the_home_network_only_on_request(self):
         with patch("podcast_automate.studio.serve") as serve:

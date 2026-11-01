@@ -2,8 +2,9 @@
 
 Podcast Automate turns a topic into a researched, reviewed dialogue podcast series and records it as MP3. You give it
 a topic or a question; the Studio, a small web app on your own computer, searches the web for sources, builds an
-evidence-backed dossier, plans a series, writes and reviews a two-host dialogue script for each episode and, once you
-have read and approved a script, records it with two synthetic voices. Text models run through your Claude or Codex
+evidence-backed dossier, plans a series, has a Claude Code agent write a two-host dialogue script for each episode in
+order, each one building on the episodes before it, reviews it against the sources and, once you have read and
+approved a script, records it with two synthetic voices. Text models run through your Claude or Codex
 subscription, through Claude Code on your own Anthropic API key, or through OpenRouter; the web search runs through the
 text model's own tools or through Perplexity; speech comes from Gemini through Google (recommended), Gemini through
 OpenRouter or local Qwen on a GPU.
@@ -12,8 +13,8 @@ The explanations assume no subject or maths background and build depth through f
 named limits. Series length and episode count follow from the topic.
 
 ```text
-topic ─▶ research ─▶ table of contents ─▶ teaching plan, script, polishing, reviews ─▶ you read ─▶ recording ─▶ MP3
-          (dossier)    (you approve)                                                   (you approve)
+topic ─▶ research ─▶ table of contents ─▶ episode by episode: agent script, review ─▶ you read ─▶ recording ─▶ MP3
+          (dossier)    (you approve)                                                  (you approve)
 ```
 
 ## Who it is for
@@ -32,7 +33,9 @@ You read every script before it is recorded. The sources are cited, but an episo
   - an OpenRouter key together with a Perplexity key for the web search ([experimental](#experimental-parts)).
 
   Subscriptions are used only through their official CLI logins, never through extracted tokens; check that your
-  plan's terms cover this use.
+  plan's terms cover this use. The scripts themselves are written by Claude Opus 5.5 through Claude Code, so writing
+  them needs the Claude subscription or your Anthropic API key; the other accesses do the rest
+  ([Story agent](docs/SCRIPTS.md#story-agent)).
 - **One speech route**, any of:
   - Gemini through Google's API on your Google key (recommended, no GPU needed);
   - Gemini through OpenRouter on your OpenRouter key;
@@ -101,8 +104,8 @@ Qwen. All commands: [PRODUCT](docs/PRODUCT.md#commands).
 | [docs/STUDIO.md](docs/STUDIO.md) | The browser Studio step by step: hold cards, stopping and resuming, progress, downloads |
 | [docs/BUSINESS_LOGIC.md](docs/BUSINESS_LOGIC.md) | Cross-cutting rules: provider choice and quotas, budgets, approvals, resume, episode length |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | From topic to verified dossier: sub-questions, reviews, gap probe, evidence contracts |
-| [docs/SCRIPTS.md](docs/SCRIPTS.md) | From dossier to reviewed dialogue: series plan, polishing, script and series review |
-| [docs/TEACHING.md](docs/TEACHING.md) | Editorial standard and the teaching plan every script run must pass |
+| [docs/SCRIPTS.md](docs/SCRIPTS.md) | From dossier to reviewed dialogue: series plan, the story agent, writing a series in order, script and series review, revisions |
+| [docs/TEACHING.md](docs/TEACHING.md) | Editorial standard and the teaching stage: story material, story research, orientation sheet, supplementary research |
 | [docs/AUDIO.md](docs/AUDIO.md) | Recording with Qwen or Gemini: take checks, spoken forms, re-rendering, exports |
 | [docs/QUALITY.md](docs/QUALITY.md) | Quality gates, assessment criteria, acceptance, evals |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline stages, processes, provider adapters, data contracts, project and run folders |
@@ -119,8 +122,9 @@ Qwen. All commands: [PRODUCT](docs/PRODUCT.md#commands).
 
 Plans with open work: [MVP acceptance](docs/specs/2026-09-10-mvp-acceptance-plan.md) (including the verification
 list), [review-loop decision gates](docs/specs/2026-10-04-review-loop-decision-gates-plan.md),
-[overviews and evidence levels](docs/specs/2026-10-21-overviews-and-evidence-levels-plan.md) and
-[narration](docs/specs/2026-10-23-narration-plan.md). Finished plans and the
+[overviews and evidence levels](docs/specs/2026-10-21-overviews-and-evidence-levels-plan.md),
+[narration](docs/specs/2026-10-23-narration-plan.md), [story agent](docs/specs/2026-10-27-story-agent-plan.md) and
+[agent-only writer](docs/specs/2026-11-01-agent-only-writer-plan.md). Finished plans and the
 quality audit of 19 September 2026 are in [docs/specs/](docs/specs/).
 
 ## Layout

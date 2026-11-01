@@ -154,16 +154,13 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Scripts
 
-- ⚠ **A resumed script run rewrites drafts it had already accepted (after 2026-10-06):** the teaching-design, writing
-  and polishing checkpoints are bound to their prompt text, and the listenability change rewrote those prompts. A stage
-  still open asks its calls again (more calls against `research_limits.model_calls`); finished stages and passed
-  script reviews stay. To give a published series the new style, start a new `pla script` run or `--revise`.
-  ([Existing projects](TEACHING.md#existing-projects))
-- ✓ **A resumed script run has no „Narrationsprüfung“, plans episodes with 20 core findings and writes without story
-  material (after 2026-10-23):** the narration stage and everything that comes with it apply only to a run whose
-  manifest has the stage, which a run started before does not; it resumes with its prompts and checkpoints unchanged
-  (`ScriptRun.narrated`). Start a new `pla script` run, or `--revise` an episode to keep its plan.
-  ([Narration review](SCRIPTS.md#narration-review))
+- ✓ **A script run from before 2026-11-01 stops on resume with `writer_retired`:** the writing prompt, its teaching
+  design, narration review and polishing no longer exist (D-184), so the two traps of their checkpoints (drafts
+  rewritten after the listenability change of 2026-10-06, a run without the narration stage of 2026-10-23) are gone
+  with them. A run begun with those stages moves onto the story agent's stages on resume while it has written
+  nothing after its outline (`scripting.retire_prompt_stages`); one that has written an episode stops. Its published
+  episodes stay readable and recordable; write further episodes from its approved outline, or start a new
+  `pla script` run. ([Runs begun before D-184](SCRIPTS.md#runs-begun-before-d-184))
 - ✓ **Publishing a new table of contents stops with `episodes_locked`:** a file in an earlier series' episode folder is
   open (for example during a recording), so the folder cannot move to `episodes/archive/`. Close or finish what holds
   it, then resume (`script_artifacts.py`). ([Earlier series](SCRIPTS.md#earlier-series))
@@ -191,9 +188,10 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   benötigt“):** until 2026-11-01 the recording asked every script run for the stages writing and polishing and for the
   planned scenes. A story run has the story stage and the agent's own chapters (`episode_audio.reviewed_episode`).
   Resume the recording.
-- ⚠ **`scripts/audit-counts.py` counts no redefined terms on an old project:** teaching plans written before
-  `Concept.terms` carry opaque concept IDs (`c01`, `c07_kv_cache`). Pass the spoken terms with
-  `--terms "Token,Query,…"`; a regenerated series needs no flag.
+- ⚠ **`scripts/audit-counts.py` counts no redefined terms on an old project, or on a series written since
+  2026-11-01:** it takes the established terms from the earlier episodes' `teaching_plan.yaml`. Plans written before
+  `Concept.terms` carry opaque concept IDs (`c01`, `c07_kv_cache`), and episodes the story agent wrote have no teaching
+  plan at all (D-184). Pass the spoken terms with `--terms "Token,Query,…"`. ([Advisories](TEACHING.md#advisories))
 
 ## Audio
 

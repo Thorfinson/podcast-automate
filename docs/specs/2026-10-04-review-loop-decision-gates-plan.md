@@ -53,7 +53,7 @@ The loops are already bounded and scoped in code. This plan builds on these rule
 | Stage | Bound | Scope after a repair | Blocks wherever it points | When the repairs are spent |
 | --- | --- | --- | --- | --- |
 | Script review | `script_pipeline.MAX_REVIEW_REPAIRS = 3` | `follow_up_scope`: previous points and changed segments ([SCRIPTS](../SCRIPTS.md#scoped-follow-up-review)) | basis in `script_pipeline.CRITICAL_BASIS` (`factual_error`, `source_contradiction`) | points in `NOTED_CATEGORIES` (`clarity`, `depth`, `dialogue`) pass as notes; any other point stops the run with `script_review_failed`; a repair that broke the evidence of a passed draft is set aside (kept draft) |
-| Episode teaching review (reader, editorial, teaching) | revision in the script stage ([SCRIPTS](../SCRIPTS.md#reader-editorial-and-teaching-reviews)) | | | its points are `depth` (a failed check or objective) or `clarity` (an essential gap); they pass as notes only when the script review itself ended with accepted notes, otherwise `teaching_review_failed` |
+| Episode teaching review (reader, editorial, teaching) | revision in the script stage (SCRIPTS, removed with D-184) | | | its points are `depth` (a failed check or objective) or `clarity` (an essential gap); they pass as notes only when the script review itself ended with accepted notes, otherwise `teaching_review_failed` |
 | Teaching design | one focused repair | `review_scope.json`: basis `previous` or `editor_note` | basis in `teaching.CRITICAL_BASIS` (`factual_error`, `unsupported_claim`, `source_contradiction`, `objective_unreachable`) | stops with `teaching_design_failed` |
 | Dialogue polishing | two repairs | `scoped_points`: repaired criteria and changed segments | `FIDELITY_CRITERIA` (`meaning`, `completeness`) | only `spoken_language` left: notes; otherwise the checked draft stays the script and the run goes on |
 | Series review | `MAX_SERIES_REPAIRS = 1` | the evidence review after a correction is scoped | | |
@@ -354,7 +354,7 @@ This step makes at most three calls per stage and episode. They go into `script_
 A1 only for `listener_readback`, which is capped today.
 
 Moving another review to A1 lowers its level. That reverses the rule of 2026-09-29 that evidence and teaching reviews
-keep the run's level ([BUSINESS_LOGIC](../BUSINESS_LOGIC.md#lower-effort-for-two-stages)). Each such move needs two
+keep the run's level ([BUSINESS_LOGIC](../BUSINESS_LOGIC.md#lower-effort-for-expression-tags)). Each such move needs two
 things: its stage's eval must show that blocker recall holds and that the call spends less quota (V-14), and a
 decision entry must record the move.
 
@@ -429,7 +429,7 @@ depends on:
   ladder used.
 
 When this is built, the sections of BUSINESS_LOGIC on [`auto`](../BUSINESS_LOGIC.md#fixed-providers-and-the-rule-auto),
-[the level caps](../BUSINESS_LOGIC.md#lower-effort-for-two-stages),
+[the level caps](../BUSINESS_LOGIC.md#lower-effort-for-expression-tags),
 [binding](../BUSINESS_LOGIC.md#the-choice-is-bound-to-the-run) and
 [switching](../BUSINESS_LOGIC.md#switching-a-job-to-another-provider) change in the same change.
 
@@ -750,4 +750,4 @@ Real-project shadow data ([§14](#14-shadow-mode)) cover the rest.
 - [SCRIPTS: Scoped follow-up review](../SCRIPTS.md#scoped-follow-up-review)
 - [RESEARCH: Gap probe](../RESEARCH.md#gap-probe)
 - [Jev decision checks](../../evals/jev_decisions/README.md)
-- [Teaching-quality eval](../../evals/teaching_quality/README.md)
+- Teaching-quality eval (`evals/teaching_quality`, removed with D-184; in git history)

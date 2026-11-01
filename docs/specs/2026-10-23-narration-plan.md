@@ -13,7 +13,7 @@ polishing, the review notes in the Studio, and a hand-run evaluation. Recording 
 
 Written for the operator and the agents who continue it. Every code reference was checked against the working tree on
 23 October 2026. The rules themselves are owned by [RESEARCH](../RESEARCH.md#story-rules-prompt-generation-4),
-[SCRIPTS](../SCRIPTS.md#narration-review), [TEACHING](../TEACHING.md#story-material-and-core-story) and
+[SCRIPTS](../SCRIPTS.md#story-agent) (the narration review went with D-184), [TEACHING](../TEACHING.md#story-material) and
 [BUSINESS_LOGIC](../BUSINESS_LOGIC.md#script-lower-bound-and-expected-calls); this plan states why and what is still
 open. (why: D-180)
 

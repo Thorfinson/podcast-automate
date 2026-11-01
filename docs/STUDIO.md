@@ -115,19 +115,18 @@ A project runs through six steps, each a page in the navigation:
    „Technische Angaben“); the dossier file itself is unchanged (why: D-162). A dossier without finding headings is shown
    as one document.
 3. **„Inhaltsverzeichnis“** (table of contents): review episodes, chapters, guiding questions and explanation steps and
-   have them revised if needed. **„Plan freigeben & Skripte schreiben“** (approve plan & write scripts) approves exactly
-   this plan state and starts the script work; an already approved plan leads to the running script work instead. A
+   have them revised if needed. **„Freigeben & erste Folge schreiben“** (approve & write the first episode) approves
+   exactly this plan state and writes its first episode; the page then writes the others in order
+   ([Writing the episodes](#writing-the-episodes)). A
    table of contents appears only when its draft is finished: while a new draft or a revision runs, the previous plan is
    hidden, and a stopped draft shows only its hold card (why: D-100). Only a finished draft can be revised or approved;
    after a stopped draft, continue with **„Neues Inhaltsverzeichnis entwerfen“** (draft a new table of contents).
-4. **„Ausarbeitung“** (script work): teaching plan, script draft, narration review („Narrationsprüfung“, in a run
-   started from 2026-10-23), dialogue polishing, quality review and publishing are automatic phases of one job, with no
-   extra click between them. The page shows the current episode, finished results
-   and concrete open points; reviewed teaching plans can be read while work continues. Supplementary research and
-   internal corrections belong here.
+4. **„Ausarbeitung“** (script work): each episode's teaching stage (story material, story research, orientation
+   sheet), the story agent's session, the quality review and publishing are automatic phases of one job, with no
+   extra click between them. The page shows the current episode, finished results and concrete open points.
+   Supplementary research and internal corrections belong here.
 5. **„Skripte lesen“** (read scripts): each episode becomes readable once its complete draft is saved. Its review state
-   reads „Entwurf“ (draft), „Erzählweise geprüft“ (storytelling checked, the narrated draft), „Dialog überarbeitet“
-   (dialogue revised) or „Prüfungen bestanden“ (reviews passed), after
+   reads „Entwurf“ (draft, the story agent's checked draft) or „Prüfungen bestanden“ (reviews passed), after
    publishing „Fertig zur Durchsicht“ (ready for review). Further episodes appear in the selection automatically. An
    opened version stays in place while you read; when a newer text or review state exists, **„Aktuellen Stand laden“**
    (load current state) loads it. Previews get no audio approval. After the script work, the published versions can be
@@ -168,6 +167,38 @@ changes, resume, the local HTTP access barriers, key handover, audio downloads w
 (see [Automated checks and early audio test](QUALITY.md#automated-checks-and-early-audio-test)). Automated content reviews
 do not guarantee excellent narration; your reading stays deliberately part of the flow. A full run with a new topic and
 a listening test remain the practical acceptance (see V-18).
+
+### Writing the episodes
+
+A series is written in order, one episode per job, each reading the episodes before it (why: D-184; the rule:
+[Writing a series in order](SCRIPTS.md#writing-a-series-in-order)). Until 2026-11-01 the approval wrote every episode
+in one job, and **„Schreiber“** (writer) in the job summary chose between the story agent and the writing prompt
+(`studio/writer.json`); both ended with D-184.
+
+- **On the outline page.** Once the outline is approved, each episode reads **„geschrieben“** (written) or
+  **„als Nächste“** (next), and the panel **„Folgen schreiben“** (write the episodes) says how many are written and
+  which comes next, with **„Nächste Folge schreiben“** (write the next episode, action `episode`) and, while more than
+  one is left, **„Alle {n} restlichen nacheinander“** (all n remaining one after the other, action `episodes`). The
+  batch writes one episode after the other, never in parallel, and stops where one stops; „Anhalten“ ends the running
+  episode, and finished ones stay. **„Fortsetzen“** on the approved outline's own run writes its next episode too.
+  These actions need the approved outline (`plan_approval_required`) and refuse once every episode is written
+  (`series_written`).
+- **The series review.** After the last episode the job runs the series review by itself; otherwise the panel
+  **„Serienprüfung“** (series review) offers **„Serienprüfung starten“** (start the series review, action
+  `series_review`), refused with `series_incomplete` while an episode is unwritten. When it finds points, the panel
+  lists them per episode, each with **„Mit diesen Hinweisen überarbeiten“** (revise with these points): a revision
+  job (`revise`) whose feedback is the points. Once an episode was revised since the review, the panel says so and
+  offers **„Serie erneut prüfen“** (review the series again); a stopped review can start again
+  ([Over an outline's published episodes](SCRIPTS.md#over-an-outlines-published-episodes)).
+- **Revising one episode.** On the reading page, **„Diese Folge überarbeiten lassen“** (have this episode revised)
+  sends the feedback field to the story agent, which changes what it asks and keeps the rest; the episode is reviewed
+  again and needs a new audio approval ([Revising a script](SCRIPTS.md#revising-a-script)).
+- **While the agent works.** The progress names its steps („Orientierungsblatt wird erstellt“, „Der Erzähl-Agent plant
+  und schreibt die Folge“, „Ein Lektor liest die Fassung des Erzähl-Agenten“), and the production view shows the stages
+  „Erzählmaterial“ (story material), „Erzähl-Agent“ (story agent), „Qualitätsprüfung“ (quality review) and „Zur
+  Durchsicht bereitstellen“ (provide for review). The reading preview of an episode reaches „Prüfungen bestanden“ once
+  its review leaves nothing that blocks. The agent needs the Claude subscription's sign-in, or Claude on the Anthropic
+  API key as the text model, which bills its sessions ([Calls and access](SCRIPTS.md#calls-and-access)).
 
 ## Attachments and provided works
 
@@ -275,8 +306,10 @@ which provider runs the web research:
 [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection). An older Claude Code stops
 a job with a fixed Claude choice with the hold card **„Claude Code zu alt“** (Claude Code too old).
 
-The choice applies to the editorial chat, table of contents, teaching plan, script, dialogue polishing, quality
-reviews and the [status briefs](#status-briefs). How each provider is called: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
+The choice applies to the editorial chat, table of contents, the teaching stage, the story agent's critiques, the
+quality reviews and the [status briefs](#status-briefs). The story agent itself is Opus 5.5 on the Claude
+subscription, or on your Anthropic key with a „Claude über den Anthropic-API-Key“ preset
+([Calls and access](SCRIPTS.md#calls-and-access)). How each provider is called: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
 
 **„Verbindungen prüfen“** (check connections) on „Auftrag“ shows both subscription logins and the quota
 state; a job is ready to start as soon as one subscription or Claude on the API key is usable (the same checks as
@@ -363,8 +396,8 @@ engine room shows the running ones' progress and the project's last research or 
 themselves, their buttons, the stop reason and the run time stand on their pages and in the header. Its head is its
 one toggle, and it stays closed when there is nothing to show. A connection check answers under „Verbindungen“ beside
 its button and a new voice sample under **„Neue Hörprobe“** (new voice sample) on „Auftrag“. Each step shows its own
-job details: the research its question status with the plan approval, the script work its progress and teaching
-plans, the recording the running and stopped recordings per episode.
+job details: the research its question status with the plan approval, the script work its progress, the recording
+the running and stopped recordings per episode.
 
 Opening an existing project leads to the actual work step, also for a resumed job. After a step starts, the view
 follows the flow; a page you open yourself stays open when the background work finishes. Project and page are kept in
@@ -411,12 +444,12 @@ page, the recording in the episode's card, and the conversation as a chat reply.
   limit and resume) or **„Kostengrenze erhöhen und fortsetzen“** (raise money limit and resume); the limit applies to
   this run only.
 - **„Neustart nötig“** (restart needed): this run cannot continue, for example after an unsupported review objection, a
-  checkpoint that no longer fits, changed inputs, a permanently contradictory table of contents or a teaching plan
-  still incomplete after the automatic corrections. The card offers no „Fortsetzen“ but the way forward (research anew,
-  new table of contents, redraft with a note, approve again) and says what stays readable. For the teaching plan this
-  is **„Mit den offenen Punkten neu entwerfen“** (redraft with the open points): the note arrives prefilled with the open
-  points of the stop and stays editable; it goes into a new draft of this one episode with new repair rounds, the run
-  resumes right away, and the approved table of contents stays.
+  checkpoint that no longer fits, changed inputs or a permanently contradictory table of contents. The card offers no
+  „Fortsetzen“ but the way forward (research anew, new table of contents, redraft with a note, approve again) and says
+  what stays readable. Until 2026-11-01 a teaching plan still incomplete after its corrections stopped here with
+  **„Mit den offenen Punkten neu entwerfen“** (redraft with the open points); the teaching design ended with D-184. A
+  script run begun with the writing prompt that has written an episode stops with `writer_retired`
+  ([Runs begun before D-184](SCRIPTS.md#runs-begun-before-d-184)).
 
 Messages appear in the [interface language](#interface-language). The Studio's own messages come from its catalogs;
 in a pipeline message it replaces command-line hints, local paths and internal identifiers and, in a German interface,
@@ -450,7 +483,7 @@ unanswered message is replaced, not repeated. When the conversation has used up 
 **„Neue Version anlegen“** (start a new version) in an overview card's **⋯** menu makes a podcast again from its
 inputs with the current pipeline (`pla new-version <project>` from the command line; why: D-168). After a confirmation a
 new project opens beside the old one, with the old one's brief, attachments, provided works (their old questions
-cleared), other local sources, style notes, spoken forms and text, audio, execution, Jev and writer choices; a German project
+cleared), other local sources, style notes, spoken forms and text, audio, execution and Jev choices; a German project
 without a Jev choice gets today's default. Runs, research, scripts, recordings, exports, the setup conversation and the
 project's own pre-approvals stay behind. The old version stays as it was and may keep running.
 
@@ -483,7 +516,7 @@ off), on macOS through `caffeinate` (why: D-104); `PLA_KEEP_AWAKE=0` switches th
 
 What a stop keeps and what „Fortsetzen“ reuses is in
 [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding). Closing the browser ends no job.
-After the worker ends, the running stage is saved as interrupted and resumable too. Complete script drafts and polished
+After the worker ends, the running stage is saved as interrupted and resumable too. Complete script drafts and reviewed
 versions stay available under „Skripte lesen“, and the display claims no model call still running. Budget counters,
 approvals and completed intermediate results are kept; opening the Studio does not restart the job.
 
@@ -551,12 +584,10 @@ yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_L
   raising an exhausted limit, disputes in the overall review, access gaps, finishing with remaining objections); see
   [Blocked sub-questions and decisions](RESEARCH.md#blocked-sub-questions-and-decisions).
 - **One sentence and a recommended button.** Each decision card (advice, access gap, dispute, finishing with remaining
-  objections, teaching redesign, table of contents, audio approval) opens with one plain sentence on what the choice
+  objections, table of contents, audio approval) opens with one plain sentence on what the choice
   means and highlights the recommended button; the alternative stays beside it, nothing is preselected and nothing runs
   on a timer, so the decision stays yours (why: D-155). An access gap recommends **„Werk hochladen“** (upload the work)
-  when the work is on the list of missing works. The teaching redesign card lists the last review's open points under
-  „Offene Punkte“, one line each that opens to the full point, and starts the note with them, one paragraph each
-  (`script_pipeline.failed_teaching` reads them from the episode's checkpoint).
+  when the work is on the list of missing works.
 - **Raising limits for blocked questions.** When the source limit is reached or the search rounds run out, the card
   proposes a raise sized to the open questions: open questions times the higher of the plan's and the run's measured
   sources or rounds per sub-question (the measured rate from three verified questions on), a quarter more, at least one
@@ -567,17 +598,6 @@ yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_L
 - **Jev.** Under „Lückenprobe“ (gap probe) in the job summary on „Auftrag“, **„Jev dazunehmen“** (add Jev)
   and **„Jev ausschalten“** (switch Jev off) switch Jev in this project's gap probe on and off; see
   [Gap probe](RESEARCH.md#gap-probe).
-- **Writer.** Under „Schreiber“ (writer) in the same summary, **„Erzähl-Agent verwenden“** (use the story agent) and
-  **„Schreib-Prompt verwenden“** (use the writing prompt) choose who writes this project's new script runs
-  (`studio/writer.json`, route `/api/projects/<id>/writer`; why: D-181). The choice is the project's own, not a
-  workspace setting, and stays out of the hash of the execution modes. The outline page names it under the outline
-  that waits for approval („Schreiber dieser Folgen: …“) with the same button, and that outline's run takes the
-  switch: it has nothing after planning yet, so only its stages change, and the approval's binding stays
-  (`scripting.adopt_writer`, `writer_switch.json` in the run folder). A run past its outline approval keeps the
-  writer it started with. The story agent needs the Claude subscription's sign-in; see [Story agent](SCRIPTS.md#story-agent).
-  While it works, the progress names its steps („Orientierungsblatt wird erstellt“, „Der Erzähl-Agent plant und
-  schreibt die Folge“, „Ein Lektor liest die Fassung des Erzähl-Agenten“), and the production view shows the stage
-  „Erzähl-Agent“ in place of draft, narration review and polishing.
 - **Starting library.** „Recherche neu beginnen“ (start research anew) preselects offering the previous research's
   sources as a starting library, and so does the first research start of a [new version](#new-versions) for the old
   version's sources; see [Starting and resuming](RESEARCH.md#starting-and-resuming).
@@ -724,15 +744,15 @@ failure tracebacks: [Logs and diagnosis](OPERATIONS.md#logs-and-diagnosis).
 ## Sequential or parallel
 
 Under „Ausführung“ on the settings page, text work („Textausarbeitung“) and recording („Vertonung“) are set to
-sequential or parallel separately. Parallel text means at most five episodes at a time in script writing, dialogue
-polishing or quality review (also across the subscriptions) and at most five independent research sub-questions at a
-time (`execution.MAX_PARALLEL_TEXT`); within one episode's review, the first-time reader and the editorial review ask
-at the same time, and the series review's correction revises all affected episodes of a round at once.
+sequential or parallel separately. Parallel text means at most five independent research sub-questions at a time
+(`execution.MAX_PARALLEL_TEXT`) and, in a script run that writes several episodes, at most five episodes at a time in
+the story agent's and the review stage (also across the subscriptions); the series review's correction revises all
+affected episodes of a round at once. The teaching stage prepares one episode after the other, and the Studio writes a
+series one episode per job in order whatever the mode ([Writing the episodes](#writing-the-episodes)).
 
 How sub-questions wait for their prerequisites: [Independent sub-questions in
-parallel](RESEARCH.md#independent-sub-questions-in-parallel). The teaching plan stays in order, so presupposed examples
-stay consistent. The mode is stored when a job starts, and resuming keeps it; the default is sequential. Provider limits
-and the approved model-call budget still apply.
+parallel](RESEARCH.md#independent-sub-questions-in-parallel). The mode is stored when a job starts, and resuming keeps
+it; the default is sequential. Provider limits and the approved model-call budget still apply.
 
 The job status names all running sub-questions (for example „5 Teilfragen in Arbeit: …“ (5 sub-questions in
 progress: …)) and marks them in the question list. When several model calls run at once, the page names each with its
@@ -761,12 +781,12 @@ reviewers classified as not necessary, with their reasoning, and the determinist
 repeated references to invented examples, a long cold open and excess length. None of this prevents publishing; it is
 reading material for your review.
 
-An episode of a narrated run leads with the narration review's scores („Spannung 6/10 · Interesse 7/10 · Erzählweise
-5/10“) and lists under **„Narrationsprüfung“** what it left open and the stories the material does not hold, each with
-its category („Geschichte zu knapp erzählt“, „Erzählstoff fehlt im Material“, „Recherchebericht statt Gewissheit“ …),
-problem, correction and segments (`studio_scripts.review_notes`: `narration` and `narration_scores`;
-[Narration review](SCRIPTS.md#narration-review)). A story missing from the material is your decision about further
-research; nothing researches it on its own.
+An episode published by a narrated run before 2026-11-01 still leads with its narration review's scores („Spannung
+6/10 · Interesse 7/10 · Erzählweise 5/10“) and lists under **„Narrationsprüfung“** what it left open and the stories
+the material did not hold, each with its category, problem, correction and segments (`studio_scripts.review_notes`:
+`narration` and `narration_scores`); its reader, editorial and teaching review notes stay as well. The narration
+review ended with D-184; an episode written since has the story agent's critiques in its quality report instead
+([Outputs of an agent episode](SCRIPTS.md#outputs-of-an-agent-episode)).
 
 ## Downloads
 

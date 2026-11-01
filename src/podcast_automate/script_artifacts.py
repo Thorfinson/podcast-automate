@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from .content_text import text as wording, transparency_lines
 from .errors import AppError
 from .models import EpisodeScript, host_labels
-from .polishing import POLISH_VERSION, host_roles
+from .cast import POLISH_VERSION, host_roles
 from .research_gap_probe import statuses
 from .script_advisories import advisories, established_terms
 from .script_models import KnowledgeModel
@@ -16,17 +16,29 @@ from .storage import atomic_text, file_hash, outlast_sharing_violation, read_yam
 from .teaching import TEACHING_VERSION
 
 
-# Measured on the German Transformer recordings of 2026-10-02: 125 to 131 words per minute, pauses included.
+# Measured on the German Transformer recordings of 2026-10-02: 125 to 131 words per minute, pauses included. The rate of
+# every script run started before 2026-11-01; a run since takes its project's speaking rate (scripting.speaking_rate).
 SPOKEN_WORDS_PER_MINUTE = 130
 
 
-def script_metrics(script: EpisodeScript) -> dict:
+def script_metrics(script: EpisodeScript, rate: float = SPOKEN_WORDS_PER_MINUTE) -> dict:
     words = sum(len(re.findall(r"\b[\w’-]+\b", s.text)) for s in script.segments)
     pauses = sum(s.pause_after_ms for s in script.segments) / 60_000
     return {"words": words, "segments": len(script.segments),
-            "estimated_minutes": round(words / SPOKEN_WORDS_PER_MINUTE + pauses, 2),
+            "estimated_minutes": round(words / rate + pauses, 2),
             "conservative_minutes": round(words / 100 + pauses, 2),
-            "duration_basis": "130 words/minute; conservative estimate 100; planned pauses included; not measured audio"}
+            "duration_basis": f"{rate:g} words/minute; conservative estimate 100; planned pauses included; "
+                              "not measured audio"}
+
+
+def run_rate(work) -> float:
+    """The words a minute a script run's lengths and estimates use: its inputs' ``speaking_rate`` (a run started since
+    2026-11-01), else SPOKEN_WORDS_PER_MINUTE, which every earlier run was written and checked against."""
+    try:
+        rate = json.loads((work / "inputs.json").read_text(encoding="utf-8")).get("speaking_rate")
+    except (OSError, ValueError, AttributeError):
+        rate = None
+    return rate if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0 else SPOKEN_WORDS_PER_MINUTE
 
 
 def episode_continuity(work, entry):
@@ -53,14 +65,6 @@ def story_report(folder):
             "chapters_replanned": (folder / "outline.json").is_file(),
             "num_turns": session.get("num_turns"), "duration_ms": session.get("duration_ms"),
             "reported_cost_usd": session.get("total_cost_usd")}
-
-
-def design_dismissals(work, entry):
-    """Gaps the design review dropped; absent on work folders from before they were recorded."""
-    try:
-        return json.loads((work / "teaching" / entry.episode_id / "dismissed_gaps.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
 
 
 def retained_episode_reports(root, previous, current):
@@ -189,7 +193,7 @@ def archive_other_series(root, plan, run_id):
     return destination
 
 
-def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teaching_for,
+def publish_scripts(root, work, *, plan, entries, dossier, sources, config,
                     research_id, manifest, input_hash, text_generation, series_report):
     archive_other_series(root, plan, manifest.run_id)
     knowledge = KnowledgeModel.model_validate_json((work / "knowledge_model.json").read_text(encoding="utf-8"))
@@ -209,38 +213,23 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config, teac
         write_yaml(folder / "script.yaml", script.model_dump())
         write_json(folder / "latest.json", {"run_id": manifest.run_id, "episode_ids": [entry.episode_id]})
         atomic_text(folder / "script.md", render_script(script, host_labels(config)))
-        # A story agent's episode has no teaching design but the agent's own plan (D-181).
+        # The story agent's own plan (D-181); an episode written before D-184 published its teaching plan instead.
         story = work / "story" / entry.episode_id
-        designed = (work / "teaching" / entry.episode_id / "plan.json").is_file()
-        if designed:
-            design = teaching_for(entry)
-            write_yaml(folder / "teaching_plan.yaml", design.model_dump())
-            atomic_text(folder / "teaching_plan.md",
-                        (work / "teaching" / entry.episode_id / "plan.md").read_text(encoding="utf-8"))
-        else:
-            atomic_text(folder / "story_plan.md", (story / "plan.md").read_text(encoding="utf-8"))
+        atomic_text(folder / "story_plan.md", (story / "plan.md").read_text(encoding="utf-8"))
         atomic_text(folder / "show_notes.md", render_show_notes(script, entry, dossier, source_map,
                                                                 research_id=research_id, run_id=manifest.run_id,
                                                                 language=config.language))
-        metrics = script_metrics(script)
+        metrics = script_metrics(script, run_rate(work))
         teaching_report = json.loads((work / "reviews" / f"{entry.episode_id}_teaching.json").read_text(encoding="utf-8"))
         # ``reviews/<ep>.json`` is the review of exactly this text: a series repair rewrites both.
         episode_reports[entry.episode_id] = {**metrics, "script_sha256": file_hash(folder / "script.yaml"),
             "run_id": manifest.run_id,
             "structure_check": "passed", "model_review": json.loads((work / "reviews" / f"{entry.episode_id}.json").read_text(encoding="utf-8")),
-            "teaching_review": teaching_report,
-            **({"dialogue_polish": json.loads((work / "polishing" / entry.episode_id / "result.json").read_text(
-                encoding="utf-8"))} if (work / "polishing" / entry.episode_id / "result.json").is_file() else {}),
-            **({"story_agent": story_report(story)} if not designed else {}),
-            "dismissed_gaps": [*design_dismissals(work, entry), *teaching_report.get("dismissed_gaps", [])],
+            "teaching_review": teaching_report, "story_agent": story_report(story),
+            "dismissed_gaps": teaching_report.get("dismissed_gaps", []),
             "advisories": advisories(script, entry, metrics, language=config.language,
                                      terms=established_terms(episode_continuity(work, entry)))}
-        narration = work / "narration" / entry.episode_id / "result.json"
-        if narration.is_file():
-            # The narration review's scores and what it left open (D-180); a run without the stage has none.
-            episode_reports[entry.episode_id]["narration"] = json.loads(narration.read_text(encoding="utf-8"))
-        plans = ("teaching_plan.yaml", "teaching_plan.md") if designed else ("story_plan.md",)
-        outputs.extend(folder / name for name in ("episode_plan.yaml", *plans, "script.yaml", "script.md",
+        outputs.extend(folder / name for name in ("episode_plan.yaml", "story_plan.md", "script.yaml", "script.md",
                                                   "show_notes.md", "latest.json"))
     quality_path = root / "reports/script_quality.yaml"
     previous = read_yaml(quality_path) if quality_path.is_file() else {}

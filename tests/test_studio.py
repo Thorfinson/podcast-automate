@@ -54,9 +54,11 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
             self.assertEqual(stale.exception.code, "plan_changed")
             completed = run_script(self.root, resume=True, approved_plan_hash=outline_hash(work))
             self.assertEqual(completed.status, "completed")
-            self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
+            # The outline, the story material, the orientation sheet and its check, a critique, the script review and the
+            # series review; the story agent's session runs beside the pool (D-184).
+            self.assertEqual(len(self.calls), 7)
             run_script(self.root, resume=True)
-            self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
+            self.assertEqual(len(self.calls), 7)
 
     def test_outline_feedback_changes_reviewed_hash_without_writing(self):
         def revised(prompt, output_type, directory, **kwargs):
@@ -72,7 +74,7 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=revised):
             result = run_script(self.root, resume=True, plan_only=True, outline_feedback="Show the motivation first")
         self.assertNotEqual(outline_hash(work), before)
-        self.assertEqual(result.stages["writing"].attempts, 0)
+        self.assertEqual(result.stages["story"].attempts, 0)
         self.assertTrue(outputs_valid(self.root, result.stages["planning"]))
         with self.assertRaises(AppError):
             run_script(self.root, resume=True, approved_plan_hash=before)
@@ -433,38 +435,85 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/projects/example/approve", {"kind": "plan", "run_id": "run_plan"},
                                       {"X-Studio-Token": "wrong"})[0], 403)
 
-    def test_a_stopped_teaching_design_is_named_on_the_job_and_takes_a_redesign_request(self):
-        work = self.root / "runs/run_teach"
-        stopped = StageRecord(status="blocked", error=Failure(code="teaching_design_failed", message="Scene 4 reads SPARQL aloud."))
-        write_yaml(work / "run_manifest.yaml", RunManifest(run_id="run_teach", kind="script", project_hash="0" * 64,
-                                                           input_hash="c" * 64, status="blocked",
-                                                           stages={"teaching": stopped}).model_dump(mode="json"))
-        write_json(work / "series_plan.json", example_plan().model_dump())
-        write_json(work / "teaching/ep_001/checkpoint.json", {"focused_repair": True, "repairs": 2})
-        job = Studio.readable(self.root, {"status": "blocked", "message": "Scene 4 reads SPARQL aloud.",
-                                          "run": {"run_id": "run_teach", "kind": "script",
-                                                  "stages": {"teaching": stopped.model_dump(mode="json")}}})
-        self.assertEqual(job["teaching_failure"], {"episode_id": "ep_001", "title": example_plan().episodes[0].title})
-        # The last review's open points come one by one, for the card's list (2026-10-25).
-        issues = ["Scene 4 reads SPARQL aloud.", "Scene 5 reads more into the source than it says."]
-        write_json(work / "teaching/ep_001/checkpoint.json", {"focused_repair": True, "repairs": 2,
-                                                              "review": {"issues": issues}})
-        job = Studio.readable(self.root, {"status": "blocked", "message": " ".join(issues),
-                                          "run": {"run_id": "run_teach", "kind": "script",
-                                                  "stages": {"teaching": stopped.model_dump(mode="json")}}})
-        self.assertEqual(job["teaching_failure"]["issues"], issues)
-        for payload in ({"episode_id": "ep_001"}, {"episode_id": "ep_404", "note": "Plain words."}):
-            self.assertEqual(self.request("/api/projects/example/approve",
-                                          {"kind": "teaching_redesign", "run_id": "run_teach", **payload})[0], 400)
-        status, body, _ = self.request("/api/projects/example/approve", {"kind": "teaching_redesign", "run_id": "run_teach",
-                                                                         "episode_id": "ep_001", "note": "Plain words."})
-        self.assertEqual(status, 200, body)
-        self.assertEqual(json.loads(body)["teaching_redesign"]["note"], "Plain words.")
-        saved = json.loads((work / "teaching_redesigns.json").read_text(encoding="utf-8"))
-        self.assertEqual((saved["run_id"], saved["input_hash"], [r["episode_id"] for r in saved["requests"]]),
-                         ("run_teach", "c" * 64, ["ep_001"]))
-        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "teaching_redesign", "run_id": "run_teach",
-                                      "episode_id": "ep_001", "note": "x"}, {"X-Studio-Token": "wrong"})[0], 403)
+    def outline(self, approved=True):
+        """An outline run of two episodes as the Studio's outline page reads it."""
+        plan = example_plan()
+        plan.episodes.append(plan.episodes[0].model_copy(update={"episode_id": "ep_002", "title": "The second"}))
+        work = self.root / "runs/run_outline"
+        write_json(work / "series_plan.json", plan.model_dump())
+        for name in ("knowledge_model.json", "inputs.json", "script_request.json"):
+            write_json(work / name, {"name": name})
+        planning = StageRecord(status="completed")
+        write_yaml(work / "run_manifest.yaml", RunManifest(run_id="run_outline", kind="script", project_hash="0" * 64,
+                                                           input_hash="c" * 64, status="pending",
+                                                           stages={"planning": planning}).model_dump(mode="json"))
+        write_json(self.root / "studio/outline.json", {"run_id": "run_outline"})
+        if approved:
+            write_json(work / "plan_approval.json", {"plan_hash": outline_hash(work), "approved_at": "2026-11-01T00:00:00Z"})
+        return work, plan
+
+    def published(self, episode, run_id, plan_file):
+        """``episode`` published by ``run_id``, whose series plan is ``plan_file``'s (a run from the outline)."""
+        work = self.root / "runs" / run_id
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "series_plan.json").write_bytes(plan_file.read_bytes())
+        write_yaml(self.root / "episodes" / episode / "script.yaml", example_script().model_dump())
+        (self.root / "episodes" / episode / "script.md").write_text("# A model compares possibilities\n", encoding="utf-8")
+        write_json(self.root / "episodes" / episode / "latest.json", {"run_id": run_id, "episode_ids": [episode]})
+
+    def test_the_outline_page_writes_episodes_in_order_and_then_reviews_the_series(self):
+        """D-184: the episodes of an approved outline are written one run each, in order, and the series review reads
+        them once all are published; the writer switch and the teaching redesign are gone."""
+        work, plan = self.outline(approved=False)
+        outline = json.loads(self.request("/api/projects/example")[1])["outline"]
+        self.assertEqual([(row["episode_id"], row["run_id"]) for row in outline["episodes"]],
+                         [("ep_001", None), ("ep_002", None)])
+        self.assertEqual(outline["next_episode"], "ep_001")
+        self.assertIsNone(outline["series_review"])
+        self.assertNotIn("writer", outline)
+        status, body, _ = self.request("/api/projects/example/start", {"action": "episode"})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "plan_approval_required"))
+        write_json(work / "plan_approval.json", {"plan_hash": outline_hash(work), "approved_at": "2026-11-01T00:00:00Z"})
+        status, body, _ = self.request("/api/projects/example/start", {"action": "series_review"})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "series_incomplete"))
+        self.assertEqual(self.request("/api/projects/example/start", {"action": "episode", "episode": "ep_404"})[0], 400)
+        with patch("podcast_automate.studio.subprocess.Popen") as process:
+            process.return_value.stdin = io.StringIO()
+            process.return_value.stdin.close = Mock()
+            process.return_value.poll.return_value = None
+            status, body, _ = self.request("/api/projects/example/start", {"action": "episodes"})
+            self.assertEqual(status, 200, body)
+            sent = json.loads(process.return_value.stdin.getvalue())
+            self.assertEqual((sent["action"], sent["run_id"]), ("episodes", "run_outline"))
+        self.app.stop_all()
+        # An episode published from another outline does not count; one from this outline does.
+        other = self.root / "runs/run_other_plan/series_plan.json"
+        write_json(other, {"episodes": []})
+        self.published("ep_001", "run_other_plan", other)
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["outline"]["next_episode"], "ep_001")
+        self.published("ep_001", "run_ep1", work / "series_plan.json")
+        self.published("ep_002", "run_ep2", work / "series_plan.json")
+        outline = json.loads(self.request("/api/projects/example")[1])["outline"]
+        self.assertEqual([row["run_id"] for row in outline["episodes"]], ["run_ep1", "run_ep2"])
+        self.assertIsNone(outline["next_episode"])
+        status, body, _ = self.request("/api/projects/example/start", {"action": "episode"})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "series_written"))
+        # The series review's verdict per episode reaches the page through its pointer.
+        review = self.root / "runs/run_review"
+        write_yaml(review / "run_manifest.yaml", {"run_id": "run_review", "kind": "series_review", "status": "completed"})
+        write_json(review / "inputs.json", {"outline_run_id": "run_outline",
+                                            "episode_runs": {"ep_001": "run_ep1", "ep_002": "run_ep2"}})
+        issue = {"category": "structure", "segment_ids": [], "reason": "progression: repeats episode 1"}
+        write_json(review / "series_review.json", {"report": {"status": "blocked", "advisories": []},
+                                                   "episode_issues": {"ep_002": [issue]}})
+        write_json(self.root / "episodes/series_review.json", {"outline_run_id": "run_outline", "run_id": "run_review"})
+        verdict = json.loads(self.request("/api/projects/example")[1])["outline"]["series_review"]
+        self.assertEqual((verdict["status"], verdict["verdict"], verdict["episode_issues"]),
+                         ("completed", "blocked", {"ep_002": [issue]}))
+        # The writer switch and the teaching redesign are gone.
+        self.assertEqual(self.request("/api/projects/example/writer", {"writer": "agent"})[0], 404)
+        self.assertEqual(self.request("/api/projects/example/approve", {"kind": "teaching_redesign",
+                                                                         "run_id": "run_outline"})[0], 400)
 
     def test_the_home_network_is_served_like_this_computer_only_when_started_for_it(self):
         """2026-09-28: the user steers the Studio from the phone in the home WLAN, with protection only against
@@ -1118,27 +1167,6 @@ class StudioHttpTests(unittest.TestCase):
         write_json(self.root / "runs/run_jev/script_request.json", {"execution": {"text": "sequential", "jev_probe": True}})
         self.request("/api/projects/example/jev_probe", {"enabled": False})
         self.assertEqual(probe_key(self.root, {"api_key": "test-key"}, "run_jev"), "test-key")
-
-    def test_the_writer_switch_is_the_projects_own_and_keeps_the_settings_hash(self):
-        """D-181: the story agent is chosen per project in its own file; new script runs take it, and saving the
-        settings, as a proposal does, neither needs nor changes it."""
-        from podcast_automate.execution import selected_execution
-        before = json.loads(self.request("/api/projects/example")[1])
-        self.assertEqual(before["writer"], "prompt")
-        status, body, _ = self.request("/api/projects/example/writer", {"writer": "agent"})
-        self.assertEqual(status, 200, body)
-        self.assertIsNone(json.loads(body)["adopted_run"], "no outline waits for its approval here")
-        after = json.loads(self.request("/api/projects/example")[1])
-        self.assertEqual(after["writer"], "agent")
-        self.assertEqual((after["execution"], after["execution_hash"]), (before["execution"], before["execution_hash"]))
-        self.assertEqual(selected_execution(self.root).writer, "agent")
-        self.assertEqual(self.request("/api/projects/example/writer", {"writer": "opus"})[0], 400)
-        data = {"config": after["config"], "config_hash": after["config_hash"], "text": after["text"],
-                "execution": after["execution"], "execution_hash": after["execution_hash"]}
-        self.assertEqual(self.request("/api/projects/example/save", data)[0], 200)
-        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["writer"], "agent")
-        self.request("/api/projects/example/writer", {"writer": "prompt"})
-        self.assertEqual(selected_execution(self.root).writer, "prompt")
 
     def test_gemini_audio_can_be_selected_without_changing_script_inputs(self):
         detail = json.loads(self.request("/api/projects/example")[1])

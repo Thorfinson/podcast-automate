@@ -131,12 +131,15 @@ class EpisodeAudioTests(unittest.TestCase):
                 result.episodes[0].scenes.append(ScenePlan(scene_id="scene_two", title="Second",
                     question="What follows?", purpose="synthesis", finding_ids=["f_energy"],
                     explanation_steps=["Apply the comparison."]))
-            if output_type is EpisodeScript:
-                result.chapters.append(Chapter(chapter_id="scene_two", title="Second"))
-                result.segments[-1].scene_id = result.segments[-1].chapter_id = "scene_two"
             return result, meta
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=two_chapters):
-            run_script(self.root, episode="ep_001")
+        # The story agent writes the episode in the outline's two chapters (D-184).
+        draft = fixtures.example_script()
+        draft.chapters.append(Chapter(chapter_id="scene_two", title="Second"))
+        draft.segments[-1].scene_id = draft.segments[-1].chapter_id = "scene_two"
+        agent = fixtures.fake_agent(Path(tempfile.mkdtemp(dir=self.root.parent)), draft)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=two_chapters),                 patch("podcast_automate.claude_code.claude_command", return_value=agent):
+            written = run_script(self.root, episode="ep_001")
+        self.assertEqual(written.status, "completed", {k: v.error for k, v in written.stages.items() if v.error})
 
         def interrupted(config, script, root, work, **kwargs):
             if script.chapters[0].chapter_id == "scene_two":

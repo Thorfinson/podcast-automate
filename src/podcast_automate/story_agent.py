@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import re
 import shutil
 import subprocess
@@ -29,6 +31,7 @@ from pydantic import Field, ValidationError
 
 from .errors import AppError
 from .models import Contract, EpisodeScript, NonEmpty
+from .script_artifacts import SPOKEN_WORDS_PER_MINUTE
 from .script_checks import quotation_errors, validate_script
 from .script_models import EpisodePlan, ScenePlan
 from .storage import digest, file_hash, write_json
@@ -36,12 +39,19 @@ from .storage import digest, file_hash, write_json
 AGENT_MODEL = "claude-opus-5-5"
 AGENT_EFFORT = "xhigh"
 CRITIQUES = 4
+# A revision changes what its feedback asks; the editor reads it at most this often.
+REVISION_CRITIQUES = 2
+# A session on an Anthropic key (claude_api) stops at this cost: ep_007's session cost 12.39 USD in subscription terms.
+SESSION_BUDGET_USD = 40.0
 # The plan's own length. The writing prompt's 1.3 for Sonnet (script_checks.WRITER_TARGET_FACTORS) makes up for a
 # writer that stops at 71 % of its target; the agent counts its words with check.py and reaches the target, so 1.3
 # gave the lean research test of 2026-11-01 a draft of 55 minutes for a planned 44, which the script review blocked
 # as scope. The lab's best draft (Milgram s1, 8.5) had 1,306 words for ten minutes, the plan's length.
 TARGET_FACTOR = 1.0
-SESSION_VERSION = "story_agent.v3-framing"
+# The share of its target the agent's draft must reach. Ep_007 of Asimov v2 (2026-11-01) stopped at 89 % of its target,
+# inside the old window of validate_script's 85 % floor, and ran 35:47 for 45 planned minutes (D-184).
+TARGET_SHARE = 0.95
+SESSION_VERSION = "story_agent.v4-series"
 ORIENTATION_VERSION = "orientation_sheet.v1"
 ORIENTATION_CHECK_VERSION = "orientation_check.v1"
 CRITIQUE_VERSION = "story_critique.v1"
@@ -107,10 +117,17 @@ class StoryCritique(Contract):
     keeps_from_10: list[CritiquePoint] = Field(max_length=8)
 
 
-def task_text(language: str, minutes: float, critiques: int = CRITIQUES) -> str:
-    """TASK.md: the agent's instructions (data/story_agent_task.md, a document rather than one prompt paragraph)."""
-    raw = files("podcast_automate").joinpath("data/story_agent_task.md").read_text(encoding="utf-8")
-    return raw.format(language=language, minutes=f"{minutes:g}", critiques=critiques)
+def task_text(language: str, minutes: float, critiques: int = CRITIQUES, *, cast: str = "",
+              revision: bool = False) -> str:
+    """TASK.md: the agent's instructions (data/story_agent_task.md, a document rather than one prompt paragraph). A
+    project with a third host appends its cast (cast.cast_note, D-179); a revision appends its own steps
+    (data/story_agent_revision.md)."""
+    data = files("podcast_automate").joinpath("data")
+    raw = data.joinpath("story_agent_task.md").read_text(encoding="utf-8")
+    if revision:
+        raw += data.joinpath("story_agent_revision.md").read_text(encoding="utf-8")
+    text = raw.format(language=language, minutes=f"{minutes:g}", critiques=critiques)
+    return text + ("\n## Three hosts\n\n" + cast.strip() + "\n" if cast else "")
 
 
 # --- the episode as planned by the agent ----------------------------------------------------------------------------
@@ -167,7 +184,8 @@ def draft_errors(folder: Path, draft: EpisodeScript, corpus=None) -> list[str]:
     corpus sections the agent used, and the length cap."""
     context = json.loads((folder / "context.json").read_text(encoding="utf-8"))
     entry, errors = planned_entry(EpisodePlan.model_validate(context["entry"]), folder)
-    errors += validate_script(draft, entry, roles=tuple(context["roles"]))
+    errors += validate_script(draft, entry, roles=tuple(context["roles"]),
+                              rate=context.get("rate", SPOKEN_WORDS_PER_MINUTE))
     if context.get("assembled"):
         errors += quotation_errors(draft, context["sources"])
     errors += echo_errors(draft)
@@ -182,6 +200,10 @@ def draft_errors(folder: Path, draft: EpisodeScript, corpus=None) -> list[str]:
                "a section listed in sources_used.json." for segment in draft.segments for ref in segment.source_refs
                if ref not in had]
     words = sum(len(segment.text.split()) for segment in draft.segments)
+    if words < context["length"]["minimum_words"]:
+        errors.append(f"{words} words: write at least length.minimum_words ({context['length']['minimum_words']}), "
+                      f"about length.target_words ({context['length']['target_words']}); develop the scenes the "
+                      "sources tell in detail rather than adding commentary.")
     if words > context["length"]["target_words"] * LENGTH_SLACK:
         errors.append(f"{words} words: stay within a tenth above length.target_words "
                       f"({context['length']['target_words']}).")
@@ -261,14 +283,18 @@ if result.returncode:
 '''
 
 
-def prepare(folder: Path, *, material: dict, context: dict, language: str, minutes: float,
-            critiques: int = CRITIQUES) -> None:
-    """The session's folder: material.json, TASK.md, context.json (what the commands need: the episode, the hosts,
-    the given passages, the length, the project root and the run's call settings) and the four command scripts."""
+def prepare(folder: Path, *, material: dict, context: dict, task: str, critiques: int = CRITIQUES,
+            files: dict[str, str] | None = None) -> None:
+    """The session's folder: material.json, TASK.md (task_text), context.json (what the commands need: the episode,
+    the hosts, the given passages, the length, the project root and the run's call settings), the four command scripts
+    and ``files`` (session_files: the earlier episodes, a revision's published episode)."""
     folder.mkdir(parents=True, exist_ok=True)
     write_json(folder / "material.json", material)
     write_json(folder / "context.json", {**context, "critiques": critiques})
-    (folder / "TASK.md").write_text(task_text(language, minutes, critiques), encoding="utf-8")
+    (folder / "TASK.md").write_text(task, encoding="utf-8")
+    for relative, text in (files or {}).items():
+        (folder / relative).parent.mkdir(parents=True, exist_ok=True)
+        (folder / relative).write_text(text, encoding="utf-8")
     for command in COMMANDS:
         (folder / f"{command}.py").write_text(COMMAND_SCRIPT.format(command=command, python=sys.executable),
                                               encoding="utf-8")
@@ -278,11 +304,14 @@ def session_timeout(minutes: float) -> float:
     return max(SESSION_TIMEOUT, minutes * SESSION_SECONDS_PER_MINUTE)
 
 
-def session_command(cli: list[str], model: str = AGENT_MODEL, effort: str = AGENT_EFFORT) -> list[str]:
+def session_command(cli: list[str], model: str = AGENT_MODEL, effort: str = AGENT_EFFORT,
+                    budget_usd: float | None = None) -> list[str]:
+    """The session's command line; ``budget_usd`` caps a session billed to an Anthropic key (SESSION_BUDGET_USD)."""
     return [*cli, "-p", "Read TASK.md in this folder and do the task it describes, start to finish.",
             "--model", model, "--effort", effort, "--permission-mode", "dontAsk",
             "--tools", TOOLS, "--allowedTools", ALLOWED_TOOLS, "--no-session-persistence", "--strict-mcp-config",
-            "--setting-sources", "", "--disable-slash-commands", "--output-format", "json"]
+            "--setting-sources", "", "--disable-slash-commands", "--output-format", "json",
+            *(["--max-budget-usd", f"{budget_usd:g}"] if budget_usd else [])]
 
 
 # --- the run's side: orientation, material, the session and its critiques --------------------------------------------
@@ -307,7 +336,15 @@ def orientation(pipeline, entry, story, directory: Path) -> list[Path]:
     signature = digest({"input": pipeline.input_hash, "prompt": drafting, "check": instructions("orientation_check")})
     if path.is_file() and json.loads(path.read_text(encoding="utf-8")).get("signature") == signature:
         return [path]
-    sheet = pipeline.invoke(drafting, OrientationSheet, ORIENTATION_VERSION)
+    # The drafted sheet is kept before its check, so a stop during the check asks only the check again (found by
+    # stopping a run at each of its calls, 2026-11-01).
+    draft = directory / "orientation_draft.json"
+    saved = json.loads(draft.read_text(encoding="utf-8")) if draft.is_file() else {}
+    if saved.get("signature") == signature:
+        sheet = OrientationSheet.model_validate(saved["sheet"])
+    else:
+        sheet = pipeline.invoke(drafting, OrientationSheet, ORIENTATION_VERSION)
+        write_json(draft, {"signature": signature, "sheet": sheet.model_dump()})
     names = [item.name for item in sheet.items]
 
     def complete(answer):
@@ -325,15 +362,76 @@ def orientation(pipeline, entry, story, directory: Path) -> list[Path]:
     return [path]
 
 
+def episode_text(script: EpisodeScript, number: int, labels: dict) -> str:
+    """An earlier episode as the agent reads it in earlier/: its chapters and turns, each turn with its speaker."""
+    from .script_artifacts import render_script
+    text = render_script(script, {role: f"{role} ({label})" for role, label in labels.items()})
+    return text.replace(f"# {script.title}", f"# Episode {number}: {script.title}", 1)
+
+
+def published_from(root: Path, episode: str) -> str | None:
+    """The hash of the series plan of the run that published ``episode`` (episodes/<episode>/latest.json), or None."""
+    from .runner import manifest_path
+    try:
+        run = json.loads((root / "episodes" / episode / "latest.json").read_text(encoding="utf-8"))["run_id"]
+        return file_hash(manifest_path(root, run).parent / "series_plan.json")
+    except (OSError, ValueError, KeyError, TypeError, AppError):
+        return None
+
+
+def earlier_episodes(root: Path, plan, entry, config, plan_file: Path | None = None) -> list[tuple[dict, str]]:
+    """The published episodes before ``entry`` in the series' order, each as its row of material.json and the text of
+    its file in earlier/: what the listeners have heard, which a new episode builds on (D-184). Until 2026-11-01 an
+    episode knew the others only by their titles and questions, even in a series run. With ``plan_file`` (the run's
+    series_plan.json), only an episode published from that outline counts: an earlier plan's episode of the same id
+    is another series."""
+    from .models import host_labels
+    from .storage import read_yaml
+    outline = file_hash(plan_file) if plan_file is not None and plan_file.is_file() else None
+    rows = []
+    for number, earlier in enumerate(plan.episodes, start=1):
+        if earlier.episode_id == entry.episode_id:
+            break
+        path = root / "episodes" / earlier.episode_id / "script.yaml"
+        if path.is_file() and (outline is None or published_from(root, earlier.episode_id) == outline):
+            script = EpisodeScript.model_validate(read_yaml(path))
+            rows.append(({"episode_id": earlier.episode_id, "number": number, "title": script.title,
+                          "file": f"earlier/{earlier.episode_id}.md"}, episode_text(script, number, host_labels(config))))
+    return rows
+
+
+def revision_entry(pipeline, entry: EpisodePlan) -> EpisodePlan:
+    """The episode a revision starts from: the chapters its story agent published it with (the revision's ``entry``,
+    scripting.revision_inputs), or the outline's."""
+    saved = (getattr(pipeline, "revision", None) or {}).get("entry")
+    return EpisodePlan.model_validate(saved) if saved and saved.get("episode_id") == entry.episode_id else entry
+
+
+def session_files(pipeline, plan, entry, material_data) -> dict[str, str]:
+    """The files a session gets beside material.json: the earlier episodes, and for a revision the published episode
+    and the corpus sections it used (its run's sources_used.json), which the draft may keep citing."""
+    from .runner import manifest_path
+    files = {row["file"]: text for row, text in earlier_episodes(pipeline.root, plan, entry, pipeline.config,
+                                                                 pipeline.work / "series_plan.json")}
+    if "revision" in material_data:
+        files["published.json"] = json.dumps(pipeline.revision["original_script"], ensure_ascii=False, indent=1)
+        used = (manifest_path(pipeline.root, pipeline.revision["source_run_id"]).parent / "story" / entry.episode_id /
+                "sources_used.json")
+        if used.is_file():
+            files["sources_used.json"] = used.read_text(encoding="utf-8")
+    return files
+
+
 def material(pipeline, plan, entry) -> tuple[dict, dict]:
     """material.json for the agent and context.json for its commands: the outline entry, the series context, the
     story material, the findings with their limits, the passages they cite, the checked orientation, the word
-    budget and the brief; the commands get the entry, the hosts, the given passages and the root."""
+    budget, the brief, the earlier episodes and a revision's feedback; the commands get the entry, the hosts, the given
+    passages, the length, the words a minute and the root."""
     from .editorial import EPISODE_FRAMING, episode_series_context
     from .models import host_roles_of
     from .narration import allowed_sections
-    from .polishing import host_roles
-    from .script_checks import episode_sources, word_budget
+    from .cast import host_roles
+    from .script_checks import episode_limits, episode_sources, word_budget
     from .script_models import episode_findings
     config, dossier = pipeline.config, pipeline.dossier
     wanted = set(episode_findings(entry))
@@ -346,10 +444,16 @@ def material(pipeline, plan, entry) -> tuple[dict, dict]:
     story = pipeline.story_for(entry)
     told = {f for item in story for f in item.get("finding_ids", [])}
     sheet = pipeline.work / "teaching" / entry.episode_id / "orientation.json"
-    length = word_budget(entry, TARGET_FACTOR)
+    rate = getattr(pipeline, "rate", SPOKEN_WORDS_PER_MINUTE)
+    length = word_budget(entry, TARGET_FACTOR, rate)
+    # The agent reaches its target, not only validate_script's floor (TARGET_SHARE, D-184).
+    length["minimum_words"] = max(length["minimum_words"], math.ceil(length["target_words"] * TARGET_SHARE))
+    third = getattr(config, "third_host", None)
     material_data = {
         "brief": {"language": config.language, "audience": config.audience_level, "host_names": config.host_names,
-                  "host_roles": host_roles(config), "style_notes": pipeline.style_notes},
+                  "host_roles": host_roles(config), "style_notes": pipeline.style_notes,
+                  **({"series_goal": config.series_goal} if getattr(config, "series_goal", None) else {}),
+                  **({"third_host": {"speaker_id": "host_c", "name": third.name, "role": third.role}} if third else {})},
         "episode": entry.model_dump(), "series_context": episode_series_context(plan, entry), "length": length,
         # The rule the script review holds the episode's opening and ending to (editorial.EPISODE_FRAMING): both
         # first reviews of 2026-11-01 raised it as structure issues the agent had never been told.
@@ -360,9 +464,24 @@ def material(pipeline, plan, entry) -> tuple[dict, dict]:
         "orientation": [{"name": i["name"], "orientation": i["orientation"]}
                         for i in json.loads(sheet.read_text(encoding="utf-8"))["items"]] if sheet.is_file() else [],
         "core_findings_without_story": [f for f in entry.finding_ids if f not in told]}
+    # What the research could not establish for this episode, which the script review expects stated where the statement
+    # it limits is made (script_checks.episode_limits); until 2026-11-01 only the review knew them.
+    limits = episode_limits(plan, entry, pipeline.stated_limits()) if hasattr(pipeline, "stated_limits") else []
+    if limits:
+        material_data["research_limits"] = limits
+    # Findings whose evidence all comes from one research group, which the review expects attributed audibly once.
+    single = pipeline.single_group(entry) if hasattr(pipeline, "single_group") else []
+    if single:
+        material_data["single_group_findings"] = single
+    earlier = earlier_episodes(pipeline.root, plan, entry, config, pipeline.work / "series_plan.json")
+    if earlier:
+        material_data["earlier_episodes"] = [row for row, _ in earlier]
+    revision = getattr(pipeline, "revision", None)
+    if revision and (revision.get("original_script") or {}).get("episode_id") == entry.episode_id:
+        material_data["revision"] = {"feedback": revision["feedback"], "published": "published.json"}
     context = {"entry": entry.model_dump(), "roles": list(host_roles_of(config)),
                "assembled": bool(dossier.assembled), "sources": sources if dossier.assembled else [],
-               "length": length, "root": str(pipeline.root)}
+               "length": length, "rate": rate, "root": str(pipeline.root)}
     return material_data, context
 
 
@@ -415,26 +534,49 @@ def request_critique(folder: Path, name: str) -> dict:
     return {"error": "No critique came back in time; go on without it."}
 
 
-def run_agent(pipeline, folder: Path, timeout: float = SESSION_TIMEOUT) -> dict:
-    """One session in ``folder``, counted as one call of the run (calls/call_NNN with its usage and the cost the
-    CLI reports), while the run answers its critique requests."""
-    from .claude_code import claude_command, claude_environment, login_status
-    from .research import refund_call, reserve_call, settle_call
-    command = claude_command()
+def session_access(pipeline, command) -> tuple[bool, dict]:
+    """Whether the session bills an Anthropic key, and its environment. A run whose text provider is ``claude_api``
+    runs it on the run's key (D-184), every other run on the claude.ai login (D-181)."""
+    from .claude_code import claude_api_environment, claude_environment, login_status
+    if (getattr(pipeline, "text_generation", None) or {}).get("provider") == "claude_api":
+        key = (getattr(pipeline.adapter, "anthropic_key", None) or os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+        if not key:
+            raise AppError("Der Erzähl-Agent über den API-Key braucht einen Anthropic-API-Key: in den Einstellungen "
+                           "eingeben.", code="anthropic_key_required", status="blocked")
+        return True, claude_api_environment(AGENT_MODEL, key)
     status = login_status(command)
     if not status["logged_in"] or status["auth_method"] != "claude.ai":
-        raise AppError("Der Erzähl-Agent braucht die Claude-Abo-Anmeldung (claude.ai): claude auth login.",
-                       code="authentication_required", status="blocked")
-    number = reserve_call(pipeline.work, pipeline.limits(), search=False, billed=False)
+        raise AppError("Der Erzähl-Agent braucht die Claude-Abo-Anmeldung (claude.ai: claude auth login) oder Claude "
+                       "über den API-Key als Textanbieter.", code="authentication_required", status="blocked")
+    return False, claude_environment(AGENT_MODEL)
+
+
+def run_agent(pipeline, folder: Path, timeout: float = SESSION_TIMEOUT) -> dict:
+    """One session in ``folder``, counted as one call of the run (calls/call_NNN with its usage and the cost the
+    CLI reports), while the run answers its critique requests. A session on an Anthropic key is billed: reserved
+    under the run's money limit, capped at SESSION_BUDGET_USD and settled with the cost the CLI reports
+    (billing.json, as provider_pool bills every claude_api call)."""
+    from .claude_code import claude_command
+    from .models import now
+    from .provider_pool import bill
+    from .research import refund_call, reserve_call, settle_call
+    command = claude_command()
+    billed, environment = session_access(pipeline, command)
+    number = reserve_call(pipeline.work, pipeline.limits(), search=False, billed=billed)
     call = pipeline.work / "calls" / f"call_{number:03d}"
     call.mkdir(parents=True, exist_ok=True)
     write_json(call / "output_schema.json", {"title": "StorySession", "story_folder": folder.name})
-    started = False
+    row = {"attempt": 1, "provider": "claude_api", "model": AGENT_MODEL, "prompt_version": SESSION_VERSION,
+           "started_at": now()}
+    started = settled = False
     try:
         with open(folder / "session_stdout.json", "w", encoding="utf-8") as stdout, \
                 open(folder / "session_stderr.txt", "w", encoding="utf-8") as stderr:
-            process = subprocess.Popen(session_command(command), cwd=folder, env=claude_environment(AGENT_MODEL),
-                                       stdout=stdout, stderr=stderr, text=True, encoding="utf-8")
+            if billed:
+                bill(call, {**row, "state": "started", "usd": None})
+            process = subprocess.Popen(session_command(command, budget_usd=SESSION_BUDGET_USD if billed else None),
+                                       cwd=folder, env=environment, stdout=stdout, stderr=stderr, text=True,
+                                       encoding="utf-8")
             started = True
             deadline = time.monotonic() + timeout
             while process.poll() is None:
@@ -451,8 +593,14 @@ def run_agent(pipeline, folder: Path, timeout: float = SESSION_TIMEOUT) -> dict:
         except ValueError:
             answer = {"raw": raw[-4000:]}
         write_json(folder / "session.json", {"returncode": process.returncode, **answer})
+        cost = answer.get("total_cost_usd")
+        if billed:
+            priced = isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0
+            bill(call, {**row, "state": "priced" if priced else "unpriced", "usd": cost if priced else None,
+                        "code": None, "ended_at": now()}, replace=True)
+            settled = True
         usage = answer.get("usage", {})
-        write_json(call / "metadata.json", {"provider": "claude_code", "model": AGENT_MODEL,
+        write_json(call / "metadata.json", {"provider": "claude_api" if billed else "claude_code", "model": AGENT_MODEL,
                                             "reasoning_effort": AGENT_EFFORT, "prompt_version": SESSION_VERSION,
                                             "usage": usage, "reported_cost_usd": answer.get("total_cost_usd"),
                                             "num_turns": answer.get("num_turns"),
@@ -460,9 +608,17 @@ def run_agent(pipeline, folder: Path, timeout: float = SESSION_TIMEOUT) -> dict:
                                             "returncode": process.returncode})
         write_json(call / "response.json", {"result": answer.get("result"), "is_error": answer.get("is_error")})
         return answer
-    except BaseException:
+    except BaseException as exc:
         if not started:
             refund_call(pipeline.work, number, search=False)
+        elif process.poll() is None:
+            # A failure while serving its critiques ends the session too; left running, it waited half an hour for an
+            # answer that never came and held the run folder (found by the suite, 2026-11-01).
+            process.kill()
+        if billed and not settled:
+            # A started session may have run model work without a reported cost; one that never started is free.
+            bill(call, {**row, "state": "unpriced" if started else "free", "usd": None,
+                        "code": getattr(exc, "code", "interrupted"), "ended_at": now()}, replace=True)
         raise
     finally:
         settle_call(pipeline.work, number)
@@ -471,11 +627,16 @@ def run_agent(pipeline, folder: Path, timeout: float = SESSION_TIMEOUT) -> dict:
 def write_episode(pipeline, plan, entry) -> list[Path]:
     """The story stage of one episode: the agent's folder, its session, and its draft checked as every draft is,
     accepted as drafts/<episode_id>.json with the episode as the agent planned it (story/<episode_id>/entry.json)."""
+    from .cast import cast_note
+    entry = revision_entry(pipeline, entry)
     folder = pipeline.work / "story" / entry.episode_id
     destination = pipeline.work / "drafts" / f"{entry.episode_id}.json"
     stamp = destination.with_suffix(".checkpoint.json")
     material_data, context = material(pipeline, plan, entry)
-    task = task_text(pipeline.config.language, entry.target_minutes)
+    revising = "revision" in material_data
+    critiques = REVISION_CRITIQUES if revising else CRITIQUES
+    task = task_text(pipeline.config.language, entry.target_minutes, critiques, cast=cast_note(pipeline.config),
+                     revision=revising)
     signature = digest({"version": SESSION_VERSION, "input": pipeline.input_hash, "material": material_data,
                         "task": task})
     outputs = [destination, stamp, folder / "entry.json", folder / "plan.md"]
@@ -489,8 +650,8 @@ def write_episode(pipeline, plan, entry) -> list[Path]:
         for path in list(folder.iterdir()):
             if path.name != "attempts":
                 shutil.move(str(path), attempt / path.name)
-    prepare(folder, material=material_data, context=context, language=pipeline.config.language,
-            minutes=entry.target_minutes)
+    prepare(folder, material=material_data, context=context, task=task, critiques=critiques,
+            files=session_files(pipeline, plan, entry, material_data))
     run_agent(pipeline, folder, session_timeout(entry.target_minutes))
     try:
         draft = EpisodeScript.model_validate_json((folder / "draft.json").read_text(encoding="utf-8"))

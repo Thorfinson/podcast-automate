@@ -74,6 +74,38 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-11-01 · The story agent writes every script (D-184). The writing prompt is gone, and with it:
+  - the teaching plan, the narration review and dialogue polish;
+  - „Schreiber“ in the job summary and `pla script --writer`;
+  - the stop card „Lehrkonzept bleibt unvollständig“ and `pla approve --redesign-teaching`.
+
+  Episodes written before stay readable and recordable. A run begun with the writing prompt that has written nothing
+  yet continues with the agent.
+- 2026-11-01 · A series is written in order, one episode at a time:
+  - „Freigeben & erste Folge schreiben“ approves the table of contents and writes its first episode.
+  - The page then offers „Nächste Folge schreiben“ and „Alle … restlichen nacheinander“, and marks each episode
+    „geschrieben“ or „als Nächste“.
+  - Each new episode first reads the published episodes before it and builds on what they said.
+  - „Fortsetzen“ on an approved table of contents writes its next episode instead of all of them at once.
+- 2026-11-01 · Series review over the published episodes:
+  - It runs once every episode is written: by itself after the last one, or with „Serienprüfung starten“.
+  - Its points appear per episode, each with „Mit diesen Hinweisen überarbeiten“.
+- 2026-11-01 · Revisions are written by the story agent: „Diese Folge überarbeiten lassen“ and `pla script --revise`. It
+  starts from the published episode and your feedback and changes only what you ask for.
+- 2026-11-01 · Episode 1 introduces the series in one to two minutes after its opening story.
+- 2026-11-01 · The story agent is given three things only the review knew so far, so it no longer misses what the
+  review then asks for:
+  - the research limits its episode should state;
+  - the findings that rest on one research group, which the review expects named;
+  - the series goal.
+- 2026-11-01 · Episode length: an episode planned at 45 minutes runs about 45 minutes in its voices.
+  - A new script run counts words at the speaking rate measured on the project's latest recording. Before the first
+    recording it assumes about 150 words a minute for ElevenLabs and about 148 for Gemini; until now every run assumed 130.
+  - The story agent writes at least 95 % of its word target.
+  - Asimov's episode 7 ran 35:47 of a planned 45 minutes.
+- 2026-11-01 · The story agent also runs with Claude on your Anthropic API key. It is billed, counts against the run's
+  money limit and stops at 40 USD per episode.
+
 - 2026-10-23 · Script runs started now keep each episode's core small enough to tell: at most one core finding per four planned minutes (at least four), the rest supporting detail; scripts say how certain a statement is by the kind of its evidence („eine Jahrzehnte spätere Chronik“) instead of what the research did or did not read, and end on the payoff instead of announcing the next episode's question. The minimum per episode in the call budget rises from nine to eleven calls; runs started before keep nine and resume unchanged (D-180).
 - 2026-10-23 · Research runs started now also ask for the story a listener follows (what happened, who acted and why, how something was found, a case), keep the scene beside the number in their findings and state limits by the kind of evidence; stopped runs resume with their earlier prompts (D-180).
 - 2026-10-09 · Jev gap probe: a script run makes at most 10,000 Jev requests per scan; with a larger corpus each gap is asked about its best-matching sections. A project with many provided editions (Orlagau: 405,050 requests, about six hours) now finishes the probe in minutes (D-172).
@@ -150,6 +182,15 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 - 2026-09-26 · „Automatisch“ asks Claude first for new runs (saved runs keep their order); Claude's default becomes Opus 5.5 at `xhigh`, needing Claude Code 2.1.280.
 
 ### Fixed
+
+- 2026-11-01 · When the series review of a story agent's run asked for corrections, the run stopped with a file error.
+  It now corrects as the episode review does.
+- 2026-11-01 · The reading preview of a running story agent's episode shows the reviewed text once its review passed. It
+  used to stay at the draft.
+- 2026-11-01 · A script run stopped during the check of an orientation sheet asks only that check again on resume. Before,
+  it drafted the sheet anew.
+- 2026-11-01 · A failure while the story agent's session runs ends the session too. Before, it kept waiting up to half an
+  hour for an answer.
 
 - 2026-10-19 · A Google or ElevenLabs recording's progress counts the segments of its finished chapters: it showed their passages against all segments, „9 von 240“ for an episode that was at 138.
 - 2026-10-19 · A project copied or moved to another folder no longer stops its scripts and recordings with „Lokale Quelle seit der Recherche geändert“: a local source is recognized by the content the research read (D-178).

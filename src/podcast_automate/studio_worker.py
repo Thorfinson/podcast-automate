@@ -28,7 +28,7 @@ from .provider_pool import AdapterPool, text_generation_settings, text_key as po
 from .research import reserve_call, run_research, latest_research_run, settle_call
 from .run_budget import run_text_generation
 from .runner import manifest_path, run_observer
-from .scripting import outline_hash, run_script
+from .scripting import approve_outline, next_episode, outline_hash, run_script, run_series_review
 from .teaching_research import gaps_in
 from .elevenlabs_speech import ElevenLabsSpeech
 from .google_speech import GoogleSpeech
@@ -154,7 +154,7 @@ def perform(root, request, sample_progress=None):
     choice = TextChoice.model_validate(request["text"])
     kwargs = choice.kwargs()
     kwargs["api_key"] = pool_key({"provider": choice.provider}, request.get("api_key"), request.get("anthropic_key"))
-    saved_key = text_key(root, request, request["run_id"]) if action in {"script", "replan"} else None
+    saved_key = text_key(root, request, request["run_id"]) if action == "replan" else None
     # New research and script runs bind the workspace's web search (D-151); resumed ones keep theirs. The model's own
     # search is the default and passes nothing, so such calls stay as they were.
     web_search = studio_settings.web_search(root)
@@ -257,10 +257,35 @@ def perform(root, request, sample_progress=None):
         run = run_script(root, plan_only=True, resume=True, run_id=request["run_id"],
                          outline_feedback=request["message"], api_key=saved_key,
                          probe_key=probe_key(root, request, request["run_id"]))
-    elif action == "script":
-        run = run_script(root, resume=True, run_id=request["run_id"],
-                         approved_plan_hash=request["plan_hash"], api_key=saved_key,
-                         probe_key=probe_key(root, request, request["run_id"]))
+    elif action in {"script", "episode", "episodes"}:
+        # A series is written in order, one run per episode, each reading what the earlier ones said (D-184): the
+        # outline's approval writes its first episode, "episode" the next or the one named, "episodes" every remaining
+        # one after the other, stopping where one stops. Once all are written, the series review reads them together.
+        outline = request["run_id"]
+        if action == "script":
+            approve_outline(root, outline, request["plan_hash"])
+        run = None
+        while True:
+            episode = (request.get("episode") if action == "episode" and run is None else None) or \
+                next_episode(root, outline)
+            if episode is None or (run is not None and action != "episodes"):
+                break
+            run = run_script(root, episode=episode, outline_run=outline, probe_key=probe_key(root, request),
+                             **search, **kwargs)
+            express_published(root, run, request.get("api_key"))
+            if run.status != "completed":
+                break
+        if run is None:
+            raise AppError("Alle Folgen dieses Inhaltsverzeichnisses sind geschrieben.", code="series_written",
+                           status="blocked")
+        result = {"run": run.model_dump(mode="json")}
+        if run.status == "completed" and next_episode(root, outline) is None:
+            result["series_review"] = series_review_after(root, outline, kwargs)
+        return result
+    elif action == "series_review":
+        review = run_series_review(root, outline_run=request["run_id"],
+                                   **{key: kwargs[key] for key in ("backend", "model", "reasoning_effort") if key in kwargs})
+        return {"run": review.model_dump(mode="json")}
     elif action == "revise":
         run = run_script(root, revise=request["episode"], feedback=request["message"],
                          probe_key=probe_key(root, request), **search, **kwargs)
@@ -300,8 +325,18 @@ def perform(root, request, sample_progress=None):
             plan_only = saved.get("require_plan_approval", False) and (
                 manifest["stages"]["planning"]["status"] != "completed" or not approval or
                 approval.get("plan_hash") != outline_hash(path.parent))
-            run = run_script(root, resume=True, run_id=run_id, plan_only=plan_only,
-                             api_key=text_key(root, request, run_id), probe_key=probe_key(root, request, run_id))
+            if saved.get("require_plan_approval") and not saved.get("episode") and not plan_only:
+                # An approved outline writes its episodes one run each, in order (D-184): resuming it writes the next
+                # one instead of every episode at once. 2026-11-01: Asimov v2's and Orlagau v2's series runs waited so.
+                episode = next_episode(root, run_id)
+                if episode is None:
+                    raise AppError("Alle Folgen dieses Inhaltsverzeichnisses sind geschrieben.", code="series_written",
+                                   status="blocked")
+                run = run_script(root, episode=episode, outline_run=run_id, probe_key=probe_key(root, request),
+                                 **search, **kwargs)
+            else:
+                run = run_script(root, resume=True, run_id=run_id, plan_only=plan_only,
+                                 api_key=text_key(root, request, run_id), probe_key=probe_key(root, request, run_id))
         elif manifest["kind"] == "research":
             # Also for the scheduler's automatic resume after a quota reset: the gate is never bypassed.
             run = run_research(root, resume=True, run_id=run_id, plan_review="required",
@@ -314,9 +349,20 @@ def perform(root, request, sample_progress=None):
             raise AppError("Diesen älteren Probentyp über die vorhandenen Werkzeuge fortsetzen.", code="unsupported_run")
     else:
         raise AppError("Unbekannter Auftrag.", code="invalid_action")
-    if action in {"script", "revise", "resume"}:
+    if action in {"revise", "resume"}:
         express_published(root, run, request.get("api_key"))
     return {"run": run.model_dump(mode="json")}
+
+
+def series_review_after(root, outline, kwargs) -> dict:
+    """The series review once the outline's last episode is published, recorded with the job; a review that stops
+    (quota, budget) leaves the job's episode published, and the outline page offers the review again."""
+    try:
+        review = run_series_review(root, outline_run=outline,
+                                   **{key: kwargs[key] for key in ("backend", "model", "reasoning_effort") if key in kwargs})
+    except AppError as exc:
+        return {"status": "blocked", "code": exc.code, "message": str(exc)}
+    return {"run_id": review.run_id, "status": review.status}
 
 
 # SetThreadExecutionState flags: keep the system running while this thread asks, until it asks no more.
@@ -404,7 +450,8 @@ def main():
     progress_stop = threading.Event()
     progress_thread = None
     summary_process = None
-    if request["action"] in {"research", "plan", "replan", "script", "revise", "resume"} and not request.get("audio_job_id"):
+    if request["action"] in {"research", "plan", "replan", "script", "episode", "episodes", "revise", "series_review",
+                             "resume"} and not request.get("audio_job_id"):
         progress_thread = threading.Thread(target=watch, args=(root, job["id"], progress_stop), daemon=True)
         progress_thread.start()
         try:

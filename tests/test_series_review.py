@@ -11,7 +11,7 @@ from podcast_automate.models import EpisodeScript, TopicBrief
 from podcast_automate.script_checkpoints import finished
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
 from podcast_automate.script_models import ScriptReview, SeriesPlan
-from podcast_automate.script_pipeline import REVIEW_REPAIR_VERSION
+from podcast_automate.script_pipeline import STORY_REPAIR_VERSION, STORY_REVIEW_SUFFIX
 from podcast_automate.series_review import (SERIES_REVIEW_PROMPT, SERIES_REVIEW_VERSION, SeriesReview, assess_series,
                                             load_series_review, require_passing_series, series_criteria)
 from podcast_automate.run_budget import approve_fresh_attempts
@@ -19,6 +19,12 @@ from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import digest, file_hash, load_project, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
 from tests.series_fixtures import series_response
+
+# The script review of a story agent's episode (D-181, D-182), the only kind of script run since D-184.
+STORY_REVIEW = SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX
+# A second episode is no fixture episode, so the fake agent writes its filler (script_fixtures.FAKE_AGENT): host_a's
+# turn and then host_b's, the last segment, which the series fixture quotes as its evidence.
+SECOND_REPLY = fixtures.example_plan().episodes[0].scenes[0].scene_id + "_b"
 
 
 class SeriesReviewTests(unittest.TestCase):
@@ -622,10 +628,10 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
                 second.episode_id, second.title = "ep_002", "Further consequences"
                 value.episodes.append(second)
             elif output_type is EpisodeScript:
-                # Writing, polishing and repairs each carry the episode under a different key.
-                episode = payload.get("episode") or payload.get("original_script") or payload.get("draft")
-                value.episode_id = episode["episode_id"]
-                if kwargs["prompt_version"] == REVIEW_REPAIR_VERSION and on_repair:
+                # A story run's model writes a script only to repair the agent's draft (story_repair), which may change
+                # only the segments the issues name and their neighbours: the answer is the draft it was given.
+                value = EpisodeScript.model_validate(payload["draft"])
+                if kwargs["prompt_version"] == STORY_REPAIR_VERSION and on_repair:
                     on_repair(value, payload)
             elif output_type is ScriptReview and on_review:
                 on_review(value, payload)
@@ -658,7 +664,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
 
         def repair(script, payload):
             self.assertEqual(script.episode_id, "ep_002")
-            self.assertEqual([i["segment_ids"] for i in payload["review"]["issues"]], [["seg_002"]])
+            self.assertEqual([i["segment_ids"] for i in payload["review"]["issues"]], [[SECOND_REPLY]])
             self.assertTrue(payload["review"]["issues"][0]["reason"].startswith("progression:"))
             script.segments[-1].text += self.SENTENCE
 
@@ -667,10 +673,10 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
             run = run_script(self.root)
         self.assertEqual(run.status, "completed")
         # One repair, one extra episode review and one series re-check; nothing else is repeated.
-        self.assertEqual(self.versions.count(REVIEW_REPAIR_VERSION), 1)
+        self.assertEqual(self.versions.count(STORY_REPAIR_VERSION), 1)
         # The review of the correction is scoped to the series issues and the changed segments (+followup).
-        self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION), 2)
-        self.assertEqual(self.versions.count(SCRIPT_REVIEW_VERSION + "+followup"), 1)
+        self.assertEqual(self.versions.count(STORY_REVIEW), 2)
+        self.assertEqual(self.versions.count(STORY_REVIEW + "+followup"), 1)
         self.assertEqual(self.versions.count(SERIES_REVIEW_PROMPT), 2)
         work = self.root / "runs" / run.run_id
         published = read_yaml(self.root / "episodes/ep_002/script.yaml")
@@ -765,7 +771,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         self.assertFalse((work / "reviews/ep_002_before_series_repair.json").exists())
         self.assertFalse((self.root / "episodes/ep_002/script.yaml").exists())
         # Two attempts, the second against the check's own objections, before the correction is rejected.
-        self.assertEqual((self.versions.count(REVIEW_REPAIR_VERSION), self.versions.count(SERIES_REVIEW_PROMPT)), (2, 1))
+        self.assertEqual((self.versions.count(STORY_REPAIR_VERSION), self.versions.count(SERIES_REVIEW_PROMPT)), (2, 1))
         receipt = json.loads((work / "series_repair.json").read_text(encoding="utf-8"))["receipt"]
         self.assertEqual((receipt["repairs"], receipt["failure"]["code"]), (1, "script_review_failed"))
         calls = len(self.versions)
@@ -856,7 +862,7 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         self.assertFalse(json.loads((work / "reviewed/ep_002.json").read_text(encoding="utf-8"))
                          ["segments"][-1]["text"].endswith(self.SENTENCE))
         self.assertIn("reviews/ep_002_series_repair_rejected.json", run.stages["review"].error.message)
-        self.assertEqual(self.versions.count(REVIEW_REPAIR_VERSION), 3)
+        self.assertEqual(self.versions.count(STORY_REPAIR_VERSION), 3)
 
     def test_a_rejected_correction_is_the_rounds_decision_even_beside_a_timeout(self):
         """2026-10-02 review: repair_series raised another episode's timeout before its rejections, so the rejection was

@@ -26,7 +26,7 @@ from .storage import init_project, inside, read_optional_json, read_yaml, write_
 
 VERSION_FILE = "version.json"
 # The Studio's choices a new version keeps; allowances and their log stay behind with the approvals.
-STUDIO_CHOICES = ("text.json", "audio.json", "execution.json", "spoken_forms.json", "jev_probe.json", "writer.json")
+STUDIO_CHOICES = ("text.json", "audio.json", "execution.json", "spoken_forms.json", "jev_probe.json")
 
 
 def version_info(root: Path) -> dict:

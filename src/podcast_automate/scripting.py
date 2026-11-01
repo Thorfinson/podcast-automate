@@ -16,7 +16,7 @@ from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.scr
 from .errors import AppError
 from .execution import ExecutionChoice, selected_execution
 from .models import EpisodeScript, RunManifest, StageRecord, host_roles_of
-from .polishing import POLISH_VERSION, cast_note, host_roles
+from .cast import POLISH_VERSION, cast_note, host_roles
 from .provider_pool import AdapterPool, check_adapter_versions, text_generation_settings  # noqa: F401  (re-exported)
 from .research import reconcile_budget, refund_call, reserve_call, settle_call, unanswered, validate_dossier
 from .text_settings import BILLED_TEXT_PROVIDERS
@@ -25,24 +25,36 @@ from .research_models import ResearchDossier
 from .research_quality import QUALITY_VERSION, load_complete_research, requirements_for
 from .run_budget import effective_limits, text_switch
 from .runner import execute_stages, manifest_path, outputs_valid
-from .script_artifacts import script_metrics  # noqa: F401  (re-exported; the Studio imports it from here)
+from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, script_metrics  # noqa: F401  (script_metrics re-exported; the Studio imports it from here)
 from .script_checks import (MAX_PLAN_REPAIRS, checked_series_plan, episode_sources, load_plan_checkpoint,  # noqa: F401
                             outline_hash, plan_dependency_conflicts, plan_failure_message,
                             script_review_signature, validate_plan, validate_script)
 from .script_models import SeriesPlan
-from .script_pipeline import SPOKEN_DIALOGUE, ScriptRun  # noqa: F401
-from .series_review import SERIES_REVIEW_VERSION, reviewed_scripts, series_report
+from .script_pipeline import ScriptRun  # noqa: F401
+from .series_review import SERIES_REVIEW_VERSION, SeriesReview, reviewed_scripts, series_issues, series_report
+from .story_agent import story_entry
 from .storage import (bound_brief, digest, file_hash, load_project, project_hash, project_lock, read_yaml, write_json,
                       write_yaml)
 from .teaching import DESIGN_VERSION, TEACHING_VERSION
 
 SCRIPT_VERSION = "script.v5-dialogue-polish"
-# "narration" since 2026-10-23 (D-180): a run started before keeps its manifest's stage list and runs without it.
-STAGES = ("planning", "teaching", "writing", "narration", "polishing", "review", "publish")
-# A run written by the story agent (D-181): its "story" stage plans and writes each episode in one Claude Code
-# session, which also reviews its own telling, so it has no narration and no polishing stage.
+# Every script run is written by the story agent (D-181, the only writer since D-184): its "story" stage plans and
+# writes each episode in one Claude Code session, which also reviews its own telling.
 STORY_STAGES = ("planning", "teaching", "story", "review", "publish")
-WRITERS = ("prompt", "agent")
+# The latest series review of an outline's published episodes (run_series_review with outline_run).
+SERIES_REVIEW_POINTER = "episodes/series_review.json"
+# The stages of the writing prompt, which ended with D-184: a run begun with them moves onto STORY_STAGES while it has
+# written nothing (retire_prompt_stages); one that has, cannot resume.
+PROMPT_STAGES = ("writing", "narration", "polishing")
+# The words a minute a voice engine speaks a script, before the project has a recording of its own (speaking_rate),
+# measured as measured_rate does on German recordings:
+# - ElevenLabs v4 spoke Asimov v2 ep_007 (2026-11-01) at 150, where every budget assumed 130, and the episode planned at 45
+#   minutes ran 35:47;
+# - Gemini spoke the 15 Orlagau episodes (2026-10) at 137 to 151, most near 148.
+# Qwen keeps the 130 measured on the Transformer recordings (SPOKEN_WORDS_PER_MINUTE).
+STARTING_RATES = {"elevenlabs_tts": 150, "google_gemini_tts": 148}
+# A measured rate outside this range is no speech rate (a broken export, a script that is not the recording's).
+PLAUSIBLE_RATES = (90, 220)
 
 
 def local_source_paths(root: Path, config):
@@ -107,6 +119,41 @@ def load_research(root: Path, config):
     return run_id, dossier, discovery, sources, context
 
 
+def measured_rate(root: Path, provider: str) -> int | None:
+    """The words a minute of the project's newest completed recording by ``provider``: its approved script's words
+    over the exported audio's minutes less the script's planned pauses, as script_metrics estimates a duration; None
+    without such a recording."""
+    for path in sorted((root / "runs").glob("run_*/run_manifest.yaml"), reverse=True):
+        work = path.parent
+        try:
+            manifest = read_yaml(path)
+            if not isinstance(manifest, dict) or manifest.get("kind") != "episode_audio" or                     manifest.get("status") != "completed":
+                continue
+            inputs = json.loads((work / "inputs.json").read_text(encoding="utf-8"))
+            if (inputs.get("audio_generation") or {}).get("provider") != provider:
+                continue
+            script = EpisodeScript.model_validate_json((work / "approved_script.json").read_text(encoding="utf-8"))
+            report = root / "exports" / inputs["episode_id"] / work.name / "audio_report.json"
+            minutes = json.loads(report.read_text(encoding="utf-8"))["duration_seconds"] / 60
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        pauses = sum(segment.pause_after_ms for segment in script.segments) / 60_000
+        if minutes <= pauses:
+            continue
+        rate = round(script_metrics(script)["words"] / (minutes - pauses))
+        if PLAUSIBLE_RATES[0] <= rate <= PLAUSIBLE_RATES[1]:
+            return rate
+    return None
+
+
+def speaking_rate(root: Path, config) -> int:
+    """The words a minute a new script run writes and checks its lengths at (D-184): the rate measured on the
+    project's newest recording by its current voice engine, else that engine's starting rate, else 130."""
+    from .speech import selected_audio
+    provider = selected_audio(root, config).provider
+    return measured_rate(root, provider) or STARTING_RATES.get(provider, SPOKEN_WORDS_PER_MINUTE)
+
+
 def resumed_run(root, run_id):
     """Saved request, execution mode and inputs of an interrupted run; nothing is recomputed."""
     path = manifest_path(root, run_id)
@@ -120,7 +167,8 @@ def resumed_run(root, run_id):
     return {"path": path, "manifest": manifest, "saved_backend": request.get("text_generation"),
             "execution": ExecutionChoice.model_validate(request.get("execution", {})), "episode": request["episode"],
             "saved_inputs": saved_inputs, "revision": saved_inputs.get("revision"),
-            "series_review_version": series_review_version, "inherited_plan": None, "inherited_knowledge": None}
+            "series_review_version": series_review_version, "inherited_plan": None, "inherited_knowledge": None,
+            "speaking_rate": saved_inputs.get("speaking_rate")}
 
 
 def revision_inputs(root, revise, feedback, research_id, dossier, roles=None):
@@ -144,12 +192,16 @@ def revision_inputs(root, revise, feedback, research_id, dossier, roles=None):
     if selected_entry is None:
         raise AppError("Folge im vorhandenen Plan nicht gefunden.", code="unknown_episode", status="blocked")
     original = EpisodeScript.model_validate(read_yaml(root / "episodes" / selected_entry.episode_id / "script.yaml"))
+    # A story agent's episode has its own chapters (story/<episode>/entry.json): its text is checked against them, and
+    # its revision starts from them (story_agent.revision_entry, D-184).
+    written = story_entry(previous_work, selected_entry)
     # A revision may be requested precisely because the existing text has the wrong length.
-    if validate_plan(inherited_plan, dossier) or validate_script(original, selected_entry, check_duration=False,
+    if validate_plan(inherited_plan, dossier) or validate_script(original, written, check_duration=False,
                                                                          **({'roles': roles} if roles else {})):
         raise AppError("Vorhandenes Skript oder Plan verletzt die Quellenzuordnung.", code="invalid_script", status="blocked")
     inherited_knowledge = json.loads((previous_work / "knowledge_model.json").read_text(encoding="utf-8"))
-    revision = {"source_run_id": previous_id, "original_script": original.model_dump(), "feedback": feedback}
+    revision = {"source_run_id": previous_id, "original_script": original.model_dump(), "feedback": feedback,
+                **({"entry": written.model_dump()} if written is not selected_entry else {})}
     return inherited_plan, inherited_knowledge, revision
 
 
@@ -179,6 +231,77 @@ def outline_inputs(root, run_id, research_id, dossier, episode):
         raise AppError("Folge im freigegebenen Inhaltsverzeichnis nicht gefunden.", code="unknown_episode",
                        status="blocked")
     return plan, json.loads((work / "knowledge_model.json").read_text(encoding="utf-8"))
+
+
+def outline_episodes(root: Path, run_id: str) -> list[dict]:
+    """The episodes of the outline in run ``run_id``, in its order, each with the run that published it from this outline,
+    or None while it is not written (D-184): a series is written one episode per run, in order (outline_inputs). Such
+    a run and a revision copy the outline's series_plan.json byte for byte, so an episode published from another
+    outline (an earlier plan of the project) counts as not written."""
+    plan_file = manifest_path(root, run_id).parent / "series_plan.json"
+    # Read for its episode ids and titles only, as the Studio reads an outline: a page must not fail on its schema.
+    try:
+        outline = file_hash(plan_file)
+        episodes = json.loads(plan_file.read_text(encoding="utf-8")).get("episodes") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+    rows = []
+    for entry in episodes:
+        if not isinstance(entry, dict) or not isinstance(entry.get("episode_id"), str):
+            continue
+        folder, written = root / "episodes" / entry["episode_id"], None
+        try:
+            run = json.loads((folder / "latest.json").read_text(encoding="utf-8"))["run_id"]
+            if (folder / "script.yaml").is_file() and \
+                    file_hash(manifest_path(root, run).parent / "series_plan.json") == outline:
+                written = run
+        except (OSError, ValueError, KeyError, TypeError, AppError):
+            pass
+        rows.append({"episode_id": entry["episode_id"], "title": entry.get("title", ""), "run_id": written})
+    return rows
+
+
+def next_episode(root: Path, run_id: str) -> str | None:
+    """The first episode of the outline in run ``run_id`` that is not written yet, or None when all are."""
+    return next((row["episode_id"] for row in outline_episodes(root, run_id) if row["run_id"] is None), None)
+
+
+def outline_series_review(root: Path, run_id: str) -> dict | None:
+    """The latest series review of the outline in run ``run_id`` (SERIES_REVIEW_POINTER): its run, its run's status,
+    its verdict and what blocks per episode, with the episodes it read; None without one."""
+    try:
+        pointer = json.loads((root / SERIES_REVIEW_POINTER).read_text(encoding="utf-8"))
+        if pointer.get("outline_run_id") != run_id:
+            return None
+        work = manifest_path(root, pointer["run_id"]).parent
+        manifest = read_yaml(work / "run_manifest.yaml")
+        saved = json.loads((work / "series_review.json").read_text(encoding="utf-8")) \
+            if (work / "series_review.json").is_file() else {}
+        runs = json.loads((work / "inputs.json").read_text(encoding="utf-8")).get("episode_runs") or {}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, AppError):
+        return None
+    report = saved.get("report") or {}
+    return {"run_id": pointer["run_id"], "status": manifest.get("status"), "verdict": report.get("status"),
+            "episode_issues": saved.get("episode_issues") or {}, "advisories": report.get("advisories") or [],
+            "episode_runs": runs}
+
+
+def approve_outline(root: Path, run_id: str, plan_hash: str) -> None:
+    """Approve the outline of run ``run_id`` exactly as the user read it (plan_approval.json), without writing an
+    episode: its episodes are written one run at a time from it (outline_inputs, D-184). Until then the approval
+    resumed the outline's run, which wrote every episode at once and none of them knew what another said."""
+    root = root.resolve()
+    with project_lock(root):
+        work = manifest_path(root, run_id).parent
+        manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
+        if manifest.kind != "script" or not outputs_valid(root, manifest.stages["planning"]):
+            raise AppError("Zuerst das Inhaltsverzeichnis erstellen und prüfen.", code="plan_approval_required",
+                           status="blocked")
+        if plan_hash != outline_hash(work):
+            raise AppError("Inhaltsverzeichnis geändert. Bitte den aktuellen Stand erneut lesen.", code="plan_changed",
+                           status="blocked")
+        write_json(work / "plan_approval.json", {"plan_hash": plan_hash,
+                                                 "approved_at": datetime.now(timezone.utc).isoformat()})
 
 
 def new_run(root, research_id, dossier, *, episode, revise, feedback, roles=None, outline_run=None):
@@ -229,6 +352,9 @@ def run_inputs(config, research_id, dossier, discovery, sources, context, state,
         inputs["revision"] = state["revision"]
     if state["series_review_version"]:
         inputs["series_review_version"] = state["series_review_version"]
+    if state.get("speaking_rate") and state["speaking_rate"] != SPOKEN_WORDS_PER_MINUTE:
+        # Only a rate other than the old constant is bound, so a run at 130 keeps the inputs it always had (D-184).
+        inputs["speaking_rate"] = state["speaking_rate"]
     if state["saved_inputs"] is not None:
         # Defaults added to readable historical schemas do not change the approved research.
         # Reuse the exact old serialization only after full semantic equality is established.
@@ -239,31 +365,29 @@ def run_inputs(config, research_id, dossier, discovery, sources, context, state,
     return config_hash, inputs, digest(inputs)
 
 
-def adopt_writer(root: Path, writer: str, run_id: str) -> str | None:
-    """The script run ``run_id`` takes ``writer`` while it has only its outline and waits for its approval (D-181): no
-    stage after planning has begun, so its stage list can change without losing a step, and the outline approval binds
-    the outline and its inputs (outline_hash), not the stages. Returns the run id, or None when the run is past that
-    point or already has the writer; the switch is recorded in writer_switch.json."""
+def retire_prompt_stages(root: Path, run_id: str) -> bool:
+    """Move the script run ``run_id``, begun with the writing prompt's stages, onto the story agent's while it has
+    written nothing (D-184): its outline and the outline's approval stay (outline_hash binds the outline and its inputs,
+    not the stages), a teaching design it began stays in teaching/ unread, and the agent writes. Returns whether the
+    run moved; one that has written an episode keeps its stages and cannot resume, since the stages are gone.
+
+    2026-11-01: Orlagau v2's series run stopped in the teaching design (teaching_design_failed) after its outline was
+    approved; it continues with the agent instead of being planned again."""
     path = manifest_path(root, run_id)
-    if not path.is_file():
-        return None
     manifest = RunManifest.model_validate(read_yaml(path))
-    work, planning = path.parent, manifest.stages.get("planning")
-    request = json.loads((work / "script_request.json").read_text(encoding="utf-8")) \
-        if (work / "script_request.json").is_file() else {}
-    # Only a run that stopped for its outline's approval; a revision never waits so, and keeps the prompt.
-    waiting = (manifest.kind == "script" and request.get("require_plan_approval") is True and planning is not None
-               and planning.status == "completed" and manifest.status != "running"
-               and not (work / "plan_approval.json").exists()
-               and all(record.status == "pending" and not record.attempts and not record.outputs
-                       for name, record in manifest.stages.items() if name != "planning"))
-    stages = STORY_STAGES if writer == "agent" else STAGES
-    if not waiting or tuple(manifest.stages) == stages:
-        return None
-    manifest.stages = {name: manifest.stages.get(name, StageRecord()) for name in stages}
+    if manifest.kind != "script" or tuple(manifest.stages) == STORY_STAGES:
+        return False
+    if any(record.status == "completed" or record.outputs for name, record in manifest.stages.items()
+           if name not in ("planning", "teaching")):
+        raise AppError("Dieser Skriptlauf wurde mit dem früheren Schreib-Prompt geschrieben, den es seit D-184 nicht mehr "
+                       "gibt. Seine veröffentlichten Folgen bleiben lesbar und vertonbar; für neue Folgen einen neuen "
+                       "Lauf starten.", code="writer_retired", status="blocked")
+    manifest.stages = {name: manifest.stages["planning"] if name == "planning" else StageRecord()
+                       for name in STORY_STAGES}
     write_yaml(path, manifest.model_dump(mode="json"))
-    write_json(work / "writer_switch.json", {"writer": writer, "switched_at": datetime.now(timezone.utc).isoformat()})
-    return manifest.run_id
+    write_json(path.parent / "writer_switch.json", {"writer": "agent", "reason": "D-184",
+                                                    "switched_at": datetime.now(timezone.utc).isoformat()})
+    return True
 
 
 def bind_manifest(root, work, state, config, config_hash, inputs, input_hash, research_id, text_generation, plan_only):
@@ -281,14 +405,12 @@ def bind_manifest(root, work, state, config, config_hash, inputs, input_hash, re
                                    "der Text wird nicht mit dem gespeicherten Entwurf überschrieben.",
                                    code="script_edited", status="blocked")
         return manifest
-    stages = STORY_STAGES if state.get("writer") == "agent" else STAGES
     manifest = RunManifest(run_id=work.name, kind="script", project_hash=config_hash,
-                           input_hash=input_hash, stages={name: StageRecord() for name in stages})
+                           input_hash=input_hash, stages={name: StageRecord() for name in STORY_STAGES})
     write_json(work / "script_request.json", {"research_run": research_id, "episode": state["episode"],
                                              "execution": state["execution"].model_dump(),
                                              "text_generation": text_generation,
-                                             "require_plan_approval": plan_only,
-                                             **({"writer": "agent"} if stages is STORY_STAGES else {})})
+                                             "require_plan_approval": plan_only, "writer": "agent"})
     write_json(work / "inputs.json", inputs)
     write_yaml(work / "project_snapshot.yaml", config.model_dump(mode="json"))
     if state["inherited_plan"]:
@@ -339,12 +461,13 @@ def require_plan_approval(root, work, manifest, plan_only, approved_plan_hash):
 def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=None,
                revise: str | None = None, feedback="", backend=None, model=None, api_key=None,
                max_output_tokens=None, reasoning_effort=None, plan_only=False, outline_feedback="", approved_plan_hash=None,
-               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None, writer=None, outline_run=None):
+               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None, outline_run=None):
     """``jev_probe`` asks Jev in the gap probe of a new run (jev.py); ``probe_key`` is the OpenRouter key for it,
     otherwise OPENROUTER_API_KEY. ``web_search`` "perplexity" sends a new run's supplementary searches through
-    Perplexity (D-151), with ``perplexity_key`` or PERPLEXITY_API_KEY. ``writer`` "agent" writes a new run's episodes
-    with the story agent (story_agent.py, D-181). ``outline_run`` with ``episode`` writes that episode of another run's
-    approved outline without planning again (outline_inputs). A resumed run keeps the choices it started with."""
+    Perplexity (D-151), with ``perplexity_key`` or PERPLEXITY_API_KEY. The story agent writes every episode
+    (story_agent.py, D-181, D-184), a revision too. ``outline_run`` with ``episode`` writes that episode of another
+    run's approved outline without planning again (outline_inputs). A resumed run keeps the choices it started
+    with."""
     root = root.resolve()
     with project_lock(root):
         config = load_project(root)
@@ -353,35 +476,22 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             raise AppError("Inhaltsverzeichnis zum Überarbeiten im Planungsmodus fortsetzen.", code="invalid_plan")
         if (revise and (resume or (episode and episode != revise))) or (feedback and not revise):
             raise AppError("--revise mit einer passenden Folge und optional --feedback verwenden.", code="invalid_revision")
-        if revise and writer == "agent":
-            # The story agent has no revision task: the feedback is read only by the writing prompt (D-181).
-            raise AppError("Eine Überarbeitung schreibt der Schreib-Prompt; der Erzähl-Agent kennt keine Rückmeldung.",
-                           code="invalid_revision")
         if outline_run and (resume or revise or plan_only or not episode):
             raise AppError("--from-outline schreibt eine Folge (--episode) eines freigegebenen Inhaltsverzeichnisses in "
                            "einem neuen Lauf.", code="invalid_request", status="blocked")
+        if resume:
+            # Begun with the writing prompt and nothing written: it continues on the agent's stages (D-184).
+            retire_prompt_stages(root, run_id)
         state = resumed_run(root, run_id) if resume else new_run(root, research_id, dossier,
                                                                  episode=episode, revise=revise, feedback=feedback,
                                                                  roles=host_roles_of(config), outline_run=outline_run)
+        if not resume:
+            state["speaking_rate"] = speaking_rate(root, config)
         if jev_probe and resume and not state["execution"].jev_probe:
             raise AppError("Die Jev-Lückenprobe gilt nur für neue Skriptläufe; ein laufender behält seine Lückenproben.",
                            code="invalid_request", status="blocked")
         if jev_probe:
             state["execution"] = state["execution"].model_copy(update={"jev_probe": True})
-        if writer not in (None, *WRITERS):
-            raise AppError(f"Unbekannter Schreiber: {writer}.", code="invalid_request", status="blocked")
-        if writer is None and not resume:
-            # A new run takes the project's choice (studio/writer.json), as it takes its modes and the Jev probe; a
-            # revision keeps the writing prompt, which reads its feedback.
-            writer = "prompt" if revise else state["execution"].writer
-        if writer and resume:
-            started = "agent" if "story" in state["manifest"].stages else "prompt"
-            if writer != started:
-                raise AppError("Ein laufender Skriptlauf behält seinen Schreiber; für den anderen einen neuen Lauf "
-                               "starten.", code="invalid_request", status="blocked")
-        state["writer"] = writer
-        if writer and not resume:
-            state["execution"] = state["execution"].model_copy(update={"writer": writer})
         text_generation = text_generation_settings(config, backend=backend, model=model, max_output_tokens=max_output_tokens,
                                                    reasoning_effort=reasoning_effort, saved=state["saved_backend"],
                                                    web_search=web_search)
@@ -413,7 +523,8 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                              sources=sources, context=context, episode=state["episode"], revision=state["revision"],
                              execution=state["execution"], plan_only=plan_only, previous_outline=previous_outline,
                              outline_feedback=outline_feedback, series_review_version=state["series_review_version"],
-                             text_generation=text_generation, resume=resume, style_notes=notes, probe_key=probe_key)
+                             text_generation=text_generation, resume=resume, style_notes=notes, probe_key=probe_key,
+                             speaking_rate=inputs.get("speaking_rate", SPOKEN_WORDS_PER_MINUTE))
         if not plan_only and (work / "series_plan.json").exists():
             pipeline.refresh_foundations(pipeline.selected()[1])
         return execute_stages(root, manifest, state["path"], pipeline.stages(),
@@ -421,14 +532,16 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
 
 
 def series_review_target(root: Path, run_id: str) -> dict:
-    """Which script run a series-review run judged and whether its verdict reached the report."""
+    """Which script run a series-review run judged, or which outline's published episodes, and whether its verdict
+    reached the report."""
     inputs = json.loads((manifest_path(root.resolve(), run_id).parent / "inputs.json").read_text(encoding="utf-8"))
-    return {"script_run_id": inputs["script_run_id"], "published_run_id": inputs.get("published_run_id"),
-            "report_mirrored": bool(inputs.get("mirror_report"))}
+    return {"script_run_id": inputs.get("script_run_id"), "outline_run_id": inputs.get("outline_run_id"),
+            "published_run_id": inputs.get("published_run_id"), "report_mirrored": bool(inputs.get("mirror_report"))}
 
 
-def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reasoning_effort=None):
-    """Review a published run's scripts on their own, without touching that run's folder.
+def run_series_review(root: Path, *, run_id=None, outline_run=None, backend=None, model=None, reasoning_effort=None):
+    """Review a published run's scripts on their own, without touching that run's folder; with ``outline_run``, the
+    published episodes of that outline, each written by a run of its own (outline_episodes, D-184), once all are.
 
     The verdict lands in a new run of kind ``series_review``. It is mirrored into
     ``reports/script_quality.yaml`` only when the reviewed run is the one that report describes
@@ -441,18 +554,30 @@ def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reas
     root = root.resolve()
     with project_lock(root):
         config = load_project(root)
-        published = json.loads((root / "episodes/latest.json").read_text(encoding="utf-8")) if (
-            root / "episodes/latest.json").is_file() else {}
-        source_id = run_id or published.get("run_id")
-        if not source_id:
-            raise AppError("Kein veröffentlichter Skriptlauf gefunden.", code="unknown_run", status="blocked")
-        source = manifest_path(root, source_id).parent
-        reviewed = RunManifest.model_validate(read_yaml(source / "run_manifest.yaml"))
-        if reviewed.kind != "script" or reviewed.status != "completed":
-            raise AppError("Die Serienprüfung braucht einen abgeschlossenen Skriptlauf.",
-                           code="invalid_run", status="blocked")
-        plan = SeriesPlan.model_validate_json((source / "series_plan.json").read_text(encoding="utf-8"))
-        scripts = reviewed_scripts(source, plan)
+        if outline_run:
+            rows = outline_episodes(root, outline_run)
+            missing = [row["episode_id"] for row in rows if row["run_id"] is None]
+            if missing:
+                raise AppError("Die Serienprüfung liest alle Folgen des Inhaltsverzeichnisses; noch nicht geschrieben: "
+                               + ", ".join(missing) + ".", code="series_incomplete", status="blocked")
+            plan = SeriesPlan.model_validate_json(
+                (manifest_path(root, outline_run).parent / "series_plan.json").read_text(encoding="utf-8"))
+            scripts = [EpisodeScript.model_validate(read_yaml(root / "episodes" / row["episode_id"] / "script.yaml"))
+                       for row in rows]
+            source_id, episode_runs = None, {row["episode_id"]: row["run_id"] for row in rows}
+        else:
+            published = json.loads((root / "episodes/latest.json").read_text(encoding="utf-8")) if (
+                root / "episodes/latest.json").is_file() else {}
+            source_id, episode_runs = run_id or published.get("run_id"), None
+            if not source_id:
+                raise AppError("Kein veröffentlichter Skriptlauf gefunden.", code="unknown_run", status="blocked")
+            source = manifest_path(root, source_id).parent
+            reviewed = RunManifest.model_validate(read_yaml(source / "run_manifest.yaml"))
+            if reviewed.kind != "script" or reviewed.status != "completed":
+                raise AppError("Die Serienprüfung braucht einen abgeschlossenen Skriptlauf.",
+                               code="invalid_run", status="blocked")
+            plan = SeriesPlan.model_validate_json((source / "series_plan.json").read_text(encoding="utf-8"))
+            scripts = reviewed_scripts(source, plan)
         text_generation = text_generation_settings(config, backend=backend, model=model,
                                                    reasoning_effort=reasoning_effort)
         adapter = build_adapter(config, text_generation, None)
@@ -462,8 +587,12 @@ def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reas
         identifier = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
         path = manifest_path(root, identifier)
         work = path.parent
-        inputs = {"version": SERIES_REVIEW_VERSION, "script_run_id": source_id,
-                  "published_run_id": published_run_id, "mirror_report": published_run_id == source_id,
+        # The published episodes of an outline are what the report describes: their verdict is mirrored into it.
+        inputs = {"version": SERIES_REVIEW_VERSION,
+                  **({"outline_run_id": outline_run, "episode_runs": episode_runs} if outline_run else
+                     {"script_run_id": source_id}),
+                  "published_run_id": published_run_id,
+                  "mirror_report": bool(outline_run) or published_run_id == source_id,
                   "scripts": [s.model_dump() for s in scripts], "plan": plan.model_dump()}
         write_json(work / "inputs.json", inputs)
         manifest = RunManifest(run_id=identifier, kind="series_review",
@@ -494,8 +623,16 @@ def run_series_review(root: Path, *, run_id=None, backend=None, model=None, reas
                 return re_asked(once, cast_note(config) + prompt)
 
             report = series_report(config, plan, scripts, manifest.input_hash, invoke)
-            write_json(work / "series_review.json", {"report": report, "sha256": digest(report)})
+            # What blocks, per episode, so the Studio can offer each episode's revision with it (D-184).
+            issues = series_issues(SeriesReview.model_validate(report["review"])) if report.get("review") else {}
+            write_json(work / "series_review.json", {
+                "report": report, "sha256": digest(report),
+                "episode_issues": {key: [issue.model_dump() for issue in rows] for key, rows in issues.items()}})
             outputs = [work / "series_review.json", work / "inputs.json"]
+            if outline_run:
+                # Where the Studio finds the latest review of an outline's published episodes.
+                write_json(root / SERIES_REVIEW_POINTER, {"outline_run_id": outline_run, "run_id": identifier})
+                outputs.append(root / SERIES_REVIEW_POINTER)
             if inputs["mirror_report"]:
                 quality["series_review"] = report
                 quality["complete_series_review"] = report["status"] == "passed"

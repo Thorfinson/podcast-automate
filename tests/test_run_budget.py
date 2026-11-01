@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from podcast_automate.errors import AppError
+from podcast_automate.models import EpisodeScript
 from podcast_automate.research import reconcile_budget, reserve_call, settle_call, settle_external
 from podcast_automate.run_budget import BudgetApproval, approve_model_call_limit, effective_limits
 from podcast_automate.script_budget import calls_per_episode
@@ -10,8 +11,32 @@ from podcast_automate.script_models import ScriptIssue, ScriptReview
 from podcast_automate.scripting import outline_hash, run_script
 from podcast_automate.storage import file_hash, load_project, read_yaml, write_json, write_yaml
 from podcast_automate.studio_progress import script_progress
-from podcast_automate.teaching import TeachingPlan
 from tests import script_fixtures as fixtures
+
+
+def story_sessions(work):
+    """The call folders of the story agent's sessions in a run: each is one charged call that no model fake answers."""
+    return [path.parent for path in (work / "calls").glob("call_*/output_schema.json")
+            if json.loads(path.read_text(encoding="utf-8")).get("title") == "StorySession"]
+
+
+REPAIRED = "Repariert."
+
+
+def repaired_draft(prompt):
+    """A story repair that replaces the last word of host_b's line in the draft it was given, so it stays inside the
+    editable segments and the length."""
+    draft = json.loads(prompt.splitlines()[-1])["draft"]
+    for segment in draft["segments"]:
+        if segment["speaker_id"] == "host_b":
+            segment["text"] = segment["text"].rsplit(" ", 1)[0] + " " + REPAIRED
+    return EpisodeScript.model_validate(draft)
+
+
+def blocking_point(prompt):
+    """A grounding issue on host_b's line of the script a review was given: it blocks, and the story repair answers it."""
+    segment = next(s for s in json.loads(prompt.splitlines()[-1])["script"]["segments"] if s["speaker_id"] == "host_b")
+    return ScriptIssue(category="grounding", segment_ids=[segment["segment_id"]], reason="Kein Beleg.")
 
 
 class RunBudgetTests(unittest.TestCase):
@@ -28,10 +53,16 @@ class RunBudgetTests(unittest.TestCase):
     def test_raise_resumes_same_approved_run_without_resetting_counts_or_changing_inputs(self):
         plan_hash = outline_hash(self.work)
         write_json(self.work / "budget.json", {"model_calls": 40, "search_rounds": 2})
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.fixture.model):
+        asked = []
+
+        def model(prompt, schema, directory, **kwargs):
+            asked.append(schema.__name__)
+            return self.fixture.model(prompt, schema, directory, **kwargs)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             blocked = run_script(self.root, resume=True, approved_plan_hash=plan_hash)
             # The used allowance equals the limit: the run stops before the first paid teaching call.
             self.assertEqual(blocked.stages["teaching"].error.code, "script_budget_insufficient")
+            self.assertEqual(asked, [])
             protected = [self.root / "project.yaml", self.work / "plan_approval.json", self.work / "inputs.json",
                          self.work / "script_request.json", self.work / "budget.json"]
             before = {p: file_hash(p) for p in protected}
@@ -43,10 +74,17 @@ class RunBudgetTests(unittest.TestCase):
         counts = json.loads((self.work / "budget.json").read_text())
         self.assertGreater(counts["model_calls"], 40)
         self.assertEqual(counts["search_rounds"], 2)
-        # Independent check of the projection table: the no-repair fixture spends exactly the projected
-        # minimum per episode plus one series review. A new model call in any stage must update STAGE_CALLS.
+        # Independent check of the projection table, from what the no-repair fixture pipeline actually spent: the
+        # model calls it answered and the story agent's sessions, each counted once in budget.json. Per episode that is
+        # the story material, the orientation sheet and its check, the session and the critique its fake agent asks
+        # for, and the script review; then one series review. A new model call in any stage must update STAGE_CALLS.
+        sessions = story_sessions(self.work)
         episodes = len(json.loads((self.work / "series_plan.json").read_text(encoding="utf-8"))["episodes"])
-        self.assertEqual(counts["model_calls"], 40 + calls_per_episode() * episodes + 1)
+        self.assertEqual(len(sessions), episodes)
+        self.assertEqual(sorted(asked), sorted(["StoryMaterial", "OrientationSheet", "OrientationReview", "StoryCritique",
+                                                "ScriptReview"] * episodes + ["SeriesReview"]))
+        self.assertEqual(counts["model_calls"], 40 + len(asked) + len(sessions))
+        self.assertEqual(len(asked) + len(sessions), calls_per_episode() * episodes + 1)
         self.assertFalse(read_yaml(self.root / "episodes/audio_review.yaml")["audio_approved"])
         self.assertEqual(script_progress(self.root, completed.model_dump(mode="json"))["model_call_limit"], 120)
         fresh = self.root / "runs/run_fresh"
@@ -65,36 +103,44 @@ class RunBudgetTests(unittest.TestCase):
         projection = json.loads((self.work / "budget_projection.json").read_text(encoding="utf-8"))
         self.assertFalse(projection["feasible"])
         self.assertEqual(projection["remaining"], 1)
-        self.assertGreaterEqual(projection["minimum_remaining_calls"], 9)
         self.assertIn("Mindestens", blocked.stages["teaching"].error.message)
         self.assertEqual(json.loads((self.work / "budget.json").read_text())["model_calls"], 39)
         approve_model_call_limit(self.root, self.run.run_id, 120)
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root, resume=True, run_id=self.run.run_id)
         self.assertEqual(run.status, "completed")
-        self.assertIn("TeachingPlan", calls)
-        self.assertGreater(json.loads((self.work / "budget.json").read_text())["model_calls"], 40)
+        self.assertIn("StoryMaterial", calls)
+        spent = json.loads((self.work / "budget.json").read_text())["model_calls"]
+        self.assertGreater(spent, 40)
+        # The minimum the gate refused with is what the no-repair fixture then spent, its story session included.
+        self.assertEqual(spent - 39, len(calls) + len(story_sessions(self.work)))
+        self.assertEqual(projection["minimum_remaining_calls"], spent - 39)
         self.assertTrue(json.loads((self.work / "budget_projection.json").read_text(encoding="utf-8"))["feasible"])
 
     def test_running_worker_reads_a_raised_allowance_before_its_next_call(self):
-        # 28 of 40 used leaves exactly the projected minimum (one episode of 11 calls since D-180, plus the series
+        # 33 of 40 used leaves exactly the projected minimum (one episode of 6 calls since D-184, plus the series
         # review), so the pre-stage gate passes. One review repair then needs more calls than the projection promised;
         # the allowance raised during the first teaching call must be honoured without a restart.
-        write_json(self.work / "budget.json", {"model_calls": 28, "search_rounds": 0})
-        reviews = []
+        from podcast_automate.narration import StoryMaterial
+        write_json(self.work / "budget.json", {"model_calls": 33, "search_rounds": 0})
+        reviews, repairs = [], []
         def model(prompt, schema, directory, **kwargs):
-            if schema is TeachingPlan:
+            if schema is StoryMaterial:
                 approve_model_call_limit(self.root, self.run.run_id, 120)
+            if schema is EpisodeScript:
+                repairs.append(schema)
+                return repaired_draft(prompt), {}
             value, meta = self.fixture.model(prompt, schema, directory, **kwargs)
             if schema is ScriptReview:
                 reviews.append(schema)
                 if len(reviews) == 1:
-                    value.issues = [ScriptIssue(category="depth", segment_ids=["seg_002"], reason="Repair once.")]
+                    # A blocking point on host_b's line of the agent's draft: the story repair answers it.
+                    value.issues = [blocking_point(prompt)]
             return value, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             run = run_script(self.root, resume=True, approved_plan_hash=outline_hash(self.work))
-        self.assertEqual(run.status, "completed")
-        self.assertEqual(len(reviews), 2)
+        self.assertEqual(run.status, "completed", {k: v.error for k, v in run.stages.items() if v.error})
+        self.assertEqual((len(reviews), len(repairs)), (2, 1))
         self.assertGreater(json.loads((self.work / "budget.json").read_text())["model_calls"], 40)
 
     def test_approval_cannot_be_reused_for_another_run_and_does_not_raise_search_limit(self):
@@ -193,28 +239,37 @@ class ReaskedStopTests(unittest.TestCase):
     """D-155: a script stop whose correction loop keeps no rejection is resumed by asking anew, so fresh attempts (and an
     allowance of them) cover it; a stop that would replay a saved state does not take them."""
 
-    def test_a_spent_writing_stop_takes_fresh_attempts_and_the_resume_writes_the_episode_anew(self):
-        from podcast_automate.models import EpisodeScript
+    def test_a_spent_story_repair_stop_takes_fresh_attempts_and_the_resume_repairs_the_episode_anew(self):
+        from podcast_automate.research_patches import MAX_REJECTIONS
         from podcast_automate.run_budget import REASKED_MARKER, approve_fresh_attempts, fresh_attempts_available
         fixture = fixtures.script_project(self)
         root = fixture.root
-        drafts = []
+        repairs, reviews = [], []
 
         def model(prompt, schema, directory, **kwargs):
-            if schema is EpisodeScript and len(drafts) < 4:
-                # The draft and its three repairs keep the wrong episode ID (validate_script), so writing stops.
-                drafts.append(prompt)
-                return fixtures.example_script().model_copy(update={"episode_id": "ep_999"}), {}
-            return fixture.model(prompt, schema, directory, **kwargs)
+            if schema is EpisodeScript:
+                # The story repair and its corrections keep the wrong episode ID (validate_script), so the review stops.
+                repairs.append(prompt)
+                if len(repairs) <= MAX_REJECTIONS + 1:
+                    return repaired_draft(prompt).model_copy(update={"episode_id": "ep_999"}), {}
+                return repaired_draft(prompt), {}
+            value, meta = fixture.model(prompt, schema, directory, **kwargs)
+            if schema is ScriptReview:
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    value.issues = [blocking_point(prompt)]
+            return value, meta
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=fixture.model):
             planned = run_script(root, plan_only=True)
         work = root / "runs" / planned.run_id
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             stopped = run_script(root, resume=True, approved_plan_hash=outline_hash(work))
-        error = stopped.stages["writing"].error
-        self.assertEqual((stopped.status, error.code, len(drafts)), ("blocked", "invalid_script", 4))
+        error = stopped.stages["review"].error
+        self.assertEqual((stopped.status, error.code, len(repairs)), ("blocked", "invalid_script", MAX_REJECTIONS + 1))
         self.assertIn(REASKED_MARKER, error.message)
-        self.assertFalse((work / "drafts/ep_001.json").exists(), "a rejected draft is never kept for a resume")
+        self.assertFalse((work / "reviewed/ep_001.json").exists(), "a rejected repair is never kept for a resume")
+        checkpoint = json.loads((work / "reviews/ep_001_checkpoint.json").read_text(encoding="utf-8"))
+        self.assertEqual((checkpoint["draft"]["episode_id"], checkpoint["repairs"]), ("ep_001", 0))
         self.assertTrue(fresh_attempts_available(root, planned.run_id))
         record = approve_fresh_attempts(root, planned.run_id)
         self.assertEqual((record["supplements"], record["reviews"], record["series_repair"]), ([], [], False))
@@ -223,7 +278,9 @@ class ReaskedStopTests(unittest.TestCase):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
             done = run_script(root, resume=True, run_id=planned.run_id)
         self.assertEqual(done.status, "completed", done.model_dump())
-        self.assertEqual(json.loads((work / "drafts/ep_001.json").read_text(encoding="utf-8"))["episode_id"], "ep_001")
+        reviewed = json.loads((work / "reviewed/ep_001.json").read_text(encoding="utf-8"))
+        self.assertEqual(reviewed["episode_id"], "ep_001")
+        self.assertIn(REPAIRED, " ".join(segment["text"] for segment in reviewed["segments"]))
 
     def test_a_stop_that_replays_a_saved_state_takes_no_fresh_attempts(self):
         import tempfile
@@ -239,15 +296,17 @@ class ReaskedStopTests(unittest.TestCase):
                 run_id="run_s", kind=kind, status="blocked", project_hash="p", input_hash="i",
                 stages={stage: StageRecord(status="blocked", error=Failure(code=code, message=message))}).model_dump(mode="json"))
             return fresh_attempts_available(root, "run_s")
-        spent = f"Lehrprüfung lässt Kriterien aus. Der Aufruf wurde 2 Mal mit Korrekturhinweis wiederholt; {REASKED_MARKER}."
-        self.assertTrue(stopped("script", "review", "invalid_teaching_review", spent))
+        spent = f"Die Reparatur verletzt ihre Vorgaben. Der Aufruf wurde 2 Mal mit Korrekturhinweis wiederholt; {REASKED_MARKER}."
+        # The story repair of a review, the orientation check and the supplementary research ask anew on resume.
+        self.assertTrue(stopped("script", "review", "invalid_script", spent))
+        self.assertTrue(stopped("script", "teaching", "invalid_model_output", "Return every entry exactly once. " + spent))
         self.assertTrue(stopped("script", "teaching", "invalid_supplement", "Give issue_basis for every issue. " + spent))
         # A changed review checkpoint is read again on every resume; a stop the user decides keeps its own card.
         self.assertFalse(stopped("script", "review", "invalid_script", "Gespeicherter Review-Entwurf ist ungültig."))
-        self.assertFalse(stopped("script", "teaching", "teaching_design_failed", spent))
+        self.assertFalse(stopped("script", "review", "script_review_failed", spent))
         # Rejections a research run saved are replayed until fresh attempts set them aside (stuck_calls), whatever the code.
         self.assertFalse(stopped("research", "dossier", "invalid_model_output", spent))
-        self.assertFalse(stopped("script", "writing", "invalid_script", "Gespeicherte Nachrecherche: die abgewiesenen "
+        self.assertFalse(stopped("script", "teaching", "invalid_supplement", "Gespeicherte Nachrecherche: die abgewiesenen "
                                  "Antworten sind gespeichert."))
 
     def test_the_marker_is_what_the_correction_loops_without_a_receipt_store_end_with(self):
@@ -259,10 +318,10 @@ class ReaskedStopTests(unittest.TestCase):
         from podcast_automate.script_models import ScriptReview
 
         def check(answer):
-            raise AppError("Lehrprüfung lässt Kriterien aus.", code="invalid_teaching_review", status="blocked")
+            raise AppError("Die Reparatur verletzt ihre Vorgaben.", code="invalid_script", status="blocked")
         with self.assertRaises(AppError) as corrected:
             corrected_call(lambda prompt, schema, version: "answer", "task\n{}", ScriptReview, "v1", check)
-        self.assertEqual(corrected.exception.code, "invalid_teaching_review")
+        self.assertEqual(corrected.exception.code, "invalid_script")
         self.assertIn(REASKED_MARKER, str(corrected.exception))
 
         def rejected(prompt):
@@ -407,17 +466,24 @@ class BilledScriptRunTests(unittest.TestCase):
             stopped = run_script(self.root, backend="claude_api", api_key=self.KEY)
             work = self.root / "runs" / stopped.run_id
             budget = json.loads((work / "budget.json").read_text(encoding="utf-8"))
-            # Four calls of 0.30 USD reach the 1 USD limit; the fifth is refused before it is charged.
+            # Four calls of 0.30 USD (the outline, the story material, the orientation sheet and its check) reach the
+            # 1 USD limit; the fifth, the story agent's session, is refused before it is charged.
             self.assertEqual(stopped.status, "blocked")
             self.assertEqual([stage.error.code for stage in stopped.stages.values() if stage.error],
                              ["cost_limit_reached"])
             self.assertEqual((budget["model_calls"], budget["billed_usd"], budget["priced_attempts"]), (4, 1.2, 4))
+            self.assertEqual(stopped.stages["story"].error.code, "cost_limit_reached")
+            self.assertEqual(story_sessions(work), [])
             self.assertEqual(set(self.keys), {("api_key", self.KEY)})
             approve_model_call_limit(self.root, stopped.run_id, cost_usd=200)
             finished = run_script(self.root, resume=True, run_id=stopped.run_id, api_key=self.KEY)
-        self.assertEqual(finished.status, "completed")
+        self.assertEqual(finished.status, "completed", {k: v.error for k, v in finished.stages.items() if v.error})
         budget = json.loads((work / "budget.json").read_text(encoding="utf-8"))
-        self.assertEqual(budget["billed_usd"], round(0.3 * budget["model_calls"], 6))
+        # Every call counts its 0.30 USD, and the story agent's session on the key the 1.50 USD its CLI reported (D-184).
+        sessions = story_sessions(work)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(json.loads((sessions[0] / "metadata.json").read_text(encoding="utf-8"))["provider"], "claude_api")
+        self.assertEqual(budget["billed_usd"], round(0.3 * (budget["model_calls"] - len(sessions)) + 1.5 * len(sessions), 6))
         self.assertEqual(len(budget["settled"]), budget["model_calls"])
         request = json.loads((work / "script_request.json").read_text(encoding="utf-8"))
         self.assertEqual((request["text_generation"]["provider"], request["text_generation"]["adapter_version"]),

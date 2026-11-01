@@ -193,7 +193,7 @@ accepts the material version for a brief at levels 2 and 3, and only for those.
   is built from the parts of the supplementary research (`teaching_research.py`): source discovery, the supplement
   check and the source review.
 - **During the script run:** the supplementary research of the teaching plan stays available
-  ([Supplementary research for the teaching plan](../TEACHING.md#supplementary-research-for-the-teaching-plan)), with
+  ([Supplementary research for the teaching plan](../TEACHING.md#supplementary-research)), with
   the same relaxations.
 
 What is relaxed and what is kept:

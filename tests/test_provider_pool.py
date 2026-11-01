@@ -88,11 +88,13 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
                 patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
             run = run_script(self.root, backend="auto")
         self.assertEqual(run.status, "completed")
-        self.assertEqual(len(self.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
+        # The outline, the story material, the orientation sheet and its check, a critique, the script review and the
+        # series review: the story agent's session runs on the Claude login beside the pool (D-184).
+        self.assertEqual(len(self.calls), 7)
         self.assertEqual([c[0] for c in claude_calls], ["call_001", "call_002", "call_003"])
         self.assertEqual(claude_calls[0][1:], ("claude-haiku-5-5", "xhigh"))
         self.assertEqual(codex_calls[0], ("call_003", "gpt-6-astra", "xhigh"))
-        self.assertEqual(len(codex_calls), 11)  # +2 since 2026-10-23: story material and narration review (D-180)
+        self.assertEqual(len(codex_calls), 5)
         work = self.root / "runs" / run.run_id
         self.assertEqual(json.loads((work / "budget.json").read_text())["model_calls"], 1 + calls_per_episode() + 1)
         first = json.loads((work / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))
@@ -247,8 +249,8 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
         self.assertEqual(resumed.status, "completed")
         self.assertEqual(resumed.input_hash, run.input_hash, "the inputs keep the selection the run started with")
         self.assertEqual(len(claude_calls), 3, "Astra is asked first now, and Claude is out anyway")
-        # Listener readbacks ask at their stage level (text_settings.STAGE_EFFORT_CAPS), every other call at xhigh.
-        self.assertEqual(set(codex_calls), {("gpt-6-astra", "xhigh"), ("gpt-6-astra", "medium")})
+        # Every call at the run's level: no call of a story run has a stage level of its own (STAGE_EFFORT_CAPS).
+        self.assertEqual(set(codex_calls), {("gpt-6-astra", "xhigh")})
         self.assertEqual((selection["provider"], selection["prefer"]), ("auto", "codex_cli"))
         # Claude works with the catalog default after a switch (Haiku 5.5 at xhigh, D-166), not the run's own level.
         self.assertEqual(selection["candidates"], {"codex_cli": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"},
@@ -315,8 +317,8 @@ class AutomaticScriptRunTests(fixtures.ScriptProjectCase):
                 patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
             run = run_script(self.root, backend="claude_code", reasoning_effort="max")
         self.assertEqual(run.status, "completed")
-        # The run's level for every call but the listener's, which asks at its stage level.
-        self.assertEqual(set(seen), {("claude-haiku-5-5", "max"), ("claude-haiku-5-5", "medium")})
+        # The run's level for every call: no call of a story run has a stage level of its own (STAGE_EFFORT_CAPS).
+        self.assertEqual(set(seen), {("claude-haiku-5-5", "max")})
         request = json.loads((self.root / "runs" / run.run_id / "script_request.json").read_text(encoding="utf-8"))
         self.assertEqual(request["text_generation"]["adapter_version"], "claude_code.v1")
         choice = json.loads((self.root / "runs" / run.run_id / "calls/call_001/provider_choice.json").read_text(encoding="utf-8"))
@@ -589,7 +591,7 @@ class PoolUnitTests(unittest.TestCase):
             pool.structured("Prompt", TextProbeOutput, Path(temp) / "quota", prompt_version="test")
         self.assertEqual(error.exception.details, {"provider": "codex_cli"})
 
-    def test_a_listener_or_expression_call_asks_at_its_stage_level_and_records_the_runs(self):
+    def test_an_expression_call_asks_at_its_stage_level_and_records_the_runs(self):
         config = TopicBrief(topic="Thema")
         seen = []
 
@@ -602,14 +604,16 @@ class PoolUnitTests(unittest.TestCase):
                 pool = AdapterPool(config.runtime, text_generation_settings(config, backend="claude_code",
                                                                             reasoning_effort=effort))
                 with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", autospec=True, side_effect=claude):
+                    # The listener readback, capped too, ended with the writing prompt (D-184): its family is no
+                    # stage of its own any more and keeps the run's level.
                     for version in ("listener_readback.v2", "audio_expression.v1", "script_review.v9-gaps-notes"):
                         directory = Path(temp) / effort / version
                         pool.structured("Prompt", TextProbeOutput, directory, prompt_version=version)
                         choice = json.loads((directory / "provider_choice.json").read_text(encoding="utf-8"))
-                        capped = effort == "xhigh" and not version.startswith("script_review")
+                        capped = effort == "xhigh" and version.startswith("audio_expression")
                         self.assertEqual(choice.get("run_effort"), "xhigh" if capped else None)
         # Evidence reviews keep the run's level; a level already below the cap stays as it is.
-        self.assertEqual(seen, [("listener_readback.v2", "medium"), ("audio_expression.v1", "medium"),
+        self.assertEqual(seen, [("listener_readback.v2", "xhigh"), ("audio_expression.v1", "medium"),
                                 ("script_review.v9-gaps-notes", "xhigh"), ("listener_readback.v2", "low"),
                                 ("audio_expression.v1", "low"), ("script_review.v9-gaps-notes", "low")])
 

@@ -2,7 +2,7 @@
 title: Architecture
 doc_type: architecture
 status: current
-last_reviewed: 2026-10-23
+last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/claude_code.py
   - src/podcast_automate/codex.py
@@ -74,8 +74,8 @@ review and two probes complement them:
 | Run kind | Command | Stages in the manifest | Covers |
 | --- | --- | --- | --- |
 | `research` | `pla research` | `discovery`, `retrieval`, `dossier`, `review`, `completeness`, `publish` | Topic planning, research, ingestion, synthesis up to the reviewed dossier |
-| `script` | `pla script` | `planning`, `teaching`, `writing`, `narration`, `polishing`, `review`, `publish` (a run started before 2026-10-23 without `narration`) | Compact knowledge model, series plan, teaching plans, scripts and their reviews |
-| `series_review` | `pla series-review` | `review` | Review of a published script run as a series |
+| `script` | `pla script` | `planning`, `teaching`, `story`, `review`, `publish` (`scripting.STORY_STAGES`; a run begun before 2026-11-01 with `writing`, `narration` and `polishing`: [Runs begun before D-184](SCRIPTS.md#runs-begun-before-d-184)) | Compact knowledge model, series plan, each episode's story material and orientation sheet, scripts written by the story agent and their reviews |
+| `series_review` | `pla series-review`, or the Studio | `review` | Review of a published script run, or of an outline's published episodes, as a series |
 | `episode_audio` | `pla audio` | `expression`, `synthesis`, `assembly`, `publish` | Recording, assembly, checks and export of one episode |
 | `text_probe` | `pla text-probe` | `codex_probe` | Technical text probe |
 | `audio_probe` | `pla audio-probe` | `synthesis`, `assembly` | Technical Qwen probe |
@@ -86,13 +86,15 @@ inside the stages, and rendering and export together form `episode_audio` (why: 
 [Commands](PRODUCT.md#commands) for the commands and [Run kinds and order](BUSINESS_LOGIC.md#run-kinds-and-order) for
 when each run kind may start.
 
-**Context per episode.** A long series is never requested in one complete script call. Each episode receives its
-relevant source sections, the series plan, the knowledge-model entries it needs and an overview of what has already
-been explained and which questions are still open.
+**Context per episode.** A long series is never requested in one complete script call. Each episode is written in a
+session of its own that receives its relevant source sections, its outline entry and place in the series, the
+findings it needs, its story material and the published text of the episodes before it
+([What the session gets](SCRIPTS.md#what-the-session-gets)).
 
-**Supplementary research** is possible when planning or writing reveals a concrete gap. New subject-matter content is
-first anchored in the knowledge model; affected plans, scripts and quality reports are then reviewed again. Failed
-stages stay resumable.
+**Supplementary research** is possible when the gap probe finds unread sections for a gap an episode reads, or the
+story material names a story its sections only point to ([Supplementary research](TEACHING.md#supplementary-research)).
+New subject-matter content is first anchored in the knowledge model; the episode's material is then collected again.
+Failed stages stay resumable.
 
 **Determinism.** The flow, the schema checks and the reuse of saved results are deterministic. New model calls are
 not promised to be reproducible word for word. A saved run must stay traceable from its frozen inputs and results and
@@ -107,6 +109,7 @@ must be exportable again.
 | Worker process | The Studio server, one per job: `python -m podcast_automate.studio_worker <project>` | Runs one job (conversation, research, script, recording, voice samples) from a request on stdin and keeps the computer awake while it runs. |
 | Status monitor | A worker of a research or script job: `python -m podcast_automate.status_summary` | Writes the status briefs under `runs/<run_id>/status_reports/` ([Progress and telemetry](STUDIO.md#progress-and-telemetry)). |
 | Model CLI | A text adapter, per call | `claude -p …` or an ephemeral `codex app-server` ([Text provider adapters](#text-provider-adapters)); stopped with its whole process tree when the job is stopped. |
+| Story agent session | The script run's `story` stage, per episode | `claude -p` with Opus 5.5 in `runs/<run_id>/story/<episode_id>/`; its four command scripts run `python -m podcast_automate.story_agent <command>`, and the run answers its critique requests while it waits ([Story agent](SCRIPTS.md#story-agent)). |
 | PDF parser | Source import: `python -m podcast_automate.pdf_text` | Parses one PDF in its own process, so a hung or crashing parse is one unreadable source. |
 | Qwen worker | Audio stage: `qwen_worker.py` run with `runtime.tts_python` | Synthesises the segments in the separate PyTorch environment, usually `.venv-tts` ([Qwen](AUDIO.md#qwen)). |
 | FFmpeg / ffprobe | Assembly | Mixing, measuring and encoding; found under `tools/ffmpeg/bin` or on `PATH`. |
@@ -370,17 +373,19 @@ last line), outputs (Pydantic contracts as strict JSON schema) and deterministic
 `prompts.py`. Shared rule blocks (terminology, teaching standard, continuity, episode framing, evidence rules) are
 placed before the task-specific instructions.
 
-Every call carries a version tag in code, for example `write_episode.v12-listenability`
-(`script_pipeline.WRITE_EPISODE_VERSION`). Checkpoints are bound to the hash of the complete composed prompt, so a
+Every call carries a version tag in code, for example `story_review_repair.v3-source-refs`
+(`script_pipeline.STORY_REPAIR_VERSION`). Checkpoints are bound to the hash of the complete composed prompt, so a
 text change repeats only the affected calls ([Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
 When the meaning of a prompt changes, the tag at the call site is bumped so receipts show which wording produced a
 result.
 
 The task families are: research search, with the Perplexity search split into planning the queries and selecting
 from the results; question plan and scope check; reading decision and answer review per
-sub-question; dossier composition with overall review and objection routing; series plan; story material; teaching
-plan with its review; script draft; narration review with its rework; dialogue polishing with comparison; source,
-reading, editorial and teaching reviews; and the series review. Details and the composition rules: [prompts/README.md](../src/podcast_automate/prompts/README.md).
+sub-question; dossier composition with overall review and objection routing; series plan; story material;
+orientation sheet with its check; supplementary research with its review; the story agent's critique; script review
+with its scoped repair; the series review; expression tags; and the companion kits. The story agent's own
+instructions are a document, not a prompt file (`data/story_agent_task.md`, `data/story_agent_revision.md`). Details
+and the composition rules: [prompts/README.md](../src/podcast_automate/prompts/README.md).
 
 ## Languages
 
@@ -389,7 +394,7 @@ Each kind of text has its own language rule (why: D-152, D-153, D-156):
 | Text | Language | Source |
 | --- | --- | --- |
 | What the Studio shows: its pages and the server's own messages | The interface language, German or English ([Interface language](CONFIGURATION.md#interface-language)) | The catalogs `locales/de.json` and `locales/en.json`, through `studio_text` |
-| What a podcast's listeners and readers get: download and ZIP names, the export's README, transcript notice, show notes and listening sheet, the companion kits of an episode and of the podcast with its transcript, the series outline, the teaching plan, `research_needed.md`, the readable research files, and the transparency note and MP3 comment of the AI marking (D-154) | The project's content language (`TopicBrief.language`), whatever the interface language | `content_text` |
+| What a podcast's listeners and readers get: download and ZIP names, the export's README, transcript notice, show notes and listening sheet, the companion kits of an episode and of the podcast with its transcript, the series outline, `research_needed.md`, the readable research files, and the transparency note and MP3 comment of the AI marking (D-154) | The project's content language (`TopicBrief.language`), whatever the interface language | `content_text` |
 | The command line: help texts, metavars, prints, the CLI's own messages and the doctor's own detail texts | English; codes and `--json` keys are unchanged | `cli`, `doctor` |
 | Prompts, the pipeline's messages (the `AppError` texts of the run modules), run files, receipts and hashes | As they are, never translated | The run modules |
 
@@ -421,10 +426,10 @@ topic, so a name keeps its length (`downloads.longer_than_german`).
 ## Data contracts
 
 The full contracts are being implemented step by step as validatable schemas. `pla schemas <folder>` exports the
-implemented state as JSON schemas and is the authoritative list; currently there are 21 contracts: TopicBrief,
+implemented state as JSON schemas and is the authoritative list; currently there are 14 contracts: TopicBrief,
 EpisodeScript, TextProbeOutput, RunManifest, ResearchDiscovery, SourceDocument, SourceIndex, ResearchDossier,
-DossierReview, KnowledgeModel, SeriesPlan, EpisodePlan, ScriptReview, TeachingPlan, TeachingPlanReview,
-TeachingPlanRepair, ListenerReadback, TeachingReview, EditorialReview, DialoguePolishReview and SeriesReview. Every
+DossierReview, KnowledgeModel, SeriesPlan, EpisodePlan, ScriptReview and SeriesReview. The seven contracts of the
+teaching design, the draft assessment and polishing went with them (D-184). Every
 contract forbids unknown fields (`models.Contract`). The compact knowledge model takes over the evidenced findings
 unchanged and references terms, mechanisms, examples and limits by their IDs. Series plan and scenes are
 validatable. The sections below also describe the missing target scope, such as differentiated confidence and
@@ -521,7 +526,7 @@ projects/<project>/
   inputs/                 attachments and provided works
   sources/raw/, sources/processed/
   research/, models/      dossier, source index, series plan, knowledge model
-  episodes/<ep>/          script.yaml, script.md, teaching plan, show notes, audio approval, publish descriptions
+  episodes/<ep>/          script.yaml, script.md, the story agent's plan, show notes, audio approval, publish descriptions
   reports/                quality reports
   runs/<run_id>/          manifest, checkpoints, model calls, budget, failures/
   exports/<ep>/<run_id>/  MP3, chapters, transcript, show notes, listening sheet, publish/ (companion kit)
@@ -533,7 +538,8 @@ src/podcast_automate/
   prompts/                all model instructions as text files (see prompts/README.md)
   research.py, question_*.py            research: flow, sub-questions, synthesis
   scripting.py, script_pipeline.py      script run: preparation and stages
-  narration.py                          story material and the narration review
+  narration.py                          story material and the scope of a repair
+  story_agent.py                        the story agent: its folder, session, commands and critiques
   studio.py, studio_worker.py           local server and job processes
 ```
 

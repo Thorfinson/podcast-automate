@@ -6,34 +6,37 @@ last_reviewed: 2026-11-01
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
-  - src/podcast_automate/narration.py
   - src/podcast_automate/story_agent.py
   - src/podcast_automate/data/story_agent_task.md
+  - src/podcast_automate/data/story_agent_revision.md
+  - src/podcast_automate/cast.py
+  - src/podcast_automate/narration.py
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_evidence.py
   - src/podcast_automate/script_artifacts.py
   - src/podcast_automate/script_checkpoints.py
   - src/podcast_automate/script_models.py
-  - src/podcast_automate/polishing.py
   - src/podcast_automate/series_review.py
   - src/podcast_automate/cli.py
   - src/podcast_automate/prompts/series_plan.txt
   - src/podcast_automate/prompts/episode_framing.txt
+  - src/podcast_automate/prompts/story_critique.txt
+  - src/podcast_automate/prompts/story_review_repair.txt
 ---
 
 # Scripts
 
-`pla script` turns a finished research run into a series draft (table of contents), source-checked teaching plans
-and reviewed, readable dialogue scripts, in the stages `planning`, `teaching`, `writing`, `narration`, `polishing`,
-`review` and `publish`. It produces no audio. Teaching plans and the binding editorial reviews: [Teaching
-design](TEACHING.md).
+`pla script` turns a finished research run into a series draft (table of contents) and reviewed, readable dialogue
+scripts. Every episode is written by the [story agent](#story-agent), in the stages `planning`, `teaching`, `story`,
+`review` and `publish` (`scripting.STORY_STAGES`). It produces no audio. The teaching stage prepares each episode's
+material (story material, story research, a checked orientation sheet, supplementary research): [Teaching
+stage](TEACHING.md#teaching-stage); the editorial standard the reviews hold an episode to: [Editorial
+standard](TEACHING.md#editorial-standard).
 
-A run started before 23 October 2026 has no `narration` stage in its manifest and resumes without it: no core limit,
-no story material, no story rules, no narration review, and polishing starts from the writer's draft (why: D-180). Only
-a run with the stage is called *narrated* below.
-
-A run written by the [story agent](#story-agent) has the stages `planning`, `teaching`, `story`, `review` and
-`publish` instead (`scripting.STORY_STAGES`; why: D-181).
+Until 2026-11-01 a script run could also be written by the writing prompt, with a teaching design, the stages
+`writing`, `narration` (narration review) and `polishing` and the listener, editorial and teaching reviews; they were
+removed, and the story agent is the only writer (why: D-184). Episodes those runs published stay readable and
+recordable; a run begun with them: [Runs begun before D-184](#runs-begun-before-d-184).
 
 ## Running a script job
 
@@ -49,22 +52,20 @@ A run written by the [story agent](#story-agent) has the stages `planning`, `tea
 .\.venv\Scripts\pla.exe resume .\projects\windows-pilot
 ```
 
-- Without `--episode`, the run writes every episode of the new draft; their number follows from the content
-  ([Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)).
+- Without `--episode`, the run plans and writes every episode of its new draft; their number follows from the content
+  ([Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)). Its sessions read only the episodes
+  published before the run started, so a series written so does not build on what its own episodes said; the Studio
+  writes a series [in order](#writing-a-series-in-order), one run per episode.
 - A new `script` call plans anew; `resume` reuses the saved plan and every valid draft.
 - The research run must be complete and its stored files must match their checksums. Sources are not downloaded
   again.
 - Local sources (`local_sources`) must lie inside the project folder ([Local files](SECURITY.md#local-files)).
-- `--writer agent` has a new run's episodes written by the [story agent](#story-agent); without the flag a new run
-  takes the project's choice (`studio/writer.json`, set in the Studio), else the writing prompt. A resume keeps the
-  writer the run started with and refuses a different `--writer` (`invalid_request`); only a run that waits for
-  its outline's approval with nothing after planning takes the Studio's switch (`scripting.adopt_writer`).
 - `--episode ep_007 --from-outline <run_id>` writes one episode of another script run's approved outline in a new
   run, without planning again (`scripting.outline_inputs`): the outline must be complete, approved as it stands
-  (`plan_approval_required` otherwise) and made from today's research (`inputs_changed`). The series run stays as it
-  was. One episode first, before an approved series of 20 starts 20 story agent sessions (2026-11-01). A revision (`--revise`) is
-  always written by the writing prompt, which reads its feedback; `--revise` with `--writer agent` is refused
-  (`invalid_revision`).
+  (`plan_approval_required` otherwise) and made from today's research (`inputs_changed`). The outline's run stays as
+  it was. This is how the Studio writes every episode ([Writing a series in order](#writing-a-series-in-order)).
+- A new run writes and checks its lengths at the project's speaking rate, bound in its inputs
+  ([Estimating and checking the duration](BUSINESS_LOGIC.md#estimating-and-checking-the-duration)).
 - Every model call counts against the run's call limit (`research_limits.model_calls`). Lower bound per episode
   (`script_budget.STAGE_CALLS`), projection (`runs/<run_id>/budget_projection.json`), expected calls and the stop
   `script_budget_insufficient`: [Budgets](BUSINESS_LOGIC.md#budgets). Input binding: [Runs, resume and input
@@ -77,12 +78,15 @@ The Studio sets text model and reasoning level on the Settings page
 
 | Option | Meaning |
 | --- | --- |
-| `--backend codex_cli\|claude_code\|auto\|openrouter\|claude_api` | Text provider for scripts and reviews; default `codex_cli`. `claude_api` is Claude on your Anthropic API key, billed per call and only with a money limit ([Claude on your own API key](BUSINESS_LOGIC.md#claude-on-your-own-api-key)). |
+| `--backend codex_cli\|claude_code\|auto\|openrouter\|claude_api` | Text provider for planning, the teaching stage, the agent's critiques and the reviews; default `codex_cli`. `claude_api` is Claude on your Anthropic API key, billed per call and only with a money limit ([Claude on your own API key](BUSINESS_LOGIC.md#claude-on-your-own-api-key)); it also runs the story agent's sessions on the key ([Calls and access](#calls-and-access)). |
 | `--model` | Model ID, for example `gpt-6-astra` (Codex), `claude-sonnet-5-5` or `claude-opus-5-5` (Claude). Required for OpenRouter. |
 | `--reasoning-effort` | `low`, `medium`, `high` or `xhigh` (`text_settings.REASONING_EFFORTS`); Claude also `max` (`text_settings.CLAUDE_EFFORTS`). Optional for OpenRouter, where the model must support the level. |
 | `--api-key` | OpenRouter key, or the Anthropic key with `claude_api`; without a value it is asked for hidden. |
 | `--max-output-tokens` | Output limit per OpenRouter call. |
 | `--web-search` | `model` (default) or `perplexity`: how a new run's supplementary research searches the web; the Perplexity key comes from `PERPLEXITY_API_KEY` ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). |
+
+The story agent itself does not follow `--model` and `--reasoning-effort`: its sessions are Opus 5.5 at `xhigh`
+([Story agent](#story-agent)).
 
 A new Codex run with `--model gpt-6-astra --reasoning-effort xhigh` matches the Studio's Codex choice. Defaults per
 provider, presets and minimum Claude Code versions: [Providers and models](PRODUCT.md#providers-and-models). All
@@ -108,11 +112,11 @@ and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
 
 ### OpenRouter for a script run
 
-The Codex subscription stays the default. Optionally, planning, teaching, writing, dialogue polishing and every model
-review of one script run go through OpenRouter, paid per call from its API credit. Research and the automatic
-supplementary research stay on the subscriptions, unless the run searches through Perplexity (`--web-search
-perplexity`), which lets the OpenRouter model research too; speech is generated separately
-([Recording flow](AUDIO.md#recording-flow)).
+The Codex subscription stays the default. Optionally, planning, the teaching stage, the agent's critiques and every
+model review of one script run go through OpenRouter, paid per call from its API credit; the agent's sessions still
+need the Claude subscription. Research and the automatic supplementary research stay on the subscriptions, unless the
+run searches through Perplexity (`--web-search perplexity`), which lets the OpenRouter model research too; speech is
+generated separately ([Recording flow](AUDIO.md#recording-flow)).
 
 ```powershell
 # Replace provider/model-id with an OpenRouter model ID that supports JSON schemas.
@@ -174,21 +178,21 @@ Short recaps are allowed; explained foundations should not form the main part of
 
 The plan assigns findings at two levels (`EpisodePlan` in `script_models.py`) (why: D-071):
 
-- `finding_ids` are an episode's core, the findings its explanation needs. Its scenes cover exactly these and develop
-  them fully; the dialogue must cite each.
+- `finding_ids` are an episode's core, the findings its explanation needs. The dialogue must cite each; the story
+  agent may regroup them into its own chapters but never demotes one ([Story agent](#story-agent)).
 - `supporting_finding_ids` are study details that can back a statement: citable in any scene, not required, part of
   no scene, never core of the same episode.
 - Every finding gets a place, as core or support in at least one episode, or a reasoned omission, never both
   (`script_checks.validate_plan`).
 - Where the series goal weights *understanding*, the core stays with what the theories explain in their own logic.
-- **Core limit in a narrated run** (why: D-180): at most one core finding per `CORE_MINUTES` = 4 planned minutes and
-  never fewer than `MIN_CORE` = 4 in an episode (`script_checks.core_limit`, 11 for 45 minutes), checked by
+- **Core limit** (why: D-180): at most one core finding per `CORE_MINUTES` = 4 planned minutes and never fewer than
+  `MIN_CORE` = 4 in an episode (`script_checks.core_limit`, 11 for 45 minutes), checked by
   `validate_plan(density=True)` and repaired like every plan defect; a side case or another example of the same point
   goes into the supporting findings, and a story the dossier holds goes into the core of its episode
-  (`prompts/series_plan_density.txt`). Orlagau's episodes held 13 to 26 core findings, about 300
-  spoken words each, and their stories got one or two sentences. An inherited plan (`--revise`) is not checked again.
-- Teaching planning, writing and reviews see core, supporting and recapped findings; the show notes name the sources
-  of core and supporting findings.
+  (`prompts/series_plan_density.txt`). Orlagau's episodes held 13 to 26 core findings, about 300 spoken words each,
+  and their stories got one or two sentences. An inherited plan (`--revise`, `--from-outline`) is not checked again.
+- The story agent and the reviews see core, supporting and recapped findings; the show notes name the sources of core
+  and supporting findings.
 - A plan without these fields counts as before: every assigned finding is core, and stored form and hash stay
   unchanged.
 
@@ -218,79 +222,179 @@ The plan assigns findings at two levels (`EpisodePlan` in `script_models.py`) (w
 
 ### Research limits in the script
 
-The limits the research run noted for the script in `research_quality_gate.json` reach planning, writing and the
-script review as `research_limits` (`script_checks.research_limits`) (why: D-072), each with a `limit_id` and, where
-known, the affected findings: source limitations and guiding questions noted as limits, noted limits, objections
-noted after two revisions, and the „Hinweise fürs Skript“ (notes for the script) of the follow-up assessment
-(`script_notes`).
+The limits the research run noted for the script in `research_quality_gate.json` reach planning, the story agent and the
+script review as `research_limits` (`script_checks.research_limits`) (why: D-072), each with a `limit_id` and, where known, the
+affected findings: source limitations and guiding questions noted as limits, noted limits, objections noted after two
+revisions, and the „Hinweise fürs Skript“ (notes for the script) of the follow-up assessment (`script_notes`).
 
 - The plan enters each `limit_id` in the `research_limit_ids` of the one episode that first uses the affected
   statement. An unplaced limit goes to the first episode whose core or supporting findings it concerns, else to the
   final episode (`script_checks.episode_limits`).
 - The script names each limit there once, briefly and in its own words, in the segment with the affected statement:
-  no limits scene, no list of caveats at the end.
+  no limits scene, no list of caveats at the end. The story agent gets its episode's limits in `material.json`
+  (`research_limits`, the same rows the review gets) beside each finding's own limits (its claim contract's
+  qualifications).
 - The script review counts a limit named this way as supported, as a gap probe supports a statement about something
   missing. A missing limit goes under `limitations`, not as an objection; a repair keeps a named limit.
 - Every limit is probed against the stored sources like a gap ([Gap probe](RESEARCH.md#in-the-script-run)), with Jev
-  where it is switched on. Its unread hits go to the supplementary research of the episode that states it, before
-  that episode's teaching plan, wherever the hit sections lie (why: D-173). A limit whose row that research resolves is
-  answered by the sources after all: writing and the script review no longer get it (`ScriptRun.stated_limits`); the
-  plan, made before the probe, still names it. (why: D-131)
+  where it is switched on. Its unread hits go to the supplementary research of the episode that states it, in that
+  episode's teaching stage, wherever the hit sections lie (why: D-173). A limit whose row that research resolves is
+  answered by the sources after all: the script review no longer gets it (`ScriptRun.stated_limits`); the plan, made
+  before the probe, still names it. (why: D-131)
 - An older quality file without these details yields no limits.
 
-## Writing and framing
+## Writing a series in order
 
-### Intro and outro
+A series is written episode by episode, in the outline's order, one script run per episode, so that each episode
+reads what the episodes before it actually said (why: D-184). Until 2026-11-01 one series run wrote every episode at
+once, and an episode knew the others only by their titles and questions.
 
-Every episode gets a spoken intro with a short greeting, an orientation and a transition to its opening question. Its
-outro answers this question, gives a fitting outlook when a follow-up episode is actually planned, and says goodbye.
-A subject example at the start and an open question at the end are not enough. The intro names the question and what
-is at stake, not the answer, which the episode earns at its end
-([Listenability and narrative arc](TEACHING.md#listenability-and-narrative-arc)).
+- **The outline's run plans only.** In the Studio the table of contents is drafted by a run that stops after
+  `planning` and waits for its approval ([Table of contents](BUSINESS_LOGIC.md#table-of-contents)).
+- **The approval writes the first episode.** `scripting.approve_outline` records the approval of exactly the outline
+  the user read (`plan_approval.json`, bound to `script_checks.outline_hash`) without writing anything itself; the
+  Studio then writes the first unwritten episode in a run of its own from that outline (`--from-outline`,
+  `scripting.outline_inputs`).
+- **Which episodes are written.** `scripting.outline_episodes` lists the outline's episodes in order, each with the
+  run that published it from this outline: an episode counts as written when its `episodes/<ep>/latest.json` names a
+  run whose `series_plan.json` is byte-identical to the outline's, as every run from that outline and every revision
+  copies it. An episode published from another outline counts as not written. `scripting.next_episode` is the first
+  one not written.
+- **The next one, or all remaining ones.** The Studio writes the next episode, or every remaining one one after the
+  other, never in parallel, stopping where one stops; with every episode written it refuses with `series_written`.
+  „Fortsetzen“ on the outline's own run, once approved, writes its next episode in the same way. The buttons:
+  [Writing the episodes](STUDIO.md#writing-the-episodes).
+- **Each episode reads the earlier ones.** The session of each episode gets the published text of every episode
+  before it in the plan's order ([What the session gets](#what-the-session-gets)).
+- **Then the series review.** Once the outline's last episode is published, the series review reads all of them
+  together and offers its points per episode as revisions ([Over an outline's published
+  episodes](#over-an-outlines-published-episodes)).
 
-- The first episode also introduces **the overall topic, its significance and the path through the series**.
+On the command line the same order is `pla script <project> --episode <ep> --from-outline <run_id>`, episode by
+episode; the outline must have been approved in the Studio.
+
+## Story agent
+
+Every episode is planned and written by the story agent (`story_agent.py`; why: D-181, D-184). Per episode one Claude
+Code session (`claude -p`, `story_agent.AGENT_MODEL` Opus 5.5, effort `story_agent.AGENT_EFFORT` `xhigh`) in
+`runs/<run_id>/story/<episode_id>/` reads the episode's material and the episodes before it, plans its own chapters,
+writes the dialogue, checks it and revises it after an editor's critique. In the narration lab (`evals/narration_lab`,
+2026-10-27) its drafts of three ten-minute cases averaged 8.0 to 8.1 on the lab's judge, where the writing prompt's
+stack averaged 5.5 on the same inputs. There is no teaching design, no narration review and no polishing: the agent's
+own plan takes the design's place, and its critiques the narration review's; in the lab, polishing made narrative
+drafts 14 % longer without making them better.
+
+### What the session gets
+
+`story_agent.write_episode` prepares the folder, which is the session's working directory:
+
+- **`material.json`**, everything the agent may use, as data (`story_agent.material`): the brief (language, audience,
+  host names and roles, the series goal where the brief sets one, style notes, a third host), the outline entry, the
+  series context (`editorial.episode_series_context`), the word budget ([Word budget](#word-budget)), the rule for
+  opening and ending the review checks (`framing`, [Opening and ending](#opening-and-ending)), the story material, the
+  episode's findings with their limits, its research limits ([Research limits in the script](#research-limits-in-the-script)),
+  the findings resting on one research group, which the review expects attributed once (`single_group_findings`), the
+  source sections they cite, the checked orientation sheet ([Teaching stage](TEACHING.md#teaching-stage)), and the core
+  findings no story item tells. Until 2026-11-01 only the review knew the research limits, the single-group findings
+  and the series goal.
+- **`earlier/`**, the published text of every episode before this one in the plan's order that `episodes/` holds,
+  one Markdown file each, with its chapters and turns and each turn's speaker (`story_agent.earlier_episodes`), listed
+  in `material.json` under `earlier_episodes` (why: D-184). The task asks the agent to read the episode just before in
+  full and to search the others for every person, term, story and study it means to use: what an earlier episode
+  explained is referred back to, not explained again; a difference is said as a correction, never a silent
+  contradiction; opening story, perspective and closing image differ from theirs. An episode the series context lists
+  before this one that `earlier/` lacks is not written yet: only its question may be used.
+- **`TASK.md`**, the agent's instructions (`data/story_agent_task.md`): find the turn the material holds, choose a
+  perspective, plan, write, check every fact, run the checks and the critiques. A project with a third host appends
+  its cast ([Three hosts](#three-hosts)); a revision appends its own steps ([Revising a script](#revising-a-script)).
+- **Four command scripts**, the only commands the session may run besides the file tools (Read, Write, Edit, Glob,
+  Grep; [Local files](SECURITY.md#local-files)):
+  - `check.py`: the run's script checks on the draft (structure and finding references; the quotation limit over the
+    given passages where the run applies it, for an assembled dossier, and always over the corpus sections in
+    `sources_used.json`), echo lines (a turn that opens with only the other host's last words) and the word budget;
+  - `critique.py`: an editor's verdict on tension, interest and storytelling with what keeps the draft from 10
+    (`prompts/story_critique.txt`), at most four times per session (`story_agent.CRITIQUES`). The request goes to the
+    run as a file and the run makes the call, so the budget, the receipts and the provider choice apply;
+  - `search.py` and `read.py`: the project's own research corpus, every section of every source the research
+    stored, so the agent finds the scenes a finding only names.
+
+A session's draft stands on resume while its material and task are unchanged; a repeated session moves the earlier
+one's files to `attempts/NN/`.
+
+### Opening and ending
+
+The script review holds every episode to the framing rule (`prompts/episode_framing.txt`, `editorial.EPISODE_FRAMING`),
+and the agent gets it as `framing`:
+
+- Every episode gets a spoken intro with a short greeting, an orientation (its question and what it adds to the
+  series) and a transition to its opening question; a short cold open may come first. Its outro answers this
+  question, says what one now knows toward the series' question, gives an outlook when a following episode is planned,
+  and says goodbye. The intro names the question and what is at stake, not the answer.
+- **Episode 1 introduces the series.** Once its opening story has raised the question, the hosts give the series an
+  introduction of one to two minutes (about 150 to 300 words, over several turns): what the series is about, why its
+  central question matters, the path it takes and how the episodes build on each other; then the episode's own
+  question takes over (`data/story_agent_task.md`; why: D-184). There is no trailer and no episode 0.
 - The final episode is **as a whole the synthesis of the series** ([Role, recap and theory first](#role-recap-and-theory-first)).
 - A series of one episode combines these tasks.
-- Intro and outro stay inside the existing first and last chapters and the word budget: no fixed length, no invented
-  show name, no host identity derived from the TTS voices, no advertising formula. Greetings outside the subject need
-  no sources; subject recaps do.
+- Intro and outro stay inside the first and last chapters and the word budget: no fixed length, no invented show
+  name, no host identity derived from the TTS voices, no advertising formula. Greetings outside the subject need no
+  sources; subject recaps do.
 
-### What each step receives
+### Word budget
 
-- Planning, teaching plan, writing and polishing get the episode's position in the complete series plan, the central
-  question and the planned topic path with each episode's question and `series_role`
-  (`editorial.episode_series_context`), also when only one episode is generated.
-- The framing rules are one shared prompt block (`prompts/episode_framing.txt`) for the teaching plan and its review,
-  writing, polishing and its comparison, the script review, and the editorial and teaching reviews.
-- The listenability rules are another (`prompts/listenability.txt`), for writing, the narration review, polishing and
-  its comparison and the script review; the teaching plan plans the arc in its own fields
-  ([Listenability and narrative arc](TEACHING.md#listenability-and-narrative-arc)).
-- **Story rules in a narrated run** (`prompts/write_episode_story.txt`; why: D-180): writing gets
-  the episode's `story_material` ([Story material and core story](TEACHING.md#story-material-and-core-story)) and tells
-  the design's `core_story` in its scene as a story before checking it: who, where, what they did and why as the source
-  tells it, the moment it turns and what followed, with room to unfold. Other items make points concrete instead of a
-  constructed example. Every detail comes from the material and cites the findings the item names. A statement's
-  certainty is said by the kind of its evidence (charter, later chronicle, single report, a scholar's reading, a
-  reference work without sources), never by how the research went (what was read, OCR, only an abstract, which
-  edition). The first answer is voiced as the design's `first_answer_voice` says, and the episode ends on its payoff;
-  an outlook is one sentence that makes the listener curious, not the formula that announces the next topic.
-- Writing gets only the plan's `scope_note` and the dependencies between the episode's findings, not the whole series
-  plan; order, roles and questions come from the series context (why: D-073).
-- Writing gets its word budget computed, as `length` in the payload (`script_checks.word_budget`,
-  `prompts/write_episode_length.txt`): at least the words of 85 % of `target_minutes` (the check below), a target, and
-  that target spread over the scenes by the number of their explanation steps. Until 2026-10-04 the writer derived the
-  budget itself, and every first draft of the Transformer series came in at 58 to 75 % of it. (why: D-127)
-- The chapter-end recaps and reflection beats of the listenability rules count toward this budget; empty repetition
-  does not. The planned minutes stay, so since 2026-10-06 the same time carries fewer facts. The floor, the hour and
-  the target factors are unchanged; the factors were measured before these rules.
-- **Only for Claude Sonnet 5.5** the target is set above the plan, at 1.3 times its words
-  (`script_checks.WRITER_TARGET_FACTORS`): shown the plan itself, Sonnet wrote 71 % of it. Every other model is shown
-  the plan until its own drafts are measured. The factor follows the run's first writer: its fixed model, or under
-  `auto` the preferred candidate, so an `auto` call that falls to Codex gets the Claude candidate's target (1.0 since Haiku 5.5 became the
-  default, D-166). The hour limit stays with
-  the check below, not the target.
-- A draft accepted under another budget, or before there was one, stands on resume while it still passes every check,
-  also after a text switch to a writer with another target; only the open episodes are written anew.
+The agent gets its word budget computed at the plan's length (`script_checks.word_budget` with
+`story_agent.TARGET_FACTOR` 1.0) and the run's speaking rate (`script_artifacts.run_rate`,
+[Estimating and checking the duration](BUSINESS_LOGIC.md#estimating-and-checking-the-duration)):
+
+- a target, the planned minutes at that rate, spread over the scenes by the number of their explanation steps;
+- a floor of 95 % of the target (`story_agent.TARGET_SHARE`), above the 85 % every script must reach
+  (`script_checks.MIN_DURATION_SHARE`), and a cap of 1.1 times the target (`story_agent.LENGTH_SLACK`); `check.py`
+  and the final check refuse a draft outside them.
+
+Asimov v2 ep_007 (2026-11-01) stopped at 89 % of its target, inside the old window, and ran 35:47 for 45 planned
+minutes, also because ElevenLabs spoke faster than the 130 words a minute every budget assumed (why: D-184). The
+writing prompt's target factor of 1.3 for Sonnet 5.5 (D-127) ended with it; the agent counts its words.
+
+### What the session leaves
+
+- `plan.md` (the turn, the idea, the perspective, the chapters and their beats), `draft.json`, optionally
+  `outline.json` (its own two to four chapters, which must hold every core finding in exactly one chapter; core
+  findings are never demoted) and `sources_used.json` (every corpus section used beyond the material).
+- Code checks the draft again when the session ends (`story_agent.draft_errors`); a draft that fails stops the
+  episode with `story_agent_failed` and the defects in `errors.json`. A session over its time limit stops with
+  `story_agent_timeout` (eight minutes per planned minute, at least two hours: `story_agent.session_timeout`; the
+  lab's ten-minute sessions took 31 to 60 minutes).
+- `story/<episode_id>/entry.json` holds the episode with the agent's chapters, which this run's review and publishing
+  use; the series plan is unchanged. `drafts/<episode_id>.json` holds the accepted draft.
+
+### Citing corpus sections
+
+A segment that tells something no finding holds, such as a scene the agent found in the corpus, names its section in
+`source_refs` (`Segment.source_refs`, `src_…#sec_…`; why: D-182). `check.py` accepts only a section of
+`material.json` or one listed in `sources_used.json`, and the run only one its review is given
+(`ScriptRun.script_errors`). Empty, the field is left out of every dump, so scripts written before keep their bytes
+and hashes. Show notes and companion kits list the cited sections' sources beside the findings'
+(`script_artifacts.render_show_notes`, `publish_kit.episode_sources`).
+
+### Calls and access
+
+- The session counts as one call of the run (`calls/call_NNN`, title `StorySession`, with the usage, the turns and
+  the cost the CLI reports); each critique is a call of its own. Per episode at least 3 calls in teaching, 2 in the
+  story stage and 1 in review ([Budgets](BUSINESS_LOGIC.md#script-lower-bound-and-expected-calls)). The critiques
+  and every other call follow the run's provider choice.
+- **On the Claude subscription** by default, whatever the run's text provider: the session needs the claude.ai
+  sign-in and stops with `authentication_required` without it (`story_agent.session_access`).
+- **On your Anthropic API key** when the run's text provider is `claude_api` (why: D-184): the session is billed. It
+  is reserved under the run's [money limit](BUSINESS_LOGIC.md#money-limit), capped at
+  `story_agent.SESSION_BUDGET_USD` = 40 USD (`--max-budget-usd`), and settled in `billing.json` with the cost the CLI
+  reports; without a key it stops with `anthropic_key_required`. Ep_007's session reported 12.39 USD.
+
+### Outputs of an agent episode
+
+Publishing writes `story_plan.md` (the agent's plan) beside the script, and the quality report's episode entry gains
+`story_agent`: the critique scores in order, the corpus sections used, whether the agent set its own chapters, and the
+session's turns, duration and reported cost (`script_artifacts.story_report`). Its `teaching_review` reads
+`not_applicable`.
 
 ### Reading before recording
 
@@ -299,248 +403,65 @@ the current script state with `audio_approved: false`; a model review grants no 
 ([Human approvals](BUSINESS_LOGIC.md#human-approvals)). The voices in the Windows pilot are Aiden (`host_a`) and
 Vivian (`host_b`).
 
-## Story agent
-
-A project may have its new script runs written by the story agent instead of the writing prompt
-(`story_agent.py`; why: D-181). Per episode one Claude Code session (`claude -p`, `story_agent.AGENT_MODEL` Opus 5.5,
-effort `xhigh`) reads the episode's material, plans its own chapters, writes the dialogue, checks it and revises it
-after an editor's critique. In the narration lab (`evals/narration_lab`, 2026-10-27) its drafts of three ten-minute
-cases averaged 8.0 to 8.1 on the lab's judge, where today's writing prompt stack averaged 5.5 on the same inputs.
-
-- **Teaching stage.** No teaching design and no design review. The stage collects the story material and runs the
-  story research as a narrated run does, then drafts an orientation sheet (`prompts/orientation_sheet.txt`: the
-  people, places, periods, institutions and terms a listener needs placed, at most 25, from general knowledge rather
-  than the episode's sources) and has a second call check every entry
-  (`prompts/orientation_check.txt`). Only the entries found correct reach the agent; the others are kept under
-  `dropped` in `teaching/<episode_id>/orientation.json`.
-- **Story stage.** `story_agent.write_episode` prepares `runs/<run_id>/story/<episode_id>/` with `material.json` (the
-  outline entry, the series context, the word budget at the plan's length (`story_agent.TARGET_FACTOR`; the
-  writing prompt's 1.3 for Sonnet would make the agent, which counts its words, write a quarter too long), the
-  story material, the findings with
-  their limits, the sections they cite, the checked orientation, the brief, the core findings no story item tells and
-  the rule for opening and ending the review checks ([Intro and outro](#intro-and-outro), `editorial.EPISODE_FRAMING`;
-  the task's „Opening and ending“ points to it, and a short cold open may still come first),
-  `TASK.md` (from `data/story_agent_task.md`) and four command scripts. The folder is the session's working
-  directory; besides the file tools (Read, Write, Edit, Glob, Grep) it may run only these commands:
-  - `check.py`: the run's script checks on the draft (structure and finding references; the quotation limit over the
-    given passages where the run applies it, for an assembled dossier, and always over the corpus sections in
-    `sources_used.json`), echo lines (a turn that opens with only the other host's last words) and the length cap of
-    1.1 times the target;
-  - `critique.py`: an editor's verdict on tension, interest and storytelling with what keeps the draft from 10
-    (`prompts/story_critique.txt`), at most four times per session (`story_agent.CRITIQUES`). The request goes to the
-    run as a file and the run makes the call, so the budget, the receipts and the provider choice apply;
-  - `search.py` and `read.py`: the project's own research corpus, every section of every source the research
-    stored, so the agent finds the scenes a finding only names.
-- **What the session leaves.** `plan.md`, `draft.json`, optionally `outline.json` (its own two to four chapters,
-  which must hold every core finding in exactly one chapter; core findings are never demoted) and
-  `sources_used.json` (every corpus section used beyond the material). Code checks the draft again when the session
-  ends; a draft that fails stops the episode with `story_agent_failed` and the defects in `errors.json`. A missing
-  claude.ai sign-in stops with `authentication_required`, a session over its time limit with `story_agent_timeout`
-  (eight minutes per planned minute, at least two hours: `story_agent.session_timeout`; the lab's ten-minute sessions
-  took 31 to 60 minutes).
-  `story/<episode_id>/entry.json` holds the episode with the agent's chapters, which this run's review and
-  publishing use; the series plan is unchanged. A repeated session moves the earlier one's files to `attempts/NN/`.
-- **No narration review, no polishing.** The agent's own critiques take the narration review's place; in the lab,
-  polishing made narrative drafts 14 % longer without making them better.
-- **Citing corpus sections.** A segment that tells something no finding holds, such as a scene the agent found in the
-  corpus, names its section in `source_refs` (`Segment.source_refs`, `src_…#sec_…`; why: D-182). `check.py` accepts
-  only a section of `material.json` or one listed in `sources_used.json`, and the run only one its review is given
-  (`ScriptRun.script_errors`); a writing-prompt run refuses `source_refs`. Empty, the field is left out of every
-  dump, so scripts written before keep their bytes and hashes. Show notes and companion kits list the cited
-  sections' sources beside the findings' (`script_artifacts.render_show_notes`, `publish_kit.episode_sources`).
-- **Review.** The [script review](#script-review) reads the draft as the agent wrote it, with the corpus sections of
-  `sources_used.json` added to the episode's passages (`ScriptRun.review_sources`), and is told that a segment may
-  cite them (`prompts/script_review_corpus.txt`, version suffix `+corpus`): such a statement is grounded when a cited
-  section holds it, and its receipt is `preserved` or `drift` against those sections, never `no_research_claim`
-  (`script_evidence.receipt_defects`). A verdict saved without this rule is reviewed again on resume. There is no
-  listener readback, editorial or teaching review. Only
-  a blocking issue (grounding, scope, structure) is repaired (`prompts/story_review_repair.txt`), from the agent's
-  material and its corpus sections, changing only the segments the issues name and their neighbours (`narration.with_neighbours`,
-  `scope_errors`), or any segment when a blocking issue names none because it concerns the whole episode, such as
-  its length (`story_review_repair.v3-source-refs`); clarity, depth and dialogue points stay notes for the reader.
-- **Calls.** The session counts as one call of the run (`calls/call_NNN`, title `StorySession`, with the usage, the
-  turns and the cost the CLI reports); each critique is a call of its own. Per episode at least 3 calls in teaching,
-  2 in the story stage and 1 in review (`script_budget.stage_calls`). A session runs on the Claude subscription,
-  whatever the run's text provider; the critiques and every other call follow the run's provider choice.
-- **Outputs.** Publishing writes `story_plan.md` (the agent's plan) in place of the teaching plan, and the quality
-  report's episode entry gains `story_agent`: the critique scores in order, the corpus sections used, whether the
-  agent set its own chapters, and the session's turns, duration and reported cost.
-
-## Narration review
-
-In a narrated run the `narration` stage reviews each draft for tension, interest and storytelling between writing and
-polishing, reworks the segments it names from the episode's material, and reviews the rework once more
-(`narration.narrate_episode`, `ScriptRun.narrate`; why: D-180). The listener's verdict on Orlagau was that the striking
-stories were told in one or two sentences, and no review asked whether an episode tells: the polishing comparison
-checks meaning, completeness, roles, spoken language and framing, the script review the evidence.
-
-- **Why before polishing.** The narrated draft becomes the baseline of polishing (`script_checkpoints.baseline_path`):
-  its comparison then protects the expanded story under `completeness`, so polishing cannot shrink it to two sentences
-  again, and a rework is polished once instead of twice. The evidence review still comes after both and checks every
-  word against the cited sections, so a rework cannot bring in a detail its source does not carry.
-- **What the review gets** (`prompts/narration_review.txt` with the terminology, spoken-dialogue and listenability
-  blocks): the draft, the teaching design, the story material, the episode's findings (statement and illustration), the
-  sections they cite, the series context, the opening, ending and devices of up to three episodes before
-  (`narration.compared_episodes`), and figures counted in code (`narration.narration_metrics`): phrases that report the
-  research instead of the evidence, how often something „bleibt offen“, two questions of one host in a row, each
-  chapter's words, host_b's share and the core story's chapter share.
-- **What it returns** (`NarrationReview`): a score from 1 to 10 for tension, interest and storytelling, each with a
-  reason (5 a correct episode that lists its points, 8 one a listener would recommend), up to three strengths and up to
-  eight points. Each point has a category (`compressed_story`, `unused_material`, `missing_story`, `workshop_talk`,
-  `predictable_shape`, `unpaid_hook`, `flat_ending`, `detour`, `name_confusion`), its segments, the problem, the
-  correction, the story items it draws on and a fix: `rewrite` (the material holds it), `research` (the material does
-  not, so it never asks for an invented story) or `note`. The answer is never asked again for its shape: unknown
-  segments and items are dropped from a point, and a rewrite point left without segments becomes a note
-  (`narration.sanitized`).
-- **Rework** (`prompts/narration_repair.txt` after the whole writing prompt, `narration_repair.v2-neighbours`): only
-  when there are rewrite points. It changes the segments they name and, for the handover, the one just before and after
-  each (`narration.with_neighbours`; in the evaluation of 2026-10-24 every rework of Orlagau ep_014 adjusted the next
-  turn and was refused while only the named segments could change), may add segments next to them and leave out a
-  named one; every other segment must stay exactly as it was, in its order (`narration.scope_errors`). Where the
-  sources disagree about who did something or why, the rework, like the writer and the design, tells their versions
-  and never merges them. It must pass the structure
-  and quotation checks of a draft, and stay within `NARRATION_GROWTH` = 1.15 times the draft's words or the word budget's
-  target, whichever is larger (`narration.length_errors`): room comes from cutting detours and repeated caveats. A
-  rework refused after its corrections (`narration_rework_refused`) keeps the draft, with its points reported and
-  `repair_errors.json` beside it; a stop for quota or budget ends the call as everywhere else and asks again on resume.
-- **Review after the rework** (`prompts/narration_review_followup.txt`), by the rule for repeated reviews: it gets its
-  earlier review and the segments the rework changed or added, scores the episode again, and lists only an earlier
-  point left unresolved or a new defect in a changed segment. There is no further round.
-- **Never blocks.** What stays open goes into the episode's report and the reading page's review notes
-  ([Review notes on the reading page](STUDIO.md#review-notes-on-the-reading-page)): the final scores, the first
-  scores, the open points and, separately, the research points.
-- **Calls.** One review per episode at least (`script_budget.STAGE_CALLS`), three when it names rewrite points, plus the
-  rework's corrections.
-- **Files** under `runs/<run_id>/narration/<episode_id>/`: `script.json` (the narrated draft, the writer's when nothing
-  changed), `result.json` (`status` `unchanged`, `repaired` or `kept_draft`, the scores, notes and `research_points`,
-  and the digests of draft and narrated draft that mark the episode finished), `checkpoint.json` (each step saved
-  before the next call, bound to the draft, the prompts and the run inputs) and, after a refused rework,
-  `repair_errors.json`.
-
-## Dialogue polishing
-
-After `writing`, or after `narration` in a narrated run, a separate call processes the complete draft with the
-teaching plan, the audience and the role split. Its task is linguistic and dramaturgical: understandable sentences, fitting reactions, transitions that arise
-from the line of thought. It must not invent facts, numbers or examples, nor delete a necessary derivation or
-qualification.
-
-Paragraph boundaries and speaker assignments may change: the call first judges the flow of a whole chapter and
-regroups dense explanations. It applies the listenability rules: long expert turns broken where the thought allows,
-the partner's reactions, summaries and questions, a short recap and the next question at each chapter end, and an
-opening that announces the answer turned into the question. Many rephrased sentences alone do not show a good
-revision; turn length and partner share are aims, and there is no quota for new segments or speaker changes. The
-roles (`polishing.HOST_ROLES`) are independent of the TTS voice and apply to Aiden and Vivian alike: [Two hosts and
-storytelling](TEACHING.md#two-hosts-and-storytelling).
-
-### Comparison
-
-A separate comparison call checks `meaning`, `completeness`, `speaker_roles`, `spoken_language` and
-`episode_framing` (`polishing.POLISH_CRITERIA`); the last covers intro and outro, including the series opening or
-overall conclusion.
-
-- Every positive verdict needs actual text evidence: for meaning and completeness from both versions, for framing
-  from the first and last chapter.
-- It checks difficult passages and transitions for unclear references, explanations merely set side by side, and empty
-  repetition. It judges `spoken_language` by the listenability rules with the candidate's measured `dialogue_shape`
-  (`script_advisories.dialogue_shape`); a recap, reflection beat or question that restates the original is no new
-  fact for `meaning`. It names the most demanding passages under `demanding_passages`
-  (`polishing.DEMANDING_PASSAGES`, 3 where the episode has them) and states how the new version resolves each unclear
-  reference; one left open becomes a `spoken_language` objection for the repair loop.
-- A comparison with missing criteria or invented evidence is asked again with its defects. Its objections go into a
-  repair, at most two; resume keeps candidate, comparison, scope and attempt counter.
-
-### Scoped comparison after a repair
-
-Every comparison after a repair is scoped (why: D-074): it gets the previous comparison's points with their outcome
-and the segments changed since. A `meaning` or `completeness` point blocks wherever it points
-(`polishing.FIDELITY_CRITERIA`), so a step the polish lost never passes as a note. Any other point blocks only if the
-previous comparison sent its criterion to repair, it cites a changed segment, or it cannot be placed in a segment; a
-new point on unchanged text is a note in `polishing/<episode>/accepted_notes.json`.
-
-### After both repairs
-
-- If only spoken-language objections remain, the polished version stands, its points in `accepted_notes.json`.
-- For any other remainder (meaning, completeness, roles, framing, or a deterministic defect such as a too-short
-  version), the reviewed draft stays the script if it passes the structure check (`kept_draft.json`, `result.json`
-  with `status: kept_draft`) (why: D-075), so the polished version's defect never reaches publication. Only if the
-  draft fails it too does the run stop with `dialogue_polish_failed`.
-- Script, editorial and teaching review then check the kept draft's framing.
-- An episode kept this way counts as polished for Studio progress and budget projection
-  (`script_checkpoints.finished`).
-
-### Files
-
-`runs/<run_id>/polishing/<episode_id>/` holds `before.md`, `after.md`, `script.json`, `review.json`, `result.json`
-and `checkpoint.json`; the original draft stays under `drafts/`, a narrated one under `narration/`, and `before.md` and
-the comparison's original are the narrated draft where there is one. `reports/script_quality.yaml` takes the comparison
-into `episodes.<episode_id>.dialogue_polish` and names the roles. Its evidence applies to the version right after
-polishing, which later subject repairs can still change; for audio, only the finally reviewed `script.yaml` the user
-approved counts.
-
-### Reviews after polishing
-
-Source review, reader and teaching reviewer then check the actually revised text. The source review also sees the
-original draft and the roles, so later repairs keep the explanations and the conversation. A passed before/after
-comparison claims no subject truth of the original text; that is still checked against the sources. The final export
-sets the audio approval back to pending.
-
-### Version changes
-
-- The intro and outro requirements apply to newly executed steps; a running process keeps the code it loaded
-  ([GOTCHAS](GOTCHAS.md)). An old passed comparison does not count as a framing check: existing texts need a targeted
-  revision with a new review. `result.json` names the prompt version. Inputs and approvals of running jobs are not
-  rewritten.
-- After a correction of the editorial review version, a saved verdict is checked again on resume; the latest revised
-  text and the correction rounds used are kept. Reading and teaching reviews are each bound to their own prompt; old
-  verdicts without this binding are not taken over. None of this grants an approval or resets attempt counters or the
-  model budget. Concrete objections of the final review show in the Studio under **„Ausarbeitung“** (drafting).
-
 ## Script review
 
 ### Structure and quotation checks
 
-- A script must reference its episode's core findings and assign chapters and speakers correctly.
+- A script must reference its episode's core findings and assign chapters and speakers correctly
+  (`script_checks.validate_script`), against the agent's chapters where it set its own.
 - With an [assembled dossier](RESEARCH.md#assembled-dossier), an episode quotes each source verbatim for at most 25
   words (`script_checks.QUOTED_WORDS_PER_SOURCE`, `script_checks.quotation_errors`): words matching a section the
   episode received as a source in runs of at least six words (`script_checks.QUOTE_RUN`), ignoring case and
-  punctuation. Shorter matches are common phrases; a translation is no verbatim quote. A draft above the limit goes
-  back to the writer with source, word count and an example passage, at first writing and after polishing and review.
-- At writing, a draft that breaks these checks or falls short of its planned duration (the 85 % rule in
-  [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)) is corrected up to three times, each
-  correction reworking the latest attempt against its own defects; a short script is told how many words it has and
-  needs at `script_artifacts.SPOKEN_WORDS_PER_MINUTE`. Then writing stops with `invalid_script`, and the message names
-  the three corrections.
+  punctuation. Shorter matches are common phrases; a translation is no verbatim quote. The corpus sections the agent
+  used count like the given passages.
+- A script under 85 % of its planned duration or over 60 minutes at the run's speaking rate is refused (the rule in
+  [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)); the agent's own floor is higher
+  ([Word budget](#word-budget)).
+- The agent runs these checks itself through `check.py`, the run again when the session ends, and every repair must
+  pass them.
 
 ### Evidence review
 
 A separate call checks what is said against the assigned findings and source sections, and also the required depth,
 the worked-out explanation steps, how start and end connect, understandability, the example, the limits of metaphors
-and the dialogue.
+and the dialogue. It reads the draft as the agent wrote it, with the corpus sections of `sources_used.json` added to
+the episode's passages (`ScriptRun.review_sources`), and is told that a segment may cite them
+(`prompts/script_review_corpus.txt`, version suffix `+corpus`): such a statement is grounded when a cited section
+holds it, and its receipt is `preserved` or `drift` against those sections, never `no_research_claim`
+(`script_evidence.receipt_defects`). It also gets the measured `dialogue_shape` and the listenability rules
+([Listenability](TEACHING.md#listenability)).
 
-- Up to three revisions (`script_pipeline.MAX_REVIEW_REPAIRS`).
+- **Repairs only for what blocks.** Up to three repairs (`script_pipeline.MAX_REVIEW_REPAIRS`), each answering only
+  the blocking issues (grounding, scope, structure) from the agent's material and its corpus sections
+  (`script_pipeline.story_repair`, `prompts/story_review_repair.txt`, `story_review_repair.v3-source-refs`). A repair
+  may change only the segments the issues name and their neighbours (`narration.with_neighbours`,
+  `narration.scope_errors`), or any segment when a blocking issue names none because it concerns the whole episode,
+  such as its length. The review's other points stay notes, so the telling the agent built is not rewritten by a
+  reviewer (why: D-181).
 - If then only objections about understandability, depth or dialogue remain (`script_checkpoints.NOTED_CATEGORIES`:
   `clarity`, `depth`, `dialogue`), the script is adopted; the points stay in the review report and
   `reviews/<episode>_accepted_notes.json`, visible when reading before the audio approval.
-- Evidence errors and objections about scope or structure keep blocking; otherwise remaining objections block
-  adoption, and drafts and objections stay saved. **„Mit neuen Anläufen fortsetzen“** (resume with fresh attempts) or
-  `pla approve <project> --fresh-attempts` gives a review stopped this way three new revisions against the same
+- Evidence errors and objections about scope or structure keep blocking: the run stops with `script_review_failed`,
+  and drafts and objections stay saved. **„Mit neuen Anläufen fortsetzen“** (resume with fresh attempts) or
+  `pla approve <project> --fresh-attempts` gives a review stopped this way three new repairs against the same
   review report.
 - A point the review itself files as an advisory (`advisories`) is its own verdict that the point does not block, and
-  it stays a note in the report and `accepted_notes.json`, in the first review and after a revision. Only an evidence
+  it stays a note in the report and `accepted_notes.json`, in the first review and after a repair. Only an evidence
   or scope point (`script_pipeline.STRICT_CATEGORIES`: `grounding`, `scope`) counts as an objection wherever the scope
   reaches it. Until 2026-10-04 every first-review advisory counted, and after a revision every one but clarity, depth
   and dialogue. (why: D-126)
-- A wall of facts goes back as a `dialogue` objection: findings strung together without a question the listener wants
+- A wall of facts goes back as a `dialogue` point: findings strung together without a question the listener wants
   answered, the answer announced before it is earned, dense blocks that end without a recap or reflection beat, or the
-  expert holding the floor. The review gets the measured `dialogue_shape`; a partner share under 25 % or more than two
-  turns over 120 words is such an objection, a long turn for one step of a worked example is not. Being a `dialogue`
-  point, it stops nothing once the three revisions are spent. (why: D-142)
+  expert holding the floor. A partner share under 25 % or more than two turns over 120 words is such a point, a long
+  turn for one step of a worked example is not. Being a `dialogue` point, it is a note for the reader. (why: D-142)
+- An episode whose gap probe still has unread hits it should have read stops with `research_gap_unread` before its
+  review ([Gap probe](RESEARCH.md#in-the-script-run)).
 - After a subscription pause too, a text already corrected need not be written again.
 
 ### Scoped follow-up review
 
-Every review after a revision is scoped (why: D-066): it gets the previous review's objections and the segments the
-revision changed. Only three kinds of objections may block:
+Every review after a repair is scoped (why: D-066): it gets the previous review's objections and the segments the
+repair changed. Only three kinds of objections may block:
 
 1. a previous objection still open,
 2. an objection about a changed segment,
@@ -554,7 +475,7 @@ marks what is critical. So the review converges instead of finding new details i
 the scope, a point the review filed as an advisory blocks only as an evidence or scope point
 ([above](#evidence-review)).
 
-If a version had no blocking objections and a later revision (say, for understandability) breaks its evidence, the
+If a version had no blocking objections and a later repair (say, for a structure point) breaks its evidence, the
 evidenced version stands with its notes; the discarded version and its review are kept in
 `reviews/<episode>_kept_draft.json`. The same scoping applies to the evidence review after a
 [series review](#series-review) correction.
@@ -570,27 +491,18 @@ The review compares each segment that cites findings with the cited source secti
   `script_review.v12-source-corrected`): no objection, but a note in the review limitations that the dossier
   finding is inaccurate, shown in the Studio when reading (why: D-085). A deviation therefore does not enter the
   follow-up review as a previous objection; that review judges each segment afresh.
-- Today's version is `script_review.v17-scene-order` (`script_checks.SCRIPT_REVIEW_VERSION`). A verdict of
-  `script_review.v11-core-limits` through `script_review.v16-breathers` that blocked nothing stays valid on resume
-  (`script_checks.RELAXED_REVIEW_VERSIONS`): v14 to v16 add or loosen only dialogue points (D-142, D-143, D-144), and
-  v17 changes only the correction asked for a statement that blocks already. So an episode in flight is not reworked
-  for them; a blocking one is reviewed again before the next correction, also when its repairs are spent.
 - A segment may cite the findings of its own scene and of earlier scenes, besides supporting and recalled ones
   (`script_checks.validate_script`). For a statement whose finding a later scene introduces, as an opening teaser
   can make, the review asks to move it to that scene or to turn it into the open question that scene answers, never
-  to add the later finding's ID; the repair prompt says the same (why: D-175).
+  to add the later finding's ID (why: D-175).
 
-### Reader, editorial and teaching reviews
+### Saved verdicts
 
-A fresh reader call, a separate editorial review and a teaching review also check each episode; what each sees:
-[What the application enforces](TEACHING.md#what-the-application-enforces); their perspectives:
-[Three editorial reviews](TEACHING.md#three-editorial-reviews).
-
-- In parallel text mode, reader call and editorial review ask at the same time.
-- An episode's evidence review is saved before its teaching review starts, so a stop during the teaching review does
-  not ask it again (`teaching_pending` in the checkpoint).
-- The application checks the evidence and completeness of the reviews. A missing required explanation step or a
-  negative verdict leads to a revision and, if problems persist, to a block.
+Today's version is `script_review.v17-scene-order` (`script_checks.SCRIPT_REVIEW_VERSION`) with the corpus rule
+(`+corpus`). A saved verdict stands on resume only when it was given with exactly this version and rule
+(`script_pipeline.saved_verdict_stands`), with today's `teaching.EDITORIAL_REVIEW_VERSION` and, for a dossier with an
+evidence version, today's `evidence_models.EVIDENCE_VERSION`; otherwise the saved draft is reviewed again, and its
+latest text and spent repairs stay. None of this grants an approval or resets the model budget.
 
 ### Limits of the review
 
@@ -601,8 +513,7 @@ publicly.
 
 ## Series review
 
-New runs store `series_review_version` in their inputs. Once all planned episodes are reviewed in the same run, one
-more call checks the complete final texts against (`series_review.series_criteria`):
+One call checks the complete final texts of a series together (`series_review.series_criteria`):
 
 - `coverage`: the guiding question and each episode's core findings (supporting findings may be missing);
 - `prerequisites`, `progression` and `deferred_questions`;
@@ -610,6 +521,15 @@ more call checks the complete final texts against (`series_review.series_criteri
 - `arc`: each episode says what it contributes and what one now knows;
 - `exposition` or `guidance` when the series goal weights *understanding* or *applying* with 2 or 3
   (`series_review.GOAL_CRITERIA`).
+
+It runs in one of two ways:
+
+- **Inside a run that writes every episode of its outline** (`pla script` without `--episode`): once all planned
+  episodes are reviewed, before publishing, with one [correction round](#correction-round). New runs store
+  `series_review_version` in their inputs; a run that writes one episode gets a partial report that claims no
+  overall review.
+- **Over an outline's published episodes**, each written by a run of its own: the Studio's way
+  ([Over an outline's published episodes](#over-an-outlines-published-episodes)).
 
 Rules for the verdict:
 
@@ -621,12 +541,12 @@ Rules for the verdict:
   `episode_ids`, `basis: source_limit`) under `report.advisories` in `runs/<run_id>/series_review.json` and
   `series_review.advisories` in `reports/script_quality.yaml`.
 - Non-blocking repetitions are stored as `warnings`.
-- Every other substantial objection blocks providing the series, and with it its new audio approval.
+- Inside a run, every other substantial objection blocks providing the series, and with it its new audio approval.
 - The report version stays `series_review.v1` (`series_review.SERIES_REVIEW_VERSION`), so saved verdicts and the
   audio approvals bound to them stay valid; new calls carry the prompt tag `series_review.SERIES_REVIEW_PROMPT`,
   currently `series_review.v4-core`.
 
-### Saved verdicts
+### Saved verdicts of the series review
 
 - The report records the criteria it asked for (`criteria`); a saved verdict is checked on load against exactly these
   (why: D-076). An older report without them is judged by the checks it contains, if the five base criteria
@@ -636,11 +556,13 @@ Rules for the verdict:
 
 ### Correction round
 
-A negative verdict is followed by exactly one bound correction across the episodes: the evidenced segments of each
-affected episode are revised once, the result gets its own evidence review, and the series review checks again;
-three calls per affected episode. If a corrected episode fails its evidence review, a second attempt answers those
+Inside a run, a negative verdict is followed by exactly one bound correction across the episodes: the evidenced
+segments of each affected episode are repaired once as a blocking review issue is (`script_pipeline.story_repair`,
+held to the agent's chapters), the result gets its own evidence review, and the series review checks again; three
+calls per affected episode. If a corrected episode fails its evidence review, a second attempt answers those
 objections and still the series review's original objection (why: D-077); only then is the correction rejected
-(`script_pipeline.SERIES_REPAIR_ATTEMPTS` = 2, up to five calls per episode).
+(`script_pipeline.SERIES_REPAIR_ATTEMPTS` = 2, up to five calls per episode). Until 2026-11-01 the correction of a
+story run called the writing prompt and would have stopped with a file error (why: D-184).
 
 - **Scoped re-review.** The renewed series review gets the corrected verdict's checks with their outcome
   (`previous_checks`) and the changed episodes (`changed_episodes`). Only an earlier objection the scripts still have
@@ -654,8 +576,7 @@ objections and still the series review's original objection (why: D-077); only t
   text, else first judges the series anew; either way it has one round again.
 - **Stopped rounds.** A round stopped before its final series review, for example by **„Auftrag anhalten“** (stop
   job), is not spent; resuming picks it up (`finished` in the record).
-- Polishing and teaching review are not repeated: the change is limited to named segments and the learning objectives
-  are unchanged.
+- No other stage is repeated: the change is limited to named segments.
 - In parallel text mode, all affected episodes of a round are corrected at once. Passed corrections are adopted even
   if another episode is rejected; the message names each rejected report.
 - Each correction answer is stored per round under `reviews/series_corrections/`, so a stop during its evidence review
@@ -683,10 +604,28 @@ objections and still the series review's original objection (why: D-077); only t
 - A corrected episode's audio approval lapses, because it hangs on the old script hash. Changed or missing reports
   prevent audio from an affected new run.
 
+### Over an outline's published episodes
+
+`scripting.run_series_review(outline_run=…)` reviews the published episodes of one outline, each written by a run of
+its own ([Writing a series in order](#writing-a-series-in-order); why: D-184). The Studio starts it by itself once the
+outline's last episode is published, or on request ([Writing the episodes](STUDIO.md#writing-the-episodes)).
+
+- It needs every episode of the outline written (`series_incomplete` otherwise) and reads each episode's published
+  `script.yaml` with the outline's plan.
+- Its run is of kind `series_review`; its inputs name the outline (`outline_run_id`) and the run that published each
+  episode (`episode_runs`). `series_review.json` also holds `episode_issues`: the blocking checks per episode, with
+  the segments they cite (`series_review.series_issues`). `episodes/series_review.json` points at the latest such
+  review of the outline (`scripting.SERIES_REVIEW_POINTER`, read by `scripting.outline_series_review`), and its
+  verdict is mirrored into `reports/script_quality.yaml`.
+- It has no correction round and blocks nothing: the episodes stay readable and recordable. Its points are offered
+  per episode as a [revision](#revising-a-script) with the points as feedback; after a revision the episode's
+  published run differs from `episode_runs`, and the series can be reviewed again.
+
 ### Scope and limits of the series review
 
 - For a partial job, the report names the missing episodes and claims no overall review; separately generated
-  episodes are not merged into a reviewed collection. A one-episode series can be reviewed fully.
+  episodes are merged into a reviewed collection only by the review over an outline's published episodes. A
+  one-episode series can be reviewed fully.
 - The call counts against the normal production budget and uses the selected text model. Texts are passed in full,
   without silent truncation; for large series a provider's context limit can block the review.
 - Older runs already started keep their original inputs and approvals and are not marked series-reviewed on resume.
@@ -695,7 +634,8 @@ objections and still the series review's original objection (why: D-077); only t
 
 `pla series-review <project> [--run <run_id>]` reviews a finished run's scripts afterwards as a series; without
 `--run`, the most recently published run. It also takes `--backend codex_cli|claude_code|claude_api|auto` (`claude_api`
-reads its key from `ANTHROPIC_API_KEY`), `--model` and `--reasoning-effort`.
+reads its key from `ANTHROPIC_API_KEY`), `--model` and `--reasoning-effort`. The review over an outline's published
+episodes has no command-line option; the Studio starts it.
 
 - Its one call counts against the new run's budget (`runs/<run_id>/budget.json`); the verdict lands in a run of its
   own, of kind `series_review`.
@@ -714,17 +654,42 @@ reads its key from `ANTHROPIC_API_KEY`), `--model` and `--reasoning-effort`.
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --revise ep_001 --feedback "Direkter formulieren und Wiederholungen kürzen."
 ```
 
-- A revision starts a new run with the previous series plan and the existing canonical script. Old text and feedback
-  are stored as inputs and the research is kept, so no new planning or search calls are needed.
-- Style changes in `project.yaml` are applied; the teaching plan is created and reviewed anew.
-- A revision started from 2026-10-23 is a narrated run: story material, core story, story rules and the narration
-  review apply to the episode, while the inherited plan keeps its core findings (no core limit).
-- The revised script must pass the source, structure and explanation reviews again; then the new text, with its own
-  hash, waits again for the reading review before audio, which none of these reviews replaces.
+A revision is a story agent session given the published episode and the feedback (why: D-184). In the Studio it is
+**„Diese Folge überarbeiten lassen“** (have this episode revised) on the reading page, and **„Mit diesen Hinweisen
+überarbeiten“** (revise with these points) for an episode the series review names.
+
+- It starts a new run with the previous series plan and the episode as published: `scripting.revision_inputs` reads
+  the episode's latest published run, which must be complete, with a valid plan and today's research and dossier
+  (`inputs_changed` otherwise). An episode the agent wrote keeps its own chapters (`story_agent.revision_entry`).
+  Old text and feedback are stored as inputs and the research is kept, so no new planning or search calls are needed;
+  the teaching stage collects the episode's material again.
+- The session gets `published.json` (the episode as published), the feedback in `material.json` under `revision`, and
+  the corpus sections the published episode used (its run's `sources_used.json`), which the draft may keep citing.
+  `TASK.md` adds the revision's steps (`data/story_agent_revision.md`): copy the published episode, change what the
+  feedback asks and what the change touches, keep every other segment as it was, check the changed facts, and use at
+  most two critiques (`story_agent.REVISION_CRITIQUES`) only where the telling changed.
+- An episode the writing prompt wrote can be revised the same way, from the outline's scenes.
+- The revised script must pass the structure checks and the script review again; then the new text, with its own
+  hash, waits again for the reading review before audio, which no review replaces.
 - If the previous order itself is unsuitable, the research job changed or the plan is damaged, start a regular
   `script` run instead.
-- Existing script versions are not rewritten automatically. For a newer stage (such as polishing or `teaching`) on an
-  existing text, use a new `script` run or `--revise`; older runs on `resume`: [Existing projects](TEACHING.md#existing-projects).
+
+## Runs begun before D-184
+
+A script run begun with the writing prompt's stages (`scripting.PROMPT_STAGES`: `writing`, `narration`,
+`polishing`) moves onto the story agent's stages on resume while nothing after `planning` and `teaching` was written
+(`scripting.retire_prompt_stages`): its outline and the outline's approval stay, since `outline_hash` binds the outline
+and its inputs, not the stages; a teaching design it began stays in `teaching/` unread, the teaching stage runs again
+for the agent, and `writer_switch.json` in the run folder records the move. A run that has written an episode keeps
+its stages and stops on resume with `writer_retired`; start a new run, or write the next episode from its approved
+outline. Orlagau v2's series run, stopped in the teaching design after its outline was approved, continued this way
+on 2026-11-01.
+
+- The keys of a run's inputs stay as they were (`teaching.TEACHING_VERSION`, `DESIGN_VERSION`,
+  `cast.POLISH_VERSION`, `host_roles`), so a waiting run keeps its input hash.
+- Episodes such runs published stay readable, exportable and recordable: the recording reads the stages their run
+  had (`episode_audio.reviewed_episode`), and their review notes stay on the reading page.
+- An outline such a run planned can be approved and written episode by episode like any other.
 
 ## Host names and style notes
 
@@ -747,13 +712,14 @@ names) on the audio page: both or none (`TopicBrief.host_names`).
 A project may have a third host, `host_c` (`TopicBrief.third_host`: name, role and Qwen voice; why: D-179). It is set
 in `project.yaml`; [examples/geld-podcast](../examples/geld-podcast/README.md) is such a project.
 
-- Every model call of a script run that is no search starts with the cast (`polishing.cast_note`): the rule for three
+- Every model call of a script run that is no search starts with the cast (`cast.cast_note`): the rule for three
   hosts (`prompts/third_host.txt`) and a JSON line with the third host's speaker ID, name and role. The prompts
-  themselves are unchanged, so a project of two hosts sends exactly what it sent before.
-- The host roles the writer, polishing, review and run inputs carry (`polishing.host_roles`) add host_c's role to
-  `HOST_ROLES`; the expert and the partner keep theirs.
+  themselves are unchanged, so a project of two hosts sends exactly what it sent before. The story agent's `TASK.md`
+  ends with the same cast under „Three hosts“, and its brief names the third host.
+- The host roles the agent, the reviews and the run inputs carry (`cast.host_roles`) add host_c's role to
+  `cast.HOST_ROLES`; the expert and the partner keep theirs ([Hosts and conversation](TEACHING.md#hosts-and-conversation)).
 - `validate_script` holds a script to the project's hosts (`models.host_roles_of`): all three speak in every episode,
-  and host_c in a project of two hosts is a defect the writer corrects.
+  and host_c in a project of two hosts is a defect.
 - `partner_share` counts every word host_a does not speak, so with three hosts host_b's and host_c's together; under
   the floor the advisory is `low_partners_share`.
 - Transcript, reading page, show notes and export name host_c by its `name` (`models.host_labels`).
@@ -763,10 +729,9 @@ in `project.yaml`; [examples/geld-podcast](../examples/geld-podcast/README.md) i
 ### Style notes
 
 `projects/<id>/style_notes.md` holds the operator's standing editorial corrections, edited in the Studio panel
-**„Redaktionelle Notizen“** (editorial notes). It enters a script run's inputs as `style_notes` and reaches writing,
-the narration review, dialogue polishing, the polishing comparison and the script review, not the series plan or the
-teaching design; the evidence rules take precedence. A change
-changes the input hash and so leads to a new run.
+**„Redaktionelle Notizen“** (editorial notes). It enters a script run's inputs as `style_notes` and reaches the story
+agent's brief and the script review, not the series plan; the evidence rules take precedence. A change changes the
+input hash and so leads to a new run.
 
 ## Outputs
 
@@ -775,18 +740,19 @@ changes the input hash and so leads to a new run.
 | `models/knowledge_model.yaml` | Evidenced findings taken over unchanged, concept, mechanism and example IDs, explanation dependencies and open questions |
 | `models/series_plan.yaml` | Justified explanation path, episodes, scenes, prerequisites and deferred topics |
 | `research/series_outline.md` | Readable overview; distinguishes planned episodes from the scripts reviewed here |
-| `episodes/ep_001/episode_plan.yaml` | The episode's question, scenes, core and supporting findings, earlier findings taken up, and its assigned research limits |
-| `episodes/ep_001/teaching_plan.md` and `.yaml` | Learning objectives, prerequisites, worked example and synthesis |
-| `episodes/ep_001/script.yaml` | Canonical speaker segments with knowledge references |
+| `episodes/ep_001/episode_plan.yaml` | The episode's question, scenes (the agent's chapters where it set its own), core and supporting findings, earlier findings taken up, and its assigned research limits |
+| `episodes/ep_001/story_plan.md` | The story agent's plan; an episode published before D-184 has `teaching_plan.md` and `.yaml` instead |
+| `episodes/ep_001/script.yaml` | Canonical speaker segments with knowledge references and, where the agent cited the corpus, section references |
 | `episodes/ep_001/script.md` | The same dialogue as readable text, labelled with the host names or roles, never the voice |
 | `episodes/ep_001/show_notes.md` | Chapters, source links and open topics for further study |
-| `reports/script_quality.yaml` | Source and structure check, reader answers, evidenced teaching review, word count and estimated speaking time per episode, and in a narrated run the narration review's `result.json` under `narration`; each episode entry names under `run_id` the run that wrote it |
+| `reports/script_quality.yaml` | Source and structure check, the script review, the story agent's critiques and session (`story_agent`), word count and estimated speaking time per episode at the run's rate, and the series review; each episode entry names under `run_id` the run that wrote it. Entries of episodes published before D-184 keep their reader answers, teaching review and, in a narrated run, the narration review |
 | `episodes/audio_review.yaml` | Script hashes and the pending reading review before audio |
+| `episodes/series_review.json` | The latest series review over an outline's published episodes ([above](#over-an-outlines-published-episodes)) |
 
 The files lie in the private project folder and are excluded from Git. `runs/<run_id>/` keeps inputs, model answers,
-drafts and reviews for resuming; per-call records: [Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest).
-`research/series_outline.md`, `teaching_plan.md` and `show_notes.md` use the fixed words of the project's language,
-German or English ([Languages](ARCHITECTURE.md#languages)).
+the agent's folders, drafts and reviews for resuming; per-call records: [Run folder and
+manifest](ARCHITECTURE.md#run-folder-and-manifest). `research/series_outline.md` and `show_notes.md` use the fixed
+words of the project's language, German or English ([Languages](ARCHITECTURE.md#languages)).
 
 ### Rejected answers
 
@@ -795,13 +761,12 @@ chapter sequence, is requested again up to twice with the fields objected to. Ea
 `failure.json` and `rejected_output.json` in its call folder; only the third rejection stops the stage. A `resume`
 repeats this episode's call, because it leaves no checkpoint.
 
-The same holds for every correction loop of a script run that keeps no rejections: the draft and its repairs, the
-script review and its repair, the teaching design, its review and focused repair, the reader, editorial and teaching
-reviews, the polishing comparison, the series review and the supplementary research's own checks
-(`run_budget.REASKED_CODES`, for example `invalid_script` or `invalid_teaching_review`). Their stop message ends with
-„die abgewiesenen Antworten liegen bei den Aufrufen“ (the rejected answers are with the calls;
-`run_budget.REASKED_MARKER`). Since 2026-10-07 such a stop also takes **„Mit neuen Anläufen fortsetzen“** and a
-fresh-attempt [pre-approval](BUSINESS_LOGIC.md#pre-approvals): nothing is set aside, and the resume asks the stage anew
+The same holds for every correction loop of a script run that keeps no rejections: the review repair, the script
+review, the orientation check, the series review and the supplementary research's own checks
+(`run_budget.REASKED_CODES`, for example `invalid_script`). Their stop message ends with „die abgewiesenen Antworten
+liegen bei den Aufrufen“ (the rejected answers are with the calls; `run_budget.REASKED_MARKER`). Since 2026-10-07
+such a stop also takes **„Mit neuen Anläufen fortsetzen“** and a fresh-attempt
+[pre-approval](BUSINESS_LOGIC.md#pre-approvals): nothing is set aside, and the resume asks the stage anew
 (`run_budget.reasked_stop`). The same codes without this message replay a saved state, such as a changed checkpoint or a
 series correction's recorded failure, and take no fresh attempts this way. (why: D-155)
 

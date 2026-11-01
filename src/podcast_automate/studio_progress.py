@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .runner import manifest_path
-from .script_checkpoints import finished, teaching_ready  # noqa: F401  (re-exported for callers)
+from .script_checkpoints import finished  # noqa: F401  (re-exported for callers)
 from .run_budget import (accepted_gaps, criterion_gaps, dispute_decisions, disputed_checks, effective_limits,
                          read_plan_approval, residual_finish, retry_requests)
 from .errors import AppError
@@ -92,12 +92,11 @@ def state_facts(work):
 
 # The activity line of a script run's newest call, by its output schema; the text is progress.activity.<schema> in the
 # interface language (D-152).
-ACTIVITIES = ("SeriesPlan", "TeachingPlan", "TeachingPlanReview", "TeachingPlanRepair", "ResearchDiscovery",
-              "FoundationSupplement", "FoundationReview", "DialoguePolishReview", "ScriptReview", "SeriesReview",
-              "ListenerReadback", "EditorialReview", "TeachingReview", "StoryMaterial", "NarrationReview",
-              "OrientationSheet", "OrientationReview", "StorySession", "StoryCritique")
-# The stages whose episodes the Studio counts one by one (script_checkpoints.finished).
-EPISODE_STAGES = {"teaching", "writing", "story", "narration", "polishing", "review"}
+ACTIVITIES = ("SeriesPlan", "ResearchDiscovery", "FoundationSupplement", "FoundationReview", "ScriptReview",
+              "SeriesReview", "StoryMaterial", "OrientationSheet", "OrientationReview", "StorySession", "StoryCritique")
+# The stages whose episodes the Studio counts one by one (script_checkpoints.finished). A run written by the writing
+# prompt before D-184 shows its writing, narration and polishing as its manifest records them.
+EPISODE_STAGES = {"teaching", "story", "review"}
 _PIPELINE = {"catalog": None, "patterns": []}
 
 
@@ -264,9 +263,7 @@ def script_progress(root, run, since=None, light=False):
     for entry in entries:
         identifier = entry["episode_id"]
         ready = finished(work, identifier, stage) if stage in EPISODE_STAGES else stages.get(stage, {}).get("status") == "completed"
-        folder = work / "teaching" / identifier
-        rows.append({"episode_id": identifier, "title": entry["title"], "completed": ready,
-                     "teaching_preview": text_at(folder / "plan.md") if teaching_ready(folder) else ""})
+        rows.append({"episode_id": identifier, "title": entry["title"], "completed": ready})
     # Each episode's state in this stage; several are running at once in parallel mode.
     stage_rows = {row["episode_id"]: read(work / "stage_activity" / stage / (row["episode_id"] + ".json"), {}) or {}
                   for row in rows} if stage in EPISODE_STAGES else {}
@@ -283,11 +280,9 @@ def script_progress(root, run, since=None, light=False):
     calls = sorted((work / "calls").glob("call_*/output_schema.json"))
     schema = read(calls[-1], {}).get("title") if calls else None
     activity = t(f"progress.activity.{schema}" if schema in ACTIVITIES else "progress.activity.default")
-    if schema == "TeachingPlan" and current and (work / "teaching" / current["episode_id"] / "checkpoint.json").exists():
-        activity = t("progress.activity.teaching_revision")
     if schema == "EpisodeScript":
-        activity = t({"narration": "progress.activity.script_narration", "polishing": "progress.activity.script_polishing",
-                      "review": "progress.activity.script_review"}.get(stage, "progress.activity.script_writing"))
+        # A story run's script calls are the scoped repairs of its review and of the series review.
+        activity = t("progress.activity.script_review")
     plan_repair = None
     if stage == "planning" and schema == "SeriesPlan":
         # A saved draft with findings means the running outline call is one of the automatic corrections.
@@ -320,10 +315,7 @@ def script_progress(root, run, since=None, light=False):
     # In a parallel stage the episode that failed is not necessarily the first unfinished one.
     failed = next((row for row in rows if stage_rows.get(row["episode_id"], {}).get("status") == "interrupted"), None)
     focus = failed or current
-    if stage == "teaching" and focus and run.get("status") == "blocked":
-        checkpoint = read(work / "teaching" / focus["episode_id"] / "checkpoint.json", {})
-        issues = (checkpoint.get("review") or {}).get("issues", [])
-    elif stage == "review" and focus and run.get("status") == "blocked":
+    if stage == "review" and focus and run.get("status") == "blocked":
         checkpoint = read(work / "reviews" / f"{focus['episode_id']}_checkpoint.json", {})
         review = checkpoint.get("review") or read(work / "reviews" / f"{focus['episode_id']}.json", {})
         issues = review.get("issues", [])

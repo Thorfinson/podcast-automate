@@ -264,7 +264,9 @@ class OpenRouterScriptTests(unittest.TestCase):
              patch("podcast_automate.cli.getpass.getpass", return_value=KEY), contextlib.redirect_stdout(output):
             code = main(["script", str(self.root), "--backend", "openrouter", "--model", "vendor/test-model", "--api-key", "--json"])
         self.assertEqual(code, 0)
-        self.assertEqual(len(self.fixture.calls), 13)  # +2 since 2026-10-23: story material and narration review (D-180)
+        # The outline, the story material, the orientation sheet and its check, a critique, the script review and the
+        # series review; the story agent's session is a Claude Code session of its own (D-184).
+        self.assertEqual(len(self.fixture.calls), 7)
         self.assertEqual(before, file_hash(self.root / "project.yaml"))
         self.assertNotIn(KEY, output.getvalue())
         for path in self.root.rglob("*"):
@@ -272,7 +274,7 @@ class OpenRouterScriptTests(unittest.TestCase):
                 self.assertNotIn(KEY.encode(), path.read_bytes())
         report = read_yaml(self.root / "reports/script_quality.yaml")
         self.assertEqual(report["text_generation"]["provider"], "openrouter")
-        self.assertEqual(report["episodes"]["ep_001"]["teaching_review"]["status"], "passed")
+        self.assertEqual(report["episodes"]["ep_001"]["teaching_review"]["status"], "not_applicable")
         self.assertFalse(read_yaml(self.root / "episodes/audio_review.yaml")["audio_approved"])
 
     def test_rate_limit_resume_restores_provider_and_model_with_rotated_key_without_rewriting(self):
@@ -293,7 +295,11 @@ class OpenRouterScriptTests(unittest.TestCase):
                 code = main(["resume", str(self.root), "--api-key", "--json"])
             prompt.assert_called_once()
         self.assertEqual(code, 0)
-        self.assertEqual(self.fixture.calls.count(EpisodeScript), 2)
+        # The resume reviews the saved draft: the story agent wrote it once (no session again).
+        work = self.root / "runs" / first.run_id
+        sessions = [path for path in work.glob("calls/call_*/output_schema.json")
+                    if json.loads(path.read_text(encoding="utf-8"))["title"] == "StorySession"]
+        self.assertEqual(len(sessions), 1)
         self.assertEqual(json.loads(output.getvalue())["run"]["run_id"], first.run_id)
 
     def test_resume_rejects_changed_backend_model_or_token_limit_before_calls(self):

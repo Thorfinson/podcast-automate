@@ -1,5 +1,10 @@
 # Narration workshop
 
+> Archive since 2026-11-01 (D-184): the lab's best process became the story agent (`story_agent.py`, D-181), the
+> only writer, and the writing prompt, polishing and the teaching design it compared against were removed. `run.py`
+> went with them; it is in git history (commit `f6d51cd`). The cases, prompts and results below stay as the
+> evidence of D-181.
+
 Real-model checks of how the script pipeline tells a story, on fixed ten-minute cases, run by hand
 (`run.py --help`). The user's goal (2026-10-26): tune the prompts on one short piece until it reaches 10/10/10, then
 scale up to an episode, three episodes and a series.

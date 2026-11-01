@@ -1,4 +1,5 @@
-"""The narration stage (D-180): story material, the narration review and its rework, and a run with and without it."""
+"""The story material of a script run (D-180), its story research, and the scope of a repair that changes only
+named segments (narration.with_neighbours, scope_errors)."""
 import json
 import tempfile
 import unittest
@@ -6,33 +7,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import yaml
-
-from podcast_automate import prompts
 from podcast_automate.errors import AppError
-from podcast_automate.models import EpisodeScript, Segment
+from podcast_automate.models import Segment
 from podcast_automate.research_models import Evidence
 from podcast_automate.teaching_research import FoundationExplanation, FoundationSupplement
-from podcast_automate.narration import (REWORK_REFUSED, MissingStory, NarrationPoint, NarrationReview, StoryItem,
-                                        StoryMaterial,
-                                        allowed_sections, length_errors, narrate_episode, narration_metrics, sanitized,
-                                        scope_errors, story_material, with_neighbours)
-from podcast_automate.script_checkpoints import baseline_path, finished
-from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
+from podcast_automate.narration import (MissingStory, StoryItem, StoryMaterial, allowed_sections, scope_errors,
+                                        story_material, with_neighbours)
 from podcast_automate.scripting import run_script
-from podcast_automate.studio_scripts import review_notes
-from podcast_automate.storage import digest, write_json
-from podcast_automate.teaching import TeachingPlan, prerequisite_context, previous_devices
 from tests import script_fixtures as fixtures
-from tests.narration_fixtures import narration_review
-from tests.teaching_fixtures import teaching_response
 
 SECTION = "Am 10. Februar 1389 hängt Graf Günther von Schwarzburg in Jena sein Siegel an den Brief und verkauft Saalfeld."
-
-
-def point(category="compressed_story", fix="rewrite", segments=("seg_002",), items=()):
-    return NarrationPoint(category=category, segment_ids=list(segments), problem="Told in one sentence.",
-                          correction="Tell who sold what, where and why.", fix=fix, item_ids=list(items))
 
 
 def reworked(text="Graf Günther verkauft in Jena den Hof; ein niedriger Wert passt."):
@@ -93,71 +77,7 @@ class StoryMaterialTests(unittest.TestCase):
         self.assertEqual(allowed_sections(self.entry, self.dossier, self.sources), [])
 
 
-class NarrateEpisodeTests(unittest.TestCase):
-    def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        self.folder = Path(temp.name)
-        self.draft = fixtures.example_script()
-        self.calls = []
-
-    def run_narration(self, first, *, repair=None, follow=None, signature="sig"):
-        def review(script):
-            self.calls.append("review")
-            return first
-
-        def rework(script, points):
-            self.calls.append(("repair", [p.category for p in points]))
-            if isinstance(repair, Exception):
-                raise repair
-            return repair
-
-        def followup(script, previous, changed):
-            self.calls.append(("followup", changed))
-            return follow
-        return narrate_episode(self.folder, signature, self.draft, review=review, repair=rework, followup=followup)
-
-    def test_a_draft_without_points_stands_unchanged_after_one_call(self):
-        final, result = self.run_narration(narration_review())
-        self.assertEqual((final, result["status"], self.calls), (self.draft, "unchanged", ["review"]))
-        self.assertEqual(result["draft_digest"], result["narrated_digest"])
-
-    def test_rewrite_points_are_reworked_and_reviewed_within_the_changed_segments(self):
-        follow = narration_review().model_copy(update={"points": [point("flat_ending", "note")]})
-        follow.scores.storytelling.score = 7
-        first = narration_review([point(), point("missing_story", "research", ())])
-        final, result = self.run_narration(first, repair=reworked(), follow=follow)
-        self.assertEqual(self.calls, ["review", ("repair", ["compressed_story"]), ("followup", ["seg_002"])])
-        self.assertEqual((final, result["status"]), (reworked(), "repaired"))
-        self.assertEqual((result["first_scores"]["storytelling"]["score"], result["scores"]["storytelling"]["score"]),
-                         (5, 7))
-        self.assertEqual([n["category"] for n in result["notes"]], ["flat_ending"])
-        self.assertEqual([n["category"] for n in result["research_points"]], ["missing_story"])
-        self.assertEqual(json.loads((self.folder / "script.json").read_text(encoding="utf-8")), reworked().model_dump())
-        # A resume with the same inputs makes no call.
-        self.calls.clear()
-        self.assertEqual(self.run_narration(first, repair=reworked(), follow=follow)[0], reworked())
-        self.assertEqual(self.calls, [])
-
-    def test_a_refused_rework_keeps_the_draft_and_reports_its_points(self):
-        refused = AppError("still too short", code=REWORK_REFUSED, status="blocked")
-        final, result = self.run_narration(narration_review([point()]), repair=refused)
-        self.assertEqual((final, result["status"]), (self.draft, "kept_draft"))
-        self.assertEqual([n["category"] for n in result["notes"]], ["compressed_story"])
-        self.assertIn("still too short", result["repair_failed"])
-
-    def test_a_stop_for_quota_or_budget_ends_the_call_and_is_asked_again_on_resume(self):
-        quota = AppError("no quota", code="quota_exhausted", status="waiting_for_quota")
-        with self.assertRaises(AppError) as caught:
-            self.run_narration(narration_review([point()]), repair=quota)
-        self.assertEqual(caught.exception.code, "quota_exhausted")
-        self.calls.clear()
-        final, result = self.run_narration(narration_review([point()]), repair=reworked(), follow=narration_review())
-        self.assertEqual(self.calls[0][0], "repair", "the saved review is not asked again")
-        self.assertEqual(result["status"], "repaired")
-
-
-class NarrationCheckTests(unittest.TestCase):
+class ScopedRepairTests(unittest.TestCase):
     def test_a_rework_changes_only_the_named_segments_and_keeps_the_others_in_order(self):
         draft = fixtures.example_script()
         added = reworked().model_copy(update={"segments": [*reworked().segments, Segment(
@@ -187,142 +107,13 @@ class NarrationCheckTests(unittest.TestCase):
             s.model_copy(update={"text": "Anders."}) if s.segment_id == "seg_005" else s for s in draft.segments]})
         self.assertEqual(len(scope_errors(draft, far, with_neighbours(draft, {"seg_003"}))), 1)
 
-    def test_a_rework_may_not_grow_the_episode_beyond_its_room(self):
-        draft = fixtures.example_script()
-        long = reworked(" ".join(["Wort"] * 60))
-        self.assertEqual(length_errors(draft, reworked(), 10), [])
-        self.assertIn("stay within about", length_errors(draft, long, 10)[0])
-        self.assertEqual(length_errors(draft, long, 80), [])
-
-    def test_points_that_name_what_is_not_there_are_trimmed_not_asked_again(self):
-        draft = fixtures.example_script()
-        review = narration_review([point(segments=("seg_404",), items=("story_09",)),
-                                   point(segments=("seg_001", "seg_404"), items=("story_01",))])
-        trimmed = sanitized(review, draft, ["story_01"])
-        self.assertEqual([(p.fix, p.segment_ids, p.item_ids) for p in trimmed.points],
-                         [("note", [], []), ("rewrite", ["seg_001"], ["story_01"])])
-
-    def test_code_counts_workshop_talk_open_ends_and_repeated_questions(self):
-        script = EpisodeScript(episode_id="ep_001", title="T", purpose="deep_dive",
-                               chapters=[{"chapter_id": "scene_example", "title": "C"}], segments=[
-            Segment(segment_id="seg_001", scene_id="scene_example", chapter_id="scene_example", speaker_id="host_a",
-                    text="Das Buch haben wir nicht im Volltext gelesen, laut Wikipedia bleibt das offen."),
-            Segment(segment_id="seg_002", scene_id="scene_example", chapter_id="scene_example", speaker_id="host_b",
-                    text="Wer war das?"),
-            Segment(segment_id="seg_003", scene_id="scene_example", chapter_id="scene_example", speaker_id="host_b",
-                    text="Und warum?")])
-        metrics = narration_metrics(script, "de-DE")
-        self.assertEqual([hit["phrase"] for hit in metrics["workshop_phrases"]],
-                         ["nicht im Volltext gelesen", "Wikipedia"])
-        self.assertEqual((metrics["stays_open"], metrics["repeated_questions"]), (1, [["seg_002", "seg_003"]]))
-        self.assertEqual(metrics["chapter_words"], {"scene_example": 18})
-        english = narration_metrics(script.model_copy(update={"segments": [script.segments[0].model_copy(
-            update={"text": "We've only examined the abstract; the full text remains open."})]}), "en-US")
-        self.assertEqual(len(english["workshop_phrases"]), 2)
-
-
-class NarratedRunTests(unittest.TestCase):
-    """A whole script run with the narration stage, and one started before it."""
+class StoryResearchTests(unittest.TestCase):
+    """A whole script run whose story material names a story its sections only point to."""
 
     def setUp(self):
         self.fixture = fixtures.script_project(self)
         self.root = self.fixture.root
         self.prompts = []
-
-    def model(self, *, story=True, first=None, follow=None, rework=None):
-        def answer(prompt, output_type, directory, **kwargs):
-            self.prompts.append((output_type, kwargs.get("prompt_version"), prompt))
-            payload = json.loads(prompt.splitlines()[-1])
-            if output_type is StoryMaterial and story:
-                section = payload["allowed_sections"][0]
-                anchor = " ".join(section["text"].split()[:8])
-                return StoryMaterial(items=[StoryItem(item_id="story_01", kind="scene", text="Eine Szene der Quelle.",
-                                                      source_ref=section["reference"], anchor=anchor,
-                                                      finding_ids=section["finding_ids"][:1], in_finding=False)]), {}
-            if output_type is TeachingPlan and payload.get("story_material") and "design" not in payload:
-                design = teaching_response(prompt, TeachingPlan)
-                return design.model_copy(update={"core_story": "Who did what, and the moment it turned.",
-                                                 "story_item_ids": ["story_01"],
-                                                 "story_scene_id": design.scenes[0].scene_id}), {}
-            if output_type is NarrationReview:
-                followup = "previous_review" in payload
-                chosen = (follow if followup else first) or narration_review()
-                return chosen, {}
-            if output_type is EpisodeScript and str(kwargs.get("prompt_version", "")).startswith("narration_repair"):
-                return rework, {}
-            return self.fixture.model(prompt, output_type, directory, **kwargs)
-        return answer
-
-    def test_the_draft_is_reviewed_reworked_and_polished_from_its_narrated_form(self):
-        follow = narration_review([point("missing_story", "research", ())])
-        follow.scores.storytelling.score = 7
-        model = self.model(first=narration_review([point(items=("story_01",))]), follow=follow, rework=reworked())
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=model):
-            run = run_script(self.root)
-        self.assertEqual(run.status, "completed", run.stages)
-        self.assertEqual(list(run.stages), ["planning", "teaching", "writing", "narration", "polishing", "review",
-                                            "publish"])
-        work = self.root / "runs" / run.run_id
-        result = json.loads((work / "narration/ep_001/result.json").read_text(encoding="utf-8"))
-        self.assertEqual((result["status"], result["scores"]["storytelling"]["score"]), ("repaired", 7))
-        self.assertTrue(finished(work, "ep_001", "narration"))
-        self.assertEqual(baseline_path(work, "ep_001"), work / "narration/ep_001/script.json")
-        # Polishing and the reviews start from the narrated draft.
-        self.assertIn("Graf Günther verkauft", (work / "polishing/ep_001/before.md").read_text(encoding="utf-8"))
-        design = TeachingPlan.model_validate_json((work / "teaching/ep_001/plan.json").read_text(encoding="utf-8"))
-        self.assertEqual((design.story_item_ids, design.story_scene_id), (["story_01"], "scene_example"))
-        writing = [p for schema, version, p in self.prompts
-                   if schema is EpisodeScript and version == WRITE_EPISODE_VERSION]
-        self.assertTrue(writing and all(prompts.text("write_episode_story") in p for p in writing))
-        self.assertEqual(json.loads(writing[0].splitlines()[-1])["story_material"][0]["item_id"], "story_01")
-        designs = [p for schema, version, p in self.prompts if schema is TeachingPlan]
-        self.assertTrue(all(prompts.text("teaching_design_story") in p for p in designs))
-        plans = [p for schema, version, p in self.prompts if version and version.startswith("series_plan.")]
-        self.assertTrue(plans and all(prompts.text("series_plan_density") in p for p in plans))
-        # The scores and what stays open reach the report and the Studio's review notes.
-        report = yaml.safe_load((self.root / "reports/script_quality.yaml").read_text(encoding="utf-8"))
-        narration = report["episodes"]["ep_001"]["narration"]
-        self.assertEqual([p["category"] for p in narration["research_points"]], ["missing_story"])
-        notes = review_notes(report["episodes"]["ep_001"])
-        self.assertEqual(notes["narration_scores"], {"tension": 5, "interest": 5, "storytelling": 7})
-        self.assertEqual([row["category"] for row in notes["narration"]], ["missing_story"])
-
-    def test_a_later_episode_reads_an_earlier_narrated_design_from_this_run(self):
-        """Orlagau v2, 2026-10-24: the second episode's teaching stopped on invalid_project. The first one's design named
-        story items, the check of a reviewed design did not know them, and the new version had no published plan to
-        fall back on. The design counts as reviewed with the story material saved beside it; an episode with no known
-        design is left out."""
-        plan = fixtures.example_plan()
-        first = plan.episodes[0]
-        second = first.model_copy(update={"episode_id": "ep_002", "prerequisite_episodes": [first.episode_id]})
-        series = plan.model_copy(update={"episodes": [first, second]})
-        design = teaching_response(json.dumps({"episode": first.model_dump()}), TeachingPlan).model_copy(update={
-            "core_story": "Who did what, and the moment it turned.", "story_item_ids": ["story_01"],
-            "story_scene_id": first.scenes[0].scene_id})
-        review = {"issues": [], "research_gaps": [], "gap_assessments": []}
-        work = self.root / "runs" / "run_narrated"
-        folder = work / "teaching" / first.episode_id
-        write_json(folder / "plan.json", design.model_dump())
-        write_json(folder / "review.json", review)
-        write_json(folder / "checkpoint.json", {"design": design.model_dump(), "review": review})
-        self.assertFalse((self.root / "episodes" / first.episode_id / "teaching_plan.yaml").exists())
-        self.assertEqual(previous_devices(series, second, work, self.root), [])
-        self.assertEqual(prerequisite_context(series, second, work)[0]["status"], "outline_only")
-        write_json(folder / "story_material.json", {"items": [{"item_id": "story_01"}], "missing": []})
-        self.assertEqual([row["episode_id"] for row in previous_devices(series, second, work, self.root)], ["ep_001"])
-        self.assertEqual(prerequisite_context(series, second, work)[0]["status"], "reviewed_teaching_plan")
-
-    def test_a_review_without_points_costs_one_call_and_the_draft_goes_on_as_written(self):
-        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model(story=False)):
-            run = run_script(self.root)
-        self.assertEqual(run.status, "completed", run.stages)
-        schemas = [schema for schema, _, _ in self.prompts]
-        self.assertEqual((schemas.count(StoryMaterial), schemas.count(NarrationReview)), (1, 1))
-        work = self.root / "runs" / run.run_id
-        self.assertEqual(json.loads((work / "narration/ep_001/script.json").read_text(encoding="utf-8")),
-                         json.loads((work / "drafts/ep_001.json").read_text(encoding="utf-8")))
-        design = TeachingPlan.model_validate_json((work / "teaching/ep_001/plan.json").read_text(encoding="utf-8"))
-        self.assertEqual(design.core_story, "", "no story material, no core story")
 
     def story_research_model(self):
         """Story material that names one story its sections only point to, on the first call only."""
@@ -336,10 +127,10 @@ class NarratedRunTests(unittest.TestCase):
                                         finding_ids=["f_energy", "f_unknown"])] if len(asked) == 1 else []
                 self.prompts.append((output_type, kwargs.get("prompt_version"), prompt))
                 return StoryMaterial(items=[], missing=missing), {}
-            return self.model(story=False)(prompt, output_type, directory, **kwargs)
+            return self.fixture.model(prompt, output_type, directory, **kwargs)
         return answer, asked
 
-    def test_a_story_the_sections_only_point_to_is_researched_once_before_the_design(self):
+    def test_a_story_the_sections_only_point_to_is_researched_once_before_the_agent_writes(self):
         """D-180: the story research reads it through the supplementary research, at most once per episode, and the
         material is collected again from the sources it added."""
         model, asked = self.story_research_model()
@@ -390,23 +181,6 @@ class NarratedRunTests(unittest.TestCase):
         self.assertEqual(resumed.status, "completed", resumed.stages)
         self.assertEqual(research.call_count, 1)
         self.assertEqual(json.loads((folder / "story_research.json").read_text(encoding="utf-8"))["status"], "not_found")
-
-    def test_a_run_started_before_the_stage_keeps_its_prompts_and_runs_without_it(self):
-        with patch("podcast_automate.scripting.STAGES", ("planning", "teaching", "writing", "polishing", "review",
-                                                         "publish")), \
-             patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model()):
-            run = run_script(self.root)
-        self.assertEqual(run.status, "completed", run.stages)
-        self.assertNotIn("narration", run.stages)
-        schemas = [schema for schema, _, _ in self.prompts]
-        self.assertNotIn(StoryMaterial, schemas)
-        self.assertNotIn(NarrationReview, schemas)
-        texts = [prompts.text(name) for name in ("write_episode_story", "teaching_design_story", "series_plan_density")]
-        self.assertFalse(any(text in prompt for text in texts for _, _, prompt in self.prompts))
-        work = self.root / "runs" / run.run_id
-        self.assertFalse((work / "narration").exists())
-        self.assertEqual(baseline_path(work, "ep_001"), work / "drafts/ep_001.json")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,7 @@ from .research_patches import MAX_REJECTIONS
 from .run_budget import run_text_generation
 from .qwen_worker import spoken_settings
 from .runner import execute_stages, manifest_path, outputs_valid
+from .script_artifacts import run_rate
 from .script_models import SeriesPlan
 from .series_review import load_series_review, require_passing_series, reviewed_scripts
 from .scripting import load_research, validate_script
@@ -73,7 +74,9 @@ def reviewed_episode(root, config, episode):
     script = EpisodeScript.model_validate(read_yaml(folder / "script.yaml"))
     reviewed = EpisodeScript.model_validate_json((work / "reviewed" / f"{episode}.json").read_text(encoding="utf-8"))
     research_id, *_ = load_research(root, config)
-    if inputs["research_run"] != research_id or script != reviewed or validate_script(script, entry, roles=host_roles_of(config)):
+    # Checked at the words a minute the run wrote it at (script_artifacts.run_rate, D-184).
+    if inputs["research_run"] != research_id or script != reviewed or validate_script(
+            script, entry, roles=host_roles_of(config), rate=run_rate(work)):
         raise AppError("Skript und geprüfte Recherche passen nicht zusammen.", code="invalid_script", status="blocked")
     return manifest, script, file_hash(folder / "script.yaml")
 

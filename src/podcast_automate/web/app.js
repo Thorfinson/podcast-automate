@@ -51,7 +51,8 @@ const AGENT_RUN_STAGES = new Set(["teaching","story","review","publish"]);
 const runStages = run => productionStages.filter(([id])=>run?.stages?.story?AGENT_RUN_STAGES.has(id):id!=="story");
 const stageNames = Object.fromEntries(["discovery","retrieval","dossier","completeness","planning","teaching","writing","narration","polishing",
   "review","publish","expression","synthesis","assembly"].map(id=>[id,tp(`stage.${id}`)]));
-const actionNames = Object.fromEntries(["assistant","research","plan","replan","expression","publish_kit","script","revise","audio",
+const actionNames = Object.fromEntries(["assistant","research","plan","replan","expression","publish_kit","script","episode",
+  "episodes","series_review","revise","audio",
   "audio_sample","audio_samples","resume","check"].map(id=>[id,tp(`action.${id}`)]));
 let boot, project = null, step = 0, episodeIndex = 0, submitting = false, lastJobSignature = "";
 let lastJobView = "";
@@ -277,8 +278,9 @@ function runPage(run,p=project) {
 function jobPage(p=project) {
   const action=p?.job?.action;
   return ({assistant:PAGE.brief,check:PAGE.brief,audio_sample:PAGE.brief,audio_samples:PAGE.brief,
-    research:PAGE.research,plan:PAGE.outline,replan:PAGE.outline,script:PAGE.production,
-    revise:PAGE.production,audio:PAGE.audio,expression:PAGE.scripts}[action]??runPage(currentRun(p),p));
+    research:PAGE.research,plan:PAGE.outline,replan:PAGE.outline,script:PAGE.production,episode:PAGE.production,
+    episodes:PAGE.production,series_review:PAGE.outline,revise:PAGE.production,audio:PAGE.audio,
+    expression:PAGE.scripts}[action]??runPage(currentRun(p),p));
 }
 function recommendedPage(p=project) {
   if(!p)return PAGE.brief;
@@ -288,7 +290,8 @@ function recommendedPage(p=project) {
     const destination=jobPage(p);
     if(destination!==null)return destination;
     return ({research:PAGE.research,plan:PAGE.outline,replan:PAGE.outline,script:PAGE.production,
-      revise:PAGE.production,audio:PAGE.audio}[job.action]??PAGE.brief);
+      episode:PAGE.production,episodes:PAGE.production,series_review:PAGE.outline,revise:PAGE.production,
+      audio:PAGE.audio}[job.action]??PAGE.brief);
   }
   if(job?.run&&runPage(job.run,p)!==null)return runPage(job.run,p);
   if((p.episodes||[]).some(e=>e.audio?.length))return PAGE.audio;
@@ -541,7 +544,6 @@ function setupSummary() {
     <dt>${t("summary.voices")}</dt><dd>${escape(audioLabel(a))} · ${escape(voiceName(a.voices.host_a))} &amp; ${escape(voiceName(a.voices.host_b))}</dd>
     <dt>${t("summary.text_execution")}</dt><dd>${mode(x.text,tp("summary.text_parallel"))}</dd><dt>${t("summary.recording")}</dt><dd>${a.provider==="qwen3_local"?t("summary.recording_qwen"):mode(x.audio,tp("summary.recording_parallel"))}</dd>
     <dt>${t("summary.gap_probe")}</dt><dd>${project.jev_probe?`${t("summary.jev_on")}${project.jev_default?` · ${t("summary.jev_default")}`:""}`:t("summary.jev_off")} <button type="button" class="secondary small" data-action="toggle-jev-probe" data-enabled="${project.jev_probe?"0":"1"}">${t(project.jev_probe?"summary.jev_switch_off":"summary.jev_switch_on")}</button></dd>
-    <dt>${t("summary.writer")}</dt><dd>${t(project.writer==="agent"?"summary.writer_agent":"summary.writer_prompt")} <button type="button" class="secondary small" data-action="toggle-writer" data-writer="${project.writer==="agent"?"prompt":"agent"}">${t(project.writer==="agent"?"summary.writer_use_prompt":"summary.writer_use_agent")}</button></dd>
     <dt>${t("summary.allowances")}</dt><dd>${escape(allowanceSummary(project.allowances))}</dd></dl>
     <p class="hint">${t("summary.settings_hint")}</p>
     <div class="actions"><button type="button" class="secondary small" data-action="open-settings">${t("common.open_settings")}</button></div>
@@ -1202,15 +1204,44 @@ function renderOutline() {
   }
   const p=outline.plan, approved=outline.approval?.plan_hash===outline.hash;
   html+=`<section class="panel tinted"><h2 class="outline-question">${escape(p.central_question)}</h2><p>${escape(p.explanation_path)}</p><div class="outline-summary"><span>${t("outline.episodes",{count:asHtml(`<strong>${p.episodes.length}</strong>`)})}</span><span>${t("outline.minutes",{minutes:asHtml(`<strong>${Math.round(p.episodes.reduce((s,e)=>s+e.target_minutes,0))}</strong>`)})}</span><span>${t(approved?"outline.approved_state":"outline.awaiting")}</span></div><p class="hint">${escape(p.scope_note)}</p></section>`;
-  html+=p.episodes.map((e,i)=>`<section class="panel"><div class="episode-head"><span class="episode-num">${String(i+1).padStart(2,"0")}</span><div><h2>${escape(e.title)}</h2><p>${escape(e.central_question)}</p></div><span class="tag">${t("outline.episode_minutes",{minutes:Math.round(e.target_minutes)})}</span></div><ol class="chapters">${e.scenes.map((s,n)=>`<li><span>${String(n+1).padStart(2,"0")}</span><div><strong>${escape(s.title)}</strong><p>${escape(s.question)}</p><details><summary>${t("outline.explained")}</summary>${s.explanation_steps.map(x=>`<p>${escape(x)}</p>`).join("")}</details></div></li>`).join("")}</ol>${e.deferred_questions.length?`<details><summary>${t("outline.deferred")}</summary>${e.deferred_questions.map(q=>`<p>${escape(q)}</p>`).join("")}</details>`:""}</section>`).join("");
+  html+=p.episodes.map((e,i)=>`<section class="panel"><div class="episode-head"><span class="episode-num">${String(i+1).padStart(2,"0")}</span><div><h2>${escape(e.title)}</h2><p>${escape(e.central_question)}</p></div><span class="tag">${t("outline.episode_minutes",{minutes:Math.round(e.target_minutes)})}</span>${episodeState(e)}</div><ol class="chapters">${e.scenes.map((s,n)=>`<li><span>${String(n+1).padStart(2,"0")}</span><div><strong>${escape(s.title)}</strong><p>${escape(s.question)}</p><details><summary>${t("outline.explained")}</summary>${s.explanation_steps.map(x=>`<p>${escape(x)}</p>`).join("")}</details></div></li>`).join("")}</ol>${e.deferred_questions.length?`<details><summary>${t("outline.deferred")}</summary>${e.deferred_questions.map(q=>`<p>${escape(q)}</p>`).join("")}</details>`:""}</section>`).join("");
   const canReplan = !Object.entries(project.job?.run?.stages || {}).some(([n,r])=>n!=="planning"&&r.attempts>0);
-  // Who writes these episodes, switchable until the outline is approved (D-181: the waiting run takes the switch).
-  const agent=outline.writer==="agent";
-  const writer=`<p class="hint outline-writer">${t("outline.writer",{writer:t(agent?"summary.writer_agent":"summary.writer_prompt")})} <button type="button" class="secondary small" data-action="toggle-writer" data-writer="${agent?"prompt":"agent"}" ${disabled()}>${t(agent?"summary.writer_use_prompt":"summary.writer_use_agent")}</button></p>`;
-  html+=approved?`<section class="panel tinted"><h2>${t("outline.approved.title")}</h2><p>${t("outline.approved.text")}</p><button data-step="${PAGE.production}">${t("outline.approved.button")}</button></section>`:
-    `<div class="action-bar"><details class="action-note"><summary>${t("outline.feedback.summary")}</summary>${area("outline-feedback",t("outline.feedback.label"),"",3)}</details><div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>${t("outline.replan")}</button><button data-action="script" ${disabled()}>${t("outline.approve")}</button></div><p class="hint">${outlineSentence(p)}</p>${writer}</div>`;
+  html+=approved?(outline.next_episode?writingPanel(outline,p):seriesReviewPanel(outline,p)):
+    `<div class="action-bar"><details class="action-note"><summary>${t("outline.feedback.summary")}</summary>${area("outline-feedback",t("outline.feedback.label"),"",3)}</details><div class="actions"><button class="secondary" data-action="replan" ${running()||!canReplan?"disabled":""}>${t("outline.replan")}</button><button data-action="script" ${disabled()}>${t("outline.approve")}</button></div><p class="hint">${outlineSentence(p)}</p><p class="hint">${t("outline.approve_hint")}</p></div>`;
   if(!canReplan)html+=`<details class="restart-options"><summary>${t("outline.new.summary")}</summary><p>${t("outline.new.text")}</p><button class="secondary" data-action="plan" ${disabled()}>${t("button.new_outline")}</button></details>`;
   return html;
+}
+// A series is written in order, one run per episode, from the approved outline (D-184): each episode's state, the
+// panel that writes the next or every remaining one, and the series review once all are written.
+function episodeState(e) {
+  const outline=project?.outline;
+  if(!outline||outline.approval?.plan_hash!==outline.hash)return "";
+  const row=(outline.episodes||[]).find(r=>r.episode_id===e.episode_id);
+  if(row?.run_id)return `<span class="tag ok">${t("outline.episode_written")}</span>`;
+  return e.episode_id===outline.next_episode?`<span class="tag">${t("outline.episode_next")}</span>`:"";
+}
+function writingPanel(outline,p) {
+  const total=p.episodes.length, written=(outline.episodes||[]).filter(r=>r.run_id).length;
+  const index=p.episodes.findIndex(e=>e.episode_id===outline.next_episode);
+  return `<section class="panel tinted"><h2>${t("outline.writing.title")}</h2><p>${t("outline.writing.text",{written,total})}</p><p>${t("outline.writing.next",{number:index+1,title:quoted(p.episodes[index].title)})}</p><div class="actions"><button data-action="episode" ${disabled()}>${t("outline.writing.next_button")}</button>${total-written>1?`<button class="secondary" data-action="episodes" ${disabled()}>${t("outline.writing.all_button",{count:total-written})}</button>`:""}</div><p class="hint">${t("outline.writing.hint")}</p></section>`;
+}
+function seriesReviewPanel(outline,p) {
+  const review=outline.series_review, total=p.episodes.length;
+  const start=label=>`<div class="actions"><button data-action="series_review" ${disabled()}>${label}</button></div>`;
+  if(!review||!["completed","running"].includes(review.status))
+    return `<section class="panel tinted"><h2>${t("outline.series.title")}</h2><p>${t(review?"outline.series.stopped":"outline.series.ready",{total})}</p>${start(t("outline.series.start"))}</section>`;
+  if(review.status==="running")return "";
+  // A revision since the review publishes another run of the episode: the verdict no longer describes the series.
+  const stale=(outline.episodes||[]).some(r=>(review.episode_runs||{})[r.episode_id]!==r.run_id);
+  const issues=Object.entries(review.episode_issues||{});
+  if(review.verdict==="passed"||!issues.length)
+    return `<section class="panel tinted"><h2>${t("outline.series.title")}</h2><p>${t("outline.series.passed")}</p>${stale?`<p class="hint">${t("outline.series.stale")}</p>${start(t("outline.series.again"))}`:""}</section>`;
+  const rows=issues.map(([episode,points])=>{
+    const index=p.episodes.findIndex(e=>e.episode_id===episode);
+    const message=[t("outline.series.feedback"),...points.map(point=>point.reason)].join("\n");
+    return `<li><strong>${t("outline.series.episode",{number:index+1,title:quoted(p.episodes[index]?.title||episode)})}</strong><ul>${points.map(point=>`<li>${escape(point.reason)}</li>`).join("")}</ul><button class="secondary small" data-action="revise" data-episode="${escape(episode)}" data-message="${escape(message)}" ${disabled()}>${t("outline.series.revise")}</button></li>`;
+  }).join("");
+  return `<section class="panel tinted"><h2>${t("outline.series.title")}</h2><p>${t("outline.series.blocked")}</p><ul class="series-issues">${rows}</ul>${stale?`<p class="hint">${t("outline.series.stale")}</p>`:""}${start(t("outline.series.again"))}</section>`;
 }
 function renderProduction() {
   const html=heading(4);
@@ -1875,7 +1906,7 @@ function attentionOf(p) {
       tp("attention.halted.mixed",{count:halted.length,list:halted.map(a=>`${quoted(title(a))} (${stopInfo(a).title})`).join(", ")}),button:tp("attention.view_audio"),page:PAGE.audio};
   }
   if(!j||runningOf(p))return null;
-  if(p.has_outline&&!p.script_count&&j.run?.kind!=="script"&&!["script","revise"].includes(j.action))return {text:tp("attention.outline_waiting"),button:tp("attention.outline_button"),page:PAGE.outline};
+  if(p.has_outline&&!p.script_count&&j.run?.kind!=="script"&&!["script","episode","episodes","revise"].includes(j.action))return {text:tp("attention.outline_waiting"),button:tp("attention.outline_button"),page:PAGE.outline};
   const audio=audioFacts(p);
   if(p.script_count&&!audio.voiced)return {text:tp("attention.scripts",{count:p.script_count}),button:tp("attention.read"),page:PAGE.scripts};
   // Recordings from an earlier state stay playable and ask for nothing; an episode without any recording does.
@@ -2128,7 +2159,7 @@ function renderScriptProgress(p, active) {
   const marker=e=>done(e)?"✓":active&&(running(e)||(!inWork.length&&e.episode_id===p.current_episode))?"●":e.stage_status==="interrupted"?"!":"○";
   const winding=active&&p.stopping?.episodes?.length?`<p class="note" role="status"><strong>${t("progress_view.stopping",{episodes:p.stopping.episodes.join(", ")})}</strong> ${t("progress_view.stopping_tail")}</p>`:"";
   const since=elapsed!==null?tp("nav.hint.since",{elapsed:elapsed<1?tp("time.less_than_minute"):tp("time.minutes",{minutes:elapsed})}):"";
-  return `<section class="script-progress"><p class="current-episode"><strong>${heading}</strong></p>${winding}<p>${active?'<span class="activity-dot" aria-hidden="true"></span>':`${t("progress_view.last")} `}${parallel&&!series?`${t("progress_view.last_started")} `:""}${escape(activity)}${active&&elapsed!==null?` · ${escape(since)}`:""}</p><p class="hint">${t("progress_view.auto_hint")}</p>${p.total_segments?`<progress value="${finished}" max="${Number(p.total_segments)}" aria-label="${t("progress_view.bar_label")}"></progress><p>${t("progress_view.finished",{done:finished,total:Number(p.total_segments),stage:stageNames[p.stage]||p.stage})}</p>`:""}${active&&series?`<p class="note" role="status">${t("progress_view.series_note")}</p>`:""}<ol class="episode-progress">${(p.episodes||[]).map(e=>`<li>${marker(e)} ${escape(e.title)}${parallel&&e.stage_started_at&&running(e)?` <span class="hint">· ${t("nav.hint.since",{elapsed:elapsedText(e.stage_started_at)})}</span>`:""}</li>`).join("")}</ol>${(p.episodes||[]).filter(e=>e.teaching_preview).map(e=>`<details data-progress-episode="${escape(e.episode_id)}"><summary>${t("progress_view.read_plan",{title:e.title})}</summary><pre class="document" data-progress-preview="${escape(e.episode_id)}">${escape(e.teaching_preview)}</pre></details>`).join("")}</section>`;
+  return `<section class="script-progress"><p class="current-episode"><strong>${heading}</strong></p>${winding}<p>${active?'<span class="activity-dot" aria-hidden="true"></span>':`${t("progress_view.last")} `}${parallel&&!series?`${t("progress_view.last_started")} `:""}${escape(activity)}${active&&elapsed!==null?` · ${escape(since)}`:""}</p><p class="hint">${t("progress_view.auto_hint")}</p>${p.total_segments?`<progress value="${finished}" max="${Number(p.total_segments)}" aria-label="${t("progress_view.bar_label")}"></progress><p>${t("progress_view.finished",{done:finished,total:Number(p.total_segments),stage:stageNames[p.stage]||p.stage})}</p>`:""}${active&&series?`<p class="note" role="status">${t("progress_view.series_note")}</p>`:""}<ol class="episode-progress">${(p.episodes||[]).map(e=>`<li>${marker(e)} ${escape(e.title)}${parallel&&e.stage_started_at&&running(e)?` <span class="hint">· ${t("nav.hint.since",{elapsed:elapsedText(e.stage_started_at)})}</span>`:""}</li>`).join("")}</ol></section>`;
 }
 function progressAge(timestamp) {
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(timestamp))/1000)), minutes=Math.floor(seconds/60), hours=Math.floor(minutes/60);
@@ -2331,7 +2362,6 @@ const STOP_RULES={
   worker_stop:rule("worker_stop","dead"),
   research_context_incomplete:rule("research_context_incomplete","dead",{actions:["restart"]}),
   script_review_failed:rule("script_review_failed","retry",{actions:["fresh_attempts","new_outline"]}),
-  dialogue_polish_failed:rule("dialogue_polish_failed","retry",{actions:["new_outline"]}),
   subscriptions_exhausted:rule("subscriptions_exhausted","wait"),
   claude_quota_exhausted:rule("claude_quota_exhausted","wait",{actions:["text_switch"]}),
   quota_exhausted:rule("quota_exhausted","wait",{actions:["text_switch"]}),
@@ -2389,11 +2419,6 @@ const STOP_RULES={
   script_edited:rule("script_edited","dead",{actions:["restart"]}),
   invalid_plan:rule("invalid_plan","dead",{actions:["new_outline"]}),
   research_required:rule("research_required","dead",{actions:["open_research","new_research"]}),
-  // With the episode known (job.teaching_failure), one plain sentence names it and what a redraft costs (D-155).
-  teaching_design_failed:rule("teaching_design_failed","dead",{actions:["redesign_teaching","new_outline"],text:c=>{
-    const number=Number(/^ep_0*(\d+)$/.exec(c.job?.teaching_failure?.episode_id||"")?.[1]);
-    return number?tp("stop.teaching_design_failed.plain",{episode:number}):tp("stop.teaching_design_failed.text",{resume:c.resume});
-  }}),
   teaching_research_required:rule("teaching_research_required","retry",{actions:["fresh_attempts","new_research","new_outline"]}),
   research_gap_unread:rule("research_gap_unread","dead",{actions:["new_research"]}),
   prompt_too_large:rule("prompt_too_large","fix",{actions:["open_settings","restart"]}),
@@ -2405,7 +2430,6 @@ const STOP_RULES={
   // A spent series correction round can be set aside for a new one (run_budget.approve_fresh_attempts).
   series_review_failed:rule("series_review_failed","retry",{actions:["fresh_attempts","new_outline"],
     text:c=>tp("stop.series_review_failed.text",{resume:c.resume})+(freshOffered(c.job,c.code)?` ${tp("stop.series_review_failed.fresh")}`:"")}),
-  teaching_review_failed:rule("teaching_review_failed","retry",{actions:["new_outline"]}),
   // The open Studio checks the login of a stopped research or script run itself, until its three automatic resumes
   // (studio.MAX_AUTO_RESUMES) are spent (D-155).
   authentication_required:rule("authentication_required","fix",{actions:["check"],
@@ -2614,13 +2638,6 @@ function stopButton(action,job,info,target) {
     case "samples":return `<button class="secondary" data-action="audio_samples" ${disabled()}>${t("stop_button.samples")}</button>`;
     case "new_research":return `<button class="secondary" data-action="research" data-confirm="${t("stop_button.new_research_confirm")}" ${disabled()}>${t("research.again")}</button>`;
     case "new_outline":return project?.research?`<button class="secondary" data-action="plan" data-confirm="${t("stop_button.new_outline_confirm")}" ${disabled()}>${t("button.new_outline")}</button>`:"";
-    case "redesign_teaching":{
-      const failed=job.teaching_failure;
-      if(!failed?.episode_id)return "";
-      // The note starts with the open points the stop names, for the editor to keep, shorten or replace (D-155).
-      const points=failed.issues?.length?failed.issues.join("\n\n"):String(info.message||"").replace(/^.*?(?:offene Punkte|open points):\s*/,"").trim();
-      return `<div class="stop-feedback">${area("redesign-note",t("stop_button.redesign_label",{episode:quoted(failed.title||failed.episode_id)}),points,3)}<button data-action="redesign-teaching" data-run-id="${runId}" data-teaching-episode="${escape(failed.episode_id)}" ${disabled()}>${t("stop_button.redesign")}</button></div>`;
-    }
     case "replan_feedback":return `<div class="stop-feedback">${area("stop-feedback",t("stop_button.replan_label"),info.message||"",3)}<button data-action="replan" data-feedback="stop-feedback" ${disabled()}>${t("stop_button.replan")}</button></div>`;
     case "audio_again":return step===PAGE.audio?`<button class="secondary" data-scroll="audio-panel">${t("stop_button.to_audio")}</button>`:`<button class="secondary" data-step="${PAGE.audio}">${t("stop_button.to_audio")}</button>`;
     case "open_research":return onPage(PAGE.research);
@@ -2718,24 +2735,8 @@ function stopBody(job,info,{target="",blocked=null}={}) {
   const fresh=freshRecommended(job,info);
   const resume=canResume(job,info)?`<button ${fresh?'class="secondary" ':""}data-action="resume" ${target||`data-run-id="${escape(job.run?.run_id||"")}"`} ${reason?"disabled":""}>${t("button.resume")}</button>`:"";
   // The step's own message stands beside the card's text in the page's language; another language goes to the details.
-  // A teaching design's open points come as a list instead (2026-10-25: two review points made one wall of text).
-  const message=openPoints(job)||(info.message&&info.message!==info.text&&sameLanguage(info)?`<p class="stop-message">${t("chat.message",{message:info.message})}</p>`:"");
+  const message=(info.message&&info.message!==info.text&&sameLanguage(info)?`<p class="stop-message">${t("chat.message",{message:info.message})}</p>`:"");
   return `<p>${escape(info.text)}</p>${message}${waitNote(job)}${resume||buttons?`<div class="actions">${fresh?buttons+resume:resume+buttons}</div>`:""}${reason&&(resume||buttons)?`<p class="hint">${escape(reason)}</p>`:""}${techDetails(info)}`;
-}
-// One line per open point: its first sentence, the rest on opening it.
-function openPoints(job) {
-  const issues=(job?.teaching_failure?.issues||[]).map(String).filter(Boolean);
-  if(!issues.length)return "";
-  const items=issues.map(issue=>{
-    const [head,rest]=pointParts(issue);
-    return `<li>${rest?`<details><summary>${escape(head)}</summary><p>${escape(rest)}</p></details>`:escape(head)}</li>`;
-  }).join("");
-  return `<p class="stop-message">${t("stop.open_points",{count:issues.length})}</p><ul class="stop-points">${items}</ul>`;
-}
-function pointParts(text) {
-  const end=text.slice(20).search(/[.:!?]\s/);
-  if(end>=0&&end+21<=160)return [text.slice(0,end+21).replace(/:$/,"").trim(),text.slice(end+21).trim()];
-  return text.length<=160?[text,""]:[`${text.slice(0,140).replace(/\s+\S*$/,"")} …`,text];
 }
 function otherJobText() {
   const voicing=(project?.audio_jobs||[]).filter(j=>j.status==="running").length;
@@ -3167,6 +3168,7 @@ function runningTitle(job) {
   if(job.action==="replan")return actionNames.replan;
   if(job.action==="plan"||(run?.kind==="script"&&stage==="planning"))return job.progress?.plan_repair?tp("running.plan_repair"):actionNames.plan;
   if(run?.kind==="script")return job.action==="revise"?actionNames.revise:tp("running.production");
+  if(run?.kind==="series_review"||job.action==="series_review")return actionNames.series_review;
   if(run?.kind==="research"||job.action==="research")return actionNames.research;
   if(run?.kind==="episode_audio")return actionNames.audio;
   return actionNames[job.action]||tp("job.running");
@@ -3339,7 +3341,8 @@ function renderJob() {
   const decisionNeeded=researchBlocked&&!reopenable&&openBlocked>0;
   const resumable=!active&&canResume(job,info);
   // A finished job of its own (a chat, a check, a companion kit) leaves the header to the project's state (D-160).
-  const finishedTitle=r?.kind==="research"?tp("research_q.phase.completed"):r?.kind==="script"?tp(job.action==="revise"?"job.revised":"job.scripts_done"):projectSummary();
+  const finishedTitle=r?.kind==="research"?tp("research_q.phase.completed"):r?.kind==="script"?tp(job.action==="revise"?"job.revised":"job.scripts_done"):
+    r?.kind==="series_review"?tp("job.series_reviewed"):projectSummary();
   const title=active?runningTitle(job):decisionNeeded?tp("job.decisions",{count:openBlocked}):
     planReview?tp(planPending?"research_q.phase.awaiting_plan_approval":"job.plan_ready"):
     info?info.title:state==="completed"?finishedTitle:tp("job.saved");
@@ -3422,7 +3425,7 @@ function audioTelemetry() {
   return (project?.audio_jobs||[]).filter(a=>a.status==="running").map(a=>`<section class="audio-job"><strong>${escape(title(a.episode))}</strong>${audioPhase(a.progress)}</section>`).join("");
 }
 // Unfinished input survives a re-render of the same project; a project switch starts clean.
-const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback","queue-key","redesign-note"];
+const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback","queue-key"];
 function formSnapshot() {
   const values={};
   for(const id of FORM_IDS){const el=$(id);if(el&&typeof el.value==="string"&&el.value!=="")values[id]=el.value;}
@@ -3587,12 +3590,6 @@ async function acceptAccessGap(button) {
   render();return false;
 }
 // A new teaching design of the stopped episode with the editor's note, then the resume that starts it.
-async function redesignTeaching(button) {
-  const note=($("redesign-note")?.value||"").trim();
-  if(!note)throw new Error(tp("act.redesign_note_missing"));
-  await api(`/api/projects/${project.id}/approve`,{kind:"teaching_redesign",run_id:button.dataset.runId,episode_id:button.dataset.teachingEpisode,note});
-  await resumeFrom(button);
-}
 // The plan approval in one click (D-155): the limits the plan needs rise first (raise_to, only those that rise), then
 // the plan is approved and, with data-then-resume, the run starts. A cap asks for a shortened plan instead, which is
 // shown again with its own limits, so nothing is raised for it.
@@ -3769,7 +3766,6 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/approve`,{kind:"retry",run_id:button.dataset.runId,task_id:button.dataset.taskId,hint});
       project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice(tp("act.retry_requested",{resume:quoted(tp("button.resume"))}),"ok");return;
     }
-    if(action==="redesign-teaching"){await redesignTeaching(button);notice(tp("act.redesign_saved"),"ok");return;}
     if(action==="production-report"){
       productionReports[button.dataset.runId]=await api(`/api/projects/${project.id}/report?run_id=${encodeURIComponent(button.dataset.runId)}`);
       lastJobView="";renderJob();return;
@@ -3785,13 +3781,6 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/jev_probe`,{enabled});
       project=await api(`/api/projects/${project.id}`);render();
       notice(tp(enabled?(boot.key_available?"act.jev_on":"act.jev_on_key"):"act.jev_off"),"ok");return;
-    }
-    if(action==="toggle-writer"){
-      const switched=await api(`/api/projects/${project.id}/writer`,{writer:button.dataset.writer});
-      project=await api(`/api/projects/${project.id}`);render();
-      // The run waiting for its outline's approval took the switch too (scripting.adopt_writer).
-      const agent=button.dataset.writer==="agent";
-      notice(tp(switched?.adopted_run?(agent?"act.writer_agent_run":"act.writer_prompt_run"):(agent?"act.writer_agent":"act.writer_prompt")),"ok");return;
     }
     if(action==="unqueue"){
       await api(`/api/projects/${project.id}/audio_queue`,{episode:button.dataset.episode});
@@ -3888,7 +3877,9 @@ document.addEventListener("click",event=>{
     if(action==="research"&&$("seed-corpus")?.checked)extra.seed_corpus=true;
     if(action==="replan")extra.message=$(button.dataset.feedback||"outline-feedback")?.value||"";
     if(action==="script")extra.plan_hash=project.outline.hash;
-    if(action==="revise"){extra.message=$("script-feedback").value;extra.episode=project.episodes[episodeIndex].script.episode_id;}
+    // A revision from the reader's feedback, or from the series review's points on the outline page (D-184).
+    if(action==="revise"){extra.message=button.dataset.message??$("script-feedback").value;
+      extra.episode=button.dataset.episode||project.episodes[episodeIndex].script.episode_id;}
     if(action==="resume"){extra.run_id=button.dataset.runId||project.job?.run?.run_id||project.run?.run_id;if(button.dataset.episode)extra.episode=button.dataset.episode;}
     if(action==="audio")Object.assign(extra,audioRequest(button.dataset.episode));
     if(action==="expression"||action==="publish_kit")extra.episodes=button.dataset.episode?[button.dataset.episode]:[];

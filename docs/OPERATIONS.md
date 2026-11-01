@@ -2,7 +2,7 @@
 title: Operations
 doc_type: operations
 status: current
-last_reviewed: 2026-10-07
+last_reviewed: 2026-11-01
 covers:
   - scripts/setup.sh
   - scripts/setup-ffmpeg.ps1
@@ -76,7 +76,9 @@ py -3.12 -m venv .venv
 `.venv-tts` is set up later ([Set up local Qwen on Windows](#set-up-local-qwen-on-windows)); the project already
 records its planned Python path. Running `init` again never overwrites an existing project (`project_exists`). Then set
 up FFmpeg (below) and log in to at least one subscription, or set up your Anthropic API key or the OpenRouter and
-Perplexity keys ([Check the subscriptions](#check-the-subscriptions)).
+Perplexity keys ([Check the subscriptions](#check-the-subscriptions)). The scripts themselves are written by Claude
+Code's story agent, which needs the Claude subscription's login or your Anthropic API key
+([Calls and access](SCRIPTS.md#calls-and-access)).
 
 ### FFmpeg
 
@@ -227,7 +229,8 @@ double-clicked Studio needs no reinstall; its ChatGPT login is checked separatel
 written.
 
 On macOS and Linux, the Studio starter and `scripts/setup.sh` also add `~/.local/bin`, `/opt/homebrew/bin` and
-`/usr/local/bin` to `PATH`. One usable subscription, or Claude on the API key, is enough.
+`/usr/local/bin` to `PATH`. One usable subscription, or Claude on the API key, is enough for research and planning;
+writing the scripts needs Claude, on the subscription or the API key.
 
 ## Install on macOS and Linux
 

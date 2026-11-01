@@ -27,8 +27,8 @@ from pydantic import Field
 from .errors import AppError
 from . import attachments
 from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_probe_enabled, jev_probe_state,
-                        selected_execution, set_jev_probe, set_writer,
-                        settings_execution, writer_choice)
+                        selected_execution, set_jev_probe,
+                        settings_execution)
 from .logs import add_secret, configure_logging, logger, scrub
 from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManifest, RuntimeSettings, SeriesGoal,
                      TopicBrief, host_labels, now)
@@ -37,11 +37,12 @@ from .expression import BACKCHANNEL, TAG
 from .runner import LIMIT_DETAIL_VALUES, manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
                          approve_fresh_attempts, approve_research_retry, approve_residual_finish, approve_text_switch,
-                         decide_review_disagreement, fresh_attempts_available, request_teaching_redesign, switch_choice,
+                         decide_review_disagreement, fresh_attempts_available, switch_choice,
                          text_switch)
 from .subscriptions import parse_iso
-from .scripting import adopt_writer, outline_hash, script_metrics, style_notes
-from .script_pipeline import failed_teaching
+from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, run_rate
+from .scripting import (next_episode, outline_episodes as outline_rows, outline_hash, outline_series_review,
+                        script_metrics, style_notes)
 from .elevenlabs_speech import account_voices
 from .speech import (OWN_AUDIO, AudioChoice, GEMINI_VOICES, PASSAGE_PROVIDERS, QWEN_VOICES, REMOTE_PROVIDERS,
                      audio_catalog, audio_generation_record, own_audio, selected_audio, same_audio_generation)
@@ -108,7 +109,11 @@ LOGIN_CHECKS: dict[tuple[str, str], float] = {}
 # Each lane keeps its own parked job (park); paused_job.json is the single slot of Studios before 2026-10-02.
 LANES = ("research", "script", "audio")
 # Jobs that never write exports: while one of them holds the project lock, downloads read without it.
-TEXT_ACTIONS = {"assistant", "research", "plan", "replan", "script", "revise", "check", "audio_sample", "audio_samples"}
+TEXT_ACTIONS = {"assistant", "research", "plan", "replan", "script", "episode", "episodes", "revise", "series_review", "check",
+                "audio_sample", "audio_samples"}
+# The jobs of the script lane: the outline, its approval with the first episode, the next or every remaining episode
+# in order (D-184), a revision and the series review over the published episodes.
+SCRIPT_ACTIONS = {"plan", "replan", "script", "episode", "episodes", "revise", "series_review"}
 # Names start with a word character, so no segment can be "..".
 DIAGNOSTIC_FILES = re.compile(r"(runs/\w[\w.-]*/(?:\w[\w.-]*/)*\w[\w.-]*\.(?:txt|md|json)|studio/failures/\w[\w.-]*\.txt"
                               r"|studio/stderr/[a-f0-9]{32}\.log)")
@@ -199,7 +204,7 @@ def lane(job):
     kind = ((job or {}).get("run") or {}).get("kind")
     if action == "research" or kind == "research":
         return "research"
-    if action in {"plan", "replan", "script", "revise"} or kind == "script":
+    if action in SCRIPT_ACTIONS or kind in {"script", "series_review"}:
         return "script"
     if action == "audio" or kind == "episode_audio":
         return "audio"
@@ -650,7 +655,7 @@ def key_needs(root, config):
 def billed_text(provider, action, web_search="model"):
     """Whether ``action`` with a text model of ``provider`` bills a key and so needs a money limit (D-146). A research
     run on OpenRouter searches on the subscriptions unless Perplexity searches (D-151), which bills its key."""
-    if web_search == "perplexity" and action in {"research", "plan", "script", "revise"}:
+    if web_search == "perplexity" and action in {"research", "plan", "script", "episode", "episodes", "revise"}:
         return True
     return provider == "claude_api" or (provider == "openrouter" and action != "research")
 
@@ -760,7 +765,13 @@ def episode_view(folder, table, table_key, language):
         decision = read_yaml(decision_file) if decision_file.is_file() else {}
         overrides = {k: v for k, v in (decision.get("spoken_overrides") or {}).items()
                      if isinstance(k, str) and isinstance(v, str) and v.strip()}
-        metrics = script_metrics(script)
+        # Estimated at the words a minute its run wrote it at (D-184): 130 for a run before 2026-11-01.
+        try:
+            run_id = json.loads((folder / "latest.json").read_text(encoding="utf-8"))["run_id"]
+            rate = run_rate(manifest_path(folder.parent.parent, run_id).parent)
+        except (OSError, ValueError, KeyError, TypeError):
+            rate = SPOKEN_WORDS_PER_MINUTE
+        metrics = script_metrics(script, rate)
         return {"script": script.model_dump(), "hash": file_hash(script_file),
                 "readable_hash": file_hash(folder / "script.md"), "metrics": metrics,
                 "spoken_overrides": overrides,
@@ -775,7 +786,7 @@ def episode_view(folder, table, table_key, language):
                 "listening_note": decision.get("listening_note", ""),
                 "human_listening_reviewed": bool(decision.get("human_listening_reviewed"))}
     return memo(("episode", str(folder), table_key, language),
-                [script_file, folder / "script.md", decision_file], compute)
+                [script_file, folder / "script.md", decision_file, folder / "latest.json"], compute)
 
 
 # Each key's attribute on the Studio, and the environment variable a server may carry it in instead (D-167).
@@ -1206,13 +1217,6 @@ class Studio:
         for gap in data.get("research_gaps") or []:
             if isinstance(gap, dict):
                 gap.update({key: clean(gap.get(key), root, language) for key in ("question", "why_needed")})
-        run_id = (data.get("run") or {}).get("run_id")
-        if (data.get("stop") or {}).get("code") == "teaching_design_failed" and isinstance(run_id, str):
-            # The episode a new design with the editor's note is for; read from the run, so older jobs have it too.
-            try:
-                data["teaching_failure"] = failed_teaching(manifest_path(root, run_id).parent)
-            except (AppError, OSError, ValueError):
-                data["teaching_failure"] = None
         return data
 
     def approve(self, project, data):
@@ -1258,9 +1262,6 @@ class Studio:
         if kind == "text_switch":
             return {"text_switch": approve_text_switch(root, run_id, data.get("choice", "claude_first"), model=data.get("model"),
                                                        cost_usd=data.get("cost_usd"))}
-        if kind == "teaching_redesign":
-            request = request_teaching_redesign(root, run_id, data.get("episode_id"), data.get("note", ""))
-            return {"teaching_redesign": request.model_dump(mode="json")}
         if kind == "plan":
             # The receipt binds to the projected plan; a cap asks the next resume to plan again and present anew.
             approval = approve_research_plan(root, run_id, max_tasks=data.get("max_tasks"), source="studio")
@@ -1783,7 +1784,6 @@ class Studio:
                 "voice_samples": self.voice_samples(),
                 "execution": execution.model_dump(), "execution_hash": digest(execution.model_dump()),
                 "jev_probe": jev_probe_enabled(root), "jev_default": jev_probe_state(root)[1],
-                "writer": writer_choice(root),
                 "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
                 "audio_queue": queue_view(read_queue(root), self.audio_key_available(audio), audio_key(audio) or "openrouter"),
@@ -1810,11 +1810,14 @@ class Studio:
             ("proposal_hash", "config_hash")))
         work = self.outline_work(root)
         if work is not None:
-            stages = (read_yaml(work / "run_manifest.yaml") or {}).get("stages") or {}
+            # Each episode with the run that published it from this outline, written in order one run at a time, and
+            # the series review once all are (D-184).
+            rows = outline_rows(root, work.name)
             data["outline"] = {"run_id": work.name, "plan": read_json(work / "series_plan.json"),
                                "hash": self.outline_hash(work), "approval": read_json(work / "plan_approval.json"),
-                               # Who writes this outline's episodes: its run's own stages (D-181).
-                               "writer": "agent" if "story" in stages else "prompt"}
+                               "episodes": rows,
+                               "next_episode": next((r["episode_id"] for r in rows if r["run_id"] is None), None),
+                               "series_review": outline_series_review(root, work.name)}
         data["research"] = self.research_text(root)
         if (root / "runs/latest.json").exists():
             data["run"] = read_yaml(manifest_path(root))
@@ -2049,27 +2052,6 @@ class Studio:
         set_jev_probe(self.root(project), enabled)
         return {"jev_probe": enabled}
 
-    def writer(self, project, data):
-        """Who writes this project's script runs: the writing ``prompt`` or the story ``agent`` (story_agent.py, D-181).
-        It holds for new runs and for the run that waits for its outline's approval (scripting.adopt_writer); a run
-        past that point keeps its writer."""
-        chosen = data.get("writer")
-        if chosen not in ("prompt", "agent"):
-            raise AppError(t("server.writer.switch"), code="invalid_request")
-        root = self.root(project)
-        set_writer(root, chosen)
-        adopted = None
-        work = self.outline_work(root)
-        if work is not None and root not in self.active_workers():
-            # The lock keeps a run from starting while its stages change; a run that holds it keeps its writer.
-            try:
-                with project_lock(root):
-                    adopted = adopt_writer(root, chosen, run_id=work.name)
-            except AppError as exc:
-                if exc.code != "project_busy":
-                    raise
-        return {"writer": chosen, "adopted_run": adopted}
-
     def spoken_override(self, project, data):
         """A per-segment spoken form. It changes only how a segment is read aloud."""
         root = self.root(project)
@@ -2242,7 +2224,7 @@ class Studio:
         if self.restarting:
             raise AppError(t("server.start.restarting"), code="studio_restarting")
         action = data.get("action")
-        if action not in {"assistant", "research", "plan", "replan", "script", "revise", "audio", "audio_sample", "audio_samples",
+        if action not in {"assistant", "research", *SCRIPT_ACTIONS, "audio", "audio_sample", "audio_samples",
                           "resume", "check", "expression", "publish_kit"}:
             raise AppError(t("server.start.unknown"), code="invalid_action")
         payload = {"action": action, "message": str(data.get("message", ""))[:12000]}
@@ -2264,7 +2246,7 @@ class Studio:
                 re.search(r"sk_[0-9a-f]{40,}", payload["message"])):
             raise AppError(t("server.start.credential.elevenlabs"), code="credential_in_prompt")
         text_provider = (studio_settings.text_data(root, TextChoice().model_dump()) or {}).get("provider")
-        if (action in {"assistant", "research", "plan", "script", "revise", "expression", "publish_kit"}
+        if (action in {"assistant", "research", *(SCRIPT_ACTIONS - {"replan"}), "expression", "publish_kit"}
                 and billed_text(text_provider, action, studio_settings.web_search(root))
                 and load_project(root).research_limits.cost_usd is None):
             # Refused before any worker starts; a run would stop at its first call anyway (D-146).
@@ -2305,6 +2287,25 @@ class Studio:
             payload["plan_hash"] = data.get("plan_hash")
             if action == "script" and payload["plan_hash"] != outline_hash(work):
                 raise AppError(t("server.start.plan_changed"), code="plan_changed")
+            if action == "script" and next_episode(root, work.name) is None:
+                raise AppError(t("server.start.series_written"), code="series_written")
+        if action in {"episode", "episodes", "series_review"}:
+            # Episodes are written from the approved outline, one run each, in order (D-184).
+            work = self.outline_work(root)
+            if work is None:
+                raise AppError(t("server.start.plan_required"), code="plan_required")
+            if (read_json(work / "plan_approval.json") or {}).get("plan_hash") != outline_hash(work):
+                raise AppError(t("server.start.outline_approval"), code="plan_approval_required")
+            payload["run_id"] = work.name
+            remaining = next_episode(root, work.name)
+            if action == "series_review" and remaining is not None:
+                raise AppError(t("server.start.series_incomplete", episode=remaining), code="series_incomplete")
+            if action in {"episode", "episodes"} and remaining is None:
+                raise AppError(t("server.start.series_written"), code="series_written")
+            if action == "episode" and data.get("episode") is not None:
+                if data["episode"] not in (self.outline_episodes(root) or []):
+                    raise AppError(t("server.start.episode"), code="unknown_episode")
+                payload["episode"] = data["episode"]
         if action in {"audio", "revise"}:
             episode = data.get("episode")
             if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode):
@@ -2669,7 +2670,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                         result = app.restore(data)
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
-                                             r"|remove_attachment|approve|spoken_override|listening_review|jev_probe|writer"
+                                             r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
                                              r"|audio_queue|allowances|reader_state|new_version|audio_own)", path)
                         if not match:
                             raise AppError(t("server.not_found"), code="not_found")

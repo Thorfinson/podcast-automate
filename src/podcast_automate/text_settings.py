@@ -30,12 +30,12 @@ DEFAULT_CLAUDE_EFFORT = "xhigh"
 CLAUDE_MODELS = {"claude-haiku-5-5": "Claude Haiku 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5",
                  "claude-opus-5-5": "Claude Opus 5.5", "claude-opus-5": "Claude Opus 5"}
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-# Stages whose task needs less thought than the run's level: a first-time listener who should only take in
-# what the dialogue itself explains, and the placing of expression tags for Gemini's reading. Each call of
-# these stages uses at most this level on a subscription; evidence and teaching reviews, writing and every
-# repair keep the run's own (2026-09-29, after the review calls of Astra at xhigh took 7 to 10 minutes each).
-# prompt_version's family names the stage; provider_choice.json records the run's level as ``run_effort``.
-STAGE_EFFORT_CAPS = {"listener_readback": "medium", "audio_expression": "medium"}
+# Stages whose task needs less thought than the run's level: the placing of expression tags for Gemini's reading.
+# Each call of these stages uses at most this level on a subscription; reviews and every repair keep the run's own
+# (2026-09-29, after the review calls of Astra at xhigh took 7 to 10 minutes each; the listener readback, capped
+# too, ended with the writing prompt, D-184). prompt_version's family names the stage; provider_choice.json records
+# the run's level as ``run_effort``.
+STAGE_EFFORT_CAPS = {"audio_expression": "medium"}
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
 # The levels an automatic choice may set for both subscriptions at once.
 SHARED_EFFORTS = tuple(effort for effort in REASONING_EFFORTS if effort in CLAUDE_EFFORTS)

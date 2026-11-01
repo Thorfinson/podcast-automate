@@ -45,33 +45,23 @@ class PromptFileTests(unittest.TestCase):
         self.assertIn("established_terms", continuity)
         self.assertIn("one short recall clause per term per episode", continuity)
         self.assertIn("under 90 words", prompts.text("episode_framing"))
-        for name in ("write_episode", "dialogue_polish"):
-            with self.subTest(prompt=name):
-                self.assertIn("illustrative exactly once", prompts.text(name))
-        self.assertIn("demanding_passages", prompts.text("dialogue_polish_review"))
-        self.assertIn("resolved_by", prompts.text("dialogue_polish_review"))
-        self.assertIn("terms the words the hosts will actually say", prompts.text("teaching_design"))
         self.assertIn("include at least one source not authored by the organisation making the claim",
                       prompts.text("research_discovery"))
-        # WP14 attribution: the writer attributes once, the reviewer notes a miss as a limitation.
-        self.assertIn("attribute it audibly once in this episode", prompts.text("write_episode"))
+        # WP14 attribution: the reviewer notes a miss as a limitation (the writing prompt's half went with D-184).
         self.assertIn("note a missing attribution in limitations, never as an issue", prompts.text("script_review"))
         self.assertIn("use a comparison only where the sources support it", prompts.text("plain_language"))
 
     def test_the_script_review_asks_for_the_scene_order_the_script_check_enforces(self):
         """Orlagau ep_001 and ep_003, 2026-10-19: the review asked to add a later scene's finding to an opening teaser's
         knowledge_refs, validate_script rejected every repair that did so, and both reviews stopped (D-175). The review
-        now asks for what the repair prompt already says: move the fact to its scene."""
+        now asks to move the fact to its scene; the story agent's check.py refuses the citation itself."""
         self.assertIn("never ask to add a later scene's finding to its knowledge_refs", prompts.text("script_review"))
-        self.assertIn("For a finding first introduced in a later scene, move its explanation there",
-                      prompts.text("script_review_repair"))
 
     def test_the_listenability_rules_replace_the_monologue_rules_and_name_their_measured_figures(self):
         """2026-10-06: listeners found the episodes "Fakten, Fakten, Fakten". The rules that welcomed long monologues and
         refused a target share between the hosts are reworded, not stacked against the new ones, and the prompts name
         the figures script_advisories measures."""
         from podcast_automate.script_advisories import LONG_TURN_LIMIT, LONG_TURN_WORDS, PARTNER_SHARE_FLOOR, TURN_WORDS
-        from podcast_automate.teaching import TeachingPlan
         rules = prompts.text("listenability")
         self.assertIn(f"about {TURN_WORDS} spoken words", rules)
         self.assertIn("about a third of the words", rules)
@@ -82,19 +72,12 @@ class PromptFileTests(unittest.TestCase):
         self.assertIn(f"partner_share below {PARTNER_SHARE_FLOOR}", review)
         self.assertEqual(LONG_TURN_LIMIT, 2)
         self.assertIn(f"more than two turns over {LONG_TURN_WORDS} words", review)
-        self.assertIn(f"every turn over {TURN_WORDS} words", prompts.text("dialogue_polish_review"))
-        for name in ("dialogue_polish", "dialogue_polish_review", "spoken_dialogue", "script_review", "write_episode"):
+        for name in ("listenability", "script_review"):
             with self.subTest(prompt=name):
                 text = prompts.text(name).casefold()
                 self.assertNotIn("monologues are", text)
                 self.assertNotIn("monologues can work", text)
                 self.assertNotIn("target ratio", text)
-        # The design plans the arc in its own fields, and its review checks every one of them; a narrated run's core
-        # story and first-answer voice are explained by the story rules both prompts add (D-180).
-        for name in ("teaching_design", "teaching_design_review"):
-            with self.subTest(prompt=name):
-                text = prompts.text(name) + " " + prompts.text(name + "_story")
-                self.assertTrue(all(field in text for field in TeachingPlan.LATER))
 
     def test_pilot_specific_examples_no_longer_live_in_the_general_rules(self):
         self.assertNotIn("tokenizer", prompts.text("continuity"))

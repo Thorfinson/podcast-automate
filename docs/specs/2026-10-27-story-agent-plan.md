@@ -13,7 +13,7 @@ settings, tests and docs. Research and recording are unchanged.
 
 Written for the operator and the agents who continue it. The evidence is the narration lab
 (`evals/narration_lab`, [README](../../evals/narration_lab/README.md)); the narration rules so far are owned by
-[SCRIPTS](../SCRIPTS.md#narration-review) and the [Narration Plan](2026-10-23-narration-plan.md). (why: D-181)
+[SCRIPTS](../SCRIPTS.md#story-agent) and the [Narration Plan](2026-10-23-narration-plan.md). (why: D-181)
 
 ## Status
 

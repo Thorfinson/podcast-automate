@@ -4,7 +4,7 @@ from pathlib import Path
 
 from podcast_automate.scripting import script_review_signature
 from podcast_automate.studio_scripts import script_previews
-from podcast_automate.storage import digest, file_hash, write_json
+from podcast_automate.storage import file_hash, write_json
 from tests.script_fixtures import example_plan, example_script
 
 
@@ -27,25 +27,22 @@ class StudioScriptPreviewTests(unittest.TestCase):
         path = self.work / "drafts" / f"{identifier}.json"
         write_json(path, {**self.script, "episode_id": identifier})
         if complete:
-            write_json(path.with_suffix(".checkpoint.json"), {"sha256": file_hash(path)})
+            self.draft_stamp(identifier)
 
-    def polished(self):
-        folder = self.work / "polishing/ep_001"
-        self.polish = {**self.script, "title": "Polished dialogue"}
-        write_json(folder / "script.json", self.polish)
-        write_json(folder / "checkpoint.json", {"candidate": self.polish})
-        write_json(folder / "result.json", {"status": "passed", "original_digest": digest(self.script),
-                                           "polished_digest": digest(self.polish)})
+    def draft_stamp(self, identifier):
+        path = self.work / "drafts" / f"{identifier}.json"
+        write_json(path.with_suffix(".checkpoint.json"), {"sha256": file_hash(path)})
 
-    def reviewed(self):
-        self.polished()
-        report = {"issues": []}
-        write_json(self.work / "reviewed/ep_001.json", self.polish)
+    def reviewed(self, issues=()):
+        """The story agent's draft reviewed as written (D-181): the review's checkpoint binds that draft."""
+        report = {"issues": list(issues)}
+        self.final = {**self.script, "episode_id": "ep_001", "title": "Reviewed dialogue"}
+        write_json(self.work / "reviewed/ep_001.json", self.final)
         write_json(self.work / "reviews/ep_001.json", report)
-        signature = script_review_signature(self.run["input_hash"], file_hash(self.work / "polishing/ep_001/script.json"),
+        signature = script_review_signature(self.run["input_hash"], file_hash(self.work / "drafts/ep_001.json"),
                                             self.plan, self.plan.episodes[0], self.work)
-        write_json(self.work / "reviews/ep_001_checkpoint.json", {"draft": self.polish, "review": report, "input_hash": signature})
-        write_json(self.work / "reviews/ep_001_teaching.json", {"status": "passed", "script_digest": digest(self.polish)})
+        write_json(self.work / "reviews/ep_001_checkpoint.json", {"draft": self.final, "review": report,
+                                                                  "input_hash": signature})
 
     def test_complete_episode_is_readable_while_next_is_unfinished_without_any_publish(self):
         self.draft("ep_002", complete=False)
@@ -60,50 +57,24 @@ class StudioScriptPreviewTests(unittest.TestCase):
         self.draft("ep_002")
         self.assertEqual(len(script_previews(self.root, self.run)), 2)
 
-    def test_preview_follows_completed_polishing_and_review_checkpoints(self):
-        self.polished()
-        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "polished")
+    def test_preview_follows_the_review_of_the_agents_draft(self):
+        """Until 2026-11-01 "reviewed" was reachable only after polishing, so a story agent's episode stayed a draft."""
         self.reviewed()
-        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "reviewed")
-        write_json(self.work / "reviews/ep_001_teaching.json", {"status": "needs_revision", "script_digest": digest(self.polish)})
-        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "polished")
+        preview = script_previews(self.root, self.run)[0]
+        self.assertEqual((preview["state"], preview["script"]["title"]), ("reviewed", "Reviewed dialogue"))
         self.assertEqual(script_previews(self.root, {**self.run, "status": "completed"}), [])
 
-    def test_a_polish_that_kept_the_checked_draft_counts_as_polished_and_then_reviewed(self):
-        """2026-10-02: polishing may end by keeping the draft (result "kept_draft", no checkpoint); read only as
-        "passed", such an episode never showed as polished or reviewed."""
-        folder = self.work / "polishing/ep_001"
-        draft = {**self.script, "episode_id": "ep_001"}
-        write_json(folder / "script.json", draft)
-        write_json(folder / "result.json", {"status": "kept_draft", "original_digest": digest(draft),
-                                           "polished_digest": digest(draft)})
-        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "polished")
-        self.polish = draft
-        report = {"issues": []}
-        write_json(self.work / "reviewed/ep_001.json", draft)
-        write_json(self.work / "reviews/ep_001.json", report)
-        signature = script_review_signature(self.run["input_hash"], file_hash(folder / "script.json"),
-                                            self.plan, self.plan.episodes[0], self.work)
-        write_json(self.work / "reviews/ep_001_checkpoint.json", {"draft": draft, "review": report, "input_hash": signature})
-        write_json(self.work / "reviews/ep_001_teaching.json", {"status": "passed", "script_digest": digest(draft)})
-        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "reviewed")
-        # A kept draft is only the draft it names: another text under that result is not a finished polish.
-        other = {**draft, "title": "Something else"}
-        write_json(folder / "script.json", other)
-        write_json(folder / "result.json", {"status": "kept_draft", "original_digest": digest(other),
-                                           "polished_digest": digest(other)})
+    def test_a_review_that_still_blocks_or_judged_another_draft_is_not_presented_as_current(self):
+        self.reviewed(issues=[{"category": "grounding", "segment_ids": ["seg_001"], "reason": "Unbelegt."}])
         self.assertEqual(script_previews(self.root, self.run)[0]["state"], "draft")
-
-    def test_old_review_cannot_be_presented_as_current_after_polish_changes(self):
-        self.reviewed()
-        updated = {**self.polish, "title": "A new polish"}
-        folder = self.work / "polishing/ep_001"
-        write_json(folder / "script.json", updated)
-        write_json(folder / "checkpoint.json", {"candidate": updated})
-        write_json(folder / "result.json", {"status": "passed", "original_digest": digest(self.script), "polished_digest": digest(updated)})
+        # A point that only stays noted leaves the episode reviewed.
+        self.reviewed(issues=[{"category": "clarity", "segment_ids": [], "reason": "Etwas dicht."}])
+        self.assertEqual(script_previews(self.root, self.run)[0]["state"], "reviewed")
+        # A new session's draft is not the one the review judged.
+        write_json(self.work / "drafts/ep_001.json", {**self.script, "episode_id": "ep_001", "title": "A new draft"})
+        self.draft_stamp("ep_001")
         preview = script_previews(self.root, self.run)[0]
-        self.assertEqual(preview["state"], "polished")
-        self.assertEqual(preview["script"]["title"], "A new polish")
+        self.assertEqual((preview["state"], preview["script"]["title"]), ("draft", "A new draft"))
 
     def test_incomplete_or_changed_checkpoint_does_not_hide_other_episodes(self):
         self.draft("ep_002")

@@ -3,15 +3,12 @@ import unittest
 from unittest.mock import patch
 
 from podcast_automate.editorial import episode_series_context
-from podcast_automate.models import EpisodeScript
-from podcast_automate.polishing import POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION
 from podcast_automate.prompts import fragment
 from podcast_automate.script_models import SeriesPlan
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
-from podcast_automate.script_pipeline import WRITE_EPISODE_VERSION
+from podcast_automate.script_pipeline import STORY_REVIEW_SUFFIX
 from podcast_automate.scripting import run_script
-from podcast_automate.teaching import (DESIGN_PROMPT_VERSION, DESIGN_REVIEW_VERSION, EDITORIAL_REVIEW_VERSION,
-                                       TEACHING_REVIEW_VERSION)
+from podcast_automate.story_agent import task_text
 from tests import script_fixtures as fixtures
 
 
@@ -48,20 +45,22 @@ class EpisodeFramingTests(unittest.TestCase):
 
     def test_the_prompts_agree_on_the_finale_and_keep_the_framing_duties_in_one_place(self):
         """Finding of 2026-10-02: the planner asked for at least half a synthesis, the framing for one at the end,
-        and the writer for an outlook on the next episode even in the finale; each restated the framing duties."""
-        framing, plan, writer, review = (fragment(name) for name in
-                                         ("episode_framing", "series_plan", "write_episode", "script_review"))
+        and the writer for an outlook on the next episode even in the finale; each restated the framing duties. The
+        writer is the story agent since D-184: its task defers to the framing material.json gives it."""
+        framing, plan, review = (fragment(name) for name in ("episode_framing", "series_plan", "script_review"))
+        writer = task_text("de-DE", 10)
         self.assertIn("The final episode of a series is as a whole the series' synthesis", framing)
         self.assertIn("The final episode as a whole is the series' synthesis", plan)
         self.assertIn("A final or standalone episode closes the subject without promising another episode", framing)
         self.assertNotIn("at least half", plan)
         self.assertNotIn("At the end of the final episode", framing)
-        # The writer and the review defer to episode_framing, which both prompts compose, instead of restating it.
+        # The writer and the review defer to episode_framing, which the review composes and the agent's material
+        # carries, instead of restating it.
         for duties in (writer, review):
             self.assertNotIn("what the next episode takes up", duties)
             self.assertNotIn("series_role", duties)
             self.assertNotIn("in the final episode require", duties)
-        self.assertIn("framing rules above", writer)
+        self.assertIn("material.json's `framing`", writer)
         self.assertIn("framing rules above", review)
         # A recall of earlier content is cited through recap findings; naming an earlier question is framing.
         self.assertIn("recap_finding_ids, cited in knowledge_refs", framing)
@@ -83,14 +82,16 @@ class EpisodeFramingTests(unittest.TestCase):
         with patch('podcast_automate.scripting.CodexAdapter.structured', side_effect=model):
             run = run_script(fixture.root, episode='ep_001')
         self.assertEqual(run.status, 'completed')
-        self.assertTrue(briefs)
+        # The story agent writes with the names (its material's brief); any model call that is given them gets them.
+        material = json.loads((fixture.root / 'runs' / run.run_id / 'story/ep_001/material.json').read_text(encoding='utf-8'))
+        self.assertEqual(material['brief']['host_names'], {'host_a': 'Mara', 'host_b': 'Jonas'})
         self.assertTrue(all(row == {'host_a': 'Mara', 'host_b': 'Jonas'} for row in briefs))
         text = (fixture.root / 'episodes/ep_001/script.md').read_text(encoding='utf-8')
         self.assertIn('**Mara:**', text)
         self.assertIn('**Jonas:**', text)
         self.assertNotIn('**Host A:**', text)
 
-    def test_selected_episode_keeps_series_context_through_writing_polishing_and_reviews(self):
+    def test_selected_episode_keeps_series_context_through_the_agent_and_the_review(self):
         fixture = fixtures.script_project(self)
         plan = self.series()
         captured = {}
@@ -100,8 +101,6 @@ class EpisodeFramingTests(unittest.TestCase):
             value, meta = fixture.model(prompt, output_type, directory, **kwargs)
             if output_type is SeriesPlan:
                 return plan, meta
-            if output_type is EpisodeScript:
-                value.episode_id = data['episode']['episode_id']
             if 'series_context' in data:
                 captured[kwargs['prompt_version']] = data['series_context']
             return value, meta
@@ -113,11 +112,12 @@ class EpisodeFramingTests(unittest.TestCase):
             self.assertEqual(run.status, 'completed')
             selected = next(entry for entry in plan.episodes if entry.episode_id == episode_id)
             expected = episode_series_context(plan, selected)
-            # The stages' own tags, so a prompt bump in one of them does not hide a lost series_context here.
-            for version in (DESIGN_PROMPT_VERSION, DESIGN_REVIEW_VERSION, WRITE_EPISODE_VERSION,
-                            POLISH_PROMPT_VERSION, POLISH_REVIEW_VERSION, SCRIPT_REVIEW_VERSION,
-                            TEACHING_REVIEW_VERSION, EDITORIAL_REVIEW_VERSION):
-                self.assertEqual(captured[version], expected)
+            # The story agent's material and the script review, by the review's own tag, so a prompt bump does not
+            # hide a lost series_context here.
+            material = json.loads((fixture.root / 'runs' / run.run_id / 'story' / episode_id / 'material.json')
+                                  .read_text(encoding='utf-8'))
+            self.assertEqual(material['series_context'], expected)
+            self.assertEqual(captured, {SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX: expected})
             self.assertFalse((fixture.root / 'audio').exists())
 
 

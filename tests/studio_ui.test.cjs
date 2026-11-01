@@ -846,10 +846,9 @@ test('script progress shows the active episode and readable results without audi
   const html=app.elements.get('production-progress').innerHTML;
   assert.ok(html.includes('Folge 2 von 6'));
   assert.ok(html.includes('1 von 6 Folgen'));
-  assert.ok(html.includes('Lehrkonzept lesen'));
-  assert.ok(html.includes('A safe &lt;script&gt; excerpt'));
+  // No teaching plan to read since D-184: a preview row the server no longer sends is not shown.
+  assert.ok(!html.includes('A safe &lt;script&gt; excerpt')&&!html.includes('<script>'));
   assert.ok(!html.includes('Sprechabschnitten'));
-  assert.ok(!app.elements.get('job-status').innerHTML.includes('Lehrkonzept lesen'));
 });
 test('a run written by the story agent shows its stage in place of draft, narration review and polishing',()=>{
   const app=studio();
@@ -861,16 +860,6 @@ test('a run written by the story agent shows its stage in place of draft, narrat
   const prompt=app.elements.get('production-progress').innerHTML;
   assert.ok(prompt.includes('Dialogschliff'));
   assert.ok(!prompt.includes('Erzähl-Agent'));
-});
-test('the job summary switches the project between the writing prompt and the story agent',async()=>{
-  const app=studio();
-  await app.run(`selectProject('p',{id:'p',config:boot.defaults,chat:[],writer:'prompt'})`);
-  let html=app.run('setupSummary()');
-  assert.ok(html.includes('data-action="toggle-writer" data-writer="agent"'));
-  app.run(`project.writer='agent';`);
-  html=app.run('setupSummary()');
-  assert.ok(html.includes('Erzähl-Agent · Claude Opus'));
-  assert.ok(html.includes('data-writer="prompt"'));
 });
 test('choosing a project keeps its identity in the URL for reloads without browser storage',async()=>{
   const app=studio();
@@ -955,40 +944,6 @@ test('a blocked final review displays readable escaped findings',()=>{
   assert.ok(html.includes('Offene Punkte der Qualitätsprüfung'));
   assert.ok(html.includes('Explain the &lt;missing&gt; connection.'));
   assert.ok(!html.includes('[object Object]'));
-});
-
-test('a teaching design that keeps its defects offers a new design with the editor\'s note, then resumes',async()=>{
-  const app=studio();
-  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
-  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j1',status:'blocked',action:'resume',message:'Scene 4 reads <SPARQL> aloud.',stop:{code:'teaching_design_failed',stage:'teaching',run_kind:'script'},teaching_failure:{episode_id:'ep_001',title:'Die <Antwort>'},started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{teaching:{status:'blocked',error:{code:'teaching_design_failed'}}}}}};overviewPage=false;step=PAGE.production;render();`);
-  const card=app.elements.get('stop-card').innerHTML;
-  assert.ok(card.includes('Hinweis für das neue Lehrkonzept von „Die &lt;Antwort&gt;“'));
-  assert.ok(card.includes('data-action="redesign-teaching" data-run-id="run_s" data-teaching-episode="ep_001"'));
-  assert.ok(card.includes('Neues Inhaltsverzeichnis entwerfen'));
-  assert.ok(!card.includes('data-action="resume"'),'a plain resume would replay the same verdict');
-  await assert.rejects(()=>app.run(`redesignTeaching({dataset:{runId:'run_s',teachingEpisode:'ep_001'}})`),/Hinweis/);
-  assert.equal(app.requests.filter(r=>r.path==='/api/projects/p/approve').length,0,'no request without a note');
-  app.run(`$('redesign-note').value='  Keine Abfragesprache vorlesen.  ';`);
-  await app.run(`redesignTeaching({dataset:{runId:'run_s',teachingEpisode:'ep_001'}})`);
-  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/approve').options.body),
-    {kind:'teaching_redesign',run_id:'run_s',episode_id:'ep_001',note:'Keine Abfragesprache vorlesen.'});
-  assert.deepEqual(JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/start').options.body),{action:'resume',run_id:'run_s'});
-  // A job without the episode (an older server) shows no redesign control rather than a broken one.
-  assert.equal(app.run(`stopButton('redesign_teaching',{run:{run_id:'run_s'}},{},'')`),'');
-});
-
-test('a stopped teaching design lists its open points one line each instead of one paragraph',()=>{
-  const app=studio();
-  const long='Erzählkern sitzt nicht im Zentrum (Design behebbar): Die Geschichte ist in s4 nur Schritt 1 von 4, danach folgen <Widukind> und die Namenzählung.';
-  const short='Szene 5 liest mehr in die Quelle, als sie sagt';
-  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j1',status:'blocked',action:'resume',message:${JSON.stringify(`Offene Punkte: ${long} ${short}`)},stop:{code:'teaching_design_failed',stage:'teaching',run_kind:'script'},teaching_failure:{episode_id:'ep_002',title:'Burgward',issues:${JSON.stringify([long,short])}},started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{teaching:{status:'blocked',error:{code:'teaching_design_failed'}}}}}};overviewPage=false;step=PAGE.production;render();`);
-  const card=app.elements.get('stop-card').innerHTML;
-  assert.ok(card.includes('Offene Punkte (2):'));
-  assert.ok(card.includes('<li><details><summary>Erzählkern sitzt nicht im Zentrum (Design behebbar)</summary><p>Die Geschichte ist in s4 nur Schritt 1 von 4, danach folgen &lt;Widukind&gt; und die Namenzählung.</p></details></li>'));
-  assert.ok(card.includes(`<li>${short}</li>`),'a short point stands as it is');
-  assert.ok(!card.includes('Meldung: Offene Punkte'),'the joined message is not repeated beside the list');
-  assert.ok(card.includes(`<textarea id="redesign-note" rows="3">${long.replace('<','&lt;').replace('>','&gt;')}\n\n${short}</textarea>`),
-    'the note starts with the points, one paragraph each');
 });
 
 test('a supplementary research that spent its corrections offers fresh attempts in a script run',()=>{
@@ -1153,7 +1108,7 @@ test('first draft becomes readable during polling and never enables preview audi
   const html=app.elements.get('content').innerHTML;
   assert.ok(html.includes('A first saved explanation.'));
   assert.ok(html.includes('Geöffneter Stand: Entwurf'));
-  assert.ok(html.includes('Qualitätsprüfungen stehen noch aus'));
+  assert.ok(html.includes('Die Prüfung steht noch aus'));
   assert.ok(!html.includes('data-action="audio"'));
   assert.ok(!html.includes('data-action="revise"'));
   assert.ok(app.elements.get('steps').innerHTML.includes('1 Folge lesbar'));
@@ -1454,7 +1409,8 @@ test('navigation distinguishes approved, automatic, reading and audio steps',()=
   assert.ok(!app.run('renderScript()').includes('Gib zuerst das Inhaltsverzeichnis frei'));
   assert.ok(app.run('renderAudio()').includes('data-step="4"'));
   const outline=app.run('renderOutline()');
-  assert.ok(outline.includes('Ausarbeitung ansehen'));
+  // An approved outline whose episodes are all written offers the series review, never a second approval (D-184).
+  assert.ok(outline.includes('data-action="series_review"'));
   assert.ok(!outline.includes('data-action="script"'));
   assert.ok(!app.run('renderResearch()').includes('data-action="plan"'));
 });
@@ -1507,21 +1463,6 @@ test('browser history restores the requested page without starting work',async()
   assert.equal(app.run('followWorkflow'),false);
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
-test('polling the production page keeps a teaching preview open at its reading position',()=>{
-  const app=studio(), p=workflowProject(app);
-  p.job.progress={phase:'script',stage:'teaching',activity:'Prüfung',completed_segments:1,total_segments:2,
-    episodes:[{episode_id:'ep_001',title:'One',completed:true,teaching_preview:'Accepted concept'}]};
-  app.run(`project=${JSON.stringify(p)};step=PAGE.production;renderJob();`);
-  const box=app.elements.get('production-progress');
-  let markup=box.innerHTML, detail={dataset:{progressEpisode:'ep_001'},open:true}, preview={dataset:{progressPreview:'ep_001'},scrollTop:180};
-  box.querySelectorAll=selector=>selector.includes('data-progress-preview')?[preview]:selector.includes('[open]')?(detail.open?[detail]:[]):[detail];
-  Object.defineProperty(box,'innerHTML',{get:()=>markup,set:value=>{
-    markup=value;detail={dataset:{progressEpisode:'ep_001'},open:false};preview={dataset:{progressPreview:'ep_001'},scrollTop:0};
-  }});
-  app.run('renderJob();');
-  assert.equal(detail.open,true);
-  assert.equal(preview.scrollTop,180);
-});
 test('setup starts with a conversation, without configuration forms; the key is entered on the settings page',()=>{
   const app=studio(),html=app.run('renderBrief()');
   assert.ok(html.includes('id="chat-message"'));
@@ -1535,24 +1476,44 @@ test('a plan is readable and approval is an explicit action, with hostile model 
   const app=studio();
   app.run(`project={config:boot.defaults,outline:{hash:'h',plan:{central_question:'<script>bad()</script>',explanation_path:'Foundations first',scope_note:'Scope',episodes:[{title:'Begin here',central_question:'Why?',target_minutes:20,scenes:[{title:'Mechanism',question:'How?',explanation_steps:['First step']}],deferred_questions:[]}]}}}`);
   const html=app.run('renderOutline()');
-  assert.ok(html.includes('Plan freigeben & Skripte schreiben'));
+  assert.ok(html.includes('Freigeben & erste Folge schreiben'));
   assert.ok(html.includes('First step'));
   assert.ok(!html.includes('<script>bad()'));
   assert.ok(html.includes('&lt;script&gt;'));
 });
-test('an outline waiting for its approval names who writes its episodes and switches it there',()=>{
+test('an approved outline writes its episodes in order, then reviews the series and offers each revision',()=>{
   const app=studio();
-  const plan="{central_question:'Why?',explanation_path:'Path',scope_note:'Scope',episodes:[{title:'One',central_question:'Why?',target_minutes:20,scenes:[],deferred_questions:[]}]}";
-  app.run(`project={id:'p',config:boot.defaults,outline:{hash:'h',writer:'prompt',plan:${plan}}}`);
+  const plan="{central_question:'Why?',explanation_path:'Path',scope_note:'Scope',episodes:["+
+    "{episode_id:'ep_001',title:'One',central_question:'Why?',target_minutes:20,scenes:[],deferred_questions:[]},"+
+    "{episode_id:'ep_002',title:'Two',central_question:'How?',target_minutes:20,scenes:[],deferred_questions:[]},"+
+    "{episode_id:'ep_003',title:'Three',central_question:'What now?',target_minutes:20,scenes:[],deferred_questions:[]}]}";
+  app.run(`project={id:'p',config:boot.defaults,outline:{hash:'h',approval:{plan_hash:'h'},plan:${plan},next_episode:'ep_002',`+
+    `episodes:[{episode_id:'ep_001',title:'One',run_id:'run_1'},{episode_id:'ep_002',title:'Two',run_id:null},{episode_id:'ep_003',title:'Three',run_id:null}]}}`);
   let html=app.run('renderOutline()');
-  assert.ok(html.includes('Schreiber dieser Folgen: Schreib-Prompt mit Narrationsprüfung und Dialogschliff'));
-  assert.ok(html.includes('data-action="toggle-writer" data-writer="agent"'));
-  app.run(`project.outline.writer='agent';`);
+  assert.ok(html.includes('1 von 3 geschrieben'));
+  assert.ok(html.includes('Als Nächste: Folge 2, „Two“.'));
+  assert.ok(html.includes('<button data-action="episode" >Nächste Folge schreiben</button>'));
+  assert.ok(html.includes('data-action="episodes" >Alle 2 restlichen nacheinander</button>'));
+  assert.ok(html.includes('<span class="tag ok">geschrieben</span>')&&html.includes('<span class="tag">als Nächste</span>'));
+  assert.ok(!html.includes('data-action="script"'),'an approved outline is not approved again');
+  // All written: the series review, then its points per episode with a revision that carries them.
+  app.run(`project.outline.next_episode=null;project.outline.episodes.forEach((r,i)=>r.run_id='run_'+(i+1));`);
   html=app.run('renderOutline()');
-  assert.ok(html.includes('Schreiber dieser Folgen: Erzähl-Agent · Claude Opus'));
-  assert.ok(html.includes('data-writer="prompt"'));
-  app.run(`project.outline.approval={plan_hash:'h'};`);
-  assert.ok(!app.run('renderOutline()').includes('toggle-writer'),'an approved outline keeps its writer');
+  assert.ok(html.includes('Alle 3 Folgen sind geschrieben.')&&html.includes('data-action="series_review"'));
+  assert.ok(!html.includes('data-action="episode"'));
+  app.run(`project.outline.series_review={run_id:'run_r',status:'completed',verdict:'blocked',`+
+    `episode_runs:{ep_001:'run_1',ep_002:'run_2',ep_003:'run_3'},`+
+    `episode_issues:{ep_002:[{category:'structure',segment_ids:[],reason:'progression: wiederholt <Folge 1>'}]}};`);
+  html=app.run('renderOutline()');
+  assert.ok(html.includes('Folge 2: „Two“'));
+  assert.ok(html.includes('<li>progression: wiederholt &lt;Folge 1&gt;</li>'));
+  assert.ok(html.includes('data-action="revise" data-episode="ep_002" data-message="Die Serienprüfung meldet:\nprogression: wiederholt &lt;Folge 1&gt;"'));
+  assert.ok(!html.includes('Seit dieser Prüfung'));
+  app.run(`project.outline.episodes[1].run_id='run_2b';`);
+  assert.ok(app.run('renderOutline()').includes('Seit dieser Prüfung wurden Folgen überarbeitet.'));
+  app.run(`project.outline.series_review={run_id:'run_r',status:'completed',verdict:'passed',episode_runs:{ep_001:'run_1',ep_002:'run_2b',ep_003:'run_3'},episode_issues:{}};`);
+  html=app.run('renderOutline()');
+  assert.ok(html.includes('Die Serienprüfung hat nichts gefunden')&&!html.includes('data-action="series_review"'));
 });
 test('audio starts disabled, names selected voices and marks an old recording',()=>{
   const app=studio();
@@ -2228,19 +2189,6 @@ test('a script run over its call limit gets the approval as a button that also r
   assert.ok(card.includes('data-action="approve-calls" data-run-id="run_s" data-model-calls="188" data-then-resume="1"'));
   assert.ok(!card.includes('>Fortsetzen<'),'without a higher limit the run would stop again at once');
   assert.ok(!app.elements.get('job-bar').innerHTML.includes('data-action="resume"'));
-});
-
-test('a teaching concept that stays incomplete offers a new outline, never a futile resume',()=>{
-  const app=studio(), p=workflowProject(app);
-  p.research='Dossier';
-  Object.assign(p.job,{status:'blocked',message:'Das Lehrkonzept hat auch nach der gezielten automatischen Korrektur noch offene Punkte: X',run:{run_id:'run_s',kind:'script',status:'blocked',stages:{planning:{status:'completed',attempts:1},teaching:{status:'blocked',attempts:3,error:{code:'teaching_design_failed'}},writing:{status:'pending'},polishing:{status:'pending'},review:{status:'pending'},publish:{status:'pending'}}},progress:{phase:'script',stage:'teaching',activity:'Lehrkonzept wird geprüft',episodes:[],review_issues:['Beispiel fehlt']}});
-  app.run(`project=${JSON.stringify(p)};step=PAGE.production;render();`);
-  const html=jobView(app);
-  assert.ok(html.includes('Lehrkonzept bleibt unvollständig'));
-  assert.ok(html.includes('data-action="plan" data-confirm='));
-  assert.ok(!html.includes('data-action="resume"'));
-  assert.ok(!html.includes('Fortsetzen wiederholt den unterbrochenen Schritt'));
-  assert.ok(html.includes('Beispiel fehlt'));
 });
 
 test('a refused resume keeps its run, is named by the worker code and shows the interrupted stage',()=>{
@@ -3848,7 +3796,7 @@ test('an access gap names its criterion, recommends the upload where a library c
   assert.ok(english.includes('>Upload the work</button>'));
 });
 
-test('dispute, residual finish and teaching redesign lead with one sentence and highlight the recommended choice',()=>{
+test('dispute and residual finish lead with one sentence and highlight the recommended choice',()=>{
   const app=studio();
   const dispute={objection_id:'o1',task_id:'t',question:'Frage',decision:null,objection:{reason:'Einwand',correction:'',closure_condition:''},review:{reason:'Gestützt',references:[]}};
   const disputeJob={status:'blocked',stop:{code:'review_disagreement'},run:{run_id:'run_x',kind:'research',stages:{}},progress:{review_disagreement:dispute,review_disagreements:[dispute]}};
@@ -3865,21 +3813,12 @@ test('dispute, residual finish and teaching redesign lead with one sentence and 
   assert.ok(residual.includes('<p class="hint">Ohne diese Wahl wird weiter nachgebessert: die nächste Gesamtprüfung öffnet ihre Einwände wieder.</p>'),'the alternative stays visible');
   residual=app.run(`residualFinish(${JSON.stringify({...ledger,phase:'audit'})},'run_x')`);
   assert.ok(residual.includes('statt in einer weiteren Runde.</p>'),'without a rework running no cost is named');
-  // Teaching redesign: the episode, what a redraft costs, and the note starting with the open points, editable.
-  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j1',status:'blocked',action:'resume',message:'Das Lehrkonzept hat auch nach der gezielten automatischen Korrektur noch offene Punkte: Beispiel fehlt. Szene 4 zu lang.',stop:{code:'teaching_design_failed',stage:'teaching',run_kind:'script'},teaching_failure:{episode_id:'ep_003',title:'Drei'},started_at:new Date().toISOString(),run:{run_id:'run_s',kind:'script',stages:{teaching:{status:'blocked',error:{code:'teaching_design_failed'}}}}}};overviewPage=false;step=PAGE.production;render();`);
-  const redesign=app.elements.get('stop-card').innerHTML;
-  assert.ok(redesign.includes('<p>Das Lehrkonzept von Folge 3 hat nach drei Korrekturen noch offene Punkte; ein Neuentwurf mit diesen Punkten als Hinweis kostet etwa 4–6 Aufrufe, die übrigen Folgen bleiben.</p>'));
-  assert.ok(redesign.includes('<textarea id="redesign-note" rows="3">Beispiel fehlt. Szene 4 zu lang.</textarea>'));
-  assert.ok(redesign.includes('<button data-action="redesign-teaching" data-run-id="run_s" data-teaching-episode="ep_003" >Mit den offenen Punkten neu entwerfen</button>'));
-  assert.ok(redesign.includes('<button class="secondary" data-action="plan"'),'a new table of contents stays the alternative');
   const en=studio({language:'en'});
   assert.ok(en.run(`renderDisputeCard(${JSON.stringify(disputeJob)},'run_x',false)`).includes('<p>The overall review considers its earlier objection settled because a passage read since supports the statement; both positions stand in the quality report.</p>'));
   const english=en.run(`residualFinish(${JSON.stringify(ledger)},'run_x')`);
   assert.ok(english.includes('<p>Round 2 still finds 3 objections, mostly details; finishing means they stand in the quality report instead of another round (about 48 calls).</p>'));
   assert.ok(english.includes('>Finish after the next review</button>'));
   assert.deepEqual(germanLeft(english),[]);
-  const teaching=en.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'teaching_design_failed'},teaching_failure:{episode_id:'ep_003',title:'Drei'},run:{run_id:'run_s',kind:'script',stages:{}},progress:{}}).text`);
-  assert.equal(teaching,'The teaching plan of episode 3 still has open points after three corrections; a redraft with these points as a note costs about 4–6 calls; the other episodes stay.');
 });
 
 test('the table of contents and the audio approval say in one sentence what approving starts',()=>{

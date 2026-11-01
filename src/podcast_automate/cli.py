@@ -16,14 +16,12 @@ from .errors import AppError
 from .episode_audio import run_episode_audio
 from .logs import add_secret, configure_logging, logger, release_logging
 from .models import RuntimeSettings, SCHEMAS, TopicBrief
-from .polishing import DialoguePolishReview
 from .runner import run_probe, status
 from .runner import manifest_path
 from .research import run_research
 from .research_models import RESEARCH_SCHEMAS
 from .script_models import SCRIPT_SCHEMAS
 from .series_review import SeriesReview
-from .teaching import TEACHING_SCHEMAS
 from .scripting import run_script
 from .storage import init_project, load_project, read_yaml, write_json
 from .platforms import configure_path
@@ -108,7 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
     script = commands.add_parser("script", help="Turn a reviewed dossier into a series plan and dialogue scripts")
     script.add_argument("project_dir", type=Path)
     script.add_argument("--episode", help="Write only the chosen episode, for example ep_001")
-    script.add_argument("--revise", metavar="EPISODE_ID", help="Revise an existing script with its previous plan")
+    script.add_argument("--revise", metavar="EPISODE_ID",
+                        help="Revise a published episode: the story agent rewrites what --feedback asks")
     script.add_argument("--feedback", default="", help="Editorial feedback for --revise")
     series = commands.add_parser("series-review",
         help="Review the published scripts of a run as a series, without changing the run")
@@ -160,10 +159,6 @@ def build_parser() -> argparse.ArgumentParser:
     script.add_argument("--jev-probe", action="store_true",
                         help="Also run the gap probe with Jev (OpenRouter, key from OPENROUTER_API_KEY): finds "
                              "passages across languages too, about 0.60 USD per run; applies to new script runs")
-    script.add_argument("--writer", choices=("prompt", "agent"),
-                        help="Who writes a new run's episodes: prompt (default, the writing prompt with narration "
-                             "review and polishing) or agent (the story agent, a Claude Code session with Opus per "
-                             "episode; needs the claude.ai sign-in)")
     script.add_argument("--from-outline", metavar="RUN_ID", dest="from_outline",
                         help="With --episode: write that episode of this script run's approved outline in a new "
                              "run, without planning again (one episode first, before the series run)")
@@ -184,9 +179,6 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--retry", metavar="TASK_ID",
                          help="Retry a blocked sub-question on the next resume, with the allowance of a new question")
     approve.add_argument("--hint", default="", help="Hint for the new attempt; goes to the model as feedback")
-    approve.add_argument("--redesign-teaching", metavar="EPISODE_ID",
-                         help="Redesign this episode's stopped teaching plan on the next resume; --hint is the "
-                              "binding hint")
     approve.add_argument("--access-gap", nargs=2, metavar=("TASK_ID", "CRITERION"),
                          help="Accept one criterion of a blocked sub-question as an access gap (numbered from 0); "
                               "requires --blocked-source")
@@ -408,18 +400,18 @@ def run_command(args) -> int:
             from .run_budget import (approve_criterion_gap, approve_fresh_attempts, approve_model_call_limit,
                                      approve_research_gap, approve_research_plan, approve_research_retry,
                                      approve_dossier_rebuild, approve_residual_finish, approve_text_switch,
-                                     decide_review_disagreement, request_teaching_redesign)
+                                     decide_review_disagreement)
             root = args.project_dir.resolve()
             named = args.research_plan if isinstance(args.research_plan, str) else args.run_id
             run_id = manifest_path(root, named).parent.name
             if (args.model_calls is None and args.search_rounds is None and args.sources is None and args.cost_usd is None
                     and not args.accept_gap
                     and not args.retry and not args.access_gap and not args.dispute and not args.finish_with_residuals
-                    and not args.fresh_attempts and args.research_plan is None and not args.redesign_teaching
+                    and not args.fresh_attempts and args.research_plan is None
                     and not args.text_switch and not args.rebuild_dossier):
                 raise AppError("Name an approval: --research-plan, --model-calls, --search-rounds, --sources, "
                                "--cost-usd, --accept-gap, --access-gap, --dispute, --finish-with-residuals, "
-                               "--fresh-attempts, --retry, --redesign-teaching, --rebuild-dossier or --text-switch.",
+                               "--fresh-attempts, --retry, --rebuild-dossier or --text-switch.",
                                code="invalid_request", status="blocked")
             if bool(args.access_gap) != bool(args.blocked_source):
                 raise AppError("--access-gap and --blocked-source go together.", code="invalid_request", status="blocked")
@@ -446,9 +438,6 @@ def run_command(args) -> int:
             if args.text_switch:
                 data["text_switch"] = approve_text_switch(root, run_id, SWITCH_OPTIONS[args.text_switch],
                                                           model=args.switch_model)
-            if args.redesign_teaching:
-                redesign = request_teaching_redesign(root, run_id, args.redesign_teaching, args.hint)
-                data["teaching_redesign"] = redesign.model_dump(mode="json")
             if args.finish_with_residuals:
                 data["residual_finish"] = approve_residual_finish(root, run_id, args.reason).model_dump(mode="json")
             if args.rebuild_dossier:
@@ -466,8 +455,7 @@ def run_command(args) -> int:
             data["message"] = "Approval saved. The run takes it over on its next call or with pla resume."
             code = 0
         elif args.command == "schemas":
-            for name, model in (SCHEMAS | RESEARCH_SCHEMAS | SCRIPT_SCHEMAS | TEACHING_SCHEMAS |
-                                {"dialogue_polish_review": DialoguePolishReview, "series_review": SeriesReview}).items():
+            for name, model in (SCHEMAS | RESEARCH_SCHEMAS | SCRIPT_SCHEMAS | {"series_review": SeriesReview}).items():
                 write_json(args.output_dir / f"{name}.schema.json", model.model_json_schema())
             data = {"status": "completed", "message": f"Schemas exported: {args.output_dir.resolve()}"}
             code = 0
@@ -542,7 +530,6 @@ def run_command(args) -> int:
                                       max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort,
                                       jev_probe=getattr(args, "jev_probe", False),
                                       web_search=getattr(args, "web_search", None),
-                                      writer=getattr(args, "writer", None),
                                       outline_run=getattr(args, "from_outline", None))
             elif research_run:
                 # The plan gate is the CLI default; only an explicit --approve-plan at the start waives it.

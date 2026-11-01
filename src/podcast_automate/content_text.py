@@ -8,7 +8,7 @@ before this table; English is its translation. A language without a table reads 
 The renderers: download and ZIP names (downloads), the companion kits of an episode and of the whole podcast with its
 transcript (publish_kit), the series outline and the script run's show notes (script_artifacts), the recording's show
 notes, listening sheet, README and transcript notice
-(episode_audio, audio), the teaching plan and research_needed.md (teaching, script_pipeline), and the research files
+(episode_audio, audio), research_needed.md (script_pipeline), and the research files
 a reader opens: the dossier and open_questions.md (research), the question ledger research_questions.md
 (question_research), quality.md (research_quality) and the corpus probe's sentences (research_gap_probe.suffix).
 Messages of the Studio, approval receipts and anything a prompt or a hash reads are not here; they keep their words.
@@ -87,31 +87,6 @@ TEXT = {
         "readme_spoken_forms": "Abweichende Sprechformen",
         "readme_complete": "Der gesamte freigegebene Text ist in Skriptreihenfolge enthalten.",
         "readme_no_review": "Die technische Montage ersetzt keine Hörprüfung von Aussprache und Natürlichkeit.",
-        # The teaching plan and its research questions (teaching.py).
-        "plan_title": "Lehrplan: {episode}",
-        "plan_start": "Ausgangspunkt",
-        "plan_big_idea": "Große Idee",
-        "plan_hook_question": "Leitfrage",
-        "plan_first_answer": "Naheliegende erste Antwort",
-        "plan_core_story": "Kerngeschichte",
-        "plan_turning_point": "Wendepunkt",
-        "plan_payoff": "Auflösung",
-        "plan_callback": "Rückgriff auf den Anfang",
-        "plan_dramaturgy": "Dramaturgie",
-        "plan_opening": "Einstieg",
-        "plan_stance": "Rolle der fragenden Stimme",
-        "plan_arc": "Spannungsbogen",
-        "plan_objectives": "Lernziele",
-        "plan_reasoning": "Gedankengang",
-        "plan_ending": "Kapitelende: {ending}",
-        "plan_example": "Durchgearbeitetes Beispiel",
-        "plan_misconception": "Mögliche Fehlvorstellung: ",
-        "plan_limit": "Grenze: ",
-        "plan_synthesis": "Synthese und Übertragung",
-        "plan_research_limits": "Eingeordnete Forschungsgrenzen",
-        "needed_title": "Recherche für die Erklärung ergänzen",
-        "resolved_title": "Recherchefragen geklärt",
-        "resolved_note": "Die Lehrplanung wurde mit den verfügbaren Quellen erneut geprüft und angenommen.",
         # The readable research dossier (research.render_dossier).
         "dossier_title": "Recherchedossier: {topic}",
         "dossier_run": "Recherchelauf: `{run_id}`",
@@ -314,30 +289,6 @@ TEXT = {
         "readme_complete": "The whole approved text is included in script order.",
         "readme_no_review": "The technical assembly does not replace a listening review of pronunciation and "
                             "naturalness.",
-        "plan_title": "Teaching plan: {episode}",
-        "plan_start": "Starting point",
-        "plan_big_idea": "Big idea",
-        "plan_hook_question": "Guiding question",
-        "plan_first_answer": "Obvious first answer",
-        "plan_core_story": "Core story",
-        "plan_turning_point": "Turning point",
-        "plan_payoff": "Payoff",
-        "plan_callback": "Callback to the opening",
-        "plan_dramaturgy": "Dramaturgy",
-        "plan_opening": "Opening",
-        "plan_stance": "Role of the questioning voice",
-        "plan_arc": "Narrative arc",
-        "plan_objectives": "Learning objectives",
-        "plan_reasoning": "Line of reasoning",
-        "plan_ending": "Chapter ending: {ending}",
-        "plan_example": "Worked example",
-        "plan_misconception": "Possible misconception: ",
-        "plan_limit": "Limit: ",
-        "plan_synthesis": "Synthesis and transfer",
-        "plan_research_limits": "Research limits taken into account",
-        "needed_title": "Research to add for the explanation",
-        "resolved_title": "Research questions resolved",
-        "resolved_note": "The teaching plan was checked again with the available sources and accepted.",
         "dossier_title": "Research dossier: {topic}",
         "dossier_run": "Research run: `{run_id}`",
         "dossier_read": "{sources} sources read; {failures} retrievals or imports failed. ",
@@ -464,8 +415,7 @@ TEXT = {
 }
 
 # Labels of catalogs whose German words live next to the code that also hands them to a prompt or a report, so they
-# stay there and a German file reads them as before: the storytelling devices of a teaching plan (dramaturgy.py), the
-# research quality criteria (research_quality.CRITERIA, which the quality report records), the corpus probe states
+# stay there and a German file reads them as before: the research quality criteria (research_quality.CRITERIA, which the quality report records), the corpus probe states
 # (research_quality.PROBE_LABELS) and where a call estimate comes from (question_budget.SOURCE_LABELS, which the plan
 # gate's message uses too). Here only the other languages' words.
 CATALOG_LABELS = {
@@ -480,17 +430,6 @@ CATALOG_LABELS = {
                          "hits_read_confirmed": "hits read, gap confirmed", "resolved": "answered in the sources"},
         "call_source": {"run": "measured in this run", "project": "the project's experience",
                         "default": "default value"},
-        "dramaturgy": {"mystery": "Mystery", "discovery": "Story of a discovery", "in_medias_res": "In medias res",
-                       "debate": "Debate", "thought_experiment": "Thought experiment",
-                       "myth_check": "Myth versus finding", "case_autopsy": "Case analysis",
-                       "build_along": "Build along"},
-        "opening": {"scene": "Scene", "number": "Number", "question": "Question", "quote": "Quote",
-                    "belief": "Belief", "anecdote": "Anecdote", "problem": "Problem"},
-        "partner_stance": {"skeptic": "Skeptical", "enthusiast": "Enthusiastic", "devils_advocate": "Devil's advocate",
-                           "learner": "Thinking along", "practice": "From practice"},
-        "ending": {"open_question": "Open question", "recap": "Interim summary", "surprise": "Surprise",
-                   "contradiction": "Contradiction", "foreshadow": "Foreshadowing", "reflection": "Reflection",
-                   "conclusion": "Conclusion"},
     },
 }
 
