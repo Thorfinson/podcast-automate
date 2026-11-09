@@ -15,6 +15,7 @@ from .elevenlabs_speech import (ELEVENLABS_SPEECH_VERSION, PASSAGE_RULE as ELEVE
                                 check_elevenlabs_rows, run_elevenlabs_tts)
 from .google_speech import GOOGLE_SPEECH_VERSION, check_google_rows, passage_rule, passage_units, run_google_tts
 from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels, host_roles_of
+from .music import credit_line, montage_music, music_hash, music_record
 from .provider_pool import AdapterPool
 from .research import refund_call, reserve_call, settle_call, unanswered
 from .research_patches import MAX_REJECTIONS
@@ -138,15 +139,16 @@ def voices_line(voices, labels, language):
                 voice_b=voices["host_b"], host_b=labels["host_b"])
 
 
-def render_export_notes(script, chapters, choice, overrides, labels=None, *, language):
+def render_export_notes(script, chapters, choice, overrides, labels=None, *, language, music=None):
     """Show notes the script stage cannot write: they need measured audio to carry timestamps. In the podcast's
-    language (D-153), ending with the transparency note (D-154)."""
+    language (D-153), ending with the transparency note (D-154). A recording with music credits it as its license
+    asks (D-189)."""
     labels = labels or host_labels(None)
     lines = [f"# {script.title}", "",
              (wording(language, "export_version_three", host_a=labels["host_a"], host_b=labels["host_b"],
                       host_c=labels["host_c"]) if "host_c" in labels and "host_c" in choice.voices else
               wording(language, "export_version", host_a=labels["host_a"], host_b=labels["host_b"])),
-             voices_line(choice.voices, labels, language), "",
+             voices_line(choice.voices, labels, language), *([credit_line(music, language)] if music else []), "",
              f"## {wording(language, 'export_chapters')}", ""]
     if chapters:
         lines.extend(f"- {row['timestamp']} {row['title']}"
@@ -212,12 +214,13 @@ def check_rows(root, script, report, config, *, table=None, overrides=None):
     return [inside(root / "cache/audio", row["path"]) for row in rows]
 
 
-def saved_approval(root, episode, script_hash, audio_generation):
+def saved_approval(root, episode, script_hash, audio_generation, music=None):
     """Whether the stored audio decision already approves this script with this audio choice.
 
     The one rule for the pipeline and the Studio: the decision says ``audio_approved``, names
     this episode's current script hash, and was made for the same provider and voices
-    (``same_audio_generation`` reads a decision without a pause policy as today's defaults).
+    (``same_audio_generation`` reads a decision without a pause policy as today's defaults)
+    and the same music (music.py; a decision without music, none).
     A spoken form is not an editorial decision, so a re-render with a saved approval starts
     without asking again.
     """
@@ -230,7 +233,8 @@ def saved_approval(root, episode, script_hash, audio_generation):
     decision = read_yaml(decision_path)
     return (decision.get("audio_approved") is True
             and (decision.get("scripts") or {}).get(episode) == script_hash
-            and same_audio_generation(decision.get("audio_generation"), audio_generation))
+            and same_audio_generation(decision.get("audio_generation"), audio_generation)
+            and decision.get("music") == music)
 
 
 def episode_spoken(root, episode, script):
@@ -328,10 +332,12 @@ def script_text_generation(root, config, script_run_id):
 def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval_note="",
                       resume=False, run_id=None, expected_script_hash=None, expected_readable_hash=None,
                       expected_config_hash=None, audio_choice=None, api_key=None, expected_audio_hash=None,
-                      parallel_remote=False, expected_expression_hash=None, speech_key=None, elevenlabs_key=None):
+                      parallel_remote=False, expected_expression_hash=None, speech_key=None, elevenlabs_key=None,
+                      expected_music_hash=None):
     """``api_key`` is the OpenRouter key (OpenRouter speech, and the expression layer's text model when it is an
     OpenRouter one); ``speech_key`` is the Google key a Google recording speaks with, ``elevenlabs_key`` the
-    ElevenLabs key an ElevenLabs recording speaks with."""
+    ElevenLabs key an ElevenLabs recording speaks with. ``expected_music_hash`` is the music the approval named
+    (music.music_hash)."""
     root = root.resolve()
     with project_lock(root, shared=parallel_remote), ExitStack() as locks:
         config = load_project(root)
@@ -368,6 +374,10 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
 
         if expected_audio_hash is not None and expected_audio_hash != digest(choice.model_dump()):
             raise AppError("Audioauswahl seit der Freigabe geändert.", code="inputs_changed", status="blocked")
+        # The project's music (D-189); a resume plays what its run started with, and its montage refuses a changed file.
+        music = request.get("music") if resume else music_record(root)
+        if expected_music_hash is not None and expected_music_hash != music_hash(music):
+            raise AppError("Musik seit der Freigabe geändert.", code="inputs_changed", status="blocked")
         # From here on the choice as this project's language speaks it; the recording binds only that (D-147).
         choice = choice.for_language(config.language)
         script_manifest, script, script_hash = reviewed_episode(root, config, episode)
@@ -393,6 +403,9 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             inputs["spoken_forms"] = {"table": table.model_dump(), "overrides": overrides}
         if audio_choice is not None:
             inputs["audio_generation"] = audio_generation_record(choice)
+        if music:
+            # Only a project with music binds it, so every other recording keeps its hash.
+            inputs["music"] = music
         google = choice.provider == "google_gemini_tts"
         eleven = choice.provider == ELEVENLABS_PROVIDER
         passages = google or eleven
@@ -452,7 +465,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
         else:
             identifier = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
             path = manifest_path(root, identifier)
-            approved = approve_audio or saved_approval(root, episode, script_hash, inputs.get("audio_generation"))
+            approved = approve_audio or saved_approval(root, episode, script_hash, inputs.get("audio_generation"), music)
             if not approved:
                 raise AppError("Audio benötigt die Freigabe des aktuellen Skripts mit --approve-audio.",
                                code="audio_approval_required", status="blocked")
@@ -482,7 +495,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             save_decision({
                 "script_run_id": script_manifest.run_id, "audio_run_id": manifest.run_id,
                 "status": "audio_generation_approved", "audio_approved": True,
-                "audio_generation": inputs.get("audio_generation"),
+                "audio_generation": inputs.get("audio_generation"), **({"music": music} if music else {}),
                 "scripts": {episode: script_hash}, "instruction": "Aktuellen Text vertonen; anschließend Hörprüfung."})
         write_json(root / "runs/latest.json", {"run_id": manifest.run_id})
 
@@ -594,7 +607,8 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             outputs = assemble(whole, paths, destination, language=config.language, labels=host_labels(config),
                                pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused,
                                units=passage_units(report) if passages else None,
-                               tempo=choice.pace_for(config.language).tempo)
+                               tempo=choice.pace_for(config.language).tempo,
+                               music=montage_music(root, music) if music else None)
             audio_report = json.loads((destination / "audio_report.json").read_text(encoding="utf-8"))
             parts = [{"part": 1, "audio": (destination / "audio.mp3").relative_to(root).as_posix(),
                       "duration_seconds": audio_report["duration_seconds"],
@@ -614,7 +628,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
             atomic_text(destination / "playlist.m3u", "\n".join(["#EXTM3U", *(path for path, _ in recordings)]) + "\n")
             chapters = episode_chapters(root, destination, parts)
             atomic_text(destination / "show_notes.md", render_export_notes(script, chapters, voiced, overrides, labels,
-                                                                           language=config.language))
+                                                                           language=config.language, music=music))
             atomic_text(destination / "listening_sheet.md", render_listening_sheet(script, chapters,
                                                                                    language=config.language))
             pronunciation = pronunciation_report(script, table, language=config.language, overrides=overrides)
@@ -623,12 +637,13 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                 "script_sha256": script_hash, "voices": voiced.voices, "audio_generation": choice.model_dump(),
                 "audio_generated": True, "audio_approved": True, "human_listening_reviewed": False,
                 "pronunciation": pronunciation, "spoken_overrides": overrides, "chapters": chapters,
+                **({"music": music} if music else {}),
                 "status": "awaiting_listening_review", **parts}
             write_json(root / "reports" / f"{episode}_audio.json", report)
             write_json(root / "episodes" / episode / "audio_latest.json", report)
             save_decision({"script_run_id": script_manifest.run_id,
                 "audio_run_id": manifest.run_id, "status": "awaiting_listening_review", "audio_approved": True,
-                "audio_generation": inputs.get("audio_generation"),
+                "audio_generation": inputs.get("audio_generation"), **({"music": music} if music else {}),
                 "scripts": {episode: script_hash}, "human_listening_reviewed": False})
             write_json(work / "progress.json", {"status": "completed", "segments": len(script.segments)})
             return [destination / "README.md", destination / "playlist.m3u",

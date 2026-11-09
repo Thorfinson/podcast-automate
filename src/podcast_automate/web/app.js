@@ -93,7 +93,7 @@ function audioFacts(p) {
   return {total,voiced:voiced.length,outdated:outdated.length,unvoiced:Math.max(0,total-voiced.length),
     reasons:[...new Set(outdated.flatMap(e=>e.audio_stale||[]))]};
 }
-const STALE_LABELS=Object.fromEntries(["script","voices","provider","model","pauses","pace","styles","alternate_roles","audio"]
+const STALE_LABELS=Object.fromEntries(["script","voices","provider","model","pauses","pace","styles","alternate_roles","audio","music"]
   .map(id=>[id,tp(`stale.${id}`)]));
 const staleText=reasons=>(reasons||[]).map(r=>STALE_LABELS[r]||r).join(", ");
 const minutesText=seconds=>{const m=Math.round(Number(seconds)/60);return m>=60?tp("time.hours_minutes",{hours:Math.floor(m/60),minutes:m%60}):tp("time.minutes",{minutes:m});};
@@ -246,6 +246,39 @@ async function attempt(action) { try { notice(""); await action(); } catch(error
 const howItWorks = html => html?`<details class="hint-toggle"><summary>${t("how_it_works")}</summary><p class="hint">${html}</p></details>`:"";
 function textInput(id,label,value,type="text") { return `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${escape(value)}"></div>`; }
 function area(id,label,value,rows=3) { return `<div class="field"><label for="${id}">${label}</label><textarea id="${id}" rows="${rows}">${escape(value)}</textarea></div>`; }
+// A revision's own length (scripting.revision_minutes, 10 to 60): empty keeps the length the episode was written for,
+// which the placeholder shows.
+function revisionMinutesField(published) {
+  const planned=Number(published?.planned_minutes);
+  return `<div class="field"><label for="script-minutes">${t("reader.revise_minutes")}</label><input id="script-minutes" type="number" inputmode="numeric" min="10" max="60" step="1"${planned>0?` placeholder="${Math.round(planned)}"`:""}></div>`;
+}
+// The minutes a reader asked for, or null for the plan's.
+function revisionMinutes(value) {
+  const text=String(value??"").trim();
+  if(!text)return null;
+  const minutes=Number(text);
+  return Number.isFinite(minutes)?minutes:null;
+}
+// A revision asked for while the project works waits in its queue (Studio.start_revisions, D-191): the button stays
+// open and says so, and the reader lists what waits, with the length asked for. The outline's remaining episodes
+// wait there too (D-192), listed on the series page as well.
+// A server older than the queue sends none and refuses a revision while the project works: app.js and the catalogs
+// reach the page on its next load, the server's rules only after its restart, which waits until nothing runs.
+const revisionQueueable=()=>Array.isArray(project?.revision_queue);
+const waitingRevisions=()=>(project?.revision_queue||[]).filter(row=>!row.error);
+const revisionWouldQueue=()=>revisionQueueable()&&(running()||waitingRevisions().length>0);
+const reviseDisabled=()=>revisionQueueable()?"":disabled();
+// "Alle weiteren Folgen" queues only on a server that says it does (D-192); an older one refuses them while running.
+const seriesQueueable=()=>revisionQueueable()&&project.queues_series===true;
+function renderRevisionQueue() {
+  const rows=project?.revision_queue||[];
+  if(!rows.length)return "";
+  const title=id=>(project.episodes||[]).find(e=>e.script.episode_id===id)?.script.title||id;
+  const what=row=>row.action==="episodes"?t("revision_queue.series"):
+    t("revision_queue.episode",{number:episodeNumber(row.episode)||row.position,title:quoted(title(row.episode))});
+  const item=row=>`<li><strong>${what(row)}</strong>${row.minutes?` · ${t(row.action==="episodes"?"revision_queue.series_minutes":"revision_queue.minutes",{minutes:fmt.number(Number(row.minutes))})}`:""}${row.error?` · ${t("queue.row.refused",{error:queueError(row)})}`:""} <button class="quiet small" data-action="unqueue-revision" data-key="${escape(row.key??row.episode)}" data-episode="${escape(row.episode??"")}">${t("common.remove")}</button></li>`;
+  return `<h3>${t("revision_queue.title",{count:rows.length})}</h3><ol>${rows.map(item).join("")}</ol><p class="hint">${t(project.revisions_held?"revision_queue.held":"revision_queue.hint")}</p>`;
+}
 // The page head (D-185): the project as eyebrow, the place as title, then the place's pages as tabs, each with its
 // state. A running page shows only its dot; the job itself stands in the strip at the top.
 let episodeTab=null;
@@ -811,7 +844,8 @@ function renderSettings() {
     <section class="panel" id="settings-section-search"><h2>${t("settings.section.search")}</h2><div class="setting-choices">
       <label class="setting-choice"><input type="radio" name="settings-web-search" value="model" ${d.web_search!=="perplexity"?"checked":""}><span>${t("settings.search.model")}</span></label>
       <label class="setting-choice"><input type="radio" name="settings-web-search" value="perplexity" ${d.web_search==="perplexity"?"checked":""}><span>${t("settings.search.perplexity")}</span></label></div>
-      <p class="hint">${t("settings.search.hint")}</p></section>
+      <p class="hint">${t("settings.search.hint")}</p>
+      ${"unpaywall_email" in d?settingField("settings-unpaywall",tp("settings.unpaywall.label"),`<input id="settings-unpaywall" type="email" autocomplete="email" value="${escape(d.unpaywall_email||"")}">`,t("settings.unpaywall.hint")):""}</section>
     <section class="panel" id="settings-section-audio"><h2>${t("settings.section.audio")}</h2>
       <div class="row">${settingField("settings-audio-provider",tp("settings.audio.provider"),settingSelect("settings-audio-provider",Object.entries(catalog).map(([id,row])=>[id,audioProviderLabel(id,row)]),a.provider))}
       ${isRemote(a.provider)&&gemini?.models?settingField("settings-audio-model",tp("settings.audio.model"),settingSelect("settings-audio-model",Object.entries(gemini.models),a.model||gemini.default_model)):""}</div>
@@ -951,6 +985,8 @@ function settingsFromForm() {
   if(cost)d.research_limits.cost_usd=Number(cost);
   const search=document.querySelector?.('input[name="settings-web-search"]:checked')?.value;
   d.web_search=search||d.web_search||"model";
+  // A Studio started before the setting existed neither shows nor takes it.
+  if("unpaywall_email" in d)d.unpaywall_email=String(value("settings-unpaywall")??"").trim();
   d.text_timeout_seconds=Math.round(Number(value("settings-timeout"))*60);
   return d;
 }
@@ -1302,9 +1338,11 @@ function episodeState(e) {
 function renderSeries(outline,p) {
   const total=p.episodes.length, written=(outline.episodes||[]).filter(r=>r.run_id).length;
   const index=p.episodes.findIndex(e=>e.episode_id===outline.next_episode);
-  const action=outline.next_episode?`<button data-action="episode" ${disabled()}>${t("outline.writing.next_button")}</button>${total-written>1?`<button class="secondary" data-action="episodes" ${disabled()}>${t("outline.writing.all_button",{count:total-written})}</button>`:""}`:"";
+  // While the project works, every remaining episode can be queued behind what waits (D-192).
+  const queueAll=seriesQueueable()&&revisionWouldQueue();
+  const action=outline.next_episode?`<button data-action="episode" ${disabled()}>${t("outline.writing.next_button")}</button>${total-written>1?`<button class="secondary" data-action="episodes" ${queueAll?"":disabled()}>${t(queueAll?"outline.writing.all_queue":"outline.writing.all_button",{count:total-written})}</button>`:""}`:"";
   const minutes=Math.round(p.episodes.reduce((sum,e)=>sum+Number(e.target_minutes||0),0));
-  let html=heading(3,action)+'<div id="stop-card"></div>';
+  let html=heading(3,action)+'<div id="stop-card"></div>'+renderRevisionQueue();
   html+=`<section class="series-summary"><p class="series-lead">${escape(p.central_question)}</p>
     <p class="series-state">${t("outline.episodes",{count:asHtml(`<strong>${total}</strong>`)})} · ${t("outline.minutes",{minutes:asHtml(`<strong>${minutes}</strong>`)})} · ${t("outline.writing.text",{written,total})}${outline.next_episode?` ${t("outline.writing.next",{number:index+1,title:quoted(p.episodes[index].title)})}`:""}</p>
     <details class="hint-toggle"><summary>${t("series.structure")}</summary><p>${escape(p.explanation_path)}</p><p>${t("series.order")} ${t("outline.writing.hint")}</p><p class="hint">${escape(p.scope_note)}</p></details></section>`;
@@ -1346,7 +1384,7 @@ function seriesReviewPanel(outline,p) {
   const rows=issues.map(([episode,points])=>{
     const index=p.episodes.findIndex(e=>e.episode_id===episode);
     const message=[t("outline.series.feedback"),...points.map(point=>point.reason)].join("\n");
-    return `<li><strong>${t("outline.series.episode",{number:index+1,title:quoted(p.episodes[index]?.title||episode)})}</strong><ul>${points.map(point=>`<li>${escape(point.reason)}</li>`).join("")}</ul><button class="secondary small" data-action="revise" data-episode="${escape(episode)}" data-message="${escape(message)}" ${disabled()}>${t("outline.series.revise")}</button></li>`;
+    return `<li><strong>${t("outline.series.episode",{number:index+1,title:quoted(p.episodes[index]?.title||episode)})}</strong><ul>${points.map(point=>`<li>${escape(point.reason)}</li>`).join("")}</ul><button class="secondary small" data-action="revise" data-episode="${escape(episode)}" data-message="${escape(message)}" ${reviseDisabled()}>${t("outline.series.revise")}</button></li>`;
   }).join("");
   return `<section class="panel tinted"><h2>${t("outline.series.title")}</h2><p>${t("outline.series.blocked")}</p><ul class="series-issues">${rows}</ul>${stale?`<p class="hint">${t("outline.series.stale")}</p>`:""}${start(t("outline.series.again"))}</section>`;
 }
@@ -1534,7 +1572,7 @@ function audioRequest(episodeId, rerender=false) {
     // An approval covers the tags the reader saw; a re-render keeps the saved approval and is bound to the tags on
     // the reader's page as well, since it speaks them (2026-10-02).
     ...(rerender?{rerender:true}:{}),expression_hash:e.expression?.hash||"",script_hash:e.hash,readable_hash:e.readable_hash,
-    config_hash:project.config_hash,audio_hash:project.audio_hash};
+    config_hash:project.config_hash,audio_hash:project.audio_hash,music_hash:project.music_hash||""};
 }
 async function rerenderEpisode(episodeId) {
   await start("audio",audioRequest(episodeId,true));
@@ -1599,7 +1637,7 @@ function renderScript() {
   // What the editor decides stands first in the margin, above the facts and the review notes (D-161): before, the
   // approval sat at the foot of a panel that scrolled on its own.
   const feedback=e.preview?`<section class="panel"><p class="hint">${t("reader.preview_feedback")}</p><button class="secondary" data-step="${PAGE.production}">${t("reader.follow_production")}</button></section>`
-    :`<section class="panel"><h2>${t("reader.feedback.title")}</h2><div class="actions">${readButton}</div>${area("script-feedback",t("reader.feedback.label"),"",3)}<div class="actions"><button class="secondary" data-action="revise" ${disabled()}>${t("reader.revise")}</button></div>${howItWorks(t("reader.revise_hint"))}</section>`;
+    :`<section class="panel"><h2>${t("reader.feedback.title")}</h2><div class="actions">${readButton}</div>${area("script-feedback",t("reader.feedback.label"),"",3)}${revisionMinutesField(published)}<div class="actions"><button class="secondary" data-action="revise" ${reviseDisabled()}>${t(revisionWouldQueue()?"reader.revise_queue":"reader.revise")}</button></div>${renderRevisionQueue()}${howItWorks(t("reader.revise_hint"))}</section>`;
   if(tabOn(PAGE.scripts)==="notes"){
     const notes=renderReviewNotes(e,true);
     return html+`<div id="script-reader-controls" class="reader-bar">${renderReaderControls()}</div><div class="form-page">${notes||`<section class="panel"><p>${t(e.preview?"episode.notes_preview":"episode.notes_none")}</p></section>`}${published?renderExpressionPanel(published):""}</div>`;
@@ -1776,6 +1814,24 @@ function pendingRecordings() {
   const active=new Set((project.audio_jobs||[]).filter(j=>j.status==="running").map(j=>j.episode));
   return (project.episodes||[]).filter(e=>!e.audio_current&&!active.has(e.script.episode_id)&&!queuedEntry(e.script.episode_id));
 }
+// Recorded episodes whose recording is out of date only for the podcast's music (D-189): text, voices and reading are
+// as approved, so they are made again from the speech cache with a new approval, without new speech. Their own bulk
+// approval covers them alone (D-193; 2026-11-08: "approve all" would also have recorded Asimov's 16 episodes never
+// voiced, about 175,000 credits, when only the music was to be added).
+function musicOnlyRecordings() {
+  return pendingRecordings().filter(e=>(e.audio||[]).length>0&&(e.audio_stale||[]).length===1&&e.audio_stale[0]==="music");
+}
+function renderMusicRemix() {
+  const rows=musicOnlyRecordings();
+  if(!rows.length)return "";
+  const blocked=audioBlockReason(undefined,true);
+  return `<section class="panel"><h2>${t("music_remix.title",{count:rows.length})}</h2><ul>${rows.map(e=>`<li>${escape(e.script.title)}</li>`).join("")}</ul>
+    <p>${t("music_remix.lead")}</p>
+    <label class="approval"><input id="audio-music-all" type="checkbox"><span>${t("music_remix.confirm",{count:rows.length})}</span></label>
+    <div class="actions"><button data-action="audio-music" ${blocked?"disabled":""}>${t("music_remix.button",{count:rows.length})}</button></div>
+    ${blocked?`<p class="hint">${escape(blocked)}</p>`:""}
+    <p class="hint">${t("approve_all.hint")}</p></section>`;
+}
 // What an audio approval confirms and who then speaks, in one plain sentence (D-155); an API voice adds that the key
 // pays for it, Qwen on this computer does not.
 function audioSentence(a,voices,count) {
@@ -1797,7 +1853,8 @@ function renderApproveAll(remote) {
     <p class="hint">${t("approve_all.hint")}</p></section>`;
 }
 function renderApprovalCard(e,a,remote) {
-  const blocked=audioBlockReason();
+  // A new approval queues while a text job runs or no place is free (2026-11-03: the card refused it instead).
+  const blocked=audioBlockReason(undefined,true);
   const pauses=a.pauses||{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900};
   const pace=paceOf(a,project.config.language);
   const pronunciation=renderPronunciation(e);
@@ -1813,6 +1870,7 @@ function renderApprovalCard(e,a,remote) {
     <dt>${t("approval.pronunciation")}</dt><dd>${pronunciation||`<span class="hint">${t("approval.pronunciation_none")}</span>`}</dd>
     ${remote&&a.expression!==false?`<dt>${t("approval.expression")}</dt><dd>${e.expression?`${t("audio.tags",{count:Number(e.expression.tags)})}${google?` · ${t("approval.backchannels",{count:Number(e.expression.backchannels||0)})}`:""} · ${t("approval.expression_marked")}`:t("approval.expression_none")} <button class="quiet small" data-step="${PAGE.scripts}">${t("approval.see_in_script")}</button></dd>`:""}
     <dt>${t("approval.pauses")}</dt><dd class="hint">${t("approval.pauses_text",{same:Number(pauses.same_speaker_ms),change:Number(pauses.speaker_change_ms),chapter:Number(pauses.chapter_break_ms)})}</dd>
+    ${project.music?`<dt>${t("approval.music")}</dt><dd>${project.music.error?`<span class="note">${escape(project.music.error)}</span>`:`${t("approval.music_text",{title:project.music.title,author:project.music.author,license:project.music.license})}`}</dd>`:""}
     ${pace.tempo!==1||(google&&pace.unhurried)?`<dt>${t("approval.tempo")}</dt><dd class="hint">${Math.round(pace.tempo*100)} %${google&&pace.unhurried?` · ${t("approval.unhurried")}`:""} · ${t(project.config.language==="de-DE"?"approval.tempo_for.de":"approval.tempo_for.en")}</dd>`:""}
     </dl>
     <p>${audioSentence(a,voiced,1)}</p>
@@ -1869,7 +1927,7 @@ function renderAudio() {
   const outdated=facts.outdated?`<p class="note">${t(facts.outdated===facts.voiced?"audio.outdated.all":"audio.outdated.some",{count:facts.outdated})}${facts.reasons.length?` (${t("audio.outdated.changed",{reasons:staleText(facts.reasons)})})`:""}. ${t("audio.outdated.tail")}</p>`:"";
   // The recordings come before the per-episode extras: listening is what the page is visited for most.
   if(tabOn(PAGE.audio)==="kit")return html+`<div class="form-page">${episodePicker()}${renderPublishKit(e)}${renderPodcastKit()}</div>`;
-  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}</div><aside class="split-rail">${capacity}${renderOwnAudio(a)}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
+  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderMusicRemix()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}</div><aside class="split-rail">${capacity}${renderOwnAudio(a)}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
   return html;
 }
 // The card's one line, from the same facts the steps and the header use (D-160).
@@ -2281,8 +2339,10 @@ function renderAudioJob(j,{main=false}={}) {
   const e=project.episodes?.find(row=>row.script.episode_id===j.episode), active=j.status==="running", info=stopInfo(j);
   const state=active?tp("audio_job.recording"):j.status==="completed"?tp("audio_job.done"):info?.title||tp("nav.state.stopped");
   const target=`data-run-id="${escape(j.run?.run_id||"")}"${main?"":` data-episode="${escape(j.episode)}"`}`;
-  // Gemini episodes resume beside each other within the free slots; the local job waits for any other job.
-  const blocked=main?(running()?tp("audio_job.other_running"):""):audioBlockReason(j.episode);
+  // Gemini episodes resume beside each other within the free slots; the local job waits for any other job. An ElevenLabs
+  // episode without a free place waits in the queue when resumed (D-188), and says so once it does.
+  const queued=main?null:queuedEntry(j.episode);
+  const blocked=main?(running()?tp("audio_job.other_running"):""):queued?tp("queue.place",{position:Number(queued.position)}):audioBlockReason(j.episode,isEleven(j.provider));
   return `<section class="audio-job${info?" stopped":""}"><div class="job-top"><strong>${escape(e?.script.title||j.episode||tp("run_label.episode_audio"))} · ${escape(state)}</strong>
     ${active&&!(j.external&&!j.external_stoppable)?`<button class="danger small" data-action="stop"${main?"":` data-job-id="${escape(j.id)}"`}>${t("audio_job.stop")}</button>`:""}</div>
     ${active?audioPhase(j.progress)+heartbeatNote(j):info?stopBody(j,info,{target,blocked}):""}
@@ -3276,26 +3336,28 @@ function audioJobSummary() {
 }
 function renderAudioJobBar() {
   const active=(project?.audio_jobs||[]).some(j=>j.status==="running"), stopped=stoppedAudio(), reason=sharedAudioStop();
-  const resume=stopped.length>1&&stopped.every(resumableAudio)?`<button class="small" data-action="resume-stopped-audio">${t("audio_bar.resume_all",{count:stopped.length})}</button>`:"";
+  const open=stopped.filter(j=>!queuedEntry(j.episode));
+  const resume=open.length>1&&open.every(resumableAudio)?`<button class="small" data-action="resume-stopped-audio">${t("audio_bar.resume_all",{count:open.length})}</button>`:"";
   const key=reason?.actions.includes("key")?`<button class="secondary small" data-action="open-settings">${t("key.name.openrouter")}</button>`:"";
   // One line; the engine room has its own toggle in the dock (D-164: the header carried a second one).
   return `<span class="job-dot ${active?"running":stopped.length?"blocked":"done"}" aria-hidden="true"></span><span class="job-text">${audioJobSummary()}</span>${key}${resume}${step!==PAGE.audio&&(active||stopped.length)?`<button class="secondary small status-link" data-step="${PAGE.audio}">${t("audio_bar.view")}</button>`:""}`;
 }
 // Resumes every stopped recording at once, each as its own card's „Fortsetzen“ would; a refusal is named, not hidden.
 async function resumeStoppedAudio() {
-  const jobs=stoppedAudio().filter(resumableAudio), id=project.id, refused=[];
+  const jobs=stoppedAudio().filter(j=>resumableAudio(j)&&!queuedEntry(j.episode)), id=project.id, refused=[];
+  let queued=0;
   if(!jobs.length)throw new Error(tp("audio_bar.none"));
   submitting=true;
   try {
     for(const job of jobs){
-      try{await api(`/api/projects/${id}/start`,{action:"resume",run_id:job.run.run_id,episode:job.episode});}
+      try{if((await api(`/api/projects/${id}/start`,{action:"resume",run_id:job.run.run_id,episode:job.episode}))?.queued)queued++;}
       catch(error){refused.push(`${job.episode}: ${errorText(error)}`);}
     }
     project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project);
   } finally { submitting=false; }
   lastJobView="";render();
   notice(refused.length?tp("audio_bar.partial",{done:jobs.length-refused.length,total:jobs.length,refused:refused.join("; ")})
-    :tp("audio_bar.resumed",{count:jobs.length}),refused.length?"warn":"ok");
+    :queued?tp("audio_bar.resumed_queued",{started:jobs.length-queued,queued}):tp("audio_bar.resumed",{count:jobs.length}),refused.length?"warn":"ok");
 }
 // The connection check in the page's language, with the fix next to every failed item: check.<name>.label and .fix
 // (doctor's check names; two older ones carry a key's name).
@@ -3691,14 +3753,16 @@ async function applySetupProposal() {
 async function start(action, extra={}) {
   if(!project) throw new Error(tp("start.no_project"));
   const parallelAudio=action==="audio"||(action==="resume"&&extra.episode);
-  const queueable=action==="audio"&&!extra.rerender;
-  if(parallelAudio?audioBlockReason(extra.episode,queueable):running()) throw new Error(parallelAudio?audioBlockReason(extra.episode,queueable):tp("audio.block.running"));
+  const queueable=(action==="audio"&&!extra.rerender)||(action==="resume"&&isEleven((project.audio_jobs||[]).find(j=>j.run?.run_id===extra.run_id)?.provider));
+  // A revision, or every remaining episode, is never refused for a running job: the server queues it (D-191, D-192).
+  const textQueued=(action==="revise"&&revisionQueueable())||(action==="episodes"&&seriesQueueable());
+  if(parallelAudio?audioBlockReason(extra.episode,queueable):!textQueued&&running()) throw new Error(parallelAudio?audioBlockReason(extra.episode,queueable):tp("audio.block.running"));
   const id=project.id;
   submitting=true;
   let response;
   try { response=await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project); }
   finally { submitting=false; }
-  if(response?.queued){notice(tp("start.queued",{position:Number(response.position)}),"ok");render();return response;}
+  if(response?.queued){notice(tp(action==="revise"?"start.queued_revision":action==="episodes"?"start.queued_series":action==="resume"?"start.queued_resume":"start.queued",{position:Number(response.position)}),"ok");render();return response;}
   navigatePage(recommendedPage(),{automatic:true,push:false});
   if(action==="assistant")scrollChatToEnd();
   return response;
@@ -3784,7 +3848,7 @@ document.addEventListener("change",event=>attempt(async()=>{
   if(event.target.id==="text-switch-choice"&&$("text-switch-cost"))$("text-switch-cost").hidden=!billedProvider(event.target.value);
   if(event.target.id==="episode-select"){episodeIndex=Number(event.target.value);scriptEpisodeId=project.episodes[episodeIndex]?.script.episode_id||scriptEpisodeId;readingSnapshot=null;render();}
   if(event.target.id==="script-select"){scriptEpisodeId=event.target.value;readingSnapshot=null;render();}
-  if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason();
+  if(event.target.id==="audio-approval")$("audio-start").disabled=!event.target.checked||!!audioBlockReason(undefined,true);
   // An access gap is accepted only for a refused source the editor chose (accessGapForm).
   if(String(event.target.id||"").startsWith("access-source-")){
     const id=event.target.id.slice("access-source-".length);accessChoices[id]=event.target.value;
@@ -3948,9 +4012,15 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/audio_queue`,{episode:button.dataset.episode});
       project=await api(`/api/projects/${project.id}`);render();notice(tp("act.unqueued"),"ok");return;
     }
-    if(action==="audio-all"){
-      if(!$("audio-approve-all")?.checked)throw new Error(tp("act.confirm_read"));
-      const rows=pendingRecordings();let started=0,queued=0;
+    if(action==="unqueue-revision"){
+      // The episode too, for a server older than the key (D-192), which removes by episode.
+      await api(`/api/projects/${project.id}/revision_queue`,{key:button.dataset.key,episode:button.dataset.episode});
+      project=await api(`/api/projects/${project.id}`);render();notice(tp("act.unqueued"),"ok");return;
+    }
+    if(action==="audio-all"||action==="audio-music"){
+      const music=action==="audio-music";
+      if(!$(music?"audio-music-all":"audio-approve-all")?.checked)throw new Error(tp("act.confirm_read"));
+      const rows=music?musicOnlyRecordings():pendingRecordings();let started=0,queued=0;
       for(const e of rows){
         const response=await api(`/api/projects/${project.id}/start`,{action:"audio",...audioRequest(e.script.episode_id),approve_audio:true});
         if(response?.queued)queued++;else started++;
@@ -4041,7 +4111,10 @@ document.addEventListener("click",event=>{
     if(action==="script")extra.plan_hash=project.outline.hash;
     // A revision from the reader's feedback, or from the series review's points on the outline page (D-184).
     if(action==="revise"){extra.message=button.dataset.message??$("script-feedback").value;
-      extra.episode=button.dataset.episode||project.episodes[episodeIndex].script.episode_id;}
+      extra.episode=button.dataset.episode||project.episodes[episodeIndex].script.episode_id;
+      // Only the reader's own revision sets a length; the series review's points keep the plan's.
+      const minutes=button.dataset.message===undefined?revisionMinutes($("script-minutes")?.value):null;
+      if(minutes!==null)extra.minutes=minutes;}
     if(action==="resume"){extra.run_id=button.dataset.runId||project.job?.run?.run_id||project.run?.run_id;if(button.dataset.episode)extra.episode=button.dataset.episode;}
     if(action==="audio")Object.assign(extra,audioRequest(button.dataset.episode));
     if(action==="expression"||action==="publish_kit")extra.episodes=button.dataset.episode?[button.dataset.episode]:[];
@@ -4052,6 +4125,7 @@ document.addEventListener("click",event=>{
     // A sent request leaves no stale draft behind; unsent drafts survive re-renders elsewhere.
     if(action==="replan"&&$(button.dataset.feedback||"outline-feedback"))$(button.dataset.feedback||"outline-feedback").value="";
     if(action==="revise"&&$("script-feedback"))$("script-feedback").value="";
+    if(action==="revise"&&$("script-minutes"))$("script-minutes").value="";
   });
 });
 // Polls run one at a time, the overview's every ten seconds, and a hidden tab's once a minute, enough for its title;

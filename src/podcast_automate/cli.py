@@ -109,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     script.add_argument("--revise", metavar="EPISODE_ID",
                         help="Revise a published episode: the story agent rewrites what --feedback asks")
     script.add_argument("--feedback", default="", help="Editorial feedback for --revise")
+    script.add_argument("--minutes", type=float,
+                        help="Target length of the --revise or --from-outline episode in minutes (10 to 60); "
+                             "default the plan's")
     series = commands.add_parser("series-review",
         help="Review the published scripts of a run as a series, without changing the run")
     series.add_argument("project_dir", type=Path)
@@ -530,7 +533,8 @@ def run_command(args) -> int:
                                       max_output_tokens=args.max_output_tokens, reasoning_effort=args.reasoning_effort,
                                       jev_probe=getattr(args, "jev_probe", False),
                                       web_search=getattr(args, "web_search", None),
-                                      outline_run=getattr(args, "from_outline", None))
+                                      outline_run=getattr(args, "from_outline", None),
+                                      minutes=getattr(args, "minutes", None))
             elif research_run:
                 # The plan gate is the CLI default; only an explicit --approve-plan at the start waives it.
                 manifest = run_research(args.project_dir, resume=args.command == "resume",

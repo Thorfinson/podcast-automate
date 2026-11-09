@@ -2,7 +2,7 @@
 title: Teaching
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-09
 covers:
   - src/podcast_automate/teaching.py
   - src/podcast_automate/teaching_research.py
@@ -260,6 +260,11 @@ Like all research, it searches with the run's web search: the subscriptions' or 
   (`storage.OPERATIONAL_FIELDS`) does not invalidate them (`invalid_supplement`).
 - Up to three rounds per episode, for different gaps (`teaching_research.MAX_SUPPLEMENTS`); results are reused after
   an interruption. A fourth stops with `teaching_research_required`.
+- **No source retrievable.** When none of the found sources can be fetched, the addition reads the stored sections
+  the gap probe matched for its gaps alone; only an addition without such sections stops with
+  `source_download_failed`, to be resumed once the sources answer again. A resume replays the stored search, so it
+  tries the same addresses. Until 2026-11-09 the stop came beside the stored sections too: Geld S1's ep_004 stopped
+  for three PDFs (HTTP 403, no answer, HTTP 404) beside 13 of them.
 - **Word limits per source.** On top of the dossier's limits (25 quoted and 150 paraphrased words), an addition may
   add 10 quoted and 40 paraphrased words per source (`teaching_research.QUOTED_WORDS`,
   `teaching_research.PARAPHRASED_WORDS`), counting the findings that already cite the source, so even a source the

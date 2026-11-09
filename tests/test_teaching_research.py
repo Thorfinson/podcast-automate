@@ -563,6 +563,46 @@ class FoundationResearchTests(unittest.TestCase):
         self.assertEqual(json.loads((folder / "review.json").read_text(encoding="utf-8"))["value"]["issues"], [])
         self.assertTrue((folder / "receipt.json").exists())
 
+    def test_stored_sections_the_probe_matched_carry_a_supplement_whose_new_sources_all_fail(self):
+        """Geld S1 ep_004, 2026-11-09: the supplement's discovery named three PDFs (HTTP 403, no answer, HTTP 404) and
+        the run stopped as if the sources were down for a while, beside 13 stored sections the corpus probe had matched
+        for the same gaps. Every resume replays the stored discovery, so it would have stopped at the same three again.
+        The pinned sections are reading material of their own; a gap with nothing pinned still stops."""
+        section = next(s for source in self.context for s in source["sections"])
+        gap = "The rule that assigns an energy to each configuration is missing."
+        write_json(self.work / "teaching/ep_001/research_needed.json", {"episode_id": "ep_001", "questions": [
+            {"question": gap, "why_needed": "Unread corpus hits.", "references": [section["reference"]]}]})
+        pinned = [{"source_id": section["reference"].split("#")[0], "sections": [section]}]
+
+        def invoke(prompt, schema, version, **kwargs):
+            if schema is FoundationSupplement:
+                self.calls.append(schema)
+                return FoundationSupplement(explanations=[], remaining_gaps=[gap])
+            return self.invoke(prompt, schema, version, **kwargs)
+
+        def research(pinned):
+            gone = AppError("Quellenabruf fehlgeschlagen (HTTP 404).", code="source_download_failed",
+                            details={"http_status": 404})
+            with patch("podcast_automate.sources.download", side_effect=gone):
+                return research_foundations(self.root, self.work, self.config, self.entry, self.dossier, invoke,
+                                            pinned=pinned)
+        with self.assertRaises(AppError) as stopped:
+            research(())
+        self.assertEqual(stopped.exception.code, "source_download_failed", "nothing to read: the stop stays")
+        folder = self.work / "teaching/ep_001/supplement"
+        self.assertFalse((folder / "source_index.json").exists())
+        # The resume replays the stored discovery, its candidates fail again, and the pinned sections carry it.
+        supplement = research(pinned)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement], "the discovery is not asked again")
+        self.assertEqual(supplement.remaining_gaps, [gap])
+        index = json.loads((folder / "source_index.json").read_text(encoding="utf-8"))
+        self.assertEqual(index["sources"], [])
+        self.assertTrue(index["failures"] and all(f["code"] == "source_download_failed" for f in index["failures"]))
+        context = json.loads((folder / "source_context.json").read_text(encoding="utf-8"))
+        self.assertEqual([s["reference"] for source in context for s in source["sections"]], [section["reference"]])
+        self.assertTrue((folder / "receipt.json").exists())
+        self.assertEqual(self.apply()[0], self.dossier, "a confirmed gap adds nothing to the dossier")
+
     def test_the_supplement_sees_what_each_source_has_left_and_an_overlong_answer_names_the_source(self):
         """The source-wide limits count the findings that already cite a source; the answer is told what is
         left, and a rejection names the source and its counts (Ontologies: 149 of 150 words already spent). A

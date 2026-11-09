@@ -387,7 +387,11 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
                 index.sources.append(document)
             except AppError as exc:
                 index.failures.append(import_failure(candidate.url, exc))
-        if not index.sources:
+        # The stored sections the corpus probe matched for these gaps are reading material of their own (merge_pinned
+        # below): with them, no fetched candidate is no reason to stop. On 2026-11-09 Geld S1's ep_004 stopped here for
+        # three PDFs (HTTP 403, no answer, HTTP 404) beside 13 such sections, and every resume replays the stored
+        # discovery, so it would have stopped at the same three again.
+        if not index.sources and not pinned:
             raise AppError("Die zusätzlichen Quellen sind derzeit nicht abrufbar. Später fortsetzen.", code="source_download_failed", status="blocked")
         write_json(index_path, index.model_dump())
     context = source_context(index, discovery)

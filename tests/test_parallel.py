@@ -31,6 +31,8 @@ from podcast_automate.speech import AudioChoice, selected_audio
 
 REMOTE = AudioChoice(provider="openrouter_gemini_tts",
                      voices={"host_a": "Sadaltager", "host_b": "Aoede"}).model_dump()
+ELEVEN = AudioChoice(provider="elevenlabs_tts",
+                     voices={"host_a": "S87WJpstXs0Ge2ukRiXJ", "host_b": "VHYWoxffK1pFlM1dtRb0"}).model_dump()
 
 
 class LockAndBudgetTests(unittest.TestCase):
@@ -220,6 +222,120 @@ class StudioParallelTests(unittest.TestCase):
         self.assertIn("Skript inzwischen geändert", row["error"])
         self.app.audio_queue("example", {"episode": "ep_004"})
         self.assertEqual(self.app.detail("example")["audio_queue"], [])
+
+    def recording_project(self, name, choice):
+        """A project in parallel mode with one read episode; returns the start request of its recording."""
+        root = self.project(name)
+        write_json(root / "studio/audio.json", choice)
+        write_json(root / "studio/execution.json", {"text": "parallel", "audio": "parallel"})
+        folder = root / "episodes/ep_001"
+        write_yaml(folder / "script.yaml", example_script().model_copy(update={"episode_id": "ep_001"}).model_dump())
+        (folder / "script.md").write_text("Read this script.")
+        return {"action": "audio", "episode": "ep_001", "approve_audio": True,
+                "script_hash": file_hash(folder / "script.yaml"), "readable_hash": file_hash(folder / "script.md"),
+                "config_hash": project_hash(self.config), "audio_hash": digest(selected_audio(root, self.config).model_dump())}
+
+    def test_elevenlabs_recordings_wait_at_the_plans_limit_across_projects_while_gemini_goes_on(self):
+        """2026-11-06: ten ElevenLabs recordings on a plan of three requests at a time made 3.8 takes a minute where three
+        alone made 7 to 8.8, and Orlagau's ep_010 stopped with elevenlabs_busy."""
+        self.app.key = self.app.elevenlabs_key = "test-key"
+        write_json(self.root / "studio/audio.json", ELEVEN)
+        other = self.recording_project("other", ELEVEN)
+        gemini = self.recording_project("speaks_gemini", REMOTE)
+        with patch("podcast_automate.studio.MAX_PARALLEL", 30), \
+                patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
+            jobs = [self.app.start("example", self.approval(f"ep_{n:03}")) for n in (1, 2, 3)]
+            self.assertEqual(self.app.detail("example")["audio_capacity"], {"limit": 3, "active": 3, "available": 0})
+            self.assertTrue(self.app.start("example", self.approval("ep_004"))["queued"])
+            self.assertTrue(self.app.start("other", other)["queued"], "the plan counts across projects")
+            self.assertEqual(self.app.detail("other")["audio_capacity"], {"limit": 3, "active": 3, "available": 0})
+            self.assertEqual(launch.call_count, 3)
+            self.assertEqual(self.app.start("speaks_gemini", gemini)["provider"], "openrouter_gemini_tts")
+            self.assertEqual(launch.call_count, 4, "Gemini has no such limit")
+            self.assertEqual(self.app.detail("speaks_gemini")["audio_capacity"]["available"], 30 - 4, "the Studio's own bound")
+            self.assertEqual(self.app.start_queued(), [], "a Gemini recording running frees no ElevenLabs place")
+            self.app.audio_processes[jobs[0]["id"]][0].poll.return_value = 0
+            self.assertEqual(self.app.start_queued(), [("example", "ep_004")], "one place, in order, then full again")
+            self.assertEqual(launch.call_count, 5)
+            self.assertEqual(self.app.detail("other")["audio_queue"][0]["episode"], "ep_001")
+
+    def test_the_podcasts_music_is_named_bound_to_the_approval_and_makes_older_recordings_outdated(self):
+        """D-189: the page shows the music it approves, an approval names its hash, and a recording made without it is
+        no longer current, so the episodes recorded before can be made again with it."""
+        self.app.key = "test-key"
+        folder = self.root / "exports/ep_001/run_old"
+        folder.mkdir(parents=True)
+        (folder / "audio.mp3").write_bytes(b"mp3")
+        choice = selected_audio(self.root, self.config)
+        write_json(self.root / "episodes/ep_001/audio_latest.json", {
+            "script_sha256": file_hash(self.root / "episodes/ep_001/script.yaml"), "voices": choice.voices,
+            "audio_generation": choice.for_language(self.config.language).model_dump(),
+            "parts": [{"part": 1, "audio": "exports/ep_001/run_old/audio.mp3", "duration_seconds": 60}]})
+        row = lambda: next(e for e in self.app.detail("example")["episodes"] if e["script"]["episode_id"] == "ep_001")
+        self.assertEqual((row()["audio_current"], self.app.detail("example")["music_hash"]), (True, ""))
+        (self.root / "studio/music").mkdir(parents=True)
+        (self.root / "studio/music/theme.mp3").write_bytes(b"theme")
+        write_json(self.root / "studio/music.json", {
+            "file": "studio/music/theme.mp3", "sha256": file_hash(self.root / "studio/music/theme.mp3"), "bpm": 120,
+            "title": "Theme", "author": "Tester", "source": "https://example.org/theme", "license": "CC0"})
+        detail = self.app.detail("example")
+        self.assertEqual(detail["music"], {"title": "Theme", "author": "Tester", "source": "https://example.org/theme",
+                                           "license": "CC0"})
+        self.assertEqual((row()["audio_current"], row()["audio_stale"]), (False, ["music"]))
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process):
+            with self.assertRaises(AppError) as before:
+                self.app.start("example", self.approval("ep_001"))
+            self.assertEqual(before.exception.code, "inputs_changed", "approved on a page without the music")
+            job = self.app.start("example", {**self.approval("ep_001"), "music_hash": detail["music_hash"]})
+        payload = json.loads(self.app.audio_processes[job["id"]][0].stdin.getvalue())
+        self.assertEqual(payload["music_hash"], detail["music_hash"])
+        # A file changed under its name is shown on the card and refuses the approval.
+        (self.root / "studio/music/theme.mp3").write_bytes(b"other")
+        self.assertEqual(self.app.detail("example")["music"]["code"], "music_changed")
+        with self.assertRaises(AppError) as broken:
+            self.app.start("example", {**self.approval("ep_002"), "music_hash": detail["music_hash"]})
+        self.assertEqual(broken.exception.code, "music_changed")
+
+    def stopped_recording(self, run_id, episode, provider):
+        path = manifest_path(self.root, run_id)
+        write_yaml(path, {"run_id": run_id, "kind": "episode_audio", "status": "blocked"})
+        write_json(path.parent / "inputs.json", {"episode_id": episode, "audio_generation": {"provider": provider}})
+
+    def test_a_stopped_elevenlabs_recording_resumed_without_a_free_place_waits_in_the_queue(self):
+        self.app.key = self.app.elevenlabs_key = "test-key"
+        write_json(self.root / "studio/audio.json", ELEVEN)
+        self.stopped_recording("run_stopped", "ep_004", "elevenlabs_tts")
+        self.stopped_recording("run_gemini", "ep_004", "openrouter_gemini_tts")
+        resume = {"action": "resume", "run_id": "run_stopped", "episode": "ep_004"}
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
+            jobs = [self.app.start("example", self.approval(f"ep_{n:03}")) for n in (1, 2, 3)]
+            queued = self.app.start("example", resume)
+            self.assertEqual((queued["queued"], queued["position"], launch.call_count), (True, 1, 3))
+            self.assertEqual(self.app.detail("example")["audio_queue"][0]["episode"], "ep_004")
+            self.assertEqual(self.app.start_queued(), [])
+            # Another route's resume is refused as before, however full ElevenLabs is.
+            with self.assertRaises(AppError) as full:
+                self.app.start("example", {"action": "resume", "run_id": "run_gemini"})
+            self.assertEqual(full.exception.code, "audio_capacity")
+            self.app.audio_processes[jobs[0]["id"]][0].poll.return_value = 0
+            self.assertEqual(self.app.start_queued(), [("example", "ep_004")])
+            self.assertEqual(launch.call_count, 4)
+        self.assertEqual(self.app.detail("example")["audio_queue"], [])
+        job_id, (process, _, episode) = list(self.app.audio_processes.items())[-1]
+        payload = json.loads(process.stdin.getvalue())
+        self.assertEqual((episode, payload["action"], payload["run_id"], payload["audio_job_id"]),
+                         ("ep_004", "resume", "run_stopped", job_id))
+        self.assertEqual(json.loads(audio_job_path(self.root, job_id).read_text())["provider"], "elevenlabs_tts")
+
+    def test_a_resume_with_a_free_place_starts_at_once_and_takes_its_row_out_of_the_queue(self):
+        self.app.elevenlabs_key = "test-key"
+        write_json(self.root / "studio/audio.json", ELEVEN)
+        self.stopped_recording("run_stopped", "ep_004", "elevenlabs_tts")
+        write_json(self.root / "studio/audio_queue.json", [{"episode": "ep_004", "queued_at": "2026-11-06T16:00:00+00:00",
+                                                            "data": {"action": "resume", "run_id": "run_stopped"}}])
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process):
+            job = self.app.start("example", {"action": "resume", "run_id": "run_stopped", "episode": "ep_004"})
+        self.assertEqual((job["status"], self.app.detail("example")["audio_queue"]), ("running", []))
 
     def test_stopping_one_remote_job_does_not_stop_its_neighbor(self):
         with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process):

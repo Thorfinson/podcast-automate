@@ -40,6 +40,16 @@ LIMITER_CEILING_DB = -2.0
 # is the IPTC digital source type for media a trained model generated. FFmpeg writes a key that has no ID3v2.3 frame
 # of its own as a TXXX frame named by the key; FFmpeg 9.0 writes "comment" so as well, not as a COMM frame.
 DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+# A podcast's music in the montage (music.py, D-189), in bars of the piece: alone for four bars before the first word,
+# then under the speech for two and out over two more; at a chapter change two bars between the chapters, the new
+# chapter's first word on the bar after them while the music fades under it over one; at the end in under the last
+# three bars of speech, up half a second after the last word, four bars on and out over two. Under speech it sits
+# 14 dB lower, alone 3 LU under the speech. The listening samples of 2026-11-08 (Geld ep_001), as the user chose them.
+MUSIC_INTRO_BARS, MUSIC_INTRO_UNDER_BARS, MUSIC_INTRO_FADE_BARS = 4, 2, 2
+MUSIC_CHAPTER_BARS = 2
+MUSIC_OUTRO_LEAD_BARS, MUSIC_OUTRO_ON_BARS, MUSIC_OUTRO_FADE_BARS = 3, 4, 2
+MUSIC_UNDER = 0.2
+MUSIC_BELOW_SPEECH_LU = 3.0
 
 
 def ai_marking(language, purpose):
@@ -237,9 +247,65 @@ def recording_units(script, units):
     return groups
 
 
+def loudness_of(path: Path) -> dict:
+    """loudnorm's measurement of ``path`` (input_i and the rest), every value finite."""
+    measurement = ffmpeg(["-i", str(path), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"])
+    blocks = re.findall(r'\{\s*"input_i".*?\}', measurement, flags=re.DOTALL)
+    if not blocks:
+        raise AppError("Lautheitsmessung fehlgeschlagen.", code="loudness_failed")
+    levels = json.loads(blocks[-1])
+    for key in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset"):
+        if not math.isfinite(float(levels[key])):
+            raise AppError("Audio ist zu kurz oder ungeeignet für die Lautheitsmessung.",
+                           code="loudness_failed")
+    return levels
+
+
+def with_music(work: Path, speech: Path, music: dict, places: list[dict], speech_loudness: float) -> tuple[Path, float]:
+    """``speech`` with the music under it at ``places`` (the MUSIC_* rules), and the music's gain in dB. Each place is
+    its own input of the piece, looped as often as it is short, so no input is read twice."""
+    bar, path = music["bar_seconds"], music["path"]
+    gain = speech_loudness - MUSIC_BELOW_SPEECH_LU - float(loudness_of(path)["input_i"])
+    length = float(audio_info(path)["format"]["duration"])
+    under = MUSIC_UNDER
+    inputs, chains = [], []
+    for number, place in enumerate(places):
+        if place["kind"] == "opening":
+            solo = MUSIC_INTRO_BARS * bar
+            begin, span = 0.0, (MUSIC_INTRO_BARS + MUSIC_INTRO_UNDER_BARS + MUSIC_INTRO_FADE_BARS) * bar
+            envelope = (f"if(lt(t,{solo - 0.5:.3f}),1,if(lt(t,{solo:.3f}),1-{1 - under}*(t-{solo - 0.5:.3f})/0.5,{under}))")
+            fades = f"afade=t=out:st={solo + MUSIC_INTRO_UNDER_BARS * bar:.3f}:d={MUSIC_INTRO_FADE_BARS * bar:.3f}"
+        elif place["kind"] == "chapter":
+            alone = MUSIC_CHAPTER_BARS * bar
+            begin, span = music["chapter_from"], alone + bar
+            envelope = (f"if(lt(t,{alone - 0.5:.3f}),1,if(lt(t,{alone:.3f}),1-{1 - under}*(t-{alone - 0.5:.3f})/0.5,"
+                        f"{under}))")
+            fades = f"afade=t=in:d=0.05,afade=t=out:st={alone:.3f}:d={bar:.3f}"
+        else:
+            lead = place["speech_end_seconds"] - place["start_seconds"]
+            begin, span = 0.0, lead + (MUSIC_OUTRO_ON_BARS + MUSIC_OUTRO_FADE_BARS) * bar
+            rise = min(1.0, lead) or 0.001
+            envelope = (f"if(lt(t,{rise:.3f}),{under}*t/{rise:.3f},if(lt(t,{lead + 0.5:.3f}),{under},"
+                        f"if(lt(t,{lead + 1.5:.3f}),{under}+{1 - under}*(t-{lead + 0.5:.3f}),1)))")
+            fades = f"afade=t=out:st={lead + MUSIC_OUTRO_ON_BARS * bar:.3f}:d={MUSIC_OUTRO_FADE_BARS * bar:.3f}"
+        inputs += ["-stream_loop", str(max(0, math.ceil((begin + span) / length) - 1)), "-i", str(path)]
+        delay = round(place["start_seconds"] * 1000)
+        chains.append(f"[{number}:a]aformat=sample_rates=44100:channel_layouts=stereo,atrim={begin:.3f}:{begin + span:.3f},"
+                      f"asetpts=PTS-STARTPTS,volume={gain:.2f}dB,volume='{envelope}':eval=frame,{fades},"
+                      f"adelay=delays={delay}:all=1[m{number}]")
+    beds = "".join(f"[m{number}]" for number in range(len(places)))
+    graph = (";".join(chains) + f";{beds}amix=inputs={len(places)}:normalize=0:duration=longest:dropout_transition=0[bed];"
+             f"[{len(places)}:a][bed]amix=inputs=2:normalize=0:duration=first:dropout_transition=0[out]")
+    combined = work / "with_music.wav"
+    # Float samples: the sum may pass full scale before the loudness pass and its limiter bring it back.
+    ffmpeg([*inputs, "-i", str(speech), "-filter_complex", graph, "-map", "[out]", "-ar", "44100", "-ac", "2",
+            "-c:a", "pcm_f32le", str(combined)])
+    return combined, gain
+
+
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
              *, max_seconds: float | None = None, language: str = "de-DE", labels: dict | None = None,
-             pauses=None, progress=None, trim_pauses=(), units=None, tempo=1.0) -> list[Path]:
+             pauses=None, progress=None, trim_pauses=(), units=None, tempo=1.0, music=None) -> list[Path]:
     """Mix, measure and encode one episode into one MP3; ``progress(step, done, total)`` reports each step.
 
     ``paths`` holds one recording per segment, or with ``units`` one per passage of several segments (a two-host
@@ -254,7 +320,11 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
     as recorded.
 
     ``tempo`` under 1 slows every recording with its pitch kept (FFmpeg atempo, LanguagePace) before the pauses go in,
-    so the pauses keep their length and the timeline and chapters are measured on the slowed audio."""
+    so the pauses keep their length and the timeline and chapters are measured on the slowed audio.
+
+    ``music`` (music.montage_music) plays the podcast's piece by the MUSIC_* rules: its bars before the first word
+    and at every chapter change go into the speech track as silence, so the timeline stays measured; a chapter mark
+    begins with its music, the first at 0:00, and the last ends with the music after the last word."""
     if not 0.8 <= tempo <= 1.0:
         raise AppError("Das Sprechtempo liegt zwischen 80 und 100 Prozent.", code="invalid_audio")
     report = progress or (lambda step, done=0, total=0: None)
@@ -262,13 +332,18 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
     if len(paths) != len(groups):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
     output.mkdir(parents=True, exist_ok=True)
-    timeline = []
+    timeline, places = [], []
+    bar = music["bar_seconds"] if music else 0.0
     with tempfile.TemporaryDirectory(prefix="mix-", dir=output) as temporary:
         work = Path(temporary)
         mixed = work / "mixed.wav"
         position = 0
         with wave.open(str(mixed), "wb") as target:
             target.setparams((2, 2, 44100, 0, "NONE", "not compressed"))
+            if music:
+                position = round(MUSIC_INTRO_BARS * bar * 44100)
+                target.writeframesraw(b"\0" * (position * 4))
+                places.append({"kind": "opening", "start_seconds": 0.0, "speech_seconds": position / 44100})
             for number, (group, source) in enumerate(zip(groups, paths, strict=True)):
                 members = [script.segments[index] for index in group]
                 name = members[0].segment_id + (f" bis {members[-1].segment_id}" if len(members) > 1 else "")
@@ -296,6 +371,21 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                                        code="invalid_audio")
                 pause_ms, reason = applied_pause(script, group[-1], pauses)
                 pause = round(pause_ms * 44100 / 1000)
+                if music and reason == "chapter_break":
+                    # Half the pause, then the music's bars; the new chapter's first word on the bar after them.
+                    half, bars = pause // 2, round(MUSIC_CHAPTER_BARS * bar * 44100)
+                    places.append({"kind": "chapter", "chapter_id": script.segments[group[-1] + 1].chapter_id,
+                                   "start_seconds": (start + frames + half) / 44100,
+                                   "speech_seconds": (start + frames + half + bars) / 44100})
+                    pause = half + bars
+                    pause_ms = round(pause * 1000 / 44100)
+                elif music and reason == "episode_end":
+                    # The ending comes in under the last bars of speech and plays on after the last word.
+                    places.append({"kind": "ending", "start_seconds": max(
+                                       0.0, (start + frames) / 44100 - MUSIC_OUTRO_LEAD_BARS * bar),
+                                   "speech_end_seconds": (start + frames) / 44100})
+                    pause = max(pause, round((MUSIC_OUTRO_ON_BARS + MUSIC_OUTRO_FADE_BARS) * bar * 44100))
+                    pause_ms = round(pause * 1000 / 44100)
                 position += frames + pause
                 if max_seconds is not None and position / 44100 > max_seconds:
                     raise AppError("Die Montage überschreitet die erlaubte Länge.", code="duration_exceeded",
@@ -314,30 +404,31 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
                     **({"trimmed_silence_ms": round(trimmed * 1000 / 44100)} if trimmed else {}),
                 })
         report("loudness", len(paths), len(paths))
-        measurement = ffmpeg([
-            "-i", str(mixed), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
-            "-f", "null", "-",
-        ])
-        blocks = re.findall(r'\{\s*"input_i".*?\}', measurement, flags=re.DOTALL)
-        if not blocks:
-            raise AppError("Lautheitsmessung fehlgeschlagen.", code="loudness_failed")
-        levels = json.loads(blocks[-1])
-        for key in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset"):
-            if not math.isfinite(float(levels[key])):
-                raise AppError("Audio ist zu kurz oder ungeeignet für die Lautheitsmessung.",
-                               code="loudness_failed")
+        levels = loudness_of(mixed)
+        music_gain = None
+        if music:
+            # The music is set against the speech's loudness; the loudness pass then measures both together.
+            mixed, music_gain = with_music(work, mixed, music, places, float(levels["input_i"]))
+            levels = loudness_of(mixed)
         gain = round(-16 - float(levels["input_i"]), 2)
         loudness = (f"volume={gain}dB,aresample=176400,"
                     f"alimiter=limit={10 ** (LIMITER_CEILING_DB / 20):.4f}:level=false:latency=true,"
                     "aresample=44100,ebur128=peak=true:framelog=quiet")
         chapters = []
-        for chapter in script.chapters:
+        # With music a chapter begins with its music, the first at 0:00, and each ends where the next begins.
+        bumpers = {place["chapter_id"]: place["start_seconds"] for place in places if place["kind"] == "chapter"}
+        for number, chapter in enumerate(script.chapters):
             entries = [row for row in timeline if row["chapter_id"] == chapter.chapter_id]
             chapters.append({
                 "chapter_id": chapter.chapter_id, "title": chapter.title,
-                "start_seconds": entries[0]["start_seconds"],
+                "start_seconds": (0.0 if music and number == 0 else
+                                  bumpers.get(chapter.chapter_id, entries[0]["start_seconds"])),
                 "end_seconds": entries[-1]["end_seconds"],
             })
+        if music:
+            for current, following in zip(chapters, chapters[1:]):
+                current["end_seconds"] = following["start_seconds"]
+            chapters[-1]["end_seconds"] = position / 44100
         metadata = work / "chapters.ffmetadata"
         atomic_text(metadata, chapter_metadata(script.title, chapters))
         encoded = work / "audio.mp3"
@@ -364,6 +455,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         # 1.1: rows of passages (segment_ids, speaker_ids) instead of segments.
         "schema_version": "1.0" if units is None else "1.1", "segments": timeline,
         "pcm_duration_seconds": position / 44100, "mp3_duration_seconds": duration,
+        **({"music": places} if music else {}),
     })
     write_json(output / "audio_report.json", {
         "purpose": script.purpose, "duration_seconds": duration,
@@ -378,6 +470,7 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
         "trimmed_silence_seconds": round(sum(row.get("trimmed_silence_ms", 0) for row in timeline) / 1000, 3),
         "chapters_embedded": bool(chapters) and [c["title"] for c in written_chapters] == [c["title"] for c in chapters],
         "ai_marking": marking, "ai_marking_embedded": all(tags.get(key) == value for key, value in marking.items()),
+        **({"music": {**music["credit"], "gain_db": round(music_gain, 2), "places": len(places)}} if music else {}),
     })
     notice = wording(language, "probe_notice" if script.purpose == "technical_probe" else "first_version")
     lines = [f"# {script.title}", "", notice, ""]

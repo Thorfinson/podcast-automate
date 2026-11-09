@@ -21,11 +21,11 @@ from podcast_automate.storage import read_yaml, write_json, write_yaml
 from podcast_automate.errors import AppError
 from podcast_automate.models import ResearchLimits
 from podcast_automate.scripting import STARTING_RATES, measured_rate, speaking_rate
-from podcast_automate.story_agent import (ALLOWED_TOOLS, TARGET_SHARE, CritiquePoint, CritiqueScores, EarlierPoint,
-                                          OrientationCheck, OrientationItem, OrientationReview, OrientationSheet,
-                                          Scale, StoryCritique, draft_errors, earlier_episodes, echo_errors,
-                                          planned_entry, prepare, request_critique, run_agent, serve_critiques,
-                                          session_command, session_files, session_timeout, task_text, used_documents)
+from podcast_automate.story_agent import (ALLOWED_TOOLS, TARGET_SHARE, CritiqueScores, OrientationCheck,
+                                          OrientationItem, OrientationReview, OrientationSheet, Scale, StoryCritique,
+                                          draft_errors, earlier_episodes, echo_errors, planned_entry, prepare,
+                                          run_agent, session_command, session_files, session_timeout, task_text,
+                                          used_documents)
 from tests.script_fixtures import ScriptProjectCase, fake_agent
 
 # A stand-in for a session on an Anthropic key: it records the key, the dropped login token and the money cap it was
@@ -163,6 +163,64 @@ class StoryAgentChecksTests(unittest.TestCase):
                                   language="de-DE")
         self.assertIn("[Regesta diplomatica](https://e.org/regesta)", notes)
 
+    def test_the_corpus_adds_the_starting_library_the_research_left_out(self):
+        """2026-11-08: the case Geld verstehen S1 ep_003 needed (a 14-year-old's 2,630 euros of Robux) stood only in
+        the season's starting library, which the agent could neither search nor cite. The corpus now holds each library
+        document the research did not take in, once."""
+        from podcast_automate import story_agent
+
+        def document(source_id, text):
+            return SimpleNamespace(id=source_id, title=source_id.upper(), sections=[SimpleNamespace(id="sec_1", text=text)])
+        root = self.folder.resolve()
+        run_id = "run_20261104_000000_000000_abcdef12"
+        (root / "runs" / run_id).mkdir(parents=True)
+        self.assertEqual(story_agent.library_documents(root, run_id), [], "a run begun without a library")
+        write_json(root / "runs" / run_id / "research_request.json", {"seed_corpus": "run_lib"})
+        case = "Ein 14-Jähriger kaufte Robux für 2.630 Euro."
+        library = {"https://a.org/studie": document("src_a", "Die ältere Kopie."),
+                   "https://vz.de/roblox": document("src_r", case), "https://www.vz.de/roblox": document("src_r", case)}
+        research = SimpleNamespace(sources=[document("src_a", "Eine Studie über Lootboxen.")])
+        with patch("podcast_automate.sources.load_library", return_value=library) as loaded, \
+             patch("podcast_automate.scripting.load_research", return_value=(run_id, None, None, research, None)), \
+             patch("podcast_automate.storage.load_project"):
+            sections = story_agent.corpus_sections(root)
+            found = story_agent.search(root, "Robux")
+            told = story_agent.read(root, "src_r#sec_1")
+        self.assertEqual(loaded.call_args.args[1], "run_lib")
+        self.assertEqual(sections, [("src_a#sec_1", "SRC_A", "Eine Studie über Lootboxen."), ("src_r#sec_1", "SRC_R", case)],
+                         "the research's copy wins, and a document two addresses share counts once")
+        self.assertEqual([hit["reference"] for hit in found["hits"]], ["src_r#sec_1"])
+        self.assertEqual(told["text"], case)
+        write_json(root / "runs" / run_id / "research_request.json", {"seed_corpus": True})
+        self.assertEqual(story_agent.library_documents(root, run_id), [], "a flag is no library")
+
+    def test_the_editor_hears_the_script_as_the_briefs_audience_with_every_host(self):
+        """2026-11-08: the editor heard every script as "a curious adult listener" of two hosts and rated a chain of
+        studies told to 14- to 16-year-olds 8/8/7. It now hears the brief's audience, with the hosts by name and part,
+        and the agent writes for that audience."""
+        from podcast_automate.prompts import instructions
+        from podcast_automate.story_agent import critique_input
+        config = SimpleNamespace(audience_level="Jugendliche zwischen 14 und 16 Jahren.",
+                                 host_names={"host_a": "Mara", "host_b": "Leo"},
+                                 third_host=SimpleNamespace(name="Ea-nasir", role="Ein Kupferhändler aus Ur."))
+        script = EpisodeScript(episode_id="ep_001", title="Probe", purpose="deep_dive",
+                               chapters=[Chapter(chapter_id="s1", title="Eins")],
+                               segments=[segment("a", "s1", "host_c", "Wo ist das Silber?")])
+        given = critique_input(config, script)
+        self.assertEqual(given["audience"], "Jugendliche zwischen 14 und 16 Jahren.")
+        self.assertEqual({role: host["name"] for role, host in given["hosts"].items()},
+                         {"host_a": "Mara", "host_b": "Leo", "host_c": "Ea-nasir"})
+        self.assertEqual(given["hosts"]["host_c"]["part"], "Ein Kupferhändler aus Ur.")
+        self.assertEqual(given["script"], "[a] host_c: Wo ist das Silber?")
+        self.assertNotIn("audience", critique_input(SimpleNamespace(audience_level=""), script))
+        rubric = instructions("story_critique")
+        self.assertIn("listener of the audience below", rubric)
+        self.assertNotIn("adult", rubric)
+        self.assertNotIn("two people", rubric)
+        task = task_text("de-DE", 20)
+        self.assertIn("for the listeners brief.audience\ndescribes", task)
+        self.assertNotIn("curious adults", task)
+
     def test_a_story_run_keeps_only_review_verdicts_given_with_the_corpus_rule(self):
         from podcast_automate.script_pipeline import saved_verdict_stands
         passed = ScriptReview(issues=[], limitations=[])
@@ -227,6 +285,23 @@ class StoryAgentChecksTests(unittest.TestCase):
         clarity = ScriptIssue(category="clarity", segment_ids=[], reason="Unklar.")
         self.assertEqual(repaired(ScriptReview(issues=[length], limitations=[])), list("abcdef"))
         self.assertEqual(repaired(ScriptReview(issues=[grounding, clarity], limitations=[])), list("bcd"))
+
+    def test_a_repair_that_also_cites_sections_in_an_unnamed_segment_passes_with_that_segment_unchanged(self):
+        """Asimov v2 ep_008, 2026-11-04: twelve repairs were refused because each copied the review's sections into
+        the empty source_refs of unnamed segments (narration.unnamed_refs_kept)."""
+        draft = EpisodeScript(episode_id="ep_001", title="Probe", purpose="deep_dive",
+                              chapters=[Chapter(chapter_id="s1", title="Eins")],
+                              segments=[segment(key, "s1", "host_a" if index % 2 == 0 else "host_b", f"Satz {key}.")
+                                        for index, key in enumerate("abcdef")])
+        answer = draft.model_copy(update={"segments": [
+            s.model_copy(update={"text": "Satz c, belegt."}) if s.segment_id == "c" else
+            s.model_copy(update={"source_refs": ["src_a#sec_1"]}) if s.segment_id == "f" else s for s in draft.segments]})
+        run = SimpleNamespace(work=self.folder, root=self.folder, invoke=lambda *args, **kwargs: answer,
+                              script_errors=lambda script, planned: [])
+        grounding = ScriptIssue(category="grounding", segment_ids=["c"], reason="Kein Beleg.")
+        with patch("podcast_automate.story_agent.material", return_value=({"sections": []}, {})):
+            repaired = ScriptRun.story_repair(run, None, entry(), draft, ScriptReview(issues=[grounding], limitations=[]))
+        self.assertEqual((repaired.segments[2].text, repaired.segments[5]), ("Satz c, belegt.", draft.segments[5]))
 
     def test_the_task_and_the_session_offer_only_the_folder_and_its_commands(self):
         text = task_text("de-DE", 12.5, 3)
@@ -360,107 +435,6 @@ class StoryAgentChecksTests(unittest.TestCase):
                          repaired.model_dump())
 
 
-class StoryCritiqueTests(unittest.TestCase):
-    """D-187: all five critiques of 2026-11-01 named exactly the eight points the prompt allowed, whatever their scores,
-    and each began afresh, so a passage the agent had fixed made room for the next weakest one. The editor now names
-    as many points as there are, each with its severity, and from the second critique on gets the points still open
-    and the segments changed since; only an open blocking point, a worse one and a new one in changed segments block."""
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.folder = Path(self.temp.name)
-        write_json(self.folder / "context.json", {"critiques": 4})
-        self.answers, self.asked = [], []
-
-        def invoke(prompt, schema, version):
-            self.asked.append(json.loads(prompt.splitlines()[-1]))
-            return self.answers.pop(0)
-        self.pipeline = SimpleNamespace(invoke=invoke)
-
-    @staticmethod
-    def draft(**texts):
-        lines = {key: texts.get(key, f"Satz {key}.") for key in "abcd"}
-        return EpisodeScript(episode_id="ep_001", title="Probe", purpose="deep_dive",
-                             chapters=[Chapter(chapter_id="s1", title="Eins")],
-                             segments=[segment(f"ep_001_s1_{key}", "s1", "host_a" if key in "ac" else "host_b", text)
-                                       for key, text in lines.items()])
-
-    @staticmethod
-    def critique(scores, earlier=(), points=()):
-        scale = lambda score: Scale(score=score, reason="Weil.")  # noqa: E731
-        return StoryCritique(scores=CritiqueScores(tension=scale(scores[0]), interest=scale(scores[1]),
-                                                   storytelling=scale(scores[2])),
-                             earlier=[EarlierPoint(point=number, status=status, note="So.")
-                                      for number, status in earlier],
-                             keeps_from_10=[CritiquePoint(severity=severity, scale="interest", segment_ids=ids,
-                                                          problem="Zäh.", fix="Kürzen.") for severity, ids in points])
-
-    def ask(self, draft, answer, replies=None):
-        """critique.py as the session runs it, with the run answering while it waits."""
-        (self.folder / "draft.json").write_text(draft.model_dump_json(), encoding="utf-8")
-        if replies:
-            write_json(self.folder / "replies.json", replies)
-        self.answers.append(answer)
-        with patch("podcast_automate.story_agent.time.sleep", side_effect=lambda _: serve_critiques(self.pipeline,
-                                                                                                 self.folder)):
-            return request_critique(self.folder, "draft.json")
-
-    def test_points_block_by_severity_until_the_editor_finds_them_resolved(self):
-        first = self.ask(self.draft(), self.critique((8, 7, 8), points=[("severe", ["s1_b"]),
-                                                                        ("minor", ["ep_001_s1_d"])]))
-        self.assertEqual(set(self.asked[0]), {"script"})
-        self.assertEqual([(p["point"], p["blocking"]) for p in first["open_points"]], [(1, True), (2, True)])
-        self.assertEqual((first["severe_open"], first["ready"]), (1, False))
-        # The agent rewrote c only and answers point 2; the editor keeps point 1 open, skips point 2 and finds two
-        # severe ones: in c, which changed (named in short, as the critics of 2026-11-01 did), and in a, which it read
-        # before.
-        second = self.ask(self.draft(c="Neu c."), self.critique((8, 8, 8), earlier=[(1, "open")],
-                                                                points=[("severe", ["s1_c"]),
-                                                                        ("severe", ["ep_001_s1_a"])]),
-                          replies={"2": "Bleibt, die Zahl trägt die Wende."})
-        sent = self.asked[1]
-        self.assertEqual([(p["point"], p["segment_ids"]) for p in sent["earlier_points"]],
-                         [(1, ["s1_b"]), (2, ["ep_001_s1_d"])])
-        self.assertNotIn("blocking", sent["earlier_points"][0])
-        self.assertEqual(sent["changed_segments"], ["ep_001_s1_c"])
-        self.assertEqual(sent["replies"], {"2": "Bleibt, die Zahl trägt die Wende."})
-        self.assertFalse((self.folder / "replies.json").exists(), "the replies answer one critique only")
-        self.assertEqual([(p["status"], p["blocking"]) for p in second["earlier"]], [("open", True), ("open", True)])
-        self.assertEqual([p["blocking"] for p in second["keeps_from_10"]], [True, False])
-        self.assertEqual([(p["point"], p["segment_ids"]) for p in second["open_points"]],
-                         [(1, ["s1_b"]), (2, ["ep_001_s1_d"]), (3, ["s1_c"]), (4, ["ep_001_s1_a"])])
-        self.assertEqual((second["severe_open"], second["ready"]), (2, False), "8 throughout is not enough")
-        # Both blocking severe points resolved: a 7 still keeps it from ready, the severe advice in a does not.
-        third = self.ask(self.draft(b="Neu b.", c="Neu c, kürzer."),
-                         self.critique((8, 7, 9), earlier=[(1, "resolved"), (2, "open"), (3, "resolved"), (4, "open")]))
-        self.assertEqual(self.asked[2]["changed_segments"], ["ep_001_s1_b", "ep_001_s1_c"])
-        self.assertEqual([(p["segment_ids"], p["blocking"]) for p in third["open_points"]],
-                         [(["ep_001_s1_d"], True), (["ep_001_s1_a"], False)])
-        self.assertEqual((third["severe_open"], third["ready"]), (0, False))
-        fourth = self.ask(self.draft(b="Neu b.", c="Neu c, kürzer."),
-                          self.critique((8, 8, 9), earlier=[(1, "open"), (2, "worse")]))
-        self.assertEqual(self.asked[3]["changed_segments"], [])
-        # Advice that got worse blocks, though nothing changed where it stands; this one is severe.
-        self.assertEqual([p["blocking"] for p in fourth["open_points"]], [True, True])
-        self.assertEqual((fourth["severe_open"], fourth["ready"]), (1, False))
-        self.assertEqual(self.ask(self.draft(), self.critique((9, 9, 9)))["refused"], "critique.py runs at most 4 times.")
-
-    def test_a_revision_blocks_only_where_it_changed_the_published_episode(self):
-        (self.folder / "published.json").write_text(self.draft().model_dump_json(), encoding="utf-8")
-        answer = self.ask(self.draft(b="Neu b."), self.critique((8, 8, 8), points=[("severe", ["ep_001_s1_b"]),
-                                                                                   ("severe", ["ep_001_s1_a"])]))
-        self.assertEqual(self.asked[0]["changed_segments"], ["ep_001_s1_b"])
-        self.assertEqual([p["blocking"] for p in answer["open_points"]], [True, False])
-        self.assertEqual((answer["severe_open"], answer["ready"]), (1, False))
-
-    def test_unparsable_replies_cost_no_critique(self):
-        (self.folder / "draft.json").write_text(self.draft().model_dump_json(), encoding="utf-8")
-        (self.folder / "replies.json").write_text("{1: nein", encoding="utf-8")
-        self.assertIn("replies.json does not parse", request_critique(self.folder, "draft.json")["error"])
-        self.assertFalse((self.folder / "requests" / "critique_1.json").exists())
-
-
 class SpeakingRateTests(unittest.TestCase):
     """D-184: a new script run writes and checks its lengths at the words a minute its voices speak."""
 
@@ -565,9 +539,7 @@ class StoryRunTests(ScriptProjectCase):
         # The agent's commands ran: the check passed and the critique came back from a call of the run.
         log = json.loads((folder / "agent_log.json").read_text(encoding="utf-8"))
         self.assertTrue(json.loads(log["check"])["passed"], log["check"])
-        critique = json.loads(log["critique"])
-        self.assertEqual(critique["scores"]["tension"]["score"], 8)
-        self.assertEqual((critique["open_points"], critique["ready"]), ([], True))
+        self.assertEqual(json.loads(log["critique"])["scores"]["tension"]["score"], 8)
         self.assertIn(StoryCritique, self.calls)
         # The review knows that a story agent's segments may cite corpus sections (D-182).
         self.assertTrue(self.reviews)
@@ -591,8 +563,7 @@ class StoryRunTests(ScriptProjectCase):
         self.assertTrue((episode / "story_plan.md").is_file())
         self.assertFalse((episode / "teaching_plan.yaml").exists())
         report = read_yaml(self.root / "reports" / "script_quality.yaml")["episodes"]["ep_001"]
-        self.assertEqual(report["story_agent"]["critiques"],
-                         [{"tension": 8, "interest": 8, "storytelling": 8, "severe_open": 0}])
+        self.assertEqual(report["story_agent"]["critiques"], [{"tension": 8, "interest": 8, "storytelling": 8}])
         self.assertEqual(report["story_agent"]["reported_cost_usd"], 1.5)
         self.assertNotIn("dialogue_polish", report)
         # The recording takes the agent's episode as reviewed: it has a story stage instead of writing and polishing
@@ -697,6 +668,66 @@ class StoryRunTests(ScriptProjectCase):
         self.assertIn("at most 2 times", task)
         self.assertEqual(json.loads((self.root / "episodes" / "ep_001" / "latest.json").read_text(encoding="utf-8"))
                          ["run_id"], revised.run_id)
+
+    def test_a_revision_may_be_given_its_own_length(self):
+        """2026-11-08: Geld verstehen ep_003 ran 55 minutes of study reports and was to be retold around one case in
+        about 38, but a revision had to keep 95 % of its plan. Its own minutes now set the word budget, the task, the
+        checks and the published episode's plan; the approved outline stays as it was."""
+        cli = fake_agent(self.root.parent)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model), \
+             patch("podcast_automate.claude_code.claude_command", return_value=cli):
+            first = run_script(self.root)
+            for wrong in (5, 61, True):
+                with self.assertRaises(AppError) as refused:
+                    run_script(self.root, revise="ep_001", feedback="Kürzer.", minutes=wrong)
+                self.assertEqual(refused.exception.code, "invalid_revision", wrong)
+            with self.assertRaises(AppError) as refused:
+                run_script(self.root, minutes=10)
+            self.assertEqual(refused.exception.code, "invalid_revision", "minutes belong to a revision")
+            # The fixture's own script is a few words long; without it the fake agent writes to its word budget.
+            (self.root.parent / "fake_draft.json").unlink(missing_ok=True)
+            revised = run_script(self.root, revise="ep_001", feedback="Um einen Fall herum erzählen.", minutes=10)
+        self.assertEqual(revised.status, "completed", {k: v.error for k, v in revised.stages.items() if v.error})
+        work = self.root / "runs" / revised.run_id
+        folder = work / "story" / "ep_001"
+        context = json.loads((folder / "context.json").read_text(encoding="utf-8"))
+        self.assertEqual(context["length"]["target_words"], math.ceil(10 * context["rate"]))
+        self.assertIn("about 10 minutes", (folder / "TASK.md").read_text(encoding="utf-8"))
+        self.assertEqual(json.loads((folder / "entry.json").read_text(encoding="utf-8"))["target_minutes"], 10)
+        self.assertEqual(read_yaml(self.root / "episodes" / "ep_001" / "episode_plan.yaml")["target_minutes"], 10)
+        self.assertEqual((work / "series_plan.json").read_bytes(),
+                         (self.root / "runs" / first.run_id / "series_plan.json").read_bytes())
+
+    def test_a_new_episode_of_an_approved_outline_may_be_given_its_own_length(self):
+        """2026-11-08: Geld verstehen's outline planned its remaining eleven episodes at 44 to 48 minutes after the
+        user had retold three of them in 30 to 38. A new episode from the outline may be given its own minutes (D-192):
+        they set the word budget, the task, the checks and the published episode's plan, and are bound in the run's
+        inputs; the run copies the outline byte for byte, so the episode counts as written; a run without them keeps
+        the inputs it always had."""
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model):
+            planned = run_script(self.root, plan_only=True)
+        work = self.root / "runs" / planned.run_id
+        write_json(work / "plan_approval.json", {"plan_hash": outline_hash(work), "approved_at": "2026-11-01T00:00:00+00:00"})
+        (self.root.parent / "fake_draft.json").unlink(missing_ok=True)
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model), \
+             patch("podcast_automate.claude_code.claude_command", return_value=fake_agent(self.root.parent)):
+            with self.assertRaises(AppError) as refused:
+                run_script(self.root, episode="ep_001", outline_run=planned.run_id, minutes=61)
+            self.assertEqual(refused.exception.code, "invalid_revision")
+            written = run_script(self.root, episode="ep_001", outline_run=planned.run_id, minutes=10)
+        self.assertEqual(written.status, "completed", {k: v.error for k, v in written.stages.items() if v.error})
+        run = self.root / "runs" / written.run_id
+        folder = run / "story" / "ep_001"
+        context = json.loads((folder / "context.json").read_text(encoding="utf-8"))
+        self.assertEqual(context["length"]["target_words"], math.ceil(10 * context["rate"]))
+        self.assertIn("about 10 minutes", (folder / "TASK.md").read_text(encoding="utf-8"))
+        self.assertNotIn("revision", json.loads((folder / "material.json").read_text(encoding="utf-8")))
+        self.assertEqual(json.loads((folder / "entry.json").read_text(encoding="utf-8"))["target_minutes"], 10)
+        self.assertEqual(read_yaml(self.root / "episodes" / "ep_001" / "episode_plan.yaml")["target_minutes"], 10)
+        self.assertEqual(json.loads((run / "inputs.json").read_text(encoding="utf-8"))["episode_minutes"], 10)
+        self.assertEqual((run / "series_plan.json").read_bytes(), (work / "series_plan.json").read_bytes())
+        self.assertEqual(outline_episodes(self.root, planned.run_id)[0]["run_id"], written.run_id)
+        self.assertNotIn("episode_minutes", json.loads((work / "inputs.json").read_text(encoding="utf-8")))
 
     def test_the_budget_counts_the_story_stage_instead_of_writing_narration_and_polishing(self):
         # Teaching: story material, orientation sheet and its check; story: the session and a critique; review: the

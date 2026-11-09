@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-03
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -287,7 +287,7 @@ If an address refuses the download (HTTP 401, 402, 403, 451), answers with a bot
 - The import then asks OpenAlex, Unpaywall, Semantic Scholar, Europe PMC and CORE in turn for the same work until a copy reads (`sources.open_access_copy`). OpenAlex is asked via the DOI in the address, otherwise only via an exactly identical title. The first readable copy is read, PDF files before full-text pages of PubMed Central or Europe PMC; landing pages with only an abstract stay out.
 - The copy keeps the original address as its identity; `final_url` and the reliability note name the service and where it was read. It takes no further place in the source limit.
 - Europe PMC supplies full texts of free articles as JATS XML, even where PubMed Central shows a captcha.
-- Unpaywall is asked only with a contact address (`PLA_UNPAYWALL_EMAIL`), CORE only with a free key from core.ac.uk, stored under **„CORE-Key“** on the Studio's settings page or set as `PLA_CORE_API_KEY`; set the variables before starting the Studio ([Environment variables](CONFIGURATION.md#environment-variables)).
+- Unpaywall is asked only with a contact address, given under **„Kontaktadresse für Unpaywall“** on the Studio's settings page (since 2026-11-03; read by each new job's worker) or set as `PLA_UNPAYWALL_EMAIL`; CORE only with a free key from core.ac.uk, stored under **„CORE-Key“** on the Studio's settings page or set as `PLA_CORE_API_KEY`. Set the variables before starting the Studio ([Environment variables](CONFIGURATION.md#environment-variables)).
 - CORE allows about 1,000 requests a day with the free key: all runs count their CORE searches together in `~/.podcast-automate/core_usage.json` (UTC day, limit `PLA_CORE_DAILY_LIMIT`, default 1000, `sources.CORE_DAILY_LIMIT`), and CORE is skipped for the rest of a used-up day (`sources.reserve_core_call`). The research page shows the status under „Fehlende Werke“ (missing works).
 - The first search and every sub-question's web searches also name open archives per field (`prompts/open_archives.txt`: arXiv, OpenReview, ACL Anthology, PsyArXiv, SocArXiv, OSF, RePEc, HAL, Zenodo, CORE, BASE, Europe PMC, OAPEN, DOAB, PhilArchive, Internet Archive Scholar, Project Gutenberg, data portals) and exclude shadow libraries.
 - A work no source releases freely can be obtained through a library, interlibrary loan, subito or purchase and uploaded under „Fehlende Werke“ (`provided_works`, [Missing works](STUDIO.md#missing-works)). With its reference (`citation`) it counts as a primary work, not a note, also as independent evidence of an empirical test. It is read with the book limits ([Download and import limits](#download-and-import-limits)) and imported at the next step (`QuestionResearch.adopt_provided_works`), and the questions it was uploaded for are tried again.

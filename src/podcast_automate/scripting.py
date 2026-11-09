@@ -29,7 +29,7 @@ from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, script_metrics  # noqa: F
 from .script_checks import (MAX_PLAN_REPAIRS, checked_series_plan, episode_sources, load_plan_checkpoint,  # noqa: F401
                             outline_hash, plan_dependency_conflicts, plan_failure_message,
                             script_review_signature, validate_plan, validate_script)
-from .script_models import SeriesPlan
+from .script_models import MAX_EPISODE_MINUTES, EpisodePlan, SeriesPlan
 from .script_pipeline import ScriptRun  # noqa: F401
 from .series_review import SERIES_REVIEW_VERSION, SeriesReview, reviewed_scripts, series_issues, series_report
 from .story_agent import story_entry
@@ -55,6 +55,21 @@ PROMPT_STAGES = ("writing", "narration", "polishing")
 STARTING_RATES = {"elevenlabs_tts": 150, "google_gemini_tts": 148}
 # A measured rate outside this range is no speech rate (a broken export, a script that is not the recording's).
 PLAUSIBLE_RATES = (90, 220)
+# The lengths a revision may be given instead of its plan's (revision_inputs), in minutes: the narration lab's ten-minute
+# episodes up to the longest an episode may be planned.
+REVISION_MINUTES = (10, MAX_EPISODE_MINUTES)
+
+
+def revision_minutes(minutes):
+    """``minutes`` as a revision's or a new episode's own length (D-190, D-192), or None for the plan's; outside
+    REVISION_MINUTES it is refused."""
+    if minutes is None:
+        return None
+    low, high = REVISION_MINUTES
+    if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or not low <= minutes <= high:
+        raise AppError(f"Die Länge einer Folge liegt zwischen {low} und {high} Minuten.",
+                       code="invalid_revision", status="blocked")
+    return float(minutes)
 
 
 def local_source_paths(root: Path, config):
@@ -168,11 +183,12 @@ def resumed_run(root, run_id):
             "execution": ExecutionChoice.model_validate(request.get("execution", {})), "episode": request["episode"],
             "saved_inputs": saved_inputs, "revision": saved_inputs.get("revision"),
             "series_review_version": series_review_version, "inherited_plan": None, "inherited_knowledge": None,
-            "speaking_rate": saved_inputs.get("speaking_rate")}
+            "speaking_rate": saved_inputs.get("speaking_rate"), "episode_minutes": saved_inputs.get("episode_minutes")}
 
 
-def revision_inputs(root, revise, feedback, research_id, dossier, roles=None):
-    """Reuse the approved plan of the latest published script for an editorial revision."""
+def revision_inputs(root, revise, feedback, research_id, dossier, roles=None, minutes=None):
+    """Reuse the approved plan of the latest published script for an editorial revision. ``minutes`` is the revision's
+    own length (REVISION_MINUTES): the episode it starts from carries it, the outline keeps its plan."""
     try:
         pointer = root / "episodes" / revise / "latest.json"
         if not pointer.exists():
@@ -199,6 +215,12 @@ def revision_inputs(root, revise, feedback, research_id, dossier, roles=None):
     if validate_plan(inherited_plan, dossier) or validate_script(original, written, check_duration=False,
                                                                          **({'roles': roles} if roles else {})):
         raise AppError("Vorhandenes Skript oder Plan verletzt die Quellenzuordnung.", code="invalid_script", status="blocked")
+    if minutes is not None:
+        # A revision may also be asked to be shorter or longer than its plan (2026-11-08: Geld verstehen ep_003, 55
+        # minutes of study reports, was to be retold around one case in about 38). The word budget, the agent's checks,
+        # the script review and the recording read the episode's target_minutes, so the revision's episode carries the
+        # new length; the series plan stays the approved outline.
+        written = EpisodePlan.model_validate({**written.model_dump(), "target_minutes": minutes})
     inherited_knowledge = json.loads((previous_work / "knowledge_model.json").read_text(encoding="utf-8"))
     revision = {"source_run_id": previous_id, "original_script": original.model_dump(), "feedback": feedback,
                 **({"entry": written.model_dump()} if written is not selected_entry else {})}
@@ -304,10 +326,11 @@ def approve_outline(root: Path, run_id: str, plan_hash: str) -> None:
                                                  "approved_at": datetime.now(timezone.utc).isoformat()})
 
 
-def new_run(root, research_id, dossier, *, episode, revise, feedback, roles=None, outline_run=None):
+def new_run(root, research_id, dossier, *, episode, revise, feedback, roles=None, outline_run=None, minutes=None):
     inherited_plan = inherited_knowledge = revision = None
     if revise:
-        inherited_plan, inherited_knowledge, revision = revision_inputs(root, revise, feedback, research_id, dossier, roles)
+        inherited_plan, inherited_knowledge, revision = revision_inputs(root, revise, feedback, research_id, dossier, roles,
+                                                                        minutes=minutes)
         episode = revise
     elif outline_run:
         inherited_plan, inherited_knowledge = outline_inputs(root, outline_run, research_id, dossier, episode)
@@ -315,7 +338,10 @@ def new_run(root, research_id, dossier, *, episode, revise, feedback, roles=None
     return {"path": manifest_path(root, identifier), "manifest": None, "saved_backend": None,
             "execution": selected_execution(root), "episode": episode, "saved_inputs": None, "revision": revision,
             "series_review_version": SERIES_REVIEW_VERSION, "inherited_plan": inherited_plan,
-            "inherited_knowledge": inherited_knowledge}
+            "inherited_knowledge": inherited_knowledge,
+            # A new episode of an approved outline may be written at its own length (D-192); a revision carries its
+            # length in its episode instead (revision_inputs).
+            "episode_minutes": minutes if outline_run and not revise else None}
 
 
 def build_adapter(config, text_generation, api_key, perplexity_key=None):
@@ -355,6 +381,9 @@ def run_inputs(config, research_id, dossier, discovery, sources, context, state,
     if state.get("speaking_rate") and state["speaking_rate"] != SPOKEN_WORDS_PER_MINUTE:
         # Only a rate other than the old constant is bound, so a run at 130 keeps the inputs it always had (D-184).
         inputs["speaking_rate"] = state["speaking_rate"]
+    if state.get("episode_minutes") is not None:
+        # Only a run given its own length binds it, so every other run keeps its hash (D-192).
+        inputs["episode_minutes"] = state["episode_minutes"]
     if state["saved_inputs"] is not None:
         # Defaults added to readable historical schemas do not change the approved research.
         # Reuse the exact old serialization only after full semantic equality is established.
@@ -461,8 +490,10 @@ def require_plan_approval(root, work, manifest, plan_only, approved_plan_hash):
 def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=None,
                revise: str | None = None, feedback="", backend=None, model=None, api_key=None,
                max_output_tokens=None, reasoning_effort=None, plan_only=False, outline_feedback="", approved_plan_hash=None,
-               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None, outline_run=None):
-    """``jev_probe`` asks Jev in the gap probe of a new run (jev.py); ``probe_key`` is the OpenRouter key for it,
+               jev_probe=False, probe_key=None, web_search=None, perplexity_key=None, outline_run=None, minutes=None):
+    """``minutes`` gives a revision (``revise``), or a new episode of an approved outline (``outline_run``), its own
+    length instead of its plan's (revision_minutes, D-190, D-192).
+    ``jev_probe`` asks Jev in the gap probe of a new run (jev.py); ``probe_key`` is the OpenRouter key for it,
     otherwise OPENROUTER_API_KEY. ``web_search`` "perplexity" sends a new run's supplementary searches through
     Perplexity (D-151), with ``perplexity_key`` or PERPLEXITY_API_KEY. The story agent writes every episode
     (story_agent.py, D-181, D-184), a revision too. ``outline_run`` with ``episode`` writes that episode of another
@@ -474,8 +505,11 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
         research_id, dossier, discovery, sources, context = load_research(root, config)
         if outline_feedback and not (resume and plan_only):
             raise AppError("Inhaltsverzeichnis zum Überarbeiten im Planungsmodus fortsetzen.", code="invalid_plan")
-        if (revise and (resume or (episode and episode != revise))) or (feedback and not revise):
-            raise AppError("--revise mit einer passenden Folge und optional --feedback verwenden.", code="invalid_revision")
+        if (revise and (resume or (episode and episode != revise))) or (feedback and not revise) or (
+                minutes is not None and not revise and not outline_run):
+            raise AppError("--revise mit einer passenden Folge und optional --feedback und --minutes verwenden; "
+                           "--minutes auch mit --from-outline.", code="invalid_revision")
+        minutes = revision_minutes(minutes)
         if outline_run and (resume or revise or plan_only or not episode):
             raise AppError("--from-outline schreibt eine Folge (--episode) eines freigegebenen Inhaltsverzeichnisses in "
                            "einem neuen Lauf.", code="invalid_request", status="blocked")
@@ -484,7 +518,8 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
             retire_prompt_stages(root, run_id)
         state = resumed_run(root, run_id) if resume else new_run(root, research_id, dossier,
                                                                  episode=episode, revise=revise, feedback=feedback,
-                                                                 roles=host_roles_of(config), outline_run=outline_run)
+                                                                 roles=host_roles_of(config), outline_run=outline_run,
+                                                                 minutes=minutes)
         if not resume:
             state["speaking_rate"] = speaking_rate(root, config)
         if jev_probe and resume and not state["execution"].jev_probe:
@@ -524,7 +559,8 @@ def run_script(root: Path, *, episode: str | None = None, resume=False, run_id=N
                              execution=state["execution"], plan_only=plan_only, previous_outline=previous_outline,
                              outline_feedback=outline_feedback, series_review_version=state["series_review_version"],
                              text_generation=text_generation, resume=resume, style_notes=notes, probe_key=probe_key,
-                             speaking_rate=inputs.get("speaking_rate", SPOKEN_WORDS_PER_MINUTE))
+                             speaking_rate=inputs.get("speaking_rate", SPOKEN_WORDS_PER_MINUTE),
+                             episode_minutes=inputs.get("episode_minutes"))
         if not plan_only and (work / "series_plan.json").exists():
             pipeline.refresh_foundations(pipeline.selected()[1])
         return execute_stages(root, manifest, state["path"], pipeline.stages(),

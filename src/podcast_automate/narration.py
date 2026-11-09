@@ -158,6 +158,25 @@ def with_neighbours(script, named):
     return allowed
 
 
+REFERENCE_FIELDS = {"knowledge_refs", "source_refs"}
+
+
+def unnamed_refs_kept(original, repaired, allowed):
+    """``repaired`` with every segment outside ``allowed`` whose change is only to its references put back as it was,
+    so scope_errors refuses a rework only for what it said. 2026-11-04: every repair of Asimov v2 ep_008 copied the
+    sections the review's claim checks named into the empty source_refs of eight unnamed segments, their words
+    unchanged; twelve answers were refused for it."""
+    before = {segment.segment_id: segment for segment in original.segments}
+    segments = []
+    for segment in repaired.segments:
+        old = before.get(segment.segment_id)
+        if (old is not None and segment.segment_id not in allowed and segment != old and
+                segment.model_dump(exclude=REFERENCE_FIELDS) == old.model_dump(exclude=REFERENCE_FIELDS)):
+            segment = old
+        segments.append(segment)
+    return repaired.model_copy(update={"segments": segments})
+
+
 def scope_errors(original, repaired, allowed):
     """A rework changes only the segments it may (``allowed``, with_neighbours): every other segment stays as it was,
     in its order. New segments may come in anywhere, an allowed one may go."""

@@ -17,6 +17,11 @@ from .storage import write_json
 # segments one after another, and a 429 throttles all of them together (speech.throttle). The bound only keeps a
 # runaway in check; 30 covers both current series together.
 MAX_PARALLEL = 30
+# Recordings spoken by ElevenLabs at once across the Studio (D-188). Each sends one request at a time and the plan limits
+# requests at a time (Starter 3, Creator 5, Pro 10); beyond that a 429 pauses all of them together
+# (elevenlabs_speech.shared_throttle), so more recordings deliver less: ten at once made 3.8 takes a minute on 2026-11-06,
+# three at once 7 to 8.8.
+MAX_ELEVENLABS_RECORDINGS = 3
 # Parallel text mode: independent research questions, or the episodes of one script stage, at once.
 MAX_PARALLEL_TEXT = 5
 

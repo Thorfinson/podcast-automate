@@ -44,6 +44,8 @@ ENGLISH = {
     "Codex app-server stream closed before the account data arrived.": "message.codex_stream_closed",
 }
 GENERIC_ENGLISH = "message.generic_english"
+# A provider's refusal quoted raw, as elevenlabs_failure does: from there to the end of the sentence.
+RAW_REFUSAL = re.compile(r':\s*\{".*$', re.DOTALL)
 REJECTED = re.compile(r"^(?P<provider>[\w -]{1,40}?) answered, but the answer violates its output contract: "
                       r"(?P<defects>.*?)\.? Return the complete answer again with exactly these defects corrected\.\s*",
                       re.DOTALL)
@@ -139,10 +141,19 @@ def user_text(message, root: Path | None = None, language: str = "de") -> dict:
     text = DOCUMENT_ID.sub(str(catalog_text(words, "message.source")), text)
     for name in EXCEPTIONS:
         text = text.replace(f"({name})", f"({catalog_text(words, 'message.exception.' + name)})")
-    rows, translated_any, german = [], bool(rejected), False
+    rows, translated_any, german, quoted = [], bool(rejected), False, False
     for sentence in sentences(text):
         if DROP.search(sentence):
             continue
+        # A raw refusal says nothing the pipeline's words around it do not, and its sentences are the provider's English,
+        # no check's (2026-11-06: ElevenLabs' limit read „Eine automatische Prüfung hat ein Ergebnis abgewiesen“). Its
+        # text is cut where the pipeline's goes on; the details keep it.
+        if quoted and ENGLISH_WORDS.search(sentence) and not GERMAN_WORDS.search(sentence):
+            continue
+        head = RAW_REFUSAL.sub(".", sentence)
+        quoted = head != sentence
+        translated_any = translated_any or quoted
+        sentence = head
         key = ENGLISH.get(sentence.strip())
         if key is None and english(sentence) and language == "de":
             key = GENERIC_ENGLISH

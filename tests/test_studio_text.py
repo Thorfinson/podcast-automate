@@ -185,6 +185,21 @@ class LocalizedTests(unittest.TestCase):
         self.assertEqual(user_text(own, None, "en")["message_language"], "en")
         self.assertEqual(user_text("Angehalten. Fertige Arbeit bleibt gespeichert.")["message_language"], "de")
 
+    def test_a_providers_raw_refusal_is_cut_from_the_message_and_stays_in_the_details(self):
+        # Orlagau's ep_010, 2026-11-06: ElevenLabs' second sentence was shown as a check that had refused a result.
+        busy = ('ElevenLabs ist ausgelastet oder die Zahl gleichzeitiger Anfragen erreicht: {"detail":{"type":"rate_limit_error",'
+                '"code":"concurrent_limit_exceeded","message":"Too many concurrent requests. Your current subscription is '
+                'associated with a maximum of 3 concurrent requests (running in parallel). This is done such that a single '
+                'user does not overwhelm our systems and affect other. Später fortsetzen; fertige Abschnitte bleiben gespeichert.')
+        shown = user_text(busy)
+        self.assertEqual(shown["message"], "ElevenLabs ist ausgelastet oder die Zahl gleichzeitiger Anfragen erreicht. Später "
+                                           "fortsetzen; fertige Abschnitte bleiben gespeichert.")
+        self.assertIn("maximum of 3 concurrent requests", shown["detail"])
+        credits = ('Das ElevenLabs-Guthaben reicht nicht: {"detail":{"status":"quota_exceeded","message":"You have no credits '
+                   'left."}}. Credits aufladen, dann fortsetzen; fertige Abschnitte bleiben gespeichert.')
+        self.assertEqual(user_text(credits)["message"], "Das ElevenLabs-Guthaben reicht nicht. Credits aufladen, dann "
+                                                        "fortsetzen; fertige Abschnitte bleiben gespeichert.")
+
 
 class BoundaryTests(unittest.TestCase):
     def sources(self):

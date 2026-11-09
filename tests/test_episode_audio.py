@@ -329,6 +329,52 @@ class EpisodeAudioTests(unittest.TestCase):
                          "Der gesamte freigegebene Text ist in Skriptreihenfolge enthalten.\n"
                          "Die technische Montage ersetzt keine Hörprüfung von Aussprache und Natürlichkeit.\n")
 
+    def add_music(self):
+        """The project's music, as studio/music.json names it (D-189): a beat of 20 seconds under studio/music/."""
+        path = self.root / "studio/music/beat.wav"
+        tone(path)
+        tone(path.with_name("one.wav"))
+        import wave
+        with wave.open(str(path.with_name("one.wav")), "rb") as one, wave.open(str(path), "wb") as piece:
+            piece.setparams(one.getparams())
+            piece.writeframes(one.readframes(one.getnframes()) * 20)
+        path.with_name("one.wav").unlink()
+        record = {"file": "studio/music/beat.wav", "sha256": file_hash(path), "bpm": 120, "chapter_from_seconds": 8.0,
+                  "title": "Beat", "author": "Tester", "source": "https://example.org/beat", "license": "CC BY-NC 4.0"}
+        write_json(self.root / "studio/music.json", record)
+        return record
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_the_projects_music_is_bound_played_and_credited(self):
+        record = self.add_music()
+        from podcast_automate.music import music_hash, music_record
+        with self.assertRaises(AppError) as refused:
+            self.render(expected_music_hash="")
+        self.assertEqual(refused.exception.code, "inputs_changed", "an approval given before the music came")
+        # The hash the Studio shows: of the checked record, as music_record dumps it.
+        run = self.render(expected_music_hash=music_hash(music_record(self.root)))
+        self.assertEqual(run.status, "completed")
+        work = self.root / "runs" / run.run_id
+        self.assertEqual(json.loads((work / "inputs.json").read_text())["music"], record)
+        report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text())
+        self.assertEqual(report["music"], record)
+        self.assertEqual(read_yaml(self.root / "episodes/ep_001/audio_review.yaml")["music"], record)
+        export = (self.root / report["parts"][0]["audio"]).parent
+        self.assertEqual([place["kind"] for place in json.loads((export / "timeline.json").read_text())["music"]][0],
+                         "opening")
+        self.assertIn("Musik: „Beat“ von Tester (https://example.org/beat), Lizenz CC BY-NC 4.0.",
+                      (export / "show_notes.md").read_text(encoding="utf-8"))
+        # Other music needs a new approval; a file changed under its name is refused before anything is recorded.
+        write_json(self.root / "studio/music.json", {**record, "title": "Another"})
+        with patch("podcast_automate.episode_audio.run_tts", side_effect=AssertionError("must not render")):
+            with self.assertRaises(AppError) as caught:
+                run_episode_audio(self.root, episode="ep_001")
+            self.assertEqual(caught.exception.code, "audio_approval_required")
+            (self.root / "studio/music/beat.wav").write_bytes(b"changed")
+            with self.assertRaises(AppError) as caught:
+                run_episode_audio(self.root, episode="ep_001", approve_audio=True)
+            self.assertEqual(caught.exception.code, "music_changed", "the file no longer has the hash it was named with")
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_a_changed_pause_policy_needs_a_fresh_approval(self):
         self.assertEqual(self.render().status, "completed")

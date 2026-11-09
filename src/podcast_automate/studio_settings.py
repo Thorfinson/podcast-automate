@@ -1,6 +1,6 @@
 """Settings that hold for every project of a Studio workspace (the user's choice of 2026-10-03): the text model, the
-audio choice with its voices and pauses, the execution modes, the pre-approvals, the research limits and the time
-limit of one model call.
+audio choice with its voices and pauses, the execution modes, the pre-approvals, the research limits, the time
+limit of one model call, the web search and the contact address Unpaywall is asked with.
 
 They live next to the projects, in ``projects/.studio-settings.json``, and only the Studio's settings page writes them.
 While that file exists, each of its sections replaces the project's own: ``studio/text.json``, ``studio/audio.json``,
@@ -14,18 +14,28 @@ This module has no project dependencies, so storage, speech, execution and studi
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 SETTINGS_NAME = ".studio-settings.json"
-SECTIONS = ("text", "audio", "execution", "allowances", "research_limits", "text_timeout_seconds", "web_search")
+SECTIONS = ("text", "audio", "execution", "allowances", "research_limits", "text_timeout_seconds", "web_search",
+            "unpaywall_email")
 # How new research and script runs search the web (D-151): with the text model's own tools, or through Perplexity.
 WEB_SEARCH = ("model", "perplexity")
+# Unpaywall answers only with a contact address (sources.unpaywall_copies); empty leaves it out.
+EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+")
 
 
 def web_search(root: Path) -> str:
     """The web search new runs of this project bind; the text model's own while the workspace sets none."""
     chosen = section(root, "web_search")
     return chosen if chosen in WEB_SEARCH else "model"
+
+
+def unpaywall_email(root: Path) -> str:
+    """The contact address a Studio worker of this project asks Unpaywall with; empty while the workspace sets none."""
+    chosen = section(root, "unpaywall_email")
+    return chosen.strip() if isinstance(chosen, str) and EMAIL.fullmatch(chosen.strip()) else ""
 
 
 def path_for(projects: Path) -> Path:

@@ -101,6 +101,57 @@ class AudioTests(unittest.TestCase):
             tone(path)
             self.paths.append(path)
 
+    def music(self, seconds=24.0):
+        """A piece at 120 BPM with a short tone on every beat, so the montage's places can be heard back."""
+        path = self.root / "music.wav"
+        rate = 22050
+        samples = [int(6000 * math.sin(2 * math.pi * 440 * i / rate)) if i % (rate // 2) < rate // 20 else 0
+                   for i in range(round(seconds * rate))]
+        with wave.open(str(path), "wb") as stream:
+            stream.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+            stream.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+        return {"path": path, "bar_seconds": 2.0, "chapter_from": 8.0,
+                "credit": {"title": "Beat", "author": "Tester", "source": "https://example.org/beat", "license": "CC0"}}
+
+    def level(self, path, start, seconds):
+        log = ffmpeg(["-ss", str(start), "-t", str(seconds), "-i", str(path), "-af", "volumedetect", "-f", "null", "-"])
+        return float(re.search(r"mean_volume: ([-\d.]+)", log)[1])
+
+    def test_music_plays_before_the_first_word_between_the_chapters_and_after_the_last(self):
+        """D-189, the user's samples of 2026-11-08: four bars before the first word, two bars between the chapters with
+        the new chapter's first word on the bar after them, and the ending played on after the last word. The chapter
+        marks begin with their music; the first at 0:00."""
+        plain, output = self.root / "plain", self.root / "music"
+        assemble(self.script, self.paths, plain)
+        assemble(self.script, self.paths, output, music=self.music())
+        timeline = json.loads((output / "timeline.json").read_text())
+        opening, chapter, ending = timeline["music"]
+        self.assertEqual([place["kind"] for place in timeline["music"]], ["opening", "chapter", "ending"])
+        segments = timeline["segments"]
+        self.assertAlmostEqual(segments[0]["start_seconds"], 8.0, places=3)
+        following = next(row for row in segments if row["chapter_id"] == chapter["chapter_id"])
+        self.assertAlmostEqual(following["start_seconds"], chapter["speech_seconds"], places=3)
+        self.assertAlmostEqual(chapter["speech_seconds"] - chapter["start_seconds"], 4.0, places=3)
+        self.assertAlmostEqual(ending["start_seconds"], segments[-1]["speech_end_seconds"] - 6.0, places=3)
+        self.assertAlmostEqual(timeline["pcm_duration_seconds"], segments[-1]["speech_end_seconds"] + 12.0, places=2)
+        chapters = json.loads((output / "chapters.json").read_text())["chapters"]
+        self.assertEqual(chapters[0]["start_seconds"], 0.0)
+        self.assertAlmostEqual(chapters[1]["start_seconds"], chapter["start_seconds"])
+        self.assertEqual(chapters[0]["end_seconds"], chapters[1]["start_seconds"])
+        self.assertAlmostEqual(chapters[1]["end_seconds"], timeline["pcm_duration_seconds"])
+        # Heard back: where the plain montage has its first word, the opening plays alone, and after the last word
+        # the ending goes on where the plain one is over.
+        mp3 = output / "audio.mp3"
+        self.assertGreater(self.level(mp3, 1.0, 5.0), -45)
+        self.assertGreater(self.level(mp3, segments[-1]["speech_end_seconds"] + 2.0, 4.0), -45)
+        report = json.loads((output / "audio_report.json").read_text())
+        self.assertEqual({key: report["music"][key] for key in ("title", "author", "license", "places")},
+                         {"title": "Beat", "author": "Tester", "license": "CC0", "places": 3})
+        measured = ffmpeg(["-i", str(mp3), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"])
+        levels = json.loads(re.findall(r'\{\s*"input_i".*?\}', measured, flags=re.DOTALL)[-1])
+        self.assertAlmostEqual(float(levels["input_i"]), -16, delta=0.6)
+        self.assertNotIn("music", json.loads((plain / "timeline.json").read_text()), "no music, no music places")
+
     def test_montage_reports_each_step_to_its_caller(self):
         steps = []
         assemble(self.script, self.paths, self.root / "reported",

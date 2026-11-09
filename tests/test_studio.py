@@ -511,6 +511,237 @@ class StudioHttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/projects/example/approve", {"kind": "teaching_redesign",
                                                                          "run_id": "run_outline"})[0], 400)
 
+    def test_a_resumed_episode_of_all_remaining_goes_on_with_the_series(self):
+        """2026-11-04: Orlagau v2's ep_003 of "alle weiteren Folgen" stopped at its review and an allowance resumed it;
+        the resume finished ep_003 alone, and ep_004 to ep_013 were never begun. A resume of such a run, or of a resume
+        of it that stopped again, carries the outline on; one of a single episode, of another outline's run or of an
+        outline no longer approved does not. The worker then writes the remaining episodes and the series review."""
+        work, _ = self.outline()
+        run = self.root / "runs/run_ep1"
+        write_yaml(run / "run_manifest.yaml", RunManifest(run_id="run_ep1", kind="script", project_hash="0" * 64,
+                                                          input_hash="d" * 64, status="blocked",
+                                                          stages={}).model_dump(mode="json"))
+        write_json(run / "script_request.json", {"episode": "ep_001", "require_plan_approval": False, "execution": {}})
+        (run / "series_plan.json").write_bytes((work / "series_plan.json").read_bytes())
+
+        def resume(stopped):
+            write_json(self.root / "studio/job.json", {"id": "stopped", "status": "blocked",
+                                                       "run": {"run_id": "run_ep1", "kind": "script"}, **stopped})
+            with patch("podcast_automate.studio.subprocess.Popen") as process:
+                process.return_value.stdin = io.StringIO()
+                process.return_value.stdin.close = Mock()
+                process.return_value.poll.return_value = None
+                job = self.app.start("example", {"action": "resume", "run_id": "run_ep1"})
+                sent = json.loads(process.return_value.stdin.getvalue())
+            self.app.workers.clear()
+            return sent.get("series"), job.get("series")
+        self.assertEqual(resume({"action": "episodes"}), ("run_outline", True))
+        self.assertEqual(resume({"action": "resume", "series": True}), ("run_outline", True))
+        self.assertEqual(resume({"action": "episode"}), (None, None))
+        (run / "series_plan.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(resume({"action": "episodes"}), (None, None), "a run of another outline")
+        (run / "series_plan.json").write_bytes((work / "series_plan.json").read_bytes())
+        (work / "plan_approval.json").unlink()
+        self.assertEqual(resume({"action": "episodes"}), (None, None), "an outline no longer approved")
+        # The worker finishes the stopped run, then writes ep_002 and reviews the series, as "episodes" would have.
+        finished = [Mock(status="completed"), Mock(status="completed")]
+        for item in finished:
+            item.model_dump.return_value = {"status": "completed"}
+        with patch("podcast_automate.studio_worker.run_script", side_effect=finished) as written, \
+                patch("podcast_automate.studio_worker.next_episode", side_effect=["ep_002", None, None]), \
+                patch("podcast_automate.studio_worker.express_published") as express, \
+                patch("podcast_automate.studio_worker.series_review_after", return_value={"status": "completed"}):
+            result = perform(self.root, {"action": "resume", "run_id": "run_ep1", "series": "run_outline", "text": {}})
+        self.assertEqual([(call.kwargs.get("run_id"), call.kwargs.get("episode"), call.kwargs.get("outline_run"))
+                          for call in written.call_args_list], [("run_ep1", None, None), (None, "ep_002", "run_outline")])
+        self.assertEqual(express.call_count, 2, "each episode's reading is placed once")
+        self.assertEqual(result["series_review"], {"status": "completed"})
+        # A resumed run that stops again ends the job there, as "episodes" stops where one stops.
+        stopped = Mock(status="blocked")
+        stopped.model_dump.return_value = {"status": "blocked"}
+        with patch("podcast_automate.studio_worker.run_script", return_value=stopped) as written, \
+                patch("podcast_automate.studio_worker.express_published"):
+            result = perform(self.root, {"action": "resume", "run_id": "run_ep1", "series": "run_outline", "text": {}})
+        self.assertEqual((written.call_count, result), (1, {"run": {"status": "blocked"}}), "a run that stops again")
+
+    def test_a_revision_from_the_reader_may_carry_its_own_length(self):
+        """2026-11-08: Geld verstehen ep_003 was to be retold in about 38 of its planned 58 minutes. The reader shows
+        the planned length; a revision with minutes sends them to the worker, which hands them to run_script; outside
+        10 to 60 the Studio refuses before a worker starts, and without minutes the plan's length stays."""
+        write_yaml(self.root / "episodes/ep_001/script.yaml", example_script().model_dump())
+        (self.root / "episodes/ep_001/script.md").write_text("# " + example_script().title, encoding="utf-8")
+        self.assertIsNone(json.loads(self.request("/api/projects/example")[1])["episodes"][0]["planned_minutes"])
+        write_yaml(self.root / "episodes/ep_001/episode_plan.yaml", {"target_minutes": 58.0})
+        self.assertEqual(json.loads(self.request("/api/projects/example")[1])["episodes"][0]["planned_minutes"], 58.0)
+
+        def revise(**extra):
+            write_json(self.root / "studio/job.json", {"id": "done", "status": "completed", "run": None})
+            with patch("podcast_automate.studio.subprocess.Popen") as process:
+                process.return_value.stdin = io.StringIO()
+                process.return_value.stdin.close = Mock()
+                process.return_value.poll.return_value = None
+                self.app.start("example", {"action": "revise", "episode": "ep_001", "message": "Kürzer.", **extra})
+                sent = json.loads(process.return_value.stdin.getvalue())
+            self.app.workers.clear()
+            return sent
+        self.assertEqual(revise(minutes=38)["minutes"], 38)
+        self.assertNotIn("minutes", revise())
+        for wrong in (5, 61, "38", True):
+            with self.assertRaises(AppError) as refused:
+                revise(minutes=wrong)
+            self.assertEqual(refused.exception.code, "invalid_revision", wrong)
+        finished = Mock(status="completed")
+        finished.model_dump.return_value = {"status": "completed"}
+        with patch("podcast_automate.studio_worker.run_script", return_value=finished) as written, \
+                patch("podcast_automate.studio_worker.express_published"):
+            perform(self.root, {"action": "revise", "episode": "ep_001", "message": "Kürzer.", "minutes": 38, "text": {}})
+            perform(self.root, {"action": "revise", "episode": "ep_001", "message": "Kürzer.", "text": {}})
+        self.assertEqual([call.kwargs["minutes"] for call in written.call_args_list], [38, None])
+
+    def test_revisions_asked_for_while_the_project_works_wait_in_order_and_start_when_it_is_free(self):
+        """2026-11-08: Geld verstehen's ep_002 and ep_004 revisions could not be asked for while the ep_003 revision
+        ran for hours. Now each waits in the project's queue with its feedback and length; the scheduler starts them
+        one at a time, in the order asked, once nothing of the project runs (D-191)."""
+        def worker(running=True):
+            process = Mock(stdin=io.StringIO())
+            process.stdin.close = Mock()
+            process.poll.return_value = None if running else 0
+            return process
+        launched = []
+
+        def launch(*args, **kwargs):
+            launched.append(worker())
+            return launched[-1]
+        write_json(self.root / "studio/job.json", {"id": "running", "action": "revise", "status": "running", "run": None})
+        self.app.workers[self.root] = (worker(), False)
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=launch):
+            first = self.app.start("example", {"action": "revise", "episode": "ep_002", "message": "Weniger DJI.",
+                                               "minutes": 36})
+            self.app.start("example", {"action": "revise", "episode": "ep_004", "message": "Bastelzimmer bleibt.",
+                                       "minutes": 30})
+            self.assertEqual((first["queued"], first["position"], launched), (True, 1, []))
+            detail = json.loads(self.request("/api/projects/example")[1])
+            self.assertEqual([(row["episode"], row["position"], row["minutes"], row["message"])
+                              for row in detail["revision_queue"]],
+                             [("ep_002", 1, 36, "Weniger DJI."), ("ep_004", 2, 30, "Bastelzimmer bleibt.")])
+            self.assertFalse(detail["revisions_held"])
+            self.assertEqual(self.app.start_revisions(), [], "the project still works")
+
+            # The run ends: the first waiting revision starts with its own feedback and length, the second waits.
+            self.app.workers[self.root] = (worker(running=False), False)
+            write_json(self.root / "studio/job.json", {"id": "running", "action": "revise", "status": "completed",
+                                                       "run": {"kind": "script", "run_id": "run_done"}})
+            self.assertEqual(self.app.start_revisions(), [("example", "ep_002")])
+            sent = json.loads(launched[0].stdin.getvalue())
+            self.assertEqual((sent["action"], sent["episode"], sent["message"], sent["minutes"]),
+                             ("revise", "ep_002", "Weniger DJI.", 36))
+            self.assertEqual([row["episode"] for row in self.app.detail("example")["revision_queue"]], ["ep_004"])
+            self.assertEqual(self.app.start_revisions(), [], "one text run of a project at a time")
+
+            # It stops for a decision: the next revision would take its stop card, so the queue waits.
+            self.app.workers[self.root] = (worker(running=False), False)
+            write_json(self.root / "studio/job.json", {"id": "second", "action": "revise", "status": "blocked",
+                                                       "run": {"kind": "script", "run_id": "run_stopped"}})
+            self.assertEqual(self.app.start_revisions(), [])
+            self.assertTrue(self.app.detail("example")["revisions_held"])
+            # Asked for directly now, a revision still queues behind the waiting one, so the order holds.
+            self.assertEqual(self.app.start("example", {"action": "revise", "episode": "ep_001", "message": "Leicht."})
+                             ["position"], 2)
+            self.assertEqual(len(launched), 1)
+
+            # The stopped run is resumed and done; a waiting request refused by start's rules keeps its reason and
+            # the next one goes on.
+            write_json(self.root / "studio/job.json", {"id": "second", "action": "resume", "status": "completed",
+                                                       "run": {"kind": "script", "run_id": "run_stopped"}})
+            rows = read_json(self.root / "studio/revision_queue.json")
+            rows[0]["data"]["minutes"] = 5
+            write_json(self.root / "studio/revision_queue.json", rows)
+            self.assertEqual(self.app.start_revisions(), [])
+            self.assertEqual(self.app.detail("example")["revision_queue"][0]["error_code"], "invalid_revision")
+            self.assertEqual(self.app.start_revisions(), [("example", "ep_001")])
+        status, body, _ = self.request("/api/projects/example/revision_queue", {"episode": "ep_004"})
+        self.assertEqual((status, json.loads(body)["revision_queue"]), (200, []))
+
+    def test_the_remaining_episodes_may_wait_behind_revisions_at_their_own_length(self):
+        """2026-11-08: the rest of Geld verstehen's first season was to follow its last queued revision overnight, at
+        about 35 minutes instead of the outline's 44 to 48 (D-192). „Alle weiteren Folgen“ asked for while the project
+        works waits behind the revisions asked before it, starts after them with its length and leaves the queue as it
+        starts; the worker gives every episode it writes that length, also when a resumed episode carries the series
+        on."""
+        self.outline()
+
+        def worker(running=True):
+            process = Mock(stdin=io.StringIO())
+            process.stdin.close = Mock()
+            process.poll.return_value = None if running else 0
+            return process
+        launched = []
+
+        def launch(*args, **kwargs):
+            launched.append(worker())
+            return launched[-1]
+
+        def finished(run_id):
+            self.app.workers[self.root] = (worker(running=False), False)
+            write_json(self.root / "studio/job.json", {"id": run_id, "action": "revise", "status": "completed",
+                                                       "run": {"kind": "script", "run_id": run_id}})
+        write_json(self.root / "studio/job.json", {"id": "running", "action": "revise", "status": "running", "run": None})
+        self.app.workers[self.root] = (worker(), False)
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=launch):
+            self.app.start("example", {"action": "revise", "episode": "ep_001", "message": "Kürzer.", "minutes": 30})
+            queued = self.app.start("example", {"action": "episodes", "minutes": 35})
+            self.assertEqual((queued["queued"], queued["key"], queued["position"], launched), (True, "episodes", 2, []))
+            with self.assertRaises(AppError) as refused:
+                self.app.start("example", {"action": "episodes", "minutes": 5})
+            self.assertEqual(refused.exception.code, "invalid_revision")
+            detail = json.loads(self.request("/api/projects/example")[1])
+            self.assertTrue(detail["queues_series"])
+            self.assertEqual([(row["key"], row["action"], row["episode"], row["minutes"])
+                              for row in detail["revision_queue"]],
+                             [("ep_001", "revise", "ep_001", 30), ("episodes", "episodes", None, 35)])
+            # The project is free: the revision asked first starts first, then the remaining episodes at their length.
+            finished("run_revised")
+            self.assertEqual(self.app.start_revisions(), [("example", "ep_001")])
+            finished("run_revised_done")
+            self.assertEqual(self.app.start_revisions(), [("example", "episodes")])
+            sent = json.loads(launched[1].stdin.getvalue())
+            self.assertEqual((sent["action"], sent["run_id"], sent["minutes"]), ("episodes", "run_outline", 35))
+            self.assertEqual(self.app.detail("example")["revision_queue"], [], "a started row no longer waits")
+            # Queued again, the row is taken out by its key.
+            finished("run_series")
+            self.app.workers[self.root] = (worker(), False)
+            self.app.start("example", {"action": "episodes"})
+        status, body, _ = self.request("/api/projects/example/revision_queue", {"key": "episodes"})
+        self.assertEqual((status, json.loads(body)["revision_queue"]), (200, []))
+        self.app.workers.clear()
+
+        # The worker hands the length to every episode it writes.
+        def completed():
+            run = Mock(status="completed")
+            run.model_dump.return_value = {"status": "completed"}
+            return run
+        with patch("podcast_automate.studio_worker.run_script", side_effect=[completed(), completed()]) as written, \
+                patch("podcast_automate.studio_worker.next_episode", side_effect=["ep_001", "ep_002", None, None]), \
+                patch("podcast_automate.studio_worker.express_published"), \
+                patch("podcast_automate.studio_worker.series_review_after", return_value={"status": "completed"}):
+            perform(self.root, {"action": "episodes", "run_id": "run_outline", "minutes": 35, "text": {}})
+        self.assertEqual([(call.kwargs["episode"], call.kwargs["minutes"]) for call in written.call_args_list],
+                         [("ep_001", 35), ("ep_002", 35)])
+        # A resumed episode of the series carries it on at the length it was written with.
+        run = self.root / "runs/run_ep1"
+        write_yaml(run / "run_manifest.yaml", RunManifest(run_id="run_ep1", kind="script", project_hash="0" * 64,
+                                                          input_hash="d" * 64, status="blocked",
+                                                          stages={}).model_dump(mode="json"))
+        write_json(run / "script_request.json", {"episode": "ep_001", "require_plan_approval": False, "execution": {}})
+        write_json(run / "inputs.json", {"episode_minutes": 35})
+        with patch("podcast_automate.studio_worker.run_script", side_effect=[completed(), completed()]) as written, \
+                patch("podcast_automate.studio_worker.next_episode", side_effect=["ep_002", None, None]), \
+                patch("podcast_automate.studio_worker.express_published"), \
+                patch("podcast_automate.studio_worker.series_review_after", return_value={"status": "completed"}):
+            perform(self.root, {"action": "resume", "run_id": "run_ep1", "series": "run_outline", "text": {}})
+        self.assertEqual([(call.kwargs.get("run_id"), call.kwargs.get("episode"), call.kwargs.get("minutes"))
+                          for call in written.call_args_list], [("run_ep1", None, None), (None, "ep_002", 35)])
+
     def test_the_home_network_is_served_like_this_computer_only_when_started_for_it(self):
         """2026-09-28: the user steers the Studio from the phone in the home WLAN, with protection only against
         the outside. This computer is always served; the home network only after ``pla studio --lan``; an
@@ -1590,6 +1821,29 @@ class WorkspaceSettingsTests(unittest.TestCase):
                 self.assertEqual(json.loads(process.return_value.stdin.getvalue())["perplexity_key"],
                                  "pplx-test-key-0123456789")
             self.app.stop_all()
+
+    def test_the_contact_address_for_unpaywall_is_a_workspace_setting_every_project_reads(self):
+        """Until 2026-11-03 only PLA_UNPAYWALL_EMAIL enabled Unpaywall, which no Studio run of this workspace had set.
+        The address is no secret: it is saved with the settings, and each worker reads it where it starts."""
+        from podcast_automate import studio_settings
+        view = self.view()
+        self.assertEqual(view["settings"]["unpaywall_email"], "")
+        for wrong in ("no address", "reader@example", 42):
+            status, body, _ = self.request("/api/settings", {"settings": {**view["settings"], "unpaywall_email": wrong},
+                                                             "hash": view["hash"], "claude_extra_usage": False})
+            self.assertEqual((status, json.loads(body)["code"]), (400, "invalid_request"), wrong)
+        status, body, _ = self.request("/api/settings", {"settings": {**view["settings"],
+                                                                      "unpaywall_email": " reader@example.org "},
+                                                         "hash": view["hash"], "claude_extra_usage": False})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["settings"]["unpaywall_email"], "reader@example.org")
+        self.assertEqual([studio_settings.unpaywall_email(root) for root in (self.root, self.other)],
+                         ["reader@example.org"] * 2)
+        saved = self.view()
+        status, body, _ = self.request("/api/settings", {"settings": {**saved["settings"], "unpaywall_email": ""},
+                                                         "hash": saved["hash"], "claude_extra_usage": False})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(studio_settings.unpaywall_email(self.root), "", "an empty field leaves Unpaywall out again")
 
     def test_saved_settings_hold_for_every_project_and_runs_take_them(self):
         from podcast_automate import studio_allowances

@@ -2,8 +2,8 @@
 pipeline makes the series again from the start while the old version stays as it was.
 
 Carried over: ``project.yaml``, ``inputs/`` (attachments and provided works), every other local source of the brief,
-``style_notes.md`` and the Studio's text, audio, execution, spoken-form and Jev choices; a German project without a
-Jev choice gets today's default. Not carried over: runs, research, scripts, recordings, exports, the setup chat and
+``style_notes.md`` and the Studio's text, audio, execution, spoken-form and Jev choices, the project's own audio
+choice included; a German project without a Jev choice gets today's default. Not carried over: runs, research, scripts, recordings, exports, the setup chat and
 approvals, which stay the editor's decision for each version. The newest completed research run's sources come along
 as a starting library: a research run of the new version offers them to its search (sources.load_library) instead of
 downloading them again, and still searches for newer ones.
@@ -20,13 +20,18 @@ from pathlib import Path
 from .errors import AppError
 from .execution import default_jev_probe
 from .models import RuntimeSettings, TopicBrief, now
+from .music import MUSIC
 from .provided_works import MANIFEST as WORKS_MANIFEST, inventory as provided_inventory
 from .runner import manifest_path
 from .storage import init_project, inside, read_optional_json, read_yaml, write_json
 
 VERSION_FILE = "version.json"
-# The Studio's choices a new version keeps; allowances and their log stay behind with the approvals.
-STUDIO_CHOICES = ("text.json", "audio.json", "execution.json", "spoken_forms.json", "jev_probe.json")
+# The Studio's choices a new version keeps; allowances and their log stay behind with the approvals. The project's
+# own audio choice (speech.OWN_AUDIO, D-177) holds before the workspace's; until 2026-11-03 a new version lost it and
+# spoke with the workspace's voices.
+STUDIO_CHOICES = ("text.json", "audio.json", "audio_own.json", "execution.json", "spoken_forms.json", "jev_probe.json")
+# The podcast's music (music.MUSIC, D-189) goes along with the folder of its pieces, so the new version sounds the same.
+MUSIC_FOLDER = "studio/music"
 
 
 def version_info(root: Path) -> dict:
@@ -122,6 +127,10 @@ def create_version(source: Path, *, target: Path | None = None, runtime: Runtime
         for name in STUDIO_CHOICES:
             if (source / "studio" / name).is_file():
                 copy_file(source / "studio" / name, building / "studio" / name)
+        if (source / MUSIC).is_file():
+            copy_file(source / MUSIC, building / MUSIC)
+            if (source / MUSIC_FOLDER).is_dir():
+                shutil.copytree(source / MUSIC_FOLDER, building / MUSIC_FOLDER)
         if not (building / "studio/jev_probe.json").exists():
             default_jev_probe(building, brief.language)
         library = None

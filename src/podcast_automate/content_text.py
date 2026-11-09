@@ -72,6 +72,9 @@ TEXT = {
         "export_pronunciation_note": "Für diese Abschnitte wurde eine abweichende Sprechform vertont; der Text bleibt "
                                      "unverändert.",
         "export_measured": "Zeitmarken stammen aus der gemessenen Montage, nicht aus einer Schätzung.",
+        # The credit of a podcast's music (music.py, D-189), in the show notes and the companion kit.
+        "music_heading": "Musik",
+        "music_credit": "Musik: „{title}“ von {author} ({source}), Lizenz {license}.",
         "sheet_title": "Hörprüfung: {title}",
         "sheet_intro": "Beim Hören ausfüllen. Diese Spalten kann keine Prüfung im Programm ersetzen.",
         "sheet_part": "Teil",
@@ -273,6 +276,8 @@ TEXT = {
         "export_pronunciation_note": "These segments were recorded with a different spoken form; the text is "
                                      "unchanged.",
         "export_measured": "Timestamps come from the measured assembly, not from an estimate.",
+        "music_heading": "Music",
+        "music_credit": "Music: “{title}” by {author} ({source}), license {license}.",
         "sheet_title": "Listening review: {title}",
         "sheet_intro": "Fill in while listening. No check in the program can replace these columns.",
         "sheet_part": "Part",

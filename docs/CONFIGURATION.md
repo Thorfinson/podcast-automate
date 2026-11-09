@@ -2,7 +2,7 @@
 title: Configuration
 doc_type: configuration
 status: current
-last_reviewed: 2026-10-21
+last_reviewed: 2026-11-08
 covers:
   - src/podcast_automate/studio_settings.py
   - src/podcast_automate/studio_text.py
@@ -29,6 +29,7 @@ covers:
 | `projects/.studio-settings.json` | Every project of a Studio workspace | Text model, web search, audio, execution modes, pre-approvals, research limits and the time limit of one model call ([Studio settings](#studio-settings)) | The Studio's settings page only |
 | `<project>/studio/text.json`, `audio.json`, `execution.json`, `allowances.json` | One project | The same choices per project; used only while the workspace file does not exist | The Studio |
 | `<project>/studio/audio_own.json` | One project | Its own speech choice, which holds over the workspace file's ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice), D-177) | The recording page's panel „Sprachanbieter dieses Projekts“ |
+| `<project>/studio/music.json`, `<project>/studio/music/` | One project | The podcast's piece of music, its hash, tempo and credit ([Music](AUDIO.md#music), D-189) | By hand; no Studio form yet |
 | `<project>/studio/jev_probe.json` | One project | Whether new script runs also ask Jev in the gap probe; stays per project even with workspace settings ([Gap probe](RESEARCH.md#gap-probe)) | The Studio switch |
 | `<project>/studio/spoken_forms.json`, `<project>/style_notes.md` | One project | Spoken forms ([Spoken forms and pronunciation](AUDIO.md#spoken-forms-and-pronunciation)) and editorial notes ([Host names and style notes](SCRIPTS.md#host-names-and-style-notes)) | The Studio |
 | `~/.podcast-automate/subscriptions.json` | The user account, all workspaces | Quota store and the Claude extra-usage switch ([Files outside the project](#files-outside-the-project)) | Adapters, Studio, `pla quota` |
@@ -169,7 +170,7 @@ Variables you can set. What the adapters set or remove for the CLIs they start i
 | `PERPLEXITY_API_KEY` | Perplexity key for the web search through Perplexity, when none was entered in the Studio; the only source of the key for `pla research` and `pla script` with `--web-search perplexity`; reported by `pla doctor` (`perplexity_search`). Handling rules: [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio) | `web_search.PerplexitySearch`, `doctor.inspect`, `studio.py`, `logs.scrub` |
 | `PLA_SUBSCRIPTIONS_STORE` | Path of the quota store instead of `~/.podcast-automate/subscriptions.json`; the tests set it so they never write to `~/.podcast-automate` | `subscriptions.store_path` |
 | `PLA_KEEP_AWAKE` | `0` stops worker processes from keeping the computer awake ([Stopping and resuming](STUDIO.md#stopping-and-resuming)) | `studio_worker.keep_awake` |
-| `PLA_UNPAYWALL_EMAIL` | Contact address that enables Unpaywall in the search for a free copy of a work whose own address refused the download | `sources.unpaywall_copies` |
+| `PLA_UNPAYWALL_EMAIL` | Contact address that enables Unpaywall in the search for a free copy of a work whose own address refused the download, where the Studio's settings give none (**„Kontaktadresse für Unpaywall“**, `studio_settings.unpaywall_email`) | `sources.unpaywall_copies` |
 | `PLA_CORE_API_KEY` | Free CORE API key; enables CORE for the same search when none was entered in the Studio ([CORE key in the Studio](SECURITY.md#core-key-in-the-studio)) | `sources.core_copies`, `studio.py` |
 | `PLA_CORE_DAILY_LIMIT` | CORE calls per UTC day, default 1000 (`sources.CORE_DAILY_LIMIT`), shared by all research workers ([Pipeline](RESEARCH.md#pipeline)) | `sources.core_usage` |
 | `PLA_CORE_USAGE_STORE` | Path of the CORE call counter instead of `~/.podcast-automate/core_usage.json` | `sources.core_usage_path` |

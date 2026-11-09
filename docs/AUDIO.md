@@ -2,13 +2,14 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-08
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
   - src/podcast_automate/google_speech.py
   - src/podcast_automate/elevenlabs_speech.py
   - src/podcast_automate/parallel_speech.py
+  - src/podcast_automate/music.py
   - src/podcast_automate/episode_audio.py
   - src/podcast_automate/expression.py
   - src/podcast_automate/spoken_forms.py
@@ -79,8 +80,8 @@ On the command line, `pla audio` records one reviewed episode with Qwen (see [Co
 - The cache key covers provider, model revision, voice, spoken segment text, pronunciation and TTS settings,
   including any seeds used. Only changed or missing segments are rendered again. Failed episodes can be resumed one
   by one.
-- Real speaker overlaps and scene-wide stage directions are not implemented; music and other audio extras: see
-  [Out of scope](PRODUCT.md#out-of-scope).
+- Real speaker overlaps and scene-wide stage directions are not implemented. A podcast may have one piece of music
+  ([Music](#music)); other audio extras: see [Out of scope](PRODUCT.md#out-of-scope).
 
 ### Errors
 
@@ -101,6 +102,32 @@ blocks the affected final export:
 - **One episode is one MP3**, whatever its length; the montage sets no length limit, because the script check bounds
   an episode before the recording ([Episode length](BUSINESS_LOGIC.md#episode-length)). Until 2026-10-04 an episode
   over 30 minutes was split into parts of at most 30 minutes; recordings made then keep their parts. (why: D-128)
+
+### Music
+
+A podcast may have one piece of music, which the montage plays before the first word, at every chapter change and
+after the last word (`music.py`, `audio.assemble`; why: D-189). `<project>/studio/music.json` names the piece under
+`studio/music/` with its SHA-256, its tempo (`bpm`, four beats a bar), where the chapter change's bars begin in it
+(`chapter_from_seconds`) and its credit (`title`, `author`, `source`, `license`). There is no Studio form for it yet.
+
+- **Opening:** the piece plays four bars alone, dips by 14 dB half a second before the first word, stays under the
+  speech for two bars and fades out over two.
+- **Chapter change:** half the chapter pause, two bars of the piece from `chapter_from_seconds`, and the new
+  chapter's first word on the bar after them, while the music dips just before it and fades out over one bar.
+- **Ending:** the piece comes in at −14 dB three bars before the last word, rises half a second after it, plays four
+  bars and fades out over two.
+- Alone it plays 3 LU under the speech's measured loudness (`audio.MUSIC_BELOW_SPEECH_LU`); the loudness pass then
+  measures speech and music together. Its bars go into the speech track as silence, so `timeline.json` stays
+  measured and lists the places under `music`; `audio_report.json` names the piece and its gain.
+- A chapter mark begins with its music, the first at 0:00, and the last ends with the music after the last word.
+- **Binding:** a recording binds the record (`inputs.json` `music`, the decision and `audio_latest.json`), and an
+  approval names its hash beside the audio choice's (`music.music_hash`, the Studio's `music_hash`). Another piece or
+  credit needs a new approval, and a file changed under its name stops with `music_changed` before anything is
+  recorded. A project without music records and hashes as before.
+- A recording made before the music came is not current any more („geändert: Musik“). Since the music is mixed in
+  the montage only, recording such an episode again takes every take from the cache: a new approval, no new speech.
+- Show notes, the episode's and the podcast's companion kit (`description.txt`, `sources.md`) name the piece as its
+  license asks, in the podcast's language (`content_text` `music_credit`), never written by a model.
 
 ### Production estimate and logging
 
@@ -254,7 +281,8 @@ choice](#a-projects-own-speech-choice)), and store the **„ElevenLabs-Key“** 
 - A 429 is the plan's limit on parallel requests (Starter 3, Creator 5, Pro 10) or a busy ElevenLabs; it waits and
   asks again up to eight times, with ElevenLabs' own throttle file for the workspace
   (`projects/.elevenlabs_throttle.json`, `elevenlabs_speech.shared_throttle`), so it never slows Gemini. After that
-  the episode stops with `elevenlabs_busy`; fewer episodes at once help on a small plan. 500, 502, 503, 504, a cut
+  the episode stops with `elevenlabs_busy`; the Studio therefore records at most three ElevenLabs episodes at once
+  ([Parallel recording and queue](#parallel-recording-and-queue)). 500, 502, 503, 504, a cut
   transfer and a reset connection are requested twice more; a lasting connection error stops with
   `elevenlabs_connection`.
 
@@ -589,6 +617,11 @@ records one at a time. Within an episode, the segments (OpenRouter) or passages 
 another. Parallel recordings share the Gemini cache with a lock per segment or passage, so no cache entry is generated
 twice. The rate-limit rules of the Google route: see [Keys, errors and limits](#keys-errors-and-limits).
 
+ElevenLabs records at most three episodes at once across all projects (`execution.MAX_ELEVENLABS_RECORDINGS`, the Starter
+plan's limit of requests at a time; a larger plan can raise the constant) (why: D-188), counted on the job's `provider`.
+Beyond the plan's limit more recordings deliver less, because a 429 pauses all of them together: ten at once made 3.8
+takes a minute on 2026-11-06, three at once 7 to 8.8.
+
 ### Rate limits and transient errors
 
 - When the provider reports a request limit (HTTP 429), all running recordings wait together, also across projects
@@ -607,7 +640,8 @@ twice. The rate-limit rules of the Google route: see [Keys, errors and limits](#
 ### Queue
 
 - An approval for which no place is free (all places taken, or a text job of the project is running) is not refused
-  but queued (`studio/audio_queue.json`).
+  but queued (`studio/audio_queue.json`). So is **„Fortsetzen“** on a stopped ElevenLabs recording while all three of its
+  places are taken, also with „Alle {n} fortsetzen“; its card then says which place it waits for.
 - The Studio's scheduler starts queued episodes in the order of their approvals as soon as a place is free and the
   key of the project's route (Google or OpenRouter) is present; after a restart, an episode otherwise shows „wartet
   auf den Google-Key“ or „wartet auf den OpenRouter-Key“ (waiting for the key).
@@ -616,7 +650,13 @@ twice. The rate-limit rules of the Google route: see [Keys, errors and limits](#
 - The page Vertonung shows the queue with **„Entfernen“** (remove) and **„{n} gelesene Folgen freigeben“**
   (approve {n} read episodes), beside **„Zuerst die Skripte lesen“** (read the scripts first): one checkmark, never
   preset, confirms that all listed scripts, including their expression, have been read, and approves them in one
-  step. As many start at once as places are free; the rest is queued.
+  step. As many start at once as places are free; the rest is queued. It covers every episode without a current
+  recording, the never voiced ones too.
+- **„{n} Folgen mit Musik neu zusammensetzen“** (assemble n episodes again with music), above it, covers only the
+  recorded episodes whose one change is the music (stale reason `music` alone, `musicOnlyRecordings`): their takes
+  come from the cache, so no new speech is sent. Its own checkmark, never preset, approves them again; they start or
+  queue as above. Why a second button: on 2026-11-08 the first would also have recorded Asimov v2's 16 episodes never
+  voiced, about 175,000 ElevenLabs credits, when only the music was to be added (D-193).
 - The Studio must stay open for this.
 
 ### Locks and stopping

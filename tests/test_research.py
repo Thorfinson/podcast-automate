@@ -208,6 +208,12 @@ class SourceTests(unittest.TestCase):
                                           env={"PLA_CORE_USAGE_STORE": str(store)})
         self.assertIn("found via CORE", handed.reliability_note)
         self.assertEqual(sent[core], {"Authorization": "Bearer core-studio-key"})
+        # And Unpaywall's contact address from the workspace settings (studio_settings.unpaywall_email, 2026-11-03).
+        from podcast_automate.sources import use_unpaywall_email
+        use_unpaywall_email("studio@example.org")
+        self.addCleanup(use_unpaywall_email, None)
+        _, asked = self.open_access_case(url, "Governing the commons", answers, env={"PLA_CORE_USAGE_STORE": str(store)})
+        self.assertIn("email=studio%40example.org", next(address for address in asked if "api.unpaywall.org" in address))
 
     def test_a_scan_without_a_text_layer_brings_a_free_copy(self):
         url, doi = "https://example.org/max-neef-scan.pdf", None

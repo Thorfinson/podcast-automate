@@ -55,7 +55,13 @@ class VersionCase(unittest.TestCase):
                                                      "sha256": "b" * 64, "bytes": 13, "added_at": "2026-10-01T00:00:00+00:00",
                                                      "tasks": ["task_old"], "run_id": COMPLETED}])
         write_json(self.root / "studio/text.json", {"provider": "claude_code", "model": "claude-haiku-5-5"})
+        write_json(self.root / "studio/audio_own.json", {"provider": "elevenlabs_tts",
+                                                         "voices": {"host_a": "S87WJpstXs0Ge2ukRiXJ",
+                                                                    "host_b": "TX3LPaxmHKxFdv7VOQHJ"}})
         write_json(self.root / "studio/allowances.json", {"fresh_attempts": 2, "extra_calls": 250})
+        (self.root / "studio/music").mkdir(parents=True)
+        (self.root / "studio/music/theme.mp3").write_bytes(b"theme")
+        write_json(self.root / "studio/music.json", {"file": "studio/music/theme.mp3", "title": "Theme"})
         research_run(self.root, COMPLETED, "completed")
         research_run(self.root, STOPPED, "blocked")
 
@@ -67,7 +73,11 @@ class CreateVersionTests(VersionCase):
         self.assertEqual(target.parent, self.projects)
         self.assertTrue(target.name.startswith("a-podcast-v2-"), target.name)
         self.assertEqual(read_yaml(target / "project.yaml"), read_yaml(self.root / "project.yaml"))
-        for relative in (UPLOAD, WORK, "inputs/attachments.json", "notes/own.txt", "style_notes.md", "studio/text.json"):
+        # The project's own audio choice too: without it the Geld podcast's seasons (2026-11-03) would have spoken
+        # with the workspace's voices instead of Mara's, Leo's and Ea-nasir's.
+        # And the podcast's music with its piece (D-189), so the new version sounds as the old one did.
+        for relative in (UPLOAD, WORK, "inputs/attachments.json", "notes/own.txt", "style_notes.md", "studio/text.json",
+                         "studio/audio_own.json", "studio/music.json", "studio/music/theme.mp3"):
             self.assertEqual((target / relative).read_bytes(), (self.root / relative).read_bytes(), relative)
         # A provided work was named for the old research's questions; the new research plans its own.
         works = json.loads((target / "inputs/works.json").read_text(encoding="utf-8"))

@@ -50,9 +50,8 @@ def episode_continuity(work, entry):
 
 
 def story_report(folder):
-    """What the episode's story agent did, for the quality report: its critiques' scores with the blocking severe
-    points each left open (D-187), the corpus sections it used beyond the material and the session's turns, duration
-    and cost by the CLI's count (D-181)."""
+    """What the episode's story agent did, for the quality report: its critiques' scores, the corpus sections it
+    used beyond the material and the session's turns, duration and cost by the CLI's count (D-181)."""
     def read(path, default):
         try:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -60,8 +59,7 @@ def story_report(folder):
             return default
     session = read(folder / "session.json", {})
     critiques = [read(path, {}) for path in sorted((folder / "requests").glob("critique_*.answer.json"))]
-    return {"critiques": [{**{key: value["score"] for key, value in answer["scores"].items()},
-                           **({"severe_open": answer["severe_open"]} if "severe_open" in answer else {})}
+    return {"critiques": [{key: value["score"] for key, value in answer["scores"].items()}
                           for answer in critiques if "scores" in answer],
             "corpus_sections": [row.get("reference") for row in read(folder / "sources_used.json", [])],
             "chapters_replanned": (folder / "outline.json").is_file(),
@@ -161,10 +159,14 @@ def render_show_notes(script, entry, dossier, source_map, *, research_id, run_id
 
 def archive_other_series(root, plan, run_id):
     """Move the episode folders of another outline to ``episodes/archive/<time>_<run>/``; nothing is deleted. A
-    folder belongs to this outline when its ``episode_plan.yaml`` is the plan's entry of the same id, as for every
-    run of one outline (a resume, a revision, one episode at a time). The recordings stay under ``exports/<ep>/<audio
-    run>/``, where the archived ``audio_latest.json`` still finds them. Before (the user's choice, 2026-10-02), a new
-    outline's scripts were published beside the old series, and old episodes the new plan lacks stayed in the Studio."""
+    folder belongs to this outline when its ``episode_plan.yaml`` is the plan's entry of the same id but for its
+    scenes and its length, as for every run of one outline (a resume, a revision, one episode at a time): a story
+    agent publishes its own chapters (D-181), and until 2026-11-03 each episode run of Asimov v2 archived the one before
+    for them; a revision (D-191) and a new episode (D-192) may have their own minutes, and on 2026-11-08 publishing Geld
+    S1's revised ep_002 (36 of 48 minutes) archived the revised ep_003 (38 of 58) for them. The recordings stay under
+    ``exports/<ep>/<audio run>/``, where the archived ``audio_latest.json`` still finds them. Before (the user's
+    choice, 2026-10-02), a new outline's scripts were published beside the old series, and old episodes the new plan
+    lacks stayed in the Studio."""
     planned = {entry.episode_id: entry for entry in plan.episodes}
     stale = []
     for folder in sorted((root / "episodes").glob("ep_*")):
@@ -172,9 +174,11 @@ def archive_other_series(root, plan, run_id):
             continue
         entry, path = planned.get(folder.name), folder / "episode_plan.yaml"
         try:
-            same = entry is not None and path.is_file() and type(entry).model_validate(read_yaml(path)) == entry
+            published = type(entry).model_validate(read_yaml(path)) if entry is not None and path.is_file() else None
         except (OSError, ValueError):
-            same = False
+            published = None
+        same = published is not None and published == entry.model_copy(
+            update={"scenes": published.scenes, "target_minutes": published.target_minutes})
         if not same:
             stale.append(folder)
     if not stale:
@@ -207,7 +211,9 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config,
         outputs.append(root / name)
     atomic_text(root / "research/series_outline.md", render_series_outline(plan, entries, language=config.language))
     outputs.append(root / "research/series_outline.md")
-    source_map = {s.id: s for s in sources.sources}
+    # A cited corpus section may come from the research's starting library (story_agent.corpus_documents, 2026-11-08).
+    from .story_agent import corpus_documents
+    source_map = {s.id: s for s in corpus_documents(root, research_id, sources.sources)}
     for entry in entries:
         script = EpisodeScript.model_validate_json((work / "reviewed" / f"{entry.episode_id}.json").read_text(encoding="utf-8"))
         folder = root / "episodes" / entry.episode_id

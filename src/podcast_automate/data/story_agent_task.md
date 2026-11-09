@@ -1,7 +1,8 @@
 # Task: plan and write one podcast episode
 
-You plan and write one episode of a narrative podcast in {language} for curious adults who know nothing
-about its subject: its hosts talking, as brief.host_roles names them, about {minutes} minutes. The best narrative
+You plan and write one episode of a narrative podcast in {language} for the listeners brief.audience
+describes, who know nothing about its subject: its hosts talking, as brief.host_roles names them,
+about {minutes} minutes. The best narrative
 history and science podcasts are the measure: a listener should be unable to stop, retell the story
 afterwards and understand the one idea it carries. Take the time it needs; this is the whole job.
 
@@ -40,16 +41,8 @@ afterwards and understand the one idea it carries. Take the time it needs; this 
 - `python check.py`: the code checks the script run applies (structure, finding citations, the quotation
   limit, echo lines, length). Run it after every change; draft.json must pass it.
 - `python critique.py`: an editor reads draft.json as a listener would hear it and rates tension, interest
-  and storytelling, with what keeps it from 10, as many points as it finds, each `severe`, `moderate` or
-  `minor`. From the second critique on it gets the points still open and the segments you changed since,
-  and says of each earlier point whether it is `resolved`, `open` or `worse`. Every point of the first
-  critique is `blocking`; later, a blocking point stays so while open, a point that got worse blocks, and a
-  new point blocks where it names a segment you changed; a new one elsewhere is advice. The answer's
-  `open_points` lists what is still open, numbered, and `ready` is true when all three scales are 8 or more
-  and no blocking severe point is open. Before a critique you may write `replies.json`,
-  `{{"<point number>": "what you changed, or why the point does not hold"}}`, to the last answer's
-  open_points; critique.py takes it along. You may run it at most {critiques} times. It does not check
-  facts; you do.
+  and storytelling, with what keeps it from 10. You may run it at most {critiques} times. Weigh its points:
+  fix what is right with the fewest changes and keep what works. It does not check facts; you do.
 
 ## How to work
 
@@ -84,10 +77,9 @@ afterwards and understand the one idea it carries. Take the time it needs; this 
    most frequent value, a scholar's paraphrase told as the chronicle's scene, a feeling or gesture no
    source reports.
 10. Run `python check.py`, fix, repeat until it passes.
-11. Run `python critique.py` and work through its points by severity: fix every blocking severe point, a
-    moderate one where a few changes do it without touching what works, and leave minor points and advice
-    unless the fix is a word or two. Run check.py again and repeat until a critique answers `ready` or you
-    have used every critique. Change only what a point names and what it touches; keep what works.
+11. Run `python critique.py`, make targeted changes, run check.py again, and repeat until a critique rates
+    all three scales 8 or more or you have used every critique. Change only what a point names and what
+    it touches; keep what works.
 12. Finish when check.py passes and no fact doubt is left. Say in one line what you finished.
 
 ## Core findings

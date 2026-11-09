@@ -12,7 +12,7 @@ from podcast_automate.models import Segment
 from podcast_automate.research_models import Evidence
 from podcast_automate.teaching_research import FoundationExplanation, FoundationSupplement
 from podcast_automate.narration import (MissingStory, StoryItem, StoryMaterial, allowed_sections, scope_errors,
-                                        story_material, with_neighbours)
+                                        story_material, unnamed_refs_kept, with_neighbours)
 from podcast_automate.scripting import run_script
 from tests import script_fixtures as fixtures
 
@@ -106,6 +106,24 @@ class ScopedRepairTests(unittest.TestCase):
         far = draft.model_copy(update={"segments": [
             s.model_copy(update={"text": "Anders."}) if s.segment_id == "seg_005" else s for s in draft.segments]})
         self.assertEqual(len(scope_errors(draft, far, with_neighbours(draft, {"seg_003"}))), 1)
+
+    def test_references_a_rework_changes_outside_its_scope_are_put_back_and_its_words_still_count(self):
+        """Asimov v2 ep_008, 2026-11-04: every repair copied the review's sections into the empty source_refs of
+        eight unnamed segments, words unchanged, and twelve answers were refused. Such a segment is put back as it
+        was; a named one keeps its new references, and a changed word outside the scope is still refused."""
+        draft = fixtures.example_script()
+        first, second = draft.segments
+        cited = reworked(second.text).model_copy(update={"segments": [
+            first.model_copy(update={"source_refs": ["src_a#sec_1"], "knowledge_refs": []}),
+            second.model_copy(update={"source_refs": ["src_a#sec_2"]})]})
+        kept = unnamed_refs_kept(draft, cited, {"seg_002"})
+        self.assertEqual(kept.segments, [first, cited.segments[1]])
+        self.assertEqual(scope_errors(draft, kept, {"seg_002"}), [])
+        self.assertEqual(scope_errors(draft, cited, {"seg_002"}),
+                         ["seg_001: no review point names this segment; keep it exactly as it was."])
+        worded = cited.model_copy(update={"segments": [cited.segments[0].model_copy(update={"text": "Anders."}),
+                                                       cited.segments[1]]})
+        self.assertEqual(len(scope_errors(draft, unnamed_refs_kept(draft, worded, {"seg_002"}), {"seg_002"})), 1)
 
 class StoryResearchTests(unittest.TestCase):
     """A whole script run whose story material names a story its sections only point to."""

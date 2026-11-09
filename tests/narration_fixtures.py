@@ -6,8 +6,7 @@ from podcast_automate.story_agent import (CritiqueScores, OrientationCheck, Orie
 
 def narration_response(output_type):
     """The fixture answer for the story material or a call of the story agent's run, or None for any other schema:
-    an empty story material, a one-entry orientation sheet the check finds correct, and a critique of 8 throughout
-    without points, which is ready."""
+    an empty story material, a one-entry orientation sheet the check finds correct, and a critique of 8 throughout."""
     if output_type is StoryMaterial:
         return StoryMaterial(items=[])
     if output_type is OrientationSheet:
@@ -17,6 +16,5 @@ def narration_response(output_type):
         return OrientationReview(checks=[OrientationCheck(name="Probe", verdict="correct")])
     if output_type is StoryCritique:
         scale = Scale(score=8, reason="Trägt.")
-        return StoryCritique(scores=CritiqueScores(tension=scale, interest=scale, storytelling=scale), earlier=[],
-                             keeps_from_10=[])
+        return StoryCritique(scores=CritiqueScores(tension=scale, interest=scale, storytelling=scale), keeps_from_10=[])
     return None

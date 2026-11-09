@@ -29,6 +29,7 @@ from .content_text import text as wording, transparency_lines, transparency_text
 from .episode_audio import expression_invoke, script_text_generation
 from .errors import AppError
 from .models import Contract, EpisodeScript, NonEmpty, ResearchLimits, RunManifest, host_labels, now
+from .music import credit_line
 from .prompts import instructions
 from .provider_pool import AdapterPool
 from .research_models import SourceIndex, is_idea
@@ -179,7 +180,9 @@ def current_recording(root, episode, script, script_hash, *, hash_audio=True):
     return {"run_id": report.get("run_id"), "folder": audio.parent, "audio": audio.relative_to(root).as_posix(),
             "audio_sha256": file_hash(audio) if hash_audio else None,
             "chapters_sha256": file_hash(audio.parent / "chapters.json"),
-            "duration_seconds": part.get("duration_seconds"), "starts": starts}
+            "duration_seconds": part.get("duration_seconds"), "starts": starts,
+            # The music the recording plays, whose credit the kit carries (D-189); None without.
+            "music": report.get("music")}
 
 
 def kit_folder(root, episode, recording):
@@ -237,6 +240,10 @@ def run_evidence(work):
             for finding_id in answer.get("finding_ids", []):
                 if finding_id in refs:
                     refs[finding_id].extend(r for r in added if r not in refs[finding_id])
+    # A story agent's segment may cite a section of the research's starting library (story_agent.corpus_documents).
+    from .story_agent import library_documents
+    for source in library_documents(work.parents[1], inputs.get("research_run")):
+        documents.setdefault(source.id, source)
     return refs, documents, works, inputs.get("research_run")
 
 
@@ -331,10 +338,17 @@ def source_entry(number, row):
             + (f" <{row['url']}>" if row["url"] else ""))
 
 
-def sources_markdown(title, rows, language):
+def music_block(music, language):
+    """The credit of each piece of music, as its license asks, after the sources (D-189)."""
+    return ["", f"## {wording(language, 'music_heading')}", "", *(credit_line(record, language) for record in music)]
+
+
+def sources_markdown(title, rows, language, music=()):
     lines = [f"# {wording(language, 'kit_sources_title', title=title)}", "",
              wording(language, "kit_sources_note" if rows else "kit_no_sources"), ""]
     lines.extend(source_entry(number, row) for number, row in enumerate(rows, 1))
+    if music:
+        lines.extend(music_block(music, language))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -347,12 +361,12 @@ def transparency_block(language, *, podcast=False):
     return "\n\n" + transparency_text(language, podcast=podcast)
 
 
-def compose_description(long, chapters, sources, language):
+def compose_description(long, chapters, sources, language, music=()):
     """The text to paste into a platform: the long description, the chapter marks, then as many sources as fit into
-    DESCRIPTION_LIMIT, the rest counted, and last the transparency note, which counts against the limit too. Returns
-    the text and the number of sources listed."""
+    DESCRIPTION_LIMIT, the rest counted, and last the music's credit (D-189) and the transparency note, which count
+    against the limit too. Returns the text and the number of sources listed."""
     head = long + "\n\n" + wording(language, "kit_chapters") + "\n" + "\n".join(chapter_line(row) for row in chapters)
-    tail = transparency_block(language)
+    tail = "".join("\n\n" + credit_line(record, language) for record in music) + transparency_block(language)
     if len(head) + len(tail) > DESCRIPTION_LIMIT:
         raise AppError(f"Beschreibung, Kapitel und Transparenzhinweis überschreiten {DESCRIPTION_LIMIT} Zeichen.",
                        code="description_too_long", status="blocked")
@@ -453,11 +467,12 @@ def build_publish_kit(root, episode, *, api_key=None, fresh=False):
         chapters = chapter_marks(script, recording)
         descriptions, reused = episode_descriptions(root, config, manifest, script, entry, script_hash,
                                                     api_key=api_key, fresh=fresh)
-        text, listed = compose_description(descriptions["long"], chapters, sources, config.language)
+        music = [recording["music"]] if recording and recording.get("music") else []
+        text, listed = compose_description(descriptions["long"], chapters, sources, config.language, music)
         folder = kit_folder(root, episode, recording)
         atomic_text(folder / "description_short.txt", descriptions["short"] + "\n")
         atomic_text(folder / "description.txt", text + "\n")
-        atomic_text(folder / "sources.md", sources_markdown(script.title, sources, config.language))
+        atomic_text(folder / "sources.md", sources_markdown(script.title, sources, config.language, music))
         kit = {"version": KIT_VERSION, "episode_id": episode, "title": script.title, "language": config.language,
                "script_sha256": script_hash, "script_run_id": manifest.run_id, "research_run_id": research_run,
                "recording": None if recording is None else {key: recording[key] for key in RECORDING_KEYS},
@@ -548,14 +563,27 @@ def podcast_sources(per_episode):
     return merged
 
 
-def podcast_sources_markdown(topic, rows, numbers, language):
-    """Every source of the series with the episodes that use it; ``numbers`` maps an episode id to its number."""
+def podcast_sources_markdown(topic, rows, numbers, language, music=()):
+    """Every source of the series with the episodes that use it; ``numbers`` maps an episode id to its number. Then
+    the credit of every piece of music the recordings play (D-189)."""
     lines = [f"# {wording(language, 'kit_sources_title', title=topic)}", "",
              wording(language, "podcast_sources_note" if rows else "podcast_no_sources"), ""]
     for number, row in enumerate(rows, 1):
         used = ", ".join(wording(language, "episode", number=numbers[episode]) for episode in row["episodes"])
         lines.append(source_entry(number, row) + " " + wording(language, "podcast_used_in", episodes=used))
+    if music:
+        lines.extend(music_block(music, language))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def recorded_music(episodes):
+    """Each piece of music the episodes' latest recordings play, once, in episode order."""
+    music = []
+    for item in episodes:
+        record = (item["recording"] or {}).get("music")
+        if record and record not in music:
+            music.append(record)
+    return music
 
 
 def podcast_transcript(topic, episodes, labels, language):
@@ -629,11 +657,14 @@ def build_podcast_kit(root, *, api_key=None, fresh=False):
             version=PODCAST_DESCRIPTIONS_VERSION, prompt_version=PODCAST_PROMPT_VERSION,
             binding={"episodes": {item["episode_id"]: item["script_sha256"] for item in episodes}},
             api_key=api_key, fresh=fresh)
-        text = descriptions["long"] + transparency_block(config.language, podcast=True)
+        music = recorded_music(episodes)
+        text = (descriptions["long"] + "".join("\n\n" + credit_line(record, config.language) for record in music)
+                + transparency_block(config.language, podcast=True))
         numbers = {item["episode_id"]: item["number"] for item in episodes}
         atomic_text(folder / "description_short.txt", descriptions["short"] + "\n")
         atomic_text(folder / "description.txt", text + "\n")
-        atomic_text(folder / "sources.md", podcast_sources_markdown(config.topic, sources, numbers, config.language))
+        atomic_text(folder / "sources.md", podcast_sources_markdown(config.topic, sources, numbers, config.language,
+                                                                    music))
         atomic_text(folder / "transcript.md", podcast_transcript(config.topic, episodes, host_labels(config),
                                                                  config.language))
         kit = {"version": PODCAST_KIT_VERSION, "topic": config.topic, "language": config.language,

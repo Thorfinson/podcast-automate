@@ -33,7 +33,7 @@ from .teaching_research import gaps_in
 from .elevenlabs_speech import ElevenLabsSpeech
 from .google_speech import GoogleSpeech
 from .publish_kit import build_podcast_kit, build_publish_kit
-from .sources import use_core_key
+from .sources import use_core_key, use_unpaywall_email
 from .speech import GeminiSpeech, selected_audio
 from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
@@ -264,30 +264,14 @@ def perform(root, request, sample_progress=None):
         outline = request["run_id"]
         if action == "script":
             approve_outline(root, outline, request["plan_hash"])
-        run = None
-        while True:
-            episode = (request.get("episode") if action == "episode" and run is None else None) or \
-                next_episode(root, outline)
-            if episode is None or (run is not None and action != "episodes"):
-                break
-            run = run_script(root, episode=episode, outline_run=outline, probe_key=probe_key(root, request),
-                             **search, **kwargs)
-            express_published(root, run, request.get("api_key"))
-            if run.status != "completed":
-                break
-        if run is None:
-            raise AppError("Alle Folgen dieses Inhaltsverzeichnisses sind geschrieben.", code="series_written",
-                           status="blocked")
-        result = {"run": run.model_dump(mode="json")}
-        if run.status == "completed" and next_episode(root, outline) is None:
-            result["series_review"] = series_review_after(root, outline, kwargs)
-        return result
+        return write_in_order(root, outline, request, search, kwargs, chain=action == "episodes",
+                              episode=request.get("episode") if action == "episode" else None)
     elif action == "series_review":
         review = run_series_review(root, outline_run=request["run_id"],
                                    **{key: kwargs[key] for key in ("backend", "model", "reasoning_effort") if key in kwargs})
         return {"run": review.model_dump(mode="json")}
     elif action == "revise":
-        run = run_script(root, revise=request["episode"], feedback=request["message"],
+        run = run_script(root, revise=request["episode"], feedback=request["message"], minutes=request.get("minutes"),
                          probe_key=probe_key(root, request), **search, **kwargs)
     elif action == "expression":
         episodes = request.get("episodes") or sorted(folder.name for folder in (root / "episodes").glob("ep_*")
@@ -313,7 +297,8 @@ def perform(root, request, sample_progress=None):
             expected_config_hash=request["config_hash"], audio_choice=request.get("audio_settings"),
             expected_audio_hash=request.get("audio_hash"), api_key=request.get("api_key"),
             parallel_remote=request.get("parallel_remote", False), expected_expression_hash=request.get("expression_hash"),
-            speech_key=request.get("google_key"), elevenlabs_key=request.get("elevenlabs_key"))
+            speech_key=request.get("google_key"), elevenlabs_key=request.get("elevenlabs_key"),
+            expected_music_hash=request.get("music_hash"))
     elif action == "resume":
         run_id = request["run_id"]
         path = manifest_path(root, run_id)
@@ -337,6 +322,13 @@ def perform(root, request, sample_progress=None):
             else:
                 run = run_script(root, resume=True, run_id=run_id, plan_only=plan_only,
                                  api_key=text_key(root, request, run_id), probe_key=probe_key(root, request, run_id))
+                if request.get("series") and run.status == "completed":
+                    # An episode run of "episodes" that stopped: its resume goes on with the remaining episodes as the
+                    # stopped job would have (Studio.series_outline names the outline), at the length it was given.
+                    express_published(root, run, request.get("api_key"))
+                    minutes = (read_json(path.parent / "inputs.json", {}) or {}).get("episode_minutes")
+                    return write_in_order(root, request["series"], {**request, "minutes": minutes}, search, kwargs,
+                                          chain=True, run=run)
         elif manifest["kind"] == "research":
             # Also for the scheduler's automatic resume after a quota reset: the gate is never bypassed.
             run = run_research(root, resume=True, run_id=run_id, plan_review="required",
@@ -352,6 +344,28 @@ def perform(root, request, sample_progress=None):
     if action in {"revise", "resume"}:
         express_published(root, run, request.get("api_key"))
     return {"run": run.model_dump(mode="json")}
+
+
+def write_in_order(root, outline, request, search, kwargs, *, chain, episode=None, run=None) -> dict:
+    """Write the outline's episodes one run each (D-184): ``episode`` or the next unwritten one, with ``chain`` every
+    remaining one after it, stopping where one stops. ``run`` is an episode run of the outline already finished, as a
+    resumed one is; the chain goes on after it. The request's ``minutes`` give every episode it writes that length
+    instead of the outline's (D-192). Once all are written, the series review reads them together."""
+    while run is None or (chain and run.status == "completed"):
+        episode = episode or next_episode(root, outline)
+        if episode is None:
+            break
+        run = run_script(root, episode=episode, outline_run=outline, probe_key=probe_key(root, request),
+                         minutes=request.get("minutes"), **search, **kwargs)
+        express_published(root, run, request.get("api_key"))
+        episode = None
+    if run is None:
+        raise AppError("Alle Folgen dieses Inhaltsverzeichnisses sind geschrieben.", code="series_written",
+                       status="blocked")
+    result = {"run": run.model_dump(mode="json")}
+    if run.status == "completed" and next_episode(root, outline) is None:
+        result["series_review"] = series_review_after(root, outline, kwargs)
+    return result
 
 
 def series_review_after(root, outline, kwargs) -> dict:
@@ -431,6 +445,8 @@ def main():
     use_worker_key("perplexity", request.get("perplexity_key"))
     add_secret(request.get("core_key"))
     use_core_key(request.get("core_key"))
+    # Not a secret: the workspace setting, read where the worker starts, so every source import of its job sees it.
+    use_unpaywall_email(studio_settings.unpaywall_email(root))
     configure_logging(root / "studio/worker.log")
     job_path = audio_job_path(root, request["audio_job_id"]) if request.get("audio_job_id") else root / "studio/job.json"
     job = read_json(job_path)

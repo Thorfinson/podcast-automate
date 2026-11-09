@@ -2,7 +2,7 @@
 title: Product
 doc_type: product
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-08
 covers:
   - src/podcast_automate/text_settings.py
   - src/podcast_automate/speech.py
@@ -228,7 +228,8 @@ preconditions: [Run kinds and order](BUSINESS_LOGIC.md#run-kinds-and-order).
   repetition are outside the MVP. They create no required fields, prompt stages, exports or acceptance criteria for
   deep-dive series. Tutor learning goals, Bloom levels and quiz data are not required parts of the knowledge model.
 - **Later options.** A web app, team features and automatic publishing.
-- **Audio extras.** Music, elaborate sound design and a third host are not prerequisites for the first MVP.
+- **Audio extras.** Elaborate sound design is not a prerequisite for the first MVP. A third host (D-179) and one
+  piece of music per podcast at the opening, the chapter changes and the end (D-189) exist since.
 - **What the system does not do.** Human subject-matter and listening acceptance (your part, see
   [Acceptance procedure](QUALITY.md#acceptance-procedure)), public rights clearance of individual sources, and a
   general anonymisation of personal data. Public export stays outside the MVP

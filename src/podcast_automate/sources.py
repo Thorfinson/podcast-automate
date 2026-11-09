@@ -393,8 +393,8 @@ def open_access_copies(candidate, limit=3):
 
 # After OpenAlex, further free services are asked one after another until a copy reads (2026-10-01: for 26 of the
 # 34 addresses Asimov's run could not read, OpenAlex alone had no copy). Unpaywall wants a contact address and CORE
-# a free key; each is asked only when the user has set it (PLA_UNPAYWALL_EMAIL; CORE's key in the Studio's settings
-# or PLA_CORE_API_KEY).
+# a free key; each is asked only when the user has set it (both in the Studio's settings, or PLA_UNPAYWALL_EMAIL and
+# PLA_CORE_API_KEY).
 UNPAYWALL = "https://api.unpaywall.org/v2/"
 SEMANTIC_SCHOLAR = "https://api.semanticscholar.org/graph/v1/paper/"
 EUROPE_PMC = "https://www.ebi.ac.uk/europepmc/webservices/rest/"
@@ -402,8 +402,18 @@ CORE = "https://api.core.ac.uk/v3/search/works"
 PMCID = re.compile(r"PMC\d{4,10}", re.I)
 
 
+_unpaywall_email = ""
+
+
+def use_unpaywall_email(address) -> None:
+    """The contact address a Studio worker read from the workspace settings (studio_settings.unpaywall_email); empty
+    falls back to PLA_UNPAYWALL_EMAIL. Until 2026-11-03 only the variable existed, and no Studio run asked Unpaywall."""
+    global _unpaywall_email
+    _unpaywall_email = address or ""
+
+
 def unpaywall_copies(candidate, doi):
-    email = os.environ.get("PLA_UNPAYWALL_EMAIL", "").strip()
+    email = (_unpaywall_email or os.environ.get("PLA_UNPAYWALL_EMAIL", "")).strip()
     if not doi or not email:
         return []
     data = lookup(f"{UNPAYWALL}{urllib.parse.quote(doi, safe='/')}?email={urllib.parse.quote(email)}") or {}

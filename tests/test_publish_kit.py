@@ -363,6 +363,27 @@ class PublishKitTests(KitCase):
         self.assertEqual((code, json.loads(output.getvalue())["code"]), (1, "unknown_episode"))
 
 
+class MusicCreditTests(KitCase):
+    def test_a_recording_with_music_credits_it_in_the_descriptions_and_the_sources(self):
+        """D-189, the user's wish of 2026-11-08: the companion material names the music as its license asks."""
+        music = {"file": "studio/music/theme.mp3", "sha256": "0" * 64, "bpm": 120.0, "chapter_from_seconds": 8.0,
+                 "title": "night shift 1x78", "author": "Setuniman", "source": "https://freesound.org/s/822301/",
+                 "license": "CC BY-NC 4.0"}
+        export = self.record()
+        latest = self.root / "episodes/ep_001/audio_latest.json"
+        write_json(latest, {**json.loads(latest.read_text(encoding="utf-8")), "music": music})
+        credit = "Musik: „night shift 1x78“ von Setuniman (https://freesound.org/s/822301/), Lizenz CC BY-NC 4.0."
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool([{"short": SHORT, "long": LONG},
+                                                                         {"short": PODCAST_SHORT, "long": PODCAST_LONG}], [])):
+            build_publish_kit(self.root, "ep_001")
+            build_podcast_kit(self.root)
+        self.assertIn(f"\n\n{credit}\n\n{NOTE_DE}", (export / "publish/description.txt").read_text(encoding="utf-8"))
+        self.assertTrue((export / "publish/sources.md").read_text(encoding="utf-8").endswith(f"## Musik\n\n{credit}\n"))
+        self.assertEqual((self.root / "publish/description.txt").read_text(encoding="utf-8"),
+                         f"{PODCAST_LONG}\n\n{credit}\n\n{NOTE_DE}\n{AI_PODCAST_DE}\n")
+        self.assertTrue((self.root / "publish/sources.md").read_text(encoding="utf-8").endswith(f"## Musik\n\n{credit}\n"))
+
+
 class PodcastTextTests(unittest.TestCase):
     """The whole podcast's source list and transcript (2026-10-07, D-165), built from the data alone."""
 

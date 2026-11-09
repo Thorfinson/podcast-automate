@@ -20,6 +20,7 @@ from podcast_automate.script_checks import script_metrics, validate_script
 from podcast_automate.scripting import run_script
 from podcast_automate.speech import THIRD_VOICES, AudioChoice, audio_catalog, selected_audio
 from podcast_automate.storage import bound_brief, project_hash, read_yaml, write_json, write_yaml
+from podcast_automate.studio import Studio
 from tests import script_fixtures as fixtures
 from tests.test_elevenlabs_speech import dialogue_answer
 from tests.test_google_speech import segments, spoken_answer
@@ -356,6 +357,11 @@ class ThreeHostScriptRunTests(fixtures.ScriptProjectCase):
         tts = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
         voiced = AudioChoice.model_validate(choice).for_hosts(read_yaml_brief(root))
         self.assertEqual(len(check_elevenlabs_rows(root, script, tts, voiced, "de-DE")), len(bodies))
+        # The Studio counts the recording as current: it compares the voices the recording spoke, the third host's
+        # included (2026-11-08: every recording of Geld verstehen read „geändert: Stimmen“ although it spoke the
+        # chosen voices, so only new speech seemed to bring its music in).
+        rows = Studio(root.parent).episode_rows(root, read_yaml_brief(root), AudioChoice.model_validate(choice))
+        self.assertEqual((rows[0]["audio_current"], rows[0]["audio_stale"]), (True, []))
 
 
 def read_yaml_brief(root):

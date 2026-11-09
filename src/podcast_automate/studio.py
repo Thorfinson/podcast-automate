@@ -26,7 +26,8 @@ from pydantic import Field
 
 from .errors import AppError
 from . import attachments
-from .execution import (ExecutionChoice, MAX_PARALLEL, default_jev_probe, jev_probe_enabled, jev_probe_state,
+from .execution import (ExecutionChoice, MAX_ELEVENLABS_RECORDINGS, MAX_PARALLEL, default_jev_probe, jev_probe_enabled,
+                        jev_probe_state,
                         selected_execution, set_jev_probe,
                         settings_execution)
 from .logs import add_secret, configure_logging, logger, scrub
@@ -41,11 +42,12 @@ from .run_budget import (approve_criterion_gap, approve_model_call_limit, approv
                          text_switch)
 from .subscriptions import parse_iso
 from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, run_rate
-from .scripting import (next_episode, outline_episodes as outline_rows, outline_hash, outline_series_review,
-                        script_metrics, style_notes)
+from .scripting import (REVISION_MINUTES, next_episode, outline_episodes as outline_rows, outline_hash,
+                        outline_series_review, script_metrics, style_notes)
 from .elevenlabs_speech import account_voices
-from .speech import (OWN_AUDIO, AudioChoice, GEMINI_VOICES, PASSAGE_PROVIDERS, QWEN_VOICES, REMOTE_PROVIDERS,
+from .speech import (ELEVENLABS_PROVIDER, OWN_AUDIO, AudioChoice, GEMINI_VOICES, PASSAGE_PROVIDERS, QWEN_VOICES, REMOTE_PROVIDERS,
                      audio_catalog, audio_generation_record, own_audio, selected_audio, same_audio_generation)
+from .music import music_hash, music_record, stored_music
 from .storage import (atomic_text, digest, file_hash, file_lock, init_project, inside, load_project, project_hash,
                       project_lock, read_text, read_yaml, write_json, write_yaml)
 from .publish_kit import PODCAST_FILES, PODCAST_FOLDER, saved_kit, saved_podcast_kit
@@ -169,14 +171,28 @@ def status_view(data):
     return view
 
 
-def stale_reasons(report, script_hash, voices, stored, current):
-    """Why a recording no longer matches its episode, as the page names it: "script", "voices", or each field of the
-    audio choice that differs (expression aside, as in same_audio_generation)."""
+def project_music(root):
+    """The project's music as the page shows it, and the record a recording binds: (None, None) without music, a view
+    with ``error`` when studio/music.json or its file no longer holds (music.music_choice)."""
+    try:
+        record = music_record(root)
+    except AppError as exc:
+        return {"error": exc.args[0] if exc.args else exc.code, "code": exc.code}, None
+    if record is None:
+        return None, None
+    return {key: record[key] for key in ("title", "author", "source", "license")}, record
+
+
+def stale_reasons(report, script_hash, voices, stored, current, music=None):
+    """Why a recording no longer matches its episode, as the page names it: "script", "voices", "music" (D-189), or
+    each field of the audio choice that differs (expression aside, as in same_audio_generation)."""
     reasons = []
     if report.get("script_sha256") != script_hash:
         reasons.append("script")
     if report.get("voices") != voices:
         reasons.append("voices")
+    if report.get("music") != music:
+        reasons.append("music")
     try:
         first, second = (AudioChoice.model_validate(value).model_dump() for value in (stored, current))
     except (ValueError, TypeError):
@@ -615,6 +631,46 @@ def queue_error(row):
     return {"error": str(error), "error_code": row.get("error_code"), "error_language": message_language(error)}
 
 
+def read_revisions(root):
+    """Revisions asked for while their project was working (Studio.enqueue_revision, D-191), and the outline's
+    remaining episodes asked for so (D-192), in the order asked."""
+    rows = read_json(root / "studio/revision_queue.json", [])
+    return rows if isinstance(rows, list) else []
+
+
+def write_revisions(root, rows):
+    write_json(root / "studio/revision_queue.json", rows)
+
+
+# The text jobs that wait in the revision queue, and the key of the row that writes the outline's remaining episodes.
+QUEUED_TEXT_ACTIONS = {"revise", "episodes"}
+SERIES_KEY = "episodes"
+
+
+def revision_key(row):
+    """A waiting row's key: its episode for a revision, SERIES_KEY for the outline's remaining episodes (D-192)."""
+    return SERIES_KEY if (row.get("data") or {}).get("action") == "episodes" else row.get("episode")
+
+
+def revision_queue_view(rows):
+    """The waiting rows as the reader and the series page show them: what, place, length and the start of the
+    feedback."""
+    return [{"episode": row.get("episode"), "key": revision_key(row),
+             "action": (row.get("data") or {}).get("action", "revise"), "position": number,
+             "queued_at": row.get("queued_at"), "minutes": (row.get("data") or {}).get("minutes"),
+             "message": str((row.get("data") or {}).get("message", ""))[:240],
+             **(queue_error(row) if row.get("error") else {})}
+            for number, row in enumerate(rows, 1)]
+
+
+def revisions_held(root):
+    """Whether a stopped script run of the project holds the waiting revisions. A new script job takes job.json and
+    supersedes a paused job of its own lane (park), so a queued revision started over a stopped run would take its
+    stop card and decisions with it; the queue waits until the run is resumed and done."""
+    return any((job := read_json(path, {}) or {}).get("status") in ATTENTION and lane(job) == "script"
+               for path in (root / "studio/job.json", root / "studio/paused_script.json"))
+
+
 # What of a project can need a key, in the order the reminder names them (web/app.js KEY_NEED_TEXT), and which key.
 KEY_NEEDS = ("google_audio", "elevenlabs_audio", "gemini_audio", "jev", "openrouter_text", "anthropic_text",
              "perplexity_search")
@@ -772,8 +828,13 @@ def episode_view(folder, table, table_key, language):
         except (OSError, ValueError, KeyError, TypeError):
             rate = SPOKEN_WORDS_PER_MINUTE
         metrics = script_metrics(script, rate)
+        # The length the episode was written for, which a revision keeps unless the reader gives another
+        # (scripting.revision_minutes).
+        plan = read_yaml(folder / "episode_plan.yaml") if (folder / "episode_plan.yaml").is_file() else {}
+        planned = plan.get("target_minutes") if isinstance(plan, dict) else None
         return {"script": script.model_dump(), "hash": file_hash(script_file),
                 "readable_hash": file_hash(folder / "script.md"), "metrics": metrics,
+                "planned_minutes": planned if isinstance(planned, (int, float)) else None,
                 "spoken_overrides": overrides,
                 # Computed from the published text, the table and the overrides, with no model
                 # call, so a reader sees the difficult tokens before the first audio run.
@@ -786,7 +847,8 @@ def episode_view(folder, table, table_key, language):
                 "listening_note": decision.get("listening_note", ""),
                 "human_listening_reviewed": bool(decision.get("human_listening_reviewed"))}
     return memo(("episode", str(folder), table_key, language),
-                [script_file, folder / "script.md", decision_file, folder / "latest.json"], compute)
+                [script_file, folder / "script.md", decision_file, folder / "latest.json", folder / "episode_plan.yaml"],
+                compute)
 
 
 # Each key's attribute on the Studio, and the environment variable a server may carry it in instead (D-167).
@@ -1269,7 +1331,8 @@ class Studio:
         raise AppError(t("server.approve.unknown"), code="invalid_action")
 
     def enqueue_audio(self, root, episode, data):
-        """Keep an approved Gemini recording until a place is free; a newer approval of the episode replaces it."""
+        """Keep an approved recording, or a resumed ElevenLabs one, until a place is free; a newer request for the
+        episode replaces it."""
         rows = [row for row in read_queue(root) if row.get("episode") != episode]
         request = {key: value for key, value in data.items() if key not in {"from_queue", "api_key"}}
         # The approval's interface language travels with it, so its start writes in it (start, D-152).
@@ -1277,6 +1340,60 @@ class Studio:
         rows.append({"episode": episode, "queued_at": now(), "data": request})
         write_queue(root, rows)
         return {"queued": True, "episode": episode, "position": len(rows)}
+
+    def enqueue_revision(self, root, request):
+        """Keep a revision, or the outline's remaining episodes, asked for while the project works until it is free
+        (start_revisions, D-191, D-192). ``request`` is start's checked one (feedback, length); a newer request for
+        the same episode, or for the remaining episodes, replaces its row, at the end."""
+        row = {"episode": request.get("episode") if request["action"] == "revise" else None, "queued_at": now(),
+               # The request's interface language travels with it, so its start writes in it (start, D-152).
+               "data": {**request, "ui_language": studio_text.current_language()}}
+        rows = [item for item in read_revisions(root) if revision_key(item) != revision_key(row)]
+        rows.append(row)
+        write_revisions(root, rows)
+        return {"queued": True, "episode": row["episode"], "key": revision_key(row), "position": len(rows)}
+
+    def revision_queue(self, project, data):
+        """Take a waiting row out of the queue: an episode's revision, or the remaining episodes (``key``)."""
+        root = self.root(project)
+        key = data.get("key", data.get("episode"))
+        if not isinstance(key, str):
+            raise AppError(t("server.queue.episode"), code="unknown_episode")
+        rows = [row for row in read_revisions(root) if revision_key(row) != key]
+        write_revisions(root, rows)
+        return {"revision_queue": revision_queue_view(rows)}
+
+    def start_revisions(self):
+        """Waiting rows start one at a time, in the order asked, once their project is free (D-191): no job and no
+        recording of it runs, a place is free, and no stopped script run holds them (revisions_held). Each start
+        checks the request again (start's own rules); one refused keeps its reason, and the next one goes on. A row
+        of the remaining episodes (D-192) starts as „Alle weiteren Folgen“ would, at its length."""
+        started = []
+        for path in sorted(self.projects.glob("*/studio/revision_queue.json")):
+            root, project = path.parents[1], path.parents[1].name
+            with self.mutex:
+                rows = [row for row in read_revisions(root) if not row.get("error")]
+                if not rows or revisions_held(root) or not self.ready_to_start(root):
+                    continue
+                row = rows[0]
+                try:
+                    self.start(project, {**row["data"], "from_queue": True})
+                except AppError as exc:
+                    if exc.code in {"project_busy", "studio_capacity", "studio_restarting"}:
+                        continue
+                    saved = read_revisions(root)
+                    for item in saved:
+                        if revision_key(item) == revision_key(row):
+                            stored_message(item, exc.args[0] if exc.args else str(exc), "error")
+                            item["error_code"] = exc.code
+                    write_revisions(root, saved)
+                    logger("studio").warning("Auftrag aus der Warteschlange der Überarbeitungen nicht gestartet (%s): %s",
+                                             exc.code, exc)
+                    continue
+                started.append((project, revision_key(row)))
+                logger("studio").info("Auftrag aus der Warteschlange der Überarbeitungen gestartet: %s %s", project,
+                                      revision_key(row))
+        return started
 
     def audio_queue(self, project, data):
         """Take an episode out of the recording queue."""
@@ -1494,6 +1611,22 @@ class Studio:
                 return job["ui_language"]
         return None
 
+    def series_outline(self, root, run_id):
+        """The current outline's run id when the stopped script run ``run_id`` was written by "alle weiteren Folgen" (an
+        ``episodes`` job, or a resume of one) from that outline and the outline is still approved, else None. Its
+        resume, by hand or by the scheduler, then writes the remaining episodes too. 2026-11-04: Orlagau v2's ep_003
+        stopped at its review, an allowance resumed it, and ep_004 to ep_013 were never begun."""
+        jobs = [read_json(path, {}) or {} for path in [root / "studio/job.json", *parked_paths(root)]]
+        if not any((job.get("run") or {}).get("run_id") == run_id and
+                   (job.get("action") == "episodes" or job.get("series") is True) for job in jobs):
+            return None
+        work = self.outline_work(root)
+        if work is None or (read_json(work / "plan_approval.json") or {}).get("plan_hash") != self.outline_hash(work):
+            return None
+        # An episode run copies its outline's series_plan.json byte for byte (scripting.outline_episodes).
+        plan = manifest_path(root, run_id).parent / "series_plan.json"
+        return work.name if plan.is_file() and file_hash(plan) == file_hash(work / "series_plan.json") else None
+
     def _schedule_loop(self):
         while True:
             time.sleep(SCHEDULER_INTERVAL_SECONDS)
@@ -1501,6 +1634,7 @@ class Studio:
                                   (self.resume_after_login, "Anmeldeprüfung übersprungen."),
                                   (self.apply_allowances, "Vorab-Erlaubnisse übersprungen."),
                                   (self.start_queued, "Warteschlange der Vertonung übersprungen."),
+                                  (self.start_revisions, "Warteschlange der Überarbeitungen übersprungen."),
                                   (self.restart_when_idle, "Neustart übersprungen.")):
                 try:
                     step()
@@ -1509,6 +1643,11 @@ class Studio:
 
     def active_audio(self):
         return {key: value for key, value in self.audio_processes.items() if value[0].poll() is None}
+
+    def active_elevenlabs(self):
+        """This server's running ElevenLabs recordings of every project: the plan counts their requests together."""
+        return sum((read_json(audio_job_path(root, job_id), {}) or {}).get("provider") == ELEVENLABS_PROVIDER
+                   for job_id, (_, root, _) in self.active_audio().items())
 
     def active_workers(self):
         return {root: value for root, value in self.workers.items() if value[0].poll() is None}
@@ -1672,6 +1811,14 @@ class Studio:
         table = load_forms(root)
         table_key = digest(table.model_dump())
         quality_path = root / "reports/script_quality.yaml"
+        # A recording is current only with the project's music, or without it where the project has none (D-189); a
+        # broken music file counts as the music it names.
+        _, music = project_music(root)
+        if music is None and (root / "studio/music.json").is_file():
+            try:
+                music = stored_music(root)
+            except AppError:
+                music = None
         reported = None
         if full:
             quality = memo(("quality", str(quality_path)), [quality_path],
@@ -1684,16 +1831,19 @@ class Studio:
             row = dict(episode_view(folder, table, table_key, config.language))
             report = read_json(folder / "audio_latest.json", {})
             row["audio"] = [part["audio"] for part in report.get("parts", []) if inside(root, part["audio"]).is_file()]
-            # A recording reports the voices of its episode, swapped in an even one when the roles alternate, and the
-            # choice as its language speaks it (D-147).
+            # A recording reports the voices of its episode, swapped in an even one when the roles alternate, with the
+            # third host's in a project that has one (episode_audio's voiced, D-179), and the choice as its language
+            # speaks it (D-147). Until 2026-11-08 the third host's voice was left out here, so every recording of a
+            # three-host project read „geändert: Stimmen“ although it spoke the chosen voices.
             stored = report.get("audio_generation", {"provider": "qwen3_local", "voices": report.get("voices")})
             current = audio.for_language(config.language).model_dump()
-            voices = audio.for_episode(folder.name).voices
+            voices = audio.for_episode(folder.name).for_hosts(config).voices
             row["audio_current"] = (report.get("script_sha256") == row["hash"]
-                and report.get("voices") == voices and same_audio_generation(stored, current))
+                and report.get("voices") == voices and same_audio_generation(stored, current)
+                and report.get("music") == music)
             # What an older recording differs in, so the page can say why it is not current (D-160).
             row["audio_stale"] = ([] if row["audio_current"] or not row["audio"]
-                                  else stale_reasons(report, row["hash"], voices, stored, current))
+                                  else stale_reasons(report, row["hash"], voices, stored, current, music))
             seconds = report.get("total_seconds") or sum(part.get("duration_seconds") or 0 for part in report.get("parts", []))
             row["audio_seconds"] = round(seconds) if row["audio"] and isinstance(seconds, (int, float)) else None
             if full:
@@ -1766,7 +1916,14 @@ class Studio:
         chat_budget = read_json(root / "studio/assistant/budget.json", {}) or {}
         active_audio = self.active_audio()
         active_here = sum(value[1] == root for value in active_audio.values())
+        music_view, music = project_music(root)
         limit = MAX_PARALLEL if execution.audio == "parallel" and audio.remote else 1
+        available = min(limit - active_here, MAX_PARALLEL - len(active_audio))
+        if audio.provider == ELEVENLABS_PROVIDER:
+            spoken = self.active_elevenlabs()
+            available = min(available, MAX_ELEVENLABS_RECORDINGS - spoken)
+            if limit > MAX_ELEVENLABS_RECORDINGS:
+                limit, active_here = MAX_ELEVENLABS_RECORDINGS, spoken
         table = load_forms(root)
         data = {"id": project, "config": config.model_dump(mode="json"),
                 "config_hash": project_hash(config), "host_labels": host_labels(config),
@@ -1776,6 +1933,8 @@ class Studio:
                 # The settings page's values hold for every project (studio_settings); the page links there.
                 "settings_global": studio_settings.load(root) is not None,
                 "audio_settings": audio.model_dump(), "audio_hash": digest(audio.model_dump()),
+                # The podcast's music (D-189): the approval card names it, and an approval names its hash.
+                "music": music_view, "music_hash": music_hash(music),
                 # Whether this project speaks with its own audio choice instead of the settings page's (D-177).
                 "audio_own": own_audio(root) is not None,
                 "style_notes": style_notes(root), "style_notes_hash": digest(style_notes(root)),
@@ -1787,10 +1946,13 @@ class Studio:
                 "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
                 "audio_queue": queue_view(read_queue(root), self.audio_key_available(audio), audio_key(audio) or "openrouter"),
+                # Revisions asked for while the project worked (D-191), and whether a stopped run holds them.
+                "revision_queue": revision_queue_view(read_revisions(root)), "revisions_held": revisions_held(root),
+                # The page queues „Alle weiteren Folgen“ while the project works only on a server that does (D-192).
+                "queues_series": True,
                 # When the tags a Gemini recording speaks are placed for reading (studio_worker.tag_episodes).
                 "expression_progress": read_json(root / "studio/expression/progress.json", None),
-                "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here,
-                    "available": max(0, min(limit - active_here, MAX_PARALLEL - len(active_audio)))},
+                "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here, "available": max(0, available)},
                 "chat": read_json(root / "studio/chat.json", []), "job": latest_job, "main_job": main,
                 # Every paused run of another lane, so each lane's page keeps its own stop card.
                 "parked_jobs": parked,
@@ -1965,7 +2127,7 @@ class Studio:
         return {"allowances": studio_allowances.set_allowances(self.root(project), data)}
 
     def settings_values(self, root=None):
-        """The six workspace settings as one project sees them (its own files where the workspace sets none), or the
+        """The workspace settings as one project sees them (its own files where the workspace sets none), or the
         defaults of a new project without one."""
         if root is None:
             config = TopicBrief(topic="Neues Podcast-Projekt", runtime=self.runtime(),
@@ -1977,7 +2139,8 @@ class Studio:
                     "execution": {"text": "sequential", "audio": "sequential"},
                     "allowances": dict(studio_allowances.NEW_WORKSPACE) if new else {"fresh_attempts": 0, "extra_calls": 0},
                     "research_limits": config.research_limits.model_dump(),
-                    "text_timeout_seconds": config.runtime.text_timeout_seconds, "web_search": "model"}
+                    "text_timeout_seconds": config.runtime.text_timeout_seconds, "web_search": "model",
+                    "unpaywall_email": ""}
         # The project's own limits, not a trial's caps: a trial changed last must not make its small limits every
         # project's on the first save of the settings page (D-157).
         config = load_project(root, trial_caps=False)
@@ -1988,7 +2151,7 @@ class Studio:
                 "allowances": studio_allowances.allowances(root),
                 "research_limits": config.research_limits.model_dump(),
                 "text_timeout_seconds": config.runtime.text_timeout_seconds,
-                "web_search": studio_settings.web_search(root)}
+                "web_search": studio_settings.web_search(root), "unpaywall_email": studio_settings.unpaywall_email(root)}
 
     def settings_view(self):
         """The settings page: the workspace settings once saved; before that the values of the project changed last,
@@ -2030,11 +2193,14 @@ class Studio:
         timeout = values["text_timeout_seconds"]
         if type(timeout) is not int or not 300 <= timeout <= 14400:
             raise AppError(t("server.settings.timeout"), code="invalid_request")
+        address = values["unpaywall_email"].strip() if isinstance(values["unpaywall_email"], str) else None
+        if address is None or (address and (len(address) > 254 or not studio_settings.EMAIL.fullmatch(address))):
+            raise AppError(t("server.settings.unpaywall_email"), code="invalid_request")
         settings = {"text": normalized, "audio": AudioChoice.model_validate(values["audio"]).model_dump(),
                     "execution": {"text": execution.text, "audio": execution.audio},
                     "allowances": studio_allowances.checked(values["allowances"]),
                     "research_limits": limits.model_dump(),
-                    "text_timeout_seconds": timeout, "web_search": values["web_search"]}
+                    "text_timeout_seconds": timeout, "web_search": values["web_search"], "unpaywall_email": address}
         extra = data.get("claude_extra_usage")
         if not isinstance(extra, bool):
             raise AppError(t("server.settings.claude_extra"), code="invalid_request")
@@ -2326,12 +2492,17 @@ class Studio:
                 audio = selected_audio(root, current)
                 if data.get("audio_hash") != digest(audio.model_dump()):
                     raise AppError(t("server.audio.audio_changed"), code="inputs_changed")
+                # The approval names the podcast's music as the page showed it (D-189); a broken music file refuses.
+                music = music_record(root)
+                if data.get("music_hash", "") != music_hash(music):
+                    raise AppError(t("server.audio.music_changed"), code="inputs_changed")
+                payload["music_hash"] = music_hash(music)
                 if rerender:
                     # A re-render changes only spoken forms. It starts on the saved approval by the
                     # rule the pipeline applies; without one the reader must approve the text first.
                     # The approval binds the choice as the project's language speaks it (D-147).
                     if not saved_approval(root, episode, payload["script_hash"],
-                                          audio_generation_record(audio.for_language(current.language))):
+                                          audio_generation_record(audio.for_language(current.language)), music):
                         raise AppError(t("server.audio.no_approval"), code="audio_approval_required")
                     payload["rerender"] = True
                 payload["audio_settings"] = audio.model_dump()
@@ -2347,6 +2518,14 @@ class Studio:
                     payload["expression_hash"] = data.get("expression_hash", "")
                 if audio.remote:
                     remote_episode, remote_provider = episode, audio.provider
+        if action in {"revise", "episode", "episodes"} and data.get("minutes") is not None:
+            # A revision's own length instead of its plan's (D-190), or that of every new episode written now (D-192;
+            # scripting.revision_minutes); refused here, before a worker starts.
+            low, high = REVISION_MINUTES
+            minutes = data["minutes"]
+            if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or not low <= minutes <= high:
+                raise AppError(t("server.start.revision_minutes", low=low, high=high), code="invalid_revision")
+            payload["minutes"] = minutes
         if action == "resume":
             job = self.job(root)
             run_id = data.get("run_id") or ((job or {}).get("run") or {}).get("run_id")
@@ -2360,6 +2539,9 @@ class Studio:
                     remote_episode = saved_inputs["episode_id"]
                     remote_provider = saved_inputs["audio_generation"]["provider"]
             payload["run_id"] = run_id
+            series = self.series_outline(root, run_id) if saved_run.get("kind") == "script" else None
+            if series:
+                payload["series"] = series
         if remote_episode:
             active = self.active_audio()
             if any(value[1:] == (root, remote_episode) for value in active.values()):
@@ -2367,17 +2549,28 @@ class Studio:
             limit = MAX_PARALLEL if selected_execution(root).audio == "parallel" else 1
             busy = self.worker(root) is not None
             full = len(active) >= MAX_PARALLEL or sum(value[1] == root for value in active.values()) >= limit
-            if (busy or full) and action == "audio" and not data.get("from_queue"):
-                # A new approval waits its turn instead of being refused (start_queued starts it when a place is free).
+            # ElevenLabs' plan counts across projects, and a resumed recording sends requests like a new one (D-188).
+            plan_full = remote_provider == ELEVENLABS_PROVIDER and self.active_elevenlabs() >= MAX_ELEVENLABS_RECORDINGS
+            if not data.get("from_queue") and ((busy or full or plan_full) and action == "audio" or
+                                               plan_full and action == "resume"):
+                # It waits its turn instead of being refused (start_queued starts it when a place is free).
                 return self.enqueue_audio(root, remote_episode, data)
             if busy:
                 raise AppError(t("server.audio.project_busy"), code="project_busy")
-            if full:
+            if full or plan_full:
                 raise AppError(t("server.audio.capacity", count=limit), code="audio_capacity")
             with project_lock(root, shared=True):
                 pass
             payload["parallel_remote"] = True
         else:
+            if action in QUEUED_TEXT_ACTIONS and not data.get("from_queue") and (
+                    any(not row.get("error") for row in read_revisions(root)) or not self.ready_to_start(root)):
+                # A revision asked for while the project works, or behind waiting ones, waits its turn instead of
+                # being refused (start_revisions, D-191; 2026-11-08: two revisions of Geld verstehen had to wait
+                # for a three-hour run to end before they could be asked for). So do the outline's remaining
+                # episodes (D-192: the same night, the rest of the season was to follow the last revision).
+                return self.enqueue_revision(root, {
+                    key: payload[key] for key in ("action", "episode", "message", "minutes") if key in payload})
             self.idle(root)
             # Outside the remote lane every audio job is local Qwen: a new one or a resumed one.
             gpu = action == "audio" or (action == "resume" and saved_run.get("kind") == "episode_audio")
@@ -2402,7 +2595,7 @@ class Studio:
         # saved choice or German.
         language = studio_text.requested()
         if language is None:
-            stored = (data.get("ui_language") if action == "audio" else
+            stored = (data.get("ui_language") if action == "audio" or data.get("from_queue") else
                       self.run_language(root, payload.get("run_id")) if action == "resume" else None)
             language = (stored if stored in studio_text.LANGUAGES
                         else studio_text.resolve(None, studio_text.setting(self.workspace)))
@@ -2414,12 +2607,18 @@ class Studio:
             job["run"] = saved_run or None
         if action == "resume" and type(data.get("auto_resume_count")) is int:
             job["auto_resume_count"] = data["auto_resume_count"]
+        if payload.get("series"):
+            # Kept with the job, so a resume that stops again still goes on with the series when it is resumed.
+            job["series"] = True
         if remote_episode:
             job.update(episode=remote_episode, provider=remote_provider)
             payload["audio_job_id"] = job["id"]
-            if action == "audio":
-                # Started now, whether from the queue or directly: it no longer waits.
-                write_queue(root, [row for row in read_queue(root) if row.get("episode") != remote_episode])
+            # Started now, whether from the queue or directly: it no longer waits.
+            write_queue(root, [row for row in read_queue(root) if row.get("episode") != remote_episode])
+        if action in QUEUED_TEXT_ACTIONS and read_revisions(root):
+            # Started now, whether from the queue or directly: it no longer waits.
+            started = revision_key({"episode": payload.get("episode"), "data": {"action": action}})
+            write_revisions(root, [row for row in read_revisions(root) if revision_key(row) != started])
         job_path = audio_job_path(root, job["id"]) if remote_episode else root / "studio/job.json"
         if not remote_episode:
             park(root, job)
@@ -2671,7 +2870,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
                                              r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
-                                             r"|audio_queue|allowances|reader_state|new_version|audio_own)", path)
+                                             r"|audio_queue|revision_queue|allowances|reader_state|new_version|audio_own)", path)
                         if not match:
                             raise AppError(t("server.not_found"), code="not_found")
                         project, action = match.groups()

@@ -2,7 +2,7 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-09
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
@@ -64,6 +64,11 @@ recordable; a run begun with them: [Runs begun before D-184](#runs-begun-before-
   run, without planning again (`scripting.outline_inputs`): the outline must be complete, approved as it stands
   (`plan_approval_required` otherwise) and made from today's research (`inputs_changed`). The outline's run stays as
   it was. This is how the Studio writes every episode ([Writing a series in order](#writing-a-series-in-order)).
+  `--minutes N` (10 to 60) writes the episode at N minutes instead of its planned length (D-192): the session writes
+  the outline's entry at those minutes (`story_agent.revision_entry`), so the word budget, the agent's floor of 95 %,
+  `check.py`, the run's script checks, the recording's check and the published `episode_plan.yaml` read them, as for a
+  [revision's own length](#revising-a-script); the run binds them in its inputs (`episode_minutes`, only when given,
+  so other runs keep their hash), and its `series_plan.json` stays the outline's, byte for byte.
 - A new run writes and checks its lengths at the project's speaking rate, bound in its inputs
   ([Estimating and checking the duration](BUSINESS_LOGIC.md#estimating-and-checking-the-duration)).
 - Every model call counts against the run's call limit (`research_limits.model_calls`). Lower bound per episode
@@ -262,8 +267,12 @@ once, and an episode knew the others only by their titles and questions.
   one not written.
 - **The next one, or all remaining ones.** The Studio writes the next episode, or every remaining one one after the
   other, never in parallel, stopping where one stops; with every episode written it refuses with `series_written`.
-  „Fortsetzen“ on the outline's own run, once approved, writes its next episode in the same way. The buttons:
-  [Writing the episodes](STUDIO.md#writing-the-episodes).
+  „Fortsetzen“ on the outline's own run, once approved, writes its next episode in the same way. A resume of an
+  episode that stopped while every remaining one was being written, by hand, after a quota wait or by an allowance,
+  finishes it and then goes on with the remaining ones, as long as the outline is the current one and still approved
+  (`Studio.series_outline`); until 2026-11-04 it finished that episode alone. The batch may be given one length for
+  every episode it writes (`minutes`, D-192); a resumed episode carries the series on at the length bound in its
+  inputs. The buttons and the queue the batch can wait in: [Writing the episodes](STUDIO.md#writing-the-episodes).
 - **Each episode reads the earlier ones.** The session of each episode gets the published text of every episode
   before it in the plan's order ([What the session gets](#what-the-session-gets)).
 - **Then the series review.** Once the outline's last episode is published, the series review reads all of them
@@ -304,8 +313,9 @@ drafts 14 % longer without making them better.
   explained is referred back to, not explained again; a difference is said as a correction, never a silent
   contradiction; opening story, perspective and closing image differ from theirs. An episode the series context lists
   before this one that `earlier/` lacks is not written yet: only its question may be used.
-- **`TASK.md`**, the agent's instructions (`data/story_agent_task.md`): find the turn the material holds, choose a
-  perspective, plan, write, check every fact, run the checks and the critiques. A project with a third host appends
+- **`TASK.md`**, the agent's instructions (`data/story_agent_task.md`), written for the listeners the brief's audience
+  describes (until D-190 for "curious adults"): find the turn the material holds, choose a perspective, plan, write,
+  check every fact, run the checks and the critiques. A project with a third host appends
   its cast ([Three hosts](#three-hosts)); a revision appends its own steps ([Revising a script](#revising-a-script)).
 - **Four command scripts**, the only commands the session may run besides the file tools (Read, Write, Edit, Glob,
   Grep; [Local files](SECURITY.md#local-files)):
@@ -313,33 +323,16 @@ drafts 14 % longer without making them better.
     given passages where the run applies it, for an assembled dossier, and always over the corpus sections in
     `sources_used.json`), echo lines (a turn that opens with only the other host's last words) and the word budget;
   - `critique.py`: an editor's verdict on tension, interest and storytelling with what keeps the draft from 10
-    (`prompts/story_critique.txt`), at most four times per session (`story_agent.CRITIQUES`). The request goes to the
-    run as a file and the run makes the call, so the budget, the receipts and the provider choice apply. See
-    [The editor's critique](#the-editors-critique);
+    (`prompts/story_critique.txt`), at most four times per session (`story_agent.CRITIQUES`). The editor hears the
+    script as the brief's audience, with the hosts by name and part (`story_agent.critique_input`, D-190). The request
+    goes to the run as a file and the run makes the call, so the budget, the receipts and the provider choice apply;
   - `search.py` and `read.py`: the project's own research corpus, every section of every source the research
-    stored, so the agent finds the scenes a finding only names.
+    stored, so the agent finds the scenes a finding only names, and of every document of the research run's starting
+    library the research did not take in (`story_agent.corpus_documents`, D-190). Geld verstehen S1's best case for
+    ep_003 stood only there.
 
 A session's draft stands on resume while its material and task are unchanged; a repeated session moves the earlier
 one's files to `attempts/NN/`.
-
-### The editor's critique
-
-The critique names as many points as it finds, none if there are none, each with its segments, the scale it costs, the
-problem, a fix and a severity: `severe` (the listener loses the thread, the question or a person here; this passage
-alone costs its scale a point), `moderate` (noticed, costs a point only together with others) or `minor` (better so,
-but no listener would miss it). Why: D-187.
-
-- **Memory.** From the second critique on the request carries the points the last answered critique left open
-  (`open_points`, numbered), the segments changed since the draft it read (`changed_segments`, by speaker and text)
-  and the agent's `replies.json` to those points, which `critique.py` takes along once. The editor marks each earlier
-  point `resolved`, `open` or `worse` (`story_agent.critique_memory`, `critique_answer`). A revision's first critique
-  compares with `published.json` instead.
-- **Blocking.** Every point of a first critique blocks. Later, a blocking point blocks while it is open, a point that
-  got worse blocks, and a new point blocks where it names a changed segment (a short id like `c1_05` counts for
-  `ep_001_c1_05`); a new point elsewhere is advice.
-- **Ready.** The answer says `ready` when all three scales are 8 or more (`story_agent.READY_SCORE`) and no blocking
-  severe point is open (`severe_open`). The agent fixes every blocking severe point, a moderate one where a few changes
-  do it, and stops when a critique is ready or it has used every critique.
 
 ### Opening and ending
 
@@ -362,7 +355,7 @@ and the agent gets it as `framing`:
 
 ### Word budget
 
-The agent gets its word budget computed at the plan's length (`script_checks.word_budget` with
+The agent gets its word budget computed at the plan's length, or a revision's own ([Revising a script](#revising-a-script)) (`script_checks.word_budget` with
 `story_agent.TARGET_FACTOR` 1.0) and the run's speaking rate (`script_artifacts.run_rate`,
 [Estimating and checking the duration](BUSINESS_LOGIC.md#estimating-and-checking-the-duration)):
 
@@ -394,7 +387,8 @@ A segment that tells something no finding holds, such as a scene the agent found
 `material.json` or one listed in `sources_used.json`, and the run only one its review is given
 (`ScriptRun.script_errors`). Empty, the field is left out of every dump, so scripts written before keep their bytes
 and hashes. Show notes and companion kits list the cited sections' sources beside the findings'
-(`script_artifacts.render_show_notes`, `publish_kit.episode_sources`).
+(`script_artifacts.render_show_notes`, `publish_kit.episode_sources`), a starting library's document too
+(`story_agent.library_documents`); the run's inputs keep the research's sources only, so no hash changes.
 
 ### Calls and access
 
@@ -412,8 +406,7 @@ and hashes. Show notes and companion kits list the cited sections' sources besid
 ### Outputs of an agent episode
 
 Publishing writes `story_plan.md` (the agent's plan) beside the script, and the quality report's episode entry gains
-`story_agent`: the critique scores in order, each with the blocking severe points it left open (`severe_open`, since
-D-187), the corpus sections used, whether the agent set its own chapters, and the
+`story_agent`: the critique scores in order, the corpus sections used, whether the agent set its own chapters, and the
 session's turns, duration and reported cost (`script_artifacts.story_report`). Its `teaching_review` reads
 `not_applicable`.
 
@@ -457,8 +450,11 @@ holds it, and its receipt is `preserved` or `drift` against those sections, neve
   (`script_pipeline.story_repair`, `prompts/story_review_repair.txt`, `story_review_repair.v3-source-refs`). A repair
   may change only the segments the issues name and their neighbours (`narration.with_neighbours`,
   `narration.scope_errors`), or any segment when a blocking issue names none because it concerns the whole episode,
-  such as its length. The review's other points stay notes, so the telling the agent built is not rewritten by a
-  reviewer (why: D-181).
+  such as its length. A segment outside that scope whose words a repair kept but whose `knowledge_refs` or
+  `source_refs` it changed is put back as it was before the check (`narration.unnamed_refs_kept`); a changed word
+  there still refuses the answer. Until 2026-11-04 such an answer was refused too, and Asimov v2 ep_008 stopped four
+  times after twelve repairs that had copied the review's sections into unnamed segments. The review's other points
+  stay notes, so the telling the agent built is not rewritten by a reviewer (why: D-181).
 - If then only objections about understandability, depth or dialogue remain (`script_checkpoints.NOTED_CATEGORIES`:
   `clarity`, `depth`, `dialogue`), the script is adopted; the points stay in the review report and
   `reviews/<episode>_accepted_notes.json`, visible when reading before the audio approval.
@@ -688,8 +684,13 @@ A revision is a story agent session given the published episode and the feedback
   the corpus sections the published episode used (its run's `sources_used.json`), which the draft may keep citing.
   `TASK.md` adds the revision's steps (`data/story_agent_revision.md`): copy the published episode, change what the
   feedback asks and what the change touches, keep every other segment as it was, check the changed facts, and use at
-  most two critiques (`story_agent.REVISION_CRITIQUES`) only where the telling changed; their points block only in
-  the segments changed from the published episode ([The editor's critique](#the-editors-critique)).
+  most two critiques (`story_agent.REVISION_CRITIQUES`) only where the telling changed.
+- **Its own length.** A revision keeps the length the episode was written for unless it is given another, 10 to 60
+  minutes (`--minutes N`; on the reading page **„Neue Länge in Minuten“**, empty for the plan's, which the field
+  shows; why: D-190). The revision's episode carries it (`scripting.revision_inputs`), so the word budget, the
+  agent's floor of 95 %, `check.py`, the run's script checks, the recording's check and the published
+  `episode_plan.yaml` read it; the approved outline stays unchanged and still shows its planned minutes. A revision
+  from the series review's points keeps the plan's length.
 - An episode the writing prompt wrote can be revised the same way, from the outline's scenes.
 - The revised script must pass the structure checks and the script review again; then the new text, with its own
   hash, waits again for the reading review before audio, which no review replaces.
@@ -798,7 +799,11 @@ A run that publishes the scripts of a different table of contents first moves th
 `episodes/archive/<time>_<run_id>/` (with `receipt.json`); nothing is deleted.
 
 - A folder belongs to the run's table of contents when its `episode_plan.yaml` equals the plan entry of the same
-  episode, as on every resume, revision and single-episode run.
+  episode but for its scenes and its length, as on every resume, revision and single-episode run: the story agent
+  publishes its own chapters, and a revision or a new episode may have its own minutes
+  ([Revising a script](#revising-a-script)). Until 2026-11-03 the scenes counted too, and each
+  episode run of Asimov v2 archived the episode before; until 2026-11-09 the length did, and publishing Geld S1's
+  revised ep_002 (36 of 48 minutes) archived the revised ep_003 (38 of 58).
 - Recordings stay under `exports/<episode>/<audio run>/`, where the archived `audio_latest.json` still finds them.
 - If a file in such a folder is open, for example during a recording, the run stops with `episodes_locked` and can be
   resumed afterwards.

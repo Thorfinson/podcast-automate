@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-08
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -209,8 +209,11 @@ A project runs through six steps. The navigation groups their pages into the thr
    Folgen anhören“** (listen to all finished episodes), which **„Podcast anhören“** (listen to the podcast) on the
    overview leads to. The page, including the size estimate for Gemini: [Recording flow](AUDIO.md#recording-flow).
    A recording made for an earlier state stays playable and says what changed since („geändert: Sprechtempo“, from the
-   server's `audio_stale`: script, voices, provider, model, pauses, pace, styles, alternate roles); the page names it
-   once above the approval (why: D-160).
+   server's `audio_stale`: script, voices, provider, model, pauses, pace, styles, alternate roles, music); the page
+   names it once above the approval (why: D-160). The voices compared are the ones the recording spoke, with the
+   third host's in a project that has one (`for_hosts`); until 2026-11-08 every three-host recording read „geändert:
+   Stimmen“. A podcast with music shows it on the approval card under „Musik“
+   ([Music](AUDIO.md#music)).
 
 The pronunciation check, the panels for spoken forms, host names and editorial notes, re-rendering one segment and the
 listening review are described in [Spoken forms and pronunciation](AUDIO.md#spoken-forms-and-pronunciation),
@@ -249,7 +252,8 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
   one is left, **„Alle {n} restlichen nacheinander“** (all n remaining one after the other, action `episodes`). The
   batch writes one episode after the other, never in parallel, and stops where one stops; „Anhalten“ ends the running
   episode, and finished ones stay. **„Fortsetzen“** on the approved outline's own run writes its next episode too.
-  These actions need the approved outline (`plan_approval_required`) and refuse once every episode is written
+  An episode the batch stopped at is resumed with the rest of the batch: it is finished, then the remaining episodes
+  follow (the rule: [Writing a series in order](SCRIPTS.md#writing-a-series-in-order)). These actions need the approved outline (`plan_approval_required`) and refuse once every episode is written
   (`series_written`).
 - **The series review.** After the last episode the job runs the series review by itself; otherwise the panel
   **„Serienprüfung“** (series review) offers **„Serienprüfung starten“** (start the series review, action
@@ -260,7 +264,29 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
   ([Over an outline's published episodes](SCRIPTS.md#over-an-outlines-published-episodes)).
 - **Revising one episode.** On the reading page, **„Diese Folge überarbeiten lassen“** (have this episode revised)
   sends the feedback field to the story agent, which changes what it asks and keeps the rest; the episode is reviewed
-  again and needs a new audio approval ([Revising a script](SCRIPTS.md#revising-a-script)).
+  again and needs a new audio approval ([Revising a script](SCRIPTS.md#revising-a-script)). **„Neue Länge in Minuten“**
+  (new length in minutes, 10 to 60) gives the revision its own length; empty keeps the planned one, which the field
+  shows (`planned_minutes` from the episode's `episode_plan.yaml`). The server refuses other values with
+  `invalid_revision` before a worker starts.
+- **Revisions wait their turn.** A revision asked for while the project works (a text run, a recording of the
+  project, or every place taken), or while other revisions wait, goes into the project's revision queue
+  (`studio/revision_queue.json`) instead of being refused; the button then reads **„Überarbeitung vormerken“** (queue
+  this revision), and the series review's **„Mit diesen Hinweisen überarbeiten“** queues the same way. The reading page
+  lists **„Vorgemerkt“** (queued) with episode, length and **„Entfernen“** (remove, route `revision_queue`, by the
+  row's `key`); a newer request for an episode replaces its row at the end. The scheduler (`start_revisions`)
+  starts them one at a time, in the order asked, once nothing of the project runs; each reads the episodes before it as
+  published by then. A stopped script run of the project (`job.json` or `paused_script.json` in an attention state)
+  holds the queue, because a new script job would take its stop card (`revisions_held`, „Wartet: Ein angehaltener Lauf
+  …“). A request that start's own rules refuse keeps its reason in its row, and the next one goes on (D-191).
+- **The remaining episodes wait too.** While the project works, or while rows wait, the outline page's batch button
+  reads **„Alle {n} restlichen vormerken“** (queue all n remaining) and queues one row, **„Alle weiteren Folgen“**
+  (all remaining episodes, key `episodes`), behind the rows asked before it; the outline page lists the queue as the
+  reading page does. It starts as the batch would (`episodes`), from the then current next episode. „Nächste Folge
+  schreiben“ alone does not queue. A request for `episode` or `episodes` may carry `minutes` (10 to 60), which every
+  episode it writes is given instead of the outline's length ([Writing a series in
+  order](SCRIPTS.md#writing-a-series-in-order)); the page has no field for it yet, so only a queued or API request
+  sets it, shown in the row as „je {n} Minuten“. The detail's `queues_series` tells the page that the server queues
+  the batch; a server older than D-192 refuses it while the project works, and the button stays closed (D-192).
 - **While the agent works.** The progress names its steps („Orientierungsblatt wird erstellt“, „Der Erzähl-Agent plant
   und schreibt die Folge“, „Ein Lektor liest die Fassung des Erzähl-Agenten“), and the production view shows the stages
   „Erzählmaterial“ (story material), „Erzähl-Agent“ (story agent), „Qualitätsprüfung“ (quality review) and „Zur
@@ -324,7 +350,7 @@ projects:
 | Section | What you set there |
 | --- | --- |
 | **„Textmodell“** (text model) | One of the presets; see [Choosing the text model](#choosing-the-text-model). Below them a line names the measured money per call of Claude Sonnet 5.5 and Opus 5.5 in research and script work and that a whole series took 1,400 to 1,800 calls ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
-| **„Websuche“** (web search) | **„Über das Textmodell“** (through the text model: Claude and Codex search with their own tools, the default) or **„Über Perplexity“** (through Perplexity: the Studio searches itself and the text model chooses among the results). Perplexity lets every text model research, an OpenRouter model included, needs the Perplexity key and a money limit, and costs about 0.005 USD per search request. New research and script runs take the choice; running ones keep theirs ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). |
+| **„Websuche“** (web search) | **„Über das Textmodell“** (through the text model: Claude and Codex search with their own tools, the default) or **„Über Perplexity“** (through Perplexity: the Studio searches itself and the text model chooses among the results). Perplexity lets every text model research, an OpenRouter model included, needs the Perplexity key and a money limit, and costs about 0.005 USD per search request. New research and script runs take the choice; running ones keep theirs ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). Below it, **„Kontaktadresse für Unpaywall“** (contact address for Unpaywall): with an address, the search for a free copy of a blocked source also asks Unpaywall, which receives the address with every request; empty leaves Unpaywall out. Saved with the workspace settings, not in the credential store; each new job's worker reads it (`studio_settings.unpaywall_email`, [Pipeline](RESEARCH.md#pipeline)). |
 | **„Audio“** | Provider (Qwen, Gemini through Google, ElevenLabs, Gemini through OpenRouter), speech model (Gemini, ElevenLabs), the voices of host A and host B (for ElevenLabs the voices of your account, loaded with the ElevenLabs key, your own first, **„Stimmen neu laden“**), **„Stimme Host C (nur bei drei Sprechern)“** (the voice of a third host, automatic by default, chosen on ElevenLabs; [Three hosts](AUDIO.md#three-hosts)), the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **„Sprechtempo Deutsch“** and **„Sprechtempo Englisch“** (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini and ElevenLabs whether expression tags are set before recording. For Google and ElevenLabs also the style of each role with its presets and **„Stil von Host C“**, **„… ohne Eile sprechen“** (speak unhurried) per language, **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode) and, for Google, **„▶ Gesprächsprobe“** (conversation sample) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles), [ElevenLabs](AUDIO.md#elevenlabs)). A project may hold a choice of its own instead ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice)): the recording page's panel **„Sprachanbieter dieses Projekts“** sets it, the third host's voice included, and **„Wieder wie Einstellungen“** removes it. |
 | **„Ausführung“** (execution) | See [Sequential or parallel](#sequential-or-parallel). |
 | **„Ohne Rückfrage“** (without asking) | See [Pre-approvals](#pre-approvals). |
@@ -564,8 +590,8 @@ unanswered message is replaced, not repeated. When the conversation has used up 
 **„Neue Version anlegen“** (start a new version) in an overview card's **⋯** menu makes a podcast again from its
 inputs with the current pipeline (`pla new-version <project>` from the command line; why: D-168). After a confirmation a
 new project opens beside the old one, with the old one's brief, attachments, provided works (their old questions
-cleared), other local sources, style notes, spoken forms and text, audio, execution and Jev choices; a German project
-without a Jev choice gets today's default. Runs, research, scripts, recordings, exports, the setup conversation and the
+cleared), other local sources, style notes, spoken forms and text, audio, execution and Jev choices, the project's own
+audio choice included; a German project without a Jev choice gets today's default. Runs, research, scripts, recordings, exports, the setup conversation and the
 project's own pre-approvals stay behind. The old version stays as it was and may keep running.
 
 Versions are numbered per podcast in the project's `version.json`; from version 2 on the number stands beside the topic

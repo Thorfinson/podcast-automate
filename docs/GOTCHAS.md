@@ -2,7 +2,7 @@
 title: Gotchas
 doc_type: gotchas
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-03
 ---
 
 # Gotchas
@@ -133,10 +133,15 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ⚠ **CORE stops finding copies during the day:** all runs share one daily allowance (`PLA_CORE_DAILY_LIMIT`, default
   1000, counted per UTC day in `~/.podcast-automate/core_usage.json`). Wait for the next UTC day or raise the limit.
   ([Environment variables](CONFIGURATION.md#environment-variables))
-- ⚠ **Unpaywall and CORE are never consulted:** `PLA_UNPAYWALL_EMAIL` is not set, or no CORE key is stored under
-  „CORE-Key“ on the settings page nor set as `PLA_CORE_API_KEY`, or a variable was set without restarting the Studio.
-  Store the key in the Studio, or set the variables and restart the Studio.
+- ⚠ **Unpaywall and CORE are never consulted:** no address is given under „Kontaktadresse für Unpaywall“ on the
+  settings page nor set as `PLA_UNPAYWALL_EMAIL`, or no CORE key is stored under „CORE-Key“ nor set as
+  `PLA_CORE_API_KEY`, or a variable was set without restarting the Studio. Give both in the Studio, or set the
+  variables and restart the Studio. Until 2026-11-03 Unpaywall had only the variable, and no Studio run here asked it.
   ([Environment variables](CONFIGURATION.md#environment-variables))
+- ⚠ **OpenAlex finds no free copy for a work without a DOI:** without an API key OpenAlex grants every network address
+  1,000 credits a day (reset at midnight UTC). A title search costs 10 and fails with HTTP 429 once they are spent; a
+  lookup by DOI costs nothing and keeps working. Anything else on the same network that searches OpenAlex, such as an
+  eval script, spends the same budget (seen 2026-11-03).
 - ⚠ **A source fails as unreadable with "pages without a text layer":** it is a scanned PDF, and OCR never starts
   automatically. Supply a readable version as a `seed_urls` entry of a new research run, or upload the work under
   „Fehlende Werke“. ([Download and import limits](RESEARCH.md#download-and-import-limits))

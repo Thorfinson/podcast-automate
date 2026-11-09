@@ -1226,6 +1226,17 @@ class EpisodeArchiveTests(unittest.TestCase):
             receipt = json.loads((archive / "receipt.json").read_text(encoding="utf-8"))
             self.assertEqual((receipt["run_id"], receipt["episodes"]), ("run_new", ["ep_002", "ep_003"]))
             self.assertIsNone(archive_other_series(root, plan, "run_new"), "nothing else to archive")
+            # The story agent's own chapters are the same outline's episode (D-181): on 2026-11-03 the run of Asimov v2's
+            # ep_002 archived ep_001 for them, as ep_001's had archived ep_007.
+            chapters = [entry.scenes[0].model_copy(update={"scene_id": "ep_001_c1", "title": "Die Nacht"})]
+            write_yaml(root / "episodes/ep_001/episode_plan.yaml", entry.model_copy(update={"scenes": chapters}).model_dump())
+            self.assertIsNone(archive_other_series(root, plan, "run_next"))
+            # An episode at its own length is too (D-191, D-192): on 2026-11-08 publishing Geld S1's revised ep_002
+            # (36 of 48 minutes) archived the revised ep_003 (38 of 58), and each new episode of a batch at 35 minutes
+            # would have archived the one before.
+            write_yaml(root / "episodes/ep_001/episode_plan.yaml", entry.model_copy(
+                update={"scenes": chapters, "target_minutes": entry.target_minutes * 2}).model_dump())
+            self.assertIsNone(archive_other_series(root, plan, "run_after_revision"))
             # A new outline whose first episode differs takes the old one along, whatever its id.
             renewed = plan.model_copy(deep=True)
             renewed.episodes[0].title = "A new first episode"

@@ -1116,6 +1116,88 @@ test('first draft becomes readable during polling and never enables preview audi
   assert.equal(app.requests.filter(r=>r.options?.method==='POST').length,0);
 });
 
+test('a revision from the reader may ask for its own length, and an empty field keeps the plan',()=>{
+  // 2026-11-08: Geld verstehen ep_003 was to be retold in about 38 of its planned 58 minutes.
+  const app=studio();
+  const field=app.run(`revisionMinutesField({planned_minutes:58})`);
+  assert.ok(field.includes('<label for="script-minutes">Neue Länge in Minuten (leer: wie geplant)</label>'));
+  assert.ok(field.includes('type="number"')&&field.includes('min="10" max="60"')&&field.includes('placeholder="58"'));
+  assert.ok(!app.run(`revisionMinutesField({planned_minutes:null})`).includes('placeholder'));
+  assert.equal(app.run(`revisionMinutes(' 38 ')`),38);
+  assert.equal(app.run(`revisionMinutes('')`),null);
+  assert.equal(app.run(`revisionMinutes('abc')`),null);
+});
+
+test('a revision asked for while a run works is queued, and the reader lists what waits',async()=>{
+  // 2026-11-08: Geld verstehen's ep_002 and ep_004 revisions could not be asked for while ep_003's ran (D-191).
+  const app=studio(),p=workflowProject(app);
+  p.episodes=[2,4].map(n=>({script:{episode_id:'ep_00'+n,title:'F'+n,segments:[],chapters:[]}}));
+  p.revision_queue=[];
+  app.run(`project=${JSON.stringify(p)};`);
+  assert.equal(app.run('revisionWouldQueue()'),true,'a running job queues the request instead of refusing it');
+  assert.equal(app.run('renderRevisionQueue()'),'');
+  app.responses.set('/api/projects/test/start',{queued:true,episode:'ep_002',position:1});
+  app.responses.set('/api/projects/test',{...p,revision_queue:[{episode:'ep_002',position:1,minutes:36,message:'Weniger DJI.'}]});
+  await app.run(`start('revise',{episode:'ep_002',message:'Weniger DJI.',minutes:36})`);
+  const sent=JSON.parse(app.requests.find(r=>r.path==='/api/projects/test/start').options.body);
+  assert.deepEqual([sent.action,sent.episode,sent.minutes],['revise','ep_002',36]);
+  assert.ok(app.elements.get('notice').textContent.includes('Vorgemerkt: Platz 1 der Warteschlange'),app.elements.get('notice').textContent);
+  app.run(`project.revision_queue.push({episode:'ep_004',position:2,minutes:30,message:'Bastelzimmer bleibt.'},
+    {episode:'ep_001',position:3,error:'Die Länge einer Überarbeitung liegt zwischen 10 und 60 Minuten.',error_code:'invalid_revision',error_language:'de'});`);
+  const list=app.run('renderRevisionQueue()');
+  assert.ok(list.includes('Vorgemerkt · 3'));
+  assert.ok(list.includes('Folge 2: „F2“</strong> · 36 Minuten'),list);
+  // A row without a key, as a server before D-192 sends it, is removed by its episode.
+  assert.ok(list.includes('data-action="unqueue-revision" data-key="ep_004" data-episode="ep_004"'));
+  assert.ok(list.includes('startet nicht: Die Länge einer Überarbeitung'));
+  assert.ok(list.includes('Sie starten nacheinander von selbst'));
+  app.run(`project.revisions_held=true;`);
+  assert.ok(app.run('renderRevisionQueue()').includes('Ein angehaltener Lauf dieses Projekts braucht zuerst deine Entscheidung'));
+  // Nothing runs, but revisions still wait: a new one joins them, so the order holds.
+  app.run(`project.job.status='completed';`);
+  assert.equal(app.run('revisionWouldQueue()'),true);
+  app.run(`project.revision_queue=[];`);
+  assert.equal(app.run('revisionWouldQueue()'),false);
+  // A server older than the queue sends none: while a job runs the button stays closed and the page refuses, as before.
+  app.run(`delete project.revision_queue;project.job.status='running';`);
+  assert.equal(app.run('revisionWouldQueue()'),false);
+  assert.equal(app.run('reviseDisabled()'),'disabled');
+  await assert.rejects(app.run(`start('revise',{episode:'ep_002',message:'Weniger DJI.'})`),/Ein Auftrag läuft bereits/);
+});
+
+test('every remaining episode may wait behind the queued revisions, at its own length',async()=>{
+  // 2026-11-08: the rest of Geld verstehen's first season was to follow its last queued revision overnight (D-192).
+  const app=studio(),p=workflowProject(app);
+  p.outline={hash:'h',approval:{plan_hash:'h'},next_episode:'ep_002',
+    plan:{central_question:'Why?',explanation_path:'Path',scope_note:'Scope',episodes:['One','Two','Three'].map((title,i)=>
+      ({episode_id:'ep_00'+(i+1),title,central_question:'Why?',target_minutes:46,scenes:[],deferred_questions:[]}))},
+    episodes:[{episode_id:'ep_001',title:'One',run_id:'run_1'},{episode_id:'ep_002',title:'Two',run_id:null},{episode_id:'ep_003',title:'Three',run_id:null}]};
+  p.revision_queue=[{episode:'ep_004',key:'ep_004',action:'revise',position:1,minutes:30,message:'Bastelzimmer bleibt.'}];
+  p.queues_series=true;
+  app.run(`project=${JSON.stringify(p)};`);
+  // While the project works, the series page offers to queue every remaining episode; the next one alone does not.
+  let html=app.run('renderOutline()');
+  assert.ok(html.includes('data-action="episodes" >Alle 2 restlichen vormerken</button>'),html);
+  assert.ok(html.includes('<button data-action="episode" disabled>'));
+  const series={episode:null,key:'episodes',action:'episodes',position:2,minutes:35,message:''};
+  app.responses.set('/api/projects/test/start',{queued:true,episode:null,key:'episodes',position:2});
+  app.responses.set('/api/projects/test',{...p,revision_queue:[...p.revision_queue,series]});
+  await app.run(`start('episodes',{minutes:35})`);
+  const sent=JSON.parse(app.requests.find(r=>r.path==='/api/projects/test/start').options.body);
+  assert.deepEqual([sent.action,sent.minutes],['episodes',35]);
+  assert.ok(app.elements.get('notice').textContent.includes('Die restlichen Folgen starten von selbst nacheinander'),
+    app.elements.get('notice').textContent);
+  const list=app.run('renderRevisionQueue()');
+  assert.ok(list.includes('Vorgemerkt · 2'));
+  assert.ok(list.includes('Alle weiteren Folgen</strong> · je 35 Minuten'),list);
+  assert.ok(list.includes('data-action="unqueue-revision" data-key="episodes" data-episode=""'));
+  assert.ok(app.run('renderOutline()').includes('Alle weiteren Folgen</strong> · je 35 Minuten'),'the series page lists it too');
+  // A server before D-192 refuses them while a run works: the button stays closed and the page refuses, as before.
+  app.run(`delete project.queues_series;`);
+  assert.ok(app.run('renderOutline()').includes('data-action="episodes" disabled>Alle 2 restlichen nacheinander</button>'));
+  await assert.rejects(app.run(`start('episodes',{})`),/Ein Auftrag läuft bereits/);
+});
+
 test('new episodes and later polish do not replace an open script or its reading position',async()=>{
   const app=studio(), p=workflowProject(app);
   p.job.run.run_id='run_one';
@@ -1199,13 +1281,14 @@ test('a re-render posts the rerender flag with the session token and no fresh ap
   assert.equal(request.options.method,'POST');
   assert.equal(request.options.headers['X-Studio-Token'],'csrf');
   // No checkbox on the reading page: the server applies the saved approval by the pipeline's rule. Since 2026-10-02 the
-  // re-render also carries the hash of the tags on the page (empty when none were placed), since it speaks them.
+  // re-render also carries the hash of the tags on the page (empty when none were placed), since it speaks them, and
+  // since 2026-11-08 the hash of the podcast's music (empty without; D-189), since the montage plays it.
   assert.deepEqual(JSON.parse(request.options.body),{action:'audio',episode:'ep_001',approve_audio:false,rerender:true,
-    expression_hash:'',script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
+    expression_hash:'',script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud',music_hash:''});
   // The approval-page button still sends the checkbox state and no rerender flag, and the hash of the tags read
   // with the script (empty when none were placed).
   app.run('episodeIndex=0;$("audio-approval").checked=true;');
-  assert.deepEqual(JSON.parse(JSON.stringify(app.run('audioRequest()'))),{episode:'ep_001',approve_audio:true,expression_hash:'',script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud'});
+  assert.deepEqual(JSON.parse(JSON.stringify(app.run('audioRequest()'))),{episode:'ep_001',approve_audio:true,expression_hash:'',script_hash:'final',readable_hash:'final',config_hash:'cfg',audio_hash:'aud',music_hash:''});
 });
 
 test('the spoken-form field starts from the table result and an unchanged save creates no override',async()=>{
@@ -1642,6 +1725,23 @@ test('remote audio enables a different reviewed episode, but blocks duplicates a
   assert.match(app.run('audioBlockReason("ep_002")'),/gleichzeitig wie erlaubt/);
   app.run('project.audio_settings.provider="qwen3_local";project.audio_capacity.available=2');
   assert.match(app.run('audioBlockReason("ep_002")'),/Auftrag läuft/);
+});
+
+test('a running text job queues a new API recording instead of locking its approval card',()=>{
+  // Orlagau 2026-11-03: while episode 2 was written, the card greyed out the checkbox for episode 1, though the server
+  // and its own button („Freigeben und einreihen“) queue the approval.
+  const app=studio();
+  app.run(`boot.elevenlabs_key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:{language:'de-DE'},
+    audio_settings:{provider:'elevenlabs_tts',voices:{host_a:'S87WJpstXs0Ge2ukRiXJ',host_b:'VHYWoxffK1pFlM1dtRb0'}},
+    execution:{audio:'parallel'},audio_capacity:{limit:3,active:0,available:3},
+    episodes:[{script:{episode_id:'ep_001',title:'Erste'},audio:[]}],audio_jobs:[],
+    job:{id:'s',action:'episode',status:'running'}};episodeIndex=0;`);
+  const card=()=>app.run('renderApprovalCard(project.episodes[0],currentAudio(),true)');
+  assert.ok(card().includes('<input id="audio-approval" type="checkbox" >'));
+  assert.ok(card().includes('>Freigeben und einreihen</button>')&&!card().includes('Zuerst den laufenden Auftrag'));
+  // Local Qwen has no queue: its card still waits for the job.
+  app.run(`project.audio_settings={provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}};`);
+  assert.ok(card().includes('<input id="audio-approval" type="checkbox" disabled>')&&card().includes('Ein Auftrag läuft bereits.'));
 });
 
 test('independent audio cards target their own stop or resume action',()=>{
@@ -2507,6 +2607,36 @@ test('a stopped Gemini episode stays visible while the others are voiced and res
   assert.ok(attention.text.includes('„F3“ (OpenRouter-Guthaben erschöpft)'));
 });
 
+test('a stopped ElevenLabs recording without a free place can be resumed into the queue and then says it waits',async()=>{
+  const app=studio();
+  const stop={code:'elevenlabs_busy',stage:'synthesis'};
+  const job=(n,extra={})=>({id:'a'+n,action:'audio',status:'blocked',episode:'ep_00'+n,provider:'elevenlabs_tts',stop,run:{run_id:'run_'+n,kind:'episode_audio',stages:{}},...extra});
+  const jobs=[job(1,{status:'running',stop:undefined,started_at:new Date().toISOString(),progress:{completed_segments:1,total_segments:9}}),job(2),job(3)];
+  app.run(`boot.key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,audio_settings:{provider:'elevenlabs_tts',voices:{host_a:'S87WJpstXs0Ge2ukRiXJ',host_b:'VHYWoxffK1pFlM1dtRb0'}},audio_capacity:{limit:3,active:3,available:0},audio_queue:[],
+    episodes:[1,2,3].map(n=>({script:{episode_id:'ep_00'+n,title:'F'+n,segments:[],chapters:[]},hash:'h',readable_hash:'r',audio:[],metrics:{words:1,estimated_minutes:1}})),
+    audio_jobs:${JSON.stringify(jobs)}};project.job=project.audio_jobs[0];step=PAGE.audio;render();`);
+  const panel=app.elements.get('audio-jobs').innerHTML;
+  assert.ok(panel.includes('data-action="resume" data-run-id="run_2" data-episode="ep_002" >'),'no place is free, yet it can be resumed');
+  assert.ok(!panel.includes('gleichzeitig wie erlaubt'));
+  assert.ok(app.run('renderAudioJobBar()').includes('Alle 2 fortsetzen'));
+  // A Gemini recording at the same capacity is still refused by the page.
+  app.run(`project.audio_jobs[1].provider='openrouter_gemini_tts';lastJobView='';renderJob();`);
+  assert.ok(app.elements.get('audio-jobs').innerHTML.includes('gleichzeitig wie erlaubt'));
+  app.run(`project.audio_jobs[1].provider='elevenlabs_tts';`);
+  // One queued already: its card says so and „Alle“ no longer asks for it again.
+  app.run(`project.audio_queue=[{episode:'ep_002',position:1,waiting:'place'}];lastJobView='';renderJob();`);
+  const waiting=app.elements.get('audio-jobs').innerHTML;
+  assert.ok(waiting.includes('wartet in der Warteschlange auf Platz 1'),waiting);
+  assert.ok(!app.run('renderAudioJobBar()').includes('resume-stopped-audio'),'one open stop has its own card');
+  app.run(`project.audio_queue=[];step=PAGE.brief;`);
+  app.responses.set('/api/projects/p/start',{queued:true,episode:'ep_002',position:1});
+  app.responses.set('/api/projects/p',{id:'p',episodes:[],audio_jobs:[],job:null});
+  await app.run(`resumeStoppedAudio()`);
+  const resumes=app.requests.filter(r=>r.path==='/api/projects/p/start').map(r=>JSON.parse(r.options.body).run_id);
+  assert.deepEqual(resumes,['run_2','run_3']);
+  assert.ok(app.elements.get('notice').textContent.includes('In der Warteschlange: 2'),app.elements.get('notice').textContent);
+});
+
 test('a paused text run waits for running episodes instead of offering a resume that would fail',()=>{
   const app=studio();
   app.run(`project={id:'p',config:boot.defaults,audio_jobs:[{id:'a1',episode:'ep_001',status:'running',started_at:new Date().toISOString(),run:{run_id:'x1',kind:'episode_audio'}}],
@@ -2697,6 +2827,32 @@ test('all read episodes can be approved at once, and a full studio queues instea
   const queue=app.run('renderAudioQueue()');
   assert.ok(queue.includes('Warteschlange der Vertonung · 2')&&queue.includes('startet nicht: Skript inzwischen geändert.'));
   assert.ok(app.run(`renderQueueState(${JSON.stringify(ep('ep_003'))})`).includes('wartet in der Warteschlange auf Platz 1'));
+});
+
+test('recordings out of date only for the music are assembled again on their own, without the episodes never voiced',()=>{
+  // 2026-11-08: "approve all" would also have recorded Asimov's 16 episodes never voiced, about 175,000 credits, when
+  // only the music was to be added (D-193).
+  const app=studio();
+  const ep=(id,extra={})=>({script:{episode_id:id,title:`Folge ${id}`},hash:'h',readable_hash:'r',audio:[],audio_current:false,audio_stale:[],...extra});
+  const voiced=(id,stale)=>ep(id,{audio:[`exports/${id}/run_x/audio.mp3`],audio_stale:stale});
+  app.run(`boot.key_available=true;boot.elevenlabs_key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,
+    audio_settings:{provider:'elevenlabs_tts',voices:{host_a:'Pauli',host_b:'Thomas'}},
+    episodes:[${[voiced('ep_001',['music']),voiced('ep_002',['voices','music']),ep('ep_003'),voiced('ep_004',['music']),
+      voiced('ep_005',['music'])].map(e=>JSON.stringify(e)).join(',')}],
+    audio_jobs:[{id:'a',status:'running',episode:'ep_005'}],audio_capacity:{available:3},audio_queue:[{episode:'ep_004',position:1}]};`);
+  // Only recorded episodes whose one change is the music, not recording and not queued: never ep_003 or ep_002.
+  assert.equal(app.run('musicOnlyRecordings().map(e=>e.script.episode_id).join(",")'),'ep_001');
+  assert.equal(app.run('pendingRecordings().map(e=>e.script.episode_id).join(",")'),'ep_001,ep_002,ep_003');
+  app.run(`project.audio_queue=[];project.audio_jobs=[];`);
+  const panel=app.run('renderMusicRemix()');
+  assert.ok(panel.includes('Mit Musik neu zusammensetzen · 3'),panel);
+  assert.ok(panel.includes('<li>Folge ep_001</li><li>Folge ep_004</li><li>Folge ep_005</li></ul>'));
+  assert.ok(panel.includes('neu gesprochen wird nichts'));
+  // The checkbox is never ticked for the editor.
+  assert.ok(panel.includes('<input id="audio-music-all" type="checkbox">'));
+  assert.ok(panel.includes('data-action="audio-music" >3 Folgen mit Musik neu zusammensetzen</button>'));
+  app.run(`project.episodes.forEach(e=>{e.audio_current=true;e.audio_stale=[];});`);
+  assert.equal(app.run('renderMusicRemix()'),'','nothing to assemble again, no panel');
 });
 
 test('the overview card offers the whole podcast as a download, not only a player',()=>{
@@ -3109,6 +3265,23 @@ test('a new server instance reloads the session and says when the key is gone an
   assert.ok(app.run('renderAudioQueue()').includes('wartet auf einen freien Platz'));
 });
 
+test('the approval card names the podcast music it approves, and an older recording says the music is new',()=>{
+  const app=studio(), p=workflowProject(app);
+  p.episodes=[{...publishedEpisode({}),audio:['exports/a.mp3'],audio_current:false,audio_stale:['music']}];
+  p.audio_settings={provider:'elevenlabs_tts',voices:{host_a:'S87WJpstXs0Ge2ukRiXJ',host_b:'VHYWoxffK1pFlM1dtRb0'}};
+  p.music={title:'night shift 1x78',author:'Setuniman',license:'CC BY-NC 4.0',source:'https://freesound.org/s/822301/'};
+  p.music_hash='m'.repeat(64);
+  app.run(`project=${JSON.stringify(p)};boot.key_available=true;boot.elevenlabs_key_available=true;boot.capabilities={parallel_audio:true};episodeIndex=0;`);
+  const card=app.run(`renderApprovalCard(project.episodes[0],project.audio_settings,true)`);
+  assert.ok(card.includes('<dt>Musik</dt><dd>„night shift 1x78“ von Setuniman (CC BY-NC 4.0) · am Anfang, überblendet an jedem Kapitelwechsel und am Ende</dd>'),card);
+  assert.ok(card.includes('Musik'),'the reason the recording is older');
+  assert.equal(app.run(`audioRequest('${p.episodes[0].script.episode_id}').music_hash`),'m'.repeat(64),'the approval names the music it saw');
+  app.run(`project.music={error:'Die Musikdatei studio/music/x.mp3 fehlt oder wurde geändert.',code:'music_changed'};`);
+  assert.ok(app.run(`renderApprovalCard(project.episodes[0],project.audio_settings,true)`).includes('fehlt oder wurde geändert'));
+  app.run(`project.music=null;project.music_hash='';`);
+  assert.ok(!app.run(`renderApprovalCard(project.episodes[0],project.audio_settings,true)`).includes('<dt>Musik</dt>'));
+});
+
 test('a paid recording shows its size before approval, for one episode and for all',()=>{
   const app=studio(), p=workflowProject(app);
   const episode=(id,chars,minutes)=>({...publishedEpisode({}),script:{...publishedEpisode({}).script,episode_id:id,title:id},speech:{characters:chars,minutes}});
@@ -3197,6 +3370,28 @@ test('the settings page holds the Anthropic key and a money limit, saved only wh
     // The web search is a choice of its own; Perplexity has its key panel (D-151).
     assert.ok(html.includes('name="settings-web-search" value="perplexity"') && html.includes('id="key-panel-perplexity"'));
     assert.equal(app.run('settingsFromForm().web_search'),'model');
+    // A Studio started before Unpaywall's setting existed neither shows nor sends it (its save wants every section).
+    assert.ok(!html.includes('id="settings-unpaywall"'));
+    assert.equal(app.run('"unpaywall_email" in settingsFromForm()'),false);
+  });
+});
+
+test('the settings page asks for Unpaywall\'s contact address and says it goes to Unpaywall',()=>{
+  const app=studio();
+  const view={settings:{text:{provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh',max_output_tokens:32768},
+    audio:{provider:'qwen_local',voices:{host_a:'Aiden',host_b:'Vivian'},pauses:{same_speaker_ms:250,speaker_change_ms:450,chapter_break_ms:900}},
+    execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},
+    research_limits:{model_calls:750,sources:150,search_rounds:48},text_timeout_seconds:1800,web_search:'model',
+    unpaywall_email:'reader@example.org'},hash:'h',global:true,claude_extra_usage:false};
+  app.responses.set('/api/settings',view);
+  return app.run('showSettings()').then(()=>{
+    const html=app.elements.get('content').innerHTML;
+    assert.ok(html.includes('id="settings-unpaywall" type="email"') && html.includes('value="reader@example.org"'));
+    assert.ok(html.includes('Kontaktadresse für Unpaywall') && html.includes('erhält sie bei jeder Abfrage'));
+    app.run(`$('settings-unpaywall').value=' new@example.org ';`);
+    assert.equal(app.run('settingsFromForm().unpaywall_email'),'new@example.org');
+    app.run(`$('settings-unpaywall').value='';`);
+    assert.equal(app.run('settingsFromForm().unpaywall_email'),'');
   });
 });
 

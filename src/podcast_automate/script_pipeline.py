@@ -18,7 +18,8 @@ from .evidence_models import EVIDENCE_VERSION
 from .execution import run_episode_stage
 from .models import EpisodeScript, host_roles_of
 from .cast import cast_note, host_roles
-from .narration import STORY_RESEARCH_SETTLED, missing_stories, scope_errors, story_material, with_neighbours
+from .narration import (STORY_RESEARCH_SETTLED, missing_stories, scope_errors, story_material, unnamed_refs_kept,
+                        with_neighbours)
 from .prompts import fragment, instructions
 from .research import check_money, refund_call, reserve_call, settle_call, settle_external, unanswered
 from .research_evidence import single_group_findings
@@ -138,7 +139,7 @@ class ScriptRun:
     def __init__(self, *, root, work, config, manifest, adapter, input_hash, research_id, dossier, discovery,
                  sources, context, episode, revision, execution, plan_only, previous_outline, outline_feedback,
                  series_review_version, text_generation, resume, style_notes="", probe_key=None,
-                 speaking_rate=SPOKEN_WORDS_PER_MINUTE):
+                 speaking_rate=SPOKEN_WORDS_PER_MINUTE, episode_minutes=None):
         self.root, self.work, self.config, self.manifest, self.adapter = root, work, config, manifest, adapter
         self.input_hash, self.research_id, self.discovery = input_hash, research_id, discovery
         self.base_dossier, self.base_context, self.base_sources = dossier, context, sources
@@ -150,6 +151,8 @@ class ScriptRun:
         self.style_notes = style_notes
         # The words a minute this run's lengths are written and checked at (scripting.speaking_rate, D-184).
         self.rate = speaking_rate
+        # A new episode's own length instead of its outline's, bound in the inputs (story_agent.revision_entry, D-192).
+        self.episode_minutes = episode_minutes
         # The OpenRouter key for the Jev gap probe; only in memory, and only a run that asked for the probe uses it.
         self.probe_key = probe_key
         self._research_limits = None
@@ -816,7 +819,9 @@ class ScriptRun:
                 write_json(self.work / f"{entry.episode_id}_review_errors.json", errors)
                 raise AppError("Die Reparatur verletzt ihre Vorgaben. " + " ".join(errors), code="invalid_script",
                                status="blocked")
-        return corrected_call(self.invoke, prompt, EpisodeScript, STORY_REPAIR_VERSION, check)
+        # References added to or dropped from a segment no issue names are put back before the scope check.
+        return corrected_call(lambda *args, **kwargs: unnamed_refs_kept(draft, self.invoke(*args, **kwargs), allowed),
+                              prompt, EpisodeScript, STORY_REPAIR_VERSION, check)
 
     def review_script(self, plan, entry, draft, original_draft, probes, follow_up=None):
         """One evidence-bound script review call, with its deterministic claim checks. ``follow_up`` is the review
