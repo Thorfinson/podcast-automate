@@ -280,6 +280,16 @@ const revisionWouldQueue=()=>revisionQueueable()&&(running()||waitingRevisions()
 const reviseDisabled=()=>revisionQueueable()?"":disabled();
 // "Alle weiteren Folgen" queues only on a server that says it does (D-192); an older one refuses them while running.
 const seriesQueueable=()=>revisionQueueable()&&project.queues_series===true;
+// „Nach dieser Folge anhalten“ (D-207): a job that writes the remaining episodes one after another ends after the one it
+// writes now, on a server that offers it (stops_after_episode); the wish can be taken back while the episode runs.
+const writesSeries=j=>j?.action==="episodes"||(j?.action==="resume"&&j?.series===true);
+const stopAfterControl=j=>{
+  if(project?.stops_after_episode!==true||!writesSeries(j)||j.status!=="running"||j.external)return "";
+  return project.stop_after_episode
+    ?`<span class="hint">${t("job.stop_after.set")}</span><button class="quiet small" data-action="stop_after" data-enabled="false">${t("job.stop_after.cancel")}</button>`
+    :`<button class="secondary small" data-action="stop_after" data-enabled="true">${t("job.stop_after.button")}</button>`;
+};
+const plannedTitle=id=>(project?.outline?.plan?.episodes||[]).find(e=>e.episode_id===id)?.title||id;
 function renderRevisionQueue() {
   const rows=project?.revision_queue||[];
   if(!rows.length)return "";
@@ -3628,7 +3638,9 @@ function renderJobView() {
   const steady={...job,heartbeat_age_seconds:undefined,progress:job.progress&&{...job.progress,updated_at:undefined}};
   const view=JSON.stringify({project:project?.id,job:steady,drawerOpen,connectionLost,audio:audioRunning.map(a=>[a.id,a.progress?.completed_segments]),
     progressClock:active&&["script","research"].includes(job.progress?.phase)?Math.floor(Date.now()/10000):null,
-    page:job.sample?null:step,minute:active?Math.floor((Date.now()-Date.parse(job.started_at))/60000):null,main:project.main_job?.id});
+    page:job.sample?null:step,minute:active?Math.floor((Date.now()-Date.parse(job.started_at))/60000):null,main:project.main_job?.id,
+    // „Nach dieser Folge anhalten“ lives beside the job (D-207); setting or taking it back redraws the bar.
+    stopAfter:[project.stops_after_episode===true,project.stop_after_episode===true]});
   // A freshly rendered research page has an empty ledger container even when the job itself is unchanged.
   const researchStale=!!research&&research.innerHTML===""&&job.progress?.phase==="research";
   if(view===lastJobView&&!researchStale)return;
@@ -3652,7 +3664,8 @@ function renderJobView() {
   const tone=active?"running":info?stopTone(info):"done";
   const calls=(Number.isSafeInteger(job.progress?.model_call_limit)&&job.progress.model_call_limit>0?` · ${t("job.calls",{used:Number(job.progress.model_calls||0),limit:job.progress.model_call_limit})}`:"")+
     (job.progress?.cost_spent_usd!==undefined?` · ${job.progress.cost_limit_usd?t("job.cost_limit",{spent:usd(job.progress.cost_spent_usd),limit:usd(job.progress.cost_limit_usd)}):t("job.cost",{spent:usd(job.progress.cost_spent_usd)})}`:"");
-  const meta=active&&job.started_at?` · ${t("nav.hint.since",{elapsed:elapsedText(job.started_at)})}${calls}`:"";
+  const meta=active&&job.started_at?` · ${t("nav.hint.since",{elapsed:elapsedText(job.started_at)})}${calls}`:
+    !active&&job?.stopped_after_episode&&job.next_episode?` · ${t("job.stop_after.done",{episode:escape(plannedTitle(job.next_episode))})}`:"";
   const lastLine=active?(job.progress?.model_trace?.lines||[]).at(-1):null;
   const audioNote=audioRunning.length?(step!==PAGE.audio?`<button class="quiet small status-link" data-step="${PAGE.audio}">${audioJobSummary()} →</button>`:`<span class="hint">${audioJobSummary()}</span>`):"";
   // A worker an earlier Studio started still runs: shown as running elsewhere; stopped only when its identity is on record.
@@ -3662,7 +3675,7 @@ function renderJobView() {
   const fresh=freshRecommended(job,info);
   bar.innerHTML=offlineMark()+`<span class="job-dot ${tone}${connectionLost?" offline":""}" aria-hidden="true"></span><span class="job-text"><strong>${escape(title)}</strong>${meta}${elsewhere}</span>`+
     (active&&job.external&&!job.external_stoppable?`<span class="hint">${t("job.ends_itself")}</span>`:
-    active?`<button class="danger small" data-action="stop" data-confirm="${t("job.stop_confirm")}">${t("job.stop")}</button>`:
+    active?`<button class="danger small" data-action="stop" data-confirm="${t("job.stop_confirm")}">${t("job.stop")}</button>${stopAfterControl(job)}`:
       resumable&&running()?`<span class="hint">${t(audioRunning.length?"job.resume_after_audio":"job.resume_after_job")}</span>`:
       resumable&&!fresh?`<button class="secondary small" data-action="resume" data-run-id="${escape(r?.run_id||"")}">${t("button.resume")}</button>`:"")+
     (destination!==null&&destination!==undefined&&destination!==step?`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`:"")+audioNote;
@@ -4073,6 +4086,7 @@ document.addEventListener("click",event=>{
       renderKeyNote();$(KEY_STATUS[kind]||"key-status").textContent=tp(keyAvailable(kind)?"act.key_env":"act.key_removed");return;
     }
     if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
+    if(action==="stop_after"){await api(`/api/projects/${project.id}/stop_after`,{enabled:button.dataset.enabled==="true"});project=await api(`/api/projects/${project.id}`);render();return;}
     if(action==="apply-advice"){await applyAdvice(button);notice(tp("act.advice_applied"),"ok");return;}
     if(action==="raise-adopt"){await raiseAndAdopt(button);notice(tp("act.limits_advice_applied"),"ok");return;}
     if(action==="upload-work"){await uploadWork(button);return;}

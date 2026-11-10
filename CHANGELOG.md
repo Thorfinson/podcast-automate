@@ -7,6 +7,10 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ## [Unreleased]
 
+### Added
+
+- 2026-11-10 · **Nach dieser Folge anhalten** ("Stop after this episode") beside "Stop" while all remaining episodes are being written: the episode in progress is finished, published and read for its tags, then the job ends instead of starting the next one; **Doch weiterschreiben** takes it back, and "All remaining" goes on later (D-207).
+
 ## [0.2.0] - 2026-11-10
 
 The first public release. Podcast Automate turns a topic into a researched, reviewed dialogue podcast series and

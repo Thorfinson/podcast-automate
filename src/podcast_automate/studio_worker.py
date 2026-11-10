@@ -37,7 +37,7 @@ from .sources import use_core_key, use_unpaywall_email
 from .speech import GeminiSpeech, selected_audio
 from .storage import digest, file_hash, load_project, project_lock, read_yaml, write_json
 from .subscriptions import quota_retry_at
-from .studio import BriefProposal, TextChoice, audio_job_path, chat_limits, read_json
+from .studio import STOP_AFTER, BriefProposal, TextChoice, audio_job_path, chat_limits, read_json, stop_after_asked
 from .studio_progress import safe_script_progress, watch
 from .status_summary import UI_LANGUAGES, interface_language, start_monitor
 from .process import stop_process_tree
@@ -350,8 +350,14 @@ def write_in_order(root, outline, request, search, kwargs, *, chain, episode=Non
     """Write the outline's episodes one run each (D-184): ``episode`` or the next unwritten one, with ``chain`` every
     remaining one after it, stopping where one stops. ``run`` is an episode run of the outline already finished, as a
     resumed one is; the chain goes on after it. The request's ``minutes`` give every episode it writes that length
-    instead of the outline's (D-192). Once all are written, the series review reads them together."""
+    instead of the outline's (D-192). Once all are written, the series review reads them together. Asked to stop after
+    the current episode (D-207), the chain ends once that one is published and read for its tags."""
+    stopped = False
     while run is None or (chain and run.status == "completed"):
+        if run is not None and stop_after_asked(root):
+            (root / STOP_AFTER).unlink(missing_ok=True)
+            stopped = True
+            break
         episode = episode or next_episode(root, outline)
         if episode is None:
             break
@@ -363,6 +369,9 @@ def write_in_order(root, outline, request, search, kwargs, *, chain, episode=Non
         raise AppError("Alle Folgen dieses Inhaltsverzeichnisses sind geschrieben.", code="series_written",
                        status="blocked")
     result = {"run": run.model_dump(mode="json")}
+    if stopped:
+        # The job ends as done; „Alle restlichen“ goes on with this episode later.
+        result.update(stopped_after_episode=True, next_episode=next_episode(root, outline))
     if run.status == "completed" and next_episode(root, outline) is None:
         result["series_review"] = series_review_after(root, outline, kwargs)
     return result

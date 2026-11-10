@@ -640,6 +640,38 @@ def queue_error(row):
     return {"error": str(error), "error_code": row.get("error_code"), "error_language": message_language(error)}
 
 
+# „Nach dieser Folge anhalten“ (D-207): the running job that writes the remaining episodes ends after the one it writes.
+STOP_AFTER = Path("studio") / "stop_after_episode.json"
+
+
+def writes_series(job):
+    """Whether ``job`` writes the outline's remaining episodes one after another: „Alle restlichen“ (``episodes``), or
+    the resume of one of its episode runs, which goes on with the series (``series``)."""
+    return bool(job) and (job.get("action") == "episodes" or (job.get("action") == "resume" and job.get("series") is True))
+
+
+def stop_after_asked(root, job=None):
+    """Whether the project's job was asked to end after its current episode; the wish names that job, so it never
+    outlives it."""
+    job = job if job is not None else read_json(root / "studio/job.json", {}) or {}
+    wish = read_json(root / STOP_AFTER, {}) or {}
+    return bool(job.get("id")) and wish.get("job_id") == job.get("id")
+
+
+def carry_stop_after(root, previous, job, payload):
+    """„Nach dieser Folge anhalten“ (D-207) when a new job starts: a resume of the run the wish's job was writing, the
+    scheduler's after a quota wait among them, keeps it under its own id; any other new job starts without it
+    (Codex review on #25: a resume after a quota wait wrote on past the episode)."""
+    wish = read_json(root / STOP_AFTER, {}) or {}
+    same_run = (job.get("action") == "resume" and bool(payload.get("series")) and bool(previous.get("id"))
+                and wish.get("job_id") == previous.get("id")
+                and (previous.get("run") or {}).get("run_id") == payload.get("run_id"))
+    if wish and same_run:
+        write_json(root / STOP_AFTER, {**wish, "job_id": job["id"]})
+    else:
+        (root / STOP_AFTER).unlink(missing_ok=True)
+
+
 def read_revisions(root):
     """Revisions asked for while their project was working (Studio.enqueue_revision, D-191), and the outline's
     remaining episodes asked for so (D-192), in the order asked."""
@@ -1996,6 +2028,8 @@ class Studio:
                 "revision_queue": revision_queue_view(read_revisions(root)), "revisions_held": revisions_held(root),
                 # The page queues „Alle weiteren Folgen“ while the project works only on a server that does (D-192).
                 "queues_series": True,
+                # „Nach dieser Folge anhalten“ on a server that knows it (D-207), and whether the running job was asked.
+                "stops_after_episode": True, "stop_after_episode": stop_after_asked(root, main or {}),
                 # When the tags a Gemini recording speaks are placed for reading (studio_worker.tag_episodes).
                 "expression_progress": read_json(root / "studio/expression/progress.json", None),
                 "audio_jobs": jobs, "audio_capacity": {"limit": limit, "active": active_here, "available": max(0, available)},
@@ -2672,7 +2706,10 @@ class Studio:
             write_revisions(root, [row for row in read_revisions(root) if revision_key(row) != started])
         job_path = audio_job_path(root, job["id"]) if remote_episode else root / "studio/job.json"
         if not remote_episode:
+            previous = read_json(root / "studio/job.json", {}) or {}
             park(root, job)
+            # „Nach dieser Folge anhalten“ (D-207) goes on with a resume of the run it was asked for, else it ends.
+            carry_stop_after(root, previous, job, payload)
         write_json(job_path, job)
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
@@ -2748,6 +2785,21 @@ class Studio:
             raise AppError(t("server.stop.none"), code="no_active_job")
         stop_process_tree(process)
         return record_interruption(root, expected_job_id=job_id, audio_job_id=job_id)
+
+    def stop_after(self, project, data):
+        """„Nach dieser Folge anhalten“ (D-207): the running job that writes the remaining episodes ends once the episode
+        it writes now is published and read for its tags; ``enabled: false`` takes the wish back. The worker looks for
+        it between two episodes (studio_worker.write_in_order)."""
+        root = self.root(project)
+        if data.get("enabled", True) is False:
+            # Taking the wish back is always safe, also once the job has ended.
+            (root / STOP_AFTER).unlink(missing_ok=True)
+            return {"stop_after_episode": False}
+        job = read_json(root / "studio/job.json", {}) or {}
+        if job.get("status") != "running" or not writes_series(job):
+            raise AppError(t("server.stop_after.none"), code="no_active_job")
+        write_json(root / STOP_AFTER, {"job_id": job["id"], "asked_at": now()})
+        return {"stop_after_episode": True}
 
     def stop_all(self):
         for job_id, (_, root, _) in list(self.active_audio().items()):
@@ -2921,7 +2973,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                     else:
                         match = re.fullmatch(r"/api/projects/([^/]+)/(save|start|stop|apply_proposal|delete|upload"
                                              r"|remove_attachment|approve|spoken_override|listening_review|jev_probe"
-                                             r"|audio_queue|revision_queue|allowances|reader_state|new_version|audio_own)", path)
+                                             r"|audio_queue|revision_queue|allowances|reader_state|new_version|audio_own|stop_after)", path)
                         if not match:
                             raise AppError(t("server.not_found"), code="not_found")
                         project, action = match.groups()
