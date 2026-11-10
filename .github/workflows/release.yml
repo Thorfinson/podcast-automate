@@ -1,15 +1,14 @@
 name: Release
 # A pushed version tag vX.Y.Z builds the sdist and the wheel, checks them, runs both test suites against the built
-# wheel on Linux, publishes to PyPI through trusted publishing and creates the GitHub release with the version's
-# CHANGELOG section. The tag must equal "v" + the version in pyproject.toml, and CHANGELOG.md needs a "## [X.Y.Z]"
-# section. One-time setup: a PyPI trusted publisher for this repository, workflow file release.yml and environment
-# "pypi", and a GitHub environment named "pypi".
+# wheel on Linux and creates the GitHub release with the version's CHANGELOG section and the built files attached.
+# Releases stay on GitHub; nothing is published to PyPI (D-203). The tag must equal "v" + the version in
+# pyproject.toml, and CHANGELOG.md needs a "## [X.Y.Z]" section.
 on:
   push:
     tags: ["v*"]
 permissions:
   contents: read
-# Never cancel a release half-way: a cancelled run could leave PyPI and the GitHub release out of step.
+# Never cancel a release half-way: a cancelled run could leave a tag without its release.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -115,25 +114,9 @@ jobs:
       - name: Test browser logic
         run: node --test tests/studio_ui.test.cjs
 
-  pypi:
-    name: Publish to PyPI
-    needs: test
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/podcast-automate/
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-
   github-release:
     name: GitHub release
-    needs: pypi
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write

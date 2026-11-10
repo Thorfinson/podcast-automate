@@ -575,8 +575,9 @@ usable but none has quota left, and `1` when none is usable. `--json` gives mach
 
 ## Release a version
 
-A release is a pushed version tag `vX.Y.Z`; `.github/workflows/release.yml` builds, checks, tests and publishes it
-(why: D-158). Versions are semantic; the first public release is 0.2.0.
+A release is a pushed version tag `vX.Y.Z`; `.github/workflows/release.yml` builds, checks and tests it and creates
+its GitHub release (why: D-158). Releases stay on GitHub, nothing is published to PyPI (why: D-203). Versions are
+semantic; the first public release is 0.2.0.
 
 1. Set `version` in `pyproject.toml` to `X.Y.Z` and move the entries under `## [Unreleased]` in `CHANGELOG.md` into
    a new section `## [X.Y.Z] - YYYY-MM-DD`.
@@ -597,18 +598,14 @@ The workflow then, each step only after the previous one passed:
 - builds the sdist and the wheel (`python -m build`), checks them with `twine check --strict` and checks that the
   wheel holds every data file of the package (catalogs, prompts, web files);
 - runs both test suites on Linux with Python 3.12 and 3.13 against the installed wheel;
-- waits for the maintainer's approval of the deployment to the GitHub environment `pypi` (Actions › the run ›
-  **Review deployments**), then publishes to PyPI through trusted publishing, without a stored token;
-- creates the GitHub release with the built files and the version's CHANGELOG section as its notes; a version with
-  `a`, `b`, `rc` or `dev` in it becomes a pre-release.
+- creates the GitHub release with the version's CHANGELOG section as its notes and the wheel and the sdist attached;
+  a version with `a`, `b`, `rc` or `dev` in it becomes a pre-release.
 
-A release run is never cancelled half-way, so PyPI and the GitHub release stay in step.
+A release run is never cancelled half-way, so a tag always gets its release. The attached wheel installs the `pla`
+command without a checkout, for example
+`pipx install https://github.com/Thorfinson/podcast-automate/releases/download/vX.Y.Z/podcast_automate-X.Y.Z-py3-none-any.whl`;
+the launchers and the FFmpeg and Qwen setup scripts come only with a checkout.
 
-**One-time setup** before the first release, by the repository owner:
-
-- On PyPI, a pending trusted publisher: project `podcast-automate`, owner `Thorfinson`, repository
-  `podcast-automate`, workflow `release.yml`, environment `pypi`. This step is still open.
-- On GitHub, set up on 2026-11-10: the environment `pypi` (deployments only from tags `v*`, the maintainer as
-  required reviewer), the rulesets for `main` and for tags `v*`, and private vulnerability reporting, the only
-  reporting channel of the [security policy](../SECURITY.md). How changes reach `main` under the ruleset is in
+**Repository setup**, done on 2026-11-10: the rulesets for `main` and for tags `v*`, and private vulnerability
+reporting, the only reporting channel of the [security policy](../SECURITY.md). How changes reach `main` under the ruleset is in
   [CONTRIBUTING](../CONTRIBUTING.md#how-a-change-reaches-main).
