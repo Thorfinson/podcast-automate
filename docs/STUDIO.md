@@ -276,9 +276,11 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
   (all remaining episodes, key `episodes`), behind the rows asked before it; the outline page lists the queue as the
   reading page does. It starts as the batch would (`episodes`), from the then current next episode. "Write the next episode" alone does not queue. A request for `episode` or `episodes` may carry `minutes` (10 to 60), which every
   episode it writes is given instead of the outline's length ([Writing a series in
-  order](SCRIPTS.md#writing-a-series-in-order)); the page has no field for it yet, so only a queued or API request
-  sets it, shown in the row as „je {n} Minuten“. The detail's `queues_series` tells the page that the server queues
-  the batch; a server older than D-192 refuses it while the project works, and the button stays closed (D-192).
+  order](SCRIPTS.md#writing-a-series-in-order)). Beside the writing buttons, **Minutes per new episode** („Minuten je neuer
+  Folge“) sets that length for the next episode or every remaining episode; empty keeps each episode's planned
+  length. A queued request shows it in the row as „je {n} Minuten“. The detail's `queues_series` tells the page that
+  the server queues the batch; a server older than D-192 refuses it while the project works, and the button stays
+  closed (D-192).
 - **While the agent works.** The progress names its steps ("Drafting the orientation sheet" („Orientierungsblatt wird erstellt“), "The story agent plans and writes the episode" („Der Erzähl-Agent plant und schreibt die Folge“), "An editor reads the story agent's draft" („Ein Lektor liest die Fassung des Erzähl-Agenten“)), and the production view shows the stages
   "Story material" („Erzählmaterial“), "Story agent" („Erzähl-Agent“), "Quality review" („Qualitätsprüfung“) and "Make available for review" („Zur Durchsicht bereitstellen“). The reading preview of an episode reaches "Reviews passed" once
   its review leaves nothing that blocks. The agent needs the Claude subscription's sign-in, or Claude on the Anthropic

@@ -8,6 +8,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-11-10 · The approved outline has a minutes-per-new-episode field (10 to 60, empty keeps the plan), used by both the next-episode and remaining-episodes buttons, including queued batches.
 - 2026-11-10 · The English interface explains every stop and refusal in English: where a German pipeline message stood, the Studio shows a plain sentence for its stop code (for example "The story agent exceeded its time limit."), with the German original under "Technical details". German pages are unchanged (D-200).
 - 2026-11-10 · The README has a sample to listen to, the first chapter of „Geld verstehen“ episode 1 in English, recorded with the ElevenLabs route on Eleven v4 Turbo (`docs/media/`, with its transcript), three screenshots of the Studio, and the measured cost of season 1 beside the October series.
 - 2026-11-10 · Refused sources to fetch yourself: „Fehlende Werke“ on the research page now also lists **„Gesperrte Quellen“**, the addresses a publisher or a bot check refused for questions that still need them. Each opens in your browser; upload what you save there in its own field, and the research reads it and tries the question again.

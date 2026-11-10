@@ -1019,7 +1019,7 @@ function studio({language='de', setting='auto'}={}) {
   };
   const defaults = {topic:'New project',central_question:'Why?',voice_profile:{host_a:'Aiden',host_b:'Vivian'},language:'de-DE',prior_knowledge:'',depth_request:'Deep',focus_questions:[],excluded_topics:[],seed_urls:[]};
   const context = vm.createContext({console,structuredClone,AbortController,encodeURIComponent,URL,URLSearchParams,btoa,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
-    document:{getElementById:element,querySelectorAll(){return [];},addEventListener(){},modelContext:{registerTool(tool){registered.set(tool.name,tool);}}},
+    document:{getElementById:element,querySelectorAll(){return [];},addEventListener(name,handler){events.set('document:'+name,handler);},modelContext:{registerTool(tool){registered.set(tool.name,tool);}}},
     fetch:async(path,options)=>{requests.push({path,options});const data=responses.get(path)??{token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults};return{ok:true,json:async()=>structuredClone(data)};}});
   vm.runInContext(localeScript(language, setting), context);
   vm.runInContext(source, context);
@@ -1196,6 +1196,46 @@ test('every remaining episode may wait behind the queued revisions, at its own l
   app.run(`delete project.queues_series;`);
   assert.ok(app.run('renderOutline()').includes('data-action="episodes" disabled>Alle 2 restlichen nacheinander</button>'));
   await assert.rejects(app.run(`start('episodes',{})`),/Ein Auftrag läuft bereits/);
+});
+
+test('the approved outline offers a localized length only while new episodes remain',()=>{
+  for(const [language,label] of [['de','Minuten je neuer Folge'],['en','Minutes per new episode']]){
+    const app=studio({language}),p=workflowProject(app);
+    p.outline.next_episode='ep_001';
+    app.run(`project=${JSON.stringify(p)};`);
+    const html=app.run('renderOutline()');
+    assert.ok(html.includes(`<label for="episode-minutes">${label}`));
+    assert.ok(html.includes('id="episode-minutes" type="number" inputmode="numeric" min="10" max="60" step="1"'));
+    app.run(`$('episode-minutes').value='35';`);
+    assert.equal(app.run('formSnapshot().values["episode-minutes"]'),'35','polling keeps an unsent choice');
+    app.run(`const saved=formSnapshot();$('episode-minutes').value='';formRestore(saved);`);
+    assert.equal(app.elements.get('episode-minutes').value,'35');
+    app.run(`project.outline.next_episode=null;`);
+    assert.ok(!app.run('renderOutline()').includes('id="episode-minutes"'));
+    app.run(`project.outline.approval=null;`);
+    assert.ok(!app.run('renderOutline()').includes('id="episode-minutes"'),'approval keeps the original plan');
+  }
+});
+
+test('writing buttons send the chosen length, omit an empty choice and retain queue behavior',async()=>{
+  for(const action of ['episode','episodes'])for(const value of ['', '10', '35', '60']){
+    const app=studio(),p=workflowProject(app);
+    p.outline.next_episode='ep_001';
+    p.revision_queue=[];p.queues_series=true;
+    p.job.status=action==='episodes'?'running':'completed';
+    app.run(`project=${JSON.stringify(p)};$('episode-minutes').value=${JSON.stringify(value)};let pending;attempt=fn=>pending=fn();`);
+    app.responses.set('/api/projects/test/start',action==='episodes'?{queued:true,position:1}:{});
+    app.responses.set('/api/projects/test',p);
+    const button={dataset:{action},hasAttribute(){return false;}};
+    app.events.get('document:click')({target:{closest:selector=>selector==='button'?button:null}});
+    await app.run('pending');
+    const sent=JSON.parse(app.requests.find(r=>r.path==='/api/projects/test/start').options.body);
+    assert.equal(sent.action,action);
+    if(value)assert.equal(sent.minutes,Number(value));
+    else assert.ok(!Object.hasOwn(sent,'minutes'),'empty leaves the planned length on the server');
+    assert.equal(app.elements.get('episode-minutes').value,'','a sent choice does not carry into the next request');
+    if(action==='episodes')assert.ok(app.elements.get('notice').textContent.includes('Die restlichen Folgen starten von selbst nacheinander'));
+  }
 });
 
 test('new episodes and later polish do not replace an open script or its reading position',async()=>{

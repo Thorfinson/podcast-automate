@@ -1377,7 +1377,7 @@ function renderSeries(outline,p) {
   const index=p.episodes.findIndex(e=>e.episode_id===outline.next_episode);
   // While the project works, every remaining episode can be queued behind what waits (D-192).
   const queueAll=seriesQueueable()&&revisionWouldQueue();
-  const action=outline.next_episode?`<button data-action="episode" ${disabled()}>${t("outline.writing.next_button")}</button>${total-written>1?`<button class="secondary" data-action="episodes" ${queueAll?"":disabled()}>${t(queueAll?"outline.writing.all_queue":"outline.writing.all_button",{count:total-written})}</button>`:""}`:"";
+  const action=outline.next_episode?`<div class="field"><label for="episode-minutes">${t("outline.writing.minutes")}</label><input id="episode-minutes" type="number" inputmode="numeric" min="10" max="60" step="1"></div><button data-action="episode" ${disabled()}>${t("outline.writing.next_button")}</button>${total-written>1?`<button class="secondary" data-action="episodes" ${queueAll?"":disabled()}>${t(queueAll?"outline.writing.all_queue":"outline.writing.all_button",{count:total-written})}</button>`:""}`:"";
   const minutes=Math.round(p.episodes.reduce((sum,e)=>sum+Number(e.target_minutes||0),0));
   let html=heading(3,action)+'<div id="stop-card"></div>'+renderRevisionQueue();
   html+=`<section class="series-summary"><p class="series-lead">${escape(p.central_question)}</p>
@@ -3735,7 +3735,7 @@ function audioTelemetry() {
   return (project?.audio_jobs||[]).filter(a=>a.status==="running").map(a=>`<section class="audio-job"><strong>${escape(title(a.episode))}</strong>${audioPhase(a.progress)}</section>`).join("");
 }
 // Unfinished input survives a re-render of the same project; a project switch starts clean.
-const FORM_IDS=["chat-message","outline-feedback","script-feedback","listening-note","style-notes","spoken-forms","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback","queue-key"];
+const FORM_IDS=["chat-message","outline-feedback","episode-minutes","script-feedback","listening-note","style-notes","spoken-forms","host-name-a","host-name-b","plan-max-tasks","api-key","audio-key","stop-key","stop-feedback","queue-key"];
 function formSnapshot() {
   const values={};
   for(const id of FORM_IDS){const el=$(id);if(el&&typeof el.value==="string"&&el.value!=="")values[id]=el.value;}
@@ -4199,6 +4199,10 @@ document.addEventListener("click",event=>{
     if(action==="research"&&$("seed-corpus")?.checked)extra.seed_corpus=true;
     if(action==="replan")extra.message=$(button.dataset.feedback||"outline-feedback")?.value||"";
     if(action==="script")extra.plan_hash=project.outline.hash;
+    if(action==="episode"||action==="episodes"){
+      const minutes=revisionMinutes($("episode-minutes")?.value);
+      if(minutes!==null)extra.minutes=minutes;
+    }
     // A revision from the reader's feedback, or from the series review's points on the outline page (D-184).
     if(action==="revise"){extra.message=button.dataset.message??$("script-feedback").value;
       extra.episode=button.dataset.episode||project.episodes[episodeIndex].script.episode_id;
@@ -4216,6 +4220,7 @@ document.addEventListener("click",event=>{
     if(action==="replan"&&$(button.dataset.feedback||"outline-feedback"))$(button.dataset.feedback||"outline-feedback").value="";
     if(action==="revise"&&$("script-feedback"))$("script-feedback").value="";
     if(action==="revise"&&$("script-minutes"))$("script-minutes").value="";
+    if((action==="episode"||action==="episodes")&&$("episode-minutes"))$("episode-minutes").value="";
   });
 });
 // Polls run one at a time, the overview's every ten seconds, and a hidden tab's once a minute, enough for its title;
