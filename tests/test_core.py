@@ -249,5 +249,21 @@ class WorkerProcessTests(ProjectCase):
         self.assertEqual(calls[-1], studio_worker.ES_CONTINUOUS)
 
 
+class VersionTests(unittest.TestCase):
+    def test_the_release_follows_pyproject_while_the_hashed_pipeline_identity_stays(self):
+        """D-206: `pla --version` names the release in pyproject.toml, but the input hashes of research runs and probes
+        keep the pipeline identity 0.1.0, so a release never stops an open run from resuming (Codex review on #24:
+        0.2.0 was built while __version__ still said 0.1.0)."""
+        import tomllib
+
+        import podcast_automate
+        root = Path(__file__).resolve().parents[1]
+        release = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+        self.assertEqual(podcast_automate.__version__, release)
+        self.assertEqual(podcast_automate.PIPELINE_IDENTITY, "0.1.0")
+        manifest = RunManifest(run_id="run_x", kind="research", project_hash="p", input_hash="i", stages={})
+        self.assertEqual(manifest.pipeline_version, podcast_automate.PIPELINE_IDENTITY)
+
+
 if __name__ == "__main__":
     unittest.main()

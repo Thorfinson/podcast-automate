@@ -288,7 +288,7 @@ class StageRecord(Contract):
 
 class RunManifest(Contract):
     schema_version: Literal["1.0"] = "1.0"
-    pipeline_version: str = "0.1.0"
+    pipeline_version: str = "0.1.0"  # podcast_automate.PIPELINE_IDENTITY, not the release (D-206)
     run_id: Identifier
     kind: Literal["text_probe", "audio_probe", "research", "script", "episode_audio", "series_review"]
     created_at: str = Field(default_factory=now)
