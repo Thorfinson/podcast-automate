@@ -88,6 +88,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-11-10 · Local Qwen keeps its pinned packages: GitHub's 15 advisories for `transformers` 4.57.3, `accelerate` 1.12.0 and PyTorch 2.9.1 are analysed in docs/SECURITY.md and dismissed, since none reaches how the worker loads its one pinned model and no upgrade runs with `qwen-tts` 0.1.1 (D-202).
 - 2026-11-10 · The launchers and `pla studio`'s own console lines are in English, like the rest of the command line (D-156).
 - 2026-11-10 · For contributors: a `lint` job (Ruff, `ruff check .`, installed with `pip install -e ".[dev]"`) runs beside the test legs, and `main` is protected by a ruleset that requires these seven checks for a pull request; CODEOWNERS, Dependabot, labels and Discussions are set up, and CONTRIBUTING.md says how a change reaches `main` and how a version is released (D-201).
 - 2026-11-09 · The podcast's companion kit fits Spotify: **„Podcastbeschreibung für Spotify“** is a text of its own of at most 600 characters, the AI notice included, the limit of Spotify for Creators for a show's description; until now the one podcast description had about 1,600 characters. **„Podcastbeschreibung für Apple Podcasts“** keeps the longer text with the whole transparency note. The music's credit is no longer in the podcast's descriptions, since every episode's description has it; the podcast's source list still names it. An existing podcast kit shows „Neu zusammenstellen“; the rebuild asks the text model once for the new Spotify text (D-194).
