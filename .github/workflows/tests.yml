@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   lint:
-    # Seconds, not minutes: a style or syntax slip fails here before the six test legs report.
+    # Seconds, not minutes: a style or syntax slip fails here before the test legs report.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -28,12 +28,39 @@ jobs:
           node-version: "22"
       - name: Check the browser script's syntax
         run: node --check src/podcast_automate/web/app.js
+
+  changes:
+    # Whether the change touches a file a test can read; docs, the project page, evals and the issue and pull request
+    # templates cannot break a test, so a change of only those skips the test legs (scripts/ci_changes.py, D-205).
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/ci_changes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
+
   tests:
+    # Every system and Python version, the Python suite split into shards of about equal time (scripts/test_shards.py):
+    # three on Linux and Windows, two on macOS, whose hosted runners are scarce (2026-11-10: jobs waited 15 minutes for
+    # one and were cancelled) and allow five at once on this plan. The browser suite runs once per leg, in shard 1.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: tests (${{ matrix.os }}, ${{ matrix.python }}, ${{ matrix.shard }}/${{ matrix.os == 'macos-latest' && 2 || 3 }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.12", "3.13"]
+        shard: [1, 2, 3]
+        exclude:
+          - os: macos-latest
+            shard: 3
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -43,6 +70,7 @@ jobs:
       - name: Install package
         run: python -m pip install .
       - uses: actions/setup-node@v7
+        if: matrix.shard == 1
         with:
           node-version: "22"
       - name: Install FFmpeg (Linux)
@@ -58,12 +86,32 @@ jobs:
           ./scripts/setup-ffmpeg.ps1
           "${{ github.workspace }}\tools\ffmpeg\bin" >> $env:GITHUB_PATH
       - name: Check Unix launchers
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.shard == 1
         run: |
           sh -n Podcast-Studio.sh
           sh -n Podcast-Studio.command
           sh -n scripts/setup.sh
-      - name: Test without model accounts or GPU
-        run: python -m unittest discover -s tests -v
+      - name: Test without model accounts or GPU (shard ${{ matrix.shard }})
+        run: python scripts/test_shards.py --run ${{ matrix.shard }} ${{ matrix.os == 'macos-latest' && 2 || 3 }}
       - name: Test browser logic
+        if: matrix.shard == 1
         run: node --test tests/studio_ui.test.cjs
+
+  tests-passed:
+    # The one check the ruleset on main requires besides lint: every shard of every leg passed, or no file a test can
+    # read changed and the legs were skipped on purpose.
+    name: tests passed
+    needs: [lint, changes, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every leg passed, or none was needed
+        env:
+          LINT: ${{ needs.lint.result }}
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          TESTS: ${{ needs.tests.result }}
+        run: |
+          echo "lint: $LINT, changes: $CHANGES (code: $CODE), tests: $TESTS"
+          [ "$LINT" = success ] && [ "$CHANGES" = success ] || exit 1
+          if [ "$CODE" = true ]; then [ "$TESTS" = success ]; else [ "$TESTS" = skipped ]; fi

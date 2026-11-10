@@ -74,7 +74,7 @@ The other top-level folders are in the [README](README.md#layout). `projects/`, 
 
 | Suite | Command | Size | Needs |
 | --- | --- | --- | --- |
-| Python | `python -m unittest discover -s tests` | about 1,280 tests, about 20 minutes (each script run starts the fake story agent as a process) | `ffmpeg` and `ffprobe` on PATH |
+| Python | `python -m unittest discover -s tests` | about 1,290 tests, about 11 minutes; a third of it with `python scripts/test_shards.py --run 1 3` (CI runs the three thirds side by side) | `ffmpeg` and `ffprobe` on PATH |
 | Browser logic | `node --test tests/studio_ui.test.cjs` | 236 tests, under 1 s | Node 22 |
 | Lint | `ruff check .` | the whole repository, about 1 s | Ruff, the version pinned in `pyproject.toml`'s `dev` extra (`pip install -e ".[dev]"`), which CI installs too |
 
@@ -104,9 +104,9 @@ several gigabytes of PyTorch and any scan of it takes minutes.
 | Editing `logs.py` or anything that keeps a file open for the life of the process | `test_logs`, `test_cli` and `test_core`, then confirm on Windows. Open handles break temp-directory cleanup there and nowhere else. |
 | Editing `claude_code.py`, `subscriptions.py` or `provider_pool.py` | Their mapped tests plus `test_scripting`, `test_research`, `test_status_summary`, `test_studio` and `test_text_selection`. Every run goes through the pool; the fixed-provider path must stay free of quota queries. |
 | Before committing or opening a pull request | `ruff check .` and both full suites, green. |
-| CI (`.github/workflows/tests.yml`) | The `lint` job (Ruff and `node --check` of `app.js`), then both suites on Linux, macOS and Windows, each with Python 3.12 and 3.13, against the installed package. All seven checks must pass; the ruleset on `main` requires them for a pull request (D-201). Superseded runs of the same ref are cancelled automatically. |
+| CI (`.github/workflows/tests.yml`) | The `lint` job (Ruff and `node --check` of `app.js`) and the `changes` job (`scripts/ci_changes.py`): a change of only files no test reads (docs, `site/`, `evals/`, top-level Markdown, the issue and pull request templates) skips the test legs; any other runs both suites on Linux, macOS and Windows, each with Python 3.12 and 3.13, the Python suite in three shards, two on macOS (`scripts/test_shards.py`), against the installed package. The check `tests passed` sums them up; the ruleset on `main` requires it and `lint` (D-205). Superseded runs of the same ref are cancelled automatically. |
 | Release (`.github/workflows/release.yml`) | On a pushed tag `vX.Y.Z`: checks the tag against `pyproject.toml` and the version's CHANGELOG section, builds and checks the sdist and the wheel, re-runs both suites on Linux with Python 3.12 and 3.13 against the built wheel, then creates the GitHub release with the wheel and the sdist attached; nothing is published to PyPI (D-203) ([Release a version](docs/OPERATIONS.md#release-a-version)). |
-| Before tagging a release | Tag only a `main` commit whose six CI legs passed: the release workflow tests on Linux only. |
+| Before tagging a release | Tag only a `main` commit whose `tests passed` check passed with the test legs run: the release workflow tests on Linux only. |
 
 A green subset is not evidence that the suite passes. Tests patch functions where they are looked up,
 for example `patch("podcast_automate.script_pipeline.research_foundations")`. Moving a function between
@@ -123,7 +123,7 @@ meaningful protection per unit of cost, not test count, lines or coverage.
   unreliable, broaden the selection instead of narrowing it.
 - During implementation, run the focused technical tests and the affected business-rule tests and keep
   a small, cheap baseline green. Before a commit or pull request, run both suites in full. Before a
-  release, tag only a `main` commit whose six CI legs passed; the release workflow then re-runs both
+  release, tag only a `main` commit whose CI test legs passed; the release workflow then re-runs both
   suites on Linux against the built wheel.
 - Broader or expensive checks (the real-model evals under `evals/`, a mutation or timing pass) run by
   hand or on a named trigger, never silently skipped. A deferral states why it is acceptable, what
@@ -196,6 +196,7 @@ modules a change reaches through transitive dependents. Regenerate the raw list 
 - `text_settings` → `test_text_selection`, `test_research_resilience`, `test_teaching_research`, `test_provider_pool` (defaults and the stage levels of `stage_effort`), and `test_cli` for the doctor catalog line
 - `trial` → `test_trial` (also `pla init --trial`); `storage.load_project` and `question_research` import it, so the `storage` line (the full suite) applies; the chat's trial key is in `test_studio` The Studio's trial option (bootstrap facts, `Studio.create`) is in `test_studio`.
 - `web_search`, `prompts/search_queries.txt`, `prompts/search_select.txt` → `test_web_search` (request, failure codes, key guards), `test_provider_pool`, `test_research`, and `test_prompts` for the two prompts; `provider_pool` imports it, so the `provider_pool` line applies as well, and it uses `openrouter.NoRedirect` and `model_trace.redact`, so a change to either selects `test_web_search` too. `evals/web_search/run.py` compares it with a finished project's model searches by hand
+- `scripts/ci_changes.py`, `scripts/test_shards.py`, `scripts/test_shards.json` → `test_ci_scripts`, which loads both scripts from their files. After adding, renaming or removing a test module, rewrite the shard weights from a full run, `python -m unittest discover -s tests --durations 0 > durations.log` then `python scripts/test_shards.py --weights durations.log`; a name of a removed module fails `test_ci_scripts`, a new one counts as the median until then
 - `scripts/setup-qwen.py` → `test_qwen_setup`, which loads the script from its file, so the regenerated list does not show it
 
 Regenerate the raw list from the repository root (Windows: `.\.venv\Scripts\python.exe scripts\test_map.py`):

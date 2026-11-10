@@ -596,8 +596,9 @@ semantic; the first public release is 0.2.0.
 
 1. Set `version` in `pyproject.toml` to `X.Y.Z` and move the entries under `## [Unreleased]` in `CHANGELOG.md` into
    a new section `## [X.Y.Z] - YYYY-MM-DD`.
-2. Merge this to `main` and wait until the lint job and all six test legs of `.github/workflows/tests.yml` pass. The
-   release workflow tests only on Linux, so tag only a `main` commit whose seven checks passed.
+2. Merge this to `main` and wait until the checks `lint` and `tests passed` of `.github/workflows/tests.yml` pass with
+   the test legs run (a version change touches `pyproject.toml`, so they run). The release workflow tests only on
+   Linux, so tag only a `main` commit whose test legs passed.
 3. Tag that commit and push the tag. Tags `v*` are protected by a repository ruleset: only the repository's
    administrator creates, moves or deletes them.
 
@@ -612,7 +613,8 @@ The workflow then, each step only after the previous one passed:
   section with content;
 - builds the sdist and the wheel (`python -m build`), checks them with `twine check --strict` and checks that the
   wheel holds every data file of the package (catalogs, prompts, web files);
-- runs both test suites on Linux with Python 3.12 and 3.13 against the installed wheel;
+- runs both test suites on Linux with Python 3.12 and 3.13 against the installed wheel, the Python suite in three
+  shards (`scripts/test_shards.py`);
 - creates the GitHub release with the version's CHANGELOG section as its notes and the wheel and the sdist attached;
   a version with `a`, `b`, `rc` or `dev` in it becomes a pre-release.
 
