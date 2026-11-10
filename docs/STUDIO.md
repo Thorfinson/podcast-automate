@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-10
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -767,7 +767,9 @@ hidden tab once a minute (the last two are `POLL_MS` in `web/app.js`); a tab tha
 (why: D-106). A project page polls `/api/projects/<id>/status`: the page without research, outline, episodes and
 script previews, its jobs without the stages' output hashes, plus `content_version`, a fingerprint of those parts. Only
 when the fingerprint or a job changes does it load the whole project (why: D-159); measured on 2026-10-07, 37 to
-84 KB per poll instead of 2.5 to 3.7 MB. The overview builds each project card from a few cached file reads instead of
+84 KB per poll instead of 2.5 to 3.7 MB. The two queues, recordings and revisions with their hold, come with every
+poll and redraw on their own when only they changed: until 2026-11-10 a row the scheduler refused, or rows taken
+out in another window or through the API, stayed on the open page until a job changed. The overview builds each project card from a few cached file reads instead of
 the full project page, with the running and stopped recordings only (why: D-107, D-159). Short file access errors are
 retried at the next poll.
 
@@ -916,7 +918,7 @@ English word is longer, that much comes off the title, so a name keeps its lengt
 An episode whose companion kit was made for exactly the recording in the ZIP also brings its kit as
 `Folge 01 - Begleitmaterial/` (`Episode 01 - Companion kit/` in English) with `description_short.txt`,
 `description.txt` and `sources.md`. The whole podcast's kit, while it covers exactly the published episodes and their
-latest recordings, comes as `Begleitmaterial Podcast/` (`Podcast companion kit/`) with `description_short.txt`,
+latest recordings, comes as `Begleitmaterial Podcast/` (`Podcast companion kit/`) with `description_spotify.txt`,
 `description.txt`, `sources.md` and `transcript.md`, the transcript of every episode.
 
 **„Begleitmaterial“** (companion kit) on the „Vertonung“ page shows, per episode, the short description and the
@@ -927,7 +929,8 @@ zusammenstellen“** (rebuild) takes the newest recording's chapters without a n
 [Exports and listening sheet](AUDIO.md#exports-and-listening-sheet) (why: D-139).
 
 **„Begleitmaterial für den Podcast“** (the podcast's companion kit) below it does the same for the whole podcast:
-the short description and the podcast description for the show page, each with **„Kopieren“**, how many episodes the
+the podcast description for Spotify (with the AI notice, against its 600 characters) and for Apple Podcasts (against
+its 4,000), each with **„Kopieren“**, how many episodes the
 transcript covers and how many of them are recorded, and how many sources the list holds; transcript and sources lie
 in `publish/` and in the ZIP. **„Transkript herunterladen“** and **„Quellen herunterladen“** fetch `transcript.md` and
 `sources.md` on their own, without the MP3s of the ZIP (`/download/<project>/kit/<file>`, named

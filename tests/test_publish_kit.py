@@ -31,9 +31,11 @@ TRANSPARENCY_DE = ("Dieser Output ist eine quellengebundene Synthese. Er ersetzt
                    "KI-Hinweis: Das Skript dieser Folge wurde von einem Sprachmodell geschrieben und wird von "
                    "synthetischen Stimmen gesprochen.")
 NOTE_DE = TRANSPARENCY_DE.split("\n")[0]
-# The podcast's own kit (2026-10-07, D-165): its texts and the AI notice that names the podcast's scripts.
+# The podcast's own kit (2026-10-07, D-165): its texts and the AI notice that names the podcast's scripts. The short
+# text is Spotify's whole show description since D-194, so it is at least 200 characters long.
 PODCAST_SHORT = ("Der Podcast erklärt, wie ein Modell Möglichkeiten vergleicht und warum eine niedrigere Bewertung "
-                 "dabei die bessere Wahl ist.")
+                 "dabei die bessere Wahl ist. Er beginnt mit einem konkreten Vergleich und zeigt dann, wo dieser "
+                 "Vergleich an seine Grenze kommt.")
 PODCAST_LONG = ("Wie vergleicht ein Modell Möglichkeiten? Der Podcast beginnt mit einem konkreten Vergleich und erklärt, "
                 "welche Zahl das Modell jeder Möglichkeit zuordnet und was eine niedrige Zahl bedeutet.\n\n"
                 "Die Folgen zeigen auch, wo dieser Vergleich an seine Grenze kommt: Die Bewertung sagt nichts darüber, "
@@ -41,6 +43,10 @@ PODCAST_LONG = ("Wie vergleicht ein Modell Möglichkeiten? Der Podcast beginnt m
                 "genannt, damit kein falscher Eindruck entsteht.")
 AI_PODCAST_DE = ("KI-Hinweis: Die Skripte dieses Podcasts wurden von einem Sprachmodell geschrieben und werden von "
                  "synthetischen Stimmen gesprochen.")
+# Spotify for Creators takes at most 600 characters for a show's description (the user, 2026-11-09), and the text
+# pasted there ends with the AI notice (D-194).
+SPOTIFY_TEXT = f"{PODCAST_SHORT}\n\n{AI_PODCAST_DE}"
+SPOTIFY_ROOM = 600 - len(f"\n\n{AI_PODCAST_DE}")
 TRANSCRIPT_NOTE_DE = ("Der freigegebene Text aller Folgen in Skriptreihenfolge. Die Zeitmarken der Kapitel stammen aus "
                       "der gemessenen Montage der Aufnahme.")
 
@@ -365,7 +371,9 @@ class PublishKitTests(KitCase):
 
 class MusicCreditTests(KitCase):
     def test_a_recording_with_music_credits_it_in_the_descriptions_and_the_sources(self):
-        """D-189, the user's wish of 2026-11-08: the companion material names the music as its license asks."""
+        """D-189, the user's wish of 2026-11-08: the companion material names the music as its license asks. The
+        podcast's own descriptions leave the credit to the episodes' and to its source list (the user, 2026-11-09:
+        it is already in every episode; D-194), so Spotify's 600 characters are not spent on it."""
         music = {"file": "studio/music/theme.mp3", "sha256": "0" * 64, "bpm": 120.0, "chapter_from_seconds": 8.0,
                  "title": "night shift 1x78", "author": "Setuniman", "source": "https://freesound.org/s/822301/",
                  "license": "CC BY-NC 4.0"}
@@ -380,7 +388,9 @@ class MusicCreditTests(KitCase):
         self.assertIn(f"\n\n{credit}\n\n{NOTE_DE}", (export / "publish/description.txt").read_text(encoding="utf-8"))
         self.assertTrue((export / "publish/sources.md").read_text(encoding="utf-8").endswith(f"## Musik\n\n{credit}\n"))
         self.assertEqual((self.root / "publish/description.txt").read_text(encoding="utf-8"),
-                         f"{PODCAST_LONG}\n\n{credit}\n\n{NOTE_DE}\n{AI_PODCAST_DE}\n")
+                         f"{PODCAST_LONG}\n\n{NOTE_DE}\n{AI_PODCAST_DE}\n")
+        self.assertEqual((self.root / "publish/description_spotify.txt").read_text(encoding="utf-8"),
+                         SPOTIFY_TEXT + "\n")
         self.assertTrue((self.root / "publish/sources.md").read_text(encoding="utf-8").endswith(f"## Musik\n\n{credit}\n"))
 
 
@@ -445,20 +455,27 @@ class PodcastKitTests(KitCase):
 
     def test_one_call_writes_the_kit_and_a_rebuild_or_a_recording_calls_no_model(self):
         prompts = []
+        folder = self.root / "publish"
+        # A kit of the first layout left a short text without the AI notice; it would not fit Spotify's field as is.
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "description_short.txt").write_text("Alt.\n", encoding="utf-8")
         with patch("podcast_automate.publish_kit.AdapterPool", self.pool([dict(self.ANSWER)], prompts)):
             kit = build_podcast_kit(self.root)
         self.assertEqual([version for version, _ in prompts], [PODCAST_PROMPT_VERSION])
         payload = json.loads(prompts[0][1].splitlines()[-1])
         self.assertEqual((payload["series_topic"], payload["central_question"]), ("Test topic", "Test topic"))
+        self.assertEqual(payload["limits"], {"short": {"min_chars": 200, "max_chars": SPOTIFY_ROOM},
+                                             "long": {"min_chars": 400, "max_chars": 1500}})
         self.assertEqual(payload["episodes"], [{
             "number": 1, "title": "A model compares possibilities", "central_question": "How are possibilities compared?",
             "series_role": "Shows how a model compares possibilities, the base of the answer.",
             "chapters": ["A concrete comparison"]}])
         self.assertNotIn("transcript", payload, "the series is described from its plans, not from hours of text")
-        folder = self.root / "publish"
         self.assertEqual((kit["folder"], kit["descriptions_reused"], kit["transcript"]),
                          ("publish", False, {"episodes": 1, "recorded": 0}))
-        self.assertEqual((folder / "description_short.txt").read_text(encoding="utf-8"), PODCAST_SHORT + "\n")
+        self.assertEqual((folder / "description_spotify.txt").read_text(encoding="utf-8"), SPOTIFY_TEXT + "\n")
+        self.assertEqual(kit["spotify"], {"characters": len(SPOTIFY_TEXT), "limit": 600})
+        self.assertFalse((folder / "description_short.txt").exists())
         self.assertEqual((folder / "description.txt").read_text(encoding="utf-8"),
                          f"{PODCAST_LONG}\n\n{NOTE_DE}\n{AI_PODCAST_DE}\n")
         self.assertEqual((folder / "transcript.md").read_text(encoding="utf-8"), self.transcript(timed=False))
@@ -486,6 +503,22 @@ class PodcastKitTests(KitCase):
         calls = sorted((self.root / "studio/publish_kit/podcast").glob("*/budget.json"))
         self.assertEqual([json.loads(path.read_text(encoding="utf-8"))["model_calls"] for path in calls], [1, 1])
 
+    def test_spotifys_text_never_passes_600_characters_with_its_ai_notice(self):
+        """The user's report of 2026-11-09: Spotify for Creators takes 600 characters for the podcast's description,
+        and the kit's text had 1,647. A short text one character too long for the AI notice is sent back; one that
+        fills the field exactly is kept (D-194)."""
+        def short(length):
+            return PODCAST_SHORT + " " + "a" * (length - len(PODCAST_SHORT) - 1)
+        prompts = []
+        answers = [{"short": short(SPOTIFY_ROOM + 1), "long": PODCAST_LONG}, {"short": short(SPOTIFY_ROOM), "long": PODCAST_LONG}]
+        with patch("podcast_automate.publish_kit.AdapterPool", self.pool(answers, prompts)):
+            kit = build_podcast_kit(self.root)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn(f"short: {SPOTIFY_ROOM + 1} characters; write between 200 and {SPOTIFY_ROOM}.", prompts[1][1])
+        spotify = (self.root / "publish/description_spotify.txt").read_text(encoding="utf-8")
+        self.assertEqual(spotify, f"{short(SPOTIFY_ROOM)}\n\n{AI_PODCAST_DE}\n")
+        self.assertEqual(kit["spotify"], {"characters": 600, "limit": 600})
+
     def test_the_studio_builds_shows_and_zips_the_kit_of_the_current_recordings(self):
         import zipfile
         from podcast_automate.downloads import podcast_zip
@@ -499,17 +532,26 @@ class PodcastKitTests(KitCase):
             "folder": "publish", "episodes": 1, "recorded": 1, "sources": 1, "reused": False,
             "characters": len(f"{PODCAST_LONG}\n\n{NOTE_DE}\n{AI_PODCAST_DE}")})
         view = podcast_kit_view(self.root)
-        self.assertEqual((view["short"], view["episodes"], view["recorded"], view["sources_total"]),
-                         (PODCAST_SHORT, 1, 1, 1))
-        self.assertTrue(view["description"].startswith(PODCAST_LONG))
+        self.assertEqual((view["spotify"], view["spotify_characters"], view["spotify_limit"], view["episodes"],
+                          view["recorded"], view["sources_total"]), (SPOTIFY_TEXT, len(SPOTIFY_TEXT), 600, 1, 1, 1))
+        self.assertEqual((view["description"], view["characters"], view["limit"]),
+                         (f"{PODCAST_LONG}\n\n{NOTE_DE}\n{AI_PODCAST_DE}",
+                          len(f"{PODCAST_LONG}\n\n{NOTE_DE}\n{AI_PODCAST_DE}"), 4000))
         with podcast_zip(self.root) as (archive, _):
             with zipfile.ZipFile(archive) as bundle:
                 names = bundle.namelist()
                 transcript = bundle.read("Begleitmaterial Podcast/transcript.md").decode("utf-8")
         self.assertEqual(sorted(name for name in names if name.startswith("Begleitmaterial Podcast/")),
-                         ["Begleitmaterial Podcast/description.txt", "Begleitmaterial Podcast/description_short.txt",
+                         ["Begleitmaterial Podcast/description.txt", "Begleitmaterial Podcast/description_spotify.txt",
                           "Begleitmaterial Podcast/sources.md", "Begleitmaterial Podcast/transcript.md"])
         self.assertEqual(transcript, self.transcript(timed=True))
+        # A kit of the first layout, without the Spotify text, is offered for a rebuild, not shown.
+        kit_file = self.root / "publish/kit.json"
+        write_json(kit_file, {**json.loads(kit_file.read_text(encoding="utf-8")), "version": "podcast_kit.v1"})
+        self.assertEqual(podcast_kit_view(self.root), {"outdated": True})
+        with patch("podcast_automate.publish_kit.AdapterPool", side_effect=AssertionError("no model call")):
+            build_podcast_kit(self.root)
+        self.assertIn("spotify", podcast_kit_view(self.root))
         # A newer recording is not covered yet: the page offers a rebuild and the ZIP leaves the old kit out.
         self.record("run_20261006_130000_000000_rec00002")
         self.assertEqual(podcast_kit_view(self.root), {"outdated": True})
@@ -556,7 +598,9 @@ class PodcastKitTests(KitCase):
         status, body, headers = get("sources.md")
         self.assertEqual((status, body), (200, (self.root / "publish/sources.md").read_bytes()))
         self.assertEqual(get("description.txt")[2]["Content-Type"], "text/plain; charset=utf-8")
-        for name in ("kit.json", "descriptions.json", "..%2Fproject.yaml"):
+        self.assertEqual(get("description_spotify.txt")[:2],
+                         (200, (self.root / "publish/description_spotify.txt").read_bytes()))
+        for name in ("kit.json", "descriptions.json", "description_short.txt", "..%2Fproject.yaml"):
             self.assertNotEqual(get(name)[0], 200, name)
         self.assertEqual(json.loads(get("kit.json")[1])["code"], "missing_kit")
         # A newer recording is not covered yet: like the ZIP, the route leaves the old transcript out.

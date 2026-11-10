@@ -64,14 +64,17 @@ KIT_FILES = (*TEXT_FILES, "kit.json")
 DESCRIPTION_KEYS = ("short", "long", "prompt_version", "input_sha256", "written_at")
 RECORDING_KEYS = ("run_id", "audio", "audio_sha256", "chapters_sha256", "duration_seconds")
 # The podcast's kit (build_podcast_kit): the layout of its kit.json, of its saved descriptions and its prompt's tag
-# (prompts/podcast_kit.txt), each on its own as for an episode. Its short text stays within SHORT_CHARS, the 300
-# characters third-party pages give for Spotify's show description (V-49); Apple Podcasts takes 4,000 (checked
-# 2026-10-07), more than LONG_CHARS[1] and the transparency note together.
-PODCAST_KIT_VERSION = "podcast_kit.v1"
+# (prompts/podcast_kit.txt), each on its own as for an episode. v2: the short text is Spotify's show description
+# (D-194). Spotify for Creators takes at most 600 characters for it (the user, in its show settings, 2026-11-09), the
+# AI notice included; Apple Podcasts takes 4,000 (checked 2026-10-07), more than LONG_CHARS[1] and the transparency
+# note together.
+PODCAST_KIT_VERSION = "podcast_kit.v2"
 PODCAST_DESCRIPTIONS_VERSION = "podcast_kit.v1"
-PODCAST_PROMPT_VERSION = "podcast_kit.v1"
+PODCAST_PROMPT_VERSION = "podcast_kit.v2"
+SPOTIFY_SHOW_LIMIT = 600
+PODCAST_SHORT_MIN = 200
 PODCAST_FOLDER = "publish"
-PODCAST_FILES = ("description_short.txt", "description.txt", "sources.md", "transcript.md")
+PODCAST_FILES = ("description_spotify.txt", "description.txt", "sources.md", "transcript.md")
 # The fixed words of the kit are in content_text, in the project's language: the kit is for the listeners, not for
 # the Studio (D-153).
 # Function words that only one of the two languages uses; enough of them tell a text's language apart.
@@ -107,10 +110,11 @@ def language_plausible(text, language):
     return own >= 2 and own > other
 
 
-def description_defects(answer, *, language, max_long):
+def description_defects(answer, *, language, max_long, short_chars=SHORT_CHARS):
     """What keeps the two texts from being pasted as they are; the rest of the kit is appended by code."""
     errors = []
-    for name, text, low, high in (("short", answer.short, *SHORT_CHARS), ("long", answer.long, LONG_CHARS[0], max_long)):
+    for name, text, low, high in (("short", answer.short, *short_chars),
+                                  ("long", answer.long, LONG_CHARS[0], max_long)):
         if not low <= len(text) <= high:
             errors.append(f"{name}: {len(text)} characters; write between {low} and {high}.")
         if WEB_ADDRESS.search(text):
@@ -403,12 +407,12 @@ def description_prompt(config, script, entry, max_long):
 
 
 def written_descriptions(root, config, run_id, prompt, *, store, calls, max_long, version, prompt_version, binding,
-                         api_key=None, fresh=False):
+                         short_chars=SHORT_CHARS, api_key=None, fresh=False):
     """Two descriptions for ``prompt``: the ones saved in ``store`` while their prompt is unchanged, else one call of
     the text model of script run ``run_id`` with at most MAX_REJECTIONS corrections, under a fresh allowance of its
     own in ``studio/publish_kit/<calls>/<time>`` as the expression layer has (episode_audio.tag_episode). ``fresh``
-    asks anew although nothing changed; ``binding`` is what the saved record names besides the prompt. Returns the
-    descriptions and whether they were reused."""
+    asks anew although nothing changed; ``binding`` is what the saved record names besides the prompt;
+    ``short_chars`` is the short text's range. Returns the descriptions and whether they were reused."""
     signature = digest({"prompt": prompt, "schema": EpisodeDescriptions.model_json_schema(), "version": prompt_version})
     saved = read_optional_json(store)
     if (not fresh and isinstance(saved, dict) and saved.get("version") == version
@@ -417,7 +421,8 @@ def written_descriptions(root, config, run_id, prompt, *, store, calls, max_long
             kept = EpisodeDescriptions(short=saved["short"], long=saved["long"])
         except (KeyError, ValueError):
             kept = None
-        if kept is not None and not description_defects(kept, language=config.language, max_long=max_long):
+        if kept is not None and not description_defects(kept, language=config.language, max_long=max_long,
+                                                        short_chars=short_chars):
             return {key: saved[key] for key in DESCRIPTION_KEYS}, True
     work = root / "studio" / "publish_kit" / calls / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     generation = script_text_generation(root, config, run_id)
@@ -426,7 +431,8 @@ def written_descriptions(root, config, run_id, prompt, *, store, calls, max_long
                             cost_usd=config.research_limits.cost_usd)
 
     def check(answer):
-        errors = description_defects(normalized(answer), language=config.language, max_long=max_long)
+        errors = description_defects(normalized(answer), language=config.language, max_long=max_long,
+                                     short_chars=short_chars)
         if errors:
             raise AppError(" ".join(errors), code="invalid_description", status="blocked")
 
@@ -606,12 +612,25 @@ def podcast_transcript(topic, episodes, labels, language):
     return "\n".join([*lines, *transparency_lines(language, podcast=True)])
 
 
+def spotify_tail(language):
+    """What follows the short text in Spotify's show description (D-194): the AI notice that names the podcast's
+    scripts. The source-bound synthesis note of D-154 stays in Apple's text, the source list and the transcript; the
+    music's credit is in every episode's description."""
+    return "\n\n" + wording(language, "ai_notice_podcast")
+
+
+def spotify_chars(language):
+    """The short text's range: as long as SPOTIFY_SHOW_LIMIT leaves after the AI notice."""
+    return PODCAST_SHORT_MIN, SPOTIFY_SHOW_LIMIT - len(spotify_tail(language))
+
+
 def podcast_prompt(config, central_question, episodes):
     """The podcast's descriptions are written from what each episode is planned to cover and its chapter titles, not
     from the transcripts: a series runs to hours of text, and the episode kits describe the episodes themselves."""
+    low, high = spotify_chars(config.language)
     payload = {"language": config.language, "series_topic": config.topic,
                **({"central_question": central_question} if central_question else {}),
-               "limits": {"short": {"min_chars": SHORT_CHARS[0], "max_chars": SHORT_CHARS[1]},
+               "limits": {"short": {"min_chars": low, "max_chars": high},
                           "long": {"min_chars": LONG_CHARS[0], "max_chars": LONG_CHARS[1]}},
                "episodes": [{"number": item["number"], "title": item["script"].title,
                              "central_question": item["entry"].central_question,
@@ -623,11 +642,12 @@ def podcast_prompt(config, central_question, episodes):
 
 def build_podcast_kit(root, *, api_key=None, fresh=False):
     """Write the companion kit of the whole podcast into ``publish/`` and return kit.json's data with ``folder`` and
-    whether the descriptions were reused (``descriptions_reused``): the podcast's short and long description (one
-    call of the newest script run's text model, saved in ``publish/descriptions.json`` under the hash of its prompt),
-    every source of the series and the transcript of every published episode. The transcript and the sources come
-    from the published scripts, their recordings and their script runs, never from a model, and are resolved before
-    the call, so a broken run folder costs no call."""
+    whether the descriptions were reused (``descriptions_reused``): the podcast's description for Spotify (the short
+    text with the AI notice, at most SPOTIFY_SHOW_LIMIT characters) and for Apple Podcasts (the long text with the
+    transparency note), both from one call of the newest script run's text model, saved in ``publish/descriptions.json``
+    under the hash of its prompt; every source of the series and the transcript of every published episode. The
+    transcript and the sources come from the published scripts, their recordings and their script runs, never from a
+    model, and are resolved before the call, so a broken run folder costs no call."""
     root = root.resolve()
     config = load_project(root)
     folder = root / PODCAST_FOLDER
@@ -654,14 +674,18 @@ def build_podcast_kit(root, *, api_key=None, fresh=False):
         descriptions, reused = written_descriptions(
             root, config, newest["manifest"].run_id, podcast_prompt(config, question, episodes),
             store=folder / "descriptions.json", calls="podcast", max_long=LONG_CHARS[1],
-            version=PODCAST_DESCRIPTIONS_VERSION, prompt_version=PODCAST_PROMPT_VERSION,
+            short_chars=spotify_chars(config.language), version=PODCAST_DESCRIPTIONS_VERSION,
+            prompt_version=PODCAST_PROMPT_VERSION,
             binding={"episodes": {item["episode_id"]: item["script_sha256"] for item in episodes}},
             api_key=api_key, fresh=fresh)
         music = recorded_music(episodes)
-        text = (descriptions["long"] + "".join("\n\n" + credit_line(record, config.language) for record in music)
-                + transparency_block(config.language, podcast=True))
+        # The music's credit stands in every episode's description and in sources.md, not in the show's (D-194).
+        spotify = descriptions["short"] + spotify_tail(config.language)
+        text = descriptions["long"] + transparency_block(config.language, podcast=True)
         numbers = {item["episode_id"]: item["number"] for item in episodes}
-        atomic_text(folder / "description_short.txt", descriptions["short"] + "\n")
+        # A v1 kit's short text without the AI notice, which no longer fits Spotify's field as it is.
+        (folder / "description_short.txt").unlink(missing_ok=True)
+        atomic_text(folder / "description_spotify.txt", spotify + "\n")
         atomic_text(folder / "description.txt", text + "\n")
         atomic_text(folder / "sources.md", podcast_sources_markdown(config.topic, sources, numbers, config.language,
                                                                     music))
@@ -673,6 +697,7 @@ def build_podcast_kit(root, *, api_key=None, fresh=False):
                              "recording": None if item["recording"] is None
                              else {key: item["recording"][key] for key in RECORDING_KEYS}} for item in episodes],
                "descriptions": descriptions, "sources": sources, "omitted_sources": omitted, "unresolved": unresolved,
+               "spotify": {"characters": len(spotify), "limit": SPOTIFY_SHOW_LIMIT},
                "description": {"characters": len(text), "limit": DESCRIPTION_LIMIT},
                "transcript": {"episodes": len(episodes),
                               "recorded": sum(item["recording"] is not None for item in episodes)},

@@ -56,7 +56,10 @@ GEMINI_PROVIDERS = ("google_gemini_tts", "openrouter_gemini_tts")
 # ElevenLabs' Text to Dialogue, two-host passages like Google's (elevenlabs_speech.py, D-176). Its voices are the user's
 # own account's, named by their ids, so no list is fixed here.
 ELEVENLABS_PROVIDER = "elevenlabs_tts"
-ELEVENLABS_MODELS = {"eleven_v4": "Eleven v4"}
+# Turbo for half the credits (D-196): on 2026-11-10 Text to Dialogue took it with three voices and the context, and one
+# Geld verstehen passage of 1,547 characters cost 375 credits against v4's 750; blind, the user heard Leo's voice a
+# little lower in quality. v4 stays the default.
+ELEVENLABS_MODELS = {"eleven_v4": "Eleven v4", "eleven_v4_turbo": "Eleven v4 Turbo"}
 ELEVENLABS_MODEL = next(iter(ELEVENLABS_MODELS))
 # ElevenLabs voice ids are 20 letters and digits; the bounds keep every Gemini voice name (13 at most) out.
 VOICE_ID = re.compile(r"[A-Za-z0-9]{16,32}")

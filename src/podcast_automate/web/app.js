@@ -1726,6 +1726,7 @@ function renderOwnAudio(a) {
   return `<details class="panel own-audio"${own||ownAudioProvider?" open":""}><summary>${t("audio.own.title")}</summary>
     <p class="hint">${t(own?"audio.own.own":"audio.own.workspace",{choice:escape(audioLabel(a))})}</p>
     ${settingField("own-audio-provider",tp("settings.audio.provider"),settingSelect("own-audio-provider",Object.entries(catalog).map(([id,r])=>[id,audioProviderLabel(id,r)]),provider))}
+    ${ownModelField(provider,row,a)}
     <div class="row">${settingField("own-voice-a",tp("settings.voice.a_google"),pick("own-voice-a","host_a",0))}${settingField("own-voice-b",tp("settings.voice.b_google"),pick("own-voice-b","host_b",1))}</div>
     ${project.config?.third_host?renderThirdVoice({...a,provider,voices:provider===a.provider?a.voices:{},third_voice:provider===a.provider?a.third_voice:null},row,options).replaceAll("settings-voice-c","own-voice-c"):""}
     ${isEleven(provider)?elevenVoiceHint():""}
@@ -1733,9 +1734,18 @@ function renderOwnAudio(a) {
     <p class="hint">${t("audio.own.hint")}</p>
     <div class="actions"><button class="secondary small" data-action="own-audio-save" ${disabled()}>${t("audio.own.save")}</button>${own?`<button class="quiet small" data-action="own-audio-clear" ${disabled()}>${t("audio.own.clear")}</button>`:""}</div></details>`;
 }
+// A project's own speech model where its route has more than one, as on the settings page: ElevenLabs v4 or v4 Turbo
+// for half the credits (D-196).
+function ownModelField(provider,row,a) {
+  const models=Object.entries(row.models||{});
+  if(!isRemote(provider)||models.length<2)return "";
+  const current=provider===a.provider&&row.models[a.model]?a.model:row.default_model;
+  return settingField("own-audio-model",tp("settings.audio.model"),settingSelect("own-audio-model",models,current));
+}
 async function saveOwnAudio(clear=false) {
   const a=currentAudio(), provider=$("own-audio-provider")?.value||a.provider, row=audioCatalog()[provider]||{};
-  const audio=clear?null:{...a,provider,model:provider===a.provider?a.model:row.default_model,
+  const chosen=$("own-audio-model")?.value, model=row.models?.[chosen]?chosen:provider===a.provider?a.model:row.default_model;
+  const audio=clear?null:{...a,provider,model,
     voices:{host_a:$("own-voice-a")?.value,host_b:$("own-voice-b")?.value},alternate_roles:!!$("own-alternate")?.checked,
     ...(isPassage(provider)&&!isPassage(a.provider)?{styles:{...(row.default_styles||{})}}:{})};
   if(audio&&!isPassage(provider)){delete audio.styles;delete audio.third_style;}
@@ -1788,8 +1798,9 @@ const queueError=row=>shownMessage(row.error,row.error_language,row.error_code);
 function renderQueueState(e) {
   const row=queuedEntry(e.script.episode_id);
   if(!row)return "";
-  const remove=`<button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">${t("queue.remove")}</button>`;
+  const remove=`<button class="secondary small" data-action="unqueue" data-episode="${escape(row.episode)}">${t("queue.remove")}</button>`;
   return row.error?`<p class="note">${t("queue.refused",{error:queueError(row)})} ${remove}</p>`:
+    row.waiting==="held"?`<p class="note">${t("queue.held_place",{position:Number(row.position)})} ${remove}</p>`:
     queueWaitsForKey(row)?`<p class="note">${t(`queue.waits_key.${queueKey(row)}`,{position:Number(row.position)})} ${remove}</p>`:
     `<p class="hint">${t("queue.place",{position:Number(row.position)})} ${remove}</p>`;
 }
@@ -1801,13 +1812,40 @@ function speechSize(rows) {
   return tp("audio.size",{minutes:fmt.number(Math.max(1,Math.round(minutes))),characters:fmt.number(chars)});
 }
 const SPEECH_SIZE_NOTE=tp("audio.size_note");
+// The queue can be held, emptied and reordered (D-195): 2026-11-10 an approval of all episodes by mistake queued twelve
+// recordings that could only be taken out one by one, behind a remove link that did not look like a button.
 function renderAudioQueue() {
-  const rows=project?.audio_queue||[];
-  if(!rows.length)return "";
+  const rows=project?.audio_queue||[], held=!!project?.audio_queue_held;
+  if(!rows.length&&!held)return "";
+  // Only a server that knows them gets the controls: an older one, still running while the page is read from disk,
+  // took a move for a removal.
+  const controls=!!boot.capabilities?.audio_queue_controls;
   const title=id=>project.episodes.find(e=>e.script.episode_id===id)?.script.title||id;
-  const waiting=rows.find(queueWaitsForKey), missing=waiting?queueKey(waiting):null;
+  const waiting=held?null:rows.find(queueWaitsForKey), missing=waiting?queueKey(waiting):null;
   const size=speechSize(rows.filter(row=>!row.error).map(row=>project.episodes.find(e=>e.script.episode_id===row.episode)));
-  return `<section class="panel"><h2>${t("queue.title",{count:rows.length})}</h2><ol>${rows.map(row=>`<li><strong>${escape(title(row.episode))}</strong> · ${row.error?t("queue.row.refused",{error:queueError(row)}):queueWaitsForKey(row)?t(`queue.row.key.${queueKey(row)}`):t("queue.row.place")} <button class="quiet small" data-action="unqueue" data-episode="${escape(row.episode)}">${t("common.remove")}</button></li>`).join("")}</ol>${missing?`<p class="note">${t(`queue.key_missing.${missing}`)}</p>`:""}${size?`<p class="hint">${t("queue.size",{size})} ${t("audio.size_note")}</p>`:""}<p class="hint">${t("queue.hint")}</p></section>`;
+  const state=row=>row.error?t("queue.row.refused",{error:queueError(row)}):row.waiting==="held"?t("queue.row.held"):queueWaitsForKey(row)?t(`queue.row.key.${queueKey(row)}`):t("queue.row.place");
+  const move=(row,index)=>["up","down"].map(direction=>`<button class="secondary small" data-action="queue-move" data-move="${direction}" data-episode="${escape(row.episode)}" aria-label="${t(`queue.${direction}`,{title:title(row.episode)})}" title="${t(`queue.${direction}`,{title:title(row.episode)})}"${(direction==="up"?index===0:index===rows.length-1)?" disabled":""}>${direction==="up"?"↑":"↓"}</button>`).join("");
+  const item=(row,index)=>`<li><strong>${escape(title(row.episode))}</strong> · ${state(row)} <span class="actions">${controls&&rows.length>1?move(row,index):""}<button class="secondary small" data-action="unqueue" data-episode="${escape(row.episode)}">${t("common.remove")}</button></span></li>`;
+  const actions=!controls?"":`<div class="actions">${held?`<button class="small" data-action="queue-hold" data-hold="false">${t("queue.release")}</button>`:`<button class="secondary small" data-action="queue-hold" data-hold="true">${t("queue.hold")}</button>`}${rows.length?`<button class="secondary small" data-action="queue-clear">${t("queue.remove_all")}</button>`:""}</div>`;
+  return `<section class="panel"><h2>${t("queue.title",{count:rows.length})}</h2>${held?`<p class="note">${t("queue.held_note")}</p>`:""}${rows.length?`<ol>${rows.map(item).join("")}</ol>`:""}${actions}${missing?`<p class="note">${t(`queue.key_missing.${missing}`)}</p>`:""}${size?`<p class="hint">${t("queue.size",{size})} ${t("audio.size_note")}</p>`:""}<p class="hint">${t("queue.hint")}</p></section>`;
+}
+// The queues change without any job changing: the scheduler stores a refusal, another window or device edits them, or
+// rows are taken out through the API. The light status carries them, so the page shows them as they are (2026-11-10:
+// twelve recordings taken out of Geld verstehen's queue stayed on the open page).
+const queuesKey=p=>JSON.stringify([p?.audio_queue||[],!!p?.audio_queue_held,p?.revision_queue||[],!!p?.revisions_held]);
+function refreshQueues() {
+  if(step===PAGE.audio){const box=$("audio-queue");if(box)box.innerHTML=renderAudioQueue();refreshAudioPanel();}
+  else if(step===PAGE.outline||step===PAGE.production)render();
+}
+// Holds or resumes the queue, empties it or moves one episode (D-195); emptying asks first, since it drops the approvals.
+async function changeQueue(action,data) {
+  const count=(project.audio_queue||[]).length;
+  if(action==="queue-clear"&&typeof window.confirm==="function"&&!window.confirm(tp("queue.remove_all_confirm",{count})))return false;
+  const request=action==="queue-hold"?{hold:data.hold==="true"}:action==="queue-clear"?{all:true}:{episode:data.episode,move:data.move};
+  await api(`/api/projects/${project.id}/audio_queue`,request);
+  project=await api(`/api/projects/${project.id}`);render();
+  notice(action==="queue-clear"?tp("act.queue_cleared",{count}):action==="queue-move"?tp("act.queue_moved"):tp(request.hold?"act.queue_held":"act.queue_released"),"ok");
+  return true;
 }
 // Every published episode without a current recording, not recording and not queued: what "approve all" covers.
 function pendingRecordings() {
@@ -1892,7 +1930,8 @@ function renderPublishKit(e) {
     <p class="hint">${t("kit.sources",{listed:Number(k.sources_listed),total:Number(k.sources_total),file:asHtml(`<code>${escape(k.folder)}/sources.md</code>`)})}</p>${buttons}</section>`;
 }
 // The whole podcast's companion kit (publish_kit.build_podcast_kit, D-165): the user's wish of 2026-10-07, the podcast's
-// two descriptions to copy, and the transcript of every episode with the series' sources in publish/ and the ZIP.
+// descriptions for Spotify (at most 600 characters, D-194) and Apple Podcasts to copy, and the transcript of every
+// episode with the series' sources in publish/ and the ZIP.
 function renderPodcastKit() {
   const k=project?.podcast_kit, current=Boolean(k&&!k.outdated);
   const buttons=`<div class="actions"><button class="secondary" data-action="publish_kit" data-podcast="1" ${disabled()}>${t(k?"kit.rebuild":"podcast_kit.create")}</button>${current?`<button class="quiet" data-action="publish_kit" data-podcast="1" data-fresh="1" ${disabled()}>${t("kit.reword")}</button>`:""}</div>`;
@@ -1903,7 +1942,7 @@ function renderPodcastKit() {
   const files=boot.capabilities?.podcast_kit_downloads?`<p>${file("transcript.md","podcast_kit.download_transcript")} · ${file("sources.md","podcast_kit.download_sources")}</p>`:"";
   return `<section class="panel"><h2>${t("podcast_kit.title")}</h2>
     ${recorded<episodes?`<p class="note">${t("podcast_kit.unrecorded",{count:episodes,recorded})}</p>`:""}
-    <div class="field"><label for="podcast-kit-short">${t("podcast_kit.short")}</label><textarea id="podcast-kit-short" rows="3" readonly>${escape(k.short)}</textarea><button class="quiet small" data-action="copy-text" data-source="podcast-kit-short">${t("common.copy")}</button></div>
+    <div class="field"><label for="podcast-kit-spotify">${t("podcast_kit.spotify",{characters:fmt.number(Number(k.spotify_characters)),limit:fmt.number(Number(k.spotify_limit))})}</label><textarea id="podcast-kit-spotify" rows="5" readonly>${escape(k.spotify)}</textarea><button class="quiet small" data-action="copy-text" data-source="podcast-kit-spotify">${t("common.copy")}</button></div>
     <div class="field"><label for="podcast-kit-long">${t("podcast_kit.long",{characters:fmt.number(Number(k.characters)),limit:fmt.number(Number(k.limit))})}</label><textarea id="podcast-kit-long" rows="10" readonly>${escape(k.description)}</textarea><button class="quiet small" data-action="copy-text" data-source="podcast-kit-long">${t("common.copy")}</button></div>
     ${files}<p class="hint">${t("podcast_kit.files",{count:episodes,folder:asHtml(`<code>${escape(k.folder)}/</code>`)})} ${t("podcast_kit.sources",{count:Number(k.sources_total)})}</p>${buttons}</section>`;
 }
@@ -1927,7 +1966,7 @@ function renderAudio() {
   const outdated=facts.outdated?`<p class="note">${t(facts.outdated===facts.voiced?"audio.outdated.all":"audio.outdated.some",{count:facts.outdated})}${facts.reasons.length?` (${t("audio.outdated.changed",{reasons:staleText(facts.reasons)})})`:""}. ${t("audio.outdated.tail")}</p>`:"";
   // The recordings come before the per-episode extras: listening is what the page is visited for most.
   if(tabOn(PAGE.audio)==="kit")return html+`<div class="form-page">${episodePicker()}${renderPublishKit(e)}${renderPodcastKit()}</div>`;
-  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div>${renderAudioQueue()}${renderMusicRemix()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}</div><aside class="split-rail">${capacity}${renderOwnAudio(a)}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
+  html+=`<div class="split"><div class="split-main">${outdated}${episodePicker()}<section class="panel check-card" id="audio-panel">${renderApprovalCard(e,a,remote)}</section><div id="audio-jobs"></div><div id="audio-queue">${renderAudioQueue()}</div>${renderMusicRemix()}${renderApproveAll(remote)}${hasAudio?`<section class="panel recordings" id="recordings"><h2>${t("audio.recordings_title")}</h2>${renderRecordings(recordingsProject())}</section>`:""}${e.audio?.length?renderListeningReview(e):""}</div><aside class="split-rail">${capacity}${renderOwnAudio(a)}${renderSpeechSettings(a)}${renderStyleNotes()}</aside></div>`;
   return html;
 }
 // The card's one line, from the same facts the steps and the header use (D-160).
@@ -3762,7 +3801,7 @@ async function start(action, extra={}) {
   let response;
   try { response=await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project); }
   finally { submitting=false; }
-  if(response?.queued){notice(tp(action==="revise"?"start.queued_revision":action==="episodes"?"start.queued_series":action==="resume"?"start.queued_resume":"start.queued",{position:Number(response.position)}),"ok");render();return response;}
+  if(response?.queued){notice(tp(action==="revise"?"start.queued_revision":action==="episodes"?"start.queued_series":action==="resume"?"start.queued_resume":response.held?"start.queued_held":"start.queued",{position:Number(response.position)}),"ok");render();return response;}
   navigatePage(recommendedPage(),{automatic:true,push:false});
   if(action==="assistant")scrollChatToEnd();
   return response;
@@ -4012,6 +4051,7 @@ document.addEventListener("click",event=>{
       await api(`/api/projects/${project.id}/audio_queue`,{episode:button.dataset.episode});
       project=await api(`/api/projects/${project.id}`);render();notice(tp("act.unqueued"),"ok");return;
     }
+    if(action==="queue-hold"||action==="queue-clear"||action==="queue-move"){await changeQueue(action,button.dataset);return;}
     if(action==="unqueue-revision"){
       // The episode too, for a server older than the key (D-192), which removes by episode.
       await api(`/api/projects/${project.id}/revision_queue`,{key:button.dataset.key,episode:button.dataset.episode});
@@ -4180,6 +4220,9 @@ async function pollOnce() {
     const samplesChanged=JSON.stringify(project.voice_samples)!==JSON.stringify(next.voice_samples);
     const chatChanged=JSON.stringify(project.chat)!==JSON.stringify(next.chat);
     const attachmentsChanged=JSON.stringify(project.attachments)!==JSON.stringify(next.attachments);
+    const queuesChanged=queuesKey(project)!==queuesKey(next);
+    project.audio_queue=next.audio_queue;project.audio_queue_held=next.audio_queue_held;
+    project.revision_queue=next.revision_queue;project.revisions_held=next.revisions_held;
     project.job=next.job;project.run=next.run;project.voice_samples=next.voice_samples;
     project.chat=next.chat;project.proposal_hash=next.proposal_hash;project.proposal_applied=next.proposal_applied;
     project.attachments=next.attachments;project.proposal_current=next.proposal_current;
@@ -4199,6 +4242,7 @@ async function pollOnce() {
       if(finishedResult)notice(next.job.checks?tp("act.check_done",{checks:quoted(tp("checks.title"))}):tp("act.sample_done",{voices:quoted(tp("voices.listen"))}),"ok");
     }else if(scriptsChanged&&step===PAGE.scripts)refreshScriptReader();
     else if((chatChanged||attachmentsChanged)&&step===PAGE.brief){refreshAttachmentComposer();if(chatChanged)scrollChatToEnd();}
+    else if(queuesChanged)refreshQueues();
   }catch(error){
     // Only a missing answer is a lost connection; a refusal of the running server says what it refused.
     if(error.network){connectionLost=true;lastJobView="";renderJob();notice(tp("act.connection_lost"),"error");}

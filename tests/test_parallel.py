@@ -223,6 +223,40 @@ class StudioParallelTests(unittest.TestCase):
         self.app.audio_queue("example", {"episode": "ep_004"})
         self.assertEqual(self.app.detail("example")["audio_queue"], [])
 
+    def test_a_held_queue_keeps_its_approvals_starts_nothing_and_can_be_reordered_and_emptied(self):
+        """D-195, 2026-11-10: „alle freigeben“ clicked by mistake on Geld verstehen queued twelve recordings that could
+        only be taken out one by one, and a row taken out loses its approval. Held, the queue keeps the approvals and
+        starts none of them, a new approval joins it, its rows move, and it empties in one step."""
+        self.app.key = "test-key"
+        with patch("podcast_automate.studio.subprocess.Popen", side_effect=self.process) as launch:
+            jobs = [self.app.start("example", self.approval(f"ep_{n:03}")) for n in (1, 2, 3)]
+            self.app.start("example", self.approval("ep_004"))
+            view = self.app.audio_queue("example", {"hold": True})
+            self.assertEqual((view["audio_queue_held"], view["audio_queue"][0]["waiting"]), (True, "held"))
+            detail = self.app.detail("example")
+            self.assertEqual((detail["audio_queue_held"], detail["audio_queue"][0]["waiting"]), (True, "held"))
+            self.app.audio_processes[jobs[0]["id"]][0].poll.return_value = 0
+            self.assertEqual(self.app.start_queued(), [], "held, nothing starts though a place is free")
+            # A free place, and yet a new approval joins the held queue instead of starting.
+            joined = self.app.start("example", self.approval("ep_001"))
+            self.assertEqual((joined["queued"], joined["held"], joined["position"], launch.call_count), (True, True, 2, 3))
+            self.app.audio_queue("example", {"episode": "ep_001", "move": "up"})
+            self.app.audio_queue("example", {"episode": "ep_001", "move": "up"})  # already first: stays
+            self.app.audio_queue("example", {"episode": "ep_009", "move": "down"})  # not queued: nothing moves
+            self.assertEqual([row["episode"] for row in self.app.detail("example")["audio_queue"]], ["ep_001", "ep_004"])
+            for wrong in ({"episode": "ep_001", "move": "top"}, {"hold": "yes"}):
+                with self.assertRaises(AppError) as refused:
+                    self.app.audio_queue("example", wrong)
+                self.assertEqual(refused.exception.code, "invalid_action")
+            # Going on, the first in the new order takes the free place, and the rest waits as before.
+            self.assertFalse(self.app.audio_queue("example", {"hold": False})["audio_queue_held"])
+            self.assertEqual(self.app.start_queued(), [("example", "ep_001")])
+            self.assertEqual(launch.call_count, 4)
+        queued = self.app.detail("example")["audio_queue"]
+        self.assertEqual([(row["episode"], row["waiting"]) for row in queued], [("ep_004", "place")])
+        self.assertEqual(self.app.audio_queue("example", {"all": True}), {"audio_queue": [], "audio_queue_held": False})
+        self.assertEqual(json.loads((self.root / "studio/audio_queue.json").read_text(encoding="utf-8")), [])
+
     def recording_project(self, name, choice):
         """A project in parallel mode with one read episode; returns the start request of its recording."""
         root = self.project(name)

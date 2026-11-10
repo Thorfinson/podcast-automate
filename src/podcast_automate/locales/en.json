@@ -14,6 +14,7 @@
  "server.approve.busy": "The job is running; fresh attempts only once it has stopped.",
  "server.approve.unknown": "Unknown approval.",
  "server.queue.episode": "Name the episode.",
+ "server.queue.action": "The queue can only be held, resumed or emptied, or one of its episodes moved up or down.",
  "server.restart.unavailable": "This Studio cannot restart itself.",
  "server.file.not_shown": "The Studio cannot show this file.",
  "server.file.not_found": "File not found.",
@@ -1003,6 +1004,15 @@
  "queue.key_missing.elevenlabs": "Key missing: the ElevenLabs key is not stored. As soon as it is stored in the approval above, the episodes start by themselves.",
  "queue.size": "Size of the waiting episodes: {size}.",
  "queue.hint": "Approved episodes start by themselves in this order as soon as a place is free; the Studio must stay open for that. Before each start it is checked that script, voices and expression still match the approved state.",
+ "queue.hold": "Hold the queue",
+ "queue.release": "Resume the queue",
+ "queue.remove_all": "Remove all",
+ "queue.remove_all_confirm": "Take all {count} episodes out of the queue? Their approvals are lost; each episode can be approved again later. To only wait, hold the queue.",
+ "queue.held_note": "Held: nothing starts from this queue, and new approvals join it, until you resume it. The approvals are kept; running recordings finish.",
+ "queue.row.held": "held",
+ "queue.held_place": "Approved · place {position} in the held queue. It starts once you resume the queue.",
+ "queue.up": "Move {title} up",
+ "queue.down": "Move {title} down",
  "revision_queue.title": "Queued · {count}",
  "revision_queue.episode": "Episode {number}: {title}",
  "revision_queue.minutes": "{minutes} minutes",
@@ -1095,14 +1105,14 @@
  "kit.sources": "{listed} of {total} sources are in the text; all of them in {file} and in the ZIP download.",
  "podcast_kit.title": "Companion kit for the podcast",
  "podcast_kit.create": "Create the podcast's companion kit",
- "podcast_kit.hint": "A short description and the podcast description for the show page on Spotify and Apple Podcasts, every source of the series and the transcript of every episode. The text model writes the two descriptions from the episode plans; transcript and sources come from scripts, recordings and research without a model.",
+ "podcast_kit.hint": "The podcast description for the show page on Spotify (at most 600 characters) and on Apple Podcasts, every source of the series and the transcript of every episode. The text model writes the two descriptions from the episode plans; transcript and sources come from scripts, recordings and research without a model.",
  "podcast_kit.outdated": "An episode has changed or been recorded again since this companion kit. Rebuild it; the descriptions are kept while the episode plans and chapters stay the same.",
  "podcast_kit.unrecorded": {
   "one": "The episode is not recorded yet: its chapters have no timestamps in the transcript. Rebuild after recording.",
   "other": "{recorded} of {count} episodes recorded: in the transcript the other episodes' chapters have no timestamps. Rebuild after recording."
  },
- "podcast_kit.short": "Short description of the podcast",
- "podcast_kit.long": "Podcast description for Spotify and Apple Podcasts ({characters} of {limit} characters)",
+ "podcast_kit.spotify": "Podcast description for Spotify ({characters} of {limit} characters, AI notice included)",
+ "podcast_kit.long": "Podcast description for Apple Podcasts ({characters} of {limit} characters)",
  "podcast_kit.files": {
   "one": "The episode's transcript, the source list and the descriptions are in {folder} and in the ZIP download.",
   "other": "The transcript of all {count} episodes, the source list and the descriptions are in {folder} and in the ZIP download."
@@ -2083,6 +2093,7 @@
  "summary.applied": "Your selection is saved.",
  "start.no_project": "Create your project first.",
  "start.queued": "Approved and queued: place {position} in the queue. The episode starts by itself as soon as a place is free.",
+ "start.queued_held": "Approved and queued: place {position} in the queue. The queue is held; the episode starts once you resume it.",
  "start.queued_resume": "Queued: place {position} in the queue. The episode goes on by itself as soon as a place is free.",
  "start.queued_revision": "Queued: place {position} in the queue. The revision starts by itself once nothing runs in the project.",
  "start.queued_series": "Queued: place {position} in the queue. The remaining episodes start one after another by themselves once nothing runs in the project.",
@@ -2107,6 +2118,13 @@
  "act.jev_on_key": "Jev is on. For new script runs, still store the OpenRouter key in the settings under Keys.",
  "act.jev_off": "Jev is off: new script runs search for gaps with the word search only.",
  "act.unqueued": "Removed from the queue.",
+ "act.queue_cleared": {
+  "one": "{count} episode taken out of the queue.",
+  "other": "{count} episodes taken out of the queue."
+ },
+ "act.queue_held": "Queue held. Running recordings finish; nothing more starts from the queue.",
+ "act.queue_released": "Queue resumed. Its episodes start in order as soon as a place is free.",
+ "act.queue_moved": "Queue order changed.",
  "act.confirm_read": "Please confirm that you have read these scripts.",
  "act.audio_all": {
   "one": "{count} episode approved: {started} start now, {queued} wait in the queue and start by themselves.",

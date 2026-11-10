@@ -2829,6 +2829,86 @@ test('all read episodes can be approved at once, and a full studio queues instea
   assert.ok(app.run(`renderQueueState(${JSON.stringify(ep('ep_003'))})`).includes('wartet in der Warteschlange auf Platz 1'));
 });
 
+test('the recording queue can be held, emptied and reordered with buttons that look like buttons',async()=>{
+  // 2026-11-10 (D-195): „alle freigeben“ clicked by mistake queued twelve recordings, which could only be taken out one
+  // by one, behind a remove link that did not look like a button, and taking one out drops its approval.
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const ep=id=>({script:{episode_id:id,title:`Folge ${id}`},hash:'h',readable_hash:'r',audio_current:false});
+  app.run(`boot.key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},
+    episodes:[${['ep_004','ep_005','ep_006'].map(id=>JSON.stringify(ep(id))).join(',')}],audio_jobs:[],audio_capacity:{available:0},
+    audio_queue:[{episode:'ep_004',position:1,waiting:'place'},{episode:'ep_005',position:2,waiting:'place'},{episode:'ep_006',position:3,waiting:'place'}]};`);
+  // A server without the controls, still running while the page is read from disk, gets „Entfernen“ alone: it took a
+  // move for a removal.
+  const older=app.run('renderAudioQueue()');
+  assert.ok(older.includes('data-action="unqueue" data-episode="ep_005"'));
+  assert.ok(!older.includes('queue-hold')&&!older.includes('queue-move')&&!older.includes('queue-clear'));
+  app.run(`boot.capabilities={parallel_audio:true,audio_queue_controls:true};`);
+  const queue=app.run('renderAudioQueue()');
+  assert.ok(queue.includes('data-action="queue-hold" data-hold="true">Warteschlange anhalten</button>'));
+  assert.ok(queue.includes('data-action="queue-clear">Alle entfernen</button>'));
+  assert.ok(queue.includes('<button class="secondary small" data-action="unqueue" data-episode="ep_005">Entfernen</button>'),'a button, not a quiet link');
+  assert.ok(queue.includes('data-move="up" data-episode="ep_004" aria-label="Folge ep_004 nach oben" title="Folge ep_004 nach oben" disabled'),'the first cannot go up');
+  assert.ok(queue.includes('data-move="down" data-episode="ep_006" aria-label="Folge ep_006 nach unten" title="Folge ep_006 nach unten" disabled'),'the last cannot go down');
+  assert.ok(!queue.includes('data-move="up" data-episode="ep_005" aria-label="Folge ep_005 nach oben" title="Folge ep_005 nach oben" disabled'));
+  // Held: every row says so, the card says where it waits, and the one way on is to resume.
+  app.run(`project.audio_queue_held=true;project.audio_queue.forEach(row=>{row.waiting='held';});`);
+  const held=app.run('renderAudioQueue()');
+  assert.ok(held.includes('Angehalten: Aus dieser Warteschlange startet nichts')&&held.includes('Folge ep_004</strong> · angehalten'));
+  assert.ok(held.includes('data-action="queue-hold" data-hold="false">Warteschlange fortsetzen</button>')&&!held.includes('Warteschlange anhalten'));
+  assert.ok(app.run(`renderQueueState(${JSON.stringify(ep('ep_005'))})`).includes('Platz 2 der angehaltenen Warteschlange'));
+  // Emptied while held, the panel stays so the queue can be resumed.
+  app.run(`project.audio_queue=[];`);
+  const empty=app.run('renderAudioQueue()');
+  assert.ok(empty.includes('Warteschlange fortsetzen')&&!empty.includes('Alle entfernen'));
+  app.run(`project.audio_queue_held=false;`);
+  assert.equal(app.run('renderAudioQueue()'),'','nothing waits and nothing is held');
+  // Each button sends one change; emptying asks first and sends nothing when declined.
+  app.run(`project.audio_queue=[{episode:'ep_004',position:1,waiting:'place'},{episode:'ep_005',position:2,waiting:'place'}];`);
+  app.responses.set('/api/projects/p',app.run('structuredClone(project)'));
+  app.run(`window.confirm=message=>{window.lastConfirm=message;return false;};`);
+  assert.equal(await app.run(`changeQueue('queue-clear',{})`),false);
+  assert.ok(app.run('window.lastConfirm').includes('Alle 2 Folgen aus der Warteschlange nehmen? Ihre Freigaben gehen damit verloren'));
+  app.run(`window.confirm=()=>true;`);
+  await app.run(`changeQueue('queue-clear',{})`);
+  assert.ok(app.elements.get('notice').textContent.includes('2 Folgen aus der Warteschlange genommen.'));
+  await app.run(`changeQueue('queue-move',{episode:'ep_005',move:'up'})`);
+  await app.run(`changeQueue('queue-hold',{hold:'true'})`);
+  assert.ok(app.elements.get('notice').textContent.includes('Warteschlange angehalten.'));
+  await app.run(`changeQueue('queue-hold',{hold:'false'})`);
+  const sent=app.requests.filter(r=>r.path==='/api/projects/p/audio_queue').map(r=>JSON.parse(r.options.body));
+  assert.deepEqual(sent,[{all:true},{episode:'ep_005',move:'up'},{hold:true},{hold:false}]);
+  // A new approval while the queue is held is queued and says why it waits.
+  app.responses.set('/api/projects/p/start',{queued:true,position:3,held:true});
+  await app.run(`start('audio',{episode:'ep_006'})`);
+  assert.ok(app.elements.get('notice').textContent.includes('Sie ist angehalten; die Folge startet, sobald du sie fortsetzt.'));
+});
+
+test('the queue on the open page follows the server when its rows change without a job changing',async()=>{
+  // 2026-11-10: twelve recordings taken out of Geld verstehen's queue through the API stayed on the open page, and a
+  // refusal the scheduler stores on a row would have stayed unseen the same way.
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const ep=id=>({script:{episode_id:id,title:`Folge ${id}`},hash:'h',readable_hash:'r',audio_current:false});
+  const p={id:'p',config:app.run('boot.defaults'),content_version:'v1',audio_settings:{provider:'openrouter_gemini_tts',voices:{host_a:'Sadaltager',host_b:'Aoede'}},
+    episodes:[ep('ep_004'),ep('ep_005')],audio_jobs:[],audio_capacity:{available:0},
+    audio_queue:[{episode:'ep_004',position:1,waiting:'place'},{episode:'ep_005',position:2,waiting:'place'}]};
+  app.run(`boot.key_available=true;boot.capabilities={parallel_audio:true,light_status:true,audio_queue_controls:true};project=${JSON.stringify(p)};
+    lastJobSignature=projectJobSignature(project);overviewPage=false;settingsPage=false;followWorkflow=false;step=PAGE.audio;render();`);
+  app.responses.set('/api/projects/p/status',{...p,episodes:undefined,
+    audio_queue:[{episode:'ep_005',position:1,error:'Skript inzwischen geändert.',error_language:'de'}]});
+  await app.run('pollOnce()');
+  assert.equal(app.run('project.audio_queue.length'),1);
+  const box=app.elements.get('audio-queue').innerHTML;
+  assert.ok(box.includes('Warteschlange der Vertonung · 1')&&box.includes('startet nicht: Skript inzwischen geändert.'),box);
+  assert.ok(!box.includes('Folge ep_004'));
+  assert.ok(!app.requests.some(r=>r.path==='/api/projects/p'),'the light status carries the queue, no full load needed');
+  // Held elsewhere, the open page says so too.
+  app.responses.set('/api/projects/p/status',{...p,episodes:undefined,audio_queue:[],audio_queue_held:true});
+  await app.run('pollOnce()');
+  assert.ok(app.elements.get('audio-queue').innerHTML.includes('Warteschlange fortsetzen'));
+});
+
 test('recordings out of date only for the music are assembled again on their own, without the episodes never voiced',()=>{
   // 2026-11-08: "approve all" would also have recorded Asimov's 16 episodes never voiced, about 175,000 credits, when
   // only the music was to be added (D-193).
@@ -2993,13 +3073,15 @@ test('the whole podcast gets its own companion kit with the transcript of every 
   app.run(`project.podcast_kit={outdated:true};`);
   const old=app.run(`renderPodcastKit()`);
   assert.ok(old.includes('Neu zusammenstellen')&&old.includes('neu vertont')&&!old.includes('textarea')&&!old.includes('data-fresh'));
-  const kit={folder:'publish',short:'Kurz <b>',description:'Lang',characters:1800,limit:4000,episodes:6,recorded:4,sources_total:37};
+  const kit={folder:'publish',spotify:'Kurz <b>',spotify_characters:540,spotify_limit:600,description:'Lang',characters:1800,limit:4000,episodes:6,recorded:4,sources_total:37};
   app.run(`project.podcast_kit=${JSON.stringify(kit)};`);
   const html=app.run(`renderPodcastKit()`);
   assert.ok(html.includes('Kurz &lt;b&gt;</textarea>'),'the text is escaped');
-  assert.ok(html.includes('(1.800 von 4.000 Zeichen)')&&html.includes('4 von 6 Folgen vertont'));
+  // Spotify for Creators takes 600 characters for the podcast's description, the AI notice included (D-194).
+  assert.ok(html.includes('Podcastbeschreibung für Spotify (540 von 600 Zeichen, mit KI-Hinweis)'));
+  assert.ok(html.includes('Podcastbeschreibung für Apple Podcasts (1.800 von 4.000 Zeichen)')&&html.includes('4 von 6 Folgen vertont'));
   assert.ok(html.includes('Transkript aller 6 Folgen')&&html.includes('<code>publish/</code>')&&html.includes('nennt 37 Quellen'));
-  assert.ok(html.includes('data-source="podcast-kit-short"')&&html.includes('data-source="podcast-kit-long"'));
+  assert.ok(html.includes('data-source="podcast-kit-spotify"')&&html.includes('data-source="podcast-kit-long"'));
   assert.ok(html.includes('data-podcast="1" data-fresh="1"'));
   app.run(`project.podcast_kit=${JSON.stringify({...kit,recorded:6})};`);
   assert.ok(!app.run(`renderPodcastKit()`).includes('Folgen vertont'),'a fully recorded series needs no note');
@@ -3008,12 +3090,13 @@ test('the whole podcast gets its own companion kit with the transcript of every 
   const english=en.run(`renderPodcastKit()`);
   assert.ok(english.includes('Companion kit for the podcast')&&english.includes('The episode is not recorded yet'));
   assert.ok(english.includes("The episode's transcript")&&english.includes('names 1 source.'));
+  assert.ok(english.includes('Podcast description for Spotify (540 of 600 characters, AI notice included)'));
 });
 
 test('the podcast kit offers its transcript and sources on their own, without the MP3s of the ZIP',()=>{
   // The user's report of 2026-10-07: the panel offered only the two descriptions, the transcript lay on disk and in the ZIP.
   const app=studio();
-  const kit={folder:'publish',short:'Kurz',description:'Lang',characters:1800,limit:4000,episodes:2,recorded:2,sources_total:3};
+  const kit={folder:'publish',spotify:'Kurz',spotify_characters:300,spotify_limit:600,description:'Lang',characters:1800,limit:4000,episodes:2,recorded:2,sources_total:3};
   app.run(`project={id:'mein projekt',config:{language:'de-DE'},audio_settings:{provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}},episodes:[],podcast_kit:${JSON.stringify(kit)}};boot.capabilities={podcast_downloads:true};`);
   assert.ok(!app.run(`renderPodcastKit()`).includes('/kit/'),'a server without the route offers no link that would fail');
   app.run(`boot.capabilities={podcast_downloads:true,podcast_kit_downloads:true};`);
@@ -3067,6 +3150,31 @@ test('a third host on ElevenLabs needs a voice of its own: the selects, the appr
   assert.equal(app.run('audioBlockReason("ep_001")'),'');
   assert.ok(!card().includes('Ea-nasir'));
   assert.ok(!app.run(`renderOwnAudio(currentAudio())`).includes('own-voice-c'));
+});
+
+test('a project chooses its own ElevenLabs model, v4 or v4 Turbo for half the credits',async()=>{
+  // D-196, 2026-11-10: Turbo took a Geld verstehen passage with three voices at half of v4's credits.
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
+  const eleven={provider:'elevenlabs_tts',model:'eleven_v4',voices:{host_a:'S87WJpstXs0Ge2ukRiXJ',host_b:'VHYWoxffK1pFlM1dtRb0'}};
+  app.run(`boot.audio_catalog={elevenlabs_tts:{label:'ElevenLabs · v4',models:{eleven_v4:'Eleven v4',eleven_v4_turbo:'Eleven v4 Turbo'},default_model:'eleven_v4',voices:[],account_voices:true,third_voices:[]},
+    qwen3_local:{label:'Qwen',voices:['Aiden','Vivian'],defaults:{host_a:'Aiden',host_b:'Vivian'}}};
+    boot.elevenlabs_key_available=true;
+    project={id:'p',config:{language:'de-DE'},audio_settings:${JSON.stringify(eleven)},audio_own:true,episodes:[]};`);
+  const panel=app.run(`renderOwnAudio(currentAudio())`);
+  assert.ok(panel.includes('id="own-audio-model"')&&panel.includes('<option value="eleven_v4" selected>Eleven v4</option>')&&panel.includes('<option value="eleven_v4_turbo" >Eleven v4 Turbo</option>'),panel);
+  assert.equal(app.run(`audioLabel(currentAudio())`),'Eleven v4 · ElevenLabs');
+  // Saving sends the chosen model with the project's own choice.
+  app.run(`$('own-audio-provider').value='elevenlabs_tts';$('own-audio-model').value='eleven_v4_turbo';
+    $('own-voice-a').value='S87WJpstXs0Ge2ukRiXJ';$('own-voice-b').value='VHYWoxffK1pFlM1dtRb0';`);
+  app.responses.set('/api/projects/p/audio_own',{audio_own:true,audio_settings:{...eleven,model:'eleven_v4_turbo'}});
+  app.responses.set('/api/projects/p',app.run(`({...structuredClone(project),audio_settings:{...project.audio_settings,model:'eleven_v4_turbo'}})`));
+  await app.run('saveOwnAudio()');
+  const sent=JSON.parse(app.requests.find(r=>r.path==='/api/projects/p/audio_own').options.body).audio;
+  assert.equal(sent.model,'eleven_v4_turbo');
+  assert.equal(app.run(`audioLabel(currentAudio())`),'Eleven v4 Turbo · ElevenLabs');
+  // A route with one model, or the local Qwen, shows no model field.
+  assert.ok(!app.run(`renderOwnAudio({provider:'qwen3_local',voices:{host_a:'Aiden',host_b:'Vivian'}})`).includes('own-audio-model'));
 });
 
 test('the server note offers a restart once the code changed and can take it back',()=>{

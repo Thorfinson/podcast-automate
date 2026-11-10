@@ -14,6 +14,7 @@
  "server.approve.busy": "Der Auftrag läuft gerade; neue Anläufe erst, wenn er angehalten hat.",
  "server.approve.unknown": "Unbekannte Freigabe.",
  "server.queue.episode": "Folge angeben.",
+ "server.queue.action": "Die Warteschlange lässt sich nur anhalten, fortsetzen, leeren oder eine Folge darin nach oben oder unten schieben.",
  "server.restart.unavailable": "Dieses Studio kann sich nicht selbst neu starten.",
  "server.file.not_shown": "Diese Datei kann das Studio nicht anzeigen.",
  "server.file.not_found": "Datei nicht gefunden.",
@@ -1003,6 +1004,15 @@
  "queue.key_missing.elevenlabs": "Key fehlt: Der ElevenLabs-Key ist nicht hinterlegt. Sobald er oben in der Freigabe hinterlegt ist, starten die Folgen von selbst.",
  "queue.size": "Umfang der wartenden Folgen: {size}.",
  "queue.hint": "Freigegebene Folgen starten in dieser Reihenfolge von selbst, sobald ein Platz frei ist; das Studio muss dafür geöffnet bleiben. Vor jedem Start wird geprüft, ob Skript, Stimmen und Ausdruck noch dem freigegebenen Stand entsprechen.",
+ "queue.hold": "Warteschlange anhalten",
+ "queue.release": "Warteschlange fortsetzen",
+ "queue.remove_all": "Alle entfernen",
+ "queue.remove_all_confirm": "Alle {count} Folgen aus der Warteschlange nehmen? Ihre Freigaben gehen damit verloren; jede Folge lässt sich später neu freigeben. Wer nur warten will, hält die Warteschlange an.",
+ "queue.held_note": "Angehalten: Aus dieser Warteschlange startet nichts, und neue Freigaben reihen sich hier ein, bis du sie fortsetzt. Die Freigaben bleiben erhalten; laufende Vertonungen laufen zu Ende.",
+ "queue.row.held": "angehalten",
+ "queue.held_place": "Freigegeben · Platz {position} der angehaltenen Warteschlange. Sie startet, sobald du die Warteschlange fortsetzt.",
+ "queue.up": "{title} nach oben",
+ "queue.down": "{title} nach unten",
  "revision_queue.title": "Vorgemerkt · {count}",
  "revision_queue.episode": "Folge {number}: {title}",
  "revision_queue.minutes": "{minutes} Minuten",
@@ -1095,14 +1105,14 @@
  "kit.sources": "{listed} von {total} Quellen stehen im Text; alle in {file} und im ZIP-Download.",
  "podcast_kit.title": "Begleitmaterial für den Podcast",
  "podcast_kit.create": "Begleitmaterial für den Podcast erstellen",
- "podcast_kit.hint": "Kurzbeschreibung und Podcastbeschreibung für die Showseite bei Spotify und Apple Podcasts, alle Quellen der Serie und das Transkript aller Folgen. Das Textmodell schreibt die beiden Beschreibungen aus den Folgenplänen; Transkript und Quellen kommen ohne Modell aus Skripten, Aufnahmen und Recherche.",
+ "podcast_kit.hint": "Die Podcastbeschreibung für die Showseite bei Spotify (höchstens 600 Zeichen) und bei Apple Podcasts, alle Quellen der Serie und das Transkript aller Folgen. Das Textmodell schreibt die beiden Beschreibungen aus den Folgenplänen; Transkript und Quellen kommen ohne Modell aus Skripten, Aufnahmen und Recherche.",
  "podcast_kit.outdated": "Seit diesem Begleitmaterial hat sich eine Folge geändert oder wurde neu vertont. Neu zusammenstellen; die Beschreibungen bleiben erhalten, solange Folgenpläne und Kapitel gleich sind.",
  "podcast_kit.unrecorded": {
   "one": "Die Folge ist noch nicht vertont: Im Transkript stehen ihre Kapitel ohne Zeitmarken. Nach der Aufnahme neu zusammenstellen.",
   "other": "{recorded} von {count} Folgen vertont: Im Transkript stehen die Kapitel der übrigen ohne Zeitmarken. Nach der Aufnahme neu zusammenstellen."
  },
- "podcast_kit.short": "Kurzbeschreibung des Podcasts",
- "podcast_kit.long": "Podcastbeschreibung für Spotify und Apple Podcasts ({characters} von {limit} Zeichen)",
+ "podcast_kit.spotify": "Podcastbeschreibung für Spotify ({characters} von {limit} Zeichen, mit KI-Hinweis)",
+ "podcast_kit.long": "Podcastbeschreibung für Apple Podcasts ({characters} von {limit} Zeichen)",
  "podcast_kit.files": {
   "one": "Transkript der Folge, Quellenliste und Beschreibungen liegen in {folder} und im ZIP-Download.",
   "other": "Transkript aller {count} Folgen, Quellenliste und Beschreibungen liegen in {folder} und im ZIP-Download."
@@ -2083,6 +2093,7 @@
  "summary.applied": "Deine Auswahl ist gespeichert.",
  "start.no_project": "Lege zuerst dein Projekt an.",
  "start.queued": "Freigegeben und eingereiht: Platz {position} der Warteschlange. Die Folge startet von selbst, sobald ein Platz frei ist.",
+ "start.queued_held": "Freigegeben und eingereiht: Platz {position} der Warteschlange. Sie ist angehalten; die Folge startet, sobald du sie fortsetzt.",
  "start.queued_resume": "Eingereiht: Platz {position} der Warteschlange. Die Folge geht von selbst weiter, sobald ein Platz frei ist.",
  "start.queued_revision": "Vorgemerkt: Platz {position} der Warteschlange. Die Überarbeitung startet von selbst, sobald im Projekt nichts mehr läuft.",
  "start.queued_series": "Vorgemerkt: Platz {position} der Warteschlange. Die restlichen Folgen starten von selbst nacheinander, sobald im Projekt nichts mehr läuft.",
@@ -2107,6 +2118,13 @@
  "act.jev_on_key": "Jev ist dabei. Für neue Skriptläufe noch den OpenRouter-Key unter Anbieter und Schlüssel hinterlegen.",
  "act.jev_off": "Jev ist aus: Neue Skriptläufe suchen Lücken nur mit der Wortsuche.",
  "act.unqueued": "Aus der Warteschlange genommen.",
+ "act.queue_cleared": {
+  "one": "{count} Folge aus der Warteschlange genommen.",
+  "other": "{count} Folgen aus der Warteschlange genommen."
+ },
+ "act.queue_held": "Warteschlange angehalten. Laufende Vertonungen laufen zu Ende, aus der Warteschlange startet nichts mehr.",
+ "act.queue_released": "Warteschlange fortgesetzt. Ihre Folgen starten der Reihe nach, sobald ein Platz frei ist.",
+ "act.queue_moved": "Reihenfolge der Warteschlange geändert.",
  "act.confirm_read": "Bitte bestätigen, dass du diese Skripte gelesen hast.",
  "act.audio_all": {
   "one": "{count} Folgen freigegeben: {started} starten jetzt, {queued} warten in der Warteschlange und starten von selbst.",

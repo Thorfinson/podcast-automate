@@ -2,7 +2,7 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-10
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
@@ -126,8 +126,9 @@ after the last word (`music.py`, `audio.assemble`; why: D-189). `<project>/studi
   recorded. A project without music records and hashes as before.
 - A recording made before the music came is not current any more („geändert: Musik“). Since the music is mixed in
   the montage only, recording such an episode again takes every take from the cache: a new approval, no new speech.
-- Show notes, the episode's and the podcast's companion kit (`description.txt`, `sources.md`) name the piece as its
-  license asks, in the podcast's language (`content_text` `music_credit`), never written by a model.
+- Show notes, the episode's companion kit (`description.txt`, `sources.md`) and the podcast's `sources.md` name the
+  piece as its license asks, in the podcast's language (`content_text` `music_credit`), never written by a model. The
+  podcast's descriptions leave it out, since every episode's description carries it (D-194).
 
 ### Production estimate and logging
 
@@ -243,9 +244,16 @@ choice](#a-projects-own-speech-choice)), and store the **„ElevenLabs-Key“** 
 
 ### The speech request
 
+- **Model:** „Eleven v4“ by default, or „Eleven v4 Turbo“ for half the credits, chosen under „Sprachmodell“ on
+  the settings page or in a project's own choice. A Turbo take is cached apart from a v4 take of the same passage
+  (the model is in its key), so switching records anew. Measured on 2026-11-10 with one Geld verstehen passage
+  (three voices, with context, 1,547 characters sent): v4 750 credits, Turbo 375, both about 90 seconds; blind,
+  the user heard Leo's voice a little lower in quality with Turbo (why: D-196). ElevenLabs' docs name Turbo
+  only for the dialogue WebSocket; its HTTP Text to Dialogue took it with three voices and the context.
 - `POST https://api.elevenlabs.io/v1/text-to-dialogue/with-timestamps?output_format=pcm_24000`
   (`elevenlabs_speech.ELEVENLABS_ENDPOINT`), the key only in the `xi-api-key` header. The body is the passage's turns
-  as `inputs` (`text`, `voice_id`), `model_id` `eleven_v4` (`speech.ELEVENLABS_MODELS`), `language_code` `de` or `en`,
+  as `inputs` (`text`, `voice_id`), `model_id` `eleven_v4` or `eleven_v4_turbo` (`speech.ELEVENLABS_MODELS`, see
+  below), `language_code` `de` or `en`,
   a fixed `seed` (42, best effort), and `previous_text`/`future_text`: at most 100 characters of the passage before and
   after in the same chapter, so the delivery runs on across a cut.
 - The answer carries the audio as base64 PCM (24 kHz, mono, 16 bit) and the start and end of every turn
@@ -647,6 +655,15 @@ takes a minute on 2026-11-06, three at once 7 to 8.8.
   auf den Google-Key“ or „wartet auf den OpenRouter-Key“ (waiting for the key).
 - Before starting, the scheduler checks script, reading view, voices and expression again; if something has
   changed, the episode stays in the queue with the reason.
+- A queued row holds its episode's approval: **„Entfernen“** (remove) on a row or on the episode's card, and **„Alle
+  entfernen“** (remove all, asked first), drop it, and the episode has to be approved again.
+- **„Warteschlange anhalten“** (hold the queue) keeps every row and its approval, and nothing starts from it until
+  **„Warteschlange fortsetzen“** (resume the queue); a new approval joins it instead of starting, even with a place
+  free, while „Fortsetzen“ on a stopped recording is not held. Running recordings finish. The hold lives in
+  `studio/audio_queue_hold.json` and survives a restart. Each row moves one place up or down with **↑** and **↓**,
+  so the next free place goes to the episode wanted first (route `audio_queue` with `hold`, `all` or `move`, why:
+  D-195). The page shows these controls only when the server names `audio_queue_controls` among its capabilities:
+  the page is read from disk on every load, and a server started before them took a move for a removal.
 - The page Vertonung shows the queue with **„Entfernen“** (remove) and **„{n} gelesene Folgen freigeben“**
   (approve {n} read episodes), beside **„Zuerst die Skripte lesen“** (read the scripts first): one checkmark, never
   preset, confirms that all listed scripts, including their expression, have been read, and approves them in one
@@ -688,11 +705,11 @@ für den Podcast“, `pla publish-kit --podcast`; why: D-165):
 
 | File | Content |
 | --- | --- |
-| `description_short.txt` | Two or three sentences on the podcast (80 to 300 characters) |
-| `description.txt` | The podcast description for the show page of Spotify and Apple Podcasts (400 to 1,500 characters), then the transparency note and an AI notice that names the podcast's scripts |
+| `description_spotify.txt` | The podcast description for Spotify for Creators, at most 600 characters (`publish_kit.SPOTIFY_SHOW_LIMIT`): two to four sentences from 200 characters up to what the AI notice leaves, then the AI notice that names the podcast's scripts (D-194) |
+| `description.txt` | The podcast description for Apple Podcasts (400 to 1,500 characters; Apple takes 4,000), then the transparency note and an AI notice that names the podcast's scripts |
 | `sources.md` | Every source of the series once, in the order of first use, each with the episodes that use it („(in Folge 01, Folge 03)“) |
 | `transcript.md` | The approved text of every published episode in script order with the hosts' labels, as each recording's `transcript.md` has it, under „## Folge 01: Title“ and „### 00:00 Chapter“ with the chapter's measured start; an episode without a recording of its current script says so once and has chapters without times; ends with the transparency note |
-| `kit.json` | `publish_kit.PODCAST_KIT_VERSION` (`podcast_kit.v1`), per episode the script hash, the script run and the recording it covers, the sources, the idea sources left out and the files' hashes |
+| `kit.json` | `publish_kit.PODCAST_KIT_VERSION` (`podcast_kit.v2`; a `v1` kit shows as outdated until it is rebuilt), the length of both descriptions against their limits, per episode the script hash, the script run and the recording it covers, the sources, the idea sources left out and the files' hashes |
 | `descriptions.json` | The two descriptions with the hash of their prompt, reused by a rebuild |
 
 - One call of the newest script run's text model writes the two descriptions from what each episode is planned to

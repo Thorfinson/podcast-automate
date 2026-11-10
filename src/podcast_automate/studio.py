@@ -615,12 +615,21 @@ def write_queue(root, rows):
     write_json(root / "studio/audio_queue.json", rows)
 
 
-def queue_view(rows, key_available=True, key="openrouter"):
+QUEUE_HOLD = "studio/audio_queue_hold.json"
+
+
+def queue_held(root):
+    """Whether the project's recording queue is held (D-195): its rows keep their approvals, the scheduler starts none
+    of them, and a new approval joins them instead of starting."""
+    return (root / QUEUE_HOLD).is_file()
+
+
+def queue_view(rows, key_available=True, key="openrouter", held=False):
     """The queue as the audio page shows it. A recording waits for a place, or for the key its route needs (``key``:
     "openrouter" or "google"), which lives only in the server's memory and is gone after a restart (2026-10-02: the
-    queue still said it waited for a place)."""
+    queue still said it waited for a place), or for the held queue to go on (``held``, D-195)."""
     return [{"episode": row.get("episode"), "position": number, "queued_at": row.get("queued_at"),
-             **(queue_error(row) if row.get("error") else
+             **(queue_error(row) if row.get("error") else {"waiting": "held"} if held else
                 {"waiting": "place"} if key_available else {"waiting": "key", "key": key})}
             for number, row in enumerate(rows, 1)]
 
@@ -772,9 +781,10 @@ def publish_view(root, folder):
 
 
 def podcast_kit_view(root):
-    """What the recording page shows of the whole podcast's kit (publish_kit.saved_podcast_kit): its two descriptions to
-    copy and what the transcript and the source list cover; ``{"outdated": True}`` while a kit exists that no longer
-    covers the published episodes and their latest recordings; None while there is none."""
+    """What the recording page shows of the whole podcast's kit (publish_kit.saved_podcast_kit): its descriptions for
+    Spotify and Apple Podcasts to copy, each with its length and limit, and what the transcript and the source list
+    cover; ``{"outdated": True}`` while a kit exists that no longer covers the published episodes and their latest
+    recordings, or one of an older layout; None while there is none."""
     folders = [folder for folder in sorted((root / "episodes").glob("ep_*")) if (folder / "script.yaml").is_file()]
     kit_file = root / PODCAST_FOLDER / "kit.json"
 
@@ -782,9 +792,12 @@ def podcast_kit_view(root):
         kit = saved_podcast_kit(root)
         if kit is None:
             return {"outdated": True} if kit_file.is_file() else None
-        path = root / PODCAST_FOLDER / "description.txt"
-        return {"folder": PODCAST_FOLDER, "short": kit["descriptions"]["short"],
-                "description": read_text(path).rstrip("\n") if path.is_file() else "",
+        def stored(name):
+            path = root / PODCAST_FOLDER / name
+            return read_text(path).rstrip("\n") if path.is_file() else ""
+        return {"folder": PODCAST_FOLDER, "spotify": stored("description_spotify.txt"),
+                "spotify_characters": kit["spotify"]["characters"], "spotify_limit": kit["spotify"]["limit"],
+                "description": stored("description.txt"),
                 "characters": kit["description"]["characters"], "limit": kit["description"]["limit"],
                 "episodes": kit["transcript"]["episodes"], "recorded": kit["transcript"]["recorded"],
                 "sources_total": len(kit["sources"])}
@@ -989,7 +1002,10 @@ class Studio:
                 "capabilities": {"text_reasoning_selection": True, "parallel_audio": True,
                                  "project_execution": True, "conversational_setup": True, "project_overview": True,
                                  "podcast_downloads": True, "project_attachments": True, "subscription_auto": True,
-                                 "light_status": True, "podcast_kit_downloads": True, "project_versions": True},
+                                 "light_status": True, "podcast_kit_downloads": True, "project_versions": True,
+                                 # The queue's hold, empty and move (D-195): a server before them took a move for a
+                                 # removal, and the page is read from disk while an older server still runs.
+                                 "audio_queue_controls": True},
                 "attachment_limits": {"files": attachments.MAX_FILES, "file_bytes": attachments.MAX_FILE_BYTES,
                                       "docx_bytes": attachments.MAX_DOCX_BYTES, "transfer_bytes": attachments.MAX_TRANSFER_BYTES,
                                       "total_bytes": attachments.MAX_TOTAL_BYTES},
@@ -1339,7 +1355,7 @@ class Studio:
         request["ui_language"] = studio_text.current_language()
         rows.append({"episode": episode, "queued_at": now(), "data": request})
         write_queue(root, rows)
-        return {"queued": True, "episode": episode, "position": len(rows)}
+        return {"queued": True, "episode": episode, "position": len(rows), "held": queue_held(root)}
 
     def enqueue_revision(self, root, request):
         """Keep a revision, or the outline's remaining episodes, asked for while the project works until it is free
@@ -1396,23 +1412,51 @@ class Studio:
         return started
 
     def audio_queue(self, project, data):
-        """Take an episode out of the recording queue."""
+        """Change the recording queue (D-195): hold it or let it go on (``hold``), empty it (``all``), move an episode
+        one place up or down (``move``), or take one out. A row taken out loses its approval; a held one keeps it.
+        2026-11-10: „alle freigeben“, clicked by mistake on Geld verstehen, queued twelve recordings that could only
+        be taken out one by one, when the user first wanted to hear the new voice in the three that had started."""
         root = self.root(project)
-        episode = data.get("episode")
-        if not isinstance(episode, str):
-            raise AppError(t("server.queue.episode"), code="unknown_episode")
-        rows = [row for row in read_queue(root) if row.get("episode") != episode]
-        write_queue(root, rows)
-        return {"audio_queue": queue_view(rows)}
+        rows = read_queue(root)
+        if "hold" in data:
+            if not isinstance(data["hold"], bool):
+                raise AppError(t("server.queue.action"), code="invalid_action")
+            if data["hold"]:
+                write_json(root / QUEUE_HOLD, {"held_at": now()})
+            else:
+                (root / QUEUE_HOLD).unlink(missing_ok=True)
+        elif data.get("all") is True:
+            rows = []
+            write_queue(root, rows)
+        else:
+            episode = data.get("episode")
+            if not isinstance(episode, str):
+                raise AppError(t("server.queue.episode"), code="unknown_episode")
+            move = data.get("move")
+            if move is None:
+                rows = [row for row in rows if row.get("episode") != episode]
+            elif move in {"up", "down"}:
+                index = next((number for number, row in enumerate(rows) if row.get("episode") == episode), None)
+                other = None if index is None else index - 1 if move == "up" else index + 1
+                if other is not None and 0 <= other < len(rows):
+                    rows[index], rows[other] = rows[other], rows[index]
+            else:
+                raise AppError(t("server.queue.action"), code="invalid_action")
+            write_queue(root, rows)
+        held = queue_held(root)
+        return {"audio_queue": queue_view(rows, held=held), "audio_queue_held": held}
 
     def start_queued(self):
         """Approved Gemini recordings waiting in a project's queue start in approval order once a place is free.
         Each start checks the approval again (start's own rules): one that no longer holds stays in the queue with
-        its reason instead of starting, and one waiting for a place or a key simply waits."""
+        its reason instead of starting, and one waiting for a place or a key simply waits. A held queue starts
+        nothing (D-195)."""
         started = []
         for path in sorted(self.projects.glob("*/studio/audio_queue.json")):
             root, project = path.parents[1], path.parents[1].name
             with self.mutex:
+                if queue_held(root):
+                    continue
                 for row in [row for row in read_queue(root) if not row.get("error")]:
                     try:
                         ready = self.audio_key_available(selected_audio(root, load_project(root)))
@@ -1945,7 +1989,9 @@ class Studio:
                 "jev_probe": jev_probe_enabled(root), "jev_default": jev_probe_state(root)[1],
                 "allowances": studio_allowances.summary(root, ((latest_job or {}).get("run") or {}).get("run_id")),
                 "server": self.server_state(), "key_reminder": self.key_reminder(),
-                "audio_queue": queue_view(read_queue(root), self.audio_key_available(audio), audio_key(audio) or "openrouter"),
+                "audio_queue": queue_view(read_queue(root), self.audio_key_available(audio), audio_key(audio) or "openrouter",
+                                          held=queue_held(root)),
+                "audio_queue_held": queue_held(root),
                 # Revisions asked for while the project worked (D-191), and whether a stopped run holds them.
                 "revision_queue": revision_queue_view(read_revisions(root)), "revisions_held": revisions_held(root),
                 # The page queues „Alle weiteren Folgen“ while the project works only on a server that does (D-192).
@@ -2551,7 +2597,9 @@ class Studio:
             full = len(active) >= MAX_PARALLEL or sum(value[1] == root for value in active.values()) >= limit
             # ElevenLabs' plan counts across projects, and a resumed recording sends requests like a new one (D-188).
             plan_full = remote_provider == ELEVENLABS_PROVIDER and self.active_elevenlabs() >= MAX_ELEVENLABS_RECORDINGS
-            if not data.get("from_queue") and ((busy or full or plan_full) and action == "audio" or
+            # A held queue (D-195) keeps every new approval with the ones waiting; a resume is asked for one episode.
+            held = queue_held(root)
+            if not data.get("from_queue") and ((busy or full or plan_full or held) and action == "audio" or
                                                plan_full and action == "resume"):
                 # It waits its turn instead of being refused (start_queued starts it when a place is free).
                 return self.enqueue_audio(root, remote_episode, data)

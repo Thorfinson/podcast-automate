@@ -7,8 +7,10 @@ episodes do not contain, no release schedule and no judgement of the series' qua
 factual prose for a curious adult: no hype, no superlatives, no exclamation marks, no emojis, no
 hashtags and no calls to action. Name a person or a work only where an episode is about them. Do not
 mention the hosts, their voices, the scripts, a model or any internal id. Plain text only: no
-Markdown, headings, lists, links, web addresses, timestamps or episode list. short: two or three
-sentences, between short.min_chars and short.max_chars characters; its first sentence says what the
-podcast is about. long: the podcast description for Spotify and Apple Podcasts, between
+Markdown, headings, lists, links, web addresses, timestamps or episode list. short: the whole
+podcast description on Spotify, which shows no other text about the series: two to four sentences,
+between short.min_chars and short.max_chars characters, that say on their own what the podcast is
+about, the path its episodes take and what a listener understands at the end; its first sentence
+says what the podcast is about. long: the podcast description for Apple Podcasts, between
 long.min_chars and long.max_chars characters, in two to four short paragraphs separated by a blank
 line; its first sentence must work on its own, since a platform's list shows only its beginning.

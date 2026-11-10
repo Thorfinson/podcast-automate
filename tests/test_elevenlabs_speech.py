@@ -104,6 +104,25 @@ class EngineTests(unittest.TestCase):
         self.assertEqual((record["credits"], record["request_id"], len(record["voice_segments"])), ("416", "req-1", 2))
         self.assertNotIn(KEY, json.dumps(record))
 
+    def test_turbo_is_sent_as_its_own_model_and_keeps_its_own_takes(self):
+        """D-196, 2026-11-10: Text to Dialogue took eleven_v4_turbo with three voices and the context, at half of v4's
+        credits for the same passage. A Turbo take is not a v4 take, so neither answers for the other from the cache."""
+        opener = Mock()
+        opener.open.side_effect = dialogue_answer
+        with patch("podcast_automate.elevenlabs_speech.build_opener", return_value=opener):
+            turbo = self.call(ElevenLabsSpeech(KEY, model="eleven_v4_turbo"))
+            v4 = self.call(self.engine)
+        self.assertNotEqual(turbo, v4)
+        self.assertEqual([json.loads(call.args[0].data)["model_id"] for call in opener.open.call_args_list],
+                         ["eleven_v4_turbo", ELEVENLABS_MODEL])
+        self.assertEqual(json.loads(turbo.with_suffix(".json").read_text(encoding="utf-8"))["settings"]["model"],
+                         "eleven_v4_turbo")
+        choice = AudioChoice(provider="elevenlabs_tts", voices=VOICES, model="eleven_v4_turbo")
+        self.assertEqual(choice.model_dump()["model"], "eleven_v4_turbo", "a chosen Turbo is not reset to v4")
+        with self.assertRaises(AppError) as unknown:
+            ElevenLabsSpeech(KEY, model="eleven_v5")
+        self.assertEqual(unknown.exception.code, "invalid_speech")
+
     def test_refusals_name_their_cause_and_a_busy_elevenlabs_is_waited_out(self):
         cases = [(401, {"detail": {"status": "quota_exceeded", "message": "You have 0 credits"}}, "elevenlabs_credits"),
                  (401, {"detail": {"status": "invalid_api_key", "message": "Invalid API key"}}, "elevenlabs_authentication"),
