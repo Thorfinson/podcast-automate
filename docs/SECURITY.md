@@ -25,6 +25,9 @@ covers:
   - src/podcast_automate/logs.py
   - src/podcast_automate/research_models.py
   - src/podcast_automate/script_checks.py
+  - src/podcast_automate/qwen_worker.py
+  - requirements-tts.txt
+  - requirements-tts-windows.txt
 ---
 
 # Security
@@ -292,7 +295,37 @@ else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-arc
 - **Artifact paths stay inside the project.** Every artifact path the Studio reads or serves, downloads included, is
   resolved inside the project folder; a path that leaves it is refused with `invalid_path` (`storage.inside`).
 
-## Source rights and privacy
+## Local Qwen's pinned packages
+
+The local Qwen environment `.venv-tts` keeps the versions its package `qwen-tts` 0.1.1 pins in its own metadata,
+`transformers` 4.57.3 and `accelerate` 1.12.0, with PyTorch 2.9.1 (on Windows AMD's ROCm 7.2.1 build,
+`requirements-tts-windows.txt`; elsewhere `scripts/setup-qwen.py`). GitHub lists advisories for these versions. None
+of them reaches the way the Qwen worker uses the packages (checked on 2026-11-10; why: D-202):
+
+| Advisory | Package | What an attack needs | Why it does not apply |
+| --- | --- | --- | --- |
+| GHSA-29pf-2h5f-8g72 | transformers < 5.3.0 | a model whose `config.json` names another repository in `_attn_implementation_internal` | the worker loads one model, below, whose configs have no such field |
+| GHSA-x9r9-c232-4q39 | transformers 4.49.0 to 5.8.1 | `load_custom_generate()` on a repository with a `custom_generate/` folder | never called; the model has no such folder |
+| GHSA-fgcw-684q-jj6r | transformers < 5.5.0 | loading a LightGlue model | not a LightGlue model |
+| GHSA-xrqw-3rrv-vx5w | transformers < 5.10.0 | `save_pretrained()` of a tokenizer or processor from a crafted repository | nothing is saved; the worker only loads and generates |
+| GHSA-69w3-r845-3855 | transformers < 5.0.0rc3 | the `Trainer` resuming from a crafted `rng_state.pth` | no training |
+| GHSA-4j2p-28q2-5m79 | accelerate ≤ 1.14.0 | a sharded checkpoint whose index points outside its folder | each part of the model is one `model.safetensors`, without a shard index |
+| GHSA-63cw-57p8-fm3p | torch < 2.10.0 | `torch.load()` of a crafted `.pt` or `.pth` file | the model holds only `.safetensors`; `qwen-tts` calls `torch.load` only in its Gradio demo, which the worker does not run |
+| GHSA-qfhq-4f3w-5fph, GHSA-rrmf-rvhw-rf47 | torch < 2.10.0, ≤ 2.12.1 | code already running on this computer that feeds crafted input to `torch.lstm_cell` or `torch.jit.script` | local only, and `qwen-tts` uses neither |
+
+**The precondition: one official model at one commit.** The worker loads `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` from
+Hugging Face at the commit `tts_revision` names, which both setup scripts set to
+`85e237c12c027371202489a0ec509ded67b5e4b5` ([Pinned versions](OPERATIONS.md#pinned-versions)); without them there is no
+`.venv-tts` and Qwen does not run, and the brief's own default, `main`, applies only then. It refuses a local model
+folder (`USE_PINNED_HUGGINGFACE_MODEL`) and passes no `trust_remote_code`. Pointing `tts_model` or `tts_revision` at
+another repository or commit gives up this precondition.
+
+**Why not upgrade.** `qwen-tts` 0.1.1 is its latest release, and its main branch (last change 2026-03-17) pins the
+same versions. It does not even import with a `transformers` that fixes the advisories: 5.10.0 and 5.22.2 fail with
+`check_model_inputs() missing 1 required positional argument`, while 5.0.0 imports but fixes only one of them (tested
+on 2026-11-10). AMD's newest Windows release, ROCm 7.2.1, ships PyTorch 2.9.1 only. The alerts are dismissed on
+GitHub as "vulnerable code not used", with a link here; Dependabot opens a pull request when `qwen-tts` releases a new
+version, which is when the pins are tried again (`.github/dependabot.yml` holds the other Qwen pins back).
 
 What version 0.1 implements:
 

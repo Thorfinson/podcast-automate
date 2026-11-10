@@ -323,7 +323,8 @@ The separate Python 3.12 environment follows the
 | Voices in the pilot | Ryan and Serena, language German |
 | Device / attention | `cuda:0` / `eager` |
 
-Other pins (torchvision, accelerate, huggingface-hub, gradio): `requirements-tts-windows.txt`. The model and its calls
+Other pins (torchvision, accelerate, huggingface-hub, gradio): `requirements-tts-windows.txt`. GitHub's advisories
+for these pins and why they stay: [SECURITY](SECURITY.md#local-qwens-pinned-packages). The model and its calls
 follow the [Qwen documentation](https://github.com/QwenLM/Qwen3-TTS). No FlashAttention installation is required. With
 this AMD PyTorch build, the `cuda` device name is the interface used.
 
