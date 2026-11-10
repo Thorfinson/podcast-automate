@@ -244,7 +244,13 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
   which comes next, with **Write the next episode** (write the next episode, action `episode`) and, while more than
   one is left, **All {n} remaining, one after another** („Alle {n} restlichen nacheinander“) (all n remaining one after the other, action `episodes`). The
   batch writes one episode after the other, never in parallel, and stops where one stops; "Stop" („Anhalten“) ends the running
-  episode, and finished ones stay. **Resume** on the approved outline's own run writes its next episode too.
+  episode, and finished ones stay. While the batch runs, **Stop after this episode** („Nach dieser Folge anhalten“)
+  beside "Stop" lets the episode it writes now finish, published and read for its tags, and then ends the job as done
+  instead of starting the next one; the bar then says **Stops after this episode** („Hält nach dieser Folge an“) with
+  **Keep writing** („Doch weiterschreiben“) to take it back, and once it ended, which episode comes next. The wish
+  belongs to that one job (`studio/stop_after_episode.json` names it; a new job starts without it), and the button
+  shows only on a server that offers it (`stops_after_episode`; why: D-207). **Resume** on the approved outline's own
+  run writes its next episode too.
   An episode the batch stopped at is resumed with the rest of the batch: it is finished, then the remaining episodes
   follow (the rule: [Writing a series in order](SCRIPTS.md#writing-a-series-in-order)). These actions need the approved outline (`plan_approval_required`) and refuse once every episode is written
   (`series_written`).

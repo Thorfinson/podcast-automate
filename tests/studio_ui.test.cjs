@@ -4588,3 +4588,45 @@ test('one episode is one page: reading, review notes, hearing and companion mate
   const listen=app.run('renderAudio()');
   assert.ok(listen.includes('id="audio-approval"')&&!listen.includes('data-action="publish_kit" data-episode'),'hearing without the companion material');
 });
+
+test('stop after this episode stands beside the stop of a series job, and its end names the next episode (D-207)',()=>{
+  const app=studio(),p=workflowProject(app);
+  p.job.action='episodes';p.stops_after_episode=true;p.stop_after_episode=false;
+  app.run(`project=${JSON.stringify(p)};renderJob();`);
+  let bar=app.elements.get('job-bar').innerHTML;
+  assert.ok(bar.includes('data-action="stop_after" data-enabled="true"')&&bar.includes('Nach dieser Folge anhalten'),bar);
+  // Setting the wish changes no field of the job, yet the bar redraws (D-207: the view key holds it).
+  app.run('project.stop_after_episode=true;renderJob();');
+  bar=app.elements.get('job-bar').innerHTML;
+  assert.ok(bar.includes('Hält nach dieser Folge an')&&bar.includes('data-enabled="false"')&&bar.includes('Doch weiterschreiben'),bar);
+  // One episode, another kind of job, an ended job or a server without the wish: no control.
+  for(const change of ["project.job.action='episode'","project.job.action='research'","project.job.status='completed'",
+    "delete project.stops_after_episode"]){
+    app.run(`project=${JSON.stringify(p)};${change};renderJob();`);
+    assert.ok(!app.elements.get('job-bar').innerHTML.includes('stop_after'),change);
+  }
+  // A resumed episode run of the series goes on with it.
+  app.run(`project=${JSON.stringify(p)};project.job.action='resume';project.job.series=true;renderJob();`);
+  assert.ok(app.elements.get('job-bar').innerHTML.includes('data-action="stop_after"'));
+  // Ended as asked: the next episode by its planned title.
+  app.run(`project=${JSON.stringify(p)};Object.assign(project.job,{status:'completed',stopped_after_episode:true,next_episode:'ep_001'});project.job.run.status='completed';renderJob();`);
+  bar=app.elements.get('job-bar').innerHTML;
+  assert.ok(bar.includes('nach dieser Folge angehalten, als Nächstes: One'),bar);
+  assert.ok(!bar.includes('data-action="stop_after"'));
+});
+
+test('the stop-after button sends the wish and takes it back (D-207)',async()=>{
+  for(const enabled of ['true','false']){
+    const app=studio(),p=workflowProject(app);
+    p.job.action='episodes';p.stops_after_episode=true;p.stop_after_episode=enabled==='false';
+    app.run(`project=${JSON.stringify(p)};let pending;attempt=fn=>pending=fn();`);
+    app.responses.set('/api/projects/test/stop_after',{stop_after_episode:enabled==='true'});
+    app.responses.set('/api/projects/test',{...p,stop_after_episode:enabled==='true'});
+    const button={dataset:{action:'stop_after',enabled},hasAttribute(){return false;}};
+    app.events.get('document:click')({target:{closest:selector=>selector==='button'?button:null}});
+    await app.run('pending');
+    const sent=JSON.parse(app.requests.find(r=>r.path==='/api/projects/test/stop_after').options.body);
+    assert.equal(sent.enabled,enabled==='true');
+    assert.equal(app.run('project.stop_after_episode'),enabled==='true','the page shows the answer at once');
+  }
+});

@@ -805,6 +805,42 @@ class StudioHttpTests(unittest.TestCase):
         # The console line is English like the rest of the command line (D-156, since 2026-11-10).
         self.assertIn("only on this computer", output.getvalue())
 
+    def test_stop_after_this_episode_is_a_wish_of_the_running_series_job_only(self):
+        """D-207: „Nach dieser Folge anhalten“ names the running job that writes the remaining episodes; it can be taken
+        back, is refused for any other job, and a new job starts without it."""
+        wish = self.root / "studio/stop_after_episode.json"
+        write_json(self.root / "studio/job.json", {"id": "job_series", "action": "episodes", "status": "running"})
+        status, body, _ = self.request("/api/projects/example/stop_after", {"enabled": True})
+        self.assertEqual((status, json.loads(body)), (200, {"stop_after_episode": True}))
+        self.assertEqual(read_json(wish)["job_id"], "job_series")
+        view = json.loads(self.request("/api/projects/example")[1])
+        self.assertEqual((view["stops_after_episode"], view["stop_after_episode"]), (True, True))
+        status, body, _ = self.request("/api/projects/example/stop_after", {"enabled": False})
+        self.assertEqual((status, json.loads(body)), (200, {"stop_after_episode": False}))
+        self.assertFalse(wish.exists())
+        # A resumed episode run of the series goes on with it, so it may be stopped after its episode as well.
+        write_json(self.root / "studio/job.json", {"id": "job_resume", "action": "resume", "series": True,
+                                                   "status": "running"})
+        self.assertEqual(self.request("/api/projects/example/stop_after", {"enabled": True})[0], 200)
+        for job in ({"id": "job_one", "action": "episode", "status": "running"},
+                    {"id": "job_done", "action": "episodes", "status": "completed"},
+                    {"id": "job_research", "action": "research", "status": "running"}):
+            with self.subTest(job=job["id"]):
+                write_json(self.root / "studio/job.json", job)
+                status, body, _ = self.request("/api/projects/example/stop_after", {"enabled": True})
+                self.assertNotEqual(status, 200)
+                self.assertEqual(json.loads(body)["code"], "no_active_job")
+        self.assertEqual(read_json(wish)["job_id"], "job_resume", "a refused wish leaves the one on record")
+        write_json(self.root / "studio/job.json", {"id": "job_done", "action": "episodes", "status": "completed"})
+        with patch("podcast_automate.studio.subprocess.Popen") as process:
+            process.return_value.stdin = io.StringIO()
+            process.return_value.stdin.close = Mock()
+            process.return_value.poll.return_value = None
+            status, body, _ = self.request("/api/projects/example/start", {"action": "check"})
+            self.assertEqual(status, 200, body)
+        stop_fake_workers(self.app)
+        self.assertFalse(wish.exists(), "a new job starts without an earlier job's wish")
+
     def test_the_studio_serves_its_own_fonts_and_nothing_else_under_fonts(self):
         # The page's CSP takes fonts from the Studio only (D-186): IBM Plex comes from the package.
         status, body, headers = self.request("/fonts/ibm-plex-sans-400.woff2")
@@ -1909,6 +1945,63 @@ class WorkspaceSettingsTests(unittest.TestCase):
                          "Claude's switch is part of every save")
         self.assertFalse((self.workspace / "projects" / ".studio-settings.json").exists())
         self.assertFalse(self.view()["global"])
+
+
+class StopAfterEpisodeTests(unittest.TestCase):
+    """D-207, „Nach dieser Folge anhalten“ (2026-11-10: the user wanted Geld S2's „Alle restlichen“ to end after episode
+    2, and only stopping it at the next episode's start could do that): the series job ends once the episode it
+    writes is published and read for its tags, and the wish belongs to that one job."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        write_json(self.root / "studio/job.json", {"id": "job_series", "action": "episodes", "status": "running"})
+
+    def series(self, *, wish_for=None, run=None):
+        """write_in_order over three outline episodes with the pipeline replaced; the wish arrives while ep_001 runs."""
+        from podcast_automate import studio_worker
+        written, read = [], []
+
+        def write(root, *, episode, **kwargs):
+            if wish_for and not written:
+                write_json(root / "studio/stop_after_episode.json", {"job_id": wish_for, "asked_at": "now"})
+            written.append(episode)
+            return RunManifest(run_id=f"run_{episode}", kind="script", project_hash="p", input_hash="i",
+                               status="completed", stages={})
+
+        def upcoming(root, outline):
+            return next((e for e in ("ep_001", "ep_002", "ep_003") if e not in written), None)
+        with patch.object(studio_worker, "run_script", side_effect=write), \
+                patch.object(studio_worker, "next_episode", side_effect=upcoming), \
+                patch.object(studio_worker, "express_published", side_effect=lambda root, run, key: read.append(run.run_id)), \
+                patch.object(studio_worker, "series_review_after", return_value={"status": "completed"}), \
+                patch.object(studio_worker, "probe_key", return_value=None):
+            result = studio_worker.write_in_order(self.root, "run_outline", {}, {}, {}, chain=True, run=run)
+        return result, written, read
+
+    def test_the_job_ends_after_the_episode_it_writes_with_its_tags_read(self):
+        result, written, read = self.series(wish_for="job_series")
+        self.assertEqual((written, read), (["ep_001"], ["run_ep_001"]), "ep_001 is finished, ep_002 never starts")
+        self.assertEqual((result["stopped_after_episode"], result["next_episode"]), (True, "ep_002"))
+        self.assertNotIn("series_review", result, "the series is not written through, so it is not reviewed")
+        self.assertFalse((self.root / "studio/stop_after_episode.json").exists(), "the wish is used up")
+
+    def test_a_wish_of_another_job_or_none_writes_every_remaining_episode(self):
+        for wish in ("job_earlier", None):
+            with self.subTest(wish=wish):
+                result, written, _ = self.series(wish_for=wish)
+                self.assertEqual(written, ["ep_001", "ep_002", "ep_003"])
+                self.assertNotIn("stopped_after_episode", result)
+                self.assertEqual(result["series_review"], {"status": "completed"})
+
+    def test_a_resumed_series_stops_before_its_next_episode(self):
+        write_json(self.root / "studio/stop_after_episode.json", {"job_id": "job_series", "asked_at": "now"})
+        resumed = RunManifest(run_id="run_resumed", kind="script", project_hash="p", input_hash="i",
+                              status="completed", stages={})
+        result, written, _ = self.series(run=resumed)
+        self.assertEqual(written, [])
+        self.assertEqual((result["run"]["run_id"], result["next_episode"]), ("run_resumed", "ep_001"))
 
 
 class StudioStopTests(unittest.TestCase):
