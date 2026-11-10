@@ -284,9 +284,11 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
   reading page does. It starts as the batch would (`episodes`), from the then current next episode. „Nächste Folge
   schreiben“ alone does not queue. A request for `episode` or `episodes` may carry `minutes` (10 to 60), which every
   episode it writes is given instead of the outline's length ([Writing a series in
-  order](SCRIPTS.md#writing-a-series-in-order)); the page has no field for it yet, so only a queued or API request
-  sets it, shown in the row as „je {n} Minuten“. The detail's `queues_series` tells the page that the server queues
-  the batch; a server older than D-192 refuses it while the project works, and the button stays closed (D-192).
+  order](SCRIPTS.md#writing-a-series-in-order)). Beside the writing buttons, **„Minuten je neuer Folge“** (minutes per
+  new episode) sets that length for the next episode or every remaining episode; empty keeps each episode's planned
+  length. A queued request shows it in the row as „je {n} Minuten“. The detail's `queues_series` tells the page that
+  the server queues the batch; a server older than D-192 refuses it while the project works, and the button stays
+  closed (D-192).
 - **While the agent works.** The progress names its steps („Orientierungsblatt wird erstellt“, „Der Erzähl-Agent plant
   und schreibt die Folge“, „Ein Lektor liest die Fassung des Erzähl-Agenten“), and the production view shows the stages
   „Erzählmaterial“ (story material), „Erzähl-Agent“ (story agent), „Qualitätsprüfung“ (quality review) and „Zur

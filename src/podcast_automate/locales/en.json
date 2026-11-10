@@ -941,6 +941,7 @@
  "reader.feedback.label": "What is missing or does not sound right yet?",
  "reader.revise": "Have this episode revised",
  "reader.revise_minutes": "New length in minutes (empty: as planned)",
+ "outline.writing.minutes": "Minutes per new episode (10–60; empty: as planned)",
  "reader.revise_queue": "Queue this revision",
  "reader.revise_hint": "The story agent revises the episode with your feedback and changes only what it asks; the episode is then reviewed again. It gets a new audio approval.",
  "reader.chapters": "Chapters",

@@ -8,6 +8,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-11-10 · The approved outline has a minutes-per-new-episode field (10 to 60, empty keeps the plan), used by both the next-episode and remaining-episodes buttons, including queued batches.
 - 2026-11-10 · „Eleven v4 Turbo“ for ElevenLabs at half the credits: choose it under „Sprachmodell“ on the settings page or in „Sprachanbieter dieses Projekts“, which now has its own model field. v4 stays the default; a passage recorded with Turbo is a new take, so switching records the episode anew.
 - 2026-11-10 · The recording queue on the audio page can be held, emptied and reordered: **„Warteschlange anhalten“** keeps the waiting episodes and their approvals and starts none of them, and new approvals wait with them, until **„Warteschlange fortsetzen“**; **„Alle entfernen“** empties it after asking; **↑** and **↓** move an episode one place. „Entfernen“ is now a visible button, and the page says that taking an episode out drops its approval.
 - 2026-11-08 · Episodes recorded before the music can get it in one step: **„{n} Folgen mit Musik neu zusammensetzen“** on the audio page approves only the recorded episodes whose one change is the music; their speech comes from the cache, so no new speech is sent. „{n} gelesene Folgen freigeben“ still covers every episode without a current recording, the never voiced ones too (D-193).

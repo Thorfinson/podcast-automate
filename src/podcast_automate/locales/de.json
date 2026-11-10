@@ -941,6 +941,7 @@
  "reader.feedback.label": "Was fehlt oder klingt noch nicht richtig?",
  "reader.revise": "Diese Folge überarbeiten lassen",
  "reader.revise_minutes": "Neue Länge in Minuten (leer: wie geplant)",
+ "outline.writing.minutes": "Minuten je neuer Folge (10–60; leer: wie geplant)",
  "reader.revise_queue": "Überarbeitung vormerken",
  "reader.revise_hint": "Der Erzähl-Agent überarbeitet die Folge mit deiner Rückmeldung und ändert nur, was sie verlangt; danach wird sie wieder geprüft. Sie erhält eine neue Audio-Freigabe.",
  "reader.chapters": "Kapitel",
