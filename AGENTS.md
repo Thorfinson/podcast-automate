@@ -76,7 +76,7 @@ The other top-level folders are in the [README](README.md#layout). `projects/`, 
 | --- | --- | --- | --- |
 | Python | `python -m unittest discover -s tests` | about 1,280 tests, about 20 minutes (each script run starts the fake story agent as a process) | `ffmpeg` and `ffprobe` on PATH |
 | Browser logic | `node --test tests/studio_ui.test.cjs` | 236 tests, under 1 s | Node 22 |
-| Lint | `ruff check .` | the whole repository, about 1 s | Ruff 0.14.4 (`pip install -e ".[dev]"`) |
+| Lint | `ruff check .` | the whole repository, about 1 s | Ruff, the version pinned in `pyproject.toml`'s `dev` extra (`pip install -e ".[dev]"`), which CI installs too |
 
 Model calls, downloads and speech synthesis are simulated in both suites; FFmpeg assembly is real.
 No account, API key, GPU or network is needed. Never add a test that performs a real model call.

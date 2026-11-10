@@ -45,8 +45,8 @@ classifiers = [
 dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7", "psutil>=7,<8", "keyring>=25.7,<26", "truststore>=0.10,<1"]
 
 [project.optional-dependencies]
-# Contributor tools: `python -m pip install -e ".[dev]"`. CI pins the same version (.github/workflows/tests.yml).
-dev = ["ruff==0.14.4"]
+# Contributor tools: `python -m pip install -e ".[dev]"`. CI installs the Ruff version pinned here (tests.yml).
+dev = ["ruff==0.17.4"]
 
 [project.urls]
 Homepage = "https://github.com/Thorfinson/podcast-automate"
@@ -72,5 +72,7 @@ target-version = "py312"
 extend-exclude = [".venv-tts", ".claude", ".cache", ".studio", "projects", "runs", "tools", "scratchpad"]
 
 [tool.ruff.lint]
-# Ruff's default rules: pyflakes and the error subset of pycodestyle. E731: the code names small lambdas on purpose.
+# Pyflakes and the error subset of pycodestyle, named explicitly so a Ruff update does not change the rules (Ruff
+# 0.17 widened its defaults). E731: the code names small lambdas on purpose.
+select = ["E4", "E7", "E9", "F"]
 ignore = ["E731"]
