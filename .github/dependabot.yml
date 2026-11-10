@@ -22,3 +22,13 @@ updates:
     commit-message:
       prefix: deps
     open-pull-requests-limit: 5
+    # The local Qwen environment (requirements-tts*.txt) is pinned to what qwen-tts 0.1.1 and AMD's ROCm build support
+    # (docs/OPERATIONS.md, "Pinned versions"); a change there needs a listening test on a GPU, so no weekly updates.
+    # Security alerts for these packages still show under Security › Dependabot.
+    ignore:
+      - dependency-name: "torch*"
+      - dependency-name: transformers
+      - dependency-name: accelerate
+      - dependency-name: huggingface-hub
+      - dependency-name: gradio
+      - dependency-name: qwen-tts
