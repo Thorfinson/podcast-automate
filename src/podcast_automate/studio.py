@@ -2047,7 +2047,8 @@ class Studio:
         files = [*ledgers, *(path.parent / "question_research/state.json" for path in ledgers[-1:]),
                  root / provided_works.MANIFEST]
         return memo(("works", str(root), tuple(map(str, ledgers))), files,
-                    lambda: provided_works.overview(root, provided_works.latest_ledger(root)))
+                    lambda: provided_works.overview(root, provided_works.latest_ledger(root),
+                                                    provided_works.latest_state(root)))
 
     def idle(self, root=None):
         """No job of this project runs, and nobody holds its lock; without a project, no job runs at all."""
@@ -2421,8 +2422,10 @@ class Studio:
         ledger = provided_works.latest_ledger(root) or {}
         known = {row.get("id") for row in ledger.get("questions") or []}
         tasks = [task for task in query.get("task", []) if task in known]
-        row = provided_works.add(root, raw, citation=(query.get("citation") or [""])[0], tasks=tasks)
-        return {"work": row, "works": provided_works.overview(root, ledger)}
+        # A refused address the editor fetched in a browser (D-199): the list shows it as uploaded.
+        row = provided_works.add(root, raw, citation=(query.get("citation") or [""])[0], tasks=tasks,
+                                 source=(query.get("source") or [None])[0])
+        return {"work": row, "works": provided_works.overview(root, ledger, provided_works.latest_state(root))}
 
     def remove_attachment(self, project, data):
         root = self.root(project)
@@ -3099,12 +3102,12 @@ def serve(workspace, port=8765, open_browser=True, *, lan=False):
             existing = json.load(response)
         if isinstance(existing, dict) and existing.get("app") == "podcast-studio" and existing.get("workspace") == str(Path(workspace).resolve()):
             if lan and not (existing.get("lan") or {}).get("enabled"):
-                print("Podcast Studio läuft bereits, aber nur auf diesem Computer. Zuerst im Studio „Studio beenden“ "
-                      "klicken, sobald kein Auftrag mehr läuft, dann die WLAN-Startdatei erneut öffnen.", flush=True)
+                print("Podcast Studio is already running, but only on this computer. Click \"Quit Studio\" in the Studio "
+                      "once no job is running, then open the home-network launcher again.", flush=True)
                 return
             if open_browser:
                 webbrowser.open(url)
-            print(f"Podcast Studio läuft bereits: {url}", flush=True)
+            print(f"Podcast Studio is already running: {url}", flush=True)
             return
     except (OSError, ValueError):
         pass
@@ -3116,11 +3119,11 @@ def serve(workspace, port=8765, open_browser=True, *, lan=False):
         server.studio.start_scheduler()
         url = f"http://127.0.0.1:{server.server_port}"
         logger("studio").info("Studio gestartet: %s%s", url, " (auch im Heimnetz)" if lan else "")
-        print(f"Podcast Studio: {url}\nDieses Fenster geöffnet lassen. Beenden mit Strg+C.", flush=True)
+        print(f"Podcast Studio: {url}\nKeep this window open. Quit with Ctrl+C.", flush=True)
         if lan:
             addresses = [f"http://{address}:{server.server_port}" for address in lan_addresses()]
-            print("Im WLAN, etwa vom Handy: " + (" oder ".join(addresses) if addresses else
-                  "keine Heimnetz-Adresse gefunden; die Adresse zeigt „ipconfig“ unter IPv4-Adresse"), flush=True)
+            print("In your home network, for example from a phone: " + (" or ".join(addresses) if addresses else
+                  "no home-network address found; \"ipconfig\" shows it as the IPv4 address"), flush=True)
         if open_browser:
             webbrowser.open(url)
         try:
@@ -3133,5 +3136,5 @@ def serve(workspace, port=8765, open_browser=True, *, lan=False):
     if server.studio.restarting:
         # The port and the workspace lock are free again; the new server takes both.
         relaunch(workspace, server.server_port, lan)
-        print("Podcast Studio startet mit dem neuen Code im Hintergrund neu. Dieses Fenster kann geschlossen werden.",
+        print("Podcast Studio is restarting with the new code in the background. You can close this window.",
               flush=True)

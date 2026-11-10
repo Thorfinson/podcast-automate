@@ -206,11 +206,21 @@ function audioBlockReason(episode=project?.episodes?.[episodeIndex]?.script?.epi
 }
 // One message box for outcomes. Errors and confirmations look different; the box sticks below the topbar.
 function notice(message, kind="warn") { const box=$("notice"); box.textContent = message; box.hidden = !message; box.className = message?`notice ${kind}`:"notice"; }
+// A pipeline message stays German: it is also model input, a receipt or part of a hash (D-152). An English page
+// explains it by its stable code instead (error.code.<code>, D-200); "" for a code without a text.
+const codeText = code => code&&hasText(`error.code.${code}`)?tp(`error.code.${code}`):"";
+// A German pipeline message on an English page as plain text: its code's text with the original quoted, else the code
+// and the original alone.
+const foreignText = (message,code) => {
+  const text=codeText(code);
+  return text?tp("error.explained",{text,code,message:message??""}):tp("error.foreign",{code:code||"?",message:message??""});
+};
 // A refusal as the notice shows it. A server message in another language than the page (a pipeline's German in the
-// English interface) is named by its code and quoted as the original (D-152); German keeps showing the message.
+// English interface) is explained by its code and quoted as the original (D-152, D-200); German keeps showing the
+// message.
 function errorText(error) {
   if(LANG!=="en"||!error?.language||error.language===LANG)return error?.message||"";
-  return tp("error.foreign",{code:error.code||"?",message:error.message||""});
+  return foreignText(error.message||"",error.code);
 }
 // Whether a stop's server message (stop.message_language) is in the page's language. Older servers name none; their
 // messages are German. German pages keep showing every message as before.
@@ -704,6 +714,14 @@ async function removeAttachment(id) {
   const updated=await api(`/api/projects/${projectId}`);
   if(project?.id===projectId){project=updated;refreshAttachmentComposer();}
 }
+// Why the chat got no answer, beside the card's text: the step's message in the page's language; on an English page a
+// German pipeline message explained by its code with the original folded into the details (D-200), or without a text
+// for the code the original as before (D-152).
+function chatStopMessage(info) {
+  if(!info.message||info.message===info.text)return "";
+  if(info.explained)return `<p class="hint">${t("chat.message",{message:info.explained})}</p><details class="tech-details"><summary>${t("tech.title")}</summary><p>${t("stop.original_message",{message:info.message})}</p></details>`;
+  return `<p class="hint">${t(sameLanguage(info)?"chat.message":"stop.original_message",{message:info.message})}</p>`;
+}
 // The partner's turn in the conversation: writing, or why no answer came and how to send again.
 function chatStatusBubble() {
   const j=project?.main_job??project?.job;
@@ -713,7 +731,7 @@ function chatStatusBubble() {
   if(!info||last?.role!=="user")return "";
   const limit=Number(project.chat_budget?.limit)||0;
   const raise=info.code==="chat_budget"&&limit?`<button class="secondary small" data-action="approve-chat" data-model-calls="${limit+50}">${t("chat.raise_limit",{limit:limit+50})}</button>`:"";
-  return `<div class="chat-message failed" role="alert"><strong>${t("chat.no_answer",{title:info.title})}</strong><p>${escape(info.text)}</p>${info.message&&info.message!==info.text?`<p class="hint">${t(sameLanguage(info)?"chat.message":"stop.original_message",{message:info.message})}</p>`:""}
+  return `<div class="chat-message failed" role="alert"><strong>${t("chat.no_answer",{title:info.title})}</strong><p>${escape(info.text)}</p>${chatStopMessage(info)}
     <div class="actions">${raise}<button class="small" data-action="resend-chat" ${running()?"disabled":""}>${t("button.resend")}</button></div></div>`;
 }
 // A settled brief: a project with work past the conversation. Its page then leads with the brief (a waiting proposal
@@ -1236,7 +1254,7 @@ function renderResearch() {
   const attachments=project.attachments?.length?`<section class="panel"><h2>${t("research.materials")}</h2><ul>${project.attachments.map(row=>`<li>${escape(row.name)}</li>`).join("")}</ul><p class="hint">${t("research.materials_hint")}</p></section>`:"";
   const brief=`<section class="panel"><div class="panel-title"><h2>${t("research.sources")}</h2><span class="tag">${researchProviderTag()}</span></div><p>${t("research.saved_brief",{brief:asHtml(`<strong>${escape(project.config.central_question||project.config.topic)}</strong>`)})}</p><div class="actions">${researching?`<p>${t("research.running_hint")}</p>`:project.research?(project.outline?`<button data-step="2">${t("research.to_outline")}</button>`:`<button data-action="plan" ${disabled()}>${t("research.plan")}</button>`):`<button data-action="research" ${disabled()}>${t("research.start")}</button>`}</div>${(project.research||researching)?`<details class="restart-options"><summary>${t("research.restart")}</summary><p>${t(researching?"research.restart_running":"research.restart_hint")}</p><label class="check"><input type="checkbox" id="seed-corpus" checked> ${t("research.seed_corpus")}</label><button class="secondary" data-action="research" ${disabled()}>${t("research.again")}</button></details>`:`${project.version?.library?`<label class="check"><input type="checkbox" id="seed-corpus" checked> ${t("version.seed_library",{count:project.version.library.documents,version:project.version.library.from_version})}</label>`:""}<p class="hint">${t("research.automatic")}</p>`}</section>`;
   // The missing works stand beside a run in progress, and afterwards as long as the list is not empty.
-  const works=researching||project.works?.missing?.length||project.works?.provided?.length?worksPanel():"";
+  const works=researching||project.works?.missing?.length||project.works?.refused?.length||project.works?.provided?.length?worksPanel():"";
   if(researching||(!project.research&&project.job?.progress?.phase==="research"))
     return html+`<div class="split"><div class="split-main"><div id="research-progress"></div>${project.research?`<details class="panel"><summary>${t("research.previous_dossier")}</summary>${renderDossier(project.research)}</details>`:""}</div><aside class="split-rail"><div id="research-live"></div>${brief}${works}${attachments}</aside></div>`;
   if(project.research){
@@ -1247,21 +1265,36 @@ function renderResearch() {
 }
 // Books and articles the research could not read freely: the editor fetches them from a library or a purchase and
 // uploads them here; the run reads each at its next pass and retries its questions (provided_works, 2026-10-01).
+// What an upload takes: PDF, an e-book without copy protection (D-198), a saved page or text.
+const WORK_TYPES=".pdf,.epub,.html,.htm,.txt";
+const hostOf=address=>{try{return new URL(address).hostname.replace(/^www\./,"");}catch{return address;}};
 function worksPanel() {
   const works=project?.works||{missing:[],provided:[]};
   const states={blocked:tp("works.state.blocked"),retrying:tp("works.state.retrying")};
+  const needed=row=>`<p class="hint">${t("works.needed_for",{questions:asHtml(row.tasks.map(task=>escape(task.question)).join(" · "))})}</p>`;
   const item=(row,index)=>`<li><strong>${escape(row.work)}</strong> <span class="tag">${row.provided?t("works.uploaded"):escape(states[row.state]||"")}</span>
-    <p class="hint">${t("works.needed_for",{questions:asHtml(row.tasks.map(task=>escape(task.question)).join(" · "))})}</p>
+    ${needed(row)}
     ${row.provided?`<p class="hint">${t("works.provided_hint")}</p>`
-      :`<div class="actions"><input type="file" id="work-file-${index}" accept=".pdf,.html,.htm,.txt" aria-label="${t("works.file_label",{work:row.work})}"><button class="small" data-action="upload-work" data-work-index="${index}">${t("works.upload")}</button></div>`}</li>`;
-  const missing=works.missing||[], others=(works.provided||[]).filter(row=>!missing.some(m=>m.provided===row.id));
+      :`<div class="actions"><input type="file" id="work-file-${index}" accept="${WORK_TYPES}" aria-label="${t("works.file_label",{work:row.work})}"><button class="small" data-action="upload-work" data-work-index="${index}">${t("works.upload")}</button></div>`}</li>`;
+  // A refused address opens in the editor's own browser; what they save there comes back for this address (D-199).
+  const refusedItem=(row,index)=>{
+    const name=row.title||hostOf(row.source);
+    const link=/^https?:\/\//i.test(row.source)?`<a href="${escape(row.source)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>`:escape(name);
+    return `<li><strong>${link}</strong> <span class="tag">${row.provided?t("works.uploaded"):row.status?`HTTP ${Number(row.status)}`:t("works.refused_check")}</span> <span class="hint">${escape(hostOf(row.source))}</span>
+    ${needed(row)}
+    ${row.provided?`<p class="hint">${t("works.provided_hint")}</p>`
+      :`<div class="actions"><input type="file" id="work-file-refused-${index}" accept="${WORK_TYPES}" aria-label="${t("works.file_label",{work:name})}"><button class="small" data-action="upload-work" data-refused-index="${index}">${t("works.upload")}</button></div>`}</li>`;
+  };
+  const missing=works.missing||[], refused=works.refused||[];
+  const others=(works.provided||[]).filter(row=>!missing.some(m=>m.provided===row.id)&&!refused.some(r=>r.provided===row.id));
   const body=`<p class="hint">${t("works.hint")}</p>
     ${missing.length?`<ul class="works">${missing.map(item).join("")}</ul>`:""}
+    ${refused.length?`<h3>${t("works.refused_title",{count:refused.length})}</h3><p class="hint">${t("works.refused_hint")}</p><ul class="works">${refused.map(refusedItem).join("")}</ul>`:""}
     ${others.length?`<p><strong>${t("works.others")}</strong> ${others.map(row=>escape(row.citation)).join(" · ")}</p>`:""}
     <details><summary>${t("works.other_upload")}</summary><div class="field"><label for="work-citation-new">${t("works.citation")}</label><input id="work-citation-new" placeholder="${t("works.citation_example")}"></div>
-    <div class="actions"><input type="file" id="work-file-new" accept=".pdf,.html,.htm,.txt" aria-label="${t("works.other_file")}"><button class="small secondary" data-action="upload-work" data-work-index="new">${t("works.upload")}</button></div></details>${coreUsage()}`;
+    <div class="actions"><input type="file" id="work-file-new" accept="${WORK_TYPES}" aria-label="${t("works.other_file")}"><button class="small secondary" data-action="upload-work" data-work-index="new">${t("works.upload")}</button></div></details>${coreUsage()}`;
   // Nothing missing: one folded line instead of a panel that explains an empty list.
-  if(!missing.length)return `<details class="panel" id="works-panel"><summary>${t("works.none")}</summary>${body}</details>`;
+  if(!missing.length&&!refused.length)return `<details class="panel" id="works-panel"><summary>${t("works.none")}</summary>${body}</details>`;
   return `<section class="panel" id="works-panel"><h2>${t("works.title",{count:missing.length})}</h2>${body}</section>`;
 }
 // Today's calls against CORE's daily allowance (sources.core_usage), once any were made.
@@ -1272,13 +1305,17 @@ function coreUsage() {
   return `<p class="hint">${t("core.usage",{calls:Number(core.calls),limit:Number(core.limit)})}${full?` · ${t("core.full")}`:""}.</p>`;
 }
 async function uploadWork(button) {
-  const index=button.dataset.workIndex, row=index==="new"?null:project.works.missing[Number(index)];
-  const file=$(`work-file-${index}`)?.files?.[0];
-  const citation=row?row.work:($("work-citation-new")?.value||"").trim();
+  const refusedIndex=button.dataset.refusedIndex, index=button.dataset.workIndex;
+  const refused=refusedIndex!==undefined?project.works.refused[Number(refusedIndex)]:null;
+  const row=refused||index==="new"?null:project.works.missing[Number(index)];
+  const file=$(refused?`work-file-refused-${refusedIndex}`:`work-file-${index}`)?.files?.[0];
+  // A refused address is cited by the title its search gave, else by the address itself.
+  const citation=refused?String(refused.title||refused.source).slice(0,400):row?row.work:($("work-citation-new")?.value||"").trim();
   if(!file)throw new Error(tp("works.choose_file"));
   if(!citation)throw new Error(tp("works.citation_missing"));
   const query=new URLSearchParams({citation});
-  for(const task of row?.tasks||[])query.append("task",task.id);
+  if(refused)query.set("source",refused.source);
+  for(const task of (refused||row)?.tasks||[])query.append("task",task.id);
   button.disabled=true;notice(tp("works.uploading",{work:quoted(citation)}));
   let response;
   try { response=await fetch(`/api/projects/${encodeURIComponent(project.id)}/work?${query}`,{method:"POST",
@@ -1287,7 +1324,7 @@ async function uploadWork(button) {
   const result=await response.json().catch(()=>({error:tp("error.unreadable"),message_language:LANG}));
   if(!response.ok){const error=new Error(result.error||tp("works.upload_failed"));error.code=result.code;error.language=result.error?result.message_language:LANG;throw error;}
   project.works=result.works;render();
-  notice(tp(row?"works.uploaded_retry":"works.uploaded_other"),"ok");
+  notice(tp(row||refused?"works.uploaded_retry":"works.uploaded_other"),"ok");
 }
 // The table of contents in one plain sentence beside its approval (D-155): episodes, minutes, the opening episode and,
 // where the outline's script run has a calibrated projection, about how many calls the writing takes.
@@ -1791,9 +1828,9 @@ function queuedEntry(episode) { return (project.audio_queue||[]).find(row=>row.e
 // restart the queue still said it waited for a place while the scheduler stopped at the missing key).
 const queueKey=row=>row.key||keyOf(currentAudio().provider);
 const queueWaitsForKey=row=>!row.error&&(row.waiting==="key"||(row.waiting===undefined&&!keyAvailable(queueKey(row))));
-// A server message as the page shows it: as written in the page's language, otherwise named by its code and quoted
-// as the original (D-152). Messages of older servers name no language and are German.
-const shownMessage=(message,language,code)=>sameLanguage({message_language:language})?String(message??""):tp("error.foreign",{code:code||"?",message});
+// A server message as the page shows it: as written in the page's language, otherwise explained by its code and
+// quoted as the original (D-152, D-200). Messages of older servers name no language and are German.
+const shownMessage=(message,language,code)=>sameLanguage({message_language:language})?String(message??""):foreignText(message,code);
 const queueError=row=>shownMessage(row.error,row.error_language,row.error_code);
 function renderQueueState(e) {
   const row=queuedEntry(e.script.episode_id);
@@ -2116,7 +2153,9 @@ function attentionOf(p) {
   if(review?.awaiting&&!review.approved)return {text:tp("attention.plan.text"),button:tp("attention.plan.button"),page:PAGE.research};
   if(j?.status==="review_ready")return {text:tp("attention.outline_ready"),button:tp("attention.outline_button"),page:PAGE.outline};
   const info=stopInfo(j);
-  if(info)return {text:info.message&&info.message!==info.text&&sameLanguage(info)?`${info.title}: ${firstSentence(info.message)}`:info.title,
+  // A German pipeline message on an English page reads as its code's text (D-200).
+  const reason=info&&info.message&&info.message!==info.text?(sameLanguage(info)?info.message:info.explained):"";
+  if(info)return {text:reason?`${info.title}: ${firstSentence(reason)}`:info.title,
     button:tp(info.kind==="decision"?"attention.decide":"attention.view"),page:jobPage(p)??PAGE.brief};
   const halted=stoppedAudio(p).filter(a=>a.id!==j?.id);
   if(halted.length){
@@ -2575,8 +2614,12 @@ function loginHint(c) {
   if(/claude/i.test(text)&&!/codex/i.test(text))return tp("stop.login.claude");
   return tp("stop.login.either");
 }
-// Google's own reason where it is in the page's language, otherwise the card's own sentence (D-152).
-const googleReason=(c,fallback)=>c.job.message&&sameLanguage(c.job.stop||{message_language:c.job.message_language})?c.job.message:tp(fallback);
+// Google's own reason where it is in the page's language; a German one on an English page is explained by its code
+// (D-200); otherwise the card's own sentence (D-152).
+const googleReason=(c,fallback)=>{
+  if(!c.job.message)return tp(fallback);
+  return sameLanguage(c.job.stop||{message_language:c.job.message_language})?c.job.message:codeText(c.code)||tp(fallback);
+};
 const STOP_RULES={
   interrupted:rule("interrupted","retry"),
   worker_start:rule("worker_start","retry"),
@@ -2774,7 +2817,10 @@ function stopInfo(job) {
   // The server already shortens paths; an older server's message still must not show a local path.
   const scrub=text=>String(text||"").replace(/[A-Za-z]:[\\/][^\s"'<>|]*/g,path=>path.split(/[\\/]/).pop());
   // The message's language decides where the page shows it (sameLanguage); without a stop record the job names it.
-  return {...info,message:scrub(stop.message??job.message??""),message_language:stop.message_language??job.message_language,
+  const message=scrub(stop.message??job.message??""), message_language=stop.message_language??job.message_language;
+  // A German pipeline message on an English page is explained by the code that raised it (D-200); "" otherwise.
+  const explained=message&&!sameLanguage({message_language})?codeText(stopCodeOf(job)):"";
+  return {...info,message,message_language,explained,
     detail:stop.detail||null,file:stop.file||null,crash:stop.crash_detail||job.crash_detail||null};
 }
 // "Fortsetzen" is offered where it can help: retry, wait and fix stops, an approved plan, decided questions.
@@ -2990,8 +3036,11 @@ function stopBody(job,info,{target="",blocked=null}={}) {
   // button (2026-10-07: the card said so while "Fortsetzen" was its filled button).
   const fresh=freshRecommended(job,info);
   const resume=canResume(job,info)?`<button ${fresh?'class="secondary" ':""}data-action="resume" ${target||`data-run-id="${escape(job.run?.run_id||"")}"`} ${reason?"disabled":""}>${t("button.resume")}</button>`:"";
-  // The step's own message stands beside the card's text in the page's language; another language goes to the details.
-  const message=(info.message&&info.message!==info.text&&sameLanguage(info)?`<p class="stop-message">${t("chat.message",{message:info.message})}</p>`:"");
+  // The step's own message stands beside the card's text in the page's language. A German one on an English page is
+  // explained there by its code, unless the card's text already says it, and its original goes to the details (D-200).
+  const shown=!info.message||info.message===info.text?"":sameLanguage(info)?info.message
+    :info.explained&&!String(info.text||"").includes(info.explained)?info.explained:"";
+  const message=shown?`<p class="stop-message">${t("chat.message",{message:shown})}</p>`:"";
   return `<p>${escape(info.text)}</p>${message}${waitNote(job)}${resume||buttons?`<div class="actions">${fresh?buttons+resume:resume+buttons}</div>`:""}${reason&&(resume||buttons)?`<p class="hint">${escape(reason)}</p>`:""}${techDetails(info)}`;
 }
 function otherJobText() {
@@ -3626,7 +3675,8 @@ function renderJobView() {
   const text=["script","research"].includes(r?.kind)||["script","research"].includes(job.progress?.phase)||Number(job.progress?.model_call_limit)>0?job
     :!active&&["research","script"].includes(project.main_job?.run?.kind)?project.main_job:null;
   const body=text?telemetryBody(text):auxiliaryBody(job);
-  showDrawer(escape(title)+(lastLine?.text?` · Live: ${escape(lastLine.text)}`:info?.message&&sameLanguage(info)?` · ${escape(info.message)}`:""),body);
+  showDrawer(escape(title)+(lastLine?.text?` · Live: ${escape(lastLine.text)}`:info?.message&&sameLanguage(info)?` · ${escape(info.message)}`
+    :info?.explained?` · ${escape(info.explained)}`:""),body);
   const traceList=box.querySelector?.(".trace-lines");
   if(traceList)traceList.scrollTop=traceAtEnd?traceList.scrollHeight:traceScroll;
 }

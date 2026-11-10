@@ -142,7 +142,7 @@ class DownloadTests(unittest.TestCase):
         # Explorer's default destination adds the ZIP's entire base name as
         # another folder, including when extracting next to the project export.
         bases = [PureWindowsPath("C:/Users/Ein langer Benutzername/Downloads"),
-                 PureWindowsPath("C:/Projekte/podcast-automate/projects/die-entwicklung-der-transformer-architek-13325a/downloads")]
+                 PureWindowsPath("C:/Projects/podcast-automate/projects/die-entwicklung-der-transformer-architek-13325a/downloads")]
         with podcast_zip(self.root) as (path, filename), zipfile.ZipFile(path) as archive:
             for member in archive.namelist():
                 self.assertLessEqual(len(member.encode("utf-8")), 92)
@@ -177,7 +177,7 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual([name.split(" - ")[0] for name in names], ["Episode 01", "Episode 01", "Episode 02"])
         self.assertTrue(names[0].endswith(" - Part 01 of 02.mp3"), names[0])
         bases = [PureWindowsPath("C:/Users/Ein langer Benutzername/Downloads"),
-                 PureWindowsPath("C:/Projekte/podcast-automate/projects/die-entwicklung-der-transformer-architek-13325a/downloads")]
+                 PureWindowsPath("C:/Projects/podcast-automate/projects/die-entwicklung-der-transformer-architek-13325a/downloads")]
         for member in names:
             self.assertLessEqual(len(member.encode("utf-8")), 92)
             for base in bases:

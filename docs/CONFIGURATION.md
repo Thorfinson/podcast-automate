@@ -25,10 +25,10 @@ covers:
 | Place | Scope | Holds | Written by |
 | --- | --- | --- | --- |
 | `<project>/project.yaml` | One project | The topic brief, the CLI default adapters and the runtime settings ([Project brief](#project-brief)); never credentials | `pla init`, the Studio's brief conversation |
-| `<project>/version.json` | One project | Its version number, the podcast's first version, the version it came from and its starting library ([New versions](STUDIO.md#new-versions)); absent in a first version | `pla new-version`, the Studio's „Neue Version anlegen“ |
+| `<project>/version.json` | One project | Its version number, the podcast's first version, the version it came from and its starting library ([New versions](STUDIO.md#new-versions)); absent in a first version | `pla new-version`, the Studio's "Start a new version" („Neue Version anlegen“) |
 | `projects/.studio-settings.json` | Every project of a Studio workspace | Text model, web search, audio, execution modes, pre-approvals, research limits and the time limit of one model call ([Studio settings](#studio-settings)) | The Studio's settings page only |
 | `<project>/studio/text.json`, `audio.json`, `execution.json`, `allowances.json` | One project | The same choices per project; used only while the workspace file does not exist | The Studio |
-| `<project>/studio/audio_own.json` | One project | Its own speech choice, which holds over the workspace file's ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice), D-177) | The recording page's panel „Sprachanbieter dieses Projekts“ |
+| `<project>/studio/audio_own.json` | One project | Its own speech choice, which holds over the workspace file's ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice), D-177) | The recording page's panel "This project's speech provider" („Sprachanbieter dieses Projekts“) |
 | `<project>/studio/music.json`, `<project>/studio/music/` | One project | The podcast's piece of music, its hash, tempo and credit ([Music](AUDIO.md#music), D-189) | By hand; no Studio form yet |
 | `<project>/studio/jev_probe.json` | One project | Whether new script runs also ask Jev in the gap probe; stays per project even with workspace settings ([Gap probe](RESEARCH.md#gap-probe)) | The Studio switch |
 | `<project>/studio/spoken_forms.json`, `<project>/style_notes.md` | One project | Spoken forms ([Spoken forms and pronunciation](AUDIO.md#spoken-forms-and-pronunciation)) and editorial notes ([Host names and style notes](SCRIPTS.md#host-names-and-style-notes)) | The Studio |
@@ -63,8 +63,8 @@ creates a [trial project](BUSINESS_LOGIC.md#trial-project), where `--topic` is o
 | `third_host` | unset | Optional third host (`models.ThirdHost`): `name` (what the others call it, at most 60 characters), `role` (who it is and how it takes part, at most 2,000 characters) and `voice` (the CLI's Qwen voice, default Dylan, not one of `voice_profile`'s). Unset, the project has two hosts. Set by hand in `project.yaml`; effect: [Three hosts](SCRIPTS.md#three-hosts), [Audio](AUDIO.md#three-hosts) |
 | `style_profile_id` | `de_calm_deep` | The speaking-style profile ([Editorial standard](TEACHING.md#editorial-standard)) |
 | `export_context` | `private_learning` | The only allowed value; public export stays outside the MVP ([Source rights and privacy](SECURITY.md#source-rights-and-privacy)) |
-| `series_goal` | unset | Weights 0 (not wanted) to 3 (main aim) for `understand`, `evaluate` and `apply`, at least one above 0; unset means the evaluating default. Studio: **„Ziel der Serie“** (goal of the series); effect: [Series goal, task aims and source types](RESEARCH.md#series-goal-task-aims-and-source-types) |
-| `recency_months` | unset | 1 to 120: prefer practice, tool and benchmark sources published within this many months; unset means no rule. Studio: **„Aktualität der Quellen“** (recency of sources) |
+| `series_goal` | unset | Weights 0 (not wanted) to 3 (main aim) for `understand`, `evaluate` and `apply`, at least one above 0; unset means the evaluating default. Studio: **Series goal** („Ziel der Serie“); effect: [Series goal, task aims and source types](RESEARCH.md#series-goal-task-aims-and-source-types) |
+| `recency_months` | unset | 1 to 120: prefer practice, tool and benchmark sources published within this many months; unset means no rule. Studio: **Source recency** („Aktualität der Quellen“) |
 | `trial` | `false` | A trial project: small limits per run, one short episode ([Trial project](BUSINESS_LOGIC.md#trial-project); why: D-157). Strictly a boolean; set by `pla init --trial` or the Studio (`POST /api/projects` with `"trial": true`) |
 | `runtime` | see below | Operational settings |
 
@@ -92,7 +92,7 @@ Setting up Qwen and changing these values on an existing project: [Set up local 
 
 ## Studio settings
 
-The settings page **„Einstellungen“** (settings) holds the values in the table below plus Claude's extra usage and the
+The settings page **Settings** („Einstellungen“) holds the values in the table below plus Claude's extra usage and the
 OpenRouter, Google, Anthropic and Perplexity keys; they apply to all projects (why: D-108). How to use the page: [Settings page](STUDIO.md#settings-page).
 
 **Storage.** The page writes `projects/.studio-settings.json` (`studio_settings`), with the sections
@@ -109,7 +109,7 @@ OpenRouter, Google, Anthropic and Perplexity keys; they apply to all projects (w
 | `web_search` | nothing; without it new runs search through the text model | How new research and script runs search the web: `model` (the text model's own tools, the default) or `perplexity` (the Perplexity Search API; `studio_settings.WEB_SEARCH`, read by `studio_settings.web_search`); `perplexity` is refused without the money limit `cost_usd` (`cost_limit_required`). Rules: [Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search) |
 
 The file also records `changed_at`. A save carries the hash of the values the page showed; if the settings changed in
-between, it is refused with „Einstellungen inzwischen geändert. Seite neu laden.“ (settings changed in the meantime,
+between, it is refused with "The settings have changed in the meantime. Reload the page." („Einstellungen inzwischen geändert. Seite neu laden.“) (settings changed in the meantime,
 reload the page). Claude's extra usage is not part of this file (see below), and the OpenRouter, Google, Anthropic,
 Perplexity and CORE keys are kept in the operating system's credential store
 ([Keys in the credential store](SECURITY.md#keys-in-the-credential-store)).
@@ -131,7 +131,7 @@ not propose them: a proposal carries only the brief, even when the model answer 
 (`studio_worker`).
 
 **Claude extra usage.** If you bought Claude usage beyond the subscription windows, switch on
-**„Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen“** (extra usage bought: pass over stored Claude
+**Extra usage bought: ignore saved Claude blocks** („Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen“) (extra usage bought: pass over stored Claude
 blocks). The switch is stored in the quota store `~/.podcast-automate/subscriptions.json`
 (`subscriptions.claude_extra_usage`), not in the workspace file, so it holds for the whole user account. Its effect on
 the provider choice is in [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection)
@@ -170,7 +170,7 @@ Variables you can set. What the adapters set or remove for the CLIs they start i
 | `PERPLEXITY_API_KEY` | Perplexity key for the web search through Perplexity, when none was entered in the Studio; the only source of the key for `pla research` and `pla script` with `--web-search perplexity`; reported by `pla doctor` (`perplexity_search`). Handling rules: [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio) | `web_search.PerplexitySearch`, `doctor.inspect`, `studio.py`, `logs.scrub` |
 | `PLA_SUBSCRIPTIONS_STORE` | Path of the quota store instead of `~/.podcast-automate/subscriptions.json`; the tests set it so they never write to `~/.podcast-automate` | `subscriptions.store_path` |
 | `PLA_KEEP_AWAKE` | `0` stops worker processes from keeping the computer awake ([Stopping and resuming](STUDIO.md#stopping-and-resuming)) | `studio_worker.keep_awake` |
-| `PLA_UNPAYWALL_EMAIL` | Contact address that enables Unpaywall in the search for a free copy of a work whose own address refused the download, where the Studio's settings give none (**„Kontaktadresse für Unpaywall“**, `studio_settings.unpaywall_email`) | `sources.unpaywall_copies` |
+| `PLA_UNPAYWALL_EMAIL` | Contact address that enables Unpaywall in the search for a free copy of a work whose own address refused the download, where the Studio's settings give none (**Contact address for Unpaywall** („Kontaktadresse für Unpaywall“), `studio_settings.unpaywall_email`) | `sources.unpaywall_copies` |
 | `PLA_CORE_API_KEY` | Free CORE API key; enables CORE for the same search when none was entered in the Studio ([CORE key in the Studio](SECURITY.md#core-key-in-the-studio)) | `sources.core_copies`, `studio.py` |
 | `PLA_CORE_DAILY_LIMIT` | CORE calls per UTC day, default 1000 (`sources.CORE_DAILY_LIMIT`), shared by all research workers ([Pipeline](RESEARCH.md#pipeline)) | `sources.core_usage` |
 | `PLA_CORE_USAGE_STORE` | Path of the CORE call counter instead of `~/.podcast-automate/core_usage.json` | `sources.core_usage_path` |

@@ -2,7 +2,7 @@
 title: Architecture
 doc_type: architecture
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-10
 covers:
   - src/podcast_automate/claude_code.py
   - src/podcast_automate/codex.py
@@ -27,6 +27,32 @@ covers:
 
 # Architecture
 
+## In five minutes
+
+A guided tour for a first change; each step links to the doc that owns the details.
+
+1. **One topic becomes three kinds of run.** A *research* run turns the brief (`project.yaml`) into a verified dossier
+   ([RESEARCH](RESEARCH.md)). A *script* run plans the series and has the story agent write and the reviews check each
+   episode ([SCRIPTS](SCRIPTS.md), [TEACHING](TEACHING.md)). An *audio* run records one approved episode as one MP3
+   ([AUDIO](AUDIO.md)). The [Overview](#overview) below draws how they connect.
+2. **The person decides at three gates:** the research plan's limits, the table of contents, and each script before it
+   is recorded ([BUSINESS_LOGIC](BUSINESS_LOGIC.md)). An automatic step acts only on an approval the person gave,
+   in the Studio, with `pla approve` or in advance as a pre-approval.
+3. **Every run is a folder of files.** `runs/<run_id>/` holds the manifest, each stage's checkpoints and each model
+   call's record; a stopped run resumes stage by stage, and a checkpoint is reused only while its inputs, including the
+   prompt's hash, are unchanged ([Run folder and manifest](#run-folder-and-manifest),
+   [Prompts and versioning](#prompts-and-versioning)).
+4. **The Studio is a thin local server** (`studio.py`) that starts one worker process per job (`studio_worker.py`)
+   and serves one page (`web/app.js`); the `pla` command line runs the same pipeline in-process
+   ([STUDIO](STUDIO.md)).
+5. **Providers sit behind adapters:** text through `provider_pool.AdapterPool` (Claude Code, Codex, OpenRouter, with
+   Perplexity as a search tool), speech through one module per route ([Text provider adapters](#text-provider-adapters)).
+6. **Where to start reading:** `cli.py` for a command, `runner.execute_stages` for how a run proceeds, the run
+   module named in [AGENTS.md › Layout](../AGENTS.md#layout) for a stage, and its tests from the
+   [source-to-test map](../AGENTS.md#source-module-to-test-modules). Three rules hold everywhere: errors carry a stable
+   `AppError` code, files are written through `storage`, and no test makes a real model call
+   ([AGENTS.md › Conventions](../AGENTS.md#conventions)).
+
 ## Overview
 
 ```
@@ -45,7 +71,8 @@ Pipeline stages per run kind (runner.execute_stages)
    ▼                                         ▼
 Text adapters (provider_pool.AdapterPool)    Speech: Qwen worker (.venv-tts), Gemini via Google
    claude_code · codex · openrouter            (google_speech) or via OpenRouter (speech),
-   + Perplexity search (web_search)            then FFmpeg/ffprobe assembly
+   + Perplexity search (web_search)            ElevenLabs (elevenlabs_speech),
+                                               then FFmpeg/ffprobe assembly
    │                                         │
    ▼                                         ▼
 Project folder projects/<project>/  (project.yaml, studio/, research/, models/, episodes/, runs/, exports/, …)
@@ -396,19 +423,26 @@ Each kind of text has its own language rule (why: D-152, D-153, D-156):
 | What the Studio shows: its pages and the server's own messages | The interface language, German or English ([Interface language](CONFIGURATION.md#interface-language)) | The catalogs `locales/de.json` and `locales/en.json`, through `studio_text` |
 | What a podcast's listeners and readers get: download and ZIP names, the export's README, transcript notice, show notes and listening sheet, the companion kits of an episode and of the podcast with its transcript, the series outline, `research_needed.md`, the readable research files, and the transparency note and MP3 comment of the AI marking (D-154) | The project's content language (`TopicBrief.language`), whatever the interface language | `content_text` |
 | The command line: help texts, metavars, prints, the CLI's own messages and the doctor's own detail texts | English; codes and `--json` keys are unchanged | `cli`, `doctor` |
-| Prompts, the pipeline's messages (the `AppError` texts of the run modules), run files, receipts and hashes | As they are, never translated | The run modules |
+| Prompts, the pipeline's messages (the `AppError` texts of the run modules), run files, receipts and hashes | As they are, never translated; the English interface explains a pipeline message by its code (D-200) | The run modules; the code texts `error.code.<code>` in the catalogs |
 
 **Interface language.** `studio_text.t(key, **params)` looks up a flat catalog key and returns a `Localized` string
 that keeps its key, its parameters and its language; a plural value (`{"one": …, "other": …}`) is chosen by the
 `count` parameter. A key missing in the active language falls back to English, then to the key itself, with one
-warning. Both catalogs have the same keys (704 on 2026-10-07); `de.json` holds the German the Studio always showed, so
+warning. Both catalogs have the same keys (2,309 on 2026-11-10); `de.json` holds the German the Studio always showed, so
 German output is unchanged. Only `studio*.py` and `production_report.py` import `studio_text`, which a test guards.
 The page loads its catalog from `GET /locale.js` (the active language over English, `Vary: Accept-Language`). A job
 keeps the language it started in (`ui_language` in the worker's request and in `job.json`); a resume by the scheduler
 takes the parked job's language, a queued recording the one stored when it was approved.
 
 **Pipeline messages stay German.** A pipeline message is also model input, a receipt or part of a hash, so it is not
-translated: the Studio shows it as it is and marks its language (`message_language`). Where the Studio must name a
+translated: the Studio receives it as it is, with its stable `code` and its language (`message_language`). The German
+interface shows it as before. The English interface explains it by its code instead (D-200): every code an `AppError`
+carries (each `code="…"` in `src/podcast_automate/*.py` and AppError's default `operation_failed`) has a short text
+`error.code.<code>` in both catalogs, which the page shows where the German message would stand (`codeText` and
+`foreignText` in `web/app.js`). The original stays under **Technical details** („Technische Details“), and a notice or
+a queued recording's refusal quotes it after the text ("Original message (German, <code>): …"). A code without a text
+falls back to `error.foreign` ("Refused (<code>)" and the original). `test_studio_text` fails for a raised code
+without a text in either catalog and for a text whose code no module raises any more. Where the Studio must name a
 cause in either language, the run carries it as data: the limit of a budget stop in the manifest
 ([Run folder and manifest](#run-folder-and-manifest)), the run limit that ended a sub-question's web search as
 `block_cause` ([Run limits](RESEARCH.md#run-limits)) and an advisory's values as `params`

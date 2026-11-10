@@ -14,7 +14,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 - ✓ **After a code update the Studio still behaves the old way, and a browser reload does not help:** the server, its
   scheduler and running workers keep the code they started with; only `app.js` is reloaded. Click
-  **„Neu starten, sobald nichts läuft“** (restart when idle); the banner „Das Studio hat neuen Code“ says so
+  **Restart as soon as nothing is running** („Neu starten, sobald nichts läuft“); the banner "The Studio has new code" („Das Studio hat neuen Code“) says so
   (`studio.py`). ([Restart after an update](STUDIO.md#restart-after-an-update))
 - ⚠ **`pip install -e .` fails on Windows because `.venv\Scripts\pla.exe` cannot be replaced:** Windows locks an
   executable while a process runs it (a CLI run in another window, a Studio started with `pla.exe studio`). Stop every
@@ -45,7 +45,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **The Studio, started by double-click, reports „Codex wurde nicht gefunden“ (`codex_missing`) although `codex`
   works in a terminal:** Explorer does not inherit the `PATH` of a shell or IDE. The Studio also looks in
   `~/.local/bin/codex.exe` and the newest OpenAI extension of VS Code or VS Code Insiders (`codex.py`); otherwise set
-  `runtime.codex_executable`, then „Verbindungen prüfen“ and „Fortsetzen“. ([Where the CLIs are found](OPERATIONS.md#where-the-clis-are-found))
+  `runtime.codex_executable`, then "Check connections" („Verbindungen prüfen“) and "Resume" („Fortsetzen“). ([Where the CLIs are found](OPERATIONS.md#where-the-clis-are-found))
 - ✓ **„Claude-Code-Shim nicht auflösbar“ (`unsupported_claude_launcher`):** `claude` on `PATH` is an npm `.cmd` or
   `.ps1` shim, but `node` or `node_modules/@anthropic-ai/claude-code/cli.js` is missing. Install Claude Code natively
   or complete the npm install; the adapter runs a shim through `node`, never through `cmd.exe` (`claude_code.py`).
@@ -64,10 +64,10 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   stop card, with `pla approve <project> --run-id <run_id> --cost-usd N` or on the settings page; finished work stays.
   ([Money limit](BUSINESS_LOGIC.md#money-limit))
 - ⚠ **The first Claude call after a window runs out fails and is charged:** Claude reports no quota in advance; the
-  block is noted only after the first refusal. Under „Automatisch“ Codex takes over; a fixed Claude job pauses.
+  block is noted only after the first refusal. Under "Automatic" („Automatisch“) Codex takes over; a fixed Claude job pauses.
   ([Quota](BUSINESS_LOGIC.md#quota-what-counts-as-limit-reached))
 - ✓ **„Kein Abo hat gerade Kontingent“ although you bought Claude extra usage:** a stored Claude block from a reported
-  weekly or 5-hour limit is respected. Turn on „Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen“ on the
+  weekly or 5-hour limit is respected. Turn on "Extra usage bought: ignore saved Claude blocks" („Zusatzkontingent gekauft: gespeicherte Claude-Sperren übergehen“) on the
   settings page (`subscriptions.claude_extra_usage`). ([Settings page](STUDIO.md#settings-page))
 - ⚠ **A call ends with `claude_budget_cap`, although `--max-budget-usd` did not stop its first model turn:** the CLI
   applies the cost cap (`claude_code.MAX_BUDGET_USD`, 12) only after the first model turn, so it is no hard per-call
@@ -87,8 +87,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Studio
 
-- ✓ **After a Studio restart OpenRouter jobs stop for a missing key, and queued Gemini episodes show „wartet auf den
-  OpenRouter-Key“:** the system has no credential store, or it refused the key, so a key entered in the Studio lived
+- ✓ **After a Studio restart OpenRouter jobs stop for a missing key, and queued Gemini episodes show "waiting for the OpenRouter key" („wartet auf den OpenRouter-Key“):** the system has no credential store, or it refused the key, so a key entered in the Studio lived
   only in the old server's memory (D-167). Enter it again on the settings page, or start the server with
   `OPENROUTER_API_KEY` set; the page says so (`studio.py`). The same holds for jobs
   with Claude on the API key and the Anthropic key (`ANTHROPIC_API_KEY`), and for runs that search through Perplexity
@@ -98,7 +97,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   `projects/.studio-settings.json` exists, its sections replace every project's `studio/*.json`, `research_limits` and
   `runtime.text_timeout_seconds`; the first save takes the values of the most recently changed project. Change them on
   the settings page. ([Studio settings](CONFIGURATION.md#studio-settings))
-- ⚠ **The header shows „Keine Verbindung“ and the run indicator stops pulsing:** the Studio server has not answered
+- ⚠ **The header shows "No connection" („Keine Verbindung“) and the run indicator stops pulsing:** the Studio server has not answered
   polls for more than 30 seconds. Wait; this is no evidence that the model call crashed.
   ([Times and connection](STUDIO.md#times-and-connection))
 - ⚠ **Live output keeps arriving, but no readable text appears for a minute or more:** the model may be in an output
@@ -119,22 +118,21 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 
 ## Research
 
-- ✓ **A run from an older version still shows „Zuschnitt der Teilfragen ungeklärt“ (`question_scope_unresolved`):**
-  that stop no longer exists; the scope check now decides in its second pass. Press „Fortsetzen“ or „Mit neuen
-  Anläufen fortsetzen“ (`studio_allowances.RESEARCH_FRESH_CODES`). ([Scope check](RESEARCH.md#scope-check))
+- ✓ **A run from an older version still shows "Scope of the sub-questions unsettled" („Zuschnitt der Teilfragen ungeklärt“) (`question_scope_unresolved`):**
+  that stop no longer exists; the scope check now decides in its second pass. Press "Resume" or "Resume with fresh attempts" („Mit neuen Anläufen fortsetzen“) (`studio_allowances.RESEARCH_FRESH_CODES`). ([Scope check](RESEARCH.md#scope-check))
 - ✓ **The gap probe reports `no_hits` although an English source answers a gap of a German project:** the probe is a
   term-overlap search and cannot cross languages. New dossiers carry `gap_terms` in the source language, and the Jev
   probe finds such passages (`research_gap_probe.py`, `jev.py`); a dossier written before `gap_terms` needs a new
   research run. ([Gap probe](RESEARCH.md#gap-probe))
 - ✓ **A source appears with empty content, for example Springer's „Client Challenge“:** the server returned a bot
   challenge page instead of the document. It is treated as blocked, and the import looks for a free copy (OpenAlex,
-  Unpaywall, Semantic Scholar, Europe PMC, CORE), or you upload the work under „Fehlende Werke“ (`sources.py`).
+  Unpaywall, Semantic Scholar, Europe PMC, CORE), or you upload the work under "Missing works" („Fehlende Werke“) (`sources.py`).
   ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-archives))
 - ⚠ **CORE stops finding copies during the day:** all runs share one daily allowance (`PLA_CORE_DAILY_LIMIT`, default
   1000, counted per UTC day in `~/.podcast-automate/core_usage.json`). Wait for the next UTC day or raise the limit.
   ([Environment variables](CONFIGURATION.md#environment-variables))
-- ⚠ **Unpaywall and CORE are never consulted:** no address is given under „Kontaktadresse für Unpaywall“ on the
-  settings page nor set as `PLA_UNPAYWALL_EMAIL`, or no CORE key is stored under „CORE-Key“ nor set as
+- ⚠ **Unpaywall and CORE are never consulted:** no address is given under "Contact address for Unpaywall" („Kontaktadresse für Unpaywall“) on the
+  settings page nor set as `PLA_UNPAYWALL_EMAIL`, or no CORE key is stored under "CORE key" („CORE-Key“) nor set as
   `PLA_CORE_API_KEY`, or a variable was set without restarting the Studio. Give both in the Studio, or set the
   variables and restart the Studio. Until 2026-11-03 Unpaywall had only the variable, and no Studio run here asked it.
   ([Environment variables](CONFIGURATION.md#environment-variables))
@@ -144,7 +142,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   eval script, spends the same budget (seen 2026-11-03).
 - ⚠ **A source fails as unreadable with "pages without a text layer":** it is a scanned PDF, and OCR never starts
   automatically. Supply a readable version as a `seed_urls` entry of a new research run, or upload the work under
-  „Fehlende Werke“. ([Download and import limits](RESEARCH.md#download-and-import-limits))
+  "Missing works". ([Download and import limits](RESEARCH.md#download-and-import-limits))
 - ⚠ **A trial project stops at 110 calls although the settings page allows more:** a trial keeps each limit at the
   lower of the settings and its trial value (`storage.load_project`), so the settings page never lifts it. Raise the
   limit for the one run in its stop card or with `pla approve`. ([Trial project](BUSINESS_LOGIC.md#trial-project))
@@ -173,7 +171,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   `script.yaml` is the canonical text. Edit `script.yaml`; `resume` detects the change instead of overwriting it, and
   the changed text needs a new subject review. ([Canonical script](SCRIPTS.md#canonical-script))
 - ✓ **Resuming a stopped review or correction stops again at the same place:** verdicts and spent attempts are saved,
-  and a resume buys no new attempts. Use „Mit neuen Anläufen fortsetzen“ or `pla approve <project> --fresh-attempts`
+  and a resume buys no new attempts. Use "Resume with fresh attempts" or `pla approve <project> --fresh-attempts`
   (`run_budget.py`). A correction loop that keeps no rejections, whose stop message ends with „die abgewiesenen
   Antworten liegen bei den Aufrufen“, asks anew on every resume. ([Rejected answers](SCRIPTS.md#rejected-answers),
   [Stopping and resuming](STUDIO.md#stopping-and-resuming))
@@ -219,9 +217,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   again:** until 2026-10-07 the check compared the episode's old `expression.json` (placed without listener
   reactions), which the reading page no longer shows for Google. Such a reading counts as none now
   (`episode_audio.reading_hash`); restart the Studio after the update. To read the tags before recording, use
-  „Ausdruck neu setzen“. ([Tags are part of reading the script](AUDIO.md#tags-are-part-of-reading-the-script))
+  "Place expression again" („Ausdruck neu setzen“). ([Tags are part of reading the script](AUDIO.md#tags-are-part-of-reading-the-script))
 - ✓ **A wrong Google key comes back as HTTP 400, not 401:** Google names it `API_KEY_INVALID`; the recording stops
-  with `google_authentication` and shows Google's message. Store the right key under „Google-Key“, then resume.
+  with `google_authentication` and shows Google's message. Store the right key under "Google key" („Google-Key“), then resume.
   ([Keys, errors and limits](AUDIO.md#keys-errors-and-limits))
 - ✓ **Google stops a recording with `google_quota` at once instead of waiting:** the key's daily quota is used up,
   which waiting minutes cannot lift. Resume after the quota resets, or raise the tier in Google AI Studio.
@@ -252,7 +250,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ⚠ **Recordings in another project seem to stall without an error:** a 429 in any project makes all Gemini
   recordings wait through `projects/.gemini_throttle.json`, for up to about three minutes. Wait; only a persisting
   limit stops an episode. ([Rate limits and transient errors](AUDIO.md#rate-limits-and-transient-errors))
-- ✓ **The audio approval or a re-render is refused after „Ausdruck neu setzen“:** the approval is bound to the hash of
+- ✓ **The audio approval or a re-render is refused after "Place expression again":** the approval is bound to the hash of
   the expression tags you read. Read the episode again with the current tags and approve again.
   ([Tags are part of reading the script](AUDIO.md#tags-are-part-of-reading-the-script))
 - ✓ **An episode near the part length fails with `duration_exceeded` after paid synthesis:** parts were sized with the
@@ -264,7 +262,7 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   tagging library, a new dependency (V-42). ([Exports and listening sheet](AUDIO.md#exports-and-listening-sheet))
 - ✓ **After the update a companion kit is gone from the recording page and the podcast ZIP:** a kit of
   `publish_kit.v1` has no transparency note (D-154), so it is no longer shown or zipped (`publish_kit.KIT_VERSION`).
-  Make the kit again („Begleitmaterial“ or `pla publish-kit`); its saved descriptions are reused without a model call.
+  Make the kit again ("Companion material" („Begleitmaterial“) or `pla publish-kit`); its saved descriptions are reused without a model call.
   ([Exports and listening sheet](AUDIO.md#exports-and-listening-sheet))
 
 ## Logs and security

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -88,6 +89,20 @@ class PublicRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
+def system_tls():
+    """The operating system's certificate check for source servers, as a browser checks them (D-197): Python's own
+    check lacks the intermediate certificates a server leaves out, and refused bundestag.de and bundesrat.de, which
+    Windows and every browser open (2026-11-10). Without the truststore package, Python's own check stays."""
+    try:
+        import truststore
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        return None
+
+
+SOURCE_TLS = system_tls()
+
+
 def download(url: str, headers: dict | None = None) -> tuple[bytes, str, str]:
     """``headers`` only for a free service that identifies the caller by a key (CORE)."""
     url = public_url(url)
@@ -99,7 +114,8 @@ def download(url: str, headers: dict | None = None) -> tuple[bytes, str, str]:
         **(headers or {}),
     })
     try:
-        opener = urllib.request.build_opener(PublicRedirect())
+        tls = [urllib.request.HTTPSHandler(context=SOURCE_TLS)] if SOURCE_TLS is not None else []
+        opener = urllib.request.build_opener(PublicRedirect(), *tls)
         with opener.open(request, timeout=30) as response:
             if int(response.headers.get("Content-Length", 0)) > MAX_BYTES:
                 raise AppError("Quelle überschreitet 20 MiB.", code="source_too_large")
@@ -253,8 +269,86 @@ def interstitial(title, text):
                                                  or clean(title or "").lower().rstrip(". ") in CHALLENGE_TITLES))
 
 
+# An e-book the editor bought or borrowed without copy protection (D-198, 2026-11-10: the books a research needs are
+# mostly sold as EPUB, and an upload took only PDF, a saved page or text). Its chapters are read in reading order.
+EPUB_MIMETYPE = b"mimetypeapplication/epub+zip"
+EPUB_PART_BYTES = 20 * 1024 * 1024
+EPUB_TOTAL_BYTES = 200 * 1024 * 1024
+FONT_SUFFIXES = (".ttf", ".otf", ".woff", ".woff2")
+
+
+def is_epub(raw: bytes) -> bool:
+    return raw.startswith(b"PK\x03\x04") and EPUB_MIMETYPE in raw[:200]
+
+
+def epub_text(raw: bytes) -> tuple[dict, list[tuple[str, None]]]:
+    """The metadata and the text blocks of an EPUB, chapter by chapter in its reading order (the package's spine).
+    A copy-protected book is refused: its chapters are encrypted, while obfuscated fonts are common and harmless."""
+    import io
+    import posixpath
+    import zipfile
+    from xml.etree import ElementTree
+
+    unreadable = AppError("Das E-Book lässt sich nicht lesen. Bitte als PDF oder als EPUB ohne Kopierschutz hochladen.",
+                          code="source_unreadable")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw))
+        names = set(archive.namelist())
+
+        def part(name):
+            info = archive.getinfo(name)
+            if info.file_size > EPUB_PART_BYTES:
+                raise unreadable
+            return archive.read(info)
+
+        if "META-INF/encryption.xml" in names:
+            locked = [reference.get("URI", "") for reference in ElementTree.fromstring(part("META-INF/encryption.xml")).iter()
+                      if reference.tag.endswith("CipherReference")]
+            if any(not uri.lower().endswith(FONT_SUFFIXES) for uri in locked):
+                raise AppError("Das E-Book ist kopiergeschützt (DRM) und lässt sich nicht lesen. Bitte eine Ausgabe ohne "
+                               "Kopierschutz oder ein PDF hochladen.", code="source_unreadable", details={"drm": True})
+        container = ElementTree.fromstring(part("META-INF/container.xml"))
+        rootfile = next(element.get("full-path") for element in container.iter() if element.tag.endswith("rootfile"))
+        package = ElementTree.fromstring(part(rootfile))
+        base = posixpath.dirname(rootfile)
+        items = {item.get("id"): item for item in package.iter() if item.tag.endswith("}item")}
+        order = [ref.get("idref") for ref in package.iter() if ref.tag.endswith("}itemref") and ref.get("linear") != "no"]
+        values = {}
+        for element in package.iter():
+            for field in ("title", "creator", "date", "language"):
+                if element.tag.endswith("}" + field) and (element.text or "").strip():
+                    values.setdefault(field, []).append(element.text.strip())
+        blocks, total = [], 0
+        for idref in order:
+            item = items.get(idref)
+            if item is None or "html" not in (item.get("media-type") or ""):
+                continue
+            name = posixpath.normpath(posixpath.join(base, urllib.parse.unquote(item.get("href") or "")))
+            if name not in names:
+                continue
+            total += archive.getinfo(name).file_size
+            if total > EPUB_TOTAL_BYTES:
+                raise unreadable
+            parser = ArticleParser()
+            parser.feed(part(name).decode("utf-8", errors="replace"))
+            blocks += [(block, None) for block in re.split(r"\n\s*\n", "".join(parser.text))]
+    except AppError:
+        raise
+    except (zipfile.BadZipFile, KeyError, StopIteration, ElementTree.ParseError, ValueError, TypeError) as exc:
+        raise unreadable from exc
+    metadata = {"title": (values.get("title") or [""])[0], "authors": values.get("creator", []),
+                "published_date": (values.get("date") or [""])[0][:10], "language": (values.get("language") or ["unknown"])[0]}
+    return metadata, blocks
+
+
 def extract(raw: bytes, content_type: str, name: str, *, book: bool = False) -> tuple[str, str, dict, list[SourceSection]]:
     metadata = {}
+    if is_epub(raw):
+        metadata, blocks = epub_text(raw)
+        if sum(len(block) for block, _ in blocks) > (MAX_BOOK_TEXT if book else MAX_TEXT):
+            raise AppError("Extrahierter Text überschreitet die Importgrenze.", code="source_too_large")
+        # Read as the text of its chapters; the stored file stays the EPUB.
+        return "text", ".epub", metadata, sections_from_blocks(blocks)
     if raw.startswith(b"%PDF-"):
         result = extract_pdf_isolated(raw, book=book)
         metadata = result.get("metadata") or {}
@@ -530,6 +624,39 @@ def open_access_copy(candidate, blocked, *, book=False):
     raise blocked
 
 
+# A page gone from its own address (HTTP 404 or 410, or a server that does not answer) is often kept by the Internet
+# Archive; its latest capture is read instead, named as such with the capture date (D-197). A refusal (401, 402, 403,
+# 451) never asks the archive: the site's own decision stands, and the editor can fetch the page in a browser.
+WAYBACK = "https://archive.org/wayback/available"
+GONE = {404, 410}
+CAPTURE = re.compile(r"\d{14}")
+
+
+def gone(exc):
+    details = getattr(exc, "details", None) or {}
+    return getattr(exc, "code", "") == "source_download_failed" and (
+        details.get("http_status") in GONE or bool(details.get("network_error")))
+
+
+def archived_copy(candidate, failure, *, book=False):
+    """The Internet Archive's latest readable capture of an address that is gone, with the archive and the capture
+    date as its service; else ``failure``."""
+    found = lookup(f"{WAYBACK}?url={urllib.parse.quote(candidate.url, safe='')}") or {}
+    closest = (found.get("archived_snapshots") or {}).get("closest") if isinstance(found.get("archived_snapshots"), dict) else None
+    stamp = str((closest or {}).get("timestamp") or "")
+    if not isinstance(closest, dict) or not closest.get("available") or str(closest.get("status")) != "200" \
+            or not CAPTURE.fullmatch(stamp):
+        raise failure
+    # „id_“ asks for the page as captured, without the archive's own frame around it.
+    url = f"https://web.archive.org/web/{stamp}id_/{candidate.url}"
+    try:
+        raw, content_type, final_url = download(url)
+        extracted = extract(raw, content_type, url, **({"book": True} if book else {}))
+    except AppError:
+        raise failure from None
+    return (raw, content_type, final_url), extracted, f"Internet Archive (captured {stamp[:4]}-{stamp[4:6]}-{stamp[6:8]})"
+
+
 # Open-access book archives (prompts/open_archives.txt sends explain tasks to OAPEN and DOAB) and book paths.
 BOOK_HOSTS = ("oapen.org", "doabooks.org", "gutenberg.org", "archive.org", "openedition.org", "openbookpublishers.com")
 BOOK_PATH = re.compile(r"/(?:books?|monographs?)/", re.I)
@@ -635,10 +762,18 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
         try:
             raw, content_type, final_url = download(address)
         except AppError as exc:
-            if not access_blocked(exc):
+            if not (access_blocked(exc) or gone(exc)):
                 raise
-            # The same work from a free repository; it keeps the address it was found under as its identity.
-            (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc, book=book)
+            try:
+                if not access_blocked(exc):
+                    raise exc
+                # The same work from a free repository; it keeps the address it was found under as its identity.
+                (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc, book=book)
+            except AppError:
+                if not gone(exc):
+                    raise
+                # A page that is gone: the Internet Archive's capture of this very address (D-197).
+                (raw, content_type, final_url), extracted, service = archived_copy(candidate, exc, book=book)
     copied = extracted is not None
     if not copied:
         try:
@@ -651,7 +786,8 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
             (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc, book=book)
             copied = True
     kind, suffix, metadata, sections = extracted
-    copy_note = f"Open-access copy of the same work found via {service}: {final_url}. " if copied else ""
+    copy_note = ("" if not copied else f"Archived copy of this address from the {service}: {final_url}. "
+                 if service.startswith("Internet Archive") else f"Open-access copy of the same work found via {service}: {final_url}. ")
     raw_path = root / "sources/raw" / run_id / f"{source_id}{suffix}"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     pending = raw_path.with_suffix(suffix + ".pending")

@@ -5,7 +5,7 @@ from unittest.mock import patch
 from podcast_automate.episode_audio import run_episode_audio, saved_expression, tag_episode
 from podcast_automate.errors import AppError
 from podcast_automate.expression import (ALLOWED_TAGS, BACKCHANNEL_PROMPT_VERSION, EXPRESSION_PROMPT_VERSION,
-                                         EXPRESSION_VERSION, ExpressionPlan, episode_tag_limit, expression_defects,
+                                         ExpressionPlan, episode_tag_limit, expression_defects,
                                          plan_expression, untagged)
 from podcast_automate.runner import manifest_path
 from podcast_automate.scripting import run_script

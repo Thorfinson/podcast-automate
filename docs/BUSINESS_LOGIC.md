@@ -2,7 +2,7 @@
 title: Business logic
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-10
 covers:
   - src/podcast_automate/provider_pool.py
   - src/podcast_automate/subscriptions.py
@@ -78,7 +78,7 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 
 - A fixed choice (Sonnet 5.5, Opus 5.5, Astra, an OpenRouter model, Claude on the API key) never switches, stops even
   on an unusable subscription and never queries quotas for the rule.
-- **„Automatisch“** (automatic) is the preset of new Studio projects (`--backend auto`); without `--backend` the CLI
+- **Automatic** („Automatisch“) is the preset of new Studio projects (`--backend auto`); without `--backend` the CLI
   uses `codex_cli`.
 - Under `auto` the provider is chosen before every model call, because quota changes during a run: Claude
   (`text_settings.AUTO_PREFERENCE = "claude_code"`) with Sonnet 5.5 at `high` over the Claude Max subscription while
@@ -92,7 +92,7 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 ### Claude on your own API key
 
 `claude_api` runs the Claude Code CLI on your Anthropic API key instead of the claude.ai login; every call is billed
-to your Anthropic account (presets „Sonnet 5.5 · high · Anthropic-API-Key“ and „Opus 5.5 · high · Anthropic-API-Key“).
+to your Anthropic account (presets "Sonnet 5.5 · high · Anthropic API key" („Sonnet 5.5 · high · Anthropic-API-Key“) and "Opus 5.5 · high · Anthropic API key" („Opus 5.5 · high · Anthropic-API-Key“)).
 It is its own provider, so no rule written for the subscription `claude_code` applies to it (why: D-145):
 
 - It is always a fixed choice: never a candidate of `auto`, never chosen automatically, and a switch to it is
@@ -165,7 +165,7 @@ level. (why: D-023) The first-time reader (`listener_readback`), capped as well,
 ### Research runs and their web search
 
 Live research and the supplementary web research of script runs search the web in one of two ways, chosen when a run
-starts (Studio setting **„Websuche“** (web search), `--web-search model|perplexity`; why: D-151):
+starts (Studio setting **Web search** („Websuche“), `--web-search model|perplexity`; why: D-151):
 
 - **Through the text model** (`model`, the default): the chosen subscription searches with its own tools, or with
   `claude_api` Claude Code's own WebSearch and WebFetch, billed to your key. With OpenRouter text, and with `auto`, the
@@ -201,7 +201,7 @@ starts (Studio setting **„Websuche“** (web search), `--web-search model|perp
 ### Switching a job to another provider
 
 Every script and research job can continue with another text provider at any time: in the Studio with
-**„Weiter mit …“** (continue with …) under the job's saved text choice ([STUDIO](STUDIO.md#choosing-the-text-model)),
+**Continue with …** („Weiter mit …“) under the job's saved text choice ([STUDIO](STUDIO.md#choosing-the-text-model)),
 on the command line with
 `pla approve <project> --run-id <run_id> --text-switch claude|astra|claude-only|astra-only|openrouter|claude-api [--switch-model MODEL] [--cost-usd N]`
 (without a value `claude`; `run_budget.TEXT_SWITCHES`):
@@ -249,13 +249,13 @@ Rules of a switch (why: D-024):
 - A call without a model answer (time limit, stalled stream, quota pause, abort) is not charged: `budget.json` lists
   it under `refunded`, and call numbers stay unique; on a key its money still counts. A charged failure (invalid
   output, a failed provider turn) keeps its charge.
-- **„Auftrag anhalten“** (stop job) ends the worker hard; its open calls keep their reservation until `resume`
+- **Stop job** („Auftrag anhalten“) ends the worker hard; its open calls keep their reservation until `resume`
   releases each that left neither an answer nor a charged failure, in research and script runs alike
   (`research.reconcile_budget`).
 - The short status reports have their own counter outside the production budget
   ([STUDIO](STUDIO.md#progress-and-telemetry)).
 - The editorial conversation has its own persistent call limit: the project's `research_limits.model_calls`, or a
-  raise by 50 with **„Gesprächslimit auf … erhöhen“** (raise the chat limit to …), for this project without
+  raise by 50 with **Raise the chat limit to …** („Gesprächslimit auf … erhöhen“), for this project without
   changing the brief (`studio/assistant/limit.json`).
 
 ### How a run stops on its budget
@@ -359,9 +359,9 @@ USD (why: D-146, D-148, D-151):
 
 - **Required, without a default.** `research_limits.cost_usd` (above 0, at most 100 000;
   [CONFIGURATION](CONFIGURATION.md#project-brief)) stays unset until you set it: on the settings page as
-  **„Kostengrenze je Lauf in USD“** (money limit per run in USD), for one run with `pla approve --cost-usd N`, in a stop
+  **Money limit per run in USD** („Kostengrenze je Lauf in USD“), for one run with `pla approve --cost-usd N`, in a stop
   card or with a [switch](#switching-a-job-to-another-provider). The settings page refuses to save a billed text model
-  or the web search „Über Perplexity“ (through Perplexity) without it (`cost_limit_required`). Subscription runs that
+  or the web search "Through Perplexity" („Über Perplexity“) without it (`cost_limit_required`). Subscription runs that
   search through the text model count no money.
 - **Billed calls.** A call is billed when it goes to OpenRouter or to `claude_api`, and a search call when the run
   searches through Perplexity, whatever its text model (`provider_pool.AdapterPool.billed`). A story agent session of a
@@ -409,7 +409,24 @@ USD (why: D-146, D-148, D-151):
 | script | 0.83 USD (1,071 calls) | 1.17 USD (735 calls) |
 
 A whole series (research and scripts) took 1,389 to 1,771 calls, worth 605 to 809 USD at API prices, with 33 to 35
-hours of research and 45 to 54 hours of script work (three series, measured on 2026-10-07).
+hours of research and 45 to 54 hours of script work (three series, measured on 2026-10-07). Their Codex calls were
+unpriced; at the Sonnet means above they add about 40 to 200 USD, so 42 to 58 USD an episode.
+
+Measured again on 2026-11-10, by the same method (`calls/*/metadata.json` `reported_cost_usd` and the runs' spans), on
+„Geld verstehen“ season 1, the first series the story agent wrote (D-184): 15 episodes, 521 minutes of audio.
+
+| Part | Calls | USD at API prices | Span |
+| --- | --- | --- | --- |
+| Research (30 sub-questions, on a starting library of 138 documents) | 369 | 142 | 2.3 h |
+| Outline, 15 episodes, series review | 358 | 512, of which the story agent's sessions 301 (about 20 an episode) | 36 h |
+| Four revisions, one abandoned episode run, audio tags and companion kits | 146 | 130 | |
+| **Season** | **873** | **784, so 52 an episode and 1.51 a minute of audio** | 51 h |
+
+The research it started from, shared by both seasons, cost another 329 USD; this season's share by sub-question is
+174 USD. Recording the published episodes with ElevenLabs (`eleven_v4`) took 266,726 credits, 512 a minute of audio
+(about 94 EUR at a top-up of 100 EUR for 284,725 credits). Against October, research is shorter and cheaper and a
+series needs half the calls, but each episode's Opus session makes the scripts dearer, so a series costs about the
+same.
 
 ### Raising a limit
 
@@ -425,21 +442,20 @@ hours of research and 45 to 54 hours of script work (three series, measured on 2
   field still validate.
 - The run uses the higher of its own receipt and the project's current limit (`run_budget.effective_limits`). A
   receipt of another run or input hash, or an unreadable one, stops the run with `invalid_budget_approval`.
-- In the Studio the stop cards „Kostengrenze fehlt“ and „Kostengrenze erreicht“ suggest a money limit: the larger of
+- In the Studio the stop cards "Money limit missing" („Kostengrenze fehlt“) and "Money limit reached" („Kostengrenze erreicht“) suggest a money limit: the larger of
   1.5 times the limit and 1.25 times the money spent, or without a limit the larger of 10 USD and twice the money
   spent ([STUDIO](STUDIO.md#stop-reasons)).
 
 ### Pre-approvals
 
-Under **„Ohne Rückfrage“** (without asking) on the settings page you set what the Studio may give a stopped run by
-itself, the **„Vorab-Erlaubnisse“** (pre-approvals; storage: [CONFIGURATION](CONFIGURATION.md#studio-settings),
+Under **Without asking** („Ohne Rückfrage“) on the settings page you set what the Studio may give a stopped run by
+itself, the **Pre-approvals** („Vorab-Erlaubnisse“) (pre-approvals; storage: [CONFIGURATION](CONFIGURATION.md#studio-settings),
 display: [STUDIO](STUDIO.md#stopping-and-resuming)):
 
-- **„Neue Anläufe je Lauf“** (fresh attempts per run, up to three; `studio_allowances.FRESH_ATTEMPT_CHOICES`) when a
-  step has used up its automatic corrections: the stops whose card offers **„Mit neuen Anläufen fortsetzen“**
-  (continue with fresh attempts), and only where the run would accept them (`run_budget.fresh_attempts_available`),
+- **Fresh attempts per run** („Neue Anläufe je Lauf“) (fresh attempts per run, up to three; `studio_allowances.FRESH_ATTEMPT_CHOICES`) when a
+  step has used up its automatic corrections: the stops whose card offers **Resume with fresh attempts** („Mit neuen Anläufen fortsetzen“), and only where the run would accept them (`run_budget.fresh_attempts_available`),
   a script correction loop that keeps no rejections included ([Rejected answers](SCRIPTS.md#rejected-answers)).
-- **„Aufruflimit erhöhen je Lauf“** (raise call limit per run, by up to 100, 250, 500 or 1000 calls;
+- **Raise the call limit per run** („Aufruflimit erhöhen je Lauf“) (raise call limit per run, by up to 100, 250, 500 or 1000 calls;
   `studio_allowances.EXTRA_CALL_CHOICES`) when the approved limit is not enough, each time by the need the stop card
   suggests, at most by the rest still allowed.
 - The Studio's scheduler then writes the same approval as the button and resumes the run within half a minute, also a
@@ -459,7 +475,7 @@ display: [STUDIO](STUDIO.md#stopping-and-resuming)):
 
 ### Trial project
 
-A trial project („Probelauf“, trial run) runs the whole pipeline once on a narrow topic for little money and time
+A trial project ("Trial" („Probelauf“), trial run) runs the whole pipeline once on a narrow topic for little money and time
 (`trial.py`; why: D-157). It is an ordinary project whose brief carries `trial: true`
 ([Project brief](CONFIGURATION.md#project-brief)); `pla init <project> --trial` without `--topic` takes the sample
 topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a rainbow form?" (`trial.TRIAL_TOPICS`).
@@ -492,7 +508,7 @@ topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a
   OpenRouter or `claude_api` your OpenRouter or Anthropic account and searches through Perplexity your Perplexity
   account, within the [money limit](#money-limit).
 - Navigation and reloading start no model calls and grant no approvals. The chat grants no plan or audio approval;
-  **„Diese Auswahl übernehmen“** (accept this selection) only saves the reviewed summary. Intermediate states in the
+  **Apply this selection** („Diese Auswahl übernehmen“) only saves the reviewed summary. Intermediate states in the
   live window are unreviewed and grant no approval.
 
 ### Research plan
@@ -500,8 +516,7 @@ topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a
 - The research plan approval is a gate: a research run stops after source search, planning and scope check, before
   the first sub-question, and uses no further model call until the plan is approved.
 - The approval is a receipt `runs/<run_id>/plan_approval.json`, bound to exactly this plan and written only by an
-  explicit action: **„Plan freigeben und starten“** (approve plan and start), or **„Plan freigeben und Limits
-  anheben“** (approve plan and raise limits) when the plan needs higher limits, in the Studio, or
+  explicit action: **Approve plan and start** („Plan freigeben und starten“), or **Approve plan and raise limits** („Plan freigeben und Limits anheben“) when the plan needs higher limits, in the Studio, or
   `pla approve <project> --research-plan [<run_id>] [--max-tasks N]`.
 - No automatic resume passes this stop, neither after a subscription reset nor after a technical stop; without
   approval `pla research`, `pla resume` and every Studio job stop at the plan again.
@@ -511,7 +526,7 @@ topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a
 
 ### Table of contents
 
-**„Freigeben & erste Folge schreiben“** (approve & write the first episode) approves exactly the displayed plan state
+**Approve & write the first episode** („Freigeben & erste Folge schreiben“) approves exactly the displayed plan state
 (`plan_approval.json`, bound to the outline and its inputs) and writes its first episode; every further episode is
 written from that approval, one run each, on your click ([SCRIPTS](SCRIPTS.md#writing-a-series-in-order); why: D-184).
 Only a finished draft can be revised or approved. An interrupted planning grants no script approval.
@@ -520,7 +535,7 @@ Only a finished draft can be revised or approved. An interrupted planning grants
 
 - `pla audio` needs `--approve-audio`, a current quality report without blocking findings for the episode and, for a
   series-reviewed run, a passed series verdict. A passed report does not replace the audio approval.
-- In the Studio the approval is the checkbox on the **„Vertonung“** (recording) page, confirming the read script state
+- In the Studio the approval is the checkbox on the **Recording** („Vertonung“) page, confirming the read script state
   with the displayed provider and voices ([AUDIO](AUDIO.md#recording-flow)). Previews receive no audio approval.
 - The approval is bound to the episode's script hash, the audio provider and both voices
   (`episode_audio.saved_approval`), and for Gemini with expression to the expression tags that were read; tags placed
@@ -563,8 +578,8 @@ sub-questions and their decisions: [RESEARCH](RESEARCH.md#blocked-sub-questions-
 - In the Studio, changing the brief, host names, editorial notes or spoken forms while a run that depends on them
   rests (a table of contents awaiting approval included) first shows a warning and a question; afterwards that run can
   no longer be resumed. Changes on the settings page ask no such question.
-- **Stopping a job.** **„Auftrag anhalten“** keeps finished stages and Qwen sections; the model call or section running
-  at that moment may have to be repeated. **„Fortsetzen“** (resume) uses the stored inputs and releases open call
+- **Stopping a job.** **Stop job** keeps finished stages and Qwen sections; the model call or section running
+  at that moment may have to be repeated. **Resume** („Fortsetzen“) uses the stored inputs and releases open call
   reservations ([Budgets](#default-limits)). Process handling and the automatic resume:
   [STUDIO](STUDIO.md#stopping-and-resuming).
 

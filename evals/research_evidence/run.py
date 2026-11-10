@@ -6,7 +6,6 @@ enforcement; they do not measure whether a model correctly reads scientific pros
 import argparse
 import json
 import sys
-from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))

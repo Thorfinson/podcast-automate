@@ -12,7 +12,7 @@ from urllib.request import Request
 
 from podcast_automate.cli import main
 from podcast_automate.errors import AppError
-from podcast_automate.models import Contract, RuntimeSettings, EpisodeScript
+from podcast_automate.models import Contract, RuntimeSettings
 from podcast_automate.openrouter import OpenRouterAdapter, NoRedirect, ENDPOINT
 from podcast_automate.script_models import ScriptReview
 from podcast_automate.scripting import run_script

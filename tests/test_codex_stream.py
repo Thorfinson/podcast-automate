@@ -84,7 +84,8 @@ class CodexStreamTests(unittest.TestCase):
         self.adapter = CodexAdapter(RuntimeSettings(codex_model='gpt-6-astra', text_timeout_seconds=4),
                                     reasoning_effort='xhigh')
         mock = patch.object(self.adapter, 'command', return_value=[sys.executable, str(script)])
-        mock.start(); self.addCleanup(mock.stop)
+        mock.start()
+        self.addCleanup(mock.stop)
 
     def call(self, **kwargs):
         return self.adapter.structured('Synthetic test only', Result, self.root/'call', prompt_version='test', **kwargs)
