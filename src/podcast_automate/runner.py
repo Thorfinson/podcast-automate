@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from . import __version__
+from . import PIPELINE_IDENTITY
 from .audio import assemble, run_tts
 from .codex import CodexAdapter
 from .errors import AppError
@@ -130,7 +130,7 @@ def run_probe(root: Path, *, kind: str | None = None,
                 audio_approved=approve_audio,
                 stages={name: StageRecord() for name in stages})
         current_hash = digest({
-            "project": config_hash, "pipeline": __version__, "kind": kind,
+            "project": config_hash, "pipeline": PIPELINE_IDENTITY, "kind": kind,
             "prompt": "text_probe.v1",
             "script": script.model_dump(mode="json") if kind == "audio_probe" else None,
             **({"backend": backend} if kind == "text_probe" and backend != "codex_cli" else {}),

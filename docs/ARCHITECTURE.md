@@ -629,7 +629,9 @@ approval for concrete script states and episodes. Cost fields distinguish estima
 they must not derive invented invoice amounts from subscription calls. Source texts and model answers are frozen in
 the run as far as permitted, so later changes to online sources do not silently change the original run.
 
-**Where it lives.** `run_manifest.yaml` (`models.RunManifest`) holds `schema_version`, `pipeline_version`, `run_id`,
+**Where it lives.** `run_manifest.yaml` (`models.RunManifest`) holds `schema_version`, `pipeline_version` (the pipeline
+identity `podcast_automate.PIPELINE_IDENTITY`, `0.1.0`, which the input hashes of research runs and probes carry too;
+it does not follow the release in `__version__`, so a release never stops an open run from resuming, D-206), `run_id`,
 `kind`, `created_at`, `updated_at`, `project_hash`, `input_hash`, `status` (statuses:
 [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)), `audio_approved` and `stages` with
 `status`, `attempts`, `outputs` and `error` (`code`, `message`, and in `details` for a quota pause the reset facts,

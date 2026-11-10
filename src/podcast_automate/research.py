@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .prompts import fragment, instructions
-from . import __version__
+from . import PIPELINE_IDENTITY
 from . import attachments
 from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.research.CodexAdapter.structured)
 from .errors import AppError
@@ -533,7 +533,7 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         # One rule for the brief's identity, shared with every other lane: ``project_hash`` drops
         # a field that is unset, so existing research manifests keep their pre-field hash.
         config_hash = project_hash(bound_config)
-        inputs = {"project": config_hash, "pipeline": __version__,
+        inputs = {"project": config_hash, "pipeline": PIPELINE_IDENTITY,
                   "research": RESEARCH_VERSION, "local_files": local_hashes}
         if selection is not None:
             inputs["text_generation"] = selection
