@@ -46,7 +46,7 @@ dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7", "
 
 [project.optional-dependencies]
 # Contributor tools: `python -m pip install -e ".[dev]"`. CI pins the same version (.github/workflows/tests.yml).
-dev = ["ruff==0.14.4"]
+dev = ["ruff==0.17.4"]
 
 [project.urls]
 Homepage = "https://github.com/Thorfinson/podcast-automate"
