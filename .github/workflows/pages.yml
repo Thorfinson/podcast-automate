@@ -15,6 +15,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
+    # Only main is published. A run by hand on another branch builds nothing; the environment github-pages admits
+    # deployments from main only as well (Codex review on #22).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
