@@ -3,6 +3,9 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/Thorfinson/podcast-automate/security/advisories/new
     about: Please report vulnerabilities privately, never in a public issue. See SECURITY.md.
+  - name: Questions, ideas and show-and-tell
+    url: https://github.com/Thorfinson/podcast-automate/discussions
+    about: Ask how something works, propose an idea before building it, or share a podcast you made.
   - name: Documentation and known pitfalls
     url: https://github.com/Thorfinson/podcast-automate#docs
     about: Installation, the Studio, providers, costs, and docs/GOTCHAS.md for known problems and their fixes.

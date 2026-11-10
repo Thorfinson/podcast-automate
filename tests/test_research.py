@@ -177,7 +177,7 @@ class SourceTests(unittest.TestCase):
         self.assertIn(TEXT, " ".join(s.text for s in document.sections))
 
     def test_unpaywall_and_core_are_asked_with_the_users_address_and_key(self):
-        url, doi = "https://www.cambridge.org/core/journals/x/article/10.1017/S0003055419000018", "10.1017/S0003055419000018"
+        url = "https://www.cambridge.org/core/journals/x/article/10.1017/S0003055419000018"
         core = "https://api.core.ac.uk/v3/search/works?q=doi%3A%2210.1017/S0003055419000018%22&limit=3"
         sent, temporary = {}, tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -216,7 +216,7 @@ class SourceTests(unittest.TestCase):
         self.assertIn("email=studio%40example.org", next(address for address in asked if "api.unpaywall.org" in address))
 
     def test_a_scan_without_a_text_layer_brings_a_free_copy(self):
-        url, doi = "https://example.org/max-neef-scan.pdf", None
+        url = "https://example.org/max-neef-scan.pdf"
         work = {"title": "Human Scale Development", "locations": [{"is_oa": True, "pdf_url": "https://repository.example/hsd.pdf"}]}
         search = "https://api.openalex.org/works?search=Human%20Scale%20Development&per_page=3"
         scan = {"blocks": [], "metadata": {"extraction_coverage": {"pages_total": 12, "pages_with_text": 0}}}
@@ -230,13 +230,46 @@ class SourceTests(unittest.TestCase):
 
     def test_other_failures_ask_for_no_copy(self):
         url = "https://example.org/paper.pdf"
-        for failure in (AppError("Quellenabruf fehlgeschlagen (HTTP 404).", code="source_download_failed", details={"http_status": 404}),
-                        AppError("Unavailable", code="source_download_failed"),
+        for failure in (AppError("Unavailable", code="source_download_failed"),
                         AppError("Quelle überschreitet 20 MiB.", code="source_too_large")):
             with self.subTest(failure=str(failure)):
                 error, fetched = self.open_access_case(url, "A paper", {url: failure})
                 self.assertIs(error, failure)
                 self.assertEqual(fetched, [url])
+
+    WAYBACK = "https://archive.org/wayback/available?url=https%3A%2F%2Fexample.org%2Fgone.html"
+
+    def test_a_page_gone_from_its_address_is_read_from_the_internet_archive_but_a_refusal_never(self):
+        """D-197, 2026-11-10: seven sources of the projects were gone (HTTP 404) and the archive keeps many such pages.
+        Until then a 404 asked for no copy at all. A refusal (403) is the site's decision and asks no archive."""
+        url = "https://example.org/gone.html"
+        gone = AppError("Quellenabruf fehlgeschlagen (HTTP 404).", code="source_download_failed", details={"http_status": 404})
+        capture = "https://web.archive.org/web/20210503101500id_/https://example.org/gone.html"
+        snapshot = {"archived_snapshots": {"closest": {"available": True, "status": "200", "timestamp": "20210503101500",
+                                                       "url": "http://web.archive.org/web/20210503101500/https://example.org/gone.html"}}}
+        answers = {url: gone, self.WAYBACK: (json.dumps(snapshot).encode(), "application/json", ""),
+                   capture: (HTML, "text/html", capture)}
+        document, fetched = self.open_access_case(url, "A page that is gone", answers)
+        self.assertEqual((document.url, document.final_url), (url, capture))
+        self.assertIn("Archived copy of this address from the Internet Archive (captured 2021-05-03)", document.reliability_note)
+        self.assertEqual(fetched, [url, self.WAYBACK, capture], "a 404 asks the archive alone, no repository")
+        # Without a capture, or with only a capture of an error page, the 404 stands.
+        for missing in ({"archived_snapshots": {}}, {"archived_snapshots": {"closest": {**snapshot["archived_snapshots"]["closest"], "status": "404"}}}):
+            with self.subTest(missing=missing):
+                error, _ = self.open_access_case(url, "A page that is gone",
+                                                 {url: gone, self.WAYBACK: (json.dumps(missing).encode(), "application/json", "")})
+                self.assertIs(error, gone)
+        # A server that does not answer asks the free repositories first, then the archive.
+        unreachable = AppError("Quellenabruf fehlgeschlagen (URLError).", code="source_download_failed",
+                               details={"network_error": "URLError"})
+        document, fetched = self.open_access_case(url, "A page that is gone", {**answers, url: unreachable})
+        self.assertEqual(document.final_url, capture)
+        self.assertLess(fetched.index("https://api.openalex.org/works?search=A%20page%20that%20is%20gone&per_page=3"),
+                        fetched.index(self.WAYBACK))
+        # A refusal never reaches the archive.
+        error, fetched = self.open_access_case(url, "A page that is gone", {**answers, url: self.REFUSED})
+        self.assertIs(error, self.REFUSED)
+        self.assertNotIn(self.WAYBACK, fetched)
 
     # Springer's bot check as the Ontologies run received it: a noscript notice and one loading error, 300 characters.
     CHALLENGE = (b"<!DOCTYPE html><html><head><title>Client Challenge</title></head><body><noscript>JavaScript is "
@@ -685,7 +718,7 @@ class ResearchTests(fixtures.ResearchProjectCase):
 
     def test_corrupt_raw_source_is_downloaded_again(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
-            first = run_research(self.root)
+            run_research(self.root)
             raw = next((self.root / "sources/raw").rglob("*.html"))
             raw.write_bytes(b"corrupted")
             self.assertIn("retrieval", status(self.root)["invalid_completed_stages"])
@@ -837,7 +870,7 @@ class ResearchTests(fixtures.ResearchProjectCase):
 
     def test_parser_upgrade_reuses_download_and_rebuilds_dossier(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
-            first = run_research(self.root)
+            run_research(self.root)
             with patch("podcast_automate.research.EXTRACTION_VERSION", "test-upgrade"), \
                  patch("podcast_automate.sources.EXTRACTION_VERSION", "test-upgrade"):
                 second = run_research(self.root, resume=True)
@@ -863,7 +896,7 @@ class ResearchTests(fixtures.ResearchProjectCase):
 
     def test_failed_rebuild_marks_downstream_stages_pending(self):
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
-            first = run_research(self.root)
+            run_research(self.root)
         raw = next((self.root / "sources/raw").rglob("*.html"))
         raw.write_bytes(b"corrupted")
         self.download.side_effect = AppError("Unavailable", code="source_download_failed")

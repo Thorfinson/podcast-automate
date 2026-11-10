@@ -9,7 +9,8 @@ when. Claude Code loads this file through `CLAUDE.md`. What the product does and
 Windows (PowerShell); macOS and Linux use `.venv/bin/…` and `sh scripts/setup.sh`.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e .        # install or update the controller (no pla process may be running)
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]" # install or update the controller and Ruff (no pla process may be running)
+.\.venv\Scripts\python.exe -m ruff check .             # lint, about a second; CI's first check
 .\scripts\setup-ffmpeg.ps1                             # once: FFmpeg into tools/ffmpeg/bin
 .\.venv\Scripts\pla.exe studio                         # run the Studio on http://127.0.0.1:8765
 .\.venv\Scripts\pla.exe doctor --skip-tts              # check the installation without local Qwen
@@ -39,8 +40,9 @@ The other top-level folders are in the [README](README.md#layout). `projects/`, 
 
 ## Conventions
 
-- Raise `errors.AppError` with a stable `code`; the Studio and the manifest show the code, so renaming one is a
-  behaviour change.
+- Raise `errors.AppError` with a stable `code`; the Studio and the manifest show the code and the English Studio
+  explains it by its catalog text `error.code.<code>` (D-200), so renaming one is a behaviour change and a new one
+  needs its text in both catalogs.
 - Write project files through `storage` (`atomic_text`, `write_json`, `write_yaml`); read files that another worker
   may be writing through `storage.read_text`.
 - A model call carries a `prompt_version` tag. Bump it when the meaning of its prompt changes; checkpoints are bound
@@ -72,8 +74,9 @@ The other top-level folders are in the [README](README.md#layout). `projects/`, 
 
 | Suite | Command | Size | Needs |
 | --- | --- | --- | --- |
-| Python | `python -m unittest discover -s tests` | about 1,250 tests, about 20 minutes (each script run starts the fake story agent as a process) | `ffmpeg` and `ffprobe` on PATH |
-| Browser logic | `node --test tests/studio_ui.test.cjs` | 230 tests, under 1 s | Node 22 |
+| Python | `python -m unittest discover -s tests` | about 1,280 tests, about 20 minutes (each script run starts the fake story agent as a process) | `ffmpeg` and `ffprobe` on PATH |
+| Browser logic | `node --test tests/studio_ui.test.cjs` | 236 tests, under 1 s | Node 22 |
+| Lint | `ruff check .` | the whole repository, about 1 s | Ruff 0.14.4 (`pip install -e ".[dev]"`) |
 
 Model calls, downloads and speech synthesis are simulated in both suites; FFmpeg assembly is real.
 No account, API key, GPU or network is needed. Never add a test that performs a real model call.
@@ -100,8 +103,8 @@ several gigabytes of PyTorch and any scan of it takes minutes.
 | Editing `prompts/*.txt` or `prompts.py` | `test_prompts` plus the tests mapped to every module that composes the changed text. If the meaning changed, bump the `prompt_version` tag at the call site and check it on a real episode by hand (`evals/research_lean` writes one with the story agent). |
 | Editing `logs.py` or anything that keeps a file open for the life of the process | `test_logs`, `test_cli` and `test_core`, then confirm on Windows. Open handles break temp-directory cleanup there and nowhere else. |
 | Editing `claude_code.py`, `subscriptions.py` or `provider_pool.py` | Their mapped tests plus `test_scripting`, `test_research`, `test_status_summary`, `test_studio` and `test_text_selection`. Every run goes through the pool; the fixed-provider path must stay free of quota queries. |
-| Before committing or opening a pull request | Both full suites, green. |
-| CI (`.github/workflows/tests.yml`) | Both suites on Linux, macOS and Windows, each with Python 3.12 and 3.13, against the installed package. All six legs must pass. Superseded runs of the same ref are cancelled automatically. |
+| Before committing or opening a pull request | `ruff check .` and both full suites, green. |
+| CI (`.github/workflows/tests.yml`) | The `lint` job (Ruff and `node --check` of `app.js`), then both suites on Linux, macOS and Windows, each with Python 3.12 and 3.13, against the installed package. All seven checks must pass; the ruleset on `main` requires them for a pull request (D-201). Superseded runs of the same ref are cancelled automatically. |
 | Release (`.github/workflows/release.yml`) | On a pushed tag `vX.Y.Z`: checks the tag against `pyproject.toml` and the version's CHANGELOG section, builds and checks the sdist and the wheel, re-runs both suites on Linux with Python 3.12 and 3.13 against the built wheel, then publishes to PyPI and creates the GitHub release ([Release a version](docs/OPERATIONS.md#release-a-version)). |
 | Before tagging a release | Tag only a `main` commit whose six CI legs passed: the release workflow tests on Linux only. |
 
@@ -186,7 +189,7 @@ modules a change reaches through transitive dependents. Regenerate the raw list 
 - `subscriptions` → `test_subscriptions`, `test_provider_pool`
 - `studio_settings` → `test_studio` (`WorkspaceSettingsTests`), `test_text_selection`; `storage.load_project` reads it, so the `storage` line (the full suite) applies, and `speech`, `execution` and `studio_allowances` read their sections; the `web_search` section (`studio_settings.web_search`) is read by `studio` (key reminder, money-limit refusal) and `studio_worker` (new runs), so their line applies too; the settings page, its „Websuche“ choice included, is in the browser suite
 - `studio_allowances`, `production_report`, and the restart when idle in `studio` → `test_studio_automation`; the page side is in the browser suite. No test imports `production_report` directly; it is reached through `studio`, whose line applies as well
-- `studio_text`, `locales/*.json` → `test_studio_text` (the catalogs' keys and placeholders, the language choice and the import guard), `test_studio`, `test_studio_progress`, and the browser suite
+- `studio_text`, `locales/*.json` → `test_studio_text` (the catalogs' keys and placeholders, the language choice, the import guard and the code-text guard: every `AppError` code has `error.code.<code>` in both catalogs), `test_studio`, `test_studio_progress`, and the browser suite; the guard reads every module's `code="…"`, so adding, renaming or removing an `AppError` code in any module selects `test_studio_text` too
 - `studio`, `studio_worker`, `studio_progress`, `studio_scripts`, `studio_messages`, `studio_trash` → `test_expression`, `test_studio`, `test_studio_automation`, `test_studio_progress`, `test_studio_scripts`, `test_studio_text`, `test_studio_trash`, `test_attachments`, `test_cli`, `test_core`, `test_parallel`, `test_platforms`, `test_provider_pool`, `test_research_parallel`, `test_research_plan_gate` (the plan approval route and the gated Studio resume), `test_research_resilience`, `test_setup_schema`, `test_speech`, `test_teaching`, `test_text_selection`, `test_question_research`, `test_run_budget`, `test_project_versions` (the `new_version` route and the version in the project list, cards and page); `test_studio_trash` reaches `studio_trash` through the `studio` routes
 - `teaching`, `teaching_research` → `test_teaching`, `test_teaching_research`, `test_episode_framing`, `test_scripting`, `test_run_budget`
 - The third host (D-179: `models.ThirdHost`, `host_roles_of`, `host_labels`; `cast.cast_note` and `host_roles`; `story_agent.task_text`'s cast; `script_checks.validate_script`'s `roles`; `script_advisories.partner_share`; `speech.AudioChoice.third_voice` and `for_hosts`, `selected_audio`; `google_speech.speaker_runs` and `passage_rule`; `elevenlabs_speech.run_elevenlabs_tts` with three voices; `studio.audio_own`'s third-voice check; `episode_audio.voices_line`) → `test_third_host`, which also runs a whole script run of three hosts and a Google recording with real FFmpeg; a change to any of these modules selects it besides their own lines

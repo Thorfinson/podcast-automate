@@ -21,8 +21,8 @@ from podcast_automate.storage import read_yaml, write_json, write_yaml
 from podcast_automate.errors import AppError
 from podcast_automate.models import ResearchLimits
 from podcast_automate.scripting import STARTING_RATES, measured_rate, speaking_rate
-from podcast_automate.story_agent import (ALLOWED_TOOLS, TARGET_SHARE, CritiqueScores, OrientationCheck,
-                                          OrientationItem, OrientationReview, OrientationSheet, Scale, StoryCritique,
+from podcast_automate.story_agent import (ALLOWED_TOOLS, TARGET_SHARE, OrientationCheck,
+                                          OrientationItem, OrientationReview, OrientationSheet, StoryCritique,
                                           draft_errors, earlier_episodes, echo_errors, planned_entry, prepare,
                                           run_agent, session_command, session_files, session_timeout, task_text,
                                           used_documents)
@@ -223,7 +223,6 @@ class StoryAgentChecksTests(unittest.TestCase):
 
     def test_a_story_run_keeps_only_review_verdicts_given_with_the_corpus_rule(self):
         from podcast_automate.script_pipeline import saved_verdict_stands
-        passed = ScriptReview(issues=[], limitations=[])
         self.assertTrue(saved_verdict_stands(SCRIPT_REVIEW_VERSION + "+corpus"))
         self.assertFalse(saved_verdict_stands(SCRIPT_REVIEW_VERSION))
 

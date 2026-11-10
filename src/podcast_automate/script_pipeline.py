@@ -684,7 +684,7 @@ class ScriptRun:
     # --- reviews --------------------------------------------------------------------------------
 
     def review_episode(self, plan, entry):
-        config, dossier, work = self.config, self.dossier, self.work
+        dossier, work = self.dossier, self.work
         # A gap whose corpus hits nobody read must not be carried into a published script.
         # The teaching stage routes such gaps; reaching the review with one is a defect. The
         # guard has the routing scope (routable_probes): a gap another episode reads is not this

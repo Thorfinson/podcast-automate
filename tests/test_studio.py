@@ -164,7 +164,6 @@ class OutlineGateTests(fixtures.ScriptProjectCase):
 
     def test_revising_one_episode_keeps_other_episodes_reviewable(self):
         from podcast_automate.episode_audio import reviewed_episode
-        from podcast_automate.models import EpisodeScript
         def multi_model(prompt, output_type, directory, **kwargs):
             value, metadata = self.model(prompt, output_type, directory, **kwargs)
             if output_type is SeriesPlan:
@@ -203,6 +202,13 @@ class MemoryVault:
         else:
             self.entries.pop(kind, None)
         return True
+
+
+def stop_fake_workers(app):
+    """Stop the workers a test started through a patched Popen. Their Mock has no process id: psutil refuses it on
+    Linux and macOS (CI, 2026-11-01 to 11-09: five errors), and on Windows taskkill was run for it."""
+    with patch("podcast_automate.studio.stop_process_tree"):
+        app.stop_all()
 
 
 class StudioHttpTests(unittest.TestCase):
@@ -293,7 +299,7 @@ class StudioHttpTests(unittest.TestCase):
                 status, body, _ = self.request("/api/projects/example/start", {"action": "check"})
                 self.assertEqual(status, 200, body)
                 self.assertEqual(json.loads(process.return_value.stdin.getvalue())["google_key"], "AIza-google-test-key-0123")
-            self.app.stop_all()
+            stop_fake_workers(self.app)
 
     def test_every_key_is_kept_in_the_credential_store_across_a_restart(self):
         """D-167: a key entered once goes into the system's credential store, the next server loads it before any page
@@ -329,7 +335,7 @@ class StudioHttpTests(unittest.TestCase):
                 self.assertEqual(status, 200, body)
                 self.assertEqual(json.loads(process.return_value.stdin.getvalue())["core_key"], "core-test-key-0123")
                 self.assertNotIn("core-test-key-0123", " ".join(map(str, process.call_args.args[0])))
-            self.app.stop_all()
+            stop_fake_workers(self.app)
             self.request("/api/key", {"key": "", "kind": "core"})
             self.assertEqual(vault.entries, {"openrouter": "sk-or-test-key-0123"})
             self.assertIsNone(self.app.key_source("core"))
@@ -368,7 +374,7 @@ class StudioHttpTests(unittest.TestCase):
                 handed = json.loads(process.return_value.stdin.getvalue())
                 self.assertEqual(handed["anthropic_key"], key)
                 self.assertNotIn(key, " ".join(map(str, process.call_args.args[0])))
-            self.app.stop_all()
+            stop_fake_workers(self.app)
 
     def test_a_work_arrives_as_raw_bytes_and_only_as_octet_stream(self):
         # 2026-10-01: a book PDF from the library is far beyond the JSON upload's 4 MB.
@@ -481,7 +487,7 @@ class StudioHttpTests(unittest.TestCase):
             self.assertEqual(status, 200, body)
             sent = json.loads(process.return_value.stdin.getvalue())
             self.assertEqual((sent["action"], sent["run_id"]), ("episodes", "run_outline"))
-        self.app.stop_all()
+        stop_fake_workers(self.app)
         # An episode published from another outline does not count; one from this outline does.
         other = self.root / "runs/run_other_plan/series_plan.json"
         write_json(other, {"episodes": []})
@@ -796,7 +802,8 @@ class StudioHttpTests(unittest.TestCase):
             serve(self.workspace, 8765, lan=True)
         started.assert_not_called()
         opened.assert_not_called()
-        self.assertIn("nur auf diesem Computer", output.getvalue())
+        # The console line is English like the rest of the command line (D-156, since 2026-11-10).
+        self.assertIn("only on this computer", output.getvalue())
 
     def test_the_studio_serves_its_own_fonts_and_nothing_else_under_fonts(self):
         # The page's CSP takes fonts from the Studio only (D-186): IBM Plex comes from the package.
@@ -1820,7 +1827,7 @@ class WorkspaceSettingsTests(unittest.TestCase):
                 self.assertEqual(status, 200, body)
                 self.assertEqual(json.loads(process.return_value.stdin.getvalue())["perplexity_key"],
                                  "pplx-test-key-0123456789")
-            self.app.stop_all()
+            stop_fake_workers(self.app)
 
     def test_the_contact_address_for_unpaywall_is_a_workspace_setting_every_project_reads(self):
         """Until 2026-11-03 only PLA_UNPAYWALL_EMAIL enabled Unpaywall, which no Studio run of this workspace had set.
@@ -2244,7 +2251,6 @@ class PublishedReportTests(fixtures.ScriptProjectCase):
     """``reports/script_quality.yaml`` speaks for every published episode, not only the last run's."""
 
     def two_episode_model(self, prompt, output_type, directory, **kwargs):
-        from podcast_automate.models import EpisodeScript
         value, metadata = self.model(prompt, output_type, directory, **kwargs)
         if output_type is SeriesPlan:
             second = value.episodes[0].model_copy(deep=True)

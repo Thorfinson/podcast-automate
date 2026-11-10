@@ -285,7 +285,7 @@ Like all research, it searches with the run's web search: the subscriptions' or 
   such as the word limit each have their own two attempts (`teaching_research.MAX_SUPPLEMENT_REJECTIONS`). The review
   sees the same word limit (`source_budget`); for an exhausted source it demands no further quote but that the
   contradicting statement be deleted or narrowed.
-- **Fresh attempts.** Once its corrections are used up, **„Mit neuen Anläufen fortsetzen“** (resume with fresh
+- **Fresh attempts.** Once its corrections are used up, **Resume with fresh attempts** („Mit neuen Anläufen fortsetzen“) (resume with fresh
   attempts) on the hold card, or `pla approve <project> --fresh-attempts`, gives it new ones. The spent corrections
   move unchanged to `<kind>_superseded_RR_NN.json`, and the points their reviews objected to stay known to the next
   review as `previous_issues`.

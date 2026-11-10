@@ -42,21 +42,21 @@ which checks must pass: see [Human approvals](BUSINESS_LOGIC.md#human-approvals)
 
 ### In the Studio
 
-The guided flow ends on the page **„Vertonung“** (recording):
+The guided flow ends on the page **Recording** („Vertonung“):
 
 - The checkbox confirms the script state you have read, with the provider and the voices shown.
 - For Gemini, the approval card, the batch approval and the queue show the scope beforehand: the minutes estimated
   at the planning rate ([Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length)) and the characters
   of the spoken text, without a price, because the price cannot be checked offline.
-- Only **„Audio erzeugen“** (generate audio) starts the recording; when the episode has to wait for a free place, the
-  button reads **„Freigeben und einreihen“** (approve and queue, see [Queue](#queue)).
+- Only **Generate audio** („Audio erzeugen“) starts the recording; when the episode has to wait for a free place, the
+  button reads **Approve and queue** („Freigeben und einreihen“; see [Queue](#queue)).
 - For Gemini, progress, stopping and resuming are separate per episode.
-- All finished recordings are listed under **„Alle fertigen Folgen anhören“** (listen to all finished episodes), one
+- All finished recordings are listed under **Listen to all finished episodes** („Alle fertigen Folgen anhören“), one
   row per episode with its length, its state and an MP3 download, also while further episodes are being recorded. ▶
   plays it in one player docked at the foot of the page, with speed, previous and next; an episode in parts plays its
   parts in a row. Where each recording stopped, which were heard to the end and the speed are kept in the project
   (`studio/reader_state.json`), so listening goes on where it stopped, also on another device (why: D-163). The page
-  says once what older recordings differ in. **„Podcast anhören“** (listen to the
+  says once what older recordings differ in. **Listen to the podcast** („Podcast anhören“) (listen to the
   podcast) on the overview leads there.
 - Earlier recordings stay available and are marked as an earlier version when text, provider or voices have changed
   since.
@@ -124,7 +124,7 @@ after the last word (`music.py`, `audio.assemble`; why: D-189). `<project>/studi
   approval names its hash beside the audio choice's (`music.music_hash`, the Studio's `music_hash`). Another piece or
   credit needs a new approval, and a file changed under its name stops with `music_changed` before anything is
   recorded. A project without music records and hashes as before.
-- A recording made before the music came is not current any more („geändert: Musik“). Since the music is mixed in
+- A recording made before the music came is not current any more ("changed: music" („geändert: Musik“)). Since the music is mixed in
   the montage only, recording such an episode again takes every take from the cache: a new approval, no new speech.
 - Show notes, the episode's companion kit (`description.txt`, `sources.md`) and the podcast's `sources.md` name the
   piece as its license asks, in the podcast's language (`content_text` `music_credit`), never written by a model. The
@@ -156,8 +156,8 @@ values reported by a CLI are not subscription costs that were actually charged.
 The listening rounds of 2026-10-06 (`.studio/hoerproben/make_hoerproben.py`, Ontologies episode 1) chose this route
 (why: D-133): two hosts speaking in one request sounded markedly more like a conversation than segments recorded one
 by one, and the user found the voices of the per-segment recordings too clean and the mood monotonous. In the Studio,
-choose **„Gemini TTS · Google“** in the **„Audio“** section of the [Settings page](STUDIO.md#settings-page) and store
-the **„Google-Key“** there; the OpenRouter key stays for OpenRouter text, Jev and the OpenRouter route.
+choose **Gemini TTS · Google** in the **Audio** section of the [Settings page](STUDIO.md#settings-page) and store
+the **Google key** („Google-Key“) there; the OpenRouter key stays for OpenRouter text, Jev and the OpenRouter route.
 
 ### The speech request
 
@@ -202,21 +202,20 @@ characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAG
 ### Style and roles
 
 - Each role has a short style in English, as Google recommends (`speech.RoleStyles`, at most 80 characters; a long
-  direction makes the voice drift). The presets (`speech.STYLE_PRESETS`) are the listening rounds; **„Neugierig,
-  gespannt auf das, was kommt“** (curious and eager for what comes next) is the default, the user's choice of
+  direction makes the voice drift). The presets (`speech.STYLE_PRESETS`) are the listening rounds; **Curious, eager for what comes next** („Neugierig, gespannt auf das, was kommt“) is the default, the user's choice of
   2026-10-06 (why: D-135). The fields can also be overwritten with own words or left empty. Styles are Google's and ElevenLabs' only
   ([ElevenLabs](#elevenlabs)).
-- **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode, `AudioChoice.alternate_roles`): in
+- **Swap roles from episode to episode** („Rollen von Folge zu Folge tauschen“, `AudioChoice.alternate_roles`): in
   every even-numbered episode the two voices swap, so each voice is the expert in turn; voice A explains in episode 1
   (`AudioChoice.for_episode`). The roles in the script stay host_a explains and host_b asks; only the voices swap.
   The approval and the run inputs hold the choice itself, the report and the show notes the episode's voices.
 - Default voices of the route: Erinome (explains in episode 1) and Sadachbia (asks).
-- A third host has a style of its own, **„Stil von Host C“** (`AudioChoice.third_style`); unset, it speaks without one.
+- A third host has a style of its own, **Style of host C** („Stil von Host C“) (`AudioChoice.third_style`); unset, it speaks without one.
   Alternating roles never move the third voice.
-- **„▶ Gesprächsprobe“** (conversation sample) on the settings page plays a short conversation of four turns with
+- **▶ Conversation sample** („▶ Gesprächsprobe“) on the settings page plays a short conversation of four turns with
   exactly the selected voices and styles and the pace of the sample's language
   ([Speaking pace per language](#speaking-pace-per-language)), with a pause tag and a listener reaction, in German or English;
-  **„▶ Mit getauschten Rollen“** plays it with the roles swapped. A sample that does not exist yet is made after a
+  **▶ With swapped roles** („▶ Mit getauschten Rollen“) plays it with the roles swapped. A sample that does not exist yet is made after a
   confirmation with one short request on the Google key (`voice_samples.generate_pair`) and is then played from
   `projects/voice-samples/google/<language>/<fingerprint>/` without a further request.
 
@@ -238,13 +237,13 @@ characters of script text and 20 segments (`MAX_PASSAGE_CHARACTERS`, `MAX_PASSAG
 
 The listening round of 2026-10-19 (`.studio/hoerproben/elevenlabs_probe.py`, Orlagau episode 1 in German) tried
 ElevenLabs v4 with the voices of the user's own account; the user chose Pauli to explain and Thomas to ask (why:
-D-176). In the Studio, choose **„ElevenLabs · v4“** in the **„Audio“** section of the
+D-176). In the Studio, choose **ElevenLabs · v4** in the **Audio** section of the
 [Settings page](STUDIO.md#settings-page), or as a project's own choice ([A project's own speech
-choice](#a-projects-own-speech-choice)), and store the **„ElevenLabs-Key“** there.
+choice](#a-projects-own-speech-choice)), and store the **ElevenLabs key** („ElevenLabs-Key“) there.
 
 ### The speech request
 
-- **Model:** „Eleven v4“ by default, or „Eleven v4 Turbo“ for half the credits, chosen under „Sprachmodell“ on
+- **Model:** „Eleven v4“ by default, or „Eleven v4 Turbo“ for half the credits, chosen under "Speech model" („Sprachmodell“) on
   the settings page or in a project's own choice. A Turbo take is cached apart from a v4 take of the same passage
   (the model is in its key), so switching records anew. Measured on 2026-11-10 with one Geld verstehen passage
   (three voices, with context, 1,547 characters sent): v4 750 credits, Turbo 375, both about 90 seconds; blind,
@@ -276,7 +275,7 @@ choice](#a-projects-own-speech-choice)), and store the **„ElevenLabs-Key“** 
   `<short pause>` → `[short pause]`, `<breath>` → `[inhales]`), a listener reaction `|mhm|` a short turn of the other
   host („Mhm.“), and each role's style ([Style and roles](#style-and-roles)) a leading tag of its first turn in a
   passage. A reading of its own in ElevenLabs' larger tag vocabulary is not built yet.
-- Styles, „Rollen von Folge zu Folge tauschen“ and the calm delivery („ohne Eile“) apply as on Google's route; the
+- Styles, "Swap roles from episode to episode" and the calm delivery ("unhurried" („ohne Eile“)) apply as on Google's route; the
   conversation sample is Google's only.
 
 ### Keys, errors and limits
@@ -299,18 +298,18 @@ choice](#a-projects-own-speech-choice)), and store the **„ElevenLabs-Key“** 
 A project may speak with a choice of its own instead of the settings page's (`studio/audio_own.json`,
 `speech.own_audio`) (why: D-177): one podcast spoken by ElevenLabs while the others keep the workspace's route. It
 holds first, then the settings page's, then the project's `studio/audio.json` (`speech.selected_audio`). The
-recording page's panel **„Sprachanbieter dieses Projekts“** sets it (route, two voices, alternating roles; pauses,
-styles and pace come from the choice in force) and **„Wieder wie Einstellungen“** removes it
+recording page's panel **This project's speech provider** („Sprachanbieter dieses Projekts“) sets it (route, two voices, alternating roles; pauses,
+styles and pace come from the choice in force) and **Back to Settings** („Wieder wie Einstellungen“) removes it
 (`POST /api/projects/<id>/audio_own`). As with any other change of the choice, every episode then needs a new
 approval, and finished recordings count as older.
 
 ## Gemini via OpenRouter
 
-In the Studio, choose **„Gemini TTS · OpenRouter (Abschnitt für Abschnitt)“** and both voices in the **„Audio“** section of the
+In the Studio, choose **Gemini TTS · OpenRouter (segment by segment)** („Gemini TTS · OpenRouter (Abschnitt für Abschnitt)“) and both voices in the **Audio** section of the
 [Settings page](STUDIO.md#settings-page); the chat does not set them. The audio choice is a workspace setting
 ([Studio settings](CONFIGURATION.md#studio-settings)), saved separately from the text model (which can still be Codex
-or Claude), and changes neither the reviewed script nor its research. **„Stimmen anhören“** (listen to voices) on the
-project page compares the voices; the key goes into the **„OpenRouter-Key“** section of the settings page.
+or Claude), and changes neither the reviewed script nor its research. **Listen to voices** („Stimmen anhören“) on the
+project page compares the voices; the key goes into the **OpenRouter key** („OpenRouter-Key“) section of the settings page.
 
 Gemini preselects an editable voice for the expert and one for the curious conversation partner. Models and the 30
 voices (`speech.GEMINI_MODELS`, `speech.GEMINI_VOICES`): see [Providers and models](PRODUCT.md#providers-and-models).
@@ -347,16 +346,15 @@ voices (`speech.GEMINI_MODELS`, `speech.GEMINI_VOICES`): see [Providers and mode
 
 ### Voice library
 
-- **„Gemini-Stimmen zum Vergleichen“** (Gemini voices to compare) lists all 30 voices. **„Fehlende Hörproben
-  erzeugen · API“** (generate missing voice samples · API) creates one short recording for each missing voice, in
+- **Gemini voices to compare** („Gemini-Stimmen zum Vergleichen“) lists all 30 voices. **Make missing voice samples · API** („Fehlende Hörproben erzeugen · API“) creates one short recording for each missing voice, in
   German or English according to the selected language; all voices read the same comparison text. The progress
   shows how many samples are stored.
 - After an interruption, finished voices are kept; the same button continues with the missing ones and skips every
   complete recording. After a provider error, no further voices are requested automatically. New recordings use
   OpenRouter credit.
-- **„▶ Play“** next to each finished voice plays only the stored MP3, without a model call or API key; another click
+- **▶ Play** next to each finished voice plays only the stored MP3, without a model call or API key; another click
   pauses, and the player below has a timeline. Voice samples survive project switches and Studio restarts. A single
-  missing voice can be created with **„Hörprobe erzeugen · API“** (create voice sample · API) next to the role
+  missing voice can be created with **Make voice sample · API** („Hörprobe erzeugen · API“) next to the role
   selection. Loading the page and switching language or voice create no recordings.
 - The shared library lies under `projects/voice-samples/gemini/`, excluded by the gitignore rule for `projects/`,
   with separate German and English libraries. Language, voice, model, comparison text and adapter version determine
@@ -373,7 +371,7 @@ voices (`speech.GEMINI_MODELS`, `speech.GEMINI_VOICES`): see [Providers and mode
   creation, splitting without text loss, cache reuse, API and format errors, the take check, retries after gateway
   errors and the shared rate-limit wait (`tests/test_speech.py`), loudness and pause trimming (`tests/test_audio.py`),
   unchanged scripts, separate provider choice, approvals, resuming after an API limit, voice-sample reuse without an
-  API key, continuing after an error and **„▶ Play“** without a generation job. Qwen calls are blocked in the Gemini
+  API key, continuing after an error and **▶ Play** without a generation job. Qwen calls are blocked in the Gemini
   integration tests; the expression stage's text call is simulated (`tests/test_expression.py`).
 - No speed comparison between Gemini and local Qwen is recorded: Gemini avoids the local GPU recording, but a
   concrete speed-up is not established (see V-19).
@@ -382,7 +380,7 @@ voices (`speech.GEMINI_MODELS`, `speech.GEMINI_VOICES`): see [Providers and mode
 
 ## Expression tags
 
-Every Gemini recording gets the stage **„Ausdruck“** (expression) before synthesis unless it is switched off (see
+Every Gemini recording gets the stage **Expression** („Ausdruck“) before synthesis unless it is switched off (see
 below) (why: D-090). The text model of the script run chooses from twelve kinds of inline tags in angle brackets and
 sets them sparingly between the words, in at most about every fourth segment: for example a chuckle at a surprising
 turn, a breath before a summary or a short pause before a key statement.
@@ -419,10 +417,10 @@ The tags belong to the script reading (why: D-091).
   places the tags of every published episode, the episodes in parallel, each with a small call allowance of its own
   (one answer, at most two corrections). A failure there never undoes the finished script run.
 - **Where:** `episodes/<episode>/expression.json`, bound to the script hash, with the spoken text they were placed on.
-- **Reading:** on **„Skripte lesen“** (read scripts) the tags are marked in the text; where a segment's spoken form
-  differs from the written text, they appear below it as „Gesprochen mit Ausdruck: …“ (spoken with expression).
-- **Placing again:** the side column offers **„Ausdruck setzen“** (set expression) or **„Ausdruck neu setzen“** (set
-  expression again), also **„Für alle Folgen“** (for all episodes); this asks the text model again.
+- **Reading:** on **Read scripts** („Skripte lesen“) the tags are marked in the text; where a segment's spoken form
+  differs from the written text, they appear below it as "Spoken with expression: …" („Gesprochen mit Ausdruck: …“).
+- **Placing again:** the side column offers **Place expression** („Ausdruck setzen“) or **Place expression again** („Ausdruck neu setzen“) (set
+  expression again), also **For all episodes** („Für alle Folgen“); this asks the text model again.
 - **Approval:** the approval on the page Vertonung carries the hash of the tags you read. If they were placed again
   afterwards, the Studio rejects the approval until the episode has been read again. A reading placed for the other
   route (with or without listener reactions) or for an earlier script counts as none, on the reading page and in the
@@ -431,7 +429,7 @@ The tags belong to the script reading (why: D-091).
   since is recorded without a tag. If no tags are placed yet, the recording places them itself, and the card says
   that they are then unread.
 - **Unchanged:** script, transcript and approval text. A recording without expression still counts as current. To
-  record without expression, clear **„Ausdrucksmarken vor der Vertonung setzen“** (set expression tags before
+  record without expression, clear **Place expression tags before the recording** („Ausdrucksmarken vor der Vertonung setzen“) (set expression tags before
   recording) in the audio panel of the settings page, or, in a project without workspace settings, set
   `"expression": false` in `studio/audio.json` (see [Studio settings](CONFIGURATION.md#studio-settings)).
 
@@ -462,10 +460,10 @@ only the further tags from line 07 on.
 A project whose brief has a third host (`TopicBrief.third_host`, [Three hosts](SCRIPTS.md#three-hosts); why: D-179)
 is recorded with three voices on every route:
 
-- **„Stimme Host C“** on the settings page (`AudioChoice.third_voice`) sets the third voice; on automatic, the first
+- **Voice of host C** („Stimme Host C“) on the settings page (`AudioChoice.third_voice`) sets the third voice; on automatic, the first
   voice of `speech.THIRD_VOICES` that neither host speaks in (Qwen: Dylan, Eric, Ryan; Gemini: Charon, Algenib,
   Puck). ElevenLabs has no such default: its voices are the account's, so there the third voice is chosen, on the
-  settings page or in a project's own choice (**„Sprachanbieter dieses Projekts“**, [A project's own speech
+  settings page or in a project's own choice (**This project's speech provider**, [A project's own speech
   choice](#a-projects-own-speech-choice)); without it the recording stops with `third_voice_required`, saving the
   own choice is refused the same way, and the recording page starts none. Without the Studio's audio choice, the
   CLI speaks the brief's `third_host.voice`.
@@ -479,7 +477,7 @@ is recorded with three voices on every route:
   2026-10-21), and its passage rule stays as it is. Qwen and OpenRouter record segment by segment and need no
   change.
 - The approval card names the third host's voice beside the two others, as the approval is bound to all of them.
-- The conversation sample („▶ Gesprächsprobe“) stays a sample of the two hosts.
+- The conversation sample ("▶ Conversation sample") stays a sample of the two hosts.
 
 ## Take checks, pauses and loudness
 
@@ -509,7 +507,7 @@ removed is in `audio_report.json` (`trimmed_silence_seconds`) and per segment in
 
 The three pause values are minimum pauses for the same voice, for a change of voice and at a chapter boundary
 (`speech.PausePolicy`, default 250, 450 and 900 ms); a longer planned pause is kept. They are set on the
-[Settings page](STUDIO.md#settings-page), and the approval card shows them under „Pausen“ (pauses).
+[Settings page](STUDIO.md#settings-page), and the approval card shows them under "Pauses" („Pausen“).
 
 - Changed pauses are audible and therefore need a new audio approval.
 - The default values are not stored in approvals and run inputs; only a deviating pause policy is stored there and
@@ -521,11 +519,11 @@ Each language a project can speak has a pace of its own (`speech.LanguagePace` i
 [Settings page](STUDIO.md#settings-page) (why: D-147). The user's choice of 2026-10-07: English at 93 % and unhurried,
 German as recorded.
 
-- **„Sprechtempo“** (speaking tempo), 80 to 100 %: under 100 % assembly slows every recording with its pitch kept
+- **speaking pace** („Sprechtempo“), 80 to 100 %: under 100 % assembly slows every recording with its pitch kept
   (FFmpeg `atempo`) before the pauses go in, so the pauses keep their length and the timeline and the chapters are
   measured on the slowed audio. `audio_report.json` names it as `tempo`. It holds on every route and never speeds a
   recording up.
-- **„… ohne Eile sprechen“** (speak unhurried), Google and ElevenLabs only: both roles' styles are sent with
+- **Speak … unhurried** („… ohne Eile sprechen“), Google and ElevenLabs only: both roles' styles are sent with
   „, unhurried“ added
   (`speech.UNHURRIED`, `AudioChoice.spoken_styles`); an empty style becomes „unhurried“. The takes are new requests.
   How much slower Gemini speaks with it is not measured yet (V-28).
@@ -535,7 +533,7 @@ German as recorded.
   existed keep their hashes.
 - A changed pace of the project's language is audible and needs a new audio approval. A new tempo alone reuses the
   recorded takes from the cache and repeats only the montage; a calm delivery records anew.
-- The approval card shows the project language's pace under „Tempo“.
+- The approval card shows the project language's pace under "Pace" („Tempo“).
 
 ### Loudness
 
@@ -550,8 +548,7 @@ Pronunciation and voice consistency are judged in the audio pilot, supported by 
 (`studio/spoken_forms.json`), per-segment overrides and [re-rendering single segments](#re-rendering-one-segment).
 
 On the audio page, **„Aussprache prüfen“** (check pronunciation) sits directly above the approval checkbox; the two
-collapsible panels **„Sprechformen und Hostnamen“** (spoken forms and host names) and **„Redaktionelle Notizen“**
-(editorial notes) sit next to it in the side column. Host names and notes are part of the script work
+collapsible panels **Spoken forms and host names** („Sprechformen und Hostnamen“) and **Editorial notes** („Redaktionelle Notizen“) sit next to it in the side column. Host names and notes are part of the script work
 ([SCRIPTS](SCRIPTS.md#host-names-and-style-notes)).
 
 ### Pronunciation report
@@ -566,7 +563,7 @@ and model names such as `V3.2` or `H800`, and words with foreign characters.
 
 ### Spoken-forms table
 
-**„Sprechformen und Hostnamen“** stores one table per project, one line per entry in the form `written = spoken`
+**Spoken forms and host names** stores one table per project, one line per entry in the form `written = spoken`
 (in the UI: `geschrieben = gesprochen`).
 
 - Every recording then gets two fields: `text` stays the reviewed script text for transcript, hash and approval;
@@ -588,7 +585,7 @@ The replacement is case-exact and works on whole words.
 
 ### Per-segment spoken form
 
-On the reading page, every spoken passage of a published episode with audio has its own **„Sprechform“** (spoken
+On the reading page, every spoken passage of a published episode with audio has its own **Spoken form** („Sprechform“) (spoken
 form). The field starts with the text the table produces for this segment; saving it unchanged creates no override,
 and the table keeps applying. A different text applies only to this segment and takes precedence over the table.
 The overrides are stored under `spoken_overrides` in `episodes/<episode>/audio_review.yaml`.
@@ -602,7 +599,7 @@ it never blocks.
 
 ## Re-rendering one segment
 
-**„Nur diesen Abschnitt neu rendern“** (re-render only this segment) sends the job with the flag `rerender` instead
+**Re-render only this segment** („Nur diesen Abschnitt neu rendern“) sends the job with the flag `rerender` instead
 of a new approval:
 
 - The Studio checks by the same rule as the recording whether a stored approval exists for exactly this script hash
@@ -648,28 +645,25 @@ takes a minute on 2026-11-06, three at once 7 to 8.8.
 ### Queue
 
 - An approval for which no place is free (all places taken, or a text job of the project is running) is not refused
-  but queued (`studio/audio_queue.json`). So is **„Fortsetzen“** on a stopped ElevenLabs recording while all three of its
-  places are taken, also with „Alle {n} fortsetzen“; its card then says which place it waits for.
+  but queued (`studio/audio_queue.json`). So is **Resume** („Fortsetzen“) on a stopped ElevenLabs recording while all three of its
+  places are taken, also with "Resume all {n}" („Alle {n} fortsetzen“); its card then says which place it waits for.
 - The Studio's scheduler starts queued episodes in the order of their approvals as soon as a place is free and the
-  key of the project's route (Google or OpenRouter) is present; after a restart, an episode otherwise shows „wartet
-  auf den Google-Key“ or „wartet auf den OpenRouter-Key“ (waiting for the key).
+  key of the project's route (Google or OpenRouter) is present; after a restart, an episode otherwise shows "waiting for the Google key" („wartet auf den Google-Key“) or "waiting for the OpenRouter key" („wartet auf den OpenRouter-Key“).
 - Before starting, the scheduler checks script, reading view, voices and expression again; if something has
   changed, the episode stays in the queue with the reason.
-- A queued row holds its episode's approval: **„Entfernen“** (remove) on a row or on the episode's card, and **„Alle
-  entfernen“** (remove all, asked first), drop it, and the episode has to be approved again.
-- **„Warteschlange anhalten“** (hold the queue) keeps every row and its approval, and nothing starts from it until
-  **„Warteschlange fortsetzen“** (resume the queue); a new approval joins it instead of starting, even with a place
-  free, while „Fortsetzen“ on a stopped recording is not held. Running recordings finish. The hold lives in
+- A queued row holds its episode's approval: **Remove** („Entfernen“) on a row or on the episode's card, and **Remove all** („Alle entfernen“) (asked first), drop it, and the episode has to be approved again.
+- **Hold the queue** („Warteschlange anhalten“) keeps every row and its approval, and nothing starts from it until
+  **Resume the queue** („Warteschlange fortsetzen“); a new approval joins it instead of starting, even with a place
+  free, while "Resume" on a stopped recording is not held. Running recordings finish. The hold lives in
   `studio/audio_queue_hold.json` and survives a restart. Each row moves one place up or down with **↑** and **↓**,
   so the next free place goes to the episode wanted first (route `audio_queue` with `hold`, `all` or `move`, why:
   D-195). The page shows these controls only when the server names `audio_queue_controls` among its capabilities:
   the page is read from disk on every load, and a server started before them took a move for a removal.
-- The page Vertonung shows the queue with **„Entfernen“** (remove) and **„{n} gelesene Folgen freigeben“**
-  (approve {n} read episodes), beside **„Zuerst die Skripte lesen“** (read the scripts first): one checkmark, never
+- The page Vertonung shows the queue with **Remove** and **Approve {n} read episodes** („{n} gelesene Folgen freigeben“), beside **Read the scripts first** („Zuerst die Skripte lesen“): one checkmark, never
   preset, confirms that all listed scripts, including their expression, have been read, and approves them in one
   step. As many start at once as places are free; the rest is queued. It covers every episode without a current
   recording, the never voiced ones too.
-- **„{n} Folgen mit Musik neu zusammensetzen“** (assemble n episodes again with music), above it, covers only the
+- **Assemble {n} episodes again with music** („{n} Folgen mit Musik neu zusammensetzen“), above it, covers only the
   recorded episodes whose one change is the music (stale reason `music` alone, `musicOnlyRecordings`): their takes
   come from the cache, so no new speech is sent. Its own checkmark, never preset, approves them again; they start or
   queue as above. Why a second button: on 2026-11-08 the first would also have recorded Asimov v2's 16 episodes never
@@ -698,10 +692,9 @@ Each recording run writes its export to `exports/<episode>/<run_id>/`:
 | `playlist.m3u` | The MP3 |
 | `show_notes.md` | Chapters with timestamps from the measured assembly, the voices, and pronunciation notes for segments with a deviating spoken form; ends with the transparency note |
 | `listening_sheet.md` | The listening sheet, see below; ends with the transparency note |
-| `publish/` | The companion kit, written later on request („Begleitmaterial“, `pla publish-kit`; why: D-139): `description_short.txt`, `description.txt` (at most 4,000 characters: the description, chapters as `00:00 Title`, as many sources as fit, and the transparency note), `sources.md` with every source, and `kit.json` bound to the script hash and this recording (`publish_kit.KIT_VERSION`, `publish_kit.v2`). Without a recording the kit lies in `episodes/<episode>/publish/`, chapters without times. |
+| `publish/` | The companion kit, written later on request ("Companion material" („Begleitmaterial“), `pla publish-kit`; why: D-139): `description_short.txt`, `description.txt` (at most 4,000 characters: the description, chapters as `00:00 Title`, as many sources as fit, and the transparency note), `sources.md` with every source, and `kit.json` bound to the script hash and this recording (`publish_kit.KIT_VERSION`, `publish_kit.v2`). Without a recording the kit lies in `episodes/<episode>/publish/`, chapters without times. |
 
-The whole podcast gets a companion kit of its own in `publish/` of the project, written on request („Begleitmaterial
-für den Podcast“, `pla publish-kit --podcast`; why: D-165):
+The whole podcast gets a companion kit of its own in `publish/` of the project, written on request ("Companion kit for the podcast" („Begleitmaterial für den Podcast“), `pla publish-kit --podcast`; why: D-165):
 
 | File | Content |
 | --- | --- |
@@ -721,7 +714,7 @@ für den Podcast“, `pla publish-kit --podcast`; why: D-165):
   title). Idea sources and local file paths never appear.
 - The kit covers every episode with a published script, also one not recorded yet. It counts as current while every
   episode's script and latest recording are the ones it covers; after a new recording or script it is outdated, not
-  shown and not zipped until it is rebuilt („Neu zusammenstellen“), which reuses the descriptions without a model call
+  shown and not zipped until it is rebuilt ("Rebuild" („Neu zusammenstellen“)), which reuses the descriptions without a model call
   while no episode's plan or chapter titles changed.
 
 An episode recorded in parts before 2026-10-04 has the first five files once per part in `part_01/`, `part_02/` and so
@@ -774,14 +767,14 @@ Every exported MP3 says in its own tags that it was made with AI (why: D-154), w
 - The companion kit counts the note against its 4,000 characters and never cuts it: sources give way first, and when
   the description, the chapters and the note alone do not fit, the kit stops with `description_too_long`. A kit made
   before the note (`publish_kit.v1`) is not shown on the recording page and not put into the ZIP until it is rebuilt
-  („Neu zusammenstellen“ or `pla publish-kit`); the rebuild reuses its saved descriptions without a model call
+  ("Rebuild" or `pla publish-kit`); the rebuild reuses its saved descriptions without a model call
   (`publish_kit.DESCRIPTIONS_VERSION` stays `publish_kit.v1`).
 - The audio itself carries no spoken disclosure; that stays an open option, since it would change approved audio.
   Whether note and tags satisfy the EU AI Act's Art. 50 for an intended use is not checked legally (V-43).
 
 ### Listening review
 
-After listening, you enter the **„Hörprüfung“** (listening review) with **„Hörprüfung eintragen“** (enter listening
+After listening, you enter the **Listening review** („Hörprüfung“) with **Record the listening review** („Hörprüfung eintragen“) (enter listening
 review).
 
 - `listening_sheet.md` lies in the export next to the MP3 and has columns for unclear points, lost attention and

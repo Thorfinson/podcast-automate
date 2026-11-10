@@ -204,7 +204,7 @@ class AttachmentResearchTests(research_fixtures.ResearchProjectCase):
 
     def test_research_receives_uploaded_leads_and_imports_the_named_local_source(self):
         from podcast_automate.research import run_research
-        from podcast_automate.research_models import ResearchDiscovery, ResearchDossier
+        from podcast_automate.research_models import ResearchDiscovery
         from podcast_automate.runner import manifest_path
         rows = attachments.add(self.root, [upload("Eigene Notizen.md", "A wish to explain storage foundations. " * 20)])
         def model(prompt, output_type, directory, **kwargs):

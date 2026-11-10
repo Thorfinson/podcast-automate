@@ -46,12 +46,12 @@ Or start it with one command:
 ```
 
 `--port 8766` chooses another port, `--no-browser` keeps the browser closed. A second double-click opens the running
-Studio. **„Studio beenden“** (stop the Studio) at the bottom left stops the local server and pauses its active jobs,
+Studio. **Quit Studio** („Studio beenden“) at the bottom left stops the local server and pauses its active jobs,
 which stay resumable at the next start. By default only this computer can reach the server (see
 [Studio access](SECURITY.md#studio-access)).
 
 If the Studio started by double-click on Windows does not find Codex, see
-[Check the subscriptions](OPERATIONS.md#check-the-subscriptions). Once that is fixed, **„Fortsetzen“** (resume)
+[Check the subscriptions](OPERATIONS.md#check-the-subscriptions). Once that is fixed, **Resume** („Fortsetzen“)
 continues the saved job; a table-of-contents draft still waits for your review before the scripts are written.
 
 ## Look and layout
@@ -62,18 +62,18 @@ The Studio's look is called Sendestudio (why: D-186):
 - IBM Plex Sans for text and IBM Plex Mono for numbers and times. The Studio serves both fonts itself (`/fonts/`),
   because the page takes nothing from other servers.
 
-**„Darstellung“** (appearance) at the foot of the sidebar, and on the settings page under „Sprache / Language“,
+**Appearance** („Darstellung“) at the foot of the sidebar, and on the settings page under "Sprache / Language",
 switches between three choices:
-- **„Wie das Gerät“** (like the device), the default;
-- **„Hell“** (light);
-- **„Dunkel“** (dark).
+- **Like the device** („Wie das Gerät“), the default;
+- **Light** („Hell“);
+- **Dark** („Dunkel“).
 
 The choice is kept per device in a cookie, never in the browser's storage.
 
 A project has three places (why: D-185):
-- **„Serie“**: the outline and the production;
-- **„Folgen“**: reading and recording;
-- **„Grundlagen“**: the brief and the research.
+- **Series** („Serie“): the outline and the production;
+- **Episodes** („Folgen“): reading and recording;
+- **Basics** („Grundlagen“): the brief and the research.
 
 Each place opens on the page where its work waits. Its pages stand as tabs below the title, each with its state. The
 running or stopped job stands in one strip at the top of the page, and only while there is one.
@@ -87,27 +87,27 @@ Five state badges mean the same everywhere:
 
 A button that cannot be used now is dashed.
 
-An ElevenLabs voice is named by the account's list. Until the list is loaded the page says „ElevenLabs-Stimme“, never
+An ElevenLabs voice is named by the account's list. Until the list is loaded the page says "ElevenLabs voice" („ElevenLabs-Stimme“), never
 the voice's id.
 
-**„Serie“** shows an approved outline as one row per episode. A row holds:
+**Series** shows an approved outline as one row per episode. A row holds:
 - the episode's number, title and chapters (folded);
 - its way in four marks: Plan, Text, Prüfung, Ton;
-- its next step: „Lesen“, „Anhören“, „schreibt“ or „als Nächste“.
+- its next step: "Read" („Lesen“), "Listen" („Anhören“), "writing" („schreibt“) or "next" („als Nächste“).
 
-„Nächste Folge schreiben“ and „Alle … restlichen nacheinander“ stand in the page head. Once every episode is written,
+"Write the next episode" („Nächste Folge schreiben“) and "All … remaining, one after another" („Alle … restlichen nacheinander“) stand in the page head. Once every episode is written,
 the series review stands above the rows. An outline that waits for approval is shown in full, as before.
 
-**„Folgen“** is one page per episode. Its head names the episode's place in the series („Folge 7 von 20“) and its
+**Episodes** is one page per episode. Its head names the episode's place in the series ("Episode 7 of 20" („Folge 7 von 20“)) and its
 title. It has four tabs:
-- **„Lesen“**: the script. „Weiter zur Audio-Freigabe →“ is the head's action.
-- **„Prüfhinweise“**: the review's notes, with their number on the tab.
-- **„Hören“**: the approval, the recordings and the listening check.
-- **„Begleitmaterial“**: the episode's and the podcast's companion kit.
+- **Read**: the script. "On to the audio approval →" („Weiter zur Audio-Freigabe →“) is the head's action.
+- **Review notes** („Prüfhinweise“): the review's notes, with their number on the tab.
+- **Listen** („Hören“): the approval, the recordings and the listening check.
+- **Companion material** („Begleitmaterial“): the episode's and the podcast's companion kit.
 
 Both pickers number episodes by the outline („7.“) and choose the same episode.
 
-Explanations that stood open under a control are folded under **„Wie das funktioniert“** (how it works):
+Explanations that stood open under a control are folded under **How it works** („Wie das funktioniert“):
 - what the speech provider does;
 - what a revision does;
 - what the production steps include.
@@ -124,13 +124,13 @@ example `http://192.168.178.75:8765`; open it in the phone's browser. Who can co
 
 On the first start, Windows Firewall asks whether Python may be reachable on the network; allow only private networks.
 If the Studio already runs for this computer only, the Wi-Fi launch file does not open it again but asks you to close it
-first with „Studio beenden“ once no job is running, because a running job would be paused.
+first with "Quit Studio" once no job is running, because a running job would be paused.
 
 On a phone the layout changes (why: D-185):
 - The places and the settings become a tab bar at the foot of the screen.
 - The page head is one line.
 - The job strip keeps its first line and the stop.
-- On the reading page the decision („Deine Rückmeldung“) stands above the script.
+- On the reading page the decision ("Your feedback" („Deine Rückmeldung“)) stands above the script.
 
 ## Interface language
 
@@ -159,60 +159,55 @@ that had projects before the choice existed stays German until you change it. Wh
 A project runs through six steps. The navigation groups their pages into the three places of
 [Look and layout](#look-and-layout); each place shows its pages as tabs:
 
-1. **„Auftrag“** (brief): a single editorial partner asks in the chat for what it needs and proposes
-   a brief. It asks early what the series is for (**„Ziel der Serie“** (series goal): „Verstehen“, „Bewerten“,
-   „Anwenden“ (understand, evaluate, apply), each weighted 0–3) and, for fast-moving fields such as AI practice, how
-   current the sources must be (**„Aktualität der Quellen“** (source recency): the last N months); both appear in the
+1. **Brief** („Auftrag“): a single editorial partner asks in the chat for what it needs and proposes
+   a brief. It asks early what the series is for (**Series goal** („Ziel der Serie“): "Understand" („Verstehen“), "Evaluate" („Bewerten“),
+   "Apply" („Anwenden“), each weighted 0–3) and, for fast-moving fields such as AI practice, how
+   current the sources must be (**Source recency** („Aktualität der Quellen“): the last N months); both appear in the
    summary. It treats attachments and posts as pointers to names, works and tools, not as claims the episodes must
    check. You state topic, prior knowledge, depth and language in your own words; text model, audio provider, voices
-   and execution are set on the [Settings page](#settings-page), not in the chat. **„Diese Auswahl übernehmen“**
-   (apply this selection) saves the reviewed summary. The chat grants no plan or audio approval. Stored voice samples
+   and execution are set on the [Settings page](#settings-page), not in the chat. **Apply this selection** („Diese Auswahl übernehmen“) saves the reviewed summary. The chat grants no plan or audio approval. Stored voice samples
    stay reachable through the collapsible voice library. Credentials belong only in the key field of the settings page.
    The partner's replies are shown with their formatting (bold labels, lists); your own messages stay plain text. Once
    a project has research or later work, the page leads with the saved brief (a waiting proposal with its
-   „Diese Auswahl übernehmen“) and folds the conversation under **„Gespräch mit der Redaktion“** (conversation with the
+   "Apply this selection") and folds the conversation under **„Gespräch mit der Redaktion“** (conversation with the
    editorial team); it opens by itself while a message waits for an answer (why: D-161). The input box stays pinned at
    the foot of the conversation only while its attachment panel is closed, and never on a phone.
-2. **„Recherche“** (research): searching, downloading and evaluating sources and checking the dossier run automatically
+2. **Research** („Recherche“): searching, downloading and evaluating sources and checking the dossier run automatically
    after the start; the result is readable here. Then the table of contents is drafted; an existing plan can be opened
    directly. A new research is marked as a restart of its own. The dossier is shown by its structure: an overview,
-   **„Leitfragen und Abdeckung“** (guiding questions and coverage) with each question's state and number of findings,
-   short lists such as the open questions, then **„Befunde nach Leitfrage“** (findings by guiding question), each
+   **Guiding questions and coverage** („Leitfragen und Abdeckung“) with each question's state and number of findings,
+   short lists such as the open questions, then **Findings by guiding question** („Befunde nach Leitfrage“), each
    question folded with its findings titled by their first sentence and kind, and long lists such as the sources folded
    at the end. Finding ids, source-section ids, claim-type values and the run id are left out (the run id stands under
-   „Technische Angaben“); the dossier file itself is unchanged (why: D-162). A dossier without finding headings is shown
+   "Technical details" („Technische Angaben“)); the dossier file itself is unchanged (why: D-162). A dossier without finding headings is shown
    as one document.
-3. **„Inhaltsverzeichnis“** (table of contents): review episodes, chapters, guiding questions and explanation steps and
-   have them revised if needed. **„Freigeben & erste Folge schreiben“** (approve & write the first episode) approves
+3. **Table of contents** („Inhaltsverzeichnis“): review episodes, chapters, guiding questions and explanation steps and
+   have them revised if needed. **Approve & write the first episode** („Freigeben & erste Folge schreiben“) approves
    exactly this plan state and writes its first episode; the page then writes the others in order
    ([Writing the episodes](#writing-the-episodes)). A
    table of contents appears only when its draft is finished: while a new draft or a revision runs, the previous plan is
    hidden, and a stopped draft shows only its hold card (why: D-100). Only a finished draft can be revised or approved;
-   after a stopped draft, continue with **„Neues Inhaltsverzeichnis entwerfen“** (draft a new table of contents).
-4. **„Ausarbeitung“** (script work): each episode's teaching stage (story material, story research, orientation
+   after a stopped draft, continue with **Draft a new table of contents** („Neues Inhaltsverzeichnis entwerfen“).
+4. **Drafting** („Ausarbeitung“): each episode's teaching stage (story material, story research, orientation
    sheet), the story agent's session, the quality review and publishing are automatic phases of one job, with no
    extra click between them. The page shows the current episode, finished results and concrete open points.
    Supplementary research and internal corrections belong here.
-5. **„Skripte lesen“** (read scripts): each episode becomes readable once its complete draft is saved. Its review state
-   reads „Entwurf“ (draft, the story agent's checked draft) or „Prüfungen bestanden“ (reviews passed), after
-   publishing „Fertig zur Durchsicht“ (ready for review). Further episodes appear in the selection automatically. An
-   opened version stays in place while you read; when a newer text or review state exists, **„Aktuellen Stand laden“**
-   (load current state) loads it. Previews get no audio approval. After the script work, the published versions can be
-   commented on and then explicitly approved for audio. The reader bar holds **„‹ Vorherige“** and **„Nächste ›“**
-   around the episode picker, which names each episode in full and shows a state only for previews. **„Als gelesen
-   markieren“** (mark as read) marks the published script state; a revised episode reads as unread again. The marks are
+5. **Read scripts** („Skripte lesen“): each episode becomes readable once its complete draft is saved. Its review state
+   reads "Draft" („Entwurf“) (the story agent's checked draft) or "Reviews passed" („Prüfungen bestanden“), after
+   publishing "Ready for review" („Fertig zur Durchsicht“). Further episodes appear in the selection automatically. An
+   opened version stays in place while you read; when a newer text or review state exists, **Load the current version** („Aktuellen Stand laden“) loads it. Previews get no audio approval. After the script work, the published versions can be
+   commented on and then explicitly approved for audio. The reader bar holds **‹ Previous** („‹ Vorherige“) and **Next ›** („Nächste ›“)
+   around the episode picker, which names each episode in full and shows a state only for previews. **Mark as read** („Als gelesen markieren“) marks the published script state; a revised episode reads as unread again. The marks are
    kept in the project (`studio/reader_state.json`), so they follow you to the phone (why: D-163). The margin starts
-   with **„Weiter zur Audio-Freigabe →“** and the feedback field. Speakers carry their host names, or without names the
+   with **On to the audio approval →** and the feedback field. Speakers carry their host names, or without names the
    voice each host speaks with in this episode, such as „Erinome · Host A“.
-6. **„Vertonung“** (recording): the checkbox confirms the script state you read, with the provider and voices shown,
-   and **„Audio erzeugen“** (generate audio) starts the recording. Finished takes are listed under **„Alle fertigen
-   Folgen anhören“** (listen to all finished episodes), which **„Podcast anhören“** (listen to the podcast) on the
+6. **Recording** („Vertonung“): the checkbox confirms the script state you read, with the provider and voices shown,
+   and **Generate audio** („Audio erzeugen“) starts the recording. Finished takes are listed under **Listen to all finished episodes** („Alle fertigen Folgen anhören“), which **Listen to the podcast** („Podcast anhören“) on the
    overview leads to. The page, including the size estimate for Gemini: [Recording flow](AUDIO.md#recording-flow).
-   A recording made for an earlier state stays playable and says what changed since („geändert: Sprechtempo“, from the
+   A recording made for an earlier state stays playable and says what changed since ("changed: speaking pace" („geändert: Sprechtempo“), from the
    server's `audio_stale`: script, voices, provider, model, pauses, pace, styles, alternate roles, music); the page
    names it once above the approval (why: D-160). The voices compared are the ones the recording spoke, with the
-   third host's in a project that has one (`for_hosts`); until 2026-11-08 every three-host recording read „geändert:
-   Stimmen“. A podcast with music shows it on the approval card under „Musik“
+   third host's in a project that has one (`for_hosts`); until 2026-11-08 every three-host recording read "changed: voices" („geändert: Stimmen“). A podcast with music shows it on the approval card under "Music" („Musik“)
    ([Music](AUDIO.md#music)).
 
 The pronunciation check, the panels for spoken forms, host names and editorial notes, re-rendering one segment and the
@@ -221,16 +216,14 @@ listening review are described in [Spoken forms and pronunciation](AUDIO.md#spok
 [Exports and listening sheet](AUDIO.md#exports-and-listening-sheet).
 
 Which approval each step needs and what it is bound to: [Human approvals](BUSINESS_LOGIC.md#human-approvals). Older
-projects show their existing research, scripts and published audio files; **„Inhaltsverzeichnis entwerfen“** (draft
-table of contents) creates a separate plan to review.
+projects show their existing research, scripts and published audio files; **Draft the table of contents** („Inhaltsverzeichnis entwerfen“) creates a separate plan to review.
 
-**Trial project.** Under the message box of a new project's brief page, the checkbox **„Probelauf: kleines Thema,
-eine kurze Folge“** (trial: a narrow topic, one short episode; never preset) creates a trial project, with a short note
+**Trial project.** Under the message box of a new project's brief page, the checkbox **Trial: a narrow topic, one short episode** („Probelauf: kleines Thema, eine kurze Folge“) (trial: a narrow topic, one short episode; never preset) creates a trial project, with a short note
 on what to expect built from the trial's limits (`/api/bootstrap` → `trial`). With it ticked, an empty message is
 allowed: the project then takes the sample topic of its language. The request that creates the project
 (`POST /api/projects`) carries `"trial": true` (`trial.trial_brief`), and its research and script runs keep to the
 trial's small limits ([Trial project](BUSINESS_LOGIC.md#trial-project); why: D-157). The editorial partner of a trial
-steers toward a narrow topic. A „Probelauf“ chip marks the project on its overview card and every page head. It then
+steers toward a narrow topic. A "Trial" („Probelauf“) chip marks the project on its overview card and every page head. It then
 runs through the same six steps as every project.
 
 Automated tests cover plan approvals, stale text and voice states, assistant proposals without automatic project
@@ -246,51 +239,48 @@ A series is written in order, one episode per job, each reading the episodes bef
 in one job, and **„Schreiber“** (writer) in the job summary chose between the story agent and the writing prompt
 (`studio/writer.json`); both ended with D-184.
 
-- **On the outline page.** Once the outline is approved, each episode reads **„geschrieben“** (written) or
-  **„als Nächste“** (next), and the panel **„Folgen schreiben“** (write the episodes) says how many are written and
-  which comes next, with **„Nächste Folge schreiben“** (write the next episode, action `episode`) and, while more than
-  one is left, **„Alle {n} restlichen nacheinander“** (all n remaining one after the other, action `episodes`). The
-  batch writes one episode after the other, never in parallel, and stops where one stops; „Anhalten“ ends the running
-  episode, and finished ones stay. **„Fortsetzen“** on the approved outline's own run writes its next episode too.
+- **On the outline page.** Once the outline is approved, each episode reads **written** („geschrieben“) or
+  **next**, and the panel **„Folgen schreiben“** (write the episodes) says how many are written and
+  which comes next, with **Write the next episode** (write the next episode, action `episode`) and, while more than
+  one is left, **All {n} remaining, one after another** („Alle {n} restlichen nacheinander“) (all n remaining one after the other, action `episodes`). The
+  batch writes one episode after the other, never in parallel, and stops where one stops; "Stop" („Anhalten“) ends the running
+  episode, and finished ones stay. **Resume** on the approved outline's own run writes its next episode too.
   An episode the batch stopped at is resumed with the rest of the batch: it is finished, then the remaining episodes
   follow (the rule: [Writing a series in order](SCRIPTS.md#writing-a-series-in-order)). These actions need the approved outline (`plan_approval_required`) and refuse once every episode is written
   (`series_written`).
 - **The series review.** After the last episode the job runs the series review by itself; otherwise the panel
-  **„Serienprüfung“** (series review) offers **„Serienprüfung starten“** (start the series review, action
+  **Series review** („Serienprüfung“) offers **Start the series review** („Serienprüfung starten“, action
   `series_review`), refused with `series_incomplete` while an episode is unwritten. When it finds points, the panel
-  lists them per episode, each with **„Mit diesen Hinweisen überarbeiten“** (revise with these points): a revision
+  lists them per episode, each with **Revise with these notes** („Mit diesen Hinweisen überarbeiten“): a revision
   job (`revise`) whose feedback is the points. Once an episode was revised since the review, the panel says so and
-  offers **„Serie erneut prüfen“** (review the series again); a stopped review can start again
+  offers **Review the series again** („Serie erneut prüfen“); a stopped review can start again
   ([Over an outline's published episodes](SCRIPTS.md#over-an-outlines-published-episodes)).
-- **Revising one episode.** On the reading page, **„Diese Folge überarbeiten lassen“** (have this episode revised)
+- **Revising one episode.** On the reading page, **Have this episode revised** („Diese Folge überarbeiten lassen“)
   sends the feedback field to the story agent, which changes what it asks and keeps the rest; the episode is reviewed
-  again and needs a new audio approval ([Revising a script](SCRIPTS.md#revising-a-script)). **„Neue Länge in Minuten“**
-  (new length in minutes, 10 to 60) gives the revision its own length; empty keeps the planned one, which the field
+  again and needs a new audio approval ([Revising a script](SCRIPTS.md#revising-a-script)). **New length in minutes** („Neue Länge in Minuten“)
+  (10 to 60) gives the revision its own length; empty keeps the planned one, which the field
   shows (`planned_minutes` from the episode's `episode_plan.yaml`). The server refuses other values with
   `invalid_revision` before a worker starts.
 - **Revisions wait their turn.** A revision asked for while the project works (a text run, a recording of the
   project, or every place taken), or while other revisions wait, goes into the project's revision queue
-  (`studio/revision_queue.json`) instead of being refused; the button then reads **„Überarbeitung vormerken“** (queue
-  this revision), and the series review's **„Mit diesen Hinweisen überarbeiten“** queues the same way. The reading page
-  lists **„Vorgemerkt“** (queued) with episode, length and **„Entfernen“** (remove, route `revision_queue`, by the
+  (`studio/revision_queue.json`) instead of being refused; the button then reads **Queue this revision** („Überarbeitung vormerken“) (queue
+  this revision), and the series review's **Revise with these notes** queues the same way. The reading page
+  lists **Queued** („Vorgemerkt“) with episode, length and **Remove** („Entfernen“) (remove, route `revision_queue`, by the
   row's `key`); a newer request for an episode replaces its row at the end. The scheduler (`start_revisions`)
   starts them one at a time, in the order asked, once nothing of the project runs; each reads the episodes before it as
   published by then. A stopped script run of the project (`job.json` or `paused_script.json` in an attention state)
   holds the queue, because a new script job would take its stop card (`revisions_held`, „Wartet: Ein angehaltener Lauf
   …“). A request that start's own rules refuse keeps its reason in its row, and the next one goes on (D-191).
 - **The remaining episodes wait too.** While the project works, or while rows wait, the outline page's batch button
-  reads **„Alle {n} restlichen vormerken“** (queue all n remaining) and queues one row, **„Alle weiteren Folgen“**
+  reads **Queue all {n} remaining** („Alle {n} restlichen vormerken“) and queues one row, **All remaining episodes** („Alle weiteren Folgen“)
   (all remaining episodes, key `episodes`), behind the rows asked before it; the outline page lists the queue as the
-  reading page does. It starts as the batch would (`episodes`), from the then current next episode. „Nächste Folge
-  schreiben“ alone does not queue. A request for `episode` or `episodes` may carry `minutes` (10 to 60), which every
+  reading page does. It starts as the batch would (`episodes`), from the then current next episode. "Write the next episode" alone does not queue. A request for `episode` or `episodes` may carry `minutes` (10 to 60), which every
   episode it writes is given instead of the outline's length ([Writing a series in
   order](SCRIPTS.md#writing-a-series-in-order)); the page has no field for it yet, so only a queued or API request
   sets it, shown in the row as „je {n} Minuten“. The detail's `queues_series` tells the page that the server queues
   the batch; a server older than D-192 refuses it while the project works, and the button stays closed (D-192).
-- **While the agent works.** The progress names its steps („Orientierungsblatt wird erstellt“, „Der Erzähl-Agent plant
-  und schreibt die Folge“, „Ein Lektor liest die Fassung des Erzähl-Agenten“), and the production view shows the stages
-  „Erzählmaterial“ (story material), „Erzähl-Agent“ (story agent), „Qualitätsprüfung“ (quality review) and „Zur
-  Durchsicht bereitstellen“ (provide for review). The reading preview of an episode reaches „Prüfungen bestanden“ once
+- **While the agent works.** The progress names its steps ("Drafting the orientation sheet" („Orientierungsblatt wird erstellt“), "The story agent plans and writes the episode" („Der Erzähl-Agent plant und schreibt die Folge“), "An editor reads the story agent's draft" („Ein Lektor liest die Fassung des Erzähl-Agenten“)), and the production view shows the stages
+  "Story material" („Erzählmaterial“), "Story agent" („Erzähl-Agent“), "Quality review" („Qualitätsprüfung“) and "Make available for review" („Zur Durchsicht bereitstellen“). The reading preview of an episode reaches "Reviews passed" once
   its review leaves nothing that blocks. The agent needs the Claude subscription's sign-in, or Claude on the Anthropic
   API key as the text model, which bills its sessions ([Calls and access](SCRIPTS.md#calls-and-access)).
 
@@ -298,12 +288,12 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
 
 ### Attachments
 
-At **„Neues Projekt“** (new project) → „Auftrag“ you can attach several **.md**, **.txt** or **.docx** files
-below the message box (**„Dateien anhängen“** (attach files)), describe how to use them if needed, and click
-**„Senden“** (send). Without accompanying text, the partner proposes a project from the files, takes the wishes they
-contain into account and asks for what is missing. You still review the summary before „Diese Auswahl übernehmen“.
+At **New project** („Neues Projekt“) → "Brief" you can attach several **.md**, **.txt** or **.docx** files
+below the message box (**Attach files** („Dateien anhängen“)), describe how to use them if needed, and click
+**Send** („Senden“). Without accompanying text, the partner proposes a project from the files, takes the wishes they
+contain into account and asks for what is missing. You still review the summary before "Apply this selection".
 
-Active attachments are visible after reloading and under „Recherche“. **„Entfernen“** (remove) takes a file out of the
+Active attachments are visible after reloading and under "Research". **Remove** takes a file out of the
 active inputs; earlier model calls and research snapshots stay traceable. After attachments change, the partner must
 update its summary before you can apply it. Uploading the same file again creates no second active copy. Changes are
 locked while jobs run.
@@ -324,16 +314,16 @@ uses explicitly marked excerpts. The research reads the full text copies and, as
 relevant sections for evaluation. Very short notes suit the brief but may fall below the minimum length of source
 extraction. Claims from notes or desired results must be supported by independent sources or treated as open.
 
-„Senden“ sends the text to the selected text model. An upload alone starts neither web research nor recording.
+"Send" sends the text to the selected text model. An upload alone starts neither web research nor recording.
 Credentials do not belong in files; detected keys are rejected ([Secrets and keys](SECURITY.md#secrets-and-keys)).
 
 ### Missing works
 
-On the „Recherche“ page, **„Fehlende Werke“** (missing works) lists the books and articles that blocked sub-questions
+On the "Research" page, **Missing works** („Fehlende Werke“) lists the books and articles that blocked sub-questions
 (or sub-questions in a new attempt after a block) need as the original work and that no free source provided, each
 with the questions that need it. Obtain the work through a library, interlibrary loan, subito or purchase and upload it
-there as PDF, saved web page or text file (up to 150 MiB, `provided_works.MAX_WORK_BYTES`; books up to 2000 pages,
-`pdf_text.BOOK_PAGES`). Under **„Anderes Werk hochladen“** (upload another work) you enter author, title and year
+there as PDF, EPUB without copy protection, saved web page or text file (up to 150 MiB,
+`provided_works.MAX_WORK_BYTES`; books up to 2000 pages, `pdf_text.BOOK_PAGES`). Under **Upload another work** („Anderes Werk hochladen“) you enter author, title and year
 yourself.
 
 An uploaded work is stored under `inputs/works/` with its reference in `inputs/works.json`, next to the brief, so a
@@ -342,73 +332,78 @@ the next step as a primary work (provenance: „vom Herausgeber bereitgestellte 
 retries the questions it was uploaded for; a paused run does so when resumed. Quotes are checked verbatim against the
 file as always. Shadow libraries are not an admissible source.
 
+**Refused sources** („Gesperrte Quellen“) below lists the addresses a publisher or a bot check refused (HTTP 401,
+402, 403, 451, or a check page instead of the document) for which no free copy was found, as long as a blocked
+question, or one in a new attempt, met them in its searches (`provided_works.refused_sources`, from the run's
+`question_research/state.json`, at most 40). Each shows the title its search gave, the refusal and the questions,
+and opens in your own browser in a new tab. Save the document there and upload it in the row's own field: it is
+stored with the address (`source` in `inputs/works.json`), its row reads "uploaded" („hochgeladen“), and the research reads it
+and retries its questions as above (why: D-199).
+
 ## Settings page
 
-The **„Einstellungen“** (settings) page sits at the top next to **„Übersicht“** (overview). Its values apply to all
+The **Settings** („Einstellungen“) page sits at the top next to **Overview** („Übersicht“). Its values apply to all
 projects:
 
 | Section | What you set there |
 | --- | --- |
-| **„Textmodell“** (text model) | One of the presets; see [Choosing the text model](#choosing-the-text-model). Below them a line names the measured money per call of Claude Sonnet 5.5 and Opus 5.5 in research and script work and that a whole series took 1,400 to 1,800 calls ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
-| **„Websuche“** (web search) | **„Über das Textmodell“** (through the text model: Claude and Codex search with their own tools, the default) or **„Über Perplexity“** (through Perplexity: the Studio searches itself and the text model chooses among the results). Perplexity lets every text model research, an OpenRouter model included, needs the Perplexity key and a money limit, and costs about 0.005 USD per search request. New research and script runs take the choice; running ones keep theirs ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). Below it, **„Kontaktadresse für Unpaywall“** (contact address for Unpaywall): with an address, the search for a free copy of a blocked source also asks Unpaywall, which receives the address with every request; empty leaves Unpaywall out. Saved with the workspace settings, not in the credential store; each new job's worker reads it (`studio_settings.unpaywall_email`, [Pipeline](RESEARCH.md#pipeline)). |
-| **„Audio“** | Provider (Qwen, Gemini through Google, ElevenLabs, Gemini through OpenRouter), speech model (Gemini, ElevenLabs), the voices of host A and host B (for ElevenLabs the voices of your account, loaded with the ElevenLabs key, your own first, **„Stimmen neu laden“**), **„Stimme Host C (nur bei drei Sprechern)“** (the voice of a third host, automatic by default, chosen on ElevenLabs; [Three hosts](AUDIO.md#three-hosts)), the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **„Sprechtempo Deutsch“** and **„Sprechtempo Englisch“** (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini and ElevenLabs whether expression tags are set before recording. For Google and ElevenLabs also the style of each role with its presets and **„Stil von Host C“**, **„… ohne Eile sprechen“** (speak unhurried) per language, **„Rollen von Folge zu Folge tauschen“** (swap roles from episode to episode) and, for Google, **„▶ Gesprächsprobe“** (conversation sample) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles), [ElevenLabs](AUDIO.md#elevenlabs)). A project may hold a choice of its own instead ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice)): the recording page's panel **„Sprachanbieter dieses Projekts“** sets it, the third host's voice included, and **„Wieder wie Einstellungen“** removes it. |
-| **„Ausführung“** (execution) | See [Sequential or parallel](#sequential-or-parallel). |
-| **„Ohne Rückfrage“** (without asking) | See [Pre-approvals](#pre-approvals). |
-| **„Limits“** | Model calls per run, sources and search rounds per research, the time limit of one model call, and **„Kostengrenze je Lauf in USD“** (money limit per run in USD), required for a text model billed to a key and for the web search through Perplexity: saving either without it is refused with `cost_limit_required` ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
-| **„Claude“** | The switch for bought extra usage ([Studio settings](CONFIGURATION.md#studio-settings)). |
-| **„OpenRouter-Key“** | The key for OpenRouter text, Gemini audio through OpenRouter and Jev: **„Key hinterlegen“** (store key), **„Key entfernen“** (remove key). Every key panel says where its key comes from (the credential store, this session only, or an environment variable of the server), and one note above them names the store; handling in [Keys in the credential store](SECURITY.md#keys-in-the-credential-store). |
-| **„Google-Key“** | The key for Gemini audio through Google and the conversation samples, with the same two buttons; handling in [Google key in the Studio](SECURITY.md#google-key-in-the-studio). |
-| **„ElevenLabs-Key“** | The key for recordings through ElevenLabs and the list of your ElevenLabs voices, with the same two buttons; handling in [ElevenLabs key in the Studio](SECURITY.md#elevenlabs-key-in-the-studio). |
-| **„Anthropic-Key“** | The key for Claude on your Anthropic API key (`claude_api`), with the same two buttons; every call is billed to your Anthropic account. Handling in [Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio). |
-| **„Perplexity-Key“** | The key for the web search through Perplexity, with the same two buttons; only the search queries go to Perplexity, and every request is billed to your Perplexity account. Handling in [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio). |
-| **„CORE-Key“** | CORE's free key for free copies of blocked sources, with the same two buttons; only the title or DOI of the work goes to CORE. Handling in [CORE key in the Studio](SECURITY.md#core-key-in-the-studio). |
+| **Text model** („Textmodell“) | One of the presets; see [Choosing the text model](#choosing-the-text-model). Below them a line names the measured money per call of Claude Sonnet 5.5 and Opus 5.5 in research and script work and that a whole series took 1,400 to 1,800 calls ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
+| **Web search** („Websuche“) | **Through the text model** („Über das Textmodell“) (through the text model: Claude and Codex search with their own tools, the default) or **Through Perplexity** („Über Perplexity“) (through Perplexity: the Studio searches itself and the text model chooses among the results). Perplexity lets every text model research, an OpenRouter model included, needs the Perplexity key and a money limit, and costs about 0.005 USD per search request. New research and script runs take the choice; running ones keep theirs ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). Below it, **Contact address for Unpaywall** („Kontaktadresse für Unpaywall“): with an address, the search for a free copy of a blocked source also asks Unpaywall, which receives the address with every request; empty leaves Unpaywall out. Saved with the workspace settings, not in the credential store; each new job's worker reads it (`studio_settings.unpaywall_email`, [Pipeline](RESEARCH.md#pipeline)). |
+| **Audio** | Provider (Qwen, Gemini through Google, ElevenLabs, Gemini through OpenRouter), speech model (Gemini, ElevenLabs), the voices of host A and host B (for ElevenLabs the voices of your account, loaded with the ElevenLabs key, your own first, **Reload voices** („Stimmen neu laden“)), **Voice of host C (three speakers only)** („Stimme Host C (nur bei drei Sprechern)“) (the voice of a third host, automatic by default, chosen on ElevenLabs; [Three hosts](AUDIO.md#three-hosts)), the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **Speaking pace · German** („Sprechtempo Deutsch“) and **Speaking pace · English** („Sprechtempo Englisch“) (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini and ElevenLabs whether expression tags are set before recording. For Google and ElevenLabs also the style of each role with its presets and **Style of host C** („Stil von Host C“), **Speak … unhurried** („… ohne Eile sprechen“) per language, **Swap roles from episode to episode** („Rollen von Folge zu Folge tauschen“) and, for Google, **▶ Conversation sample** („▶ Gesprächsprobe“) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles), [ElevenLabs](AUDIO.md#elevenlabs)). A project may hold a choice of its own instead ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice)): the recording page's panel **This project's speech provider** („Sprachanbieter dieses Projekts“) sets it, the third host's voice included, and **Back to Settings** („Wieder wie Einstellungen“) removes it. |
+| **Execution** („Ausführung“) | See [Sequential or parallel](#sequential-or-parallel). |
+| **Without asking** („Ohne Rückfrage“) | See [Pre-approvals](#pre-approvals). |
+| **Limits** | Model calls per run, sources and search rounds per research, the time limit of one model call, and **Money limit per run in USD** („Kostengrenze je Lauf in USD“), required for a text model billed to a key and for the web search through Perplexity: saving either without it is refused with `cost_limit_required` ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
+| **Claude** | The switch for bought extra usage ([Studio settings](CONFIGURATION.md#studio-settings)). |
+| **OpenRouter key** („OpenRouter-Key“) | The key for OpenRouter text, Gemini audio through OpenRouter and Jev: **Store key** („Key hinterlegen“), **Remove key** („Key entfernen“). Every key panel says where its key comes from (the credential store, this session only, or an environment variable of the server), and one note above them names the store; handling in [Keys in the credential store](SECURITY.md#keys-in-the-credential-store). |
+| **Google key** („Google-Key“) | The key for Gemini audio through Google and the conversation samples, with the same two buttons; handling in [Google key in the Studio](SECURITY.md#google-key-in-the-studio). |
+| **ElevenLabs key** („ElevenLabs-Key“) | The key for recordings through ElevenLabs and the list of your ElevenLabs voices, with the same two buttons; handling in [ElevenLabs key in the Studio](SECURITY.md#elevenlabs-key-in-the-studio). |
+| **Anthropic key** („Anthropic-Key“) | The key for Claude on your Anthropic API key (`claude_api`), with the same two buttons; every call is billed to your Anthropic account. Handling in [Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio). |
+| **Perplexity key** („Perplexity-Key“) | The key for the web search through Perplexity, with the same two buttons; only the search queries go to Perplexity, and every request is billed to your Perplexity account. Handling in [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio). |
+| **CORE key** („CORE-Key“) | CORE's free key for free copies of blocked sources, with the same two buttons; only the title or DOI of the work goes to CORE. Handling in [CORE key in the Studio](SECURITY.md#core-key-in-the-studio). |
 
-Below the title, links jump to each section, and **„Keys“** shows whether the OpenRouter, the Google, the Anthropic
-and the Perplexity key are there („✓ hinterlegt“ or „fehlt“), entered in the Studio or taken from the server's
+Below the title, links jump to each section, and **Keys** shows whether the OpenRouter, the Google, the Anthropic
+and the Perplexity key are there ("✓ stored" („✓ hinterlegt“) or "missing" („fehlt“)), entered in the Studio or taken from the server's
 environment; the same mark stands on each key's panel. The key itself never reaches the page. The text models are
-grouped by how a call is paid: **„Über deine Abos · keine API-Kosten“** (through your subscriptions),
-**„Über deinen Anthropic-API-Key · pro Aufruf bezahlt“** and **„Über OpenRouter · pro Aufruf bezahlt“**; a paid group
-names its missing key („Anthropic-Key fehlt“). What each costs folds under **„Was kostet welches Textmodell?“**
+grouped by how a call is paid: **Through your subscriptions · no API costs** („Über deine Abos · keine API-Kosten“),
+**Through your Anthropic API key · paid per call** („Über deinen Anthropic-API-Key · pro Aufruf bezahlt“) and **Through OpenRouter · paid per call** („Über OpenRouter · pro Aufruf bezahlt“); a paid group
+names its missing key ("Anthropic key missing" („Anthropic-Key fehlt“)). What each costs folds under **What does each text model cost?** („Was kostet welches Textmodell?“)
 (why: D-161).
 
-**„Einstellungen für alle Projekte speichern“** (save settings for all projects) saves the page from a bar pinned at
-its foot, which reads **„Ungespeicherte Änderungen“** (unsaved changes) after an edit and **„Alles gespeichert“**
-(everything saved) otherwise; leaving the page with unsaved edits asks first. Storing or removing a key acts at once
+**Save settings for all projects** („Einstellungen für alle Projekte speichern“) saves the page from a bar pinned at
+its foot, which reads **Unsaved changes** („Ungespeicherte Änderungen“) after an edit and **Everything saved** („Alles gespeichert“) otherwise; leaving the page with unsaved edits asks first. Storing or removing a key acts at once
 and is no unsaved edit. On the settings page and the overview, the sidebar lists the projects instead of a project's
 places. The chip at the top
-reads **„Gilt für alle Projekte“** (applies to all projects) once the workspace settings are saved, **„Noch je
-Projekt“** (still per project) before. Storage, the values shown before the first save, and when running jobs pick up a
+reads **Applies to all projects** („Gilt für alle Projekte“) once the workspace settings are saved, **Still per project** („Noch je Projekt“) before. Storage, the values shown before the first save, and when running jobs pick up a
 change: [Studio settings](CONFIGURATION.md#studio-settings) (why: D-108). The project page only shows the settings,
-with **„Einstellungen öffnen“** (open settings).
+with **Open settings** („Einstellungen öffnen“).
 
 ## Choosing the text model
 
-Text and audio providers are chosen independently; asked about them, the editorial partner points to „Einstellungen“.
+Text and audio providers are chosen independently; asked about them, the editorial partner points to "Settings".
 
-The „Textmodell“ section offers the presets of `text_settings.TEXT_PRESETS`;
+The "Text model" section offers the presets of `text_settings.TEXT_PRESETS`;
 [Providers and models](PRODUCT.md#providers-and-models) lists them with their models, reasoning levels and the
-minimum Claude Code versions. New Studio projects start with **„Automatisch · Claude, sonst
-Codex“** (automatic · Claude, otherwise Codex). A saved choice that matches no preset stays selectable as „Bisher: …“
-(so far: …). For OpenRouter presets, **„Höchstens Ausgabe-Tokens je Aufruf (nur OpenRouter)“** (at most output tokens
+minimum Claude Code versions. New Studio projects start with **Automatic · Claude, otherwise Codex** („Automatisch · Claude, sonst Codex“). A saved choice that matches no preset stays selectable as "So far: …" („Bisher: …“)
+(so far: …). For OpenRouter presets, **At most output tokens per call (OpenRouter only)** („Höchstens Ausgabe-Tokens je Aufruf (nur OpenRouter)“) (at most output tokens
 per call, OpenRouter only) caps the answer length. Other model IDs can be given on the command line
 ([Choosing the provider on the command line](SCRIPTS.md#choosing-the-provider-on-the-command-line)).
 
-With „Automatisch“ the model cannot be set, and the reasoning level only jointly for both subscriptions (`low` to
-`xhigh`, `text_settings.SHARED_EFFORTS`; for example „Automatisch · Claude, sonst Codex · high“); to set them
+With "Automatic" („Automatisch“) the model cannot be set, and the reasoning level only jointly for both subscriptions (`low` to
+`xhigh`, `text_settings.SHARED_EFFORTS`; for example "Automatic · Claude, otherwise Codex · high" („Automatisch · Claude, sonst Codex · high“)); to set them
 individually, choose a fixed provider. How the automatic choice picks a subscription per call, when it switches and
 which provider runs the web research:
 [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection). An older Claude Code stops
-a job with a fixed Claude choice with the hold card **„Claude Code zu alt“** (Claude Code too old).
+a job with a fixed Claude choice with the hold card **Claude Code too old** („Claude Code zu alt“).
 
 The choice applies to the editorial chat, table of contents, the teaching stage, the story agent's critiques, the
 quality reviews and the [status briefs](#status-briefs). The story agent itself is Opus 5.5 on the Claude
-subscription, or on your Anthropic key with a „Claude über den Anthropic-API-Key“ preset
+subscription, or on your Anthropic key with a "Claude on the Anthropic API key" („Claude über den Anthropic-API-Key“) preset
 ([Calls and access](SCRIPTS.md#calls-and-access)). How each provider is called: [Text provider adapters](ARCHITECTURE.md#text-provider-adapters).
 
-**„Verbindungen prüfen“** (check connections) on „Auftrag“ shows both subscription logins and the quota
+**Check connections** („Verbindungen prüfen“) on "Brief" shows both subscription logins and the quota
 state; a job is ready to start as soon as one subscription or Claude on the API key is usable (the same checks as
 [`pla doctor`](OPERATIONS.md#quota-and-installation-check); here the `claude_api` and `perplexity_search` checks also see
-a key entered on the settings page, while `pla doctor` reads only the environment). **„Websuche über Perplexity“** (web
+a key entered on the settings page, while `pla doctor` reads only the environment). **Web search through Perplexity** („Websuche über Perplexity“) (web
 search through Perplexity) only says whether the Perplexity key is there and never makes a job unready. What it checks
 with Gemini audio:
 [Providers and models](PRODUCT.md#providers-and-models).
@@ -416,28 +411,26 @@ with Gemini audio:
 With a text model billed to a key (OpenRouter, Claude on the Anthropic API key), the Studio refuses a billed action
 (chat, research on the API key, table of contents, scripts, revision, expression tags, companion kit) with
 `cost_limit_required` before any worker starts while no money limit is set; research with OpenRouter text searches on
-the subscriptions and needs none ([Money limit](BUSINESS_LOGIC.md#money-limit)). With the web search „Über Perplexity“
+the subscriptions and needs none ([Money limit](BUSINESS_LOGIC.md#money-limit)). With the web search "Through Perplexity"
 the same refusal holds for research, table of contents, scripts and revision on any text model, and research with
 OpenRouter text runs on the OpenRouter model instead of the subscriptions.
 
 The job status shows the choice the run saved, even if other settings were saved for new jobs since; below it,
-**„Aktueller Anbieter“** (current provider) shows the quota state and reset of both subscriptions from the last model
-call. Older jobs without an explicit choice appear as „nicht festgelegt“ (not set) and get no new defaults when resumed.
+**Current provider** („Aktueller Anbieter“) shows the quota state and reset of both subscriptions from the last model
+call. Older jobs without an explicit choice appear as "not set" („nicht festgelegt“) and get no new defaults when resumed.
 Where a run stores its choice: [Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest).
 
 ### Continuing with another provider
 
 Every script and research job can continue with another text provider at any time: below the job's saved text choice,
-**„Weiter mit …“** (continue with …) offers „Claude, sonst Astra (xhigh)“, „Astra (xhigh), sonst Claude“, „Nur
-Claude“, „Nur Astra (xhigh)“, „OpenRouter · bezahlt pro Aufruf“ (OpenRouter · paid per call) with a model selection,
-and „Claude über den Anthropic-API-Key · bezahlt pro Aufruf“ (Claude on the Anthropic API key · paid per call). „Nur
-Claude“ and the API key show a **„Claude-Modell“** (Claude model) list, preselected with the run's own Claude model; a
-chosen model works at its preset's level, Sonnet 5.5 at high (D-170). The hold card's „Mit Claude fortsetzen“ keeps the
+**Continue with …** („Weiter mit …“) offers "Claude, otherwise Astra (xhigh)" („Claude, sonst Astra (xhigh)“), "Astra (xhigh), otherwise Claude" („Astra (xhigh), sonst Claude“), "Claude only" („Nur Claude“), "Astra (xhigh) only" („Nur Astra (xhigh)“), "OpenRouter · paid per call" („OpenRouter · bezahlt pro Aufruf“) with a model selection,
+and "Claude on the Anthropic API key · paid per call" („Claude über den Anthropic-API-Key · bezahlt pro Aufruf“) (Claude on the Anthropic API key · paid per call). "Claude only" and the API key show a **Claude model** („Claude-Modell“) list, preselected with the run's own Claude model; a
+chosen model works at its preset's level, Sonnet 5.5 at high (D-170). The hold card's "Resume with Claude" („Mit Claude fortsetzen“) keeps the
 catalog default. Both
-paid choices show a field **„Kostengrenze USD“** (money limit in USD) for this run, which the switch needs unless the
-run already has one; **„Übernehmen“** (apply) saves the choice. If a job with a fixed provider stops because its subscription is
-exhausted, the hold card offers the other one: **„Mit Astra (xhigh) fortsetzen“** (continue with Astra) for Claude,
-**„Mit Claude fortsetzen“** (continue with Claude) for Codex. When the switch applies and what it keeps: [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
+paid choices show a field **Money limit USD** („Kostengrenze USD“) for this run, which the switch needs unless the
+run already has one; **Apply** („Übernehmen“) saves the choice. If a job with a fixed provider stops because its subscription is
+exhausted, the hold card offers the other one: **Resume with Astra (xhigh)** („Mit Astra (xhigh) fortsetzen“) for Claude,
+**Resume with Claude** for Codex. When the switch applies and what it keeps: [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
 
 ## Overview, navigation and hold cards
 
@@ -451,24 +444,23 @@ card holds:
 sub-questions done again instead, as in „Gesamtprüfung Runde 2 · 10 von 10 nachgebesserten Teilfragen fertig“;
 `cardProgress`), and its next
 action as the one filled button,
-such as „Skripte lesen“ or „Plan freigeben“; otherwise **„Öffnen“** (open). A stopped project's card carries the
-step its page recommends as that button, done in one click on the overview: **„Fortsetzen“** where the header offers
-it, **„Mit neuen Anläufen fortsetzen“** where the server would accept fresh attempts, **„Empfehlungen übernehmen und
-fortsetzen“** or **„Limits anheben und Empfehlungen übernehmen“** for the advisor's retry advice (with each
+such as "Read scripts" or "Approve plan" („Plan freigeben“); otherwise **Open** („Öffnen“). A stopped project's card carries the
+step its page recommends as that button, done in one click on the overview: **Resume** where the header offers
+it, **Resume with fresh attempts** („Mit neuen Anläufen fortsetzen“) where the server would accept fresh attempts, **Adopt the recommendations and resume** („Empfehlungen übernehmen und fortsetzen“) or **Raise limits and adopt recommendations** („Limits anheben und Empfehlungen übernehmen“) for the advisor's retry advice (with each
 question's hint and the decision card's sized limits), the raise of the call limit the advice needs, and the call or
-search limit a stop names as its way on. „Ansehen“ or „Entscheiden“ stays beside it; a key, a money limit, a note, a
+search limit a stop names as its way on. "View" („Ansehen“) or "Decide" („Entscheiden“) stays beside it; a key, a money limit, a note, a
 dispute or a choice per question still opens the page (why: D-169). Clicking the title or the card opens the
-project where its work waits. Once takes are finished, „Podcast anhören“ stands beside it. The card's „⋯“ menu holds:
-- **„Podcast herunterladen“** (download podcast, ZIP);
-- „Neue Version anlegen“;
-- **„Projekt löschen“**.
+project where its work waits. Once takes are finished, "Listen to the podcast" stands beside it. The card's „⋯“ menu holds:
+- **Download the podcast** („Podcast herunterladen“) (ZIP);
+- "Start a new version" („Neue Version anlegen“);
+- **Delete project** („Projekt löschen“).
 
 Why: D-161, D-185.
 
 The card, the navigation and the header take a project's state from the same facts (why: D-160). Recordings made for
 an earlier script, voice or audio setting stay playable and ask for nothing: the card reads „Podcast verfügbar · 19
-Folgen · 19 von einem früheren Stand“ and the step „Vertonung“ „Aufnahmen vorhanden · 19 älter“. Only a published
-episode without any recording asks for an audio approval („1 Folge hat noch keine Aufnahme.“, ▲ on „Vertonung“).
+Folgen · 19 von einem früheren Stand“ and the step "Recording" "Recordings ready · 19 older" („Aufnahmen vorhanden · 19 älter“). Only a published
+episode without any recording asks for an audio approval („1 Folge hat noch keine Aufnahme.“, ▲ on "Recording").
 
 The sidebar marks each place with the most urgent state of its pages:
 - ● running;
@@ -480,29 +472,29 @@ The sidebar marks each place with the most urgent state of its pages:
 The page tabs give each page's state; a research plan waiting for approval shows its projection in hours there. The
 strip at the top of the page names the job or its stop reason in one line, with stop, resume (only where it can help) and the jump to the page where something is to be
 decided; running recordings are listed beside it. The strip keeps one line on every page. Where the hold card
-recommends fresh attempts, the header offers no plain „Fortsetzen“ but the jump to the card. After a finished job of
+recommends fresh attempts, the header offers no plain "Resume" but the jump to the card. After a finished job of
 its own (a chat, a check, a companion kit, recordings) the header names the project's state instead, such as „Podcast
 verfügbar · 14 Folgen“. While a job runs, the line adds its time since the start, the calls
-used of the limit („Aufrufe 120 von 750“) and, for a run billed to a key, **„Kosten X von Y USD“** (cost X of Y USD:
+used of the limit ("Calls 120 of 750") and, for a run billed to a key, **Cost X of Y USD** („Kosten X von Y USD“:
 money spent of the money limit, from the progress fields `cost_spent_usd` and `cost_limit_usd`; `cost_estimated_usd`
 and `cost_unpriced_attempts` hold the part counted without a reported cost). Stopped recordings that share one reason
-name it there, as in „14 angehalten: OpenRouter verweigert den Zugriff“, with **„Alle 14 fortsetzen“** (resume all) and, for a key stop,
-a button to the „OpenRouter-Key“ panel; until 2026-10-04 only the job list on the recording page named the reason. The browser tab shows ● for a running job, ▲ for a decision and ! for
+name it there, as in „14 angehalten: OpenRouter verweigert den Zugriff“, with **Resume all 14** („Alle 14 fortsetzen“) and, for a key stop,
+a button to the "OpenRouter key" panel; until 2026-10-04 only the job list on the recording page named the reason. The browser tab shows ● for a running job, ▲ for a decision and ! for
 a stop; the overview shows the number of waiting projects.
 
-The collapsed **„Maschinenraum“** (engine room) at the bottom holds only telemetry, in this order (why: D-164):
-**„Kurzbericht“** (status brief), the live output, the calls and money of the run, the times of the current call,
-the run's text model with **„Anderen Anbieter für diesen Auftrag wählen“** (choose another provider for this job)
-folded, and for research and script runs the **„Produktionsbericht“** (production report: calls, model time and share
+The collapsed **Engine room** („Maschinenraum“) at the bottom holds only telemetry, in this order (why: D-164):
+**Status brief** („Kurzbericht“), the live output, the calls and money of the run, the times of the current call,
+the run's text model with **Choose another provider for this job** („Anderen Anbieter für diesen Auftrag wählen“)
+folded, and for research and script runs the **Production report** („Produktionsbericht“) (production report: calls, model time and share
 per stage, the same numbers per prompt version, providers, stops per stage and approvals; `production_report.py`; a
-research run's one stage broken down by step from its prompt versions, such as „Quellen lesen“, „Websuche“,
-„Antworten prüfen“). For a provider billed to a key it adds the USD billed, counted from every attempt's row in
-`billing.json`, and the **„Versuche ohne Kostenangabe“** (attempts without a reported cost). A running chat, check,
+research run's one stage broken down by step from its prompt versions, such as "Reading sources" („Quellen lesen“), "Web search",
+"Reviewing answers" („Antworten prüfen“)). For a provider billed to a key it adds the USD billed, counted from every attempt's row in
+`billing.json`, and the **attempts without a reported cost** („Versuche ohne Kostenangabe“). A running chat, check,
 voice sample, expression or companion kit shows its progress there; finished, it leaves nothing. After recordings the
 engine room shows the running ones' progress and the project's last research or script run; the recordings
 themselves, their buttons, the stop reason and the run time stand on their pages and in the header. Its head is its
-one toggle, and it stays closed when there is nothing to show. A connection check answers under „Verbindungen“ beside
-its button and a new voice sample under **„Neue Hörprobe“** (new voice sample) on „Auftrag“. Each step shows its own
+one toggle, and it stays closed when there is nothing to show. A connection check answers under "Connections" („Verbindungen“) beside
+its button and a new voice sample under **New voice sample** („Neue Hörprobe“) on "Brief". Each step shows its own
 job details: the research its question status with the plan approval, the script work its progress, the recording
 the running and stopped recordings per episode.
 
@@ -513,46 +505,45 @@ Navigation and reloading start no model calls and grant no approvals.
 
 ### Stop reasons
 
-When a job stops, its page shows a **hold card**: what happened, whether „Fortsetzen“ can help and which button leads
+When a job stops, its page shows a **hold card**: what happened, whether "Resume" can help and which button leads
 on. The research shows it above the question status, the table of contents and the script work at the top of their
 page, the recording in the episode's card, and the conversation as a chat reply. There are five kinds:
 
-- **„Angehalten“** (stopped): „Fortsetzen“ repeats the step and everything finished stays saved (time limit,
+- **Stopped** („Angehalten“): "Resume" repeats the step and everything finished stays saved (time limit,
   connection error, your own stop; transient stops of research and script runs resume by themselves, see
   [Automatic resume](#automatic-resume)). When a step has used up its automatic corrections, including the series
-  review's correction (`series_review_failed`), the card offers **„Mit neuen Anläufen fortsetzen“** (continue with
+  review's correction (`series_review_failed`), the card offers **Resume with fresh attempts** (continue with
   fresh attempts), but only when the run would accept them (`run_budget.fresh_attempts_available`) (why: D-101).
-  The web search through Perplexity stops here with **„Websuche nicht erreichbar“** (web search unreachable:
-  Perplexity failed or returned nothing) and **„Suchauswahl abgewiesen“** (search selection rejected: the model kept
+  The web search through Perplexity stops here with **Web search unreachable** („Websuche nicht erreichbar“) (web search unreachable:
+  Perplexity failed or returned nothing) and **Search selection rejected** („Suchauswahl abgewiesen“) (search selection rejected: the model kept
   naming sources the search had not found; if it stops again, another text model helps); neither resumes by itself.
-- **„Wartet auf Kontingent“** (waiting for quota): after the reset, „Fortsetzen“ or the automatic resume. On the
-  Anthropic key this is **„Ratenlimit der Anthropic-API“** (rate limit of the Anthropic API), for the web search
-  **„Ratenlimit von Perplexity“** (rate limit of Perplexity); the Studio resumes both by itself after a pause.
-- **„Braucht Einrichtung“** (needs setup): first fix something outside the Studio (login, FFmpeg, OpenRouter credit),
-  then „Fortsetzen“. If an OpenRouter or Anthropic key is missing (**„Anthropic-Key fehlt“**, Anthropic key missing)
-  or refused (**„Anthropic-Key abgelehnt“**, Anthropic key refused), the card holds the input field and resumes once
-  the key is stored. **„Anthropic-Guthaben erschöpft“** (Anthropic credit used up) asks you to top up the account in
-  the Anthropic Console and is never resumed automatically; **„Claude lief nicht über den API-Key“** (Claude did not
-  run on the API key) asks for `claude update`. The web search through Perplexity has the same cards: **„Perplexity-Key
-  fehlt“** (Perplexity key missing) and **„Perplexity-Key abgelehnt“** (Perplexity key refused) hold the input field,
-  **„Perplexity-Guthaben erschöpft“** (Perplexity credit used up) asks you to top up the Perplexity account. With „Automatisch“, an expired login or a too old Claude CLI stops the
+- **Waiting for quota** („Wartet auf Kontingent“): after the reset, "Resume" or the automatic resume. On the
+  Anthropic key this is **Anthropic API rate limit** („Ratenlimit der Anthropic-API“), for the web search
+  **Perplexity rate limit** („Ratenlimit von Perplexity“); the Studio resumes both by itself after a pause.
+- **Needs setup** („Braucht Einrichtung“): first fix something outside the Studio (login, FFmpeg, OpenRouter credit),
+  then "Resume". If an OpenRouter or Anthropic key is missing (**Anthropic key missing**, Anthropic key missing)
+  or refused (**Anthropic key refused** („Anthropic-Key abgelehnt“), Anthropic key refused), the card holds the input field and resumes once
+  the key is stored. **Anthropic credit used up** („Anthropic-Guthaben erschöpft“) asks you to top up the account in
+  the Anthropic Console and is never resumed automatically; **Claude did not run on the API key** („Claude lief nicht über den API-Key“) (Claude did not
+  run on the API key) asks for `claude update`. The web search through Perplexity has the same cards: **Perplexity key missing** („Perplexity-Key fehlt“) and **Perplexity key refused** („Perplexity-Key abgelehnt“) hold the input field,
+  **Perplexity credit used up** („Perplexity-Guthaben erschöpft“) asks you to top up the Perplexity account. With "Automatic", an expired login or a too old Claude CLI stops the
   job only when the other subscription cannot continue either. Where the fix is another text model or audio provider,
-  the card offers **„Einstellungen öffnen“** (open settings).
-- **„Deine Entscheidung“** (your decision): research plan, blocked sub-questions or a higher call limit, for research
+  the card offers **Open settings**.
+- **Your decision** („Deine Entscheidung“): research plan, blocked sub-questions or a higher call limit, for research
   and script runs alike; „… erhöhen und fortsetzen“ (raise … and resume) approves and resumes in one click. A budget
   stop names the limit it reached, model calls or search rounds (`job.stop.limit`, from the run's
   [manifest](ARCHITECTURE.md#run-folder-and-manifest)), and a sub-question whose web search ended on a run limit names
   whether the search rounds or the sources ran out (`block_cause`, [Run limits](RESEARCH.md#run-limits)), so the card
   offers the matching raise in either interface language; older runs carry neither, and the page then reads the
   German reason. A run
-  billed to a key stops here with **„Kostengrenze fehlt“** (money limit missing) or **„Kostengrenze erreicht“** (money
+  billed to a key stops here with **Money limit missing** („Kostengrenze fehlt“) or **Money limit reached** („Kostengrenze erreicht“) (money
   limit reached): the card shows the money spent, a USD field with a suggested limit
-  ([Raising a limit](BUSINESS_LOGIC.md#raising-a-limit)) and **„Kostengrenze festlegen und fortsetzen“** (set money
-  limit and resume) or **„Kostengrenze erhöhen und fortsetzen“** (raise money limit and resume); the limit applies to
+  ([Raising a limit](BUSINESS_LOGIC.md#raising-a-limit)) and **Set a money limit and resume** („Kostengrenze festlegen und fortsetzen“) (set money
+  limit and resume) or **Raise the money limit and resume** („Kostengrenze erhöhen und fortsetzen“); the limit applies to
   this run only.
-- **„Neustart nötig“** (restart needed): this run cannot continue, for example after an unsupported review objection, a
+- **Restart needed** („Neustart nötig“): this run cannot continue, for example after an unsupported review objection, a
   checkpoint that no longer fits, changed inputs or a permanently contradictory table of contents. The card offers no
-  „Fortsetzen“ but the way forward (research anew, new table of contents, redraft with a note, approve again) and says
+  "Resume" but the way forward (research anew, new table of contents, redraft with a note, approve again) and says
   what stays readable. Until 2026-11-01 a teaching plan still incomplete after its corrections stopped here with
   **„Mit den offenen Punkten neu entwerfen“** (redraft with the open points); the teaching design ended with D-184. A
   script run begun with the writing prompt that has written an episode stops with `writer_retired`
@@ -561,9 +552,10 @@ page, the recording in the episode's card, and the conversation as a chat reply.
 Messages appear in the [interface language](#interface-language). The Studio's own messages come from its catalogs;
 in a pipeline message it replaces command-line hints, local paths and internal identifiers and, in a German interface,
 translates the review texts the model gets in English. The pipeline's messages are German and are never translated
-(why: D-152): a message in the other language than the interface stands as the original under **„Technische
-Details“** (technical details), where the stop code and, wherever the Studio rewrote a message, its original wording
-are too; a code without its own card appears as „Angehalten“ with its code. For
+(why: D-152). The German interface shows them as they are; the English interface explains each by its stop code in a
+plain sentence (D-200) and keeps the German original under **Technical details** („Technische Details“), where the
+stop code and, wherever the Studio rewrote a message, its original wording are too; a refused request's notice quotes
+the original after the sentence. A code without its own card appears as "Stopped" with its code. For
 unexpected program errors and the log files see [Logs and diagnosis](OPERATIONS.md#logs-and-diagnosis).
 
 A paused run stays visible when a conversation, a connection check, a voice sample or a run of another kind runs
@@ -576,18 +568,18 @@ Saving the brief, host names, editorial notes or spoken forms while a run that d
 contents awaiting approval) first shows a warning and a confirmation question, because that run cannot be resumed
 afterwards ([Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
 
-If no answer arrives in the conversation, the chat names the reason and offers **„Erneut senden“** (send again); the
+If no answer arrives in the conversation, the chat names the reason and offers **Send again** („Erneut senden“); the
 unanswered message is replaced, not repeated. When the conversation has used up its own call limit
-([Budgets](BUSINESS_LOGIC.md#budgets)), **„Gesprächslimit auf … erhöhen“** (raise the chat limit to …) raises it.
+([Budgets](BUSINESS_LOGIC.md#budgets)), **Raise the chat limit to …** („Gesprächslimit auf … erhöhen“) raises it.
 
 ### Deleting projects
 
-**„Projekt löschen“** (delete project) on an overview card moves a resting project to `.studio/trash/`; the overview's
-**„Papierkorb“** (trash) restores it with **„Wiederherstellen“** (restore). Running projects cannot be deleted.
+**Delete project** on an overview card moves a resting project to `.studio/trash/`; the overview's
+**Trash** („Papierkorb“) restores it with **Restore** („Wiederherstellen“). Running projects cannot be deleted.
 
 ### New versions
 
-**„Neue Version anlegen“** (start a new version) in an overview card's **⋯** menu makes a podcast again from its
+**Start a new version** in an overview card's **⋯** menu makes a podcast again from its
 inputs with the current pipeline (`pla new-version <project>` from the command line; why: D-168). After a confirmation a
 new project opens beside the old one, with the old one's brief, attachments, provided works (their old questions
 cleared), other local sources, style notes, spoken forms and text, audio, execution and Jev choices, the project's own
@@ -611,9 +603,9 @@ supported live browser (see V-23).
 
 ### Stopping a job
 
-**„Auftrag anhalten“** (stop job) stops the worker process the Studio started, with its child processes and any model
+**Stop job** („Auftrag anhalten“) stops the worker process the Studio started, with its child processes and any model
 processes started in parallel, on Windows, macOS and Linux; other jobs keep running. A worker that an earlier Studio
-started and that survived its restart appears as „läuft außerhalb dieses Studios“ (running outside this Studio) instead
+started and that survived its restart appears as "running outside this Studio" („läuft außerhalb dieses Studios“) instead
 of interrupted; the Studio recognises it by process ID and process start time and can stop it too (why: D-103).
 Without this record, the page says that it ends by itself.
 
@@ -621,22 +613,22 @@ While a worker runs, it keeps the computer awake: on Windows through `SetThreadE
 off), on macOS through `caffeinate` (why: D-104); `PLA_KEEP_AWAKE=0` switches this off (see
 [Environment variables](CONFIGURATION.md#environment-variables)).
 
-What a stop keeps and what „Fortsetzen“ reuses is in
+What a stop keeps and what "Resume" reuses is in
 [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding). Closing the browser ends no job.
 After the worker ends, the running stage is saved as interrupted and resumable too. Complete script drafts and reviewed
-versions stay available under „Skripte lesen“, and the display claims no model call still running. Budget counters,
+versions stay available under "Read scripts", and the display claims no model call still running. Budget counters,
 approvals and completed intermediate results are kept; opening the Studio does not restart the job.
 
 If a worker reports nothing new for more than five minutes, the job's page says so; Qwen counts each spoken segment,
 and loading its speech model may take 15 minutes. If a worker ends without a result, for example after a crash, the
 Studio sets its run back to resumable and shows the last lines of its error output (`<project>/studio/stderr/<job>.log`)
-under „Technische Details“, filtered for credentials (see
+under "Technical details", filtered for credentials (see
 [Credentials in traces, diagnostics and logs](SECURITY.md#credentials-in-traces-diagnostics-and-logs)).
 
 ### Automatic resume
 
 The open Studio server resumes some stops by itself, at most three times in a row without progress
-(`studio.MAX_AUTO_RESUMES`): the count starts again with your own „Fortsetzen“ and, since 2026-10-07, once a resumed
+(`studio.MAX_AUTO_RESUMES`): the count starts again with your own "Resume" and, since 2026-10-07, once a resumed
 job got an answer from its model (why: D-155).
 
 - **Quota.** A research, script or Qwen job paused by a subscription limit resumes at the reset of the subscription
@@ -670,9 +662,8 @@ resumed automatically, and the Studio announces nothing there; for missing voice
 
 ### Pre-approvals
 
-Under „Ohne Rückfrage“ on the settings page, **„Neue Anläufe je Lauf“** (fresh attempts per run) and **„Aufruflimit
-erhöhen je Lauf“** (raise the call limit per run) set what the Studio may give a stopped run by itself. The job summary
-on „Auftrag“ shows them; a hold card announces when one is about to be used. A new workspace, without saved settings
+Under "Without asking" on the settings page, **Fresh attempts per run** („Neue Anläufe je Lauf“) and **Raise the call limit per run** („Aufruflimit erhöhen je Lauf“) set what the Studio may give a stopped run by itself. The job summary
+on "Brief" shows them; a hold card announces when one is about to be used. A new workspace, without saved settings
 and without a project, shows 2 fresh attempts and 250 extra calls there and gives them to its first project; existing
 workspaces keep theirs (why: D-155). The choices, when the scheduler applies them and which decisions always stay
 yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_LOGIC.md#budgets).
@@ -680,32 +671,30 @@ yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_L
 ### Research decisions and limits
 
 - **Research plan.** Every Studio research job waits before the first sub-question until you click
-  **„Plan freigeben und starten“** (approve plan and start). The card says in one sentence what the plan needs in
-  sub-questions, hours, calls, sources and search rounds; when its limits do not suffice, the button is **„Plan
-  freigeben und Limits anheben“** (approve plan and raise limits) and raises only the limits that fall short, then
+  **Approve plan and start** („Plan freigeben und starten“). The card says in one sentence what the plan needs in
+  sub-questions, hours, calls, sources and search rounds; when its limits do not suffice, the button is **Approve plan and raise limits** („Plan freigeben und Limits anheben“) and raises only the limits that fall short, then
   approves and starts (why: D-155); see
   [Scope check and plan approval](RESEARCH.md#scope-check-and-plan-approval) and, for the gate rule,
   [Human approvals](BUSINESS_LOGIC.md#human-approvals).
-- **Blocked sub-questions.** The „Recherche“ page shows each guiding question's review state and offers the decisions a
-  blocked sub-question needs (the advisor's recommendation, **„Noch einmal versuchen“** (try again), accepting a gap,
+- **Blocked sub-questions.** The "Research" page shows each guiding question's review state and offers the decisions a
+  blocked sub-question needs (the advisor's recommendation, **Try again** („Noch einmal versuchen“), accepting a gap,
   raising an exhausted limit, disputes in the overall review, access gaps, finishing with remaining objections); see
   [Blocked sub-questions and decisions](RESEARCH.md#blocked-sub-questions-and-decisions).
 - **One sentence and a recommended button.** Each decision card (advice, access gap, dispute, finishing with remaining
   objections, table of contents, audio approval) opens with one plain sentence on what the choice
   means and highlights the recommended button; the alternative stays beside it, nothing is preselected and nothing runs
-  on a timer, so the decision stays yours (why: D-155). An access gap recommends **„Werk hochladen“** (upload the work)
+  on a timer, so the decision stays yours (why: D-155). An access gap recommends **Upload the work** („Werk hochladen“)
   when the work is on the list of missing works.
 - **Raising limits for blocked questions.** When the source limit is reached or the search rounds run out, the card
   proposes a raise sized to the open questions: open questions times the higher of the plan's and the run's measured
   sources or rounds per sub-question (the measured rate from three verified questions on), a quarter more, at least one
-  above the limit; without rates it offers +40 sources and +6 rounds. With retry advice the button **„Limits anheben und
-  Empfehlungen übernehmen“** (raise limits and adopt recommendations) raises sources and rounds (and calls, if the
+  above the limit; without rates it offers +40 sources and +6 rounds. With retry advice the button **Raise limits and adopt recommendations** raises sources and rounds (and calls, if the
   advice would not fit), adopts the retries and resumes; without advice **„Limits auf … anheben“** (raise limits to …)
   only raises.
-- **Jev.** Under „Lückenprobe“ (gap probe) in the job summary on „Auftrag“, **„Jev dazunehmen“** (add Jev)
-  and **„Jev ausschalten“** (switch Jev off) switch Jev in this project's gap probe on and off; see
+- **Jev.** Under "Gap probe" („Lückenprobe“) in the job summary on "Brief", **Add Jev** („Jev dazunehmen“)
+  and **Switch Jev off** („Jev ausschalten“) switch Jev in this project's gap probe on and off; see
   [Gap probe](RESEARCH.md#gap-probe).
-- **Starting library.** „Recherche neu beginnen“ (start research anew) preselects offering the previous research's
+- **Starting library.** "Start the research anew" („Recherche neu beginnen“) preselects offering the previous research's
   sources as a starting library, and so does the first research start of a [new version](#new-versions) for the old
   version's sources; see [Starting and resuming](RESEARCH.md#starting-and-resuming).
 
@@ -719,22 +708,21 @@ after an interruption picks up from there without resetting the correction limit
 ### Restart after an update
 
 The page reloads `app.js` on every visit, but the server and its scheduler keep the code they started with. If the code
-has changed since, the top of the page shows „Das Studio hat neuen Code“ (the Studio has new code) with **„Neu starten,
-sobald nichts läuft“** (restart as soon as nothing is running). The Studio then waits until no job and no recording
+has changed since, the top of the page shows "The Studio has new code" („Das Studio hat neuen Code“) with **Restart as soon as nothing is running** („Neu starten, sobald nichts läuft“). The Studio then waits until no job and no recording
 runs, accepts no new ones meanwhile, ends itself and restarts in the background with the same working folder and port,
 without a browser window. The new server takes over queued recordings and scheduled resumes; the page reconnects by
 itself.
 
 The new server loads the keys from the credential store (D-167). Only on a system without one, an OpenRouter, Google, Anthropic or Perplexity key stored in the Studio lived only in the old server's memory and must be entered again
-([Times and connection](#times-and-connection)); until then queued Gemini episodes show „wartet auf den Google-Key“
-or „wartet auf den OpenRouter-Key“ (waiting for the key of their route) instead of waiting for a free slot.
+([Times and connection](#times-and-connection)); until then queued Gemini episodes show "waiting for the Google key" („wartet auf den Google-Key“)
+or "waiting for the OpenRouter key" („wartet auf den OpenRouter-Key“) (waiting for the key of their route) instead of waiting for a free slot.
 
-While a key is missing but something needs it, every page shows **„Google-Key fehlt“**, **„ElevenLabs-Key fehlt“**, **„OpenRouter-Key fehlt“**,
-**„Anthropic-Key fehlt“** or **„Perplexity-Key fehlt“** (key missing) at the top, also on a page loaded fresh after a
+While a key is missing but something needs it, every page shows **Google key missing** („Google-Key fehlt“), **ElevenLabs key missing** („ElevenLabs-Key fehlt“), **OpenRouter key missing** („OpenRouter-Key fehlt“),
+**Anthropic key missing** or **Perplexity key missing** at the top, also on a page loaded fresh after a
 restart (`Studio.key_reminder`, `studio.key_needs`): Gemini through Google (Google key), ElevenLabs (ElevenLabs key, need
 `elevenlabs_audio`), Gemini through OpenRouter, Jev
 in the gap probe or an OpenRouter text model (OpenRouter key), Claude on the API key (Anthropic key, need
-`anthropic_text`), or the web search „Über Perplexity“ (Perplexity key, need `perplexity_search`), each with its
+`anthropic_text`), or the web search "Through Perplexity" (Perplexity key, need `perplexity_search`), each with its
 projects and what happens without the key (Gemini recordings wait; new script runs search gaps by words only, or stop
 where Jev was switched on by hand; OpenRouter jobs and jobs with Claude on the API key stop; research and
 supplementary research stop as soon as they search). The notes fold into one line, such as „2 Keys fehlen ·
@@ -752,11 +740,11 @@ closed. See also [Update the Studio](OPERATIONS.md#update-the-studio).
 
 During the script work the header shows the run time since the start or resume, and the engine room the duration
 of the current model call and the age of the last saved model result. Ages beyond an hour read in hours, beyond two
-days in days. „Letzte Änderung im Lauf“ (last change in the run)
+days in days. "Last change in the run" („Letzte Änderung im Lauf“)
 says when the run itself last saved something.
 
 If the Studio server does not answer for more than 30 seconds, the Studio marks the display as the state of a given
-time, the header shows „Keine Verbindung“ (no connection) and the run indicator stops pulsing; this does not mean the
+time, the header shows "No connection" („Keine Verbindung“) and the run indicator stops pulsing; this does not mean the
 model crashed. If the running server rejects a request, its message appears instead of a connection notice. Every
 answer names the running server instance: after a server restart the page reads session and key state again at the
 next poll or click and says when an OpenRouter, Google, Anthropic or Perplexity key stored earlier was lost with the
@@ -773,7 +761,7 @@ out in another window or through the API, stayed on the open page until a job ch
 the full project page, with the running and stopped recordings only (why: D-107, D-159). Short file access errors are
 retried at the next poll.
 
-During a research, its page shows **„Nächster Schritt“** (next step): that there is nothing to do, with the current
+During a research, its page shows **Next step** („Nächster Schritt“): that there is nothing to do, with the current
 step and its usual duration. The review loop reports each step in the activity line (review part, verdict,
 assignment part, incorporation block, evidence correction, repeated attempt), and from the overall review on, the
 research card names the review round and the number of reopened sub-questions.
@@ -781,7 +769,7 @@ research card names the review round and the number of reopened sub-questions.
 ### Status briefs
 
 During research and script work the run writes short summaries of the logged activities and saved results under
-`runs/<run_id>/status_reports/`; the engine room shows the newest as „Kurzbericht“. The run checks for changes every
+`runs/<run_id>/status_reports/`; the engine room shows the newest as "Status brief". The run checks for changes every
 three minutes (`status_summary.INTERVAL_SECONDS`); without new data a notice appears instead of another model call.
 Each provider writes the brief with its own cheaper model at `low` (`status_summary.STATUS_MODELS`, listed under
 [Providers and models](PRODUCT.md#providers-and-models)); the main model stays unchanged. The brief names no invented
@@ -793,18 +781,17 @@ three consecutive failures; the production budget stays unchanged. The brief is 
 [interface language](#interface-language) its job started in (prompt version `studio_status.v2-ui-language`), while
 the facts the model reads stay German; a brief in another language than its job's is written anew at the next check
 (why: D-152). A run on the Anthropic API key gets no brief: the
-„Kurzbericht“ reads „aus, weil dieser Lauf über den Anthropic-API-Key abrechnet“ (off, because this run bills the
+"Status brief" reads "off, because this run bills the Anthropic API key" („aus, weil dieser Lauf über den Anthropic-API-Key abrechnet“) (off, because this run bills the
 Anthropic API key; state `off`, reason `billed_text`), since its calls would bill the key outside the run's money
 limit (why: D-149). A failure of the status model does not stop the
 job. When the job is stopped or ended, its status process ends too; older reports stay readable, and a stopped run's
-brief never reads „wird gerade erstellt“ (being written). The brief stands first in the engine room; the small model's
+brief never reads "being written" („wird gerade erstellt“). The brief stands first in the engine room; the small model's
 name shows on pointing at its age.
 
 ### Current research task
 
-Next to the brief, **„Aktueller Rechercheauftrag“** (current research task) shows the concrete question, the work order
-given to the model, the last saved reading result and existing review objections. **„Material und Prüfpunkte“**
-(material and checkpoints) lists the text passages provided, with source titles and pages, and the completion criteria.
+Next to the brief, **Current research task** („Aktueller Rechercheauftrag“) shows the concrete question, the work order
+given to the model, the last saved reading result and existing review objections. **Material and checkpoints** („Material und Prüfpunkte“) lists the text passages provided, with source titles and pages, and the completion criteria.
 Search hits are listed separately, because a hit is not yet read evidence. The view comes from each call's
 `calls/call_*/work_context.json`; for calls started without one, it is reconstructed from the saved question status
 and marked as such.
@@ -819,8 +806,8 @@ changes no research results or budgets.
 
 ### Live output
 
-Under **„Live-Ausgabe · letzte 20 Meldungen“** (live output · last 20 messages) the engine room shows up to 20 readable
-messages, expanded while the job runs; a stopped run folds them under **„Letzte Arbeitsschritte“** (last work steps).
+Under **Live output · last 20 messages** („Live-Ausgabe · letzte 20 Meldungen“) the engine room shows up to 20 readable
+messages, expanded while the job runs; a stopped run folds them under **Last work steps** („Letzte Arbeitsschritte“).
 Consecutive lines of one call at one moment share one head with time and sub-question or episode; plain live text
 carries no kind label, a reasoning summary, a work step or a technical note does (why: D-164). Structured answers are reduced to their content as they arrive, for example „Vorhandene
 Quellen durchsuchen“ (search existing sources), „Suchbegriff: …“ (search term: …) or „Einordnung: …“
@@ -852,7 +839,7 @@ failure tracebacks: [Logs and diagnosis](OPERATIONS.md#logs-and-diagnosis).
 
 ## Sequential or parallel
 
-Under „Ausführung“ on the settings page, text work („Textausarbeitung“) and recording („Vertonung“) are set to
+Under "Execution" on the settings page, text work ("Text drafting" („Textausarbeitung“)) and recording ("Recording") are set to
 sequential or parallel separately. Parallel text means at most five independent research sub-questions at a time
 (`execution.MAX_PARALLEL_TEXT`) and, in a script run that writes several episodes, at most five episodes at a time in
 the story agent's and the review stage (also across the subscriptions); the series review's correction revises all
@@ -884,14 +871,14 @@ respective project.
 
 ## Review notes on the reading page
 
-The reading page of a published episode has a collapsible field **„Hinweise der Prüfungen“** (review notes). It shows
+The reading page of a published episode has a collapsible field **Review notes** („Hinweise der Prüfungen“). It shows
 what the reviews said but did not block: the limitations each review gives its own verdict, the explanation gaps the
 reviewers classified as not necessary, with their reasoning, and the deterministic notes about repeated definitions,
 repeated references to invented examples, a long cold open and excess length. None of this prevents publishing; it is
 reading material for your review.
 
 An episode published by a narrated run before 2026-11-01 still leads with its narration review's scores („Spannung
-6/10 · Interesse 7/10 · Erzählweise 5/10“) and lists under **„Narrationsprüfung“** what it left open and the stories
+6/10 · Interesse 7/10 · Erzählweise 5/10“) and lists under **Narration review** („Narrationsprüfung“) what it left open and the stories
 the material did not hold, each with its category, problem, correction and segments (`studio_scripts.review_notes`:
 `narration` and `narration_scores`); its reader, editorial and teaching review notes stay as well. The narration
 review ended with D-184; an episode written since has the story agent's critiques in its quality report instead
@@ -899,12 +886,12 @@ review ended with D-184; an episode written since has the story agent's critique
 
 ## Downloads
 
-On the „Vertonung“ page, under „Alle fertigen Folgen anhören“, **„Gesamten Podcast herunterladen“** (download the
+On the "Recording" page, under "Listen to all finished episodes", **Download the whole podcast** („Gesamten Podcast herunterladen“) (download the
 whole podcast) offers a ZIP with the individual MP3s in episode order: the most recently published takes including all
 parts, without new speech generation or conversion. The ZIP carries a shortened podcast title; inside, files are named
 `Folge 01 - Episodentitel.mp3`, with several parts extended by `Teil 01 von 02`. The podcast title is not repeated
 inside, so ZIP folder and file name together stay short when unpacking on Windows. Single downloads also get a short
-podcast title. Every overview project card offers the same ZIP as „Podcast herunterladen“ once one episode is
+podcast title. Every overview project card offers the same ZIP as "Download the podcast" once one episode is
 recorded. Long titles are shortened at word boundaries where possible; umlauts are kept, and no ellipsis is appended.
 
 The names follow the project's content language, not the interface language (why: D-153). A German project's names
@@ -921,26 +908,23 @@ An episode whose companion kit was made for exactly the recording in the ZIP als
 latest recordings, comes as `Begleitmaterial Podcast/` (`Podcast companion kit/`) with `description_spotify.txt`,
 `description.txt`, `sources.md` and `transcript.md`, the transcript of every episode.
 
-**„Begleitmaterial“** (companion kit) on the „Vertonung“ page shows, per episode, the short description and the
-episode description for Spotify and Apple Podcasts, each with **„Kopieren“** (copy), the character count against the
-4,000 allowed and how many sources fit into the text. **„Begleitmaterial erstellen“** (create) makes it, **„Neu
-zusammenstellen“** (rebuild) takes the newest recording's chapters without a new model call, **„Neu formulieren“**
-(reword) asks the text model again, **„Für alle Folgen“** does every episode. How the kit is made:
+**Companion material** on the "Recording" page shows, per episode, the short description and the
+episode description for Spotify and Apple Podcasts, each with **Copy** („Kopieren“), the character count against the
+4,000 allowed and how many sources fit into the text. **Create the companion kit** („Begleitmaterial erstellen“) makes it, **Rebuild** („Neu zusammenstellen“) takes the newest recording's chapters without a new model call, **Reword** („Neu formulieren“) asks the text model again, **For all episodes** („Für alle Folgen“) does every episode. How the kit is made:
 [Exports and listening sheet](AUDIO.md#exports-and-listening-sheet) (why: D-139).
 
-**„Begleitmaterial für den Podcast“** (the podcast's companion kit) below it does the same for the whole podcast:
+**Companion kit for the podcast** („Begleitmaterial für den Podcast“) below it does the same for the whole podcast:
 the podcast description for Spotify (with the AI notice, against its 600 characters) and for Apple Podcasts (against
-its 4,000), each with **„Kopieren“**, how many episodes the
+its 4,000), each with **Copy**, how many episodes the
 transcript covers and how many of them are recorded, and how many sources the list holds; transcript and sources lie
-in `publish/` and in the ZIP. **„Transkript herunterladen“** and **„Quellen herunterladen“** fetch `transcript.md` and
+in `publish/` and in the ZIP. **Download transcript** („Transkript herunterladen“) and **Download sources** („Quellen herunterladen“) fetch `transcript.md` and
 `sources.md` on their own, without the MP3s of the ZIP (`/download/<project>/kit/<file>`, named
 `Podcasttitel - transcript.md`). The route serves only the four files the ZIP carries and only while the kit is
-current; otherwise it refuses with `missing_kit`. **„Begleitmaterial für den Podcast erstellen“** makes it with one text-model call,
-**„Neu zusammenstellen“** takes the newest scripts and recordings without a new call, **„Neu formulieren“** asks
+current; otherwise it refuses with `missing_kit`. **Create the podcast's companion kit** („Begleitmaterial für den Podcast erstellen“) makes it with one text-model call,
+**Rebuild** takes the newest scripts and recordings without a new call, **Reword** asks
 again. After a new recording or script the panel says the kit is outdated and offers the rebuild (why: D-165).
 
-For an incomplete series the link reads **„Fertige Folgen herunterladen · ZIP · 2 von 6 Folgen“** (download finished
-episodes · ZIP · 2 of 6 episodes). Older script or voice states stay marked as such. If a file of a published episode
+For an incomplete series the link reads **Download the finished episodes · ZIP · 2 of 6 episodes** („Fertige Folgen herunterladen · ZIP · 2 von 6 Folgen“). Older script or voice states stay marked as such. If a file of a published episode
 is missing, the ZIP download aborts with an understandable message instead of silently leaving parts out.
 
 The ZIP is built only for the download and then removed from temporary storage; meanwhile the top of the page shows

@@ -2,7 +2,7 @@
 title: Operations
 doc_type: operations
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-10
 covers:
   - scripts/setup.sh
   - scripts/setup-ffmpeg.ps1
@@ -44,17 +44,17 @@ on macOS and Linux. All commands: [Commands](PRODUCT.md#commands); in daily use 
 | Start the Studio | `Podcast-Studio.cmd` (Windows), `Podcast-Studio.command` (macOS) or `sh Podcast-Studio.sh`; [Starting the Studio](STUDIO.md#starting-the-studio) |
 | Update | [Update the Studio](#update-the-studio) |
 | Try the whole pipeline small and cheap | `pla init <project> --trial` (a sample topic without `--topic`); [Trial project](BUSINESS_LOGIC.md#trial-project) |
-| Make a podcast again with the current pipeline | „Neue Version anlegen“ in its overview card's ⋯ menu or `pla new-version <project>`; [New versions](STUDIO.md#new-versions) |
+| Make a podcast again with the current pipeline | "Start a new version" („Neue Version anlegen“) in its overview card's ⋯ menu or `pla new-version <project>`; [New versions](STUDIO.md#new-versions) |
 | Check subscriptions and quota | `pla doctor --skip-tts`, `pla quota`; [Check the subscriptions](#check-the-subscriptions) |
 | Set the OpenRouter key | Studio key field, `--api-key` or `OPENROUTER_API_KEY`; [Secrets and keys](SECURITY.md#secrets-and-keys) |
 | Run without a subscription | Claude Code with your Anthropic API key, or an OpenRouter model with the Perplexity search, each with a money limit; [Claude on your Anthropic API key](#claude-on-your-anthropic-api-key), [Research with OpenRouter and Perplexity](#research-with-openrouter-and-perplexity) |
-| Set or raise a run's money limit | Settings „Kostengrenze je Lauf in USD“, the hold card's offer or `pla approve <project> --cost-usd N`; [Money limit](BUSINESS_LOGIC.md#money-limit) |
+| Set or raise a run's money limit | Settings "Money limit per run in USD" („Kostengrenze je Lauf in USD“), the hold card's offer or `pla approve <project> --cost-usd N`; [Money limit](BUSINESS_LOGIC.md#money-limit) |
 | Watch progress | `pla status <project>` in a second terminal; [Logs and diagnosis](#logs-and-diagnosis) |
-| Resume a run | **„Fortsetzen“** (resume) or `pla resume <project> [--run-id <run_id>]`; [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding) |
+| Resume a run | **Resume** („Fortsetzen“) or `pla resume <project> [--run-id <run_id>]`; [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding) |
 | Raise a run's call limit | The hold card's offer or `pla approve <project> --model-calls N`; [Budgets](BUSINESS_LOGIC.md#budgets) |
 | Accept a gap or retry a blocked sub-question | [Blocked sub-questions and decisions](RESEARCH.md#blocked-sub-questions-and-decisions) |
 | Re-render one segment | [Re-rendering one segment](AUDIO.md#re-rendering-one-segment) |
-| Restore a deleted project | **„Papierkorb“** (trash) on the overview; [Overview, navigation and hold cards](STUDIO.md#overview-navigation-and-hold-cards) |
+| Restore a deleted project | **Trash** („Papierkorb“) on the overview; [Overview, navigation and hold cards](STUDIO.md#overview-navigation-and-hold-cards) |
 | Set up local Qwen | `scripts/setup-qwen.ps1` on [Windows](#set-up-local-qwen-on-windows), `scripts/setup-qwen.py` on [macOS and Linux](#set-up-local-qwen-on-macos-and-linux) |
 | Make a voice sample | `pla audio-probe <project> --approve-audio`; [Voice samples](#voice-samples) |
 | Read logs | [Logs and diagnosis](#logs-and-diagnosis) |
@@ -148,13 +148,13 @@ Without a subscription, Claude Code can run on your own Anthropic API key (`clau
 research included, is billed to your Anthropic account:
 
 1. Install Claude Code (the same minimum versions); no `claude auth login` is needed.
-2. Give the key to the Studio under **„Anthropic-Key“** on the settings page (kept in the credential store),
+2. Give the key to the Studio under **Anthropic key** („Anthropic-Key“) on the settings page (kept in the credential store),
    or set `ANTHROPIC_API_KEY` in the environment of the Studio or of `pla`; `pla research`, `script` and `resume` also
    ask for it hidden with `--api-key` ([Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio)).
-3. Set a money limit: **„Kostengrenze je Lauf in USD“** under „Limits“ on the settings page, or
+3. Set a money limit: **Money limit per run in USD** under "Limits" on the settings page, or
    `research_limits.cost_usd` in `project.yaml` outside a Studio workspace. A billed run without one does not start.
    What a run and a whole series cost: [Money limit](BUSINESS_LOGIC.md#money-limit).
-4. Choose „Sonnet 5.5 · high · Anthropic-API-Key“ or „Opus 5.5 · high · Anthropic-API-Key“ on the settings page, or
+4. Choose "Sonnet 5.5 · high · Anthropic API key" („Sonnet 5.5 · high · Anthropic-API-Key“) or "Opus 5.5 · high · Anthropic API key" („Opus 5.5 · high · Anthropic-API-Key“) on the settings page, or
    `--backend claude_api` on the command line.
 
 ```powershell
@@ -172,13 +172,13 @@ Without any subscription and without Claude Code, an OpenRouter model can do all
 when the run searches the web through Perplexity's Search API (why: D-151). OpenRouter bills the model calls,
 Perplexity every search request:
 
-1. Give the Studio the **„OpenRouter-Key“** and the **„Perplexity-Key“** on the settings page (kept in the
+1. Give the Studio the **OpenRouter key** („OpenRouter-Key“) and the **Perplexity key** („Perplexity-Key“) on the settings page (kept in the
    credential store), or set `OPENROUTER_API_KEY` and `PERPLEXITY_API_KEY` in the environment of the Studio or of
    `pla` ([Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio)).
-2. Set a money limit (**„Kostengrenze je Lauf in USD“**, as above); it covers the OpenRouter calls and the
+2. Set a money limit (**Money limit per run in USD**, as above); it covers the OpenRouter calls and the
    Perplexity requests together.
-3. Choose an OpenRouter preset under „Textmodell“ and **„Über Perplexity“** (through Perplexity) under
-   **„Websuche“** (web search) on the settings page, or `--backend openrouter --model … --web-search perplexity` on the
+3. Choose an OpenRouter preset under "Text model" („Textmodell“) and **Through Perplexity** („Über Perplexity“) under
+   **Web search** („Websuche“) on the settings page, or `--backend openrouter --model … --web-search perplexity` on the
    command line.
 
 ```powershell
@@ -217,7 +217,7 @@ The installation is ready when every technical check passes and at least one tex
 login, Claude on the API key or an OpenRouter key (`doctor.readiness`, `doctor.TEXT_ACCESS`). `--skip-tts` skips only
 local Qwen, for example when you record with Gemini. `doctor` produces no audio; research needs a subscription, Claude
 on the API key or, with an OpenRouter model, the Perplexity search, whatever the audio provider. In the Studio,
-„Verbindungen prüfen“ also counts the keys entered on the settings page.
+"Check connections" („Verbindungen prüfen“) also counts the keys entered on the settings page.
 
 ### Where the CLIs are found
 
@@ -225,7 +225,7 @@ on the API key or, with an OpenRouter model, the Perplexity search, whatever the
 extension of VS Code or VS Code Insiders ([Text provider adapters](ARCHITECTURE.md#text-provider-adapters)). A path in
 `runtime.codex_executable` always wins. So a Codex that works in a terminal but is missing from the `PATH` of a
 double-clicked Studio needs no reinstall; its ChatGPT login is checked separately. After a detection error is fixed,
-**„Fortsetzen“** continues the saved job; a draft table of contents still waits for your review before the scripts are
+**Resume** continues the saved job; a draft table of contents still waits for your review before the scripts are
 written.
 
 On macOS and Linux, the Studio starter and `scripts/setup.sh` also add `~/.local/bin`, `/opt/homebrew/bin` and
@@ -521,13 +521,13 @@ program paths such as `runtime.codex_executable` where needed.
 
    On macOS and Linux, `sh scripts/setup.sh` does the same.
 3. Restart the Studio: a running server and its scheduler keep the code they started with, and reloading the browser
-   page is not enough. When the Studio notices new code it shows „Das Studio hat neuen Code“ with
-   **„Neu starten, sobald nichts läuft“** (restart once nothing is running); see
+   page is not enough. When the Studio notices new code it shows "The Studio has new code" („Das Studio hat neuen Code“) with
+   **Restart as soon as nothing is running** („Neu starten, sobald nichts läuft“); see
    [Stopping and resuming](STUDIO.md#stopping-and-resuming). Alternatively, once the running job has finished, click
-   **„Studio beenden“** (stop the Studio) and start it again.
+   **Quit Studio** („Studio beenden“) and start it again.
 4. Only on a system without a credential store: enter an OpenRouter key that was kept only in the Studio again; it
    lived in the old server's memory ([Keys in the credential store](SECURITY.md#keys-in-the-credential-store)). Until then, queued Gemini episodes show
-   „wartet auf den OpenRouter-Key“.
+   "waiting for the OpenRouter key" („wartet auf den OpenRouter-Key“).
 
 A failed restart leaves its reason in `.studio/relaunch.log` ([Log files](#log-files)).
 
@@ -555,13 +555,13 @@ traceback files ([Credentials in traces, diagnostics and logs](SECURITY.md#crede
 ### When a step fails
 
 - **Unexpected program error.** The Studio message stays short; the hold card opens the cleaned traceback as text
-  under **„Technische Details“** (technical details), and `pla status` lists the same files ("Technical failure
+  under **Technical details** („Technische Details“), and `pla status` lists the same files ("Technical failure
   logs").
 - **Stop with a domain reason** (quota, missing evidence, review objections). The log gets one line without traceback
   and the message names no traceback file, but the stop is still recorded under `runs/<run_id>/failures/`, like every
   stage stop (`runner.execute_stages`).
 - **Job process ended without a result**, for example after a crash. The Studio sets its run back to resumable and shows
-  the last lines of `<project>/studio/stderr/<job>.log`, filtered for credentials, under **„Technische Details“**.
+  the last lines of `<project>/studio/stderr/<job>.log`, filtered for credentials, under **Technical details**.
 - **Per-call records** (provider choice, diagnostics, failures, rejected output) are in `runs/<run_id>/calls/`
   ([Run folder and manifest](ARCHITECTURE.md#run-folder-and-manifest)).
 
@@ -579,9 +579,10 @@ A release is a pushed version tag `vX.Y.Z`; `.github/workflows/release.yml` buil
 
 1. Set `version` in `pyproject.toml` to `X.Y.Z` and move the entries under `## [Unreleased]` in `CHANGELOG.md` into
    a new section `## [X.Y.Z] - YYYY-MM-DD`.
-2. Merge this to `main` and wait until all six legs of `.github/workflows/tests.yml` pass. The release workflow tests
-   only on Linux, so tag only a `main` commit whose six CI legs passed.
-3. Tag that commit and push the tag:
+2. Merge this to `main` and wait until the lint job and all six test legs of `.github/workflows/tests.yml` pass. The
+   release workflow tests only on Linux, so tag only a `main` commit whose seven checks passed.
+3. Tag that commit and push the tag. Tags `v*` are protected by a repository ruleset: only the repository's
+   administrator creates, moves or deletes them.
 
    ```sh
    git tag vX.Y.Z
@@ -595,7 +596,8 @@ The workflow then, each step only after the previous one passed:
 - builds the sdist and the wheel (`python -m build`), checks them with `twine check --strict` and checks that the
   wheel holds every data file of the package (catalogs, prompts, web files);
 - runs both test suites on Linux with Python 3.12 and 3.13 against the installed wheel;
-- publishes to PyPI through trusted publishing in the GitHub environment `pypi`, without a stored token;
+- waits for the maintainer's approval of the deployment to the GitHub environment `pypi` (Actions › the run ›
+  **Review deployments**), then publishes to PyPI through trusted publishing, without a stored token;
 - creates the GitHub release with the built files and the version's CHANGELOG section as its notes; a version with
   `a`, `b`, `rc` or `dev` in it becomes a pre-release.
 
@@ -604,7 +606,8 @@ A release run is never cancelled half-way, so PyPI and the GitHub release stay i
 **One-time setup** before the first release, by the repository owner:
 
 - On PyPI, a pending trusted publisher: project `podcast-automate`, owner `Thorfinson`, repository
-  `podcast-automate`, workflow `release.yml`, environment `pypi`.
-- On GitHub, an environment named `pypi` in the repository settings.
-- On GitHub, private vulnerability reporting turned on, the only reporting channel of the
-  [security policy](../SECURITY.md).
+  `podcast-automate`, workflow `release.yml`, environment `pypi`. This step is still open.
+- On GitHub, set up on 2026-11-10: the environment `pypi` (deployments only from tags `v*`, the maintainer as
+  required reviewer), the rulesets for `main` and for tags `v*`, and private vulnerability reporting, the only
+  reporting channel of the [security policy](../SECURITY.md). How changes reach `main` under the ruleset is in
+  [CONTRIBUTING](../CONTRIBUTING.md#how-a-change-reaches-main).

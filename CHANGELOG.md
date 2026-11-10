@@ -8,6 +8,10 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Added
 
+- 2026-11-10 · The English interface explains every stop and refusal in English: where a German pipeline message stood, the Studio shows a plain sentence for its stop code (for example "The story agent exceeded its time limit."), with the German original under "Technical details". German pages are unchanged (D-200).
+- 2026-11-10 · The README has a sample to listen to, the first chapter of „Geld verstehen“ episode 1 in English, recorded with the ElevenLabs route on Eleven v4 Turbo (`docs/media/`, with its transcript), three screenshots of the Studio, and the measured cost of season 1 beside the October series.
+- 2026-11-10 · Refused sources to fetch yourself: „Fehlende Werke“ on the research page now also lists **„Gesperrte Quellen“**, the addresses a publisher or a bot check refused for questions that still need them. Each opens in your browser; upload what you save there in its own field, and the research reads it and tries the question again.
+- 2026-11-10 · Uploads under „Fehlende Werke“ take **EPUB** e-books without copy protection, read chapter by chapter.
 - 2026-11-10 · „Eleven v4 Turbo“ for ElevenLabs at half the credits: choose it under „Sprachmodell“ on the settings page or in „Sprachanbieter dieses Projekts“, which now has its own model field. v4 stays the default; a passage recorded with Turbo is a new take, so switching records the episode anew.
 - 2026-11-10 · The recording queue on the audio page can be held, emptied and reordered: **„Warteschlange anhalten“** keeps the waiting episodes and their approvals and starts none of them, and new approvals wait with them, until **„Warteschlange fortsetzen“**; **„Alle entfernen“** empties it after asking; **↑** and **↓** move an episode one place. „Entfernen“ is now a visible button, and the page says that taking an episode out drops its approval.
 - 2026-11-08 · Episodes recorded before the music can get it in one step: **„{n} Folgen mit Musik neu zusammensetzen“** on the audio page approves only the recorded episodes whose one change is the music; their speech comes from the cache, so no new speech is sent. „{n} gelesene Folgen freigeben“ still covers every episode without a current recording, the never voiced ones too (D-193).
@@ -84,6 +88,8 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-11-10 · The launchers and `pla studio`'s own console lines are in English, like the rest of the command line (D-156).
+- 2026-11-10 · For contributors: a `lint` job (Ruff, `ruff check .`, installed with `pip install -e ".[dev]"`) runs beside the test legs, and `main` is protected by a ruleset that requires these seven checks for a pull request; CODEOWNERS, Dependabot, labels and Discussions are set up, and CONTRIBUTING.md says how a change reaches `main` and how a version is released (D-201).
 - 2026-11-09 · The podcast's companion kit fits Spotify: **„Podcastbeschreibung für Spotify“** is a text of its own of at most 600 characters, the AI notice included, the limit of Spotify for Creators for a show's description; until now the one podcast description had about 1,600 characters. **„Podcastbeschreibung für Apple Podcasts“** keeps the longer text with the whole transparency note. The music's credit is no longer in the podcast's descriptions, since every episode's description has it; the podcast's source list still names it. An existing podcast kit shows „Neu zusammenstellen“; the rebuild asks the text model once for the new Spotify text (D-194).
 - 2026-11-01 · Studio redesign (D-185, D-186). A project has three places instead of six step pages: „Serie“, „Folgen“ and „Grundlagen“. Each place shows its pages as tabs that say their state.
   - „Serie“ shows an approved outline as one row per episode, with its way (Plan, Text, Prüfung, Ton) and its next step; „Nächste Folge schreiben“ stands in the page head.
@@ -205,6 +211,9 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Fixed
 
+- 2026-11-10 · CI is green again: every push to `main` since 2026-11-01 failed on Linux and macOS (five Studio tests stopped a mocked worker through psutil) and on macOS and Windows (one audio test compared an unresolved temporary path); both were faults of the tests.
+- 2026-11-10 · Private vulnerability reporting, the only channel SECURITY.md names, is turned on; it was off.
+- 2026-11-10 · Sources whose servers leave out an intermediate certificate (bundestag.de, bundesrat.de) download again: the import checks certificates like the operating system and browsers do. A page that is gone (404, 410 or a server that no longer answers) is read from the Internet Archive's latest capture, named with its date.
 - 2026-11-10 · The recording and revision queues on an open page follow the server: a row refused at its start, or rows taken out in another window, no longer stay on the page until a job changes.
 - 2026-11-09 · Publishing an episode no longer moves another episode of the same outline to the archive because it has its own length: a revised episode (D-191) and a new one written at the batch length (D-192) counted as another outline's, so publishing Geld S1's revised ep_002 archived the revised ep_003, and each episode of a batch would have archived the one before.
 - 2026-11-09 · An episode's supplementary research whose found sources all fail to download reads the stored sections the gap probe matched instead of stopping with „Die zusätzlichen Quellen sind derzeit nicht abrufbar“, which every resume would have repeated for the same addresses.

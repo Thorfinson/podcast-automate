@@ -4,7 +4,6 @@ from __future__ import annotations
 import copy
 import json
 import re
-from collections import Counter
 
 from typing import Literal
 

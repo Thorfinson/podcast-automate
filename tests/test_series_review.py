@@ -12,7 +12,7 @@ from podcast_automate.script_checkpoints import finished
 from podcast_automate.script_checks import SCRIPT_REVIEW_VERSION
 from podcast_automate.script_models import ScriptReview, SeriesPlan
 from podcast_automate.script_pipeline import STORY_REPAIR_VERSION, STORY_REVIEW_SUFFIX
-from podcast_automate.series_review import (SERIES_REVIEW_PROMPT, SERIES_REVIEW_VERSION, SeriesReview, assess_series,
+from podcast_automate.series_review import (SERIES_REVIEW_PROMPT, SeriesReview, assess_series,
                                             load_series_review, require_passing_series, series_criteria)
 from podcast_automate.run_budget import approve_fresh_attempts
 from podcast_automate.scripting import outline_hash, run_script

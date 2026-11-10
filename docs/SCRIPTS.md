@@ -112,7 +112,7 @@ explicitly switched to another provider.
 
 `--backend auto` picks a subscription by quota before each call and uses the catalog defaults. Its records
 (`script_request.json`, `provider_choice.json`, `provider_switch.json`), quota pauses and switching a job to another
-provider (**„Weiter mit …“** (continue with …), `pla approve --text-switch`, `text_switch.json`): see [Text providers
+provider (**Continue with …** („Weiter mit …“), `pla approve --text-switch`, `text_switch.json`): see [Text providers
 and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection).
 
 ### OpenRouter for a script run
@@ -267,7 +267,7 @@ once, and an episode knew the others only by their titles and questions.
   one not written.
 - **The next one, or all remaining ones.** The Studio writes the next episode, or every remaining one one after the
   other, never in parallel, stopping where one stops; with every episode written it refuses with `series_written`.
-  „Fortsetzen“ on the outline's own run, once approved, writes its next episode in the same way. A resume of an
+  "Resume" („Fortsetzen“) on the outline's own run, once approved, writes its next episode in the same way. A resume of an
   episode that stopped while every remaining one was being written, by hand, after a quota wait or by an allowance,
   finishes it and then goes on with the remaining ones, as long as the outline is the current one and still approved
   (`Studio.series_outline`); until 2026-11-04 it finished that episode alone. The batch may be given one length for
@@ -459,7 +459,7 @@ holds it, and its receipt is `preserved` or `drift` against those sections, neve
   `clarity`, `depth`, `dialogue`), the script is adopted; the points stay in the review report and
   `reviews/<episode>_accepted_notes.json`, visible when reading before the audio approval.
 - Evidence errors and objections about scope or structure keep blocking: the run stops with `script_review_failed`,
-  and drafts and objections stay saved. **„Mit neuen Anläufen fortsetzen“** (resume with fresh attempts) or
+  and drafts and objections stay saved. **Resume with fresh attempts** („Mit neuen Anläufen fortsetzen“) or
   `pla approve <project> --fresh-attempts` gives a review stopped this way three new repairs against the same
   review report.
 - A point the review itself files as an advisory (`advisories`) is its own verdict that the point does not block, and
@@ -587,11 +587,11 @@ story run called the writing prompt and would have stopped with a file error (wh
   episode is an advisory with `basis: unchanged`. This scope is saved in `series_repair.json` before the call, so a
   resume asks the same question. A second negative verdict in this scope blocks (`series_review.MAX_SERIES_REPAIRS`,
   one round).
-- **Fresh attempts.** **„Mit neuen Anläufen fortsetzen“** (or `--fresh-attempts`) sets a failed correction round
+- **Fresh attempts.** **Resume with fresh attempts** (or `--fresh-attempts`) sets a failed correction round
   aside, and likewise the spent round after a negative series verdict
   (`series_repair_superseded_NN.json`). The next start corrects against the saved verdict if it belongs to today's
   text, else first judges the series anew; either way it has one round again.
-- **Stopped rounds.** A round stopped before its final series review, for example by **„Auftrag anhalten“** (stop
+- **Stopped rounds.** A round stopped before its final series review, for example by **Stop job** („Auftrag anhalten“) (stop
   job), is not spent; resuming picks it up (`finished` in the record).
 - No other stage is repeated: the change is limited to named segments.
 - In parallel text mode, all affected episodes of a round are corrected at once. Passed corrections are adopted even
@@ -614,8 +614,7 @@ story run called the writing prompt and would have stopped with a file error (wh
   still broke source mapping or structure after its repeated attempts (`invalid_script`)
   (`series_review.CORRECTION_VERDICTS`). A `resume` then buys neither a new series verdict nor a second round but
   reports this error again.
-- No other failure is recorded (`series_review.resumable`): a timeout, a stall, a quota pause, **„Auftrag
-  anhalten“**, a missing sign-in or key, a spent call limit, a busy project, a malformed answer, or a provider error
+- No other failure is recorded (`series_review.resumable`): a timeout, a stall, a quota pause, **Stop job**, a missing sign-in or key, a spent call limit, a busy project, a malformed answer, or a provider error
   (`codex_failed`, `claude_failed`, `claude_structured_output`, `openrouter_unavailable`, `openrouter_connection`).
   Resuming continues the round for the episodes whose correction is not yet adopted (why: D-078).
 - A corrected episode's audio approval lapses, because it hangs on the old script hash. Changed or missing reports
@@ -672,8 +671,7 @@ episodes has no command-line option; the Studio starts it.
 ```
 
 A revision is a story agent session given the published episode and the feedback (why: D-184). In the Studio it is
-**„Diese Folge überarbeiten lassen“** (have this episode revised) on the reading page, and **„Mit diesen Hinweisen
-überarbeiten“** (revise with these points) for an episode the series review names.
+**Have this episode revised** („Diese Folge überarbeiten lassen“) on the reading page, and **Revise with these notes** („Mit diesen Hinweisen überarbeiten“) for an episode the series review names.
 
 - It starts a new run with the previous series plan and the episode as published: `scripting.revision_inputs` reads
   the episode's latest published run, which must be complete, with a valid plan and today's research and dossier
@@ -686,7 +684,7 @@ A revision is a story agent session given the published episode and the feedback
   feedback asks and what the change touches, keep every other segment as it was, check the changed facts, and use at
   most two critiques (`story_agent.REVISION_CRITIQUES`) only where the telling changed.
 - **Its own length.** A revision keeps the length the episode was written for unless it is given another, 10 to 60
-  minutes (`--minutes N`; on the reading page **„Neue Länge in Minuten“**, empty for the plan's, which the field
+  minutes (`--minutes N`; on the reading page **New length in minutes** („Neue Länge in Minuten“), empty for the plan's, which the field
   shows; why: D-190). The revision's episode carries it (`scripting.revision_inputs`), so the word budget, the
   agent's floor of 95 %, `check.py`, the run's script checks, the recording's check and the published
   `episode_plan.yaml` read it; the approved outline stays unchanged and still shows its planned minutes. A revision
@@ -718,7 +716,7 @@ on 2026-11-01.
 
 ### Host names
 
-The host names are two optional fields in the Studio panel **„Sprechformen und Hostnamen“** (spoken forms and host
+The host names are two optional fields in the Studio panel **Spoken forms and host names** („Sprechformen und Hostnamen“) (spoken forms and host
 names) on the audio page: both or none (`TopicBrief.host_names`).
 
 - With names, the hosts may address each other by them, and transcript, show notes and reading page show them;
@@ -752,7 +750,7 @@ in `project.yaml`; [examples/geld-podcast](../examples/geld-podcast/README.md) i
 ### Style notes
 
 `projects/<id>/style_notes.md` holds the operator's standing editorial corrections, edited in the Studio panel
-**„Redaktionelle Notizen“** (editorial notes). It enters a script run's inputs as `style_notes` and reaches the story
+**Editorial notes** („Redaktionelle Notizen“). It enters a script run's inputs as `style_notes` and reaches the story
 agent's brief and the script review, not the series plan; the evidence rules take precedence. A change changes the
 input hash and so leads to a new run.
 
@@ -788,7 +786,7 @@ The same holds for every correction loop of a script run that keeps no rejection
 review, the orientation check, the series review and the supplementary research's own checks
 (`run_budget.REASKED_CODES`, for example `invalid_script`). Their stop message ends with „die abgewiesenen Antworten
 liegen bei den Aufrufen“ (the rejected answers are with the calls; `run_budget.REASKED_MARKER`). Since 2026-10-07
-such a stop also takes **„Mit neuen Anläufen fortsetzen“** and a fresh-attempt
+such a stop also takes **Resume with fresh attempts** and a fresh-attempt
 [pre-approval](BUSINESS_LOGIC.md#pre-approvals): nothing is set aside, and the resume asks the stage anew
 (`run_budget.reasked_stop`). The same codes without this message replay a saved state, such as a changed checkpoint or a
 series correction's recorded failure, and take no fresh attempts this way. (why: D-155)

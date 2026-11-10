@@ -2,7 +2,7 @@
 title: Security
 doc_type: security
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-10
 covers:
   - src/podcast_automate/google_speech.py
   - src/podcast_automate/studio.py
@@ -47,7 +47,7 @@ the processing you commissioned:
 | The spoken text of approved scripts and of conversation samples | Google (Gemini API), billed to your Google key | only for a Gemini recording through Google or a new conversation sample |
 | The spoken text of approved scripts and of voice samples | OpenRouter (Gemini TTS) | only for a Gemini recording through OpenRouter or a new Gemini voice sample |
 | Reported gaps and corpus sections of the research | OpenRouter (Jev, TypeSafe) | only when the gap probe with Jev is on ([RESEARCH](RESEARCH.md#gap-probe)) |
-| Requests for source documents; title or DOI lookups for free copies | the public servers of the sources; OpenAlex, Semantic Scholar and Europe PMC, and Unpaywall or CORE only when you set their contact address or key | during research ([RESEARCH](RESEARCH.md#pipeline)) |
+| Requests for source documents; title or DOI lookups for free copies; the address of a page that is gone | the public servers of the sources; OpenAlex, Semantic Scholar and Europe PMC, and Unpaywall or CORE only when you set their contact address or key; the Internet Archive (archive.org, web.archive.org) for a page that is gone | during research ([RESEARCH](RESEARCH.md#pipeline)) |
 | An episode's material (outline, story material, findings, cited sections, orientation sheet, brief), the published text of the episodes before it, for a revision the published episode and your feedback, and the research corpus sections the agent reads | Anthropic (Claude Code CLI): your claude.ai login, or your Anthropic API key, billed, when the run's text provider is `claude_api` | for every episode a script run writes or revises, whatever the run's text provider ([SCRIPTS](SCRIPTS.md#story-agent)) |
 | Quota and login queries | the Codex app server (`account/rateLimits/read`) and `claude auth status` | before model calls, `pla doctor`, `pla quota` |
 
@@ -59,7 +59,9 @@ What never leaves the computer, or never gets in:
   key in use, are refused with `credential_in_prompt`; the editorial partner never sees a key.
 - **No browser credentials.** Source retrieval uses no browser cookies or credentials. Each source address and each
   redirect must resolve to a public server (`sources.public_url`); an address in a private network is refused with
-  `invalid_source_url`.
+  `invalid_source_url`. Source servers are checked against the operating system's certificate store (D-197). A refused
+  address is never fetched another way: the Studio lists it for you to open in your own browser (D-199), and its link
+  is shown only for an http or https address.
 - **No access log.** The Studio server logs no requests, only an unexpected failure with its path and error type,
   never the body.
 - The Claude Code CLI runs with telemetry, error reporting and non-essential traffic off
@@ -120,7 +122,7 @@ operating system's credential store (why: D-167):
   encrypted with your login. You find and delete them there too (Windows: „Anmeldeinformationsverwaltung“ →
   „Windows-Anmeldeinformationen“ → „Generische Anmeldeinformationen“).
 - At its start the server loads every stored key into memory (`Studio.load_stored_keys`); from there a key reaches a
-  worker as before, through its standard input. **„Key entfernen“** (remove key) removes the entry as well.
+  worker as before, through its standard input. **Remove key** („Key entfernen“) removes the entry as well.
 - The settings page says where each key comes from: the store, this session only, or an environment variable of the
   server (`Studio.key_source`). A system without a store, or a store that refuses, keeps the keys in memory only, gone
   after a restart, and the page says so. A key that could not be stored is also removed from the store, so an older
@@ -132,12 +134,12 @@ operating system's credential store (why: D-167):
 
 ### OpenRouter key in the Studio
 
-- The key is entered on the **„Einstellungen“** (settings) page ([STUDIO](STUDIO.md#settings-page)) or in a hold
+- The key is entered on the **Settings** („Einstellungen“) page ([STUDIO](STUDIO.md#settings-page)) or in a hold
   card that asks for it, and serves OpenRouter text, Gemini audio through OpenRouter and Jev.
 - It stays in the credential store and the local Studio server's memory and reaches a worker through its standard
   input, not through process arguments; it is stored neither in project files nor in browser storage.
 - Without a store it must be entered again after a Studio restart, unless the server has `OPENROUTER_API_KEY` in its
-  environment. **„Key entfernen“** (remove key) removes only the key entered in the Studio, not that one.
+  environment. **Remove key** removes only the key entered in the Studio, not that one.
 - The key can be exchanged at any time; a rotated key needs no new run.
 - A worker hands the key on only where OpenRouter is used: to a text job while it works with OpenRouter, to runs that
   use the Jev gap probe, to Gemini recordings and to new Gemini voice samples.
@@ -146,7 +148,7 @@ operating system's credential store (why: D-167):
 
 The Google key serves Gemini audio through Google and the conversation samples (why: D-138):
 
-- It is entered under **„Google-Key“** on the settings page or in a hold card that asks for it, kept in the
+- It is entered under **Google key** („Google-Key“) on the settings page or in a hold card that asks for it, kept in the
   credential store and the Studio server's memory (or read from `GEMINI_API_KEY` in its environment), and handled
   like the OpenRouter key: standard input to a worker, never in project files or browser storage.
 - A worker receives it only for audio, resume and the connection check; the conversation sample is spoken by the
@@ -159,7 +161,7 @@ The Google key serves Gemini audio through Google and the conversation samples (
 
 The ElevenLabs key serves recordings through ElevenLabs and the list of the account's voices (why: D-176):
 
-- It is entered under **„ElevenLabs-Key“** on the settings page or in a hold card that asks for it, kept in the
+- It is entered under **ElevenLabs key** („ElevenLabs-Key“) on the settings page or in a hold card that asks for it, kept in the
   credential store under the kind `elevenlabs` and the Studio server's memory (or read from `ELEVENLABS_API_KEY` in
   its environment), and handled like the Google key: standard input to a worker, never in project files or browser
   storage. A worker receives it only for audio, resume and the connection check.
@@ -173,8 +175,8 @@ The ElevenLabs key serves recordings through ElevenLabs and the list of the acco
 
 The Anthropic key serves Claude on your API key (`claude_api`) and nothing else (why: D-145):
 
-- It is entered under **„Anthropic-Key“** on the settings page, in a hold card that asks for it or in the note
-  **„Anthropic-Key fehlt“** (Anthropic key missing), kept in the credential store and the Studio server's memory (or
+- It is entered under **Anthropic key** („Anthropic-Key“) on the settings page, in a hold card that asks for it or in the note
+  **Anthropic key missing** („Anthropic-Key fehlt“), kept in the credential store and the Studio server's memory (or
   read from `ANTHROPIC_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a worker,
   never in project files or browser storage.
 - A worker hands it only to pools that run Claude on the key (`studio_worker.text_key`,
@@ -187,8 +189,8 @@ The Anthropic key serves Claude on your API key (`claude_api`) and nothing else 
 
 The Perplexity key serves the web search through Perplexity and nothing else (why: D-151):
 
-- It is entered under **„Perplexity-Key“** on the settings page, in a hold card that asks for it or in the note
-  **„Perplexity-Key fehlt“** (Perplexity key missing), kept in the credential store and the Studio server's memory
+- It is entered under **Perplexity key** („Perplexity-Key“) on the settings page, in a hold card that asks for it or in the note
+  **Perplexity key missing** („Perplexity-Key fehlt“), kept in the credential store and the Studio server's memory
   (or read from `PERPLEXITY_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a
   worker, never in project files or browser storage.
 - A worker holds it for the pools of runs that search through Perplexity (`provider_pool.use_worker_key`); no text
@@ -201,7 +203,7 @@ The Perplexity key serves the web search through Perplexity and nothing else (wh
 CORE's free key serves the search for a free copy of a work whose own address refused the download, and nothing
 else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-archives); why: D-167):
 
-- It is entered under **„CORE-Key“** on the settings page, kept in the credential store and the Studio server's
+- It is entered under **CORE key** („CORE-Key“) on the settings page, kept in the credential store and the Studio server's
   memory (or read from `PLA_CORE_API_KEY` in its environment), and handled like the OpenRouter key: standard input to a
   worker, never in project files or browser storage; a chat message containing it is refused with
   `credential_in_prompt`.
@@ -243,7 +245,7 @@ else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-arc
   (`sk-…`, `sess-…`, `pplx-…`, `AIza…`, `Bearer …`, values after `api_key`, `access_token`, `token`, `password` or `secret`): in the live
   trace `runs/<run_id>/model_trace.json` and in the tracebacks of failed stages and workers (`logs.record_failure`:
   `runs/<run_id>/failures/`, `<project>/studio/failures/`). Error messages and diagnostic files shown in the Studio
-  replace each of its stored keys (OpenRouter, Google, Anthropic, Perplexity) with „[Key verborgen]“ (key hidden).
+  replace each of its stored keys (OpenRouter, Google, Anthropic, Perplexity) with "[key hidden]" („[Key verborgen]“).
 - `calls/call_*/diagnostics.json` keeps only sanitised technical diagnostics, no raw error messages, prompts, tool
   outputs or credentials. The one exception is a Codex failure the adapter cannot name (`codex_failed`): its
   `failure.json` and stop message carry Codex's own short reason, redacted by `model_trace.redact` and cut to 300
@@ -256,7 +258,7 @@ else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-arc
   Studio's stored keys, a worker's keys, a key typed after `--api-key`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
   `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`; `logs.add_secret`) are
   replaced whole, then the patterns of `model_trace.redact` apply. The tail of a crashed worker's error output, shown
-  in the Studio under „Technische Details“ (technical details), passes the same filter.
+  in the Studio under "Technical details" („Technische Details“), passes the same filter.
 - Not filtered: a traceback that Python itself prints when a process dies outside its own error handling. A worker's
   stays raw in `<project>/studio/stderr/<job>.log` until a later job removes it once it is an hour old; a relaunched
   Studio's stays in `.studio/relaunch.log`. A credential in a format the patterns don't know is caught only if the

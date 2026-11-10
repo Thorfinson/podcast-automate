@@ -1,8 +1,8 @@
 @echo off
-rem Wie Podcast-Studio.cmd, aber auch im Heimnetz erreichbar, etwa vom Handy im WLAN. Aus dem Internet nicht.
+rem Like Podcast-Studio.cmd, but also reachable from your home network (WLAN), for example from a phone. Not from the Internet.
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
-  echo Die Python-Umgebung fehlt. Bitte zuerst die Installation in README.md ausfuehren.
+  echo The Python environment is missing. Please run the installation in README.md first.
   pause
   exit /b 1
 )
