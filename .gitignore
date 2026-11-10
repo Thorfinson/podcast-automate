@@ -76,3 +76,6 @@ temp/
 .tmp/
 .cache/
 .evidence-*.txt
+
+# Personal scratch files of coding sessions
+/scratchpad/

@@ -1,6 +1,7 @@
 """The Studio's interface language (D-152, studio_text): the catalogs, the language a request is answered in, the saved
 choice, the Studio's own messages and the rule that only the Studio's boundary speaks through the catalogs."""
 import ast
+import inspect
 import json
 import re
 import tempfile
@@ -236,6 +237,32 @@ class BoundaryTests(unittest.TestCase):
         named |= set(studio_messages.ENGLISH.values())
         self.assertGreater(len(named), 100)
         self.assertEqual(sorted(key for key in named if key not in german or key not in english), [])
+
+    def test_every_code_an_apperror_carries_has_its_text_in_both_catalogs(self):
+        """A pipeline message stays German; an English page explains it by its stable code (D-200). A new code without
+        a text fails here, and a text whose code no module raises any more goes with it."""
+        def literal(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return {node.value}
+            if isinstance(node, ast.IfExp):
+                return literal(node.body) | literal(node.orelse)
+            return set()  # A code passed on from another AppError (exc.code) is one of the literal ones.
+
+        codes = {inspect.signature(AppError).parameters["code"].default}
+        for source in self.sources().values():
+            for node in ast.walk(ast.parse(source)):
+                name = getattr(node, "func", None)
+                name = getattr(name, "id", getattr(name, "attr", None))
+                if isinstance(node, ast.Call) and name in {"AppError", "Failure"}:
+                    for keyword in node.keywords:
+                        if keyword.arg == "code":
+                            codes |= literal(keyword.value)
+        self.assertGreater(len(codes), 150, "the pattern no longer finds the pipeline's codes")
+        german, english = studio_text.catalog("de"), studio_text.catalog("en")
+        self.assertEqual(sorted(code for code in codes if f"error.code.{code}" not in german
+                                or f"error.code.{code}" not in english), [], "every code needs its text in both catalogs")
+        texts = {key[len("error.code."):] for key in english if key.startswith("error.code.")}
+        self.assertEqual(sorted(texts - codes), [], "a text for a code no module raises")
 
 
 if __name__ == "__main__":

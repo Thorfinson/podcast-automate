@@ -10,6 +10,23 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  lint:
+    # Seconds, not minutes: a style or syntax slip fails here before the six test legs report.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Lint Python (Ruff, the version pinned in pyproject.toml's dev extra)
+        run: |
+          python -m pip install "ruff==0.14.4"
+          ruff check --output-format=github .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check the browser script's syntax
+        run: node --check src/podcast_automate/web/app.js
   tests:
     strategy:
       fail-fast: false

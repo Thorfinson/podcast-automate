@@ -269,7 +269,9 @@ class EpisodeAudioTests(unittest.TestCase):
             run = self.render()
         self.assertEqual(run.status, "completed")
         script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
-        destination = self.root / "exports/ep_001" / run.run_id
+        # The run resolves its root once (AGENTS.md); an unresolved temp root differs on macOS (/var → /private/var)
+        # and on Windows runners (8.3 short TEMP), which failed CI from 2026-11-01 to 11-09.
+        destination = self.root.resolve() / "exports/ep_001" / run.run_id
         self.assertEqual(calls, [([s.segment_id for s in script.segments], destination, None)])
         report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
         self.assertEqual([p["audio"] for p in report["parts"]], [f"exports/ep_001/{run.run_id}/audio.mp3"])

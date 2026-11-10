@@ -66,21 +66,21 @@ Studio speaks English or German ([Interface language](STUDIO.md#interface-langua
 in the language of its project, and its exports follow that language (why: D-152, D-153). A trial project runs the six
 steps once with small limits ([Trial project](BUSINESS_LOGIC.md#trial-project)).
 
-1. **„Auftrag“** (brief): topic, depth, language and the goal of the series are settled in a
+1. **Brief** („Auftrag“): topic, depth, language and the goal of the series are settled in a
    conversation; you can attach your own MD, TXT or DOCX files. Text model, audio provider and voices are set on the
    settings page for all projects ([Studio settings](CONFIGURATION.md#studio-settings)). See
    [The guided flow](STUDIO.md#the-guided-flow).
-2. **„Recherche“** (research): live search, retrieval of the original sources, fixed sub-questions with completion
+2. **Research** („Recherche“): live search, retrieval of the original sources, fixed sub-questions with completion
    criteria, independent answer review and an overall review up to an evidenced dossier ([Research](RESEARCH.md#pipeline)).
-3. **„Inhaltsverzeichnis“** (table of contents): a source-bound series plan that you read and approve explicitly
+3. **Table of contents** („Inhaltsverzeichnis“): a source-bound series plan that you read and approve explicitly
    ([Series plan](SCRIPTS.md#series-plan), [Human approvals](BUSINESS_LOGIC.md#human-approvals)).
-4. **„Ausarbeitung“** (drafting): the episodes in order, one at a time: the story material of its sources, a story
+4. **Drafting** („Ausarbeitung“): the episodes in order, one at a time: the story material of its sources, a story
    agent that plans, writes and checks the episode knowing the episodes before it, and a review against the sources;
    missing foundations are researched again automatically, and a series review reads the finished series
    ([Story agent](SCRIPTS.md#story-agent), [Writing a series in order](SCRIPTS.md#writing-a-series-in-order)).
-5. **„Skripte lesen“** (read scripts): you check every episode as text before any audio is made
+5. **Read scripts** („Skripte lesen“): you check every episode as text before any audio is made
    ([Review notes on the reading page](STUDIO.md#review-notes-on-the-reading-page)).
-6. **„Vertonung“** (recording): only after you approve the script you read; produces MP3 with chapters, transcript
+6. **Recording** („Vertonung“): only after you approve the script you read; produces MP3 with chapters, transcript
    and show notes ([Recording flow](AUDIO.md#recording-flow)), and on request the companion kit of each episode and
    of the whole podcast with the transcript of every episode ([Downloads](STUDIO.md#downloads)).
 
@@ -116,21 +116,21 @@ The presets the Studio offers (`text_settings.TEXT_PRESETS`):
 
 | Preset (label in the Studio) | Provider | Model ID | Level |
 | --- | --- | --- | --- |
-| „Automatisch · Claude, sonst Codex“ (`auto_subscriptions`) | Claude, else Codex subscription | `claude-haiku-5-5` and `gpt-6-astra` | `xhigh` (both) |
-| „Automatisch · Claude, sonst Codex · high“ (`auto_subscriptions_high`) | Claude, else Codex subscription | `claude-haiku-5-5` and `gpt-6-astra` | `high` (both) |
-| „Haiku 5.5 · Claude-Abo · xhigh“ (`claude_haiku_sub`) | Claude subscription | `claude-haiku-5-5` | `xhigh` |
-| „Sonnet 5.5 · Claude-Abo · high“ (`claude_sonnet_sub`) | Claude subscription | `claude-sonnet-5-5` | `high` |
-| „Opus 5.5 · Claude-Abo“ (`claude_opus_sub`) | Claude subscription | `claude-opus-5-5` | `xhigh` |
-| „Astra · Codex-Abo“ (`codex_astra`) | Codex subscription | `gpt-6-astra` | `xhigh` |
-| „Haiku 5.5 · xhigh · Anthropic-API-Key“ (`claude_haiku_api`) | Claude on your Anthropic API key, billed | `claude-haiku-5-5` | `xhigh` |
-| „Sonnet 5.5 · high · Anthropic-API-Key“ (`claude_sonnet_api`) | Claude on your Anthropic API key, billed | `claude-sonnet-5-5` | `high` |
-| „Opus 5.5 · high · Anthropic-API-Key“ (`claude_opus_api`) | Claude on your Anthropic API key, billed | `claude-opus-5-5` | `high` (`xhigh` roughly doubles a billed run) |
-| [„Astra · xhigh · OpenRouter“](https://openrouter.ai/openai/gpt-6-astra) (`openrouter_astra`) | OpenRouter | `openai/gpt-6-astra` | `xhigh` |
-| [„Opus 5.5 · medium · OpenRouter“](https://openrouter.ai/anthropic/claude-opus-5.5) (`openrouter_opus`) | OpenRouter | `anthropic/claude-opus-5.5` | `medium` |
-| [„Sonnet 5.5 · high · OpenRouter“](https://openrouter.ai/anthropic/claude-sonnet-5.5) (`openrouter_sonnet`) | OpenRouter | `anthropic/claude-sonnet-5.5` | `high` |
-| [„DeepSeek V4.1 Flash · max · OpenRouter“](https://openrouter.ai/deepseek/deepseek-v4.1-flash) (`openrouter_deepseek`) | OpenRouter | `deepseek/deepseek-v4.1-flash` | `max` |
+| "Automatic · Claude, otherwise Codex" („Automatisch · Claude, sonst Codex“) (`auto_subscriptions`) | Claude, else Codex subscription | `claude-haiku-5-5` and `gpt-6-astra` | `xhigh` (both) |
+| "Automatic · Claude, otherwise Codex · high" („Automatisch · Claude, sonst Codex · high“) (`auto_subscriptions_high`) | Claude, else Codex subscription | `claude-haiku-5-5` and `gpt-6-astra` | `high` (both) |
+| "Haiku 5.5 · Claude subscription · xhigh" („Haiku 5.5 · Claude-Abo · xhigh“) (`claude_haiku_sub`) | Claude subscription | `claude-haiku-5-5` | `xhigh` |
+| "Sonnet 5.5 · Claude subscription · high" („Sonnet 5.5 · Claude-Abo · high“) (`claude_sonnet_sub`) | Claude subscription | `claude-sonnet-5-5` | `high` |
+| "Opus 5.5 · Claude subscription" („Opus 5.5 · Claude-Abo“) (`claude_opus_sub`) | Claude subscription | `claude-opus-5-5` | `xhigh` |
+| "Astra · Codex subscription" („Astra · Codex-Abo“) (`codex_astra`) | Codex subscription | `gpt-6-astra` | `xhigh` |
+| "Haiku 5.5 · xhigh · Anthropic API key" („Haiku 5.5 · xhigh · Anthropic-API-Key“) (`claude_haiku_api`) | Claude on your Anthropic API key, billed | `claude-haiku-5-5` | `xhigh` |
+| "Sonnet 5.5 · high · Anthropic API key" („Sonnet 5.5 · high · Anthropic-API-Key“) (`claude_sonnet_api`) | Claude on your Anthropic API key, billed | `claude-sonnet-5-5` | `high` |
+| "Opus 5.5 · high · Anthropic API key" („Opus 5.5 · high · Anthropic-API-Key“) (`claude_opus_api`) | Claude on your Anthropic API key, billed | `claude-opus-5-5` | `high` (`xhigh` roughly doubles a billed run) |
+| ["Astra · xhigh · OpenRouter"](https://openrouter.ai/openai/gpt-6-astra) (`openrouter_astra`) | OpenRouter | `openai/gpt-6-astra` | `xhigh` |
+| ["Opus 5.5 · medium · OpenRouter"](https://openrouter.ai/anthropic/claude-opus-5.5) (`openrouter_opus`) | OpenRouter | `anthropic/claude-opus-5.5` | `medium` |
+| ["Sonnet 5.5 · high · OpenRouter"](https://openrouter.ai/anthropic/claude-sonnet-5.5) (`openrouter_sonnet`) | OpenRouter | `anthropic/claude-sonnet-5.5` | `high` |
+| ["DeepSeek V4.1 Flash · max · OpenRouter"](https://openrouter.ai/deepseek/deepseek-v4.1-flash) (`openrouter_deepseek`) | OpenRouter | `deepseek/deepseek-v4.1-flash` | `max` |
 
-**„Automatisch“** (automatic) is the Studio's default preset; a saved choice is kept. Other model IDs work only
+**Automatic** („Automatisch“) is the Studio's default preset; a saved choice is kept. Other model IDs work only
 through the CLI option `--model` ([Commands](#commands)).
 
 ### Models and levels per provider
@@ -157,7 +157,7 @@ through the CLI option `--model` ([Commands](#commands)).
 
 | Use | Model | Source |
 | --- | --- | --- |
-| Status brief (**„Kurzbericht“**) during research and drafting, at `low` | `gpt-5.6-luna` for Codex jobs, `claude-haiku-4-5` for Claude subscription jobs, `deepseek/deepseek-v4.1-flash` for OpenRouter jobs; none for jobs on the Anthropic API key (why: D-149) | `status_summary.STATUS_MODELS`, [Progress and telemetry](STUDIO.md#progress-and-telemetry) |
+| **Status brief** („Kurzbericht“) during research and drafting, at `low` | `gpt-5.6-luna` for Codex jobs, `claude-haiku-4-5` for Claude subscription jobs, `deepseek/deepseek-v4.1-flash` for OpenRouter jobs; none for jobs on the Anthropic API key (why: D-149) | `status_summary.STATUS_MODELS`, [Progress and telemetry](STUDIO.md#progress-and-telemetry) |
 | Advisor for blocked sub-questions | `claude-opus-5-5` at `xhigh` when the run uses the fixed Claude subscription; other selections, Claude on the API key included, keep their own | `research_advisor.ADVISOR_MODEL`, `ADVISOR_EFFORT`, [Blocked sub-questions and decisions](RESEARCH.md#blocked-sub-questions-and-decisions) |
 | Gap probe with Jev | `typesafe/jev-1.13` via OpenRouter | `jev.JEV_MODEL`, [Gap probe](RESEARCH.md#gap-probe) |
 | Story agent, the writer of every script | `claude-opus-5-5` at `xhigh` through Claude Code, on the Claude subscription, or on your Anthropic key when the run's text model is Claude on the API key (why: D-181, D-184) | `story_agent.AGENT_MODEL`, `AGENT_EFFORT`, [Story agent](SCRIPTS.md#story-agent) |

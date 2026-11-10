@@ -3229,6 +3229,35 @@ test('the research page lists the missing works and uploads one as raw bytes for
   assert.equal(app.run('project.works.missing[0].provided'),'work_ef');
 });
 
+test('refused sources are listed to open in the browser and uploaded back at their own address',async()=>{
+  // D-199, 2026-11-10: the user wanted the refused contents as a list to click through, save and push back into the
+  // right drawer. An EPUB is taken too (D-198).
+  const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const works={missing:[],provided:[{id:'work_x',citation:'Earlier upload (2020)',tasks:[],source:'https://publisher.example/done'}],
+    refused:[{source:'https://www.publisher.example/paper',title:'The paper the question needs',status:403,state:'blocked',provided:null,tasks:[{id:'t_open',question:'Offen?'}]},
+      {source:'https://springer.example/chapter',title:'',status:null,state:'retrying',provided:null,tasks:[{id:'t_open',question:'Offen?'}]},
+      {source:'https://publisher.example/done',title:'Done',status:403,state:'blocked',provided:'work_x',tasks:[{id:'t_open',question:'Offen?'}]}]};
+  app.run(`project={id:'p',config:boot.defaults,works:${JSON.stringify(works)}};`);
+  const panel=app.run('worksPanel()');
+  assert.ok(panel.includes('Gesperrte Quellen · 3'));
+  assert.ok(panel.includes('<a href="https://www.publisher.example/paper" target="_blank" rel="noopener noreferrer">The paper the question needs</a></strong> <span class="tag">HTTP 403</span> <span class="hint">publisher.example</span>'));
+  assert.ok(panel.includes('>springer.example</a></strong> <span class="tag">Bot-Schutz</span>'),'without a title the host names it');
+  assert.ok(panel.includes('data-refused-index="0"')&&!panel.includes('data-refused-index="2"'),'an uploaded one offers no second upload');
+  assert.ok(!panel.includes('Weitere hochgeladene Werke'),'its upload is not listed again among the others');
+  assert.ok(panel.includes('accept=".pdf,.epub,.html,.htm,.txt"'));
+  assert.ok(!panel.includes('<summary>Fehlende Werke · keine</summary>'),'refused sources unfold the panel');
+  app.run(`$('work-file-refused-0').files=[{name:'paper.pdf'}];`);
+  const path='/api/projects/p/work?citation=The+paper+the+question+needs&source=https%3A%2F%2Fwww.publisher.example%2Fpaper&task=t_open';
+  app.responses.set(path,{work:{id:'work_y'},works:{...works,refused:[{...works.refused[0],provided:'work_y'},...works.refused.slice(1)]}});
+  await app.run(`uploadWork({dataset:{refusedIndex:'0'}})`);
+  assert.ok(app.requests.some(r=>r.path===path),app.requests.map(r=>r.path).join(' '));
+  assert.equal(app.run('project.works.refused[0].provided'),'work_y');
+  // An address that is not a web address is shown, never linked.
+  app.run(`project.works.refused=[{source:'javascript:alert(1)',title:'X',status:403,state:'blocked',provided:null,tasks:[]}];`);
+  assert.ok(!app.run('worksPanel()').includes('href="javascript'));
+});
+
 test('the missing-works panel shows today\'s CORE calls against the daily allowance',()=>{
   const app=studio();
   app.run(`project={id:'p',config:boot.defaults,works:{missing:[],provided:[]},server:{core:{date:'2026-10-01',calls:37,limit:1000}}};`);
@@ -3835,7 +3864,8 @@ test('stop texts name the resume button of the page language in its quotation ma
   }
 });
 
-test('an English page shows a German server message only in the technical details, an English one in the card',()=>{
+test('an English page explains a German server message by its code and keeps the original in the technical details',()=>{
+  // D-200: the card's message line, before only the German original in the details, now reads the code's English text.
   const app=studio({language:'en'}), p=workflowProject(app);
   app.run(`project=${JSON.stringify(p)};`);
   const card=message_language=>app.run(`(job=>renderStopCard(job,stopInfo(job)))(${JSON.stringify({id:'j',status:'blocked',action:'resume',error_code:'timeout',
@@ -3843,10 +3873,73 @@ test('an English page shows a German server message only in the technical detail
     run:{kind:'script',run_id:'r1',stages:{}},progress:{}})})`);
   const german=card('de'), [main,details]=german.split('<details class="tech-details">');
   assert.ok(!main.includes('Der Aufruf hat zu lange gedauert.'));
-  assert.ok(details.includes('Der Aufruf hat zu lange gedauert.'),'the original stays reachable');
+  assert.ok(main.includes(`<p class="stop-message">Message: ${locales.en['error.code.timeout']}</p>`),main);
+  assert.ok(details.includes('Original message (German): Der Aufruf hat zu lange gedauert.'),'the original stays reachable');
   assert.ok(card('en').split('<details class="tech-details">')[0].includes('The call took too long.'));
-  assert.equal(app.run(`errorText({message:'Projekt nicht gefunden.',language:'de',code:'not_found'})`),'Refused (not_found). Original message (German): Projekt nicht gefunden.');
+  assert.ok(!card('en').includes(locales.en['error.code.timeout']),'an English message needs no explanation');
+  assert.equal(app.run(`errorText({message:'Projekt nicht gefunden.',language:'de',code:'not_found'})`),
+    'The requested item was not found. Original message (German, not_found): Projekt nicht gefunden.');
+  assert.equal(app.run(`errorText({message:'Projekt nicht gefunden.',language:'de',code:'no_such_code'})`),
+    'Refused (no_such_code). Original message (German): Projekt nicht gefunden.','a code without a text keeps the plain refusal');
+  assert.equal(app.run(`errorText({message:'Project not found.',language:'en',code:'not_found'})`),'Project not found.');
   assert.equal(studio().run(`errorText({message:'Projekt nicht gefunden.',language:'de',code:'not_found'})`),'Projekt nicht gefunden.');
+});
+
+// D-200: every AppError code has an English text (test_studio_text holds the pipeline's codes to the catalog), and a
+// stop with a German message reads in English outside the technical details, which keep the original.
+const escapedText=text=>String(text).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+test('every pipeline code explains a German stop message in English and keeps the original in the details',()=>{
+  const app=studio({language:'en'}), warnings=watchWarnings(app), p=workflowProject(app);
+  app.run(`project=${JSON.stringify(p)};`);
+  const codes=Object.keys(locales.en).filter(key=>key.startsWith('error.code.')).map(key=>key.slice('error.code.'.length));
+  assert.ok(codes.length>190,`${codes.length} codes`);
+  const german='Der Schritt wurde angehalten; die Eingaben bitte prüfen.';
+  for(const code of codes)for(const kind of ['research','script','episode_audio']){
+    const job={id:'j',status:'blocked',action:kind==='episode_audio'?'audio':'resume',episode:'ep_001',error_code:code,
+      stop:{code,message:german,message_language:'de'},run:{kind,run_id:'r1',status:'blocked',stages:{}},progress:{}};
+    const html=app.run(`(job=>renderStopCard(job,stopInfo(job)))(${JSON.stringify(job)})`);
+    const [main,details='']=html.split('<details class="tech-details">');
+    assert.deepEqual(germanLeft(main),[],`${code} · ${kind}`);
+    assert.ok(main.includes(escapedText(locales.en[`error.code.${code}`])),`${code} · ${kind}: the code's text is on the card`);
+    assert.ok(details.includes(`Original message (German): ${german}`),`${code} · ${kind}: the original stays in the details`);
+  }
+  assert.deepEqual(warnings,[]);
+  // A German page shows the message as before and never the code's text.
+  const de=studio(), info=de.run(`stopInfo(${JSON.stringify({id:'j',status:'blocked',action:'resume',error_code:'story_agent_timeout',
+    stop:{code:'story_agent_timeout',message:'Der Erzähl-Agent hat nach 90 Minuten aufgegeben.',message_language:'de'},run:{kind:'script',run_id:'r1',stages:{}},progress:{}})})`);
+  assert.equal(info.explained,'');
+  const card=de.run(`renderStopCard({},${JSON.stringify(info)})`);
+  assert.ok(card.includes('<p class="stop-message">Meldung: Der Erzähl-Agent hat nach 90 Minuten aufgegeben.</p>'),card);
+  assert.ok(!card.includes(locales.de['error.code.story_agent_timeout'])&&!card.includes(locales.en['error.code.story_agent_timeout']));
+});
+
+test('an English chat, queue row, overview card, engine room and Google stop explain a German message by its code once',()=>{
+  const app=studio({language:'en'}), p=workflowProject(app);
+  const message='Claude-Code-Aufruf fehlgeschlagen. Verbindung und CLI-Konfiguration prüfen.';
+  p.job={id:'c1',action:'assistant',status:'failed',error_code:'claude_failed',stop:{code:'claude_failed',message,message_language:'de'},progress:{}};
+  p.chat=[{role:'user',message:'Hello'}];
+  app.run(`project=${JSON.stringify(p)};`);
+  const [chat,original]=app.run('chatStatusBubble()').split('<details class="tech-details">');
+  assert.ok(chat.includes(`<p class="hint">Message: ${locales.en['error.code.claude_failed']}</p>`),chat);
+  assert.deepEqual(germanLeft(chat),[]);
+  assert.ok(original.includes(`Original message (German): ${message}`));
+  assert.equal(app.run(`queueError(${JSON.stringify({error:'Für ElevenLabs-Audio den ElevenLabs-Key im Studio hinterlegen.',error_language:'de',error_code:'elevenlabs_key_required'})})`),
+    `${locales.en['error.code.elevenlabs_key_required']} Original message (German, elevenlabs_key_required): Für ElevenLabs-Audio den ElevenLabs-Key im Studio hinterlegen.`);
+  assert.equal(app.run(`queueError({error:'Kaputt.',error_language:'de',error_code:'no_such_code'})`),'Refused (no_such_code). Original message (German): Kaputt.');
+  const stopped={...p.job,action:'resume',status:'blocked',run:{kind:'script',run_id:'r1',status:'blocked',stages:{}}};
+  assert.equal(app.run(`attentionOf(${JSON.stringify({...p,job:stopped})}).text`),`${locales.en['stop.claude_failed.title']}: A Claude Code call failed.`);
+  app.run(`project.job=${JSON.stringify({...stopped,progress:{phase:'script',model_calls:3,model_call_limit:40}})};lastJobView='';drawerOpen=true;renderJob();`);
+  const room=app.elements.get('job-status').innerHTML;
+  assert.ok(room.includes(` · ${escapedText(locales.en['error.code.claude_failed'])}`),room);
+  assert.ok(!room.includes(message.split('.')[0]),'the engine room names no German message');
+  // Google's reason on its card is the code's text, and the message line does not repeat it.
+  const google={id:'a1',action:'audio',status:'blocked',episode:'ep_001',error_code:'google_quota',
+    stop:{code:'google_quota',message:'Das Google-Kontingent für Gemini-Audio ist erschöpft. Später fortsetzen; fertige Passagen bleiben gespeichert.',message_language:'de'},
+    run:{kind:'episode_audio',run_id:'r2',stages:{}},progress:{}};
+  const head=app.run(`(job=>renderStopCard(job,stopInfo(job)))(${JSON.stringify(google)})`).split('<details class="tech-details">')[0];
+  assert.equal(head.split(locales.en['error.code.google_quota']).length-1,1,head);
+  assert.ok(!head.includes('class="stop-message"'));
+  assert.ok(head.includes(`<p>${locales.en['error.code.google_quota']} After the quota resets`),head);
 });
 
 test('a budget stop and a blocked question read their limit from the server fields before the German wording',()=>{

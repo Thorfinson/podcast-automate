@@ -42,7 +42,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Education",
 ]
-dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7", "psutil>=7,<8", "keyring>=25.7,<26"]
+dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts]>=6.18.1,<7", "psutil>=7,<8", "keyring>=25.7,<26", "truststore>=0.10,<1"]
+
+[project.optional-dependencies]
+# Contributor tools: `python -m pip install -e ".[dev]"`. CI pins the same version (.github/workflows/tests.yml).
+dev = ["ruff==0.14.4"]
 
 [project.urls]
 Homepage = "https://github.com/Thorfinson/podcast-automate"
@@ -60,3 +64,13 @@ where = ["src"]
 [tool.setuptools.package-data]
 podcast_automate = ["data/*.json", "data/*.md", "locales/*.json", "prompts/*.txt", "web/*.html", "web/*.css",
                     "web/*.js", "web/fonts/*.woff2", "web/fonts/*.txt"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+# Local, generated or third-party folders; .venv-tts holds gigabytes of PyTorch.
+extend-exclude = [".venv-tts", ".claude", ".cache", ".studio", "projects", "runs", "tools", "scratchpad"]
+
+[tool.ruff.lint]
+# Ruff's default rules: pyflakes and the error subset of pycodestyle. E731: the code names small lambdas on purpose.
+ignore = ["E731"]

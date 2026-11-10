@@ -7,6 +7,7 @@
 <!-- What ran, how long it took, and what did not run and why. A proposed command is not an executed one.
      Selection rules: AGENTS.md, "When to run what" and "Choosing what to run". -->
 
+- [ ] Lint: `ruff check .` (installed with `python -m pip install -e ".[dev]"`)
 - [ ] Python suite in full: `python -m unittest discover -s tests` (time: …)
 - [ ] Browser suite in full: `node --test tests/studio_ui.test.cjs`
 - Focused tests run during the work: …

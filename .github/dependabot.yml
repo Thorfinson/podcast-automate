@@ -1,0 +1,24 @@
+# Weekly update pull requests for the workflows' actions and the package's Python dependencies. They run the same CI
+# as every pull request; a major version waits for a maintainer's read of its changelog (CONTRIBUTING.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies]
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 5

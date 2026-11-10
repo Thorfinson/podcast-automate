@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-03
+last_reviewed: 2026-11-10
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -190,7 +190,7 @@ After planning and scope check, before the first call for a sub-question, the ru
 - Since 2026-10-07 it also projects sources and search rounds ([Research projection](BUSINESS_LOGIC.md#research-projection); why: D-155): `sources_used`, `sources_limit`, `sources_per_task`, `projected_sources` and `sources_within_limit`, the same five for `search_rounds`, their origin `search_rates_source` (`project` or `default`), and `raise_to` with `model_calls`, `search_rounds` and `sources` (`null` while all fit). A projection written before has none of these fields, and its message stays as it was.
 - The stage reports `research_plan_review` (status `blocked`), the question state the phase `awaiting_plan_approval`.
 - The message states the figures in one sentence, for example „18 Teilfragen, voraussichtlich 290 Aufrufe, etwa 22 Stunden bei 4,5 Minuten je Aufruf (16 Aufrufe je Teilfrage, Standardwert; genehmigtes Limit 750 Aufrufe, 3 verbraucht)“, then the sources and search rounds expected by the run's end with their limits, the limits that rise with `raise_to` together with the matching `pla approve … --model-calls … --search-rounds … --sources …`, plus the scope check's note (`scope_note`) if its second pass still split (`question_budget.plan_review_message`).
-- In the Studio, every research job shows „Wartet auf Freigabe des Rechercheplans“ (waiting for research plan approval) in the header and at the top of the **„Recherche“** (Research) page, with the projection: number of sub-questions, expected calls, estimated hours, minutes per call and the origin of the experience values (measured in this run, project experience value or default value), and for a billed run the expected cost in USD next to its money limit. If the projection exceeds the limit, the card next to it offers the increase.
+- In the Studio, every research job shows "Waiting for the research plan's approval" („Wartet auf Freigabe des Rechercheplans“) in the header and at the top of the **Research** („Recherche“) page, with the projection: number of sub-questions, expected calls, estimated hours, minutes per call and the origin of the experience values (measured in this run, project experience value or default value), and for a billed run the expected cost in USD next to its money limit. If the projection exceeds the limit, the card next to it offers the increase.
 - From six sub-questions on (`question_budget.LARGE_RUN_TASKS`) the plan approval warns that the dossier no longer fits one model window and that every review round reviews the whole dossier again, about 1.4 review parts per sub-question (`question_budget.REVIEW_PARTS_PER_TASK`; see [Written dossier of older runs](#written-dossier-of-older-runs)).
 
 ### Approval receipt
@@ -203,7 +203,7 @@ Who writes the receipt `runs/<run_id>/plan_approval.json`, and how `--approve-pl
 
 ### Re-cutting the plan to N sub-questions
 
-With `--max-tasks N` (Studio: number field **„Höchstens N Teilfragen“**, at most N sub-questions) below the planned number, the next run plans once more. A plan the brief's focus questions bounded ([Research projection](BUSINESS_LOGIC.md#research-projection); `content_cap` in the projection) is planned again the same way with an N above that bound: its card says so, and its field takes more (**„Plan mit so vielen Teilfragen neu zuschneiden, auch mehr“**; why: D-183).
+With `--max-tasks N` (Studio: number field **„Höchstens N Teilfragen“**, at most N sub-questions) below the planned number, the next run plans once more. A plan the brief's focus questions bounded ([Research projection](BUSINESS_LOGIC.md#research-projection); `content_cap` in the projection) is planned again the same way with an N above that bound: its card says so, and its field takes more (**Plan again with this many sub-questions, more as well** („Plan mit so vielen Teilfragen neu zuschneiden, auch mehr“); why: D-183).
 
 - Planning gets `max_tasks: N` as a cap, bundles commitments and is requested again up to twice if it exceeds the cap; the scope check follows with the same cap.
 - The scope check can only split tasks, never merge them, so the cut goes through planning and costs those planning calls.
@@ -215,10 +215,10 @@ With `--max-tasks N` (Studio: number field **„Höchstens N Teilfragen“**, at
 
 ### What the research page shows
 
-Open points of the [guiding-question assessment](#assessment-of-the-guiding-questions) trigger further search and review automatically. On the **„Recherche“** page, met and open guiding questions expand with their reasons.
+Open points of the [guiding-question assessment](#assessment-of-the-guiding-questions) trigger further search and review automatically. On the **Research** page, met and open guiding questions expand with their reasons.
 
-- A guiding question that is not met, whose defect is a limit of the sources or whose objection is already noted, decided or accepted as a gap while its sub-questions have not changed since, appears as „als Grenze vermerkt“ (noted as a limit) and is not reassessed in every review round.
-- If the review passes with such limits, the overall verdict reads „bestanden mit vermerkten Grenzen“ (passed with noted limits): the limits are in the quality report; that is not an accepted gap.
+- A guiding question that is not met, whose defect is a limit of the sources or whose objection is already noted, decided or accepted as a gap while its sub-questions have not changed since, appears as "noted as a limit" („als Grenze vermerkt“) and is not reassessed in every review round.
+- If the review passes with such limits, the overall verdict reads "passed with noted limits" („bestanden mit vermerkten Grenzen“): the limits are in the quality report; that is not an accepted gap.
 - Every sub-question states how often it was reopened with an objection and how often it was rechecked.
 - Only the passed review releases planning. A run that reaches a limit stays saved with concrete gaps ([Budgets](BUSINESS_LOGIC.md#budgets)).
 - Every blocked sub-question, expanded, names its reason, the web searches actually run and any run limit reached.
@@ -230,29 +230,29 @@ Before the run stops for blocked sub-questions, each gets an advisor call (`rese
 - It reads the unmet criteria, the sources read, the failed downloads, the limits, and every earlier advice on this question with its outcome: which new attempt followed, how it ended and how many new sections it read (`advice_history`).
 - It may search the web itself while search rounds are free. If a question advised at the same time takes the last search round, it advises on without its own search instead of stopping the run for an approval (`search_fallback` on the advice).
 - It names the cause and recommends a new attempt, a gap or a higher limit, pointing to concrete works and free locations, and does not send the question down a path that already produced nothing.
-- The card **„Wartet auf dich“** (waiting for you) shows its diagnosis, its recommendation and the sources it found as links; its hint is already in the field for the new attempt.
+- The card **Waiting for you** („Wartet auf dich“) shows its diagnosis, its recommendation and the sources it found as links; its hint is already in the field for the new attempt.
 - The run starts a recommended new attempt itself, at most five times per sub-question (`research_advisor.MAX_AUTO_RETRIES`) and never after an automatic attempt that read no new section (`auto_stop`: `limit` or `no_progress`). Every other decision stays with the human, who sees the advice next to the question.
 - The advice is search help, not evidence: what the new attempt finds goes through the same independent review.
 - Without room in the call budget for the advice and a new attempt, it is skipped.
 
 ### Try again
 
-With **„Noch einmal versuchen“** (try again), a blocked sub-question gets the allowance of a new question at the next resume: another working pass (15 steps, 10 in runs started before 2026-10-08) and two web searches on top of those used, plus your optional hint as feedback to the model. Sub-questions that only waited for it start again afterwards. Each request covers exactly one new attempt; if the question blocks again, you decide again. Command line: `pla approve <project> --retry <task_id> [--hint "…"]`.
+With **Try again** („Noch einmal versuchen“), a blocked sub-question gets the allowance of a new question at the next resume: another working pass (15 steps, 10 in runs started before 2026-10-08) and two web searches on top of those used, plus your optional hint as feedback to the model. Sub-questions that only waited for it start again afterwards. Each request covers exactly one new attempt; if the question blocks again, you decide again. Command line: `pla approve <project> --retry <task_id> [--hint "…"]`.
 
 ### Accepting a gap
 
-A blocked sub-question can be accepted explicitly as a gap (button on the **„Recherche“** page or `pla approve <project> --accept-gap <task_id> [--reason "…"]`; the optional reason appears in the quality report next to the gap).
+A blocked sub-question can be accepted explicitly as a gap (button on the **Research** page or `pla approve <project> --accept-gap <task_id> [--reason "…"]`; the optional reason appears in the quality report next to the gap).
 
 - The next run closes the dossier without it and lists the gap in the quality report, in `research/open_questions.md` and in `reports/research_quality.json` (`complete_topic_coverage: false`).
 - Review objections that concern only accepted gaps become documented remaining objections instead of new research; objections against verified answers still reopen them.
 
 ### Raising limits
 
-If a limit is not enough, the **„Recherche“** page offers the increase as a button, also for an exhausted search-round or source limit; on the command line `pla approve <project> --model-calls N --search-rounds M --sources Q` (or the buttons in the job status) raises them per run. Default limits: [Budgets](BUSINESS_LOGIC.md#budgets).
+If a limit is not enough, the **Research** page offers the increase as a button, also for an exhausted search-round or source limit; on the command line `pla approve <project> --model-calls N --search-rounds M --sources Q` (or the buttons in the job status) raises them per run. Default limits: [Budgets](BUSINESS_LOGIC.md#budgets).
 
 ### Accepting an access gap for one criterion
 
-If a sub-question fails only on a criterion whose source the publisher refuses, this one criterion can be accepted as an access gap: card **„Kriterium als Zugangslücke akzeptieren“** (accept criterion as an access gap) under **„Wartet auf dich“**, choosing criterion and blocked source, or `pla approve <project> --access-gap <task_id> <criterion> --blocked-source <url> [--reason "…"]` (criteria counted from 0).
+If a sub-question fails only on a criterion whose source the publisher refuses, this one criterion can be accepted as an access gap: card **Accept the criterion as an access gap** („Kriterium als Zugangslücke akzeptieren“) under **Waiting for you**, choosing criterion and blocked source, or `pla approve <project> --access-gap <task_id> <criterion> --blocked-source <url> [--reason "…"]` (criteria counted from 0).
 
 - Only an address whose download was demonstrably blocked in this run qualifies: HTTP 401, 402, 403 or 451, or a bot challenge page instead of the document (`blocked_sources` in `research_questions.json`).
 - The approval is stored in `runs/<run_id>/criterion_gaps.json`. The next resume reopens the sub-question; if this was the last open decision, the job continues at once.
@@ -262,7 +262,7 @@ If a sub-question fails only on a criterion whose source the publisher refuses, 
 
 ### Finishing with remaining objections
 
-Every review round reviews the whole dossier again and often finds new details; otherwise the loop ends only when every sub-question has used its two reworks. From the first overall review on it can be ended explicitly: **„Nach der nächsten Prüfung abschließen“** (finish after the next review; the card names the open objections and the round in one sentence) on the **„Recherche“** page, or `pla approve <project> --finish-with-residuals [--reason "…"]`, stored in `runs/<run_id>/residual_finish.json`.
+Every review round reviews the whole dossier again and often finds new details; otherwise the loop ends only when every sub-question has used its two reworks. From the first overall review on it can be ended explicitly: **Finish after the next review** („Nach der nächsten Prüfung abschließen“) (finish after the next review; the card names the open objections and the round in one sentence) on the **Research** page, or `pla approve <project> --finish-with-residuals [--reason "…"]`, stored in `runs/<run_id>/residual_finish.json`.
 
 - The next overall review runs as always; instead of reopening sub-questions, the run then closes, without a further rework round.
 - Its open objections appear under „Verbliebene Prüfeinwände“ (remaining review objections) in the quality report and in `accepted_gaps.json`, in the objection register with status `residual`, and the publication carries `model_review: residual_objections_remaining`.
@@ -273,10 +273,10 @@ Every review round reviews the whole dossier again and often finds new details; 
 
 ### Dispute in the overall review
 
-If the overall review contradicts an earlier objection (`review_disagreement`, for example because a passage read meanwhile supports the statement objected to), the run stops and stores verdict and objection in `synthesis/audit_NN/review_disagreement.json`. The editor decides: on the **„Recherche“** page (card **„Streitfall in der Gesamtprüfung“**, dispute in the overall review, showing both positions) or with `pla approve <project> --dispute <objection_id> reviewer|objection [--reason "…"]`, stored in `runs/<run_id>/dispute_decisions.json`.
+If the overall review contradicts an earlier objection (`review_disagreement`, for example because a passage read meanwhile supports the statement objected to), the run stops and stores verdict and objection in `synthesis/audit_NN/review_disagreement.json`. The editor decides: on the **Research** page (card **Dispute in the overall review** („Streitfall in der Gesamtprüfung“), dispute in the overall review, showing both positions) or with `pla approve <project> --dispute <objection_id> reviewer|objection [--reason "…"]`, stored in `runs/<run_id>/dispute_decisions.json`.
 
-- `reviewer` (**„Dem Prüfer folgen“**, follow the reviewer) closes the objection; the dispute appears with both positions and the note under „Strittige Prüfeinwände“ (disputed review objections) in the quality report.
-- `objection` (**„Einwand aufrechterhalten“**, uphold the objection) sends the objection back to its sub-question in its original wording, without a routing call; the sub-question reworks it like any objection, and the next review round checks it again.
+- `reviewer` (**Follow the reviewer** („Dem Prüfer folgen“), follow the reviewer) closes the objection; the dispute appears with both positions and the note under „Strittige Prüfeinwände“ (disputed review objections) in the quality report.
+- `objection` (**Uphold the objection** („Einwand aufrechterhalten“), uphold the objection) sends the objection back to its sub-question in its original wording, without a routing call; the sub-question reworks it like any objection, and the next review round checks it again.
 - The job continues immediately. Resuming uses the stored review parts, so the decision costs no call.
 - A newly raised objection that the review cannot anchor in read passages still ends the run; it is recorded once in `review_disagreements`, even when a resume replays the same review.
 
@@ -286,11 +286,13 @@ If an address refuses the download (HTTP 401, 402, 403, 451), answers with a bot
 
 - The import then asks OpenAlex, Unpaywall, Semantic Scholar, Europe PMC and CORE in turn for the same work until a copy reads (`sources.open_access_copy`). OpenAlex is asked via the DOI in the address, otherwise only via an exactly identical title. The first readable copy is read, PDF files before full-text pages of PubMed Central or Europe PMC; landing pages with only an abstract stay out.
 - The copy keeps the original address as its identity; `final_url` and the reliability note name the service and where it was read. It takes no further place in the source limit.
+- **A page that is gone** (HTTP 404 or 410, or a server that does not answer, after the free copies for the latter) is read from the Internet Archive's latest capture of the same address (`sources.archived_copy`, the availability API, then the capture as it was taken, `…/web/<date>id_/<address>`). Its reliability note names the archive and the capture date. A refusal (401, 402, 403, 451) never asks the archive: the site's decision stands (why: D-197).
+- **Certificates:** source servers are checked against the operating system's certificate store (`sources.SOURCE_TLS`, the `truststore` package), as a browser checks them. Python's own check lacks the intermediate certificates some servers leave out and refused bundestag.de and bundesrat.de (why: D-197).
 - Europe PMC supplies full texts of free articles as JATS XML, even where PubMed Central shows a captcha.
-- Unpaywall is asked only with a contact address, given under **„Kontaktadresse für Unpaywall“** on the Studio's settings page (since 2026-11-03; read by each new job's worker) or set as `PLA_UNPAYWALL_EMAIL`; CORE only with a free key from core.ac.uk, stored under **„CORE-Key“** on the Studio's settings page or set as `PLA_CORE_API_KEY`. Set the variables before starting the Studio ([Environment variables](CONFIGURATION.md#environment-variables)).
-- CORE allows about 1,000 requests a day with the free key: all runs count their CORE searches together in `~/.podcast-automate/core_usage.json` (UTC day, limit `PLA_CORE_DAILY_LIMIT`, default 1000, `sources.CORE_DAILY_LIMIT`), and CORE is skipped for the rest of a used-up day (`sources.reserve_core_call`). The research page shows the status under „Fehlende Werke“ (missing works).
+- Unpaywall is asked only with a contact address, given under **Contact address for Unpaywall** („Kontaktadresse für Unpaywall“) on the Studio's settings page (since 2026-11-03; read by each new job's worker) or set as `PLA_UNPAYWALL_EMAIL`; CORE only with a free key from core.ac.uk, stored under **CORE key** („CORE-Key“) on the Studio's settings page or set as `PLA_CORE_API_KEY`. Set the variables before starting the Studio ([Environment variables](CONFIGURATION.md#environment-variables)).
+- CORE allows about 1,000 requests a day with the free key: all runs count their CORE searches together in `~/.podcast-automate/core_usage.json` (UTC day, limit `PLA_CORE_DAILY_LIMIT`, default 1000, `sources.CORE_DAILY_LIMIT`), and CORE is skipped for the rest of a used-up day (`sources.reserve_core_call`). The research page shows the status under "Missing works" („Fehlende Werke“).
 - The first search and every sub-question's web searches also name open archives per field (`prompts/open_archives.txt`: arXiv, OpenReview, ACL Anthology, PsyArXiv, SocArXiv, OSF, RePEc, HAL, Zenodo, CORE, BASE, Europe PMC, OAPEN, DOAB, PhilArchive, Internet Archive Scholar, Project Gutenberg, data portals) and exclude shadow libraries.
-- A work no source releases freely can be obtained through a library, interlibrary loan, subito or purchase and uploaded under „Fehlende Werke“ (`provided_works`, [Missing works](STUDIO.md#missing-works)). With its reference (`citation`) it counts as a primary work, not a note, also as independent evidence of an empirical test. It is read with the book limits ([Download and import limits](#download-and-import-limits)) and imported at the next step (`QuestionResearch.adopt_provided_works`), and the questions it was uploaded for are tried again.
+- A work no source releases freely can be obtained through a library, interlibrary loan, subito or purchase and uploaded under "Missing works" as PDF, EPUB without copy protection, saved page or text (`provided_works`, [Missing works](STUDIO.md#missing-works)). An EPUB is read chapter by chapter in its reading order (`sources.epub_text`); one with encrypted chapters (DRM) is refused, obfuscated fonts are not (why: D-198). A refused address the questions still need is listed there to fetch in your own browser and upload at that address (why: D-199). With its reference (`citation`) it counts as a primary work, not a note, also as independent evidence of an empirical test. It is read with the book limits ([Download and import limits](#download-and-import-limits)) and imported at the next step (`QuestionResearch.adopt_provided_works`), and the questions it was uploaded for are tried again.
 
 ## Assembled dossier
 
@@ -318,7 +320,7 @@ Three rules make the review loop of an assembled dossier end on its own (why: D-
 
 - **Met criteria pass.** A guiding question whose five criteria the assessment rates as met and which has independently retrieved evidence passes. What the assessment also lists as "still missing" appears as „Als Grenze vermerkt“ at the guiding question in the quality report (`noted` in `research_quality_gate.json`) and triggers no research.
 - **After two reworks, objections are only noted.** An objection against a sub-question whose two reworks are used up no longer reopens it or stops the run: the last verified answer stays, and the objection appears under „Einwände nach zwei Nachbesserungen“ (objections after two reworks) in the quality report (`noted_objections` with `basis: reworks_spent`, gate key `noted_after_reworks`). The run closes once no sub-question can be reworked any more.
-- **An accepted gap with a verified answer keeps the answer.** A sub-question blocked because its reworks were used up (`audit_block`), or accepted as a gap in this state, gets its last verified answer back on resume (`question_synthesis.keep_spent_answers`); its objection is noted as above. A sub-question without a verified answer stays a gap. For such sub-questions the Studio offers **„Fortsetzen“** (resume) without a decision of their own (`keeps_spent_answers` in the question state).
+- **An accepted gap with a verified answer keeps the answer.** A sub-question blocked because its reworks were used up (`audit_block`), or accepted as a gap in this state, gets its last verified answer back on resume (`question_synthesis.keep_spent_answers`); its objection is noted as above. A sub-question without a verified answer stays a gap. For such sub-questions the Studio offers **Resume** („Fortsetzen“) without a decision of their own (`keeps_spent_answers` in the question state).
 
 **A rework that ends blocked returns the verified answer at once.** If a sub-question's rework finds nothing that closes its objection and ends with an evidence, search or access block (even one already accepted as a gap), the sub-question gets its previously verified answer back in the same pass instead of stopping the run. The objection appears as a limit under „Einwände, die eine Nachbesserung nicht schließen konnte“ (objections a rework could not close) in the quality report (`noted_objections` with `basis: rework_blocked`), and the next follow-up assessment reads it as noted, not as reworked. A sub-question that only waits for a prerequisite is decided together with it.
 
@@ -458,7 +460,7 @@ In the script run the same probe runs once per run during planning over the unce
 
 A new script run can also check the gaps with Jev, TypeSafe's decision model via OpenRouter (`jev.py`, `jev.JEV_MODEL`).
 
-**Switching it on.** The Studio switch **„Jev dazunehmen“** (add Jev) turns it on per project ([Research decisions and limits](STUDIO.md#research-decisions-and-limits); `studio/jev_probe.json`, see [Where settings live](CONFIGURATION.md#where-settings-live)); on the command line `pla script <project> --jev-probe`. The key comes from the Studio or from `OPENROUTER_API_KEY`; the Studio passes it only to runs that use the probe ([Secrets and keys](SECURITY.md#secrets-and-keys)).
+**Switching it on.** The Studio switch **Add Jev** („Jev dazunehmen“) turns it on per project ([Research decisions and limits](STUDIO.md#research-decisions-and-limits); `studio/jev_probe.json`, see [Where settings live](CONFIGURATION.md#where-settings-live)); on the command line `pla script <project> --jev-probe`. The key comes from the Studio or from `OPENROUTER_API_KEY`; the Studio passes it only to runs that use the probe ([Secrets and keys](SECURITY.md#secrets-and-keys)).
 
 - New German-language projects have Jev on from the start, because their gaps are worded in German and the sources are mostly English. If the key is missing then, the gap probe runs with the word search only (`runs/<run_id>/jev_probe.json`: `status: skipped`) instead of stopping the run. Whoever switches Jev on themselves still gets a stop without a key.
 - The switch changes no adopted selection, and running jobs keep their gap probes, because new hits would reopen finished episodes.
@@ -537,7 +539,7 @@ Formally invalid model responses (for example a search without logged search que
 
 - If a stored rejected response passes today's check after a rule change, the most recent one becomes the receipt on resume (`adopted_rejection`) instead of costing a new call or stopping the run again. Each is checked as the attempt it answered (an earlier one like a first attempt, the last one under today's rules for the last attempt), so a call that stopped after its corrections were used up closes on resume as that attempt would close today.
 - If a step has used its three attempts, the run stops, and a resume stops at the same place again. The stop code is the rejecting check's code, and `rejected_output` where it rejected a readable response as `invalid_model_output` (`research_patches.exhausted_code`); `invalid_model_output` as a stop code means only that no readable response came, and a resume then asks again.
-- **„Mit neuen Anläufen fortsetzen“** (resume with fresh attempts, stop card in the Studio) or `pla approve <project> --fresh-attempts` sets aside the stored rejections of every such call (`<name>_superseded_NN_MM.json`, logged in `fresh_attempts.json`) and gives it three fresh attempts; only for a stopped run.
+- **Resume with fresh attempts** („Mit neuen Anläufen fortsetzen“, a stop card in the Studio) or `pla approve <project> --fresh-attempts` sets aside the stored rejections of every such call (`<name>_superseded_NN_MM.json`, logged in `fresh_attempts.json`) and gives it three fresh attempts; only for a stopped run.
 - Rejected responses count only against the prompt they answered; if the prompt changes, they move to `<name>_superseded_NN_MM.json`, and the corrected prompt gets its attempts anew.
 - Every step of the review loop reports its state in the activity line (review part, assessment, routing part, incorporation block, evidence correction).
 
@@ -547,7 +549,7 @@ If a verified prerequisite is reworked or reopened, every verified answer buildi
 
 - A stored verified answer that no longer passes a rule tightened since (its fixed checks, its stored review verdict or its evidence receipts) is reviewed again with the named points, together with everything building on it, instead of stopping the resume. If the round had reached the dossier or the overall review, a new review round follows.
 - A revalidation is no rework: it counts against no limit, the answer may come back unchanged (`resubmit`), and a lock from an earlier rejection does not apply.
-- It is still counted: `revalidations` per sub-question in `research_questions.json`, „N Mal erneut geprüft“ (rechecked N times) in the Studio, „Nachprüfungen nach geänderten Voraussetzungen“ (revalidations after changed prerequisites) in the quality report of an assembled dossier.
+- It is still counted: `revalidations` per sub-question in `research_questions.json`, "checked again N times" („N Mal erneut geprüft“) in the Studio, „Nachprüfungen nach geänderten Voraussetzungen“ (revalidations after changed prerequisites) in the quality report of an assembled dossier.
 - A stored answer or source that no longer matches its checksum still stops the run with `invalid_research_checkpoint`.
 - Before assembling and before completion, every sub-question must be verified or blocked (blocked ones first stop for a decision, except accepted gaps); otherwise the run stops with `research_questions_open`, and a resume continues working on them. Publication checks the same again, and a run stored as completed with open sub-questions answers them on resume in a new review round.
 
@@ -575,7 +577,7 @@ The source stays fully stored within the import limits. For each sub-question th
 
 - Valid completed stages are skipped on resume. Successful model responses and individual downloads (with checksum checkpoints) are stored, so an interruption between search, reading and review repeats no finished work.
 - After a parser update, stored raw files can be processed again and dependent dossier and review stages are renewed. Damaged raw files are downloaded again.
-- Stopped older runs adopt, at the next **„Fortsetzen“**, the retrieved sources and the last formally valid draft of the stored rounds; old assessments become hints, not automatically passed answers. Raw files, section references and checksums are checked before reuse, and consumption in the run budget is kept. Fully completed runs are not recalculated.
+- Stopped older runs adopt, at the next **Resume**, the retrieved sources and the last formally valid draft of the stored rounds; old assessments become hints, not automatically passed answers. Raw files, section references and checksums are checked before reuse, and consumption in the run budget is kept. Fully completed runs are not recalculated.
 - The open Studio server resumes a job paused by a subscription limit or stopped by a transient technical error by itself ([Automatic resume](STUDIO.md#automatic-resume)); new attempts and a higher call limit without asking come only from the pre-approvals ([Budgets](BUSINESS_LOGIC.md#budgets)).
 - At the next resume the new Studio worker loads updated research code without a server restart; reloading the browser page loads the new display.
 

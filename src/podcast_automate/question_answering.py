@@ -14,7 +14,7 @@ from .evidence_models import EVIDENCE_VERSION
 from .prompts import instructions
 from .question_dependencies import prerequisite_answers, prerequisite_gaps
 from .question_sources import attempt_folder, reserve_source, restore_attempts, source_identity
-from .research_evidence import (EVIDENCE_INSTRUCTIONS, PROFILES, blocks, evidence_profile, collapse_assessments, collapse_support, verbatim,
+from .research_evidence import (EVIDENCE_INSTRUCTIONS, blocks, evidence_profile, collapse_assessments, collapse_support, verbatim,
                                 evidence_summary, scope_assessments, settle_receipts, support_errors)
 from .research_gap_probe import settle
 from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
@@ -23,7 +23,7 @@ from .research_dates import research_day
 from .research_reader import source_catalog
 from .research_retrieval import references
 from .research_tasks import AnswerReview, CriterionVerdict, QuestionAnswer, QuestionSearch, ReaderWindow, ResearchDecision
-from .sources import canonical_url, clean, import_failure, import_source
+from .sources import canonical_url, import_failure, import_source
 from .storage import digest, read_text
 
 READER_ACTIONS = ["search_local", "read", "search_web", "answer", "blocked"]
