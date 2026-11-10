@@ -58,6 +58,8 @@ runs/
 *.wav
 *.m4a
 *.flac
+# The README's listening sample is the one recording the repository ships.
+!docs/media/*.mp3
 
 # Narration lab: the experimental variants stay local; versioned are the ones the work builds on (2026-10-27):
 # agent6 (the agentic writer), narrative13 (the best single-call writer) and craft, whose design run it writes on.
