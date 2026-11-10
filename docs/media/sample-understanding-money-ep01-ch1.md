@@ -1,6 +1,6 @@
 # Sample: Understanding Money, episode 1, chapter 1
 
-[Listen (MP3, 10:34 min, 5 MB)](sample-understanding-money-ep01-ch1.mp3)
+[Listen (MP3, 10:33 min, 5 MB)](sample-understanding-money-ep01-ch1.mp3) · [German original](sample-geld-verstehen-ep01-ch1.md)
 
 **What this is.** The first chapter of episode 1 of „Geld verstehen“, a German podcast for listeners aged 14 to 16
 that Podcast Automate researched and wrote: Mara hosts, Leo asks, and Ea-nasir, the copper merchant of Ur who

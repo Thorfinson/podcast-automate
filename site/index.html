@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podcast Automate</title>
+<meta name="description" content="Podcast Automate turns a topic into a researched, reviewed dialogue podcast and records it as MP3, on your own computer. Listen to a sample in English and German.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Podcast Automate">
+<meta property="og:description" content="From a topic to a researched, reviewed dialogue podcast, on your own computer. Listen to a sample in English and German.">
+<meta property="og:url" content="https://thorfinson.github.io/podcast-automate/">
+<meta property="og:image" content="https://thorfinson.github.io/podcast-automate/media/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 36'%3E%3Crect width='36' height='36' rx='9' fill='%23f2c94c'/%3E%3Ctext x='18' y='25' font-family='monospace' font-size='21' text-anchor='middle' fill='%230e1116'%3Ep%3C/text%3E%3C/svg%3E">
+<style>
+@font-face{font-family:"IBM Plex Sans";font-weight:400;font-display:swap;src:url(fonts/ibm-plex-sans-400.woff2) format("woff2")}
+@font-face{font-family:"IBM Plex Sans";font-weight:600;font-display:swap;src:url(fonts/ibm-plex-sans-600.woff2) format("woff2")}
+@font-face{font-family:"IBM Plex Sans";font-weight:700;font-display:swap;src:url(fonts/ibm-plex-sans-700.woff2) format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-weight:500;font-display:swap;src:url(fonts/ibm-plex-mono-500.woff2) format("woff2")}
+:root{
+  color-scheme:light;
+  --bg:#f3f5f7;--surface:#fff;--surface-2:#eef1f4;--line:#dce1e6;--ink:#11161c;--muted:#556170;
+  --console:#0e1116;--console-ink:#e8edf2;--console-muted:#9aa6b2;
+  --action:#f2c94c;--action-ink:#0e1116;--action-hover:#e8b92a;--link:#7a5600;--focus:#1c6fd0;
+  --shadow:0 6px 24px rgb(14 17 22 / .08);
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  color-scheme:dark;
+  --bg:#0e1116;--surface:#161b22;--surface-2:#1d242d;--line:#2a3340;--ink:#e8edf2;--muted:#9aa6b2;
+  --console:#0a0d11;--link:#f2c94c;--shadow:0 6px 24px rgb(0 0 0 / .35);
+}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 17px/1.6 var(--sans)}
+a{color:var(--link)}
+a:focus-visible,audio:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:6px}
+.wrap{max-width:1040px;margin:0 auto;padding:0 16px}
+header{background:var(--console);color:var(--console-ink)}
+header .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:68px}
+.brand{display:flex;align-items:center;gap:12px;color:var(--console-ink);text-decoration:none;font-weight:700;font-size:17px;line-height:1.1}
+.mark{position:relative;display:grid;place-items:center;width:36px;height:36px;border-radius:9px;background:var(--action);color:var(--action-ink);font:500 21px/1 var(--mono)}
+.mark span{position:absolute;right:5px;top:4px;font-size:7px}
+.ghost{color:var(--console-ink);text-decoration:none;border:1px solid #39424f;border-radius:999px;padding:7px 14px;font-size:15px;font-weight:600}
+.ghost:hover{border-color:var(--console-muted)}
+.hero{background:var(--console);color:var(--console-ink);padding:40px 0 56px}
+.hero h1{font-size:clamp(30px,5vw,46px);line-height:1.12;margin:0 0 16px;max-width:20ch;letter-spacing:-.01em}
+.hero p{color:var(--console-muted);font-size:clamp(17px,2.2vw,19px);max-width:62ch;margin:0 0 24px}
+.buttons{display:flex;flex-wrap:wrap;gap:12px}
+.button{display:inline-block;background:var(--action);color:var(--action-ink);text-decoration:none;font-weight:700;border-radius:10px;padding:11px 18px}
+.button:hover{background:var(--action-hover)}
+.button.secondary{background:transparent;color:var(--console-ink);border:1px solid #39424f}
+main.wrap{padding:48px 16px 24px}
+h2{font-size:26px;line-height:1.25;margin:0 0 8px}
+.lead{color:var(--muted);margin:0 0 24px;max-width:70ch}
+.samples{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:20px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:22px;display:flex;flex-direction:column;gap:12px}
+.tag{font:500 13px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.card h3{font-size:20px;line-height:1.3;margin:0}
+.meta{color:var(--muted);font-size:15px;margin:0}
+audio{width:100%;margin-top:4px}
+.links{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:15px;margin:0}
+.note{margin:20px 0 0;padding:14px 16px;background:var(--surface-2);border-radius:10px;color:var(--muted);font-size:15px}
+figure{margin:48px 0 0}
+figure img{width:100%;height:auto;display:block;border-radius:14px;border:1px solid var(--line);box-shadow:var(--shadow)}
+figcaption{color:var(--muted);font-size:15px;margin-top:10px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px;margin:48px 0 0;padding:0;list-style:none}
+.facts li{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px}
+.facts strong{display:block;margin-bottom:4px}
+.facts span{color:var(--muted);font-size:15px}
+footer{color:var(--muted);font-size:14px;padding:32px 0 48px}
+footer .wrap{border-top:1px solid var(--line);padding-top:20px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <a class="brand" href="./"><span class="mark" aria-hidden="true">p<span>●</span></span><span>Podcast Automate</span></a>
+    <a class="ghost" href="https://github.com/Thorfinson/podcast-automate">GitHub</a>
+  </div>
+</header>
+<section class="hero">
+  <div class="wrap">
+    <h1>From a topic to a researched dialogue podcast</h1>
+    <p>Podcast Automate reads sources, builds an evidence-backed dossier, has a Claude Code agent write each episode as a
+      dialogue of two or three hosts, reviews it against the sources and, once you have read and approved it, records it
+      with synthetic voices. Open source, on your own computer.</p>
+    <div class="buttons">
+      <a class="button" href="#listen">Listen to a sample</a>
+      <a class="button secondary" href="https://github.com/Thorfinson/podcast-automate#quick-start">Get started</a>
+    </div>
+  </div>
+</section>
+<main class="wrap">
+  <section id="listen" aria-labelledby="listen-title">
+    <h2 id="listen-title">Listen to a sample</h2>
+    <p class="lead">The first chapter of a season on money for teenagers: Mara hosts, Leo asks, and Ea-nasir, the copper
+      merchant of ancient Ur, defends himself against the world's oldest known customer complaint.</p>
+    <div class="samples">
+      <article class="card" aria-labelledby="sample-en">
+        <span class="tag">English</span>
+        <h3 id="sample-en">Ea-nasir and the Clay Tablet: Money as a Written Promise</h3>
+        <p class="meta">Understanding Money · episode 1, chapter 1 · 10:33 · translated from the German original,
+          ElevenLabs Eleven v4 Turbo</p>
+        <audio controls preload="metadata" src="media/sample-understanding-money-ep01-ch1.mp3">
+          <a href="media/sample-understanding-money-ep01-ch1.mp3">Download the MP3</a>
+        </audio>
+        <p class="links">
+          <a href="https://github.com/Thorfinson/podcast-automate/blob/main/docs/media/sample-understanding-money-ep01-ch1.md">Transcript</a>
+          <a href="media/sample-understanding-money-ep01-ch1.mp3" download>Download MP3 (5 MB)</a>
+        </p>
+      </article>
+      <article class="card" lang="de" aria-labelledby="sample-de">
+        <span class="tag">Deutsch</span>
+        <h3 id="sample-de">Ea-nasir und die Tontafel: Geld als aufgeschriebenes Versprechen</h3>
+        <p class="meta">Geld verstehen · Folge 1, Kapitel 1 · 10:42 · die veröffentlichte Aufnahme, ElevenLabs Eleven v4</p>
+        <audio controls preload="metadata" src="media/sample-geld-verstehen-ep01-ch1.mp3">
+          <a href="media/sample-geld-verstehen-ep01-ch1.mp3">MP3 herunterladen</a>
+        </audio>
+        <p class="links">
+          <a href="https://github.com/Thorfinson/podcast-automate/blob/main/docs/media/sample-geld-verstehen-ep01-ch1.md">Transkript</a>
+          <a href="media/sample-geld-verstehen-ep01-ch1.mp3" download>MP3 herunterladen (5 MB)</a>
+        </p>
+      </article>
+    </div>
+    <p class="note">Both samples are AI-generated: a language model wrote the script and the voices are synthetic, as the
+      MP3 files also say in their tags. The research and the script are cited; listen as you would to any explainer,
+      not as a replacement for an expert's review.</p>
+  </section>
+  <figure>
+    <img src="media/studio-series.png" width="1440" height="900" loading="lazy"
+      alt="The Studio's series page: fifteen episodes of a season, each planned, written and checked, with a series review on top">
+    <figcaption>The Studio, a small web app on your own computer: the season above, planned, written and reviewed
+      episode by episode.</figcaption>
+  </figure>
+  <ul class="facts">
+    <li><strong>You decide at every gate</strong><span>The research plan, the table of contents and each script before
+      it is recorded.</span></li>
+    <li><strong>Sources, not guesses</strong><span>A verified dossier first; each script is reviewed against it.</span></li>
+    <li><strong>English and German</strong><span>The Studio and the podcasts it makes, in either language.</span></li>
+    <li><strong>Your keys, your computer</strong><span>No accounts and no hosting; keys stay in your system's credential
+      store.</span></li>
+  </ul>
+</main>
+<footer>
+  <div class="wrap">Podcast Automate is open source under the MIT license ·
+    <a href="https://github.com/Thorfinson/podcast-automate">Source and docs on GitHub</a> · The samples are AI-generated.</div>
+</footer>
+</body>
+</html>
