@@ -48,7 +48,7 @@ for development.
 
 ## Lint
 
-`ruff check .` runs in a second and is the first CI job; its rules are in `pyproject.toml` (Ruff's defaults, so
+`ruff check .` runs in a second and is the first CI job; its rules are named in `pyproject.toml` (
 pyflakes and the error subset of pycodestyle, at 120 columns). `ruff check --fix .` removes unused imports. There is no
 formatter: keep the style of the file you edit.
 
