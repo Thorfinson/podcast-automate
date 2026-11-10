@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "podcast-automate"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turns a topic into a researched, reviewed dialogue podcast series and records it as MP3, on your own computer"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.12"

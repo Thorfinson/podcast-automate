@@ -1,10 +1,35 @@
 # Changelog
 
-User-visible changes. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). There is no released
-version yet; everything since 0.1.0 is under Unreleased, newest first within each group, with the date in front.
+User-visible changes. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are on
+[GitHub](https://github.com/Thorfinson/podcast-automate/releases); within a version the entries are newest first in
+each group, with the date in front.
 Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-11-10
+
+The first public release. Podcast Automate turns a topic into a researched, reviewed dialogue podcast series and
+records it as MP3, on your own computer. Listen to a sample in English and German:
+https://thorfinson.github.io/podcast-automate/
+
+Highlights since 0.1.0:
+
+- **Story agent.** Every episode is written by a Claude Code session, in order, building on the episodes before it,
+  and reviewed against the research (D-181, D-184).
+- **Research.** A verified dossier from answered sub-questions; starting libraries, works you provide (PDF, EPUB, a
+  saved page), a list of refused sources to fetch yourself, and the Internet Archive for pages that are gone.
+- **Studio.** In English and German, organised around the series, the episode and the basics; in the English
+  interface every stop is explained in English.
+- **Speech.** Gemini through Google, ElevenLabs (Eleven v4 and v4 Turbo), Gemini through OpenRouter or local Qwen; up
+  to three hosts, a piece of music, one MP3 per episode with chapters and the AI marking.
+- **Publishing.** A companion kit for each episode and for the whole podcast, with its full transcript.
+- **Cost control.** Trial projects, a money limit for every run billed to a key, and the measured cost of a season in
+  the README.
+
+Experimental: Claude on your own Anthropic API key and the web search through Perplexity are tested against simulated
+APIs only. The installation needs a checkout (launchers, FFmpeg and Qwen setup); the wheel attached below provides the
+`pla` command alone. The detailed changes follow, newest first within each group.
 
 ### Added
 

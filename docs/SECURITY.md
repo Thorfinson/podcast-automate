@@ -329,7 +329,7 @@ version, which is when the pins are tried again (`.github/dependabot.yml` holds 
 
 ## Source rights and privacy
 
-What version 0.1 implements:
+What the current version implements:
 
 - **Private learning only.** `export_context` is limited to `private_learning`. The application offers no public
   publishing workflow and grants no rights clearance for republication; an export never publishes anything.

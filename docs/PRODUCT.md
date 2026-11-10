@@ -34,7 +34,7 @@ By default no subject-matter or mathematical prior knowledge is assumed, and dem
 everyday language; prior knowledge and level of detail can be adjusted in the topic brief. The full standard is in
 [Editorial standard](TEACHING.md#editorial-standard).
 
-### Platforms and version 0.1
+### Platforms
 
 The MVP started as a CLI with local project files on Windows 11; today the CLI and the browser Studio run on
 Windows, macOS and Linux. The target machine for local speech output has an AMD Radeon RX 9070 XT. Text processing
@@ -237,7 +237,7 @@ preconditions: [Run kinds and order](BUSINESS_LOGIC.md#run-kinds-and-order).
 
 ## Roadmap
 
-Target scope that version 0.1 does not implement yet:
+Target scope that the current version does not implement yet:
 
 - **Individual source rights and export blocks.** The full rights contract of
   [SourceDocument](ARCHITECTURE.md#sourcedocument) with adjustable states including `restricted` and `no_export`, and
