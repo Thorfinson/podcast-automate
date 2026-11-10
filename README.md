@@ -172,10 +172,12 @@ quality audit of 19 September 2026 are in [docs/specs/](docs/specs/).
 
 ## Releases and updates
 
-There is no hosted service: the Studio and the CLI run on your computer. A version tag `vX.Y.Z` builds the package,
-runs both test suites and publishes it to PyPI as `podcast-automate`, with a GitHub release that carries the version's
-[CHANGELOG](CHANGELOG.md) section. The package provides the same `pla` command; the launchers and the FFmpeg and Qwen
-setup scripts come with a checkout, which the quick start above uses. To update a checkout, follow
+There is no hosted service: the Studio and the CLI run on your computer. Releases are published only here, as
+[GitHub releases](https://github.com/Thorfinson/podcast-automate/releases), not on PyPI: a version tag `vX.Y.Z` builds
+the package, runs both test suites and creates a release with the version's [CHANGELOG](CHANGELOG.md) section and the
+built wheel attached. The wheel provides the same `pla` command without a checkout
+([Release a version](docs/OPERATIONS.md#release-a-version)); the launchers and the FFmpeg and Qwen setup scripts come
+with a checkout, which the quick start above uses. To update a checkout, follow
 [Update the Studio](docs/OPERATIONS.md#update-the-studio).
 
 ## Contributing and security

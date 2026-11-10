@@ -126,8 +126,9 @@ behaviour, and the CHANGELOG says how. Only the maintainer releases: move the `[
 [CHANGELOG.md](CHANGELOG.md) under a new `## [X.Y.Z] - YYYY-MM-DD` section, set the same version in `pyproject.toml`,
 and once that commit's checks passed on `main`, push the tag `vX.Y.Z`. Tags `v*` are protected: only the maintainer
 creates them. The [release workflow](.github/workflows/release.yml) then builds and checks the package, runs both
-suites against the built wheel, waits for the maintainer's approval in the `pypi` environment, publishes to PyPI and
-creates the GitHub release with the CHANGELOG section ([Release a version](docs/OPERATIONS.md#release-a-version)).
+suites against the built wheel and creates the GitHub release with the CHANGELOG section and the built wheel and
+sdist attached. Releases stay on GitHub; nothing is published to PyPI
+([Release a version](docs/OPERATIONS.md#release-a-version)).
 
 ## Reporting bugs
 

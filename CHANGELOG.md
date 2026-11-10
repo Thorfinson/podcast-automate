@@ -89,6 +89,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-11-10 · Releases stay on GitHub: a version tag creates the GitHub release with the built wheel and sdist attached and publishes nothing to PyPI (D-203).
 - 2026-11-10 · Local Qwen keeps its pinned packages: GitHub's 15 advisories for `transformers` 4.57.3, `accelerate` 1.12.0 and PyTorch 2.9.1 are analysed in docs/SECURITY.md and dismissed, since none reaches how the worker loads its one pinned model and no upgrade runs with `qwen-tts` 0.1.1 (D-202).
 - 2026-11-10 · The launchers and `pla studio`'s own console lines are in English, like the rest of the command line (D-156).
 - 2026-11-10 · For contributors: a `lint` job (Ruff, `ruff check .`, installed with `pip install -e ".[dev]"`) runs beside the test legs, and `main` is protected by a ruleset that requires these seven checks for a pull request; CODEOWNERS, Dependabot, labels and Discussions are set up, and CONTRIBUTING.md says how a change reaches `main` and how a version is released (D-201).
