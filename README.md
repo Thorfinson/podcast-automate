@@ -10,9 +10,11 @@ computer. You give it a topic or a question. It collects and reads sources, buil
 series, has a Claude Code agent write each episode as a dialogue of two or three hosts, reviews every script against
 the sources and, once you have read and approved it, records it with synthetic voices.
 
-**[▶ Listen to a sample](docs/media/sample-understanding-money-ep01-ch1.mp3)** (10:34 min, English, AI-generated):
-the first chapter of a season on money for teenagers, in which a copper merchant from ancient Ur defends himself
-against the world's oldest known customer complaint. [Transcript and how it was made](docs/media/sample-understanding-money-ep01-ch1.md).
+**[▶ Listen to a sample, in English and German](https://thorfinson.github.io/podcast-automate/#listen)** (about 10
+minutes each, AI-generated, plays in the browser): the first chapter of a season on money for teenagers, in which a
+copper merchant from ancient Ur defends himself against the world's oldest known customer complaint. Transcripts and
+how they were made: [English](docs/media/sample-understanding-money-ep01-ch1.md),
+[German](docs/media/sample-geld-verstehen-ep01-ch1.md).
 
 ![The Studio's series page: 15 episodes, each planned, written and checked](docs/media/studio-series.png)
 
@@ -166,8 +168,9 @@ quality audit of 19 September 2026 are in [docs/specs/](docs/specs/).
 | `evals/` | Real-model regression checks, run by hand ([QUALITY](docs/QUALITY.md#evals)) |
 | `examples/` | Example projects to copy into `projects/`: [geld-podcast](examples/geld-podcast/README.md), a German podcast on money with three hosts |
 | `scripts/` | Setup and maintenance scripts |
-| `docs/` | The documentation above; dated plans and specs in `docs/specs/`, the sample and screenshots in `docs/media/` |
-| `.github/` | CI and release workflows, issue and pull request templates, code owners, Dependabot |
+| `docs/` | The documentation above; dated plans and specs in `docs/specs/`, the samples, screenshots and social preview in `docs/media/` |
+| `site/` | The [project page](https://thorfinson.github.io/podcast-automate/) with the samples' players ([Project page](docs/OPERATIONS.md#project-page)) |
+| `.github/` | CI, release and Pages workflows, issue and pull request templates, code owners, Dependabot |
 | `projects/` | Your projects and their runs (git-ignored); structure in [ARCHITECTURE](docs/ARCHITECTURE.md#project-folder-layout) |
 
 ## Releases and updates

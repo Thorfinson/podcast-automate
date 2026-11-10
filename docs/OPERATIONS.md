@@ -573,6 +573,21 @@ interruption. `pla doctor` returns `1` when the installation is not ready; `pla 
 usable but none has quota left, and `1` when none is usable. `--json` gives machine-readable results
 ([Commands](PRODUCT.md#commands)).
 
+## Project page
+
+The project page `https://thorfinson.github.io/podcast-automate/` plays the two listening samples in the browser, since
+a README on GitHub shows no audio player and its link to an MP3 starts a download (why: D-204). Its source is `site/index.html`;
+`.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main` that changes `site/`, `docs/media/`
+or the Studio's fonts, and by hand (Actions › Pages › **Run workflow**). The workflow copies next to the page only the
+MP3 and PNG files of `docs/media/` and the fonts with their license; nothing else of the repository is published.
+
+- **The samples** are `docs/media/sample-understanding-money-ep01-ch1.mp3` (English, translated from the German
+  script and recorded on Eleven v4 Turbo) and `docs/media/sample-geld-verstehen-ep01-ch1.mp3` (German, the published
+  recording's first chapter, assembled from the cached passages without the season's music), each 64 kbit/s mono with
+  the AI marking in its tags and a transcript beside it. `.gitignore` excludes every other MP3.
+- **The social preview** `docs/media/social-preview.png` (1280 × 640) is the page's `og:image`; for the repository
+  it is uploaded by hand under Settings › General › Social preview, which has no API.
+
 ## Release a version
 
 A release is a pushed version tag `vX.Y.Z`; `.github/workflows/release.yml` builds, checks and tests it and creates

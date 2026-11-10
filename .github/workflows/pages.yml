@@ -1,0 +1,42 @@
+name: Pages
+# The project page with the listening samples (site/index.html), published to GitHub Pages at
+# https://thorfinson.github.io/podcast-automate/ (D-204). It copies the samples, the screenshots and the social preview
+# from docs/media and the Studio's fonts next to the page; nothing else of the repository is published.
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "docs/media/**", "src/podcast_automate/web/fonts/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+# One deployment at a time; a newer push waits instead of cancelling one half-way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Assemble the page
+        run: |
+          mkdir -p _site/media _site/fonts
+          cp site/index.html _site/
+          cp docs/media/*.mp3 docs/media/*.png _site/media/
+          cp src/podcast_automate/web/fonts/*.woff2 src/podcast_automate/web/fonts/OFL.txt _site/fonts/
+      - uses: actions/configure-pages@v6.0.0
+      - uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5.0.1
