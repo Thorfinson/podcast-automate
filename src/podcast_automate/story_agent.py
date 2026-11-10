@@ -57,9 +57,21 @@ ORIENTATION_VERSION = "orientation_sheet.v1"
 ORIENTATION_CHECK_VERSION = "orientation_check.v1"
 # v2: the editor hears the script as the brief's audience, with the hosts by name and part (critique_input).
 CRITIQUE_VERSION = "story_critique.v2-audience"
-# How long a critique request waits for its answer, and how often the run looks for requests.
+# How long a critique request waits for its answer, and how often the run and the session look: the pause between two
+# looks starts at FIRST_POLL_SECONDS and doubles up to POLL_SECONDS, so a quick step (a check, the test suite's fake
+# agent) is seen at once while a long session is still looked at every two seconds (2026-11-10: a fixed two seconds
+# on both sides was most of the Python suite's time).
 CRITIQUE_WAIT = 30 * 60
 POLL_SECONDS = 2
+FIRST_POLL_SECONDS = 0.05
+
+
+def poll_pauses():
+    """The pauses between two looks: FIRST_POLL_SECONDS, doubling each time, then POLL_SECONDS for good."""
+    pause = FIRST_POLL_SECONDS
+    while True:
+        yield pause
+        pause = min(POLL_SECONDS, pause * 2)
 # A session read, planned, wrote and revised a ten-minute episode in 31 to 60 minutes in the lab, so its ceiling grows
 # with the episode: eight minutes per planned minute, at least two hours (session_timeout).
 SESSION_TIMEOUT = 120 * 60
@@ -544,13 +556,14 @@ def critique_input(config, draft: EpisodeScript) -> dict:
             "script": script_text(draft)}
 
 
-def serve_critiques(pipeline, folder: Path) -> None:
+def serve_critiques(pipeline, folder: Path) -> int:
     """Answer the critique requests the session left (requests/critique_N.json) with a call of the run, so the
-    budget, the receipts and the provider choice apply as to every other call."""
+    budget, the receipts and the provider choice apply as to every other call. Returns how many it answered."""
     from .prompts import instructions
     requests = folder / "requests"
     if not requests.is_dir():
-        return
+        return 0
+    served = 0
     allowed = json.loads((folder / "context.json").read_text(encoding="utf-8"))["critiques"]
     for request in sorted(requests.glob("critique_*.json")):
         if request.name.endswith(".answer.json") or request.with_suffix(".answer.json").exists():
@@ -567,6 +580,8 @@ def serve_critiques(pipeline, folder: Path) -> None:
         except (AppError, ValidationError, ValueError, KeyError) as exc:
             answer = {"error": str(exc), "code": getattr(exc, "code", "invalid_request")}
         write_json(request.with_suffix(".answer.json"), answer)
+        served += 1
+    return served
 
 
 def request_critique(folder: Path, name: str) -> dict:
@@ -581,11 +596,12 @@ def request_critique(folder: Path, name: str) -> dict:
         return {"error": f"{name} cannot be read: {exc}"}
     write_json(request, {"draft": draft})
     deadline = time.monotonic() + CRITIQUE_WAIT
+    pauses = poll_pauses()
     while time.monotonic() < deadline:
         answer = request.with_suffix(".answer.json")
         if answer.is_file():
             return json.loads(answer.read_text(encoding="utf-8"))
-        time.sleep(POLL_SECONDS)
+        time.sleep(next(pauses))
     return {"error": "No critique came back in time; go on without it."}
 
 
@@ -634,13 +650,16 @@ def run_agent(pipeline, folder: Path, timeout: float = SESSION_TIMEOUT) -> dict:
                                        encoding="utf-8")
             started = True
             deadline = time.monotonic() + timeout
+            pauses = poll_pauses()
             while process.poll() is None:
-                serve_critiques(pipeline, folder)
+                if serve_critiques(pipeline, folder):
+                    # After an answer the agent goes on at once, so the run looks quickly again.
+                    pauses = poll_pauses()
                 if time.monotonic() > deadline:
                     process.kill()
                     raise AppError("Der Erzähl-Agent hat sein Zeitlimit überschritten.", code="story_agent_timeout",
                                    status="blocked")
-                time.sleep(POLL_SECONDS)
+                time.sleep(next(pauses))
             serve_critiques(pipeline, folder)
         raw = (folder / "session_stdout.json").read_text(encoding="utf-8")
         try:

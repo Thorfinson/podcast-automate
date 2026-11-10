@@ -90,6 +90,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Changed
 
+- 2026-11-10 · For contributors: the Python suite takes about 11 instead of 21 minutes, since the story agent's run and session no longer look for each other only every two seconds; CI splits it into three shards (two on macOS) per system and Python version and skips the test legs for a change of only docs, and `main` requires the checks `lint` and `tests passed` (D-205).
 - 2026-11-10 · Releases stay on GitHub: a version tag creates the GitHub release with the built wheel and sdist attached and publishes nothing to PyPI (D-203).
 - 2026-11-10 · Local Qwen keeps its pinned packages: GitHub's 15 advisories for `transformers` 4.57.3, `accelerate` 1.12.0 and PyTorch 2.9.1 are analysed in docs/SECURITY.md and dismissed, since none reaches how the worker loads its one pinned model and no upgrade runs with `qwen-tts` 0.1.1 (D-202).
 - 2026-11-10 · The launchers and `pla studio`'s own console lines are in English, like the rest of the command line (D-156).

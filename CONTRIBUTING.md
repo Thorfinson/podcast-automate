@@ -54,8 +54,8 @@ formatter: keep the style of the file you edit.
 
 ## Run the tests
 
-There are two suites: the Python suite (about 1,280 tests, about 20 minutes, because every script run starts a fake
-story agent as a process) and the browser-logic suite (about 240 tests, about a second). Their commands, the Windows
+There are two suites: the Python suite (about 1,290 tests, about 11 minutes; `python scripts/test_shards.py --run 1 3`
+runs a third of it) and the browser-logic suite (about 240 tests, about a second). Their commands, the Windows
 PATH line for FFmpeg and which tests a change selects are in AGENTS.md:
 
 - [The two suites](AGENTS.md#the-two-suites): commands and requirements.
@@ -67,7 +67,9 @@ PATH line for FFmpeg and which tests a change selects are in AGENTS.md:
 `python -m unittest tests.test_spoken_forms tests.test_audio`, and the browser suite after any change to `web/`. That
 takes seconds to a few minutes. Before the pull request, run both suites in full once; CI runs them again on every push.
 
-CI runs the lint job and both suites on Linux, macOS and Windows with Python 3.12 and 3.13; all seven checks must pass.
+CI runs the lint job and, unless a change touches only docs and other files no test reads, both suites on Linux, macOS
+and Windows with Python 3.12 and 3.13, the Python suite in three shards each (two on macOS); the checks `lint` and
+`tests passed` must pass.
 
 **Never add a test that performs a real model call,** a download, speech synthesis or any other network access. Model
 answers come from patched adapters and the fixtures in `tests/*_fixtures.py`. Checks against real models live under
@@ -102,8 +104,8 @@ The full list is in [AGENTS.md › Conventions](AGENTS.md#conventions). In short
 4. When you replace a test, name the protection it keeps in the commit message; business rules keep their tests
    through refactors.
 
-`main` is protected by a repository ruleset: a change arrives through a pull request, the seven CI checks (lint and the
-six test legs) must pass, review threads must be resolved, and nobody force-pushes or deletes `main`. The maintainer
+`main` is protected by a repository ruleset: a change arrives through a pull request, the checks `lint` and `tests
+passed` (every shard of every test leg, or none when only docs changed) must pass, review threads must be resolved, and nobody force-pushes or deletes `main`. The maintainer
 reviews every pull request ([CODEOWNERS](.github/CODEOWNERS)) and merges it by squash, with the pull request's title
 as the commit message, or by rebase for a series of commits that each stand alone; merged branches are deleted.
 The maintainer, as the repository's administrator, may push small fixes to `main` directly; CI checks those too.
