@@ -658,6 +658,20 @@ def stop_after_asked(root, job=None):
     return bool(job.get("id")) and wish.get("job_id") == job.get("id")
 
 
+def carry_stop_after(root, previous, job, payload):
+    """„Nach dieser Folge anhalten“ (D-207) when a new job starts: a resume of the run the wish's job was writing, the
+    scheduler's after a quota wait among them, keeps it under its own id; any other new job starts without it
+    (Codex review on #25: a resume after a quota wait wrote on past the episode)."""
+    wish = read_json(root / STOP_AFTER, {}) or {}
+    same_run = (job.get("action") == "resume" and bool(payload.get("series")) and bool(previous.get("id"))
+                and wish.get("job_id") == previous.get("id")
+                and (previous.get("run") or {}).get("run_id") == payload.get("run_id"))
+    if wish and same_run:
+        write_json(root / STOP_AFTER, {**wish, "job_id": job["id"]})
+    else:
+        (root / STOP_AFTER).unlink(missing_ok=True)
+
+
 def read_revisions(root):
     """Revisions asked for while their project was working (Studio.enqueue_revision, D-191), and the outline's
     remaining episodes asked for so (D-192), in the order asked."""
@@ -2692,9 +2706,10 @@ class Studio:
             write_revisions(root, [row for row in read_revisions(root) if revision_key(row) != started])
         job_path = audio_job_path(root, job["id"]) if remote_episode else root / "studio/job.json"
         if not remote_episode:
+            previous = read_json(root / "studio/job.json", {}) or {}
             park(root, job)
-            # A new job starts without an earlier one's „Nach dieser Folge anhalten“ (D-207).
-            (root / STOP_AFTER).unlink(missing_ok=True)
+            # „Nach dieser Folge anhalten“ (D-207) goes on with a resume of the run it was asked for, else it ends.
+            carry_stop_after(root, previous, job, payload)
         write_json(job_path, job)
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"

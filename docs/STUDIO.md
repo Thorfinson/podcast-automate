@@ -248,7 +248,8 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
   beside "Stop" lets the episode it writes now finish, published and read for its tags, and then ends the job as done
   instead of starting the next one; the bar then says **Stops after this episode** („Hält nach dieser Folge an“) with
   **Keep writing** („Doch weiterschreiben“) to take it back, and once it ended, which episode comes next. The wish
-  belongs to that one job (`studio/stop_after_episode.json` names it; a new job starts without it), and the button
+  belongs to that one job (`studio/stop_after_episode.json` names it): a resume of the run it was asked for, also the
+  scheduler's after a quota wait, takes it on, and any other new job starts without it. The button
   shows only on a server that offers it (`stops_after_episode`; why: D-207). **Resume** on the approved outline's own
   run writes its next episode too.
   An episode the batch stopped at is resumed with the rest of the batch: it is finished, then the remaining episodes

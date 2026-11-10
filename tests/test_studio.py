@@ -1995,6 +1995,33 @@ class StopAfterEpisodeTests(unittest.TestCase):
                 self.assertNotIn("stopped_after_episode", result)
                 self.assertEqual(result["series_review"], {"status": "completed"})
 
+    def test_the_wish_goes_on_with_a_resume_of_its_run_and_ends_with_any_other_job(self):
+        """Codex review on #25: a series job asked to stop that pauses for quota is resumed by the scheduler as a new
+        job; the wish must name that job, or the resumed episode writes on past it."""
+        from podcast_automate.studio import carry_stop_after
+        wish = self.root / "studio/stop_after_episode.json"
+        previous = {"id": "job_series", "action": "episodes", "status": "waiting_for_quota",
+                    "run": {"run_id": "run_ep_002"}}
+        cases = [
+            ("the scheduler resumes the paused run", {"id": "job_new", "action": "resume"},
+             {"run_id": "run_ep_002", "series": "run_outline"}, "job_new"),
+            ("a resume of another run", {"id": "job_new", "action": "resume"},
+             {"run_id": "run_other", "series": "run_outline"}, None),
+            ("a resume outside a series", {"id": "job_new", "action": "resume"}, {"run_id": "run_ep_002"}, None),
+            ("other new work", {"id": "job_new", "action": "research"}, {}, None),
+        ]
+        for name, job, payload, expected in cases:
+            with self.subTest(name):
+                write_json(wish, {"job_id": "job_series", "asked_at": "then"})
+                carry_stop_after(self.root, previous, job, payload)
+                self.assertEqual(read_json(wish)["job_id"] if wish.exists() else None, expected)
+        wish.unlink(missing_ok=True)
+        carry_stop_after(self.root, previous, cases[0][1], cases[0][2])
+        self.assertFalse(wish.exists(), "no wish, nothing to carry")
+        write_json(wish, {"job_id": "job_earlier", "asked_at": "then"})
+        carry_stop_after(self.root, previous, cases[0][1], cases[0][2])
+        self.assertFalse(wish.exists(), "a wish of an older job is not the paused job's")
+
     def test_a_resumed_series_stops_before_its_next_episode(self):
         write_json(self.root / "studio/stop_after_episode.json", {"job_id": "job_series", "asked_at": "now"})
         resumed = RunManifest(run_id="run_resumed", kind="script", project_hash="p", input_hash="i",
