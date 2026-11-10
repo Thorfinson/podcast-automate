@@ -327,6 +327,8 @@ on 2026-11-10). AMD's newest Windows release, ROCm 7.2.1, ships PyTorch 2.9.1 on
 GitHub as "vulnerable code not used", with a link here; Dependabot opens a pull request when `qwen-tts` releases a new
 version, which is when the pins are tried again (`.github/dependabot.yml` holds the other Qwen pins back).
 
+## Source rights and privacy
+
 What version 0.1 implements:
 
 - **Private learning only.** `export_context` is limited to `private_learning`. The application offers no public
