@@ -9,7 +9,7 @@ https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp31
 https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl
 https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl
 qwen-tts==0.1.1
-transformers==4.57.3
+transformers==5.10.1
 accelerate==1.12.0
 huggingface-hub==0.36.2
 gradio==6.17.3
