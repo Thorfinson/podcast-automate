@@ -2,7 +2,7 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-12
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
@@ -442,7 +442,9 @@ and the dialogue. It reads the draft as the agent wrote it, with the corpus sect
 the episode's passages (`ScriptRun.review_sources`), and is told that a segment may cite them
 (`prompts/script_review_corpus.txt`, version suffix `+corpus`): such a statement is grounded when a cited section
 holds it, and its receipt is `preserved` or `drift` against those sections, never `no_research_claim`
-(`script_evidence.receipt_defects`). It also gets the measured `dialogue_shape` and the listenability rules
+(`script_evidence.receipt_defects`). Each receipt quotes its segment verbatim; only the case of the quote's first
+letter may differ, since a reviewer quoting from mid-sentence capitalizes the word it starts with (`script_evidence.quoted`;
+why: D-208). It also gets the measured `dialogue_shape` and the listenability rules
 ([Listenability](TEACHING.md#listenability)).
 
 - **Repairs only for what blocks.** Up to three repairs (`script_pipeline.MAX_REVIEW_REPAIRS`), each answering only

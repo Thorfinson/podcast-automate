@@ -48,6 +48,17 @@ def settle_receipts(review, script, anchors=None):
     return review
 
 
+def quoted(quote, text):
+    """Whether a receipt's ``quote`` is a verbatim excerpt of the segment's ``text``. Only the case of its first letter
+    may differ: a reviewer quoting from mid-sentence writes the word it starts with capitalized (D-208, Geld S2 ep_013,
+    2026-11-12: two reviews of 195 receipts each failed on one such quote, "Ganz recht hatte ich" for "Und ganz recht
+    hatte ich", and the run stopped). Any other letter, word or order still fails."""
+    quote, text = clean(quote), clean(text)
+    if quote in text:
+        return True
+    return bool(quote) and any(variant in text for variant in (quote[0].lower() + quote[1:], quote[0].upper() + quote[1:]))
+
+
 def receipt_defects(check, segment, known, sections=None):
     """Why one claim check does not fit its segment, one sentence per broken rule. ``sections`` are the source
     section references the review was given; a preserved segment names those it was compared with."""
@@ -55,7 +66,7 @@ def receipt_defects(check, segment, known, sections=None):
     # The corpus sections a story agent's segment cites besides or instead of findings (D-182).
     cited = sorted(segment.source_refs)
     defects = []
-    if clean(check.quote) not in clean(segment.text):
+    if not quoted(check.quote, segment.text):
         defects.append(f"{sid}: the quote must be a verbatim excerpt of the segment's text.")
     if set(check.finding_ids) != set(refs):
         defects.append(f"{sid}: finding_ids must be exactly the segment's knowledge_refs {refs}.")

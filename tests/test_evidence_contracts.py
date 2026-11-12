@@ -396,6 +396,25 @@ class EvidenceContractTests(unittest.TestCase):
         with self.assertRaises(AppError):
             validate_claim_checks(review, script, self.findings)
 
+    def test_a_quote_cut_from_mid_sentence_may_recase_its_first_letter_and_nothing_else(self):
+        """D-208, Geld S2 ep_013 (2026-11-12): two reviews of 195 receipts each failed on one quote that began a cut
+        sentence with a capital ("Ganz recht hatte ich" for "Und ganz recht hatte ich"), and the run stopped."""
+        from podcast_automate.script_evidence import quoted
+        text = "Behalt sie. Und ganz recht hatte ich auch nicht."
+        self.assertTrue(quoted("Ganz recht hatte ich auch nicht.", text))
+        self.assertTrue(quoted("und ganz recht", text), "a lowercased first letter as well")
+        for wrong in ("Ganz Recht hatte ich", "ganz recht hatte er", "Recht ganz hatte ich", "Ganz recht … nicht."):
+            self.assertFalse(quoted(wrong, text), wrong)
+        script = example_script()
+        review = ScriptReview(issues=[], limitations=[], claim_checks=script_checks(json.dumps({"script": script.model_dump()})))
+        segment = next(s for s in script.segments if s.segment_id == review.claim_checks[1].segment_id)
+        excerpt = " ".join(segment.text.split()[1:5])
+        review.claim_checks[1].quote = excerpt[0].swapcase() + excerpt[1:]
+        self.assertEqual(validate_claim_checks(review, script, self.findings), [])
+        review.claim_checks[1].quote = excerpt[0].swapcase() + excerpt[1:].swapcase()
+        with self.assertRaises(AppError, msg="a recased inner letter is no verbatim quote"):
+            validate_claim_checks(review, script, self.findings)
+
     def test_a_rejected_receipt_names_its_segment_and_the_broken_rule(self):
         """Ontologies ep_006, 2026-09-29: three answers judged an invented scenario that cites findings as
         no_research_claim; the bare rejection never said which segment or rule, so no correction could fix it."""
