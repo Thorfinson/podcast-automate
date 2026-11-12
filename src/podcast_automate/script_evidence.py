@@ -50,13 +50,18 @@ def settle_receipts(review, script, anchors=None):
 
 def quoted(quote, text):
     """Whether a receipt's ``quote`` is a verbatim excerpt of the segment's ``text``. Only the case of its first letter
-    may differ: a reviewer quoting from mid-sentence writes the word it starts with capitalized (D-208, Geld S2 ep_013,
-    2026-11-12: two reviews of 195 receipts each failed on one such quote, "Ganz recht hatte ich" for "Und ganz recht
-    hatte ich", and the run stopped). Any other letter, word or order still fails."""
+    may differ, also after an opening quotation mark or bracket: a reviewer quoting from mid-sentence writes the word it
+    starts with capitalized (D-208, Geld S2 ep_013, 2026-11-12: two reviews of 195 receipts each failed on one such
+    quote, "Ganz recht hatte ich" for "Und ganz recht hatte ich", and the run stopped). A letter after a digit is no
+    sentence start, and any other letter, word or order still fails."""
     quote, text = clean(quote), clean(text)
     if quote in text:
         return True
-    return bool(quote) and any(variant in text for variant in (quote[0].lower() + quote[1:], quote[0].upper() + quote[1:]))
+    first = next((index for index, char in enumerate(quote) if char.isalnum()), None)
+    if first is None or not quote[first].isalpha():
+        return False
+    head, letter, tail = quote[:first], quote[first], quote[first + 1:]
+    return any(head + variant + tail in text for variant in (letter.lower(), letter.upper()))
 
 
 def receipt_defects(check, segment, known, sections=None):

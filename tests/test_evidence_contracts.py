@@ -405,6 +405,11 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertTrue(quoted("und ganz recht", text), "a lowercased first letter as well")
         for wrong in ("Ganz Recht hatte ich", "ganz recht hatte er", "Recht ganz hatte ich", "Ganz recht … nicht."):
             self.assertFalse(quoted(wrong, text), wrong)
+        # Codex review on #26: the first letter counts after an opening quotation mark too, but not after a digit.
+        self.assertTrue(quoted("„Ganz recht“", "Er sagt „ganz recht“ und geht."))
+        self.assertTrue(quoted("(Und dann", "Sie zahlt (und dann geht sie)."))
+        self.assertFalse(quoted("1844 Kam der Aufstand", "Im Juni 1844 kam der Aufstand."))
+        self.assertFalse(quoted("„…“", "Er sagt „ganz recht“."), "no letter to recase")
         script = example_script()
         review = ScriptReview(issues=[], limitations=[], claim_checks=script_checks(json.dumps({"script": script.model_dump()})))
         segment = next(s for s in script.segments if s.segment_id == review.claim_checks[1].segment_id)
