@@ -469,6 +469,13 @@ why: D-208). It also gets the measured `dialogue_shape` and the listenability ru
   or scope point (`script_pipeline.STRICT_CATEGORIES`: `grounding`, `scope`) counts as an objection wherever the scope
   reaches it. Until 2026-10-04 every first-review advisory counted, and after a revision every one but clarity, depth
   and dialogue. (why: D-126)
+- After a repair, what the review keeps of a previous objection as an advisory stays a note, even about evidence or
+  scope: an advisory of that objection's category naming only segments it named, or a whole-episode advisory after a
+  whole-episode objection of its category. It is the review's verdict that the objection is settled, since one still
+  open is reported again as an objection. A drift found by the claim checks still blocks there; a new point on the
+  same segments cannot be told from such a note and stays one too. Until 2026-11-12 such a
+  note counted, and Geld S2 ep_013 spent six repairs on research density in chapter 4 that its review called "a
+  non-blocking note" in every round. (why: D-210)
 - A wall of facts goes back as a `dialogue` point: findings strung together without a question the listener wants
   answered, the answer announced before it is earned, dense blocks that end without a recap or reflection beat, or the
   expert holding the floor. A partner share under 25 % or more than two turns over 120 words is such a point, a long
@@ -491,8 +498,8 @@ category about the whole episode, or as a factual or source error. Everything el
 or a statement about something missing without a gap probe in a segment the previous review passed unchanged, is an
 advisory (`advisories`) in the report and notes. Code sets the scope by comparing the versions; the verdict only
 marks what is critical. So the review converges instead of finding new details in the same text every round. Within
-the scope, a point the review filed as an advisory blocks only as an evidence or scope point
-([above](#evidence-review)).
+the scope, a point the review filed as an advisory blocks only as an evidence or scope point, and not when it is what
+the review kept of a previous objection ([above](#evidence-review)).
 
 If a version had no blocking objections and a later repair (say, for a structure point) breaks its evidence, the
 evidenced version stands with its notes; the discarded version and its review are kept in
@@ -521,7 +528,8 @@ Today's version is `script_review.v17-scene-order` (`script_checks.SCRIPT_REVIEW
 (`+corpus`). A saved verdict stands on resume only when it was given with exactly this version and rule
 (`script_pipeline.saved_verdict_stands`), with today's `teaching.EDITORIAL_REVIEW_VERSION` and, for a dossier with an
 evidence version, today's `evidence_models.EVIDENCE_VERSION`; otherwise the saved draft is reviewed again, and its
-latest text and spent repairs stay. None of this grants an approval or resets the model budget.
+latest text and spent repairs stay. The editorial version also changes with the rule of which points block, so a
+review stopped under the old rule is judged by today's (`editorial_review.v6-residual`, D-210). None of this grants an approval or resets the model budget.
 
 ### Limits of the review
 

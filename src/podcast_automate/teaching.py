@@ -15,8 +15,9 @@ TEACHING_VERSION = "teaching.v3"
 DESIGN_VERSION = "teaching_design.v2"
 # Stored in every script-review checkpoint: bumping it makes a resumed in-flight run re-run the review of its saved
 # draft (draft and repair count are kept). That is intended whenever a composed fragment such as episode_framing.txt
-# changes meaning.
-EDITORIAL_REVIEW_VERSION = "editorial_review.v5-goal"
+# changes meaning, or the rule of which review points block (v6, D-210: a stopped review is judged again by today's
+# follow_up_scope instead of repairing a point its review had already let go).
+EDITORIAL_REVIEW_VERSION = "editorial_review.v6-residual"
 
 
 def prerequisite_context(plan, entry, work):
