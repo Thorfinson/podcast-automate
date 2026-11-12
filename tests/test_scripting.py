@@ -893,6 +893,37 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual([(i.segment_ids[0], i.category) for i in scoped.advisories],
                          [("seg_005", "grounding"), ("seg_003", "clarity"), ("seg_001", "structure")])
 
+    def test_what_a_review_keeps_of_a_previous_issue_as_a_note_does_not_block(self):
+        """Geld S2 ep_013, 2026-11-12: after the repairs the review called chapter 4's research density "a non-blocking
+        note" in every round, and the code counted the scope advisory as an issue on the previous issue's segments
+        until all repairs were spent, twice (D-210). A previous issue still open is reported again in issues."""
+        point = lambda category, *segments: ScriptIssue(category=category, segment_ids=list(segments), reason="r")
+        previous = ScriptReview(issues=[point("scope", "seg_002", "seg_003", "seg_004"), point("grounding", "seg_005"),
+                                        point("scope")], limitations=[])
+        review = ScriptReview(
+            issues=[point("scope", "seg_002"), point("grounding", "seg_005")], limitations=[],
+            issue_basis=["previous", "previous"],
+            advisories=[
+                point("scope", "seg_002", "seg_003"),   # what is left of the scope issue: a note
+                point("grounding", "seg_005"),          # what is left of the grounding issue: a note
+                point("scope"),                         # what is left of the whole-episode scope issue: a note
+                point("scope", "seg_003", "seg_006"),   # reaches a changed segment the scope issue never named
+                point("grounding", "seg_002"),          # evidence on a segment only a scope issue named
+                point("scope", "seg_005"),              # scope on a segment only a grounding issue named
+            ])
+        scoped = follow_up_scope(review, previous, ["seg_002", "seg_006"])
+        self.assertEqual([(i.category, i.segment_ids) for i in scoped.issues],
+                         [("scope", ["seg_002"]), ("grounding", ["seg_005"]), ("scope", ["seg_003", "seg_006"]),
+                          ("grounding", ["seg_002"]), ("scope", ["seg_005"])])
+        self.assertEqual([(i.category, i.segment_ids) for i in scoped.advisories],
+                         [("scope", ["seg_002", "seg_003"]), ("grounding", ["seg_005"]), ("scope", [])])
+        # A drift the claim checks found stays an issue on a segment a previous issue named: the receipts, not the
+        # review's notes, decide evidence (validate_claim_checks adds it to issues before the scope is applied).
+        drift = point("grounding", "seg_005")
+        kept = follow_up_scope(review.model_copy(update={"issues": [drift], "issue_basis": [], "advisories": []}),
+                               previous, [])
+        self.assertEqual(kept.issues, [drift])
+
     def test_a_new_whole_episode_point_after_a_repair_is_an_advisory_unless_it_repeats_or_is_critical(self):
         """Finding of 2026-10-02: a point naming no segment was always in scope, so a new whole-episode structure point
         in a later review blocked. It now blocks only as a repeat of an earlier whole-episode point of its category,

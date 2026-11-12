@@ -59,7 +59,8 @@ CRITICAL_BASIS = {"factual_error", "source_contradiction"}
 # A point the review files as an advisory is its own verdict that the point does not block, and it stands, except for
 # these categories: evidence and scope count as issues wherever the scope reaches them. Until 2026-10-04 every other
 # category counted too, in a first review all of them: Ontologies ep_019 spent all three repairs on a closing-structure
-# point its reviewer filed as an advisory in every round ("trimming is optional … do not block").
+# point its reviewer filed as an advisory in every round ("trimming is optional … do not block"). After a repair, what
+# the review keeps of a previous issue as a note stays a note in these categories too (follow_up_scope, D-210).
 STRICT_CATEGORIES = frozenset({"grounding", "scope"})
 # The planner reads the editorial brief, not the whole project config. Its max_episode_minutes (30), the audio part
 # length until 2026-10-04 and unused since, was taken by the model for an episode cap: it cut one long explanation
@@ -102,20 +103,34 @@ def follow_up_scope(review, previous, changed):
     in a later review blocked although no earlier review had raised it.
 
     A point the review itself files as an advisory stays one unless it concerns evidence or scope
-    (STRICT_CATEGORIES): only such a point counts as an issue in scope."""
+    (STRICT_CATEGORIES): only such a point counts as an issue in scope. Not even then when it is what is left of a
+    previous issue: an advisory of that issue's category on none but that issue's segments is the review's verdict
+    that the issue is settled, since a previous issue still open is reported again in issues (D-210). Until
+    2026-11-12 such a note counted too, and Geld S2 ep_013 stopped twice on a review that called chapter 4's density
+    "a non-blocking note" in every round, its repairs spent on a point the review had let go."""
     watched = set(changed) | {key for issue in previous.issues for key in issue.segment_ids}
     episode_wide = {issue.category for issue in previous.issues if not issue.segment_ids}
+    raised = {}
+    for issue in previous.issues:
+        raised.setdefault(issue.category, set()).update(issue.segment_ids)
 
     def in_scope(issue):
         return bool(set(issue.segment_ids) & watched) if issue.segment_ids else issue.category in episode_wide
+
+    def residual(issue):
+        """What the review kept of a previous issue as a note: its category, and only segments that issue named."""
+        if not issue.segment_ids:
+            return issue.category in episode_wide
+        return issue.category in raised and set(issue.segment_ids) <= raised[issue.category]
     issues, advisories = [], []
     for index, issue in enumerate(review.issues):
         basis = review.issue_basis[index] if index < len(review.issue_basis) else None
         (issues if in_scope(issue) or basis in CRITICAL_BASIS else advisories).append(issue)
     for issue in review.advisories:
-        # On a segment the repair touched or a previous issue named, an evidence or scope advisory counts as an issue;
-        # any other stays an advisory.
-        (issues if in_scope(issue) and issue.category in STRICT_CATEGORIES else advisories).append(issue)
+        # On a segment the repair touched or a previous issue named, an evidence or scope advisory counts as an issue,
+        # unless it is what the review kept of a previous issue as a note; any other stays an advisory.
+        strict = in_scope(issue) and issue.category in STRICT_CATEGORIES and not residual(issue)
+        (issues if strict else advisories).append(issue)
     return review.model_copy(update={"issues": issues, "advisories": advisories})
 
 
