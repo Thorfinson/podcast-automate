@@ -104,9 +104,9 @@ several gigabytes of PyTorch and any scan of it takes minutes.
 | Editing `logs.py` or anything that keeps a file open for the life of the process | `test_logs`, `test_cli` and `test_core`, then confirm on Windows. Open handles break temp-directory cleanup there and nowhere else. |
 | Editing `claude_code.py`, `subscriptions.py` or `provider_pool.py` | Their mapped tests plus `test_scripting`, `test_research`, `test_status_summary`, `test_studio` and `test_text_selection`. Every run goes through the pool; the fixed-provider path must stay free of quota queries. |
 | Before committing or opening a pull request | `ruff check .` and both full suites, green. |
-| CI (`.github/workflows/tests.yml`) | The `lint` job (Ruff and `node --check` of `app.js`) and the `changes` job (`scripts/ci_changes.py`): a change of only files no test reads (docs, `site/`, `evals/`, top-level Markdown, the issue and pull request templates) skips the test legs; any other runs both suites on Linux, macOS and Windows, each with Python 3.12 and 3.13, the Python suite in three shards, two on macOS (`scripts/test_shards.py`), against the installed package. The check `tests passed` sums them up; the ruleset on `main` requires it and `lint` (D-205). Superseded runs of the same ref are cancelled automatically. |
-| Release (`.github/workflows/release.yml`) | On a pushed tag `vX.Y.Z`: checks the tag against `pyproject.toml` and the version's CHANGELOG section, builds and checks the sdist and the wheel, re-runs both suites on Linux with Python 3.12 and 3.13 against the built wheel, then creates the GitHub release with the wheel and the sdist attached; nothing is published to PyPI (D-203) ([Release a version](docs/OPERATIONS.md#release-a-version)). |
-| Before tagging a release | Tag only a `main` commit whose `tests passed` check passed with the test legs run: the release workflow tests on Linux only. |
+| CI (`.github/workflows/tests.yml`) | The `lint` job (Ruff and `node --check` of `app.js`) and the `changes` job (`scripts/ci_changes.py`): a change of only files no test reads (docs, `site/`, `evals/`, top-level Markdown, the issue and pull request templates) skips the tests; any other runs both suites on one runner, Linux with Python 3.13, the Python suite in three shards (`scripts/test_shards.py`), against the installed package. The check `tests passed` sums them up; the ruleset on `main` requires it and `lint` (D-205). macOS, Windows and Python 3.12 run on a release and its dry run (D-209). Superseded runs of the same ref are cancelled automatically. |
+| Release (`.github/workflows/release.yml`) | On a pushed tag `vX.Y.Z`: checks the tag against `pyproject.toml` and the version's CHANGELOG section, builds and checks the sdist and the wheel, runs both suites on Linux, macOS and Windows with Python 3.12 and 3.13 against the built wheel (three shards each, two on macOS), then creates the GitHub release with the wheel and the sdist attached; nothing is published to PyPI (D-203) ([Release a version](docs/OPERATIONS.md#release-a-version)). Run by hand (Actions › Release › Run workflow) it is a dry run of the branch: build and every system's tests, no tag check, no release (D-209). |
+| Before tagging a release | Tag only a `main` commit whose `tests passed` check passed with the test legs run. CI tests Linux only; for a change that may behave differently on Windows or macOS (paths, processes, file locks, FFmpeg), run the release workflow's dry run on `main` first. |
 
 A green subset is not evidence that the suite passes. Tests patch functions where they are looked up,
 for example `patch("podcast_automate.script_pipeline.research_foundations")`. Moving a function between
@@ -123,8 +123,8 @@ meaningful protection per unit of cost, not test count, lines or coverage.
   unreliable, broaden the selection instead of narrowing it.
 - During implementation, run the focused technical tests and the affected business-rule tests and keep
   a small, cheap baseline green. Before a commit or pull request, run both suites in full. Before a
-  release, tag only a `main` commit whose CI test legs passed; the release workflow then re-runs both
-  suites on Linux against the built wheel.
+  release, tag only a `main` commit whose CI test legs passed; the release workflow then runs both
+  suites on Linux, macOS and Windows against the built wheel, as its dry run does by hand (D-209).
 - Broader or expensive checks (the real-model evals under `evals/`, a mutation or timing pass) run by
   hand or on a named trigger, never silently skipped. A deferral states why it is acceptable, what
   triggers the run, who owns it and which risk remains until then.

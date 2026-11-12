@@ -11,6 +11,10 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 - 2026-11-10 · **Nach dieser Folge anhalten** ("Stop after this episode") beside "Stop" while all remaining episodes are being written: the episode in progress is finished, published and read for its tags, then the job ends instead of starting the next one; **Doch weiterschreiben** takes it back, and "All remaining" goes on later (D-207).
 
+### Changed
+
+- 2026-11-12 · For contributors: pull requests and `main` are tested on Linux with Python 3.13 only; macOS, Windows and Python 3.12 run on a release and in its dry run by hand (Actions › Release › Run workflow), which builds and tests without releasing (D-209).
+
 ### Fixed
 
 - 2026-11-12 · A script review is no longer rejected because one of its receipts quotes a segment from mid-sentence with a capital first letter ("Ganz recht" for "und ganz recht"); a run of Geld season 2 stopped after three such reviews (D-208).
