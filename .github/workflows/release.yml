@@ -1,11 +1,13 @@
 name: Release
 # A pushed version tag vX.Y.Z builds the sdist and the wheel, checks them, runs both test suites against the built
-# wheel on Linux and creates the GitHub release with the version's CHANGELOG section and the built files attached.
+# wheel on Linux, macOS and Windows and creates the GitHub release with the version's CHANGELOG section and the built files attached.
 # Releases stay on GitHub; nothing is published to PyPI (D-203). The tag must equal "v" + the version in
-# pyproject.toml, and CHANGELOG.md needs a "## [X.Y.Z]" section.
+# pyproject.toml, and CHANGELOG.md needs a "## [X.Y.Z]" section. Run by hand (Actions › Release › Run workflow) it
+# is a dry run of the branch: it builds and tests on every system, but checks no tag and creates no release (D-209).
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 permissions:
   contents: read
 # Never cancel a release half-way: a cancelled run could leave a tag without its release.
@@ -22,6 +24,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Check that the tag matches the package version
+        if: github.event_name == 'push'
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
@@ -30,6 +33,7 @@ jobs:
           fi
           echo "VERSION=${version}" >> "$GITHUB_ENV"
       - name: Extract the CHANGELOG section of this version
+        if: github.event_name == 'push'
         run: |
           awk -v v="$VERSION" '
             index($0, "## [" v "]") == 1 { found = 1; next }
@@ -81,19 +85,31 @@ jobs:
           path: dist/
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
+        if: github.event_name == 'push'
         with:
           name: release-notes
           path: release-notes.md
           if-no-files-found: error
 
   test:
-    name: Tests (Linux, Python ${{ matrix.python }}, ${{ matrix.shard }}/3)
+    # Every system and Python version against the built wheel, the Python suite in shards (scripts/test_shards.py):
+    # three on Linux and Windows, two on macOS. Pull requests and main test Linux with Python 3.13 only, so a release
+    # is where the package proves itself everywhere (D-209). Bash on every system, also for the wheel's glob on Windows.
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }}, ${{ matrix.shard }}/${{ matrix.os == 'macos-latest' && 2 || 3 }})
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.12", "3.13"]
         shard: [1, 2, 3]
+        exclude:
+          - os: macos-latest
+            shard: 3
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.1.0
@@ -109,16 +125,34 @@ jobs:
         if: matrix.shard == 1
         with:
           node-version: "22"
-      - name: Install FFmpeg
+      - name: Install FFmpeg (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - name: Test without model accounts or GPU (shard ${{ matrix.shard }} of 3, scripts/test_shards.py)
-        run: python scripts/test_shards.py --run ${{ matrix.shard }} 3
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/setup-ffmpeg.ps1
+          "${{ github.workspace }}\tools\ffmpeg\bin" >> $env:GITHUB_PATH
+      - name: Check Unix launchers
+        if: runner.os != 'Windows' && matrix.shard == 1
+        run: |
+          sh -n Podcast-Studio.sh
+          sh -n Podcast-Studio.command
+          sh -n scripts/setup.sh
+      - name: Test without model accounts or GPU (shard ${{ matrix.shard }})
+        run: python scripts/test_shards.py --run ${{ matrix.shard }} ${{ matrix.os == 'macos-latest' && 2 || 3 }}
       - name: Test browser logic
         if: matrix.shard == 1
         run: node --test tests/studio_ui.test.cjs
 
   github-release:
     name: GitHub release
+    # A dry run by hand stops after the tests.
+    if: github.event_name == 'push'
     needs: test
     runs-on: ubuntu-latest
     permissions:

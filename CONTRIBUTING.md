@@ -67,9 +67,10 @@ PATH line for FFmpeg and which tests a change selects are in AGENTS.md:
 `python -m unittest tests.test_spoken_forms tests.test_audio`, and the browser suite after any change to `web/`. That
 takes seconds to a few minutes. Before the pull request, run both suites in full once; CI runs them again on every push.
 
-CI runs the lint job and, unless a change touches only docs and other files no test reads, both suites on Linux, macOS
-and Windows with Python 3.12 and 3.13, the Python suite in three shards each (two on macOS); the checks `lint` and
-`tests passed` must pass.
+CI runs the lint job and, unless a change touches only docs and other files no test reads, both suites on one runner,
+Linux with Python 3.13, the Python suite in three shards; the checks `lint` and `tests passed` must pass. macOS,
+Windows and Python 3.12 are tested on every release, and by hand in the release workflow's dry run (Actions ›
+Release › Run workflow); test locally on your own system as well.
 
 **Never add a test that performs a real model call,** a download, speech synthesis or any other network access. Model
 answers come from patched adapters and the fixtures in `tests/*_fixtures.py`. Checks against real models live under
@@ -128,7 +129,7 @@ behaviour, and the CHANGELOG says how. Only the maintainer releases: move the `[
 [CHANGELOG.md](CHANGELOG.md) under a new `## [X.Y.Z] - YYYY-MM-DD` section, set the same version in `pyproject.toml`,
 and once that commit's checks passed on `main`, push the tag `vX.Y.Z`. Tags `v*` are protected: only the maintainer
 creates them. The [release workflow](.github/workflows/release.yml) then builds and checks the package, runs both
-suites against the built wheel and creates the GitHub release with the CHANGELOG section and the built wheel and
+suites against the built wheel on Linux, macOS and Windows and creates the GitHub release with the CHANGELOG section and the built wheel and
 sdist attached. Releases stay on GitHub; nothing is published to PyPI
 ([Release a version](docs/OPERATIONS.md#release-a-version)).
 
