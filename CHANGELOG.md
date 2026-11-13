@@ -17,6 +17,7 @@ Why a rule exists is in [DECISIONS](docs/DECISIONS.md).
 
 ### Fixed
 
+- 2026-11-13 · The Jev gap probe tells why OpenRouter refused a request (HTTP 403): a spent key or workspace limit stops as used-up credit, to be raised at OpenRouter; a section OpenRouter's moderation blocks is left out instead of stopping the whole probe; any other refusal stops with OpenRouter's reason. Before, every refusal stopped as "Jev does not answer" (D-211).
 - 2026-11-12 · A script review after a repair no longer stops the run on a point it kept only as a note about an earlier objection ("the density stays a non-blocking note"); Geld season 2 episode 13 stopped twice after spending its repairs on such a note (D-210).
 - 2026-11-12 · A script review is no longer rejected because one of its receipts quotes a segment from mid-sentence with a capital first letter ("Ganz recht" for "und ganz recht"); a run of Geld season 2 stopped after three such reviews (D-208).
 

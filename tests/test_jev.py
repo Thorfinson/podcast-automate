@@ -9,7 +9,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from podcast_automate.errors import AppError
-from podcast_automate.jev import DECISIONS_ENDPOINT, JEV_HITS, JEV_MODEL, JevClient, candidate_sections, scan
+from podcast_automate.jev import (DECISIONS_ENDPOINT, JEV_HITS, JEV_MODEL, JevClient, SectionRefused,
+                                  candidate_sections, scan)
 from podcast_automate.research_gap_probe import probe, settle
 from tests.test_gap_probe import BIAS_GAP, F13_GAP, V3_BIAS_RULE, index
 
@@ -73,6 +74,40 @@ class ClientTests(unittest.TestCase):
                 JevClient("test-key").decide("s", self.QUESTIONS)
             self.assertEqual(silent.exception.code, "jev_unavailable")
 
+    def test_a_forbidden_request_is_read_by_openrouters_reason(self):
+        """Geld S2 ep_016, 2026-11-13: a 403 stopped the probe at 7,854 of 9,999 requests as „Jev hat die Anfrage
+        abgewiesen (HTTP 403)“, and nothing told a spent key limit from a blocked section (D-211)."""
+        error = lambda message, **metadata: json.dumps({"error": {"code": 403, "message": message, "metadata": metadata}})
+        with patch("podcast_automate.jev.build_opener") as build, patch("podcast_automate.jev.time.sleep") as pause:
+            for text in (error("Key limit exceeded (monthly limit)", limit_source="openrouter_key_limit"),
+                         error("Workspace budget reached", limit_source="openrouter_guardrail_budget"),
+                         error("Key limit exceeded")):
+                build.return_value.open.side_effect = [refused(403, text)]
+                with self.subTest(text=text), self.assertRaises(AppError) as limit:
+                    JevClient("test-key").decide("s", self.QUESTIONS)
+                self.assertEqual(limit.exception.code, "openrouter_credits")
+                self.assertIn(json.loads(text)["error"]["message"], str(limit.exception))
+            for text in (error("Input was flagged", reasons=["violence"], flagged_input="A passage"),
+                         error("Blocked by guardrail", patterns=["ignore previous instructions"]),
+                         error("Your chosen model requires moderation and your input was flagged")):
+                build.return_value.open.side_effect = [refused(403, text)]
+                with self.subTest(text=text), self.assertRaises(SectionRefused) as blocked:
+                    JevClient("test-key").decide("s", self.QUESTIONS)
+                self.assertEqual(blocked.exception.reason, json.loads(text)["error"]["message"])
+            # Any other refusal stops with OpenRouter's reason, without the key it may echo.
+            build.return_value.open.side_effect = [refused(403, error("Region not supported for test-key"))]
+            with self.assertRaises(AppError) as other:
+                JevClient("test-key").decide("s", self.QUESTIONS)
+            self.assertEqual(other.exception.code, "jev_unavailable")
+            self.assertIn("Region not supported", str(other.exception))
+            self.assertNotIn("test-key", str(other.exception))
+            build.return_value.open.side_effect = [refused(403, "not json")]
+            with self.assertRaises(AppError) as bare:
+                JevClient("test-key").decide("s", self.QUESTIONS)
+            self.assertEqual(bare.exception.code, "jev_unavailable")
+            self.assertEqual(build.return_value.open.call_count, 8, "each 403 is asked once, never again")
+            pause.assert_not_called()
+
     def test_without_a_key_nothing_is_sent(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}), patch("podcast_automate.jev.build_opener") as build:
             with self.assertRaises(AppError) as missing:
@@ -120,6 +155,29 @@ class ScanTests(unittest.TestCase):
         newcomer = Fake({})
         scan(newcomer, self.corpus, {**gaps, "gap_new": "another missing thing"}, self.cache)
         self.assertEqual(newcomer.requests, [["g0"], ["g0"]])
+
+    def test_a_section_openrouter_refuses_is_left_out_and_not_asked_again(self):
+        """D-211: a moderation or guardrail block of one section's text left the whole probe stopped; Jev only
+        proposes sections to read and the word search still covers it, so the scan goes on without it."""
+        class Refusing(Fake):
+            def decide(self, state, questions):
+                if "decrease the bias term" in state:
+                    self.requests.append(sorted(questions))
+                    raise SectionRefused("Input was flagged")
+                return super().decide(state, questions)
+        gaps = {"gap_f13": F13_GAP, "gap_other": "another missing thing"}
+        client = Refusing({("minimum deployment unit", F13_GAP): 0.4})
+        found, summary = scan(client, self.corpus, gaps, self.cache)
+        self.assertEqual(len(client.requests), 2)
+        self.assertEqual([ref for ref, _, _, _ in found["gap_f13"]], ["src_v3#sec_001"])
+        self.assertEqual((summary["refused_sections"], summary["requests"]), (1, 2))
+        rows = [json.loads(line) for line in self.cache.read_text(encoding="utf-8").splitlines()]
+        self.assertIn({"reference": "src_v3#sec_002", "gaps": {}, "refused": ["gap_f13", "gap_other"],
+                       "reason": "Input was flagged"}, rows)
+        # Resumed, neither the answered nor the refused section is asked again, and the refusal still counts.
+        again = Refusing({})
+        _, repeated = scan(again, self.corpus, gaps, self.cache)
+        self.assertEqual((again.requests, repeated["refused_sections"]), ([], 1))
 
     def test_above_the_ceiling_each_gap_is_asked_about_its_best_ranked_sections_only(self):
         """Orlagau, 2026-10-09: 81,010 sections and 33 gaps made 405,050 requests. Above MAX_REQUESTS a gap is asked
