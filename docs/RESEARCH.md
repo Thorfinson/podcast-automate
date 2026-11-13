@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-13
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -472,6 +472,7 @@ A new script run can also check the gaps with Jev, TypeSafe's decision model via
 - **Hits:** Sections with a probability of at least 0.3 (`jev.THRESHOLD`) join the word hits, at most five per gap (`jev.JEV_HITS`), marked with `"via": "jev"` and their probability.
 - **Reading stays mandatory:** Jev decides nothing; a Jev hit has to be read like any other before the gap may stand. Jev finds the matching passages even when gap and source are in different languages; the text model still reads and confirms them.
 - **Safe to interrupt:** The answers are stored in `runs/<run_id>/jev_scan.jsonl`, where an interrupted scan continues; `runs/<run_id>/jev_probe.json` reports progress, requests and cost.
+- **Refusals:** A rate limit, a server error or a broken connection is asked again, four times in all. OpenRouter's HTTP 403 is read by its body (`jev.forbidden`): a spent limit of the key or the workspace (`error.metadata.limit_source`, or "key limit" in the message) stops with `openrouter_credits`, so raise the limit, then resume; a section whose text OpenRouter's moderation or a guardrail blocks is left out, recorded in `jev_scan.jsonl` with the reason, not asked again and counted as `refused_sections` in `jev_probe.json`, since the word search still covers it; any other 403 stops with `jev_unavailable` and OpenRouter's reason, without the key. Until 13 November 2026 every 403 stopped without the reason. (why: D-211)
 - **Effort:** At most 10,000 requests, at about 19 requests per second about nine minutes and, with sections of about 1,000 characters, an estimated 0.50 USD (`jev_probe.json` reports the billed cost). Without the ceiling the corpora of Asimov and Ontologies needed about 20,000 requests and 0.60 USD, and Orlagau's 92 provided editions 405,050 requests, about six hours; with it Orlagau's run of 9 October 2026 made 9,804 requests for 0.51 USD. With a money limit set, the run checks it before the scan and counts the scan's cost once it is complete ([Money limit](BUSINESS_LOGIC.md#money-limit)).
 - **Basis:** The evaluation of 29 September 2026 (`evals/jev_decisions`) showed that Jev separates cited sections from random ones well (AUC 0.95 to 0.975), including German questions against English sources; there the word search reported 15 of 23 Asimov gaps as `no_hits`. Jev does not reliably judge whether individual statements are faithful to findings and is not used for that. (why: D-041)
 - **Errors:** A rejected key, missing credit or a privacy setting that excludes TypeSafe stop the run with the respective reason.
