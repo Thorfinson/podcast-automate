@@ -4832,7 +4832,10 @@ test('a poll the server never answers ends as a lost connection and lets the nex
   app.responses.set('/api/projects/a',p);
   app.run(`boot.capabilities={};POLL_MS.timeout=20;project=${JSON.stringify(p)};lastJobSignature=projectJobSignature(project);overviewPage=false;step=PAGE.research;`);
   app.hold('/api/projects/a');
-  await app.run('poll()');
+  // AbortSignal.timeout's timer does not keep Node's event loop alive, and the held request is the only work left, so
+  // Node 22 ended the loop before the timeout fired and cancelled this test and the ones after it (CI, 2026-11-15).
+  const alive=setInterval(()=>{},5);
+  try { await app.run('poll()'); } finally { clearInterval(alive); }
   assert.equal(app.run('connectionLost'),true);
   assert.equal(app.run('pollRunning'),false,'the hung request holds no later poll');
   await app.run('poll()');

@@ -357,10 +357,24 @@ class SourceServer:
         self.answers, self.requests, self.connected = list(answers), [], []
         self.release = threading.Event()
 
+    @staticmethod
+    def pair():
+        """Two connected TCP sockets on the loopback interface, which is what ``socket.socketpair`` gives on Windows.
+        On Linux and macOS it gives Unix sockets, on which http.client's TCP_NODELAY fails with EOPNOTSUPP, so every
+        download failed there before the server answered (CI, 2026-11-15). ``socket.create_connection`` is patched
+        while the server runs, so the client connects by hand."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            ours = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            ours.connect(listener.getsockname())
+            theirs, _ = listener.accept()
+        return ours, theirs
+
     def create_connection(self, address, timeout=None, source_address=None, **kwargs):
         import threading
         self.connected.append(tuple(address))
-        ours, theirs = socket.socketpair()
+        ours, theirs = self.pair()
         ours.settimeout(timeout if isinstance(timeout, (int, float)) else None)
         threading.Thread(target=self.answer, args=(theirs, self.answers.pop(0)), daemon=True).start()
         return ours
