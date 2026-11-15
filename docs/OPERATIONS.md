@@ -2,7 +2,7 @@
 title: Operations
 doc_type: operations
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-15
 covers:
   - scripts/setup.sh
   - scripts/setup-ffmpeg.ps1
@@ -40,10 +40,10 @@ on macOS and Linux. All commands: [Commands](PRODUCT.md#commands); in daily use 
 
 | Task | How |
 | --- | --- |
-| Install | [Windows 11](#install-on-windows-11), [macOS and Linux](#install-on-macos-and-linux) |
+| Install | [Windows 11](#install-on-windows-11), [macOS and Linux](#install-on-macos-and-linux), then [the CLIs](#install-the-clis) |
 | Start the Studio | `Podcast-Studio.cmd` (Windows), `Podcast-Studio.command` (macOS) or `sh Podcast-Studio.sh`; [Starting the Studio](STUDIO.md#starting-the-studio) |
 | Update | [Update the Studio](#update-the-studio) |
-| Try the whole pipeline small and cheap | `pla init <project> --trial` (a sample topic without `--topic`); [Trial project](BUSINESS_LOGIC.md#trial-project) |
+| Try the whole pipeline small and cheap | The Studio's trial checkbox on a new project, or `pla init <project> --trial --language en-US` (a sample topic without `--topic`; German without `--language`); [Trial project](BUSINESS_LOGIC.md#trial-project) |
 | Make a podcast again with the current pipeline | "Start a new version" („Neue Version anlegen“) in its overview card's ⋯ menu or `pla new-version <project>`; [New versions](STUDIO.md#new-versions) |
 | Check subscriptions and quota | `pla doctor --skip-tts`, `pla quota`; [Check the subscriptions](#check-the-subscriptions) |
 | Set the OpenRouter key | Studio key field, `--api-key` or `OPENROUTER_API_KEY`; [Secrets and keys](SECURITY.md#secrets-and-keys) |
@@ -63,30 +63,45 @@ on macOS and Linux. All commands: [Commands](PRODUCT.md#commands); in daily use 
 
 ## Install on Windows 11
 
-Prerequisites: Python 3.12 and the downloaded repository. Run the commands in PowerShell in the repository folder; the
-virtual environment need not be activated.
+Prerequisites: Python 3.12 or 3.13 from python.org (with its `py` launcher) and Git. Run the commands in PowerShell;
+the virtual environment need not be activated.
 
 ```powershell
+git clone https://github.com/Thorfinson/podcast-automate.git
+cd podcast-automate
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\pla.exe --help
-.\.venv\Scripts\pla.exe init .\projects\energy-models --topic "Energiebasierte Modelle gründlich verstehen" --tts-python .\.venv-tts\Scripts\python.exe
 ```
 
-`.venv-tts` is set up later ([Set up local Qwen on Windows](#set-up-local-qwen-on-windows)); the project already
-records its planned Python path. Running `init` again never overwrites an existing project (`project_exists`). Then set
-up FFmpeg (below) and log in to at least one subscription, or set up your Anthropic API key or the OpenRouter and
-Perplexity keys ([Check the subscriptions](#check-the-subscriptions)). The scripts themselves are written by Claude
-Code's story agent, which needs the Claude subscription's login or your Anthropic API key
+With Python 3.13 the first line is `py -3.13 -m venv .venv`. Then set up FFmpeg (below), install Claude Code and log
+in ([Install the CLIs](#install-the-clis)), and log in to at least one subscription, or set up your Anthropic API key
+or the OpenRouter and Perplexity keys ([Check the subscriptions](#check-the-subscriptions)). The scripts themselves
+are written by Claude Code's story agent, which needs the Claude subscription's login or your Anthropic API key
 ([Calls and access](SCRIPTS.md#calls-and-access)).
+
+The Studio creates projects itself, so the command line needs no project to start. On the command line, `pla init`
+creates one, `--language` sets the language of the series (`de-DE`, the default, or `en-US`), and `--trial` makes it a
+[trial project](BUSINESS_LOGIC.md#trial-project):
+
+```powershell
+.\.venv\Scripts\pla.exe init .\projects\rainbow --trial --language en-US
+.\.venv\Scripts\pla.exe init .\projects\energy-models --topic "Energy-based models from the ground up" --language en-US
+```
+
+Running `init` again never overwrites an existing project (`project_exists`). A project that will record with local
+Qwen can name the Python of its Qwen environment with `--tts-python` (`.\.venv-tts\Scripts\python.exe` after
+[Set up local Qwen on Windows](#set-up-local-qwen-on-windows), which can also set it later).
 
 ### FFmpeg
 
 FFmpeg and ffprobe assemble the audio. `scripts/setup-ffmpeg.ps1` installs the project-local Windows x64 build 9.0.1
-(gyan.dev's build, from its GitHub mirror `GyanD/codexffmpeg`; why: D-120) and checks its SHA-256:
+(gyan.dev's build, from its GitHub mirror `GyanD/codexffmpeg`; why: D-120) and checks its SHA-256. Windows 11 runs no
+script under its default execution policy, so the call allows this one script for this one process
+(`-ExecutionPolicy Bypass`, as the header of both `.ps1` scripts says); the policy itself stays as it is:
 
 ```powershell
-powershell -NoProfile -File .\scripts\setup-ffmpeg.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.ps1
 $ffmpegBin = (Resolve-Path .\tools\ffmpeg\bin).Path
 $env:PATH = "$ffmpegBin;$env:PATH"
 ffmpeg -version
@@ -99,13 +114,40 @@ ffprobe -version
   Studio: of its workspace) to their own PATH (`platforms.configure_path`).
 - Run the two PATH lines in each new PowerShell window before you call `ffmpeg` yourself, run the tests or
   `scripts/generate-voice-samples.py`, or start `pla` from another folder. Without FFmpeg on PATH the audio
-  integration tests are skipped, not failed ([AGENTS.md](../AGENTS.md)).
+  integration tests are skipped locally, not failed; a CI leg checks FFmpeg first and fails without it
+  ([AGENTS.md](../AGENTS.md)).
 - Download source and checksum: [scripts/setup-ffmpeg.ps1](../scripts/setup-ffmpeg.ps1).
+
+## Install the CLIs
+
+The writer of every episode is a Claude Code session, so every installation needs the **Claude Code CLI**, logged in
+to a Claude subscription or used with your own Anthropic API key. The **Codex CLI** is optional: it lets research and
+reviews run on a ChatGPT subscription. Install both from their makers' official sources:
+
+| CLI | Windows (PowerShell) | macOS and Linux |
+| --- | --- | --- |
+| Claude Code ([setup guide](https://code.claude.com/docs/en/setup)) | `irm https://claude.ai/install.ps1 \| iex` | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| Claude Code through npm (needs Node.js) | `npm install -g @anthropic-ai/claude-code` | the same |
+| Codex (needs Node.js) | `npm install -g @openai/codex` | the same |
+
+Then check the versions in a new terminal:
+
+```sh
+claude --version
+codex --version
+```
+
+`claude --version` must show **2.1.293 or newer** for the default Claude model, Haiku 5.5; every Claude call needs at
+least 2.1.280 and Sonnet 5.5 2.1.284 (`claude_code.MINIMUM_CLI_VERSION`, `MODEL_MINIMUM_CLI`;
+[Providers and models](PRODUCT.md#providers-and-models)). `claude update` brings it up to date. The logins follow in
+[Codex](#codex) and [Claude Code](#claude-code), or, without a subscription,
+[Claude on your Anthropic API key](#claude-on-your-anthropic-api-key). Where the Studio looks for both programs:
+[Where the CLIs are found](#where-the-clis-are-found).
 
 ## Check the subscriptions
 
 Web research and every text call that does not go to OpenRouter need at least one logged-in subscription, Codex CLI
-with a ChatGPT subscription or Claude Code with a Claude Max subscription, or Claude Code on your own Anthropic API key
+with a ChatGPT subscription or Claude Code with a Claude subscription, or Claude Code on your own Anthropic API key
 ([below](#claude-on-your-anthropic-api-key)); an OpenRouter model needs none of them when the run searches through
 Perplexity ([below](#research-with-openrouter-and-perplexity)). Choice between them and quota pauses:
 [Text providers and model selection](BUSINESS_LOGIC.md#text-providers-and-model-selection); login rules:
@@ -113,7 +155,8 @@ Perplexity ([below](#research-with-openrouter-and-perplexity)). Choice between t
 
 ### Codex
 
-Install the Codex CLI and log in with your ChatGPT account ([Codex login](https://learn.chatgpt.com/docs/auth)).
+Install the Codex CLI ([Install the CLIs](#install-the-clis)) and log in with your ChatGPT account
+([Codex login](https://learn.chatgpt.com/docs/auth)).
 
 ```powershell
 codex login
@@ -128,7 +171,8 @@ go to `probes/text/<run_id>/` (`result.json`, `metadata.json`). When the quota i
 
 ### Claude Code
 
-Log in to Claude Code through claude.ai with `claude auth login`; `claude auth status --json` must show
+Install Claude Code ([Install the CLIs](#install-the-clis)), then log in through claude.ai with `claude auth login`;
+any Claude subscription's login is accepted, though a whole series uses much of a plan's quota. `claude auth status --json` must show
 `authMethod: "claude.ai"`. An API-key login is refused for the subscription (why: D-109); a key is used only by
 [Claude on your Anthropic API key](#claude-on-your-anthropic-api-key).
 
@@ -147,15 +191,18 @@ and its Haiku 5.5 entries against the model catalog of 2.1.293 (2026-10-07) (`cl
 Without a subscription, Claude Code can run on your own Anthropic API key (`claude_api`; why: D-145). Every call, web
 research included, is billed to your Anthropic account:
 
-1. Install Claude Code (the same minimum versions); no `claude auth login` is needed.
+1. Install Claude Code ([Install the CLIs](#install-the-clis), the same minimum versions); no `claude auth login` is
+   needed.
 2. Give the key to the Studio under **Anthropic key** („Anthropic-Key“) on the settings page (kept in the credential store),
    or set `ANTHROPIC_API_KEY` in the environment of the Studio or of `pla`; `pla research`, `script` and `resume` also
    ask for it hidden with `--api-key` ([Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio)).
 3. Set a money limit: **Money limit per run in USD** under "Limits" on the settings page, or
    `research_limits.cost_usd` in `project.yaml` outside a Studio workspace. A billed run without one does not start.
    What a run and a whole series cost: [Money limit](BUSINESS_LOGIC.md#money-limit).
-4. Choose "Sonnet 5.5 · high · Anthropic API key" („Sonnet 5.5 · high · Anthropic-API-Key“) or "Opus 5.5 · high · Anthropic API key" („Opus 5.5 · high · Anthropic-API-Key“) on the settings page, or
-   `--backend claude_api` on the command line.
+4. Choose one of the three presets "Haiku 5.5 · xhigh · Anthropic API key" („Haiku 5.5 · xhigh · Anthropic-API-Key“),
+   "Sonnet 5.5 · high · Anthropic API key" („Sonnet 5.5 · high · Anthropic-API-Key“) or "Opus 5.5 · high · Anthropic
+   API key" („Opus 5.5 · high · Anthropic-API-Key“) on the settings page, or `--backend claude_api` on the command line
+   (Haiku 5.5 at `xhigh` unless `--model` and `--reasoning-effort` say otherwise; why: D-166).
 
 ```powershell
 .\.venv\Scripts\pla.exe doctor --skip-tts
@@ -234,11 +281,18 @@ writing the scripts needs Claude, on the subscription or the API key.
 
 ## Install on macOS and Linux
 
-The browser Studio uses the same flow and project files on every platform; Python, FFmpeg and Codex or Claude Code are
-installed on each computer. Gemini audio needs only the OpenRouter key in the protected key field, not local Qwen.
+The browser Studio uses the same flow and project files on every platform; Python, FFmpeg and Claude Code (and Codex,
+if you use it) are installed on each computer ([Install the CLIs](#install-the-clis)). Recording through Gemini or
+ElevenLabs needs only that route's key on the settings page (the Google key for Gemini through Google, the default
+Gemini route; the ElevenLabs key; or the OpenRouter key for Gemini through OpenRouter), not local Qwen.
 
-The controller needs Python **3.12 or newer** and `ffmpeg` and `ffprobe` on PATH. Run the commands in the repository
-folder.
+The controller needs Python **3.12 or 3.13** and `ffmpeg` and `ffprobe` on PATH. Get the code and run the commands in
+its folder:
+
+```sh
+git clone https://github.com/Thorfinson/podcast-automate.git
+cd podcast-automate
+```
 
 On macOS with Homebrew:
 
@@ -251,7 +305,7 @@ sh Podcast-Studio.sh
 Afterwards **Podcast-Studio.command** can be double-clicked in the Finder; the setup sets the execute permissions, and
 the starter covers the Homebrew paths of Apple Silicon and Intel Macs.
 
-On Ubuntu 24.04 or a comparable distribution with Python 3.12 or newer:
+On Ubuntu 24.04 or a comparable distribution with Python 3.12 or 3.13:
 
 ```sh
 sudo apt update
@@ -260,9 +314,10 @@ sh scripts/setup.sh
 sh Podcast-Studio.sh
 ```
 
-On other distributions, install Python, the venv module and FFmpeg with the package manager. Choose a specific Python
-with, for example, `PYTHON=python3.13 sh scripts/setup.sh`. The setup never changes an existing virtual environment
-that belongs to another system; it stops with a message.
+On other distributions, install Python, the venv module and FFmpeg with the package manager. The setup takes
+`python3.13`, else `python3.12`, else `python3`, and warns when that Python is newer than the tested 3.12 and 3.13;
+choose a specific one with, for example, `PYTHON=python3.13 sh scripts/setup.sh`. The setup never changes an existing
+virtual environment that belongs to another system; it stops with a message. Both setup scripts print English.
 
 `sh Podcast-Studio.sh` passes options such as `--port 8766` or `--no-browser` on to the Studio
 ([Starting the Studio](STUDIO.md#starting-the-studio)); the server stays bound to this computer
@@ -274,8 +329,9 @@ A check without a local Qwen worker ([what it checks](#quota-and-installation-ch
 .venv/bin/pla doctor --skip-tts
 ```
 
-CI runs the tests on Windows, Ubuntu and macOS ([AGENTS.md](../AGENTS.md)), including the Unix starters, platform
-paths, device selection, process trees and trash and restore (see V-22).
+The test suites cover the Unix starters, platform paths, device selection, process trees and trash and restore. CI
+runs them on Linux for every pull request and push to `main`; macOS and Windows run on every release and in the
+release workflow's dry run, started by hand (why: D-209; [Release a version](#release-a-version)).
 
 ## Set up local Qwen on Windows
 
@@ -288,7 +344,7 @@ AMD PyTorch. The target computer has Windows 11 Pro, an RX 9070 XT and driver 32
 [AMD installation guide and driver requirements](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installrad/windows/install-pytorch.html)
 
 ```powershell
-powershell -NoProfile -File .\scripts\setup-qwen.ps1 -ProjectDir .\projects\windows-pilot
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-qwen.ps1 -ProjectDir .\projects\windows-pilot
 ```
 
 The setup:
@@ -513,7 +569,7 @@ program paths such as `runtime.codex_executable` where needed.
 1. Get the new code, for example with `git pull`. The controller is installed in editable mode (`pip install -e .`), so
    the code itself is read from `src/`.
 2. If the update changed the dependencies in `pyproject.toml` (the controller needs them current, including
-   `pypdf[fonts]`), reinstall. On Windows, only when no other `pla` process uses `.venv\Scripts\pla.exe`, for example
+   `pypdf[fonts,crypto]`, which since 2026-11-14 brings `cryptography` for AES-locked PDFs; D-245), reinstall. On Windows, only when no other `pla` process uses `.venv\Scripts\pla.exe`, for example
    a CLI run in another window:
 
    ```powershell
@@ -526,9 +582,11 @@ program paths such as `runtime.codex_executable` where needed.
    **Restart as soon as nothing is running** („Neu starten, sobald nichts läuft“); see
    [Stopping and resuming](STUDIO.md#stopping-and-resuming). Alternatively, once the running job has finished, click
    **Quit Studio** („Studio beenden“) and start it again.
-4. Only on a system without a credential store: enter an OpenRouter key that was kept only in the Studio again; it
-   lived in the old server's memory ([Keys in the credential store](SECURITY.md#keys-in-the-credential-store)). Until then, queued Gemini episodes show
-   "waiting for the OpenRouter key" („wartet auf den OpenRouter-Key“).
+4. Only on a system without a credential store: enter the keys that were kept only in the Studio again; they lived in
+   the old server's memory ([Keys in the credential store](SECURITY.md#keys-in-the-credential-store)). Until then,
+   queued episodes show the key their route needs, such as "waiting for the Google key" („wartet auf den Google-Key“)
+   for Gemini through Google or "waiting for the OpenRouter key" („wartet auf den OpenRouter-Key“) for Gemini through
+   OpenRouter.
 
 A failed restart leaves its reason in `.studio/relaunch.log` ([Log files](#log-files)).
 
@@ -569,7 +627,8 @@ traceback files ([Credentials in traces, diagnostics and logs](SECURITY.md#crede
 ### Exit codes
 
 Every `pla` command returns `0` for success, `1` for blocked or failed, `2` for a quota pause and `130` for an
-interruption. `pla doctor` returns `1` when the installation is not ready; `pla quota` returns `2` when a subscription is
+interruption. `2` also covers a quota pause raised outside a run (`pla publish-kit`) and a paused series review.
+`pla doctor` returns `1` when the installation is not ready; `pla quota` returns `2` when a subscription is
 usable but none has quota left, and `1` when none is usable. `--json` gives machine-readable results
 ([Commands](PRODUCT.md#commands)).
 
@@ -615,11 +674,13 @@ The workflow then, each step only after the previous one passed:
 - builds the sdist and the wheel (`python -m build`), checks them with `twine check --strict` and checks that the
   wheel holds every data file of the package (catalogs, prompts, web files);
 - runs both test suites on Linux, macOS and Windows with Python 3.12 and 3.13 against the installed wheel, the Python
-  suite in three shards, two on macOS (`scripts/test_shards.py`);
+  suite in three shards, two on macOS (`scripts/test_shards.py`); every leg first checks
+  `ffmpeg -version && ffprobe -version`, so in CI a missing FFmpeg fails the leg (locally the audio tests still skip);
 - creates the GitHub release with the version's CHANGELOG section as its notes and the wheel and the sdist attached;
   a version with `a`, `b`, `rc` or `dev` in it becomes a pre-release.
 
-A release run is never cancelled half-way, so a tag always gets its release. The attached wheel installs the `pla`
+A release run is never cancelled half-way, so a tag always gets its release. Every action in the workflows is pinned
+by commit SHA with its version as a comment, and Dependabot moves both (why: D-244). The attached wheel installs the `pla`
 command without a checkout, for example
 `pipx install https://github.com/Thorfinson/podcast-automate/releases/download/vX.Y.Z/podcast_automate-X.Y.Z-py3-none-any.whl`;
 the launchers and the FFmpeg and Qwen setup scripts come only with a checkout.

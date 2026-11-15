@@ -5,7 +5,7 @@ from pathlib import Path
 
 from podcast_automate.call_activity import CallActivity
 from podcast_automate.model_trace import ModelTrace, trace_view
-from podcast_automate.question_scope import QuestionScopeReview, refine_state, pending_task, scoped_plan
+from podcast_automate.question_scope import QuestionScopeReview, scoped_plan
 from podcast_automate.research_tasks import QuestionPlan
 from podcast_automate.errors import AppError
 from tests.question_fixtures import task_value
@@ -94,7 +94,9 @@ class ModelTraceTests(unittest.TestCase):
             ['"query": "common cause",', '"web_queries": [],', '"source_id": "internal",', '}']]}))
         self.assertEqual([r["text"] for r in trace_view(self.work)["lines"]], ["Suchbegriff: common cause"])
 
-    def test_refine_plan_preserves_coverage_and_verified_checkpoint(self):
+    def test_a_scope_split_preserves_coverage_and_every_criterion(self):
+        # The state migration refine_state was never called by the pipeline and is gone; the split it rested on is
+        # scoped_plan, which plan_tasks uses for both scope passes.
         one, two = task_value(), task_value("task_methods")
         two["acceptance"] = ["Randomization", "Forecasts"]
         plan = QuestionPlan(tasks=[one, two])
@@ -103,14 +105,10 @@ class ModelTraceTests(unittest.TestCase):
             {"task_id": two["id"], "reason": "Two independent methods", "parts": [
                 {"question": title, "criterion_indices": [n], "acceptance": [title], "queries": [title], "key_terms": [title]}
                 for n, title in enumerate(two["acceptance"])]}])
-        state = {"plan": plan.model_dump(), "tasks": {one["id"]: {**pending_task(), "status": "verified", "answer": {"kept": True}},
-                 two["id"]: pending_task()}, "dirty_tasks": [one["id"], two["id"]], "active_task": two["id"], "index_hash": "unchanged"}
-        result = refine_state(state, review)
-        self.assertEqual(result["tasks"][one["id"]], state["tasks"][one["id"]])
-        self.assertEqual(result["index_hash"], "unchanged")
-        self.assertEqual(len(result["plan"]["tasks"]), 3)
-        self.assertIsNone(result["active_task"])
-        self.assertEqual(result["task_groups"][two["id"]], ["task_methods_a", "task_methods_b"])
+        result, groups = scoped_plan(plan, review)
+        self.assertEqual(result.tasks[0], plan.tasks[0], "a task the review keeps stays as it was")
+        self.assertEqual(len(result.tasks), 3)
+        self.assertEqual(groups[two["id"]], ["task_methods_a", "task_methods_b"])
         review.decisions[1].parts[1].criterion_indices = [0]
         with self.assertRaises(AppError):
             scoped_plan(plan, review)

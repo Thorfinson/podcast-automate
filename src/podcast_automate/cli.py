@@ -52,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Required unless --trial, which then takes a narrow sample topic (checked in main).
     init.add_argument("--topic", help="Topic of the series; required unless --trial")
     init.add_argument("--total-minutes", type=float, default=None)
+    init.add_argument("--language", choices=("de-DE", "en-US"), default=None,
+                      help="Content language of the series and its exports; default de-DE")
     init.add_argument("--tts-python", help="Python of the separate Qwen environment")
     # A trial project (D-157): the whole pipeline once, small and cheap (trial.py).
     init.add_argument("--trial", action="store_true",
@@ -356,7 +358,8 @@ def run_command(args) -> int:
                 runtime.tts_revision = revision
             # Without --topic (only a trial, see main) the placeholder gives way to the sample topic at once.
             config = TopicBrief(topic=args.topic or "-", central_question=args.topic or "",
-                                target_total_minutes=args.total_minutes, runtime=runtime)
+                                target_total_minutes=args.total_minutes, runtime=runtime,
+                                **({"language": args.language} if args.language else {}))
             if args.trial:
                 config = trial_brief(config, sample_topic=args.topic is None)
             init_project(args.project_dir.resolve(), config)
@@ -473,7 +476,7 @@ def run_command(args) -> int:
                         f" The reviewed run {target['script_run_id']} is not the published state; "
                         f"the verdict is only in runs/{manifest.run_id}/series_review.json.")
             data = {"status": manifest.status, "run_id": manifest.run_id, **target, "message": verdict + location}
-            code = 0 if manifest.status == "completed" else 1
+            code = 0 if manifest.status == "completed" else 2 if manifest.status == "waiting_for_quota" else 1
         elif args.command == "publish-kit" and args.podcast:
             from .publish_kit import build_podcast_kit
             kit = build_podcast_kit(args.project_dir, fresh=args.fresh)
@@ -557,7 +560,8 @@ def run_command(args) -> int:
         return code
     except AppError as exc:
         emit({"status": exc.status, "code": exc.code, "message": str(exc)}, args.json_output)
-        return 1
+        # A quota pause raised outside a run, such as the one call of publish-kit, is a pause too (exit codes).
+        return 2 if exc.status == "waiting_for_quota" else 1
     except ValidationError as exc:
         errors = "; ".join(".".join(map(str, item["loc"])) + ": " + item["msg"]
                            for item in exc.errors(include_input=False, include_url=False))

@@ -18,21 +18,23 @@ on 4 October 2026. Rules that already hold are owned by [BUSINESS_LOGIC](../BUSI
 
 ## Status
 
-**Planned; nothing implemented.** Step 0 (the call baseline, V-10) comes first and may change the scope of the plan.
+**Planned; nothing implemented on `main`.** Step 0 (the call baseline, V-10) comes first and may change the scope of
+the plan. A build of 2026-10-04 never reached `main`. Since 2026-11-01 (D-184) the dialogue polishing and the
+teaching design this plan names no longer exist; the script review's loop remains.
 
 The operator decided on 4 October 2026:
 
 1. **A dismissable point gets one repair round** and then passes as a note (G-cap, [§7.2](#72-gate-variants)). Today
-   such points pass only once all repairs are spent: three rounds in the script review, two in polishing.
-   (why: D-TODO(review-gate-one-round))
+   such points pass only once all repairs are spent: three rounds in the script review (two in polishing, until
+   D-184). (why: D-121)
 2. **The final adjudicator (A3) may only repair or stop.** It never closes a point that blocks today without asking
-   the operator ([§9.2](#92-a3-terminal-step)). (why: D-TODO(a3-repair-or-stop))
+   the operator ([§9.2](#92-a3-terminal-step)). (why: D-122)
 3. **Script text and source passages may go to TypeSafe** for the Jev gate
    ([§7.7](#77-data-and-decision-record)). When the gate is on but the OpenRouter key is missing, the Studio says so
-   and offers to add it ([§7.8](#78-missing-key-in-the-studio)). (why: D-TODO(jev-gate-data-flow))
+   and offers to add it ([§7.8](#78-missing-key-in-the-studio)). (why: D-124)
 4. **A gate may miss at most 10 % of real blockers**, measured as the 95 % upper bound
    ([§13.2](#132-labels-and-sample-size)). The eval therefore needs at least 30 labelled blockers per activated stage.
-   (why: D-TODO(gate-miss-rate-10-percent))
+   (why: D-125)
 
 ## 1. Problem
 

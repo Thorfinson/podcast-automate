@@ -19,7 +19,9 @@ new project's 750 calls, whatever the topic).
 - Each research is written by one script run of the story agent (Opus 5.5 xhigh, critiques by Sonnet 5.5 high).
 - The two published scripts are judged blind by the narration lab's v3 judge (Sonnet and Opus, mean of both, the judge
   the operator calibrated on 2026-10-27) and by its pair judge in both orders; a side wins a scale only when both orders
-  agree.
+  agree. The lab's own `run.py` went with the writing prompt (D-184); its judging parts live on unchanged in
+  [judge.py](judge.py), which reads the two judge prompts from the lab's archive
+  ([judge_quality.txt](../narration_lab/judge_quality.txt), [judge_pair.txt](../narration_lab/judge_pair.txt)).
 - Beside the scores the report puts what each side cost (sub-questions, sources, findings, calls, model hours,
   reported cost, wall clock) and what the script review still found.
 

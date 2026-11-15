@@ -102,6 +102,9 @@ if mode == "retry":
 structured = {"topic": "incomplete"} if mode == "invalid" else (
     {"topic": payload.get("topic", ""), "focus_questions": ["Wie und warum?"], "note": "Keine Quellenrecherche."}
     if "topic" in payload else {"reason": "Alpha Beta"})
+if mode == "surrogate":
+    # Half of an emoji: json.dumps writes it as the escape \ud83d, which decodes to a lone surrogate.
+    structured = {"reason": "Alpha \ud83d Beta"}
 emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t1", "name": "StructuredOutput", "input": structured}]}})
 if search and mode == "fetchonly":
     emit({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t4", "name": "WebFetch", "input": {"url": "https://example.org/known", "prompt": "read"}}]}})
@@ -143,15 +146,13 @@ emit(final)
 '''
 
 
-STORE_ENV = patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(Path(tempfile.mkdtemp()) / "subscriptions.json")})
-
-
 def setUpModule():
-    STORE_ENV.start()
-
-
-def tearDownModule():
-    STORE_ENV.stop()
+    # The quota store in a folder that goes with the module, never ~/.podcast-automate.
+    folder = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(folder.cleanup)
+    store_env = patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(Path(folder.name) / "subscriptions.json")})
+    store_env.start()
+    unittest.addModuleCleanup(store_env.stop)
 
 
 def fake_cli(root):
@@ -283,6 +284,15 @@ class ClaudeCodeAdapterTests(unittest.TestCase):
         self.assertEqual(diagnostics["status"], "completed")
         activity = (self.root / "call/activity.json").read_text(encoding="utf-8")
         self.assertIn("Strukturierte Antwort empfangen", activity)
+
+    def test_half_an_emoji_in_the_answer_is_replaced_instead_of_crashing_after_the_call(self):
+        """Review 2026-11-14: a lone surrogate (\\ud83d) in the CLI's JSON passed validation, then writing response.json
+        raised UnicodeEncodeError after the answer had been received, and the stage stopped as invalid_local_data."""
+        with patch.dict(os.environ, {"PLA_CLAUDE_TEST": "surrogate"}):
+            result, _ = self.call("surrogate")
+        self.assertEqual(result.reason, "Alpha � Beta")
+        self.assertEqual(json.loads((self.root / "surrogate/response.json").read_text(encoding="utf-8")),
+                         {"reason": "Alpha � Beta"})
 
     def test_sonnet_5_5_needs_the_cli_that_lists_it(self):
         # CLI 2.1.283 has no catalog entry for Sonnet 5.5; 2.1.284 has (2026-09-29). Opus keeps working with 2.1.283.
@@ -501,6 +511,47 @@ class ClaudeHelperTests(unittest.TestCase):
         until, _ = claude_block_window("limit resets at 3pm", now=now)
         self.assertGreater(until, now)
         self.assertLessEqual(until - now, timedelta(days=1))
+
+    def test_a_weekly_reset_with_its_date_is_read_as_that_date(self):
+        """Review 2026-11-14: "resets Nov 18, 5pm" was read as the next Monday 00:00 UTC, so the block ended two days
+        early and the next refusal blocked a fixed Claude run until the Monday after the real reset."""
+        local = datetime(2026, 11, 14, 12, 0).astimezone()  # a Saturday, in this computer's time zone
+        now = local.astimezone(timezone.utc)
+        expected = local.replace(month=11, day=18, hour=17, minute=0).astimezone(timezone.utc)
+        for text in ("You've hit your weekly limit · resets Nov 18, 5pm (Europe/Berlin)",
+                     "You've hit your weekly limit · resets Nov 18 at 5pm", "weekly limit reached, resets November 18, 5:00 PM"):
+            with self.subTest(text=text):
+                until, kind = claude_block_window(text, now=now)
+                self.assertEqual((until, kind), (expected, "weekly_limit"))
+        # A date already past this year is next year's.
+        until, _ = claude_block_window("weekly limit · resets Jan 2, 9am", now=now)
+        self.assertEqual(until, local.replace(year=2027, month=1, day=2, hour=9, minute=0).astimezone(timezone.utc))
+        # A date without a time of day starts that day.
+        until, _ = claude_block_window("weekly limit · resets Nov 18", now=now)
+        self.assertEqual(until, local.replace(day=18, hour=0, minute=0).astimezone(timezone.utc))
+
+    def test_the_subscription_never_runs_on_another_endpoint_or_cloud_account(self):
+        """Review 2026-11-14: a subscription call kept CLAUDE_CODE_USE_BEDROCK, _VERTEX, _FOUNDRY and
+        ANTHROPIC_BASE_URL from the user's environment, so it could run on a cloud account or another endpoint outside
+        every money limit; the login check read only the login method, not the API provider."""
+        variables = {"CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "CLAUDE_CODE_USE_FOUNDRY": "1",
+                     "ANTHROPIC_BASE_URL": "https://elsewhere.example", "CLAUDE_CODE_OAUTH_TOKEN": "subscription-token"}
+        with patch.dict(os.environ, variables):
+            environment = claude_code.claude_environment("claude-opus-5-5")
+        self.assertEqual([name for name in variables if name in environment], ["CLAUDE_CODE_OAUTH_TOKEN"],
+                         "the subscription's own token stays; it is the login")
+        adapter = ClaudeCodeAdapter(RuntimeSettings(), model="claude-opus-5")
+        status = {"logged_in": True, "auth_method": "claude.ai", "subscription": "max"}
+        for provider, accepted in (("firstParty", True), (None, True), ("bedrock", False), ("vertex", False)):
+            with self.subTest(provider=provider), \
+                    patch("podcast_automate.claude_code.login_status", return_value={**status, "api_provider": provider}), \
+                    patch.object(adapter, "command", return_value=["claude"]):
+                if accepted:
+                    self.assertEqual(adapter.check_login(), "claude.ai")
+                else:
+                    with self.assertRaises(AppError) as error:
+                        adapter.check_login()
+                    self.assertEqual((error.exception.code, error.exception.status), ("subscription_required", "blocked"))
 
     def test_failure_classes(self):
         self.assertEqual(classify_claude_failure("Reached maximum budget ($1)", subtype="error_max_budget_usd").code, "claude_budget_cap")

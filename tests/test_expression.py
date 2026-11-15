@@ -350,6 +350,53 @@ class ExpressionRecordingTests(unittest.TestCase):
         self.assertEqual(self.recording(choice, sent).status, "completed")
         self.assertEqual(sent, ["Was vergleicht es?", second.text])
 
+    def marked_recording(self, choice, sent, pool):
+        """A recording through OpenRouter with ``pool`` as the text model, whose montage reports the AI marking as a
+        real montage does."""
+        def audio(request, **options):
+            sent.append(json.loads(request.data)["input"])
+            return response()
+
+        def assemble(script, paths, folder, **options):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "audio.mp3").write_bytes(b"test-audio")
+            write_json(folder / "audio_report.json", {"duration_seconds": 3, "ai_marking_embedded": True})
+            return [folder / "audio.mp3", folder / "audio_report.json"]
+        with patch("podcast_automate.episode_audio.AdapterPool", pool), \
+                patch("podcast_automate.speech.build_opener") as build, \
+                patch("podcast_automate.episode_audio.assemble", side_effect=assemble):
+            build.return_value.open.side_effect = audio
+            run = run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=choice,
+                                    api_key="test-key")
+        self.assertEqual(run.status, "completed")
+        return json.loads((manifest_path(self.root, run.run_id).parent / "expression.json").read_text(encoding="utf-8"))
+
+    def test_a_tempo_or_music_remix_speaks_the_recorded_tags_again_without_new_speech(self):
+        """2026-11-14: a recording that placed its own tags (no reading for it) kept them in its run folder only, so
+        „Mit Musik neu zusammensetzen“ or a new tempo asked the model again and spoke every passage with other tags
+        anew, although the card promised that nothing is spoken again. A remix for the montage alone (music, tempo,
+        the AI marking) speaks the tags the recording spoke, also over a reading placed since; without a reading any new
+        recording of the same script takes them before it asks the model."""
+        first, second = example_script().segments
+        tagged, calls, sent = "<chuckle> " + first.text, [], []
+        choice = AudioChoice(provider="openrouter_gemini_tts", voices={"host_a": "Sadaltager", "host_b": "Aoede"},
+                             expression=True)
+        self.marked_recording(choice, sent, self.placing({first.segment_id: tagged}, calls))
+        self.assertEqual((calls, sent), ([EXPRESSION_PROMPT_VERSION], [tagged, second.text]))
+        with patch("podcast_automate.episode_audio.AdapterPool", self.placing({first.segment_id: "<sigh> " + first.text},
+                                                                              calls)):
+            tag_episode(self.root, "ep_001")
+        never = self.placing({}, [])
+        never.structured = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no model call"))
+        slower = AudioChoice.model_validate({**choice.model_dump(), "pace": {"de-DE": {"tempo": 0.9}}})
+        sent.clear()
+        used = self.marked_recording(slower, sent, never)
+        self.assertEqual((used["segments"], used["source"], sent), ({first.segment_id: tagged}, "recording", []))
+        # Without a reading, a recording of the same script and choice speaks what the last one spoke.
+        (self.root / "episodes/ep_001/expression.json").unlink()
+        used = self.marked_recording(slower, sent, never)
+        self.assertEqual((used["segments"], used["source"], sent), ({first.segment_id: tagged}, "recording", []))
+
     def test_a_finished_script_run_places_the_tags_of_a_gemini_project_for_reading(self):
         manifest = RunManifest.model_validate(read_yaml(manifest_path(self.root)))
         first = example_script().segments[0]

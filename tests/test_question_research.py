@@ -2392,7 +2392,10 @@ class QuestionResearchTests(unittest.TestCase):
         engine.run(self.discovery, self.index)
         state = {**engine.state, "phase": "audit", "audit_round": 1}
         _, closing = remaining_calls(state, self.work / "question_research")
-        self.assertEqual(sorted(path.name for path in closing), ["assessment.json"])
+        # Round 0 holds its assessment, so round 1's is a follow-up (review 2026-11-14: a whole one was counted).
+        self.assertEqual(sorted(path.name for path in closing), ["assessment_followup.json"])
+        _, first = remaining_calls({**state, "audit_round": 0}, self.work / "question_research")
+        self.assertEqual(sorted(path.name for path in first), [], "round 0's assessment is on record")
         _, composed = remaining_calls({**state, "prompt_generation": 2, "seed_dossier": None}, self.work / "question_research")
         self.assertEqual(sorted(path.name for path in composed), ["assessment.json", "dossier.json", "grounding_0.json"])
 

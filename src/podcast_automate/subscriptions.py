@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .call_activity import clean_status
-from .claude_code import (MINIMUM_CLI_VERSION, claude_block_window, claude_command, claude_environment,
+from .claude_code import (FIRST_PARTY, MINIMUM_CLI_VERSION, claude_block_window, claude_command, claude_environment,
                           format_local, login_status, parse_version, version_text)
 from .codex import executable_command, subscription_environment
 from .codex_stream import read_rate_limits
@@ -224,12 +224,15 @@ def claude_quota(*, refresh=False, clock=time.time) -> dict:
     login = claude_login(refresh=refresh, clock=clock)
     extra = claude_extra_usage()
     block = None if extra else claude_quota_state(clock=clock)
-    usable = bool(login.get("logged_in")) and login.get("auth_method") == "claude.ai" and bool(login.get("version_supported"))
+    # A login with another API provider (Bedrock, Vertex, Foundry) would not run on the subscription (review 2026-11-14).
+    first_party = login.get("api_provider") in FIRST_PARTY
+    usable = (bool(login.get("logged_in")) and login.get("auth_method") == "claude.ai" and first_party
+              and bool(login.get("version_supported")))
     if usable:
         reason = (block.get("reason") or "unclear_limit") if block else None
     elif login.get("error"):
         reason = login["error"]
-    elif login.get("logged_in") and login.get("auth_method") != "claude.ai":
+    elif login.get("logged_in") and (login.get("auth_method") != "claude.ai" or not first_party):
         reason = "subscription_required"
     elif login.get("logged_in"):
         reason = "unsupported_version"
@@ -392,6 +395,14 @@ def choose_subscription(settings, candidates: dict, *, prefer="codex_cli", exclu
     """The preferred subscription while it is available, else the other one, else pause naming the earliest reset."""
     order = [prefer] + [provider for provider in candidates if provider != prefer]
     snapshots = {}
+
+    def passed_over(name):
+        # A provider this call left out although it had quota: it failed this call or cannot take its prompt.
+        if name in exclude and snapshots[name].get("available"):
+            return "excluded"
+        if snapshots[name].get("usable"):
+            return "exhausted_until " + str(snapshots[name].get("resets_at"))
+        return "unavailable (" + str(snapshots[name].get("reason")) + ")"
     for provider in order:
         if provider not in candidates:
             continue
@@ -404,8 +415,7 @@ def choose_subscription(settings, candidates: dict, *, prefer="codex_cli", exclu
         snapshots[provider] = snapshot
         if provider in exclude or not snapshot.get("available"):
             continue
-        reasons = [f"{name.split('_')[0]}_{'exhausted_until ' + str(snapshots[name].get('resets_at')) if snapshots[name].get('usable') else 'unavailable (' + str(snapshots[name].get('reason')) + ')'}"
-                   for name in order if name in snapshots and name != provider]
+        reasons =[f"{name.split('_')[0]}_{passed_over(name)}" for name in order if name in snapshots and name != provider]
         reasons.append(f"{provider.split('_')[0]}_available")
         return {"provider": provider, **candidates[provider], "mode": "auto", "reason": "; ".join(reasons),
                 "snapshots": snapshots, "decided_at": iso_at(clock())}

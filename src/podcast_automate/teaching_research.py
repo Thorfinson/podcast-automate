@@ -25,7 +25,9 @@ VERSION = "teaching_research.v1"
 # The prompt tag is separate from VERSION: VERSION also binds stored supplement receipts, and a
 # wording change must not invalidate the receipts of runs that already hold one.
 # v5-terms (2026-10-02): the topic's own terminology rule instead of the machine-learning names in every call.
-PROMPT_VERSION = "teaching_research.v5-terms"
+# v6-review-scope (2026-11-14 review): the review names each issue's explanation and whether only a source the research
+# lacks could fix it, and is told which explanations changed since an earlier review (review_scope).
+PROMPT_VERSION = "teaching_research.v6-review-scope"
 MAX_SUPPLEMENTS = 3
 # Correction attempts of a supplement answer the check rejected, as in research_patches.cached_call; before,
 # one rejected answer ended the script run, and a resume replayed it unchanged (Ontologies, 2026-09-27).
@@ -66,6 +68,10 @@ class FoundationReview(Contract):
     # Why each issue blocks (foundation_review_basis); every other observation is an advisory kept with the supplement.
     issue_basis: list[Literal["factual_error", "unsupported_claim", "source_contradiction", "previous"]] = Field(default_factory=list)
     advisories: list[NonEmpty] = Field(default_factory=list)
+    # Since 2026-11-14 (review), in the order of issues: the explanation each concerns (its index in the supplement, -1
+    # for the supplement as a whole), and whether only a source the research does not hold could fix it (review_scope).
+    issue_explanations: list[int] = Field(default_factory=list)
+    issue_source_limit: list[bool] = Field(default_factory=list)
 
 
 def supplement_findings(supplement):
@@ -189,6 +195,53 @@ def supersede_corrections(directory):
     for kind in ("evidence", "review"):
         for path in sorted(directory.glob(f"{kind}_rejected_*.json")):
             path.replace(directory / f"{kind}_superseded_{round_number:02d}_{path.stem.rsplit('_', 1)[1]}.json")
+
+
+def explanation_key(explanation) -> str:
+    """One explanation of a supplement as a review judged it: its text and its evidence."""
+    data = explanation.model_dump() if hasattr(explanation, "model_dump") else explanation
+    return digest({"explanation": data.get("explanation"), "evidence": data.get("evidence")})
+
+
+def reviewed_explanations(directory) -> set[str]:
+    """Every explanation an earlier review of this supplement judged: those of each answer a review's correction sent
+    back (evidence_rejected_*, evidence_superseded_* with REVIEW_CORRECTION defects)."""
+    keys = set()
+    for path in [*sorted(directory.glob("evidence_superseded_*.json")), *sorted(directory.glob("evidence_rejected_*.json"))]:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved.get("errors") and all(error.startswith(REVIEW_CORRECTION) for error in saved["errors"]):
+            keys.update(explanation_key(row) for row in (saved.get("value") or {}).get("explanations") or [])
+    return keys
+
+
+def review_scope(review, previous, changed) -> FoundationReview:
+    """``review`` with only what may block left in its issues, the rest moved to its advisories (the user's rule for
+    repeated reviews, 2026-10-02): an issue only a source the research lacks could fix is a note in every round; in a
+    first review (no ``previous``) every other issue blocks; after a correction only an earlier issue still unresolved
+    (``previous``, or basis previous) or one on an explanation that changed since (``changed``, the indices code
+    found) does, and an issue on an explanation reviewed before unchanged is a note. Until 2026-11-14 every new
+    critical issue blocked in every round, wherever it pointed, so each correction could find a new point in text an
+    earlier review had passed."""
+    aligned = len(review.issue_basis) == len(review.issues)
+    issues, basis, explanations, limits, noted = [], [], [], [], []
+    for number, issue in enumerate(review.issues):
+        own_basis = review.issue_basis[number] if aligned else None
+        index = review.issue_explanations[number] if number < len(review.issue_explanations) else -1
+        limit = review.issue_source_limit[number] if number < len(review.issue_source_limit) else False
+        blocks = not limit and (not previous or issue in previous or own_basis == "previous" or index in changed)
+        if not blocks:
+            noted.append(issue)
+            continue
+        issues.append(issue)
+        explanations.append(index)
+        limits.append(limit)
+        basis.append(own_basis)
+    # A review that gave no basis per issue named only earlier issues (its check), and keeps the basis it gave.
+    basis = basis if aligned else list(review.issue_basis)
+    return review.model_copy(update={"issues": issues, "issue_basis": basis, "issue_explanations": explanations,
+                                     "issue_source_limit": limits,
+                                     "advisories": [*review.advisories, *(issue for issue in noted
+                                                                          if issue not in review.advisories)]})
 
 
 def short(text, limit=90):
@@ -384,7 +437,10 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
                     continue
                 document, _ = import_source(candidate, root, work.name)
                 index.sources.append(document)
-            except AppError as exc:
+            except (AppError, OSError, ValueError) as exc:
+                # Recorded like every failed source, so the index is saved and a resume goes on past it: the
+                # supplement replays its saved discovery, and an OSError or ValueError from one source stopped every
+                # resume at the same candidate (2026-11-14 review).
                 index.failures.append(import_failure(candidate.url, exc))
         # The stored sections the corpus probe matched for these gaps are reading material of their own (merge_pinned
         # below): with them, no fetched candidate is no reason to stop. On 2026-11-09 Geld S1's ep_004 stopped here for
@@ -445,12 +501,30 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
                                "source_contradiction or previous. Move every other observation to advisories.",
                                code="invalid_supplement", status="blocked")
 
+        # From the second review on: the explanations no earlier review judged as they stand now (review_scope).
+        judged = reviewed_explanations(directory) if previous else set()
+        changed = {number for number, explanation in enumerate(supplement.explanations)
+                   if explanation_key(explanation) not in judged}
+        stored_path = directory / "review.json"
+        stored = json.loads(stored_path.read_text(encoding="utf-8")).get("value") if stored_path.exists() else None
         review = cached("review", FoundationReview,
             terms + TEACHING_SCOPE + EVIDENCE_INSTRUCTIONS +
             instructions("foundation_review") + " " + instructions("foundation_review_basis") + "\n" +
             json.dumps({**data, "supplement": supplement.model_dump(),
                         "findings": [f.model_dump() for f in findings],
-                        **({"previous_issues": previous} if previous else {})}, ensure_ascii=False), check=well_formed)
+                        **({"previous_issues": previous, "changed_explanations": sorted(changed)} if previous else {})},
+                       ensure_ascii=False), check=well_formed)
+        loaded = stored is not None and FoundationReview.model_validate(stored) == review
+        if not loaded or len(review.issue_explanations) == len(review.issues):
+            # A review stored before its issues named their explanations keeps the rule it was given under.
+            scoped = review_scope(review, previous, changed)
+            if scoped != review:
+                if not loaded:
+                    # The answer as given stays beside the scoped one, which is what the supplement is judged by.
+                    write_json(directory / f"review_answer_{len(rejected):02d}.json",
+                               {"value": review.model_dump(), "sha256": digest(review.model_dump())})
+                write_json(stored_path, {"value": scoped.model_dump(), "sha256": digest(scoped.model_dump())})
+                review = scoped
         # A receipt the review judged only partly supported fails like a critical issue (Asimov ep_012, 2026-09-29:
         # it stopped the run after the review, with no correction).
         unsupported = support_errors(findings, review, context) if dossier.evidence_version else []
@@ -490,15 +564,19 @@ def research_foundations(root, work, config, entry, dossier, invoke, *, current_
     return supplement
 
 
-def apply_foundations(root, work, config, entries, dossier, context, sources):
+def apply_foundations(root, work, config, entries, dossier, context, sources, carried=()):
+    """The dossier, context and source index with every verified supplement of ``entries`` applied: first those of the
+    runs in ``carried`` (the earlier runs a revision carries, oldest first), then this run's own. Each supplement is
+    checked against the binding of the run that made it."""
     augmented, extended, index = dossier.model_copy(deep=True), copy.deepcopy(context), sources.model_copy(deep=True)
     output_files = []
-    for entry, directory in [(e, p) for e in entries for p in supplement_directories(work, e)]:
+    for origin, entry, directory in [(w, e, p) for w in (*carried, work) for e in entries
+                                     for p in supplement_directories(w, e)]:
         receipt_path = directory / "receipt.json"
         if not receipt_path.exists():
             continue
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        if receipt["binding"] not in bindings(work, config, entry, dossier):
+        if receipt["binding"] not in bindings(origin, config, entry, dossier):
             raise AppError("Die Nachrecherche passt nicht zum freigegebenen Plan.", code="invalid_supplement", status="blocked")
         required = {(directory / name).relative_to(root).as_posix() for name in REQUIRED_FILES}
         if not required <= receipt.get("outputs", {}).keys():

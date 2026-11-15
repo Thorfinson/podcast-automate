@@ -47,8 +47,8 @@ from .question_answering import (ACCESS_GAP_READER, STORY_GENERATION, TaskResear
 from .trial import plan_cap
 from .question_budget import (SOURCE_LABELS, affordable_tasks, budget_projection, content_tasks,
                               expected_calls_per_task, plan_projection, plan_review_message, run_timings)
-from .question_dependencies import (gatekeepers, invalidate_dependents, ordered_tasks, prerequisite_met,
-                                    prerequisites_current, revalidate)
+from .question_dependencies import (changed_prerequisites, gatekeepers, invalidate_dependents, ordered_tasks,
+                                    prerequisite_met, prerequisite_refs, prerequisites_current, revalidate)
 from .question_scope import SCOPE_INSTRUCTIONS, QuestionScopeReview, pending_task, scoped_plan
 from .question_sources import restore_attempts
 from .question_synthesis import PROMPT_GENERATION, SynthesisMixin
@@ -246,7 +246,9 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
             self.state["budget_projection"] = projection
             if not projection["feasible"]:
                 task = self.task_of(request)
-                if task:
+                # Only a blocked question takes the run's limit as its outcome. One still being researched kept it after
+                # the limit was raised, and a later evidence block of it read as a spent budget (review 2026-11-14).
+                if task and self.state["tasks"][task]["status"] == "blocked":
                     self.state["tasks"][task]["outcome"] = "budget_block"
                 self.save("Das genehmigte Aufruflimit reicht nicht für die verbleibenden Fragen und Abschlussprüfungen", budget_request=request)
                 raise AppError(f"Mindestens {projection['minimum_remaining_calls']} weitere Modellaufrufe erforderlich, "
@@ -308,7 +310,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                 try:
                     document, _ = import_source(provided_works.candidate(row), self.root, self.work.name,
                                                 local=provided_works.work_path(self.root, row), citation=row["citation"])
-                except AppError as exc:
+                except (AppError, OSError, ValueError) as exc:
                     adopted[row["id"]] = {"error": str(exc), "at": now()}
                     continue
                 if all(source.id != document.id for source in sources):
@@ -434,6 +436,7 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
                    answer_locked=False, auto_stop=None, revise_only=False,
                    extra_steps=row.get("extra_steps", 0) + limits["steps_per_question"],
                    extra_web_attempts=row.get("extra_web_attempts", 0) + limits["web_attempts"],
+                   pass_web_start=row.get("web_attempts", 0),
                    activity=activity, feedback=feedback, **fields)
 
     def release_ready(self):
@@ -702,8 +705,11 @@ class QuestionResearch(TaskResearchMixin, SynthesisMixin):
         however indirectly (invalidate_dependents). Before (2026-10-02), a dependent of a revalidated answer stayed
         verified against the old answer of its prerequisite, and nothing checked it again once that re-verified."""
         rows = self.state["tasks"]
+        specs = {task["id"]: task for task in self.state["plan"]["tasks"]}
         for task_id in stale:
-            revalidate(rows[task_id])
+            # Scoped by the passages of the prerequisites whose answers changed since its verification.
+            changed = changed_prerequisites(specs[task_id].get("depends_on", []), self.state, rows[task_id].get("verification"))
+            revalidate(rows[task_id], scope_refs=prerequisite_refs(self.state, changed))
         for task_id, errors in rechecks.items():
             revalidate(rows[task_id], activity="Geprüfte Antwort wird nach geänderten Prüfregeln erneut geprüft",
                        feedback=["This answer was verified under earlier checks and is reviewed again under today's. Keep "

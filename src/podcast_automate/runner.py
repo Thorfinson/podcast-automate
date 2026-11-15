@@ -231,6 +231,18 @@ def execute_stages(root: Path, manifest: RunManifest, path: Path, actions: dict,
             record.error = Failure(code=error.code, message=str(error), details=failure_details(error))
             save()
             return manifest
+        except Exception as exc:
+            # Any other error (a subprocess.TimeoutExpired, an AttributeError) still goes to the caller, but the stage
+            # and the run are recorded as failed first: a manifest left "running" named no worker that carried it on
+            # (review 2026-11-14).
+            receipt = record_failure(path.parent, f"{name}_{record.attempts}", exc)
+            location = f" Technische Details: {receipt.relative_to(root).as_posix()}" if receipt else ""
+            logger("runner").error("Stufe %s fehlgeschlagen: %s: %s", name, type(exc).__name__, exc, exc_info=exc)
+            record.status = manifest.status = "failed"
+            record.error = Failure(code="invalid_local_data", message="Lokale Verarbeitung fehlgeschlagen; Eingaben und "
+                                   "Dateien prüfen." + location)
+            save()
+            raise
     manifest.status = "completed"
     save()
     return manifest

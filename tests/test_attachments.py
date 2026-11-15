@@ -81,6 +81,17 @@ class AttachmentTests(unittest.TestCase):
                 attachments.add(self.root, [item])
         self.assertEqual(attachments.inventory(self.root), [])
 
+    def test_a_docx_with_a_broken_deflate_stream_is_refused_as_unreadable(self):
+        # zlib.error is no OSError or ValueError, so a damaged file escaped as an unexpected failure (2026-11-14).
+        raw = bytearray(base64.b64decode(docx_upload()["base64"]))
+        start = raw.find(b"word/document.xml") + len("word/document.xml")
+        for offset in range(start + 5, start + 25):
+            raw[offset] ^= 0x5A
+        item = {"name": "Projekt.docx", "base64": base64.b64encode(bytes(raw)).decode("ascii")}
+        with self.assertRaises(AppError) as refused:
+            attachments.add(self.root, [item])
+        self.assertEqual(refused.exception.code, "invalid_attachment")
+
     def test_invalid_batch_does_not_write_any_file(self):
         invalid = [upload("../brief.md"), upload("C:\\secret.txt"), upload("program.exe"),
                    upload("x.txt", "hello\0world"), upload("x.txt", "   "),

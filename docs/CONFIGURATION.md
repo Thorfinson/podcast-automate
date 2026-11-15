@@ -2,7 +2,7 @@
 title: Configuration
 doc_type: configuration
 status: current
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/studio_settings.py
   - src/podcast_automate/studio_text.py
@@ -26,7 +26,7 @@ covers:
 | --- | --- | --- | --- |
 | `<project>/project.yaml` | One project | The topic brief, the CLI default adapters and the runtime settings ([Project brief](#project-brief)); never credentials | `pla init`, the Studio's brief conversation |
 | `<project>/version.json` | One project | Its version number, the podcast's first version, the version it came from and its starting library ([New versions](STUDIO.md#new-versions)); absent in a first version | `pla new-version`, the Studio's "Start a new version" („Neue Version anlegen“) |
-| `projects/.studio-settings.json` | Every project of a Studio workspace | Text model, web search, audio, execution modes, pre-approvals, research limits and the time limit of one model call ([Studio settings](#studio-settings)) | The Studio's settings page only |
+| `projects/.studio-settings.json` | Every project of a Studio workspace | Text model, web search, audio, execution modes, pre-approvals, research limits, the time limit of one model call and the Unpaywall contact address ([Studio settings](#studio-settings)) | The Studio's settings page only |
 | `<project>/studio/text.json`, `audio.json`, `execution.json`, `allowances.json` | One project | The same choices per project; used only while the workspace file does not exist | The Studio |
 | `<project>/studio/audio_own.json` | One project | Its own speech choice, which holds over the workspace file's ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice), D-177) | The recording page's panel "This project's speech provider" („Sprachanbieter dieses Projekts“) |
 | `<project>/studio/music.json`, `<project>/studio/music/` | One project | The podcast's piece of music, its hash, tempo and credit ([Music](AUDIO.md#music), D-189) | By hand; no Studio form yet |
@@ -41,14 +41,15 @@ covers:
 ## Project brief
 
 `project.yaml` holds one `TopicBrief` (`models.TopicBrief`), validated strictly: unknown fields are refused
-(`models.Contract`). `pla init <project> --topic "…"` creates it with these defaults; `pla init <project> --trial`
-creates a [trial project](BUSINESS_LOGIC.md#trial-project), where `--topic` is optional:
+(`models.Contract`). `pla init <project> --topic "…"` creates it with these defaults, `--language en-US` sets
+`language`; `pla init <project> --trial` creates a [trial project](BUSINESS_LOGIC.md#trial-project), where `--topic`
+is optional:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `schema_version` | `"1.0"` | Version of the contract |
 | `topic`, `central_question` | required, `""` | Topic and guiding question of the series |
-| `language` | `de-DE` | Language of the series; `de-DE` or `en-US` |
+| `language` | `de-DE` | Language of the series; `de-DE` or `en-US` (`pla init --language`) |
 | `audience_level`, `prior_knowledge` | „Neugierige Erwachsene ohne spezielles Vorwissen; fachlich anspruchsvoll und auf Augenhöhe“ (curious adults without special prior knowledge; demanding and on equal footing), `""` | Level and the foundations already known |
 | `depth_request` | A default text that asks for depth built from the ground up, one worked example, no formulas and no repeated definitions | Desired depth and explanatory focus; independent of listening time |
 | `focus_questions`, `excluded_topics` | `[]` | Desired focus and boundaries |
@@ -78,7 +79,7 @@ so an unchanged brief keeps its hash. The research lane binds `third_host` like 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `codex_executable` | `codex` | Codex CLI to run; an explicit full path stays authoritative ([Codex CLI](ARCHITECTURE.md#codex-cli)) |
-| `codex_model` | `null` | Model passed to Codex when set |
+| `codex_model` | `null` | Model passed to Codex when set; a research run started without `--model` records it in `research_request.json` and keeps it on resume |
 | `text_timeout_seconds` | `1800` | Time limit of one model call; the workspace settings replace it |
 | `tts_python` | The Python that runs `pla` | Python of the separate Qwen environment (`pla init --tts-python`) |
 | `tts_model` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Qwen model |
@@ -93,7 +94,7 @@ Setting up Qwen and changing these values on an existing project: [Set up local 
 ## Studio settings
 
 The settings page **Settings** („Einstellungen“) holds the values in the table below plus Claude's extra usage and the
-OpenRouter, Google, Anthropic and Perplexity keys; they apply to all projects (why: D-108). How to use the page: [Settings page](STUDIO.md#settings-page).
+OpenRouter, Google, ElevenLabs, Anthropic, Perplexity and CORE keys; they apply to all projects (why: D-108). How to use the page: [Settings page](STUDIO.md#settings-page).
 
 **Storage.** The page writes `projects/.studio-settings.json` (`studio_settings`), with the sections
 `studio_settings.SECTIONS`. While the file exists, each section replaces the project's own file or field:
@@ -107,11 +108,12 @@ OpenRouter, Google, Anthropic and Perplexity keys; they apply to all projects (w
 | `research_limits` | `research_limits` in `project.yaml` | Model calls, sources, search rounds and the money limit `cost_usd`; a billed text model is refused without it ([Budgets](BUSINESS_LOGIC.md#budgets)) |
 | `text_timeout_seconds` | `runtime.text_timeout_seconds` in `project.yaml` | Time limit of one model call, 300 to 14 400 seconds (5 to 240 minutes) |
 | `web_search` | nothing; without it new runs search through the text model | How new research and script runs search the web: `model` (the text model's own tools, the default) or `perplexity` (the Perplexity Search API; `studio_settings.WEB_SEARCH`, read by `studio_settings.web_search`); `perplexity` is refused without the money limit `cost_usd` (`cost_limit_required`). Rules: [Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search) |
+| `unpaywall_email` | nothing; without it, `PLA_UNPAYWALL_EMAIL` or no Unpaywall | The contact address Unpaywall is asked with in the search for a free copy of a blocked source; an address that does not look like one counts as none (`studio_settings.unpaywall_email`, read by each new job's worker). Studio: **Contact address for Unpaywall** („Kontaktadresse für Unpaywall“) |
 
 The file also records `changed_at`. A save carries the hash of the values the page showed; if the settings changed in
 between, it is refused with "The settings have changed in the meantime. Reload the page." („Einstellungen inzwischen geändert. Seite neu laden.“) (settings changed in the meantime,
-reload the page). Claude's extra usage is not part of this file (see below), and the OpenRouter, Google, Anthropic,
-Perplexity and CORE keys are kept in the operating system's credential store
+reload the page). Claude's extra usage is not part of this file (see below), and the OpenRouter, Google, ElevenLabs,
+Anthropic, Perplexity and CORE keys are kept in the operating system's credential store
 ([Keys in the credential store](SECURITY.md#keys-in-the-credential-store)).
 
 **Without the file.** As long as `projects/.studio-settings.json` does not exist, every project keeps its own files
@@ -169,7 +171,7 @@ Variables you can set. What the adapters set or remove for the CLIs they start i
 | `ANTHROPIC_API_KEY` | Anthropic key for Claude on your API key (`claude_api`), when none was entered in the Studio or after `--api-key`; checked by `pla doctor` (`claude_api`). Never handed to a subscription call; handling rules: [Anthropic key in the Studio](SECURITY.md#anthropic-key-in-the-studio) | `claude_code.ClaudeCodeAdapter`, `doctor.claude_api_check`, `studio.py`, `logs.scrub` |
 | `PERPLEXITY_API_KEY` | Perplexity key for the web search through Perplexity, when none was entered in the Studio; the only source of the key for `pla research` and `pla script` with `--web-search perplexity`; reported by `pla doctor` (`perplexity_search`). Handling rules: [Perplexity key in the Studio](SECURITY.md#perplexity-key-in-the-studio) | `web_search.PerplexitySearch`, `doctor.inspect`, `studio.py`, `logs.scrub` |
 | `PLA_SUBSCRIPTIONS_STORE` | Path of the quota store instead of `~/.podcast-automate/subscriptions.json`; the tests set it so they never write to `~/.podcast-automate` | `subscriptions.store_path` |
-| `PLA_KEEP_AWAKE` | `0` stops worker processes from keeping the computer awake ([Stopping and resuming](STUDIO.md#stopping-and-resuming)) | `studio_worker.keep_awake` |
+| `PLA_KEEP_AWAKE` | `0` stops worker processes, and the Studio server while a stopped run waits for its automatic resume (D-239), from keeping the computer awake; a set `CI` does the same ([Stopping and resuming](STUDIO.md#stopping-and-resuming)) | `studio_worker.keep_awake`, `studio.py` |
 | `PLA_UNPAYWALL_EMAIL` | Contact address that enables Unpaywall in the search for a free copy of a work whose own address refused the download, where the Studio's settings give none (**Contact address for Unpaywall** („Kontaktadresse für Unpaywall“), `studio_settings.unpaywall_email`) | `sources.unpaywall_copies` |
 | `PLA_CORE_API_KEY` | Free CORE API key; enables CORE for the same search when none was entered in the Studio ([CORE key in the Studio](SECURITY.md#core-key-in-the-studio)) | `sources.core_copies`, `studio.py` |
 | `PLA_CORE_DAILY_LIMIT` | CORE calls per UTC day, default 1000 (`sources.CORE_DAILY_LIMIT`), shared by all research workers ([Pipeline](RESEARCH.md#pipeline)) | `sources.core_usage` |

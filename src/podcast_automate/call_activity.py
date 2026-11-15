@@ -76,7 +76,8 @@ class CallActivity:
     def record(self, message):
         self.trace.record("status", message)
         self.data["updated_at"] = now()
-        self.data["events"] = (self.data["events"] + [{"at": now(), "message": clean_status(message)}])[-40:]
+        # whole_text: one lone surrogate in a search query kept every later write of the receipt failing.
+        self.data["events"] = (self.data["events"] + [{"at": now(), "message": whole_text(clean_status(message))}])[-40:]
         try:
             write_json(self.path, self.data)
         except OSError:
@@ -170,7 +171,7 @@ class CallActivity:
             self.diagnostic("oversized_event")
             return
         try:
-            event = json.loads(line)
+            event = provider_json(line)
         except (ValueError, TypeError):
             return
         if not isinstance(event, dict):
@@ -229,7 +230,7 @@ class CallActivity:
             self.diagnostic("oversized_event")
             return
         try:
-            event = json.loads(line)
+            event = provider_json(line)
         except (ValueError, TypeError):
             return
         if not isinstance(event, dict):
@@ -327,12 +328,39 @@ class CallActivity:
         self.trace.finish()
 
 
+SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def whole_text(value):
+    """``value`` with every string encodable as UTF-8: surrogate halves that stand next to each other become their
+    character, a lone half becomes U+FFFD.
+
+    JSON may escape half of a character (``\\ud83d``), and a stream may split a character's two halves over two
+    chunks. Such a string passes validation, but writing the answer or hashing it fails after the call was made
+    (review 2026-11-14), so provider JSON is read through this."""
+    if isinstance(value, str):
+        return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace") if SURROGATE.search(value) \
+            else value
+    if isinstance(value, list):
+        return [whole_text(item) for item in value]
+    if isinstance(value, dict):
+        return {whole_text(key): whole_text(item) for key, item in value.items()}
+    return value
+
+
+def provider_json(text):
+    """``json.loads`` of a provider's output, through whole_text. Only an escape can produce a surrogate, so text
+    without one is returned as parsed."""
+    value = json.loads(text)
+    return whole_text(value) if "\\u" in text else value
+
+
 def parsed_json(text):
-    """The JSON value in ``text``, or None when there is none to keep."""
+    """The JSON value in ``text``, or None when there is none to keep; strings through whole_text."""
     if not isinstance(text, str):
         return None
     try:
-        return json.loads(text)
+        return whole_text(json.loads(text))
     except ValueError:
         return None
 

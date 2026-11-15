@@ -398,6 +398,19 @@ class MoneyLimitTests(unittest.TestCase):
         spent = self.budget()
         self.assertEqual((spent["billed_usd"], spent["estimated_usd"], spent["unpriced_attempts"]), (0.4, 0.8, 2))
 
+    def test_search_requests_count_as_money_but_not_into_the_mean_of_a_model_attempt(self):
+        """Review 2026-11-14: Perplexity's requests (0.005 USD each) counted as priced attempts, so after ten of them the
+        mean that values a model attempt without a reported cost, and the run's projection, sank toward a search."""
+        search = {"provider": "perplexity", "model": "search", "state": "priced", "usd": 0.005}
+        self.bill(4, [search] * 10 + [{"provider": "openrouter", "model": "vendor/x", "state": "priced", "usd": 0.5}] * 2)
+        self.bill(5, [{"provider": "openrouter", "model": "vendor/x", "state": "started", "usd": None},
+                      {**search, "state": "started", "usd": None}])
+        settle_call(self.work, 4)
+        settle_call(self.work, 5)
+        spent = self.budget()
+        self.assertEqual((spent["billed_usd"], spent["priced_attempts"]), (1.05, 2), "every request is money spent")
+        self.assertEqual(spent["estimated_usd"], 0.505, "the model attempt at the model mean, the request at its price")
+
     def test_a_resume_counts_what_a_killed_worker_left_and_changes_only_the_budget(self):
         self.bill(6, [{"provider": "claude_api", "model": "claude-sonnet-5-5", "state": "priced", "usd": 0.5},
                       {"provider": "claude_api", "model": "claude-sonnet-5-5", "state": "started", "usd": None}])

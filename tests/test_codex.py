@@ -95,6 +95,18 @@ class CodexTests(unittest.TestCase):
         self.assertFalse(metadata["research_performed"])
         self.assertFalse((self.root / "request dir/response.pending.json").exists())
 
+    def test_the_subscription_environment_holds_no_key_of_any_kind_the_studio_knows(self):
+        """Review 2026-11-14: CORE's key (PLA_CORE_API_KEY) reached every Codex and Claude child, since the list of
+        variables the child loses did not name it."""
+        from podcast_automate.codex import subscription_environment
+        names = ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+                 "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "PERPLEXITY_API_KEY", "ELEVENLABS_API_KEY",
+                 "PLA_CORE_API_KEY")
+        with patch.dict(os.environ, {name: "test-only" for name in names} | {"PLA_KEEP_AWAKE": "0"}):
+            environment = subscription_environment()
+        self.assertEqual([name for name in names if name in environment], [])
+        self.assertEqual(environment.get("PLA_KEEP_AWAKE"), "0", "every other variable stays")
+
     def test_api_login_is_blocked(self):
         with patch.dict(os.environ, {"PLA_TEST_MODE": "api"}), self.assertRaises(AppError) as error:
             self.adapter.probe("Thema", self.root / "request")
@@ -286,6 +298,37 @@ class CodexTests(unittest.TestCase):
         with self.assertRaises(AppError) as error:
             run_process([sys.executable, "-c", "import time; time.sleep(20)"], timeout=1)
         self.assertEqual(error.exception.code, "timeout")
+
+    def test_a_tree_that_outlives_its_stop_is_an_app_error_and_never_replaces_the_calls_own(self):
+        """Review 2026-11-14: a taskkill that did not finish, or a process that outlived it, raised
+        subprocess.TimeoutExpired: it replaced the call's time limit and escaped a Studio request and the runner."""
+        import io
+        import subprocess
+        from podcast_automate import process as processes
+
+        class Stubborn:
+            pid, returncode = 4242, None
+
+            def __init__(self):
+                self.stdout, self.stderr, self.stdin = io.StringIO(""), io.StringIO(""), io.StringIO()
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("stubborn", timeout)
+
+        with patch.object(processes, "kill_tree"), self.assertLogs("podcast_automate.process", "WARNING"):
+            with self.assertRaises(AppError) as stop:
+                processes.stop_process_tree(Stubborn())
+            self.assertEqual(stop.exception.code, "worker_stop")
+            with self.assertRaises(AppError) as call:
+                processes._stream_process(Stubborn(), None, 0, ["stubborn"], None, None)
+            self.assertEqual(call.exception.code, "timeout")
+        with patch.object(processes, "kill_tree", side_effect=subprocess.TimeoutExpired(["taskkill"], 10)), \
+                self.assertLogs("podcast_automate.process", "WARNING"), self.assertRaises(AppError) as taskkill:
+            processes.stop_process_tree(Stubborn())
+        self.assertEqual(taskkill.exception.code, "worker_stop")
 
     def test_model_timeout_reports_call_limit_and_discards_partial_response(self):
         import json

@@ -15,11 +15,12 @@ projects continue at today's quality, and a project is set back only where it ca
 
 Written for the operator and the agents who continue it. The evidence is the first real agent episode, Asimov v2
 ep_007 of 2026-11-01. The operator listened to it („sehr großartig“), and its run files are summarised in the
-[Story Agent Plan](2026-10-27-story-agent-plan.md) under V-64 and V-66. (why: D-184)
+[Story Agent Plan](2026-10-27-story-agent-plan.md) under V-76 and V-66. (why: D-184)
 
 ## Status
 
-**Steps 1 to 5 built on 2026-11-01, uncommitted.**
+**Steps 1 to 5 built and committed on 2026-11-01; in 0.2.0. Open: the verification below.** The record of
+2026-11-01 follows.
 
 - Step 4 needed no reset. Every current project continues from where it stands:
   - Asimov v2's next episode is ep_001 of 20, with ep_007 written.
@@ -97,9 +98,11 @@ ep_007 of 2026-11-01. The operator listened to it („sehr großartig“), and i
 
 | ID | Item | Status |
 | --- | --- | --- |
-| V-68 | A whole series written in order: does an episode build on what the earlier ones said, without repeating it? | open |
+| V-68 | A whole series written in order: does an episode build on what the earlier ones said, without repeating it? | open: „Geld verstehen“ season 1, 15 episodes, was written in order by the agent ([Money limit](../BUSINESS_LOGIC.md#money-limit)); the reading for repetition is not recorded |
 | V-69 | Episode 1's series introduction, heard by the operator | open |
-| V-70 | An agent revision changes what the feedback asks and keeps the rest | open |
-| V-71 | Three hosts written by the agent (Geld verstehen) | open |
+| V-70 | An agent revision changes what the feedback asks and keeps the rest | open: four revisions of „Geld verstehen“ season 1 ran ([Money limit](../BUSINESS_LOGIC.md#money-limit)); whether each kept the rest is not recorded |
+| V-71 | Three hosts written by the agent (Geld verstehen) | done: „Geld verstehen“ season 1 (three hosts, [example project](../../examples/geld-podcast/README.md)) was written by the agent and recorded, 2026-11 ([Money limit](../BUSINESS_LOGIC.md#money-limit)); host_c's share is V-51 |
 | V-72 | An English episode written by the agent (Ontologies v2) | open |
 | V-73 | An API-key session: its cost in the run's money and receipts | open |
+| V-80 | The next real story-agent episode (D-222): Claude Code allows `Bash(python ../<ep>.commands/check.py:*)`, outside the working folder, in `dontAsk` mode, and the agent runs `check.py`; if it is refused, the run's own checks still judge the draft | open |
+| V-82 | The prompts changed on 2026-11-14 (`story_critique.v3-length-material`, `script_review.v18-source-limit`, `foundation_review_basis` v6) on a real episode, by hand with `evals/research_lean` | open |

@@ -1,19 +1,23 @@
 """Render an approved, reviewed episode with resumable chapter batches."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .audio import PAUSE_TAGS, assemble, run_tts, worker_path
-from .content_text import text as wording, transparency_lines
+from .content_text import DEFAULT as DEFAULT_LANGUAGE, text as wording, transparency_lines
 from .errors import AppError
-from .expression import BACKCHANNELS, EXPRESSION_VERSION, plan_expression, untagged
+from .expression import ALLOWED_TAGS, BACKCHANNELS, EXPRESSION_VERSION, plan_expression, untagged
 from .elevenlabs_speech import (ELEVENLABS_SPEECH_VERSION, PASSAGE_RULE as ELEVENLABS_PASSAGE_RULE,
-                                check_elevenlabs_rows, run_elevenlabs_tts)
-from .google_speech import GOOGLE_SPEECH_VERSION, check_google_rows, passage_rule, passage_units, run_google_tts
+                                REQUEST_CHARACTERS as ELEVENLABS_REQUEST_CHARACTERS, check_elevenlabs_rows,
+                                passage_turns as elevenlabs_turns, plan as elevenlabs_plan, run_elevenlabs_tts)
+from .google_speech import (GOOGLE_SPEECH_VERSION, check_google_rows, heard_texts, passage_rule, passage_units,
+                            run_google_tts)
 from .models import EpisodeScript, ResearchLimits, RunManifest, StageRecord, host_labels, host_roles_of
 from .music import credit_line, montage_music, music_hash, music_record
 from .provider_pool import AdapterPool
@@ -25,13 +29,87 @@ from .runner import execute_stages, manifest_path, outputs_valid
 from .script_artifacts import run_rate
 from .script_models import SeriesPlan
 from .series_review import load_series_review, require_passing_series, reviewed_scripts
-from .scripting import load_research, validate_script
+from .scripting import validate_script
 from .speech import (AudioChoice, ELEVENLABS_PROVIDER, PASSAGE_PROVIDERS, SPEECH_VERSION, audio_generation_record,
                      check_gemini_rows, run_gemini_tts, same_audio_generation, selected_audio)
 from .spoken_forms import SpokenForms, load_forms, report as pronunciation_report, spoken_text
 from .story_agent import story_entry
-from .storage import (atomic_text, digest, file_hash, file_lock, inside, load_project, project_hash,
-                      project_lock, read_yaml, write_json, write_yaml)
+from .storage import (atomic_text, bound_brief, digest, file_hash, file_lock, inside, load_project, project_hash,
+                      project_lock, read_optional_json, read_yaml, write_json, write_yaml)
+
+# The runtime fields that decide what a local Qwen take sounds like (qwen_worker.segment_settings). Every other runtime
+# field and the research limits are operational and never bind a resumed run (storage.bound_brief, D-038).
+QWEN_SOUND_FIELDS = ("tts_model", "tts_revision", "tts_device", "tts_attention", "seed")
+
+
+def engine_hashes(path):
+    """The hashes a recording may have bound for an engine file: its text with LF line ends first, which every
+    recording binds since 2026-11-14 and which is the same in a Windows checkout (CRLF), a fresh clone and the wheel;
+    then its bytes as they are and with CRLF line ends, which recordings bound before."""
+    raw = Path(path).read_bytes()
+    text = raw.replace(b"\r\n", b"\n")
+    return list(dict.fromkeys(hashlib.sha256(form).hexdigest() for form in (text, raw, text.replace(b"\n", b"\r\n"))))
+
+
+def research_intact(root, run_id):
+    """Whether the research run a script run read is completed and its own files are as it finished them. A recording
+    binds this research, not the project's newest one (the user's decision of 2026-11-14): new focus questions or a
+    new research run leave the published episodes recordable. Its own files are those under its run id (its run
+    folder and its sources); the copies it published for the project (research/latest.json, research/dossier.yaml and
+    the like) are the newest research run's once another one has finished."""
+    if not isinstance(run_id, str):
+        return False
+    try:
+        manifest = RunManifest.model_validate(read_yaml(manifest_path(root, run_id)))
+    except (AppError, ValueError):
+        return False
+    if (manifest.kind != "research" or manifest.status != "completed" or not manifest.stages
+            or any(record.status != "completed" for record in manifest.stages.values())):
+        return False
+    own = {path: checksum for record in manifest.stages.values() for path, checksum in record.outputs.items()
+           if run_id in Path(path).parts}
+    try:
+        return bool(own) and all(file_hash(inside(root, path)) == checksum for path, checksum in own.items())
+    except (OSError, AppError):
+        return False
+
+
+# The characters a speech engine takes for markup in a spoken text: Gemini and ElevenLabs read <…> as a tag (ElevenLabs'
+# words for Gemini's tags dropped an unknown one with every word inside: „<5 % und über >95 %“ lost „5 % und über“) and
+# |…| as the other host's reaction. The engine hears words instead (spoken_symbols); the allowed tags stay tags.
+SYMBOL_WORDS = {"de-DE": {"<=": "höchstens", ">=": "mindestens", "<": "weniger als", ">": "mehr als"},
+                "en-US": {"<=": "at most", ">=": "at least", "<": "less than", ">": "more than"}}
+ARROW_SIGNS = {"<->": "↔", "<=>": "⇔", "->": "→", "=>": "⇒", "<-": "←"}
+SYMBOL = re.compile(r"<->|<=>|<=|>=|->|=>|<-|[<>|]")
+KEPT_TAGS = re.compile("(" + "|".join(re.escape(tag) for tag in ALLOWED_TAGS) + ")")
+
+
+def spoken_symbols(text, language):
+    """``text`` with <, > and | spoken as words or signs that no engine takes for a tag or a reaction, except the
+    expression layer's own tags (expression.ALLOWED_TAGS). A text without them is returned as it is."""
+    if not re.search(r"[<>|]", text):
+        return text
+    words = SYMBOL_WORDS.get(language, SYMBOL_WORDS[DEFAULT_LANGUAGE])
+
+    def say(match):
+        sign = match.group(0)
+        return " " + (ARROW_SIGNS.get(sign) or words.get(sign) or "") + " "
+    parts = KEPT_TAGS.split(text)
+    said = " ".join("".join(part if index % 2 else SYMBOL.sub(say, part) for index, part in enumerate(parts)).split())
+    return re.sub(r"\s+([.,;:!?)])", r"\1", re.sub(r"\(\s+", "(", said))
+
+
+def symbol_overrides(script, table, overrides, language):
+    """The per-segment spoken forms a recording speaks: the operator's (``overrides``), and for every segment whose
+    spoken text holds <, > or |, that text as spoken_symbols says it. The operator's own forms are what the decision,
+    the inputs and the show notes keep; these go to the engines and the expression layer."""
+    derived = {}
+    for segment in script.segments:
+        spoken = spoken_text(segment, table, overrides)
+        said = spoken_symbols(spoken, language)
+        if said != spoken:
+            derived[segment.segment_id] = said
+    return {**overrides, **derived} if derived else overrides
 
 
 def reviewed_episode(root, config, episode):
@@ -74,9 +152,9 @@ def reviewed_episode(root, config, episode):
                            code="script_edited", status="blocked")
     script = EpisodeScript.model_validate(read_yaml(folder / "script.yaml"))
     reviewed = EpisodeScript.model_validate_json((work / "reviewed" / f"{episode}.json").read_text(encoding="utf-8"))
-    research_id, *_ = load_research(root, config)
-    # Checked at the words a minute the run wrote it at (script_artifacts.run_rate, D-184).
-    if inputs["research_run"] != research_id or script != reviewed or validate_script(
+    # The script run's own research, completed and intact, not the project's newest (research_intact). Checked at the
+    # words a minute the run wrote it at (script_artifacts.run_rate, D-184).
+    if not research_intact(root, inputs.get("research_run")) or script != reviewed or validate_script(
             script, entry, roles=host_roles_of(config), rate=run_rate(work)):
         raise AppError("Skript und geprüfte Recherche passen nicht zusammen.", code="invalid_script", status="blocked")
     return manifest, script, file_hash(folder / "script.yaml")
@@ -237,14 +315,92 @@ def saved_approval(root, episode, script_hash, audio_generation, music=None):
             and decision.get("music") == music)
 
 
-def episode_spoken(root, episode, script):
-    """What each segment of a published episode would be spoken as: the table and the episode's overrides applied."""
+def episode_spoken(root, episode, script, language=None):
+    """What each segment of a published episode would be spoken as: the table and the episode's overrides applied,
+    and with ``language`` the markup characters as a recording speaks them (symbol_overrides)."""
     decision_path = root / "episodes" / episode / "audio_review.yaml"
     decision = read_yaml(decision_path) if decision_path.is_file() else {}
     overrides = {k: v for k, v in (decision.get("spoken_overrides") or {}).items()
                  if isinstance(k, str) and isinstance(v, str) and v.strip()}
     table = load_forms(root)
+    if language is not None:
+        overrides = symbol_overrides(script, table, overrides, language)
     return {s.segment_id: spoken_text(s, table, overrides) for s in script.segments}
+
+
+def recording_unmarked(root, report):
+    """Whether a recording's MP3 lacks the AI marking (D-154): an audio_report.json that does not say
+    ``ai_marking_embedded: true``, as every recording made before 2026-10-07 has it. The Studio calls such a recording
+    outdated, so it is assembled again from the cache (montage_only)."""
+    for part in (report or {}).get("parts") or []:
+        try:
+            folder = inside(Path(root), part["audio"]).parent
+        except (AppError, KeyError, TypeError):
+            return True
+        data = read_optional_json(folder / "audio_report.json", {})
+        if not isinstance(data, dict) or data.get("ai_marking_embedded") is not True:
+            return True
+    return False
+
+
+def steady_choice(choice, language):
+    """``choice`` as ``language`` speaks it, without what the montage alone does with the takes (the tempo). The
+    expression switch stays in, unlike in same_audio_generation: a remix speaks the tags of the recording it remixes,
+    so a switch turned on would keep an episode without expression and one turned off would speak the old tags again
+    (Codex review on #30)."""
+    spoken = choice.for_language(language)
+    data = spoken.model_copy(update={"pace": {key: pace.model_copy(update={"tempo": 1.0})
+                                              for key, pace in spoken.pace.items()}}).model_dump()
+    return AudioChoice.model_validate(data).model_dump()
+
+
+def montage_only(root, report, choice, voices, music, language):
+    """Whether this recording differs from the episode's latest one only in what the montage adds to the same takes:
+    the music, the tempo or the AI marking (the Studio's „mit Musik neu zusammensetzen“ and a new tempo)."""
+    stored = report.get("audio_generation")
+    if report.get("voices") != voices or not isinstance(stored, dict):
+        return False
+    try:
+        before = AudioChoice.model_validate(stored)
+    except ValueError:
+        return False
+    if steady_choice(before, language) != steady_choice(choice, language):
+        return False
+    return (report.get("music") != music or recording_unmarked(root, report)
+            or before.pace_for(language).tempo != choice.pace_for(language).tempo)
+
+
+def recorded_tags(root, episode, script_hash, *, backchannels):
+    """The episode's latest recording of this script: its report and the tags it spoke (``tags``, None where they were
+    placed for the other kind of recording), and whether it ran the expression layer (``layer``); None without one."""
+    report = read_optional_json(root / "episodes" / episode / "audio_latest.json", {})
+    if (not isinstance(report, dict) or report.get("script_sha256") != script_hash
+            or not isinstance(report.get("run_id"), str)):
+        return None
+    try:
+        work = manifest_path(root, report["run_id"]).parent
+    except AppError:
+        return None
+    saved = read_optional_json(work / "expression.json")
+    tags = (saved["segments"] if isinstance(saved, dict) and saved.get("version") == EXPRESSION_VERSION
+            and saved.get("script_sha256") == script_hash and isinstance(saved.get("segments"), dict)
+            and bool(saved.get("backchannels")) == bool(backchannels) else None)
+    return {"report": report, "run_id": report["run_id"], "tags": tags, "layer": saved is not None}
+
+
+def elevenlabs_fit(script, heard, styles):
+    """Refuse a recording a passage of which is longer than ElevenLabs takes in one request (the engine's own check,
+    elevenlabs_speech.REQUEST_CHARACTERS), before anything is asked for: until 2026-11-14 such a passage stopped the
+    recording only when its turn came, after the passages before it were paid for, and every resume stopped there."""
+    for indices in elevenlabs_plan(script):
+        segments = [script.segments[index] for index in indices]
+        size = sum(len(text) for _, text in elevenlabs_turns(segments, heard, styles))
+        if size > ELEVENLABS_REQUEST_CHARACTERS:
+            span = segments[0].segment_id + (f" bis {segments[-1].segment_id}" if len(segments) > 1 else "")
+            raise AppError(f"Abschnitt {span} ist mit {size} Zeichen länger als die {ELEVENLABS_REQUEST_CHARACTERS} "
+                           "Zeichen, die ElevenLabs je Anfrage verträgt. Es wurde nichts angefragt; den Abschnitt oder "
+                           "seine Sprechform kürzen.", code="invalid_speech", status="blocked",
+                           details={"segment_ids": [segment.segment_id for segment in segments]})
 
 
 def expression_invoke(pool, work, limits):
@@ -307,7 +463,7 @@ def tag_episode(root, episode, *, api_key=None):
     root = root.resolve()
     config = load_project(root)
     script_manifest, script, script_hash = reviewed_episode(root, config, episode)
-    spoken = episode_spoken(root, episode, script)
+    spoken = episode_spoken(root, episode, script, config.language)
     work = root / "studio" / "expression" / episode / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     pool = AdapterPool(config.runtime, script_text_generation(root, config, script_manifest.run_id), api_key=api_key)
     limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1,
@@ -395,9 +551,12 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
         decision_now = read_yaml(episode_folder / "audio_review.yaml") if (episode_folder / "audio_review.yaml").is_file() else {}
         overrides = {k: v for k, v in (decision_now.get("spoken_overrides") or {}).items()
                      if isinstance(k, str) and isinstance(v, str) and v.strip()}
+        # What the engines and the expression layer hear: the operator's forms, and <, > and | said as words.
+        spoken_overrides = symbol_overrides(script, table, overrides, config.language)
+        engine = worker_path()
         inputs = {"version": "episode_audio.v1", "project": config_hash, "episode_id": episode,
                   "script_run_id": script_manifest.run_id, "script_sha256": script_hash,
-                  "script": script.model_dump(), "worker_sha256": file_hash(worker_path())}
+                  "script": script.model_dump(), "worker_sha256": engine_hashes(engine)[0]}
         if table.entries or overrides:
             # Only a project that uses spoken forms binds them, so existing runs keep their hash.
             inputs["spoken_forms"] = {"table": table.model_dump(), "overrides": overrides}
@@ -415,8 +574,10 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                                         else SPEECH_VERSION)
             # The engine's own file: a Google recording binds google_speech.py, an ElevenLabs one elevenlabs_speech.py,
             # an OpenRouter one speech.py.
-            engine_file = "google_speech.py" if google else "elevenlabs_speech.py" if eleven else "speech.py"
-            inputs["worker_sha256"] = file_hash(Path(__file__).with_name(engine_file))
+            # Hashed as text with LF line ends (engine_hashes), the same in every checkout and in the wheel.
+            engine = Path(__file__).with_name("google_speech.py" if google else "elevenlabs_speech.py" if eleven
+                                              else "speech.py")
+            inputs["worker_sha256"] = engine_hashes(engine)[0]
             if passages:
                 # A Google script in which a third host speaks binds the speaker bound too (google_speech.passage_rule);
                 # ElevenLabs speaks every host of a passage in one request and keeps its rule.
@@ -428,6 +589,12 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
         voiced = choice.for_episode(episode).for_hosts(config)
         audio_config = config.model_copy(update={"voice_profile": voiced.voices})
         reactions = backchannels_for(choice, config.language)
+        if eleven:
+            # Every passage must fit one request before anything is asked for: with the tags the reader saw, if any; the
+            # synthesis checks again with the tags this run speaks.
+            reading = saved_expression(root, episode, script_hash, backchannels=bool(reactions)) if choice.expression else None
+            elevenlabs_fit(script, heard_texts(script, table, spoken_overrides, (reading or {}).get("segments")),
+                           voiced.spoken_styles(config.language))
 
         def expression_tags():
             """The inline tags this run placed (expression stage), empty for a run without the layer."""
@@ -436,18 +603,29 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
 
         def validate_audio(batch, report):
             if google:
-                return check_google_rows(root, batch, report, voiced, config.language, table=table, overrides=overrides,
-                                         expression=expression_tags())
+                return check_google_rows(root, batch, report, voiced, config.language, table=table,
+                                         overrides=spoken_overrides, expression=expression_tags())
             if eleven:
                 return check_elevenlabs_rows(root, batch, report, voiced, config.language, table=table,
-                                             overrides=overrides, expression=expression_tags())
-            return (check_gemini_rows(root, batch, report, voiced, config.language, table=table, overrides=overrides,
-                                      expression=expression_tags())
+                                             overrides=spoken_overrides, expression=expression_tags())
+            return (check_gemini_rows(root, batch, report, voiced, config.language, table=table,
+                                      overrides=spoken_overrides, expression=expression_tags())
                     if choice.remote
-                    else check_rows(root, batch, report, audio_config, table=table, overrides=overrides))
+                    else check_rows(root, batch, report, audio_config, table=table, overrides=spoken_overrides))
         if resume:
-            if manifest.kind != "episode_audio" or manifest.input_hash != digest(inputs):
+            # Bound as the run started: its operational fields from its snapshot (storage.bound_brief, D-038), except
+            # what decides a Qwen take's sound; its engine file as text or, as recordings bound it before, as bytes.
+            snapshot = path.parent / "project_snapshot.yaml"
+            bound = bound_brief(config, read_yaml(snapshot) if snapshot.is_file() else None)
+            if not choice.remote and any(getattr(bound.runtime, key) != getattr(config.runtime, key)
+                                         for key in QWEN_SOUND_FIELDS):
+                bound = config
+            candidates = [{**inputs, "project": project_hash(bound), "worker_sha256": worker}
+                          for worker in engine_hashes(engine)]
+            matched = next((candidate for candidate in candidates if digest(candidate) == manifest.input_hash), None)
+            if manifest.kind != "episode_audio" or matched is None:
                 raise AppError("Audioeingaben geändert; einen neuen Audiolauf starten.", code="inputs_changed", status="blocked")
+            inputs = matched
             if approve_audio and not manifest.audio_approved:
                 # Keep the original receipt and any completed synthesis hashes intact.
                 renewed_at = datetime.now(timezone.utc)
@@ -501,18 +679,35 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
 
         def expression():
             """Inline audio tags for this recording, placed once by the script's text model and reused on a resume.
-            Only tags are added; the check in expression.py keeps every word as it would be spoken anyway."""
-            spoken = {s.segment_id: spoken_text(s, table, overrides) for s in script.segments}
+            Only tags are added; the check in expression.py keeps every word as it would be spoken anyway.
+
+            Which tags: for a recording that differs from the episode's latest one only in what the montage adds (the
+            music, the tempo, the AI marking; montage_only), the tags that recording spoke, so every take comes from
+            the cache as the Studio's card promises; else the tags the reader saw (the reading); without a reading the
+            tags the latest recording of this script spoke; only then the text model. A segment whose spoken form
+            changed since goes without its tag."""
+            spoken = {s.segment_id: spoken_text(s, table, spoken_overrides) for s in script.segments}
             saved = saved_expression(root, episode, script_hash, backchannels=bool(reactions))
             mark = {"backchannels": True} if reactions else {}
-            if saved is not None:
-                # The tags the reader saw with the script: a segment whose spoken form changed since goes without.
-                tags = {key: text for key, text in saved["segments"].items()
+
+            def keep(tags):
+                return {key: text for key, text in tags.items()
                         if key in spoken and untagged(text) == " ".join(spoken[key].split())}
+
+            def placed(tags, source, extra=None):
                 write_json(work / "expression.json", {"version": EXPRESSION_VERSION, "script_sha256": script_hash,
-                                                      "segments": tags, "source": "reading", **mark,
-                                                      **({"rejected": saved["rejected"]} if saved.get("rejected") else {})})
+                                                      "segments": keep(tags), "source": source, **mark, **(extra or {})})
                 return [work / "expression.json"]
+            recorded = recorded_tags(root, episode, script_hash, backchannels=bool(reactions))
+            if (recorded is not None and (recorded["tags"] is not None or not recorded["layer"])
+                    and montage_only(root, recorded["report"], choice, voiced.voices, music, config.language)):
+                # A recording without the layer spoke no tags, and the remix speaks none either.
+                return placed(recorded["tags"] or {}, "recording", {"recording_run_id": recorded["run_id"]})
+            if saved is not None:
+                return placed(saved["segments"], "reading",
+                              {"rejected": saved["rejected"]} if saved.get("rejected") else None)
+            if recorded is not None and recorded["tags"] is not None:
+                return placed(recorded["tags"], "recording", {"recording_run_id": recorded["run_id"]})
             pool = AdapterPool(config.runtime, script_text_generation(root, config, script_manifest.run_id), api_key=api_key)
             limits = ResearchLimits(model_calls=MAX_REJECTIONS + 1, search_rounds=1, sources=1,
                                     cost_usd=config.research_limits.cost_usd)
@@ -527,6 +722,10 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
 
         def synthesis():
             outputs, rows, unit = [], [], "passages" if passages else "segments"
+            if eleven:
+                # With the tags this run speaks: no passage may be over ElevenLabs' limit before the first is asked for.
+                elevenlabs_fit(script, heard_texts(script, table, spoken_overrides, expression_tags()),
+                               voiced.spoken_styles(config.language))
             # Segments of the finished chapters: a passage row holds several of them.
             done = 0
             for number, chapter in enumerate(script.chapters, 1):
@@ -552,28 +751,28 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                         if parallel_remote:
                             from .parallel_speech import run_parallel_google_tts
                             run_parallel_google_tts(config, batch, root, folder, voiced, speech_key,
-                                                    table=table, overrides=overrides, expression=expression_tags())
+                                                    table=table, overrides=spoken_overrides, expression=expression_tags())
                         else:
                             run_google_tts(config, batch, root, folder, voiced, speech_key,
-                                           table=table, overrides=overrides, expression=expression_tags())
+                                           table=table, overrides=spoken_overrides, expression=expression_tags())
                     elif eleven:
                         if parallel_remote:
                             from .parallel_speech import run_parallel_elevenlabs_tts
                             run_parallel_elevenlabs_tts(config, batch, root, folder, voiced, elevenlabs_key,
-                                                        table=table, overrides=overrides, expression=expression_tags())
+                                                        table=table, overrides=spoken_overrides, expression=expression_tags())
                         else:
                             run_elevenlabs_tts(config, batch, root, folder, voiced, elevenlabs_key,
-                                               table=table, overrides=overrides, expression=expression_tags())
+                                               table=table, overrides=spoken_overrides, expression=expression_tags())
                     elif choice.remote:
                         if parallel_remote:
                             from .parallel_speech import run_parallel_gemini_tts
                             run_parallel_gemini_tts(config, batch, root, folder, voiced, api_key,
-                                                    table=table, overrides=overrides, expression=expression_tags())
+                                                    table=table, overrides=spoken_overrides, expression=expression_tags())
                         else:
                             run_gemini_tts(config, batch, root, folder, voiced, api_key,
-                                           table=table, overrides=overrides, expression=expression_tags())
+                                           table=table, overrides=spoken_overrides, expression=expression_tags())
                     else:
-                        run_tts(audio_config, batch, root, folder, table=table, overrides=overrides)
+                        run_tts(audio_config, batch, root, folder, table=table, overrides=spoken_overrides)
                     report = json.loads(report_file.read_text(encoding="utf-8"))
                     validate_audio(batch, report)
                     write_json(stamp_file, {"input_hash": signature, "sha256": file_hash(report_file)})
@@ -608,7 +807,7 @@ def run_episode_audio(root: Path, *, episode=None, approve_audio=False, approval
                                pauses=choice.pauses, progress=assembly_progress, trim_pauses=paused,
                                units=passage_units(report) if passages else None,
                                tempo=choice.pace_for(config.language).tempo,
-                               music=montage_music(root, music) if music else None)
+                               music=montage_music(root, music) if music else None, scratch=work)
             audio_report = json.loads((destination / "audio_report.json").read_text(encoding="utf-8"))
             parts = [{"part": 1, "audio": (destination / "audio.mp3").relative_to(root).as_posix(),
                       "duration_seconds": audio_report["duration_seconds"],

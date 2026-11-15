@@ -303,9 +303,21 @@ def with_music(work: Path, speech: Path, music: dict, places: list[dict], speech
     return combined, gain
 
 
+def clear_stale_mixes(*folders: Path) -> None:
+    """Remove the mix-* folders an earlier montage left behind: a Studio stop ends the worker hard (taskkill /F), so
+    its temporary directory is never cleaned up, and it held up to 1.7 GB of WAVs for a 40-minute episode. Each folder
+    belongs to one run, and an episode never assembles twice at once (its .audio.lock), so every such folder is
+    stale."""
+    for folder in folders:
+        for stale in folder.glob("mix-*") if folder.is_dir() else ():
+            if stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
+
+
 def assemble(script: EpisodeScript, paths: list[Path], output: Path,
              *, max_seconds: float | None = None, language: str = "de-DE", labels: dict | None = None,
-             pauses=None, progress=None, trim_pauses=(), units=None, tempo=1.0, music=None) -> list[Path]:
+             pauses=None, progress=None, trim_pauses=(), units=None, tempo=1.0, music=None,
+             scratch: Path | None = None) -> list[Path]:
     """Mix, measure and encode one episode into one MP3; ``progress(step, done, total)`` reports each step.
 
     ``paths`` holds one recording per segment, or with ``units`` one per passage of several segments (a two-host
@@ -324,7 +336,10 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
 
     ``music`` (music.montage_music) plays the podcast's piece by the MUSIC_* rules: its bars before the first word
     and at every chapter change go into the speech track as silence, so the timeline stays measured; a chapter mark
-    begins with its music, the first at 0:00, and the last ends with the music after the last word."""
+    begins with its music, the first at 0:00, and the last ends with the music after the last word.
+
+    ``scratch`` is the folder the montage's temporary WAVs go into, the run's own (episode_audio); without it the
+    export folder. Either way the mix-* folders a hard stop left there are removed first (clear_stale_mixes)."""
     if not 0.8 <= tempo <= 1.0:
         raise AppError("Das Sprechtempo liegt zwischen 80 und 100 Prozent.", code="invalid_audio")
     report = progress or (lambda step, done=0, total=0: None)
@@ -332,9 +347,12 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
     if len(paths) != len(groups):
         raise AppError("Es fehlen Audiosegmente.", code="invalid_audio")
     output.mkdir(parents=True, exist_ok=True)
+    scratch = scratch or output
+    scratch.mkdir(parents=True, exist_ok=True)
+    clear_stale_mixes(scratch, output)
     timeline, places = [], []
     bar = music["bar_seconds"] if music else 0.0
-    with tempfile.TemporaryDirectory(prefix="mix-", dir=output) as temporary:
+    with tempfile.TemporaryDirectory(prefix="mix-", dir=scratch) as temporary:
         work = Path(temporary)
         mixed = work / "mixed.wav"
         position = 0
@@ -448,7 +466,11 @@ def assemble(script: EpisodeScript, paths: list[Path], output: Path,
             raise AppError("Die gemessene MP3 überschreitet die erlaubte Länge.",
                            code="duration_exceeded", status="blocked")
         written_chapters = embedded_chapters(encoded)
-        encoded.replace(output / "audio.mp3")
+        try:
+            encoded.replace(output / "audio.mp3")
+        except OSError:
+            # A scratch folder on another drive than the export cannot be renamed across; copy it instead.
+            shutil.copyfile(encoded, output / "audio.mp3")
     write_json(output / "chapters.json", {"version": "1.0", "chapters": chapters,
                                           "embedded": written_chapters})
     write_json(output / "timeline.json", {

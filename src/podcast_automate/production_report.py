@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+from .call_folders import numbered
 from .storage import read_optional_json as read
 from .subscriptions import parse_iso
 
@@ -39,7 +40,7 @@ def production_report(work, *, allowance_rows=()):
     providers = defaultdict(lambda: {"calls": 0, "minutes": 0.0, "reported_usd": 0.0, "billed_usd": 0.0,
                                      "unpriced_attempts": 0})
     starts, ends = [], []
-    for folder in sorted((work / "calls").glob("call_*")):
+    for folder in numbered((work / "calls").glob("call_*")):
         activity = read(folder / "activity.json", {}) or {}
         metadata = read(folder / "metadata.json", {}) or {}
         choice = read(folder / "provider_choice.json", {}) or {}

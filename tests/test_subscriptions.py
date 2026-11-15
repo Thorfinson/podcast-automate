@@ -44,7 +44,8 @@ import json, os, sys
 mode = os.environ.get("PLA_CLAUDE_LOGIN", "ok")
 if sys.argv[1:] == ["auth", "status", "--json"]:
     print(json.dumps({"loggedIn": mode != "logout", "authMethod": "apiKey" if mode == "api" else "claude.ai",
-                      "subscriptionType": "max", "email": "private@example.org", "orgId": "org-private"}))
+                      "subscriptionType": "max", "email": "private@example.org", "orgId": "org-private",
+                      **({"apiProvider": "bedrock"} if mode == "bedrock" else {})}))
 elif sys.argv[1:] == ["--version"]:
     print("2.1.283 (Claude Code)")
 '''
@@ -151,6 +152,10 @@ class SubscriptionStoreTests(unittest.TestCase):
         self.assertEqual(released["last_rate_limit"]["window"], "five_hour")
         with patch.dict(os.environ, {"PLA_CLAUDE_LOGIN": "api"}):
             self.assertEqual(claude_quota(refresh=True, clock=self.clock)["reason"], "subscription_required")
+        # Review 2026-11-14: a claude.ai login whose CLI is set to another API provider would not run on the subscription.
+        with patch.dict(os.environ, {"PLA_CLAUDE_LOGIN": "bedrock"}):
+            bedrock = claude_quota(refresh=True, clock=self.clock)
+            self.assertEqual((bedrock["usable"], bedrock["reason"]), (False, "subscription_required"))
         with patch.dict(os.environ, {"PLA_CLAUDE_LOGIN": "logout"}):
             self.assertEqual(claude_quota(refresh=True, clock=self.clock)["reason"], "authentication_required")
         with patch("podcast_automate.subscriptions.claude_command",
@@ -301,7 +306,9 @@ class SubscriptionStoreTests(unittest.TestCase):
 
 class ChoiceRuleTests(unittest.TestCase):
     def setUp(self):
-        env = patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(Path(tempfile.mkdtemp()) / "subscriptions.json")})
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        env = patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(Path(folder.name) / "subscriptions.json")})
         env.start()
         self.addCleanup(env.stop)
         self.candidates = {"codex_cli": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"},
@@ -333,6 +340,8 @@ class ChoiceRuleTests(unittest.TestCase):
         self.assertIn("codex_unavailable (codex_missing)", choice["reason"])
         self.assertEqual(self.choose(codex_ok, claude_blocked)["provider"], "codex_cli")
         self.assertEqual(self.choose(codex_ok, claude_ok, exclude=["codex_cli"])["provider"], "claude_code")
+        # A provider this call left out although it has quota is named so, not as exhausted with no reset.
+        self.assertEqual(self.choose(codex_ok, claude_ok, exclude=["codex_cli"])["reason"], "codex_excluded; claude_available")
         self.assertEqual(self.choose(codex_ok, claude_ok, prefer="claude_code")["provider"], "claude_code")
         with self.assertRaises(AppError) as paused:
             self.choose(codex_out, claude_blocked)

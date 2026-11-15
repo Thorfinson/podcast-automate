@@ -8,6 +8,7 @@ import json
 import re
 import unicodedata
 import zipfile
+import zlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -90,7 +91,9 @@ def docx_text(raw: bytes) -> str:
             elif element.tag == namespace + "tc":
                 output.append("\t")
         return "".join(output).strip()
-    except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile, NotImplementedError, ET.ParseError) as exc:
+    # A broken deflate stream (zlib.error) or a truncated one (EOFError) is a damaged file like any other.
+    except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile, NotImplementedError, ET.ParseError,
+            zlib.error, EOFError) as exc:
         raise AppError("DOCX nicht lesbar oder zu groß entpackt. Bitte als normale .docx ohne Passwort oder als .txt speichern.",
                        code="invalid_attachment") from exc
 

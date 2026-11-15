@@ -134,8 +134,8 @@ def description_defects(answer, *, language, max_long, short_chars=SHORT_CHARS):
 
 def published_episode(root, episode):
     """The published script and plan of ``episode`` with its script run, while both files are the ones that run
-    published. Unlike episode_audio.reviewed_episode this does not ask for the current research: a kit describes
-    the text that was read and recorded, also after a newer research run."""
+    published. Like episode_audio.reviewed_episode (since 2026-11-14) this does not ask for the project's current
+    research: a kit describes the text that was read and recorded, also after a newer research run."""
     if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode):
         raise AppError("Unbekannte Folge.", code="unknown_episode", status="blocked")
     folder = inside(root / "episodes", episode)
@@ -232,7 +232,12 @@ def run_evidence(work):
     refs = {f["id"]: [e["reference"] for e in f.get("evidence", [])] for f in dossier.get("findings", [])}
     works = {a["source_id"]: a["work_id"] for a in dossier.get("source_assessments", []) if a.get("work_id")}
     documents = {source.id: source for source in SourceIndex.model_validate(inputs["sources"]).sources}
-    for receipt in sorted(work.glob("teaching/ep_*/supplement*/receipt.json")):
+    # A revision carries the supplements of the runs it revises, oldest first, as its material did
+    # (script_pipeline.carried_runs; review 2026-11-14), so their sources are this run's evidence too.
+    from .script_pipeline import carried_runs
+    receipts = [receipt for run in [*carried_runs(work.parents[1], inputs.get("revision")), work]
+                for receipt in sorted(run.glob("teaching/ep_*/supplement*/receipt.json"))]
+    for receipt in receipts:
         folder = receipt.parent
         if not re.fullmatch(r"supplement(?:_\d{2})?", folder.name):
             continue

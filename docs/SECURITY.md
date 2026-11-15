@@ -2,7 +2,7 @@
 title: Security
 doc_type: security
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/google_speech.py
   - src/podcast_automate/studio.py
@@ -62,7 +62,9 @@ What never leaves the computer, or never gets in:
   key in use, are refused with `credential_in_prompt`; the editorial partner never sees a key.
 - **No browser credentials.** Source retrieval uses no browser cookies or credentials. Each source address and each
   redirect must resolve to a public server (`sources.public_url`); an address in a private network is refused with
-  `invalid_source_url`. Source servers are checked against the operating system's certificate store (D-197). A refused
+  `invalid_source_url`. The connection is then pinned to the checked addresses, without a second DNS lookup, so a
+  rebound name cannot lead it to a private one; with a proxy from the environment the proxy resolves the name
+  (why: D-217). Source servers are checked against the operating system's certificate store (D-197). A refused
   address is never fetched another way: the Studio lists it for you to open in your own browser (D-199), and its link
   is shown only for an http or https address.
 - **No access log.** The Studio server logs no requests, only an unexpected failure with its path and error type,
@@ -88,6 +90,8 @@ What never leaves the computer, or never gets in:
   - every change needs the session key of the opened page (`X-Studio-Token`, new at every server start);
   - responses carry a same-origin Content Security Policy, `X-Content-Type-Options: nosniff`,
     `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+- **Error answers name files, never local folders.** Every request gets an answer, an unexpected error `500` with
+  `processing_failed`, and no answer carries a path of the computer.
 - **Unencrypted.** Plain HTTP, meant for your own Wi-Fi, not a public one. From outside the home the Studio is not
   reachable; that would need a VPN into the home network.
 - **Firewall.** On the first LAN start the Windows firewall asks whether Python may be reachable in the network: allow
@@ -102,10 +106,14 @@ What never leaves the computer, or never gets in:
 - For the subscription providers (`codex_cli`, `claude_code`, and both under `auto`) API-key logins are refused,
   because they would bill per call (why: D-109): Codex must be logged in with ChatGPT, Claude Code must report
   `authMethod: "claude.ai"`; anything else stops as `subscription_required`.
-- Their CLIs are started without `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
-  `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` (`codex.subscription_environment`), so they can
-  only use the subscription login.
-  `CLAUDE_CONFIG_DIR` stays untouched, because it holds the Claude login.
+- Their CLIs are started without any variable that holds a credential (`codex.subscription_environment`), so they can
+  only use the subscription login: the list is `key_store.SECRET_VARIABLES`, every key the Studio stores
+  (`OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`, `PLA_CORE_API_KEY`,
+  `ELEVENLABS_API_KEY`) plus `OPENAI_API_KEY`, `CODEX_API_KEY`, `GOOGLE_API_KEY` and `ANTHROPIC_AUTH_TOKEN`. The same
+  list feeds `logs.scrub`, so a new kind of key cannot reach a child process or a log line through a list that forgot
+  it. A Claude subscription call also drops the variables that send Claude Code to a cloud account or another
+  endpoint, and its login must name Anthropic itself as the API provider (why: D-236;
+  [ARCHITECTURE](ARCHITECTURE.md#claude-code)). `CLAUDE_CONFIG_DIR` stays untouched, because it holds the Claude login.
 - Claude on your Anthropic API key (`claude_api`) is a separate, billed provider that uses the key and nothing else:
   its calls drop every variable that would outrank or redirect the key, receive the key as `ANTHROPIC_API_KEY`, and
   are discarded with `claude_api_auth_mismatch` when Claude Code reports that it used no API key (why: D-145;
@@ -282,11 +290,14 @@ else ([Blocked downloads](RESEARCH.md#blocked-downloads-free-copies-and-open-arc
   (storage, limits and formats: [STUDIO](STUDIO.md#attachments-and-provided-works)).
 - **The story agent works in its run folder** (`runs/<run_id>/story/<episode_id>/`, the session's working
   directory; why: D-181). Its Claude Code session gets the file tools Read, Write, Edit, Glob and Grep, and Bash only
-  for the four command scripts the run writes into that folder (`story_agent.ALLOWED_TOOLS`); every other tool, web
-  search and web fetch included, is not offered, and it runs with `--permission-mode dontAsk`, no MCP servers
+  for the four command scripts the run writes beside that folder, into `story/<episode_id>.commands/`, which run with
+  `python -P` in their own folder (`story_agent.ALLOWED_TOOLS`; why: D-222); every other tool, web search and web
+  fetch included, is not offered, and it runs with `--permission-mode dontAsk`, no MCP servers
   (`--strict-mcp-config`), no setting sources, no slash commands and no saved session. Claude Code's own rules decide
   how far the file tools reach beyond the working directory; the run takes only `draft.json`, `outline.json`,
-  `sources_used.json` and `plan.md` from the folder, and checks the draft in code before it counts. The run writes
+  `sources_used.json` and `plan.md` from the folder and checks the draft in code before it counts, with its own
+  context in memory and after verifying the command scripts' checksums. Until 14 November 2026 the scripts and their
+  context lay in the session's folder, so its Write tool plus `python check.py` could run code of its own (see V-80). The run writes
   the earlier episodes' published text into `earlier/` and, for a revision, the published episode into
   `published.json`. The session needs the claude.ai login (`authentication_required`), except in a run whose text
   provider is `claude_api`: there it runs on the Anthropic key, which reaches it only as `ANTHROPIC_API_KEY` in its

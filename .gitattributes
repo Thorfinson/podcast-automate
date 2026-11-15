@@ -1,2 +1,20 @@
+# Git stores every text file with LF; a checkout writes the platform's line ending unless a rule below fixes it.
+* text=auto
+
 *.sh text eol=lf
 *.command text eol=lf
+# cmd.exe reads its batch files with CRLF.
+*.cmd text eol=crlf
+
+# The speech engines whose file hash an open recording binds (episode_audio, worker_sha256): the same bytes on every
+# checkout and in the wheel, whatever core.autocrlf says (2026-11-14 review).
+src/podcast_automate/speech.py text eol=lf
+src/podcast_automate/google_speech.py text eol=lf
+src/podcast_automate/elevenlabs_speech.py text eol=lf
+src/podcast_automate/qwen_worker.py text eol=lf
+
+*.mp3 binary
+*.png binary
+*.woff2 binary
+*.pdf binary
+*.zip binary

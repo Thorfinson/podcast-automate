@@ -8,8 +8,31 @@ import subprocess
 import threading
 import time
 
+from .call_activity import provider_json
 from .errors import AppError
+from .logs import logger
 from .process import stall_error, stop_process_tree
+
+
+def end_server(process, *, completed):
+    """Close an app-server's input and let it end; stop its tree first when the turn did not complete.
+
+    Closing the input from this thread waits for a writer that is stuck in a large request to a server that reads no
+    more, so after a time limit, a stall or a cancel the server is stopped before its input is closed (review
+    2026-11-14: the time limit never ended such a call). A tree that cannot be stopped is logged, never raised over
+    the call's own result."""
+    try:
+        if not completed:
+            stop_process_tree(process)
+        process.stdin.close()
+        process.wait(timeout=2)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        try:
+            stop_process_tree(process)
+        except AppError as exc:
+            logger("codex").warning("Codex App Server nicht angehalten (%s): %s", exc.code, exc)
+    except AppError as exc:
+        logger("codex").warning("Codex App Server nicht angehalten (%s): %s", exc.code, exc)
 
 
 def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
@@ -32,6 +55,7 @@ def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
     events, messages = [], {}
     thread_id = turn_id = None
     usage = None
+    completed = False
 
     def enqueue(value):
         while not stopped.is_set():
@@ -45,7 +69,7 @@ def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
         try:
             for line in process.stdout:
                 try:
-                    value = json.loads(line)
+                    value = provider_json(line)
                 except ValueError:
                     continue
                 if isinstance(value, dict):
@@ -202,17 +226,14 @@ def run_app_server(command, *, prompt, schema, response_file, cwd, env, timeout,
                     return failure({"message": "Codex stream completed without a final message"})
                 response_file.write_text(next(reversed(messages.values())), encoding="utf-8")
                 emit({"type": "turn.completed", "usage": usage})
+                completed = True
                 return subprocess.CompletedProcess(args, 0, "\n".join(json.dumps(e) for e in events), "")
     finally:
         # The process belongs to this call only. Never leave an idle app-server
         # or a cancelled model turn running after the caller has returned.
         stopped.set()
         outbox.put(None)
-        try:
-            process.stdin.close()
-            process.wait(timeout=2)
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            stop_process_tree(process)
+        end_server(process, completed=completed)
         for worker in workers:
             worker.join(timeout=2)
         process.stdout.close()
@@ -295,11 +316,8 @@ def read_rate_limits(command, *, env, timeout=20):
                 results[event["id"]] = event.get("result") or {}
         return {"account": results[2].get("account") or {}, "rate_limits": results[3]}
     finally:
-        try:
-            process.stdin.close()
-            process.wait(timeout=2)
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            stop_process_tree(process)
+        # This thread wrote every request itself, so nothing can be stuck in a write when the input closes.
+        end_server(process, completed=True)
         for worker in workers:
             worker.join(timeout=2)
         process.stdout.close()

@@ -566,6 +566,54 @@ class CompleteContextTests(AuditCase):
         self.assertIn(refs[-1], str(dropped.exception))
 
 
+class ProbeTests(AuditCase):
+    def accepted_run(self):
+        """A completed two-task run whose task_empirical blocked and was accepted as a gap; returns engine and dossier."""
+        def flow(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[task_value(), task_value("task_empirical", "empirical")])
+            if schema is ResearchDecision and payload["task"]["id"] == "task_empirical":
+                return decision("blocked")
+        self.hook = flow
+        with self.assertRaises(AppError):
+            self.engine().run(self.discovery, self.index)
+        approval = {"task_id": "task_empirical", "reason": "No measurement in reach.", "approved_at": "2026-11-14T00:00:00Z"}
+        engine = QuestionResearch(self.root, self.work, self.config, self.model, lambda activity: None,
+                                  accepted=lambda: {"task_empirical": approval})
+        engine.run(self.discovery, self.index)
+        dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        return engine, dossier
+
+    def test_the_coverage_row_of_an_accepted_gap_is_neither_probed_nor_a_blocking_gap(self):
+        """Review 2026-11-14: the coverage row of an accepted gap was probed like any gap; its unread hits blocked every
+        round of an assembled audit, and the routing sent that objection anywhere, since code fixed no scope for it."""
+        engine, dossier = self.accepted_run()
+        gap = next(row.gap for row in dossier.coverage if row.gap)
+        self.assertIn("No measurement in reach.", gap)
+        self.assertEqual(engine.probe_declared_gaps(dossier), [])
+        self.assertNotIn(gap, [row["text"] for row in engine.state["gap_probes"]])
+        self.assertEqual(self.gate()["blocking_gaps"], [])
+
+    def test_a_probe_objection_may_reopen_only_the_questions_that_own_its_gap(self):
+        from podcast_automate.research_gap_probe import gap_id
+        engine = self.engine()
+        engine.run(self.discovery, self.index)
+        dossier = ResearchDossier.model_validate_json((self.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        tasks = QuestionPlan.model_validate(engine.state["plan"]).tasks
+        dossier.coverage[0].gap = "What is energy?: nicht beantwortet"
+        text = "What is energy?: nicht beantwortet Dazu gibt es ungelesene Abschnitte im Korpus: src#s."
+        report = {"requirements": [], "probe_objections": [{"text": text, "gap": dossier.coverage[0].gap,
+                                                             "gap_id": gap_id(dossier.coverage[0].gap)}]}
+        routes = engine.probe_routes(report, tasks, dossier)
+        self.assertEqual(routes, [{"text": text, "task_ids": ["task_definition"]}])
+        scoped = {**report, "routing_scope": {"issues": [], "requirements": {}, "probes": routes}}
+        self.assertEqual(engine.objection_scopes([text], scoped), [{"task_ids": ["task_definition"], "requirement_id": None,
+                                                                    "finding_ids": [], "remedy": "research"}])
+        # A round recorded before probes had a scope keeps routing them as it did.
+        self.assertEqual(engine.objection_scopes([text], {**report, "routing_scope": {"issues": [], "requirements": {}}}),
+                         [None])
+
+
 class RenderTests(unittest.TestCase):
     def test_a_finish_on_accepted_gaps_alone_keeps_its_heading(self):
         report = {"closed": 1, "total": 1, "requirements": [], "blocking_gaps": [], "passed_with_accepted_gaps": True,

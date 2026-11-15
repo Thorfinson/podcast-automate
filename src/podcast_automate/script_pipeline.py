@@ -33,14 +33,14 @@ from .script_artifacts import SPOKEN_WORDS_PER_MINUTE, publish_scripts, script_m
 from .script_budget import ensure_script_budget
 # NOTED_CATEGORIES: review points that stop nothing once repairs are spent; shared with progress and projection.
 from .script_checkpoints import NOTED_CATEGORIES, series_adoption
-from .script_checks import (SCRIPT_REVIEW_VERSION, checked_series_plan, episode_limits, episode_sources,
-                            planning_dossier, quotation_errors, research_limits, script_review_signature,
-                            validate_script)
+from .script_checks import (RELAXED_REVIEW_VERSIONS, SCRIPT_REVIEW_VERSION, checked_series_plan, episode_limits,
+                            episode_sources, planning_dossier, quotation_errors, research_limits,
+                            script_review_signature, validate_script)
 from .script_evidence import (SCRIPT_EVIDENCE_INSTRUCTIONS, is_claim_drift, settle_receipts, source_corrections,
                               validate_claim_checks)
 from .script_models import KnowledgeModel, ScriptReview, SeriesPlan, episode_findings
 from .series_review import assess_series, load_series_review, require_passing_series, reviewed_scripts
-from .storage import atomic_text, digest, file_hash, read_optional_json, write_json
+from .storage import atomic_text, digest, file_hash, file_lock, read_optional_json, read_text, write_json
 from .story_agent import orientation, story_entry, used_documents
 from .story_agent import write_episode as story_episode
 from .teaching import EDITORIAL_REVIEW_VERSION, prerequisite_context
@@ -78,10 +78,29 @@ def review_blocks(review):
     return any(issue.category not in NOTED_CATEGORIES for issue in review.issues)
 
 
-def saved_verdict_stands(version):
+def saved_verdict_stands(version, review=None):
     """Whether a saved script review verdict holds on resume: a story agent's episode is reviewed with the corpus rule
-    (STORY_REVIEW_SUFFIX), and only a verdict given with today's review and that rule stands."""
-    return version == SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX
+    (STORY_REVIEW_SUFFIX), and a verdict given with today's review and that rule stands. So does one given with an
+    earlier version of RELAXED_REVIEW_VERSIONS when nothing in it blocks (``review``): that version's rule only lacked a
+    way for a point to be a note, so its pass is today's pass; a blocking one is judged again by today's rule."""
+    if version == SCRIPT_REVIEW_VERSION + STORY_REVIEW_SUFFIX:
+        return True
+    return (review is not None and not review_blocks(review) and
+            version in {earlier + STORY_REVIEW_SUFFIX for earlier in RELAXED_REVIEW_VERSIONS})
+
+
+def source_limited(issue):
+    """A point only research could fix (ScriptIssue.source_limit): a note in every round, never repaired. A grounding
+    point never is one, since a repair can always cut or narrow a statement the sources do not hold."""
+    return issue.source_limit and issue.category != "grounding"
+
+
+def carried_runs(root, revision):
+    """The run folders whose supplements a revision carries (scripting.revision_inputs, ``supplement_runs``): the
+    published runs it revises, oldest first, so the sections the published episode tells from stay in its material
+    and its review (2026-11-14 review: Geld S1 ep_002's revision lost Epley's Harvard study, fetched by the run that
+    published it). Any other run, and a revision begun before, carries none."""
+    return [manifest_path(root, run_id).parent for run_id in ((revision or {}).get("supplement_runs") or [])]
 
 
 def changed_segments(before, after):
@@ -125,11 +144,15 @@ def follow_up_scope(review, previous, changed):
     issues, advisories = [], []
     for index, issue in enumerate(review.issues):
         basis = review.issue_basis[index] if index < len(review.issue_basis) else None
-        (issues if in_scope(issue) or basis in CRITICAL_BASIS else advisories).append(issue)
+        # A point only research could fix is a note in this round too (source_limited).
+        blocking = (in_scope(issue) or basis in CRITICAL_BASIS) and not source_limited(issue)
+        (issues if blocking else advisories).append(issue)
     for issue in review.advisories:
         # On a segment the repair touched or a previous issue named, an evidence or scope advisory counts as an issue,
-        # unless it is what the review kept of a previous issue as a note; any other stays an advisory.
-        strict = in_scope(issue) and issue.category in STRICT_CATEGORIES and not residual(issue)
+        # unless it is what the review kept of a previous issue as a note or a point only research could fix; any
+        # other stays an advisory.
+        strict = (in_scope(issue) and issue.category in STRICT_CATEGORIES and not residual(issue)
+                  and not source_limited(issue))
         (issues if strict else advisories).append(issue)
     return review.model_copy(update={"issues": issues, "advisories": advisories})
 
@@ -176,6 +199,12 @@ class ScriptRun:
 
     def limits(self):
         return effective_limits(self.work, self.config.research_limits, self.input_hash)
+
+    def budget_now(self):
+        """The run's budget.json as reserve_call reads it, under its lock: {} before the first call."""
+        path = self.work / "budget.json"
+        with file_lock(self.work / ".budget.lock", timeout=30):
+            return json.loads(read_text(path)) if path.exists() else {}
 
     def terms(self):
         """The project's terminology rule (editorial.terminology): the machine-learning names only for such a topic.
@@ -247,7 +276,8 @@ class ScriptRun:
         planned = {entry.episode_id: entry for entry in plan.episodes}
         entries = [planned.get(entry.episode_id, entry) for entry in entries]
         self.dossier, self.context, self.sources, supplements = apply_foundations(
-            self.root, self.work, self.config, entries, self.base_dossier, self.base_context, self.base_sources)
+            self.root, self.work, self.config, entries, self.base_dossier, self.base_context, self.base_sources,
+            carried=carried_runs(self.root, getattr(self, "revision", None)))
         return supplements
 
     def check_budget(self, entries):
@@ -371,8 +401,10 @@ class ScriptRun:
         report = self.work / "jev_probe.json"
         limit = self.limits().cost_usd
         if limit is not None:
-            # Jev bills the OpenRouter key; with a money limit set, a reached limit stops before the scan (D-146).
-            check_money(read_optional_json(self.work / "budget.json", {}) or {}, limit)
+            # Jev bills the OpenRouter key; with a money limit set, a reached limit stops before the scan (D-146). Read
+            # under the budget's lock and through read_text, as reserve_call reads it: a sharing violation while a
+            # parallel call rewrites budget.json read as nothing spent (2026-11-14 review).
+            check_money(self.budget_now(), limit)
         state = {"status": "running", "done": 0, "total": 0}
         write_json(report, state)
 
@@ -730,12 +762,25 @@ class ScriptRun:
                 # latest corrected script and consumed repair allowance intact.
                 if saved.get("editorial_review_version") != EDITORIAL_REVIEW_VERSION:
                     result = None
-                if not saved_verdict_stands(saved.get("script_review_version")):
+                if not saved_verdict_stands(saved.get("script_review_version"), result):
                     result = None
                 if dossier.evidence_version and saved.get("evidence_review_version") != EVIDENCE_VERSION:
                     result = None
+                if result is None:
+                    # A pass judged by the rule just set aside is no pass of today's: kept, it was restored after
+                    # today's review blocked and its repairs failed, and published with the old verdict (2026-11-14
+                    # review).
+                    passed = None
                 if self.script_errors(draft, entry):
                     raise AppError("Gespeicherter Review-Entwurf ist ungültig.", code="invalid_script", status="blocked")
+        if result is None and repairs == 0 and previous is None:
+            # The agent's draft as it reached the review: held to the run's own checks of it (structure, citations,
+            # the quotation limit, the sections the review is given), not only to the session's (2026-11-14 review:
+            # the session's final check read files the session could write).
+            errors = self.script_errors(draft, entry)
+            if errors:
+                raise AppError("Die Fassung des Erzähl-Agenten verletzt die Skriptprüfungen: " + " ".join(errors),
+                               code="story_agent_failed", status="blocked")
 
         def save():
             write_json(checkpoint, {"input_hash": signature, "draft": draft.model_dump(),
@@ -762,7 +807,7 @@ class ScriptRun:
                                               sections=self.source_sections(entry)[0])
             except AppError:
                 # Saved before its check ran: reviewed again instead of stopping every resume here.
-                result = None
+                result = passed = None
             else:
                 for issue in drift:
                     if issue not in result.issues and issue not in result.advisories:
@@ -897,12 +942,15 @@ class ScriptRun:
         if follow_up:
             return follow_up_scope(reviewed, *follow_up)
         # A first review has no scope: an evidence or scope point it set aside as an advisory counts as an issue. Any
-        # other advisory is the review's own verdict that the point does not block; it is reported as a note.
-        strict = [issue for issue in reviewed.advisories if issue.category in STRICT_CATEGORIES]
-        return reviewed.model_copy(update={"issues": [*reviewed.issues, *strict],
-                                           "advisories": [issue for issue in reviewed.advisories
-                                                          if issue.category not in STRICT_CATEGORIES],
-                                           "issue_basis": []})
+        # other advisory is the review's own verdict that the point does not block; it is reported as a note. A point
+        # only research could fix is a note either way (source_limited).
+        strict = [issue for issue in reviewed.advisories
+                  if issue.category in STRICT_CATEGORIES and not source_limited(issue)]
+        return reviewed.model_copy(update={
+            "issues": [*(issue for issue in reviewed.issues if not source_limited(issue)), *strict],
+            "advisories": [*(issue for issue in reviewed.issues if source_limited(issue)),
+                           *(issue for issue in reviewed.advisories if issue not in strict)],
+            "issue_basis": []})
 
     def repair_series(self, plan, grouped):
         """Rewrite the segments a failing series check cites, then review the result again.

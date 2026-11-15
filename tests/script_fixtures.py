@@ -21,11 +21,12 @@ from tests.research_fixtures import HTML, discovery, dossier_from_prompt, assess
 
 
 # A stand-in for the Claude Code CLI: it answers the login check, then acts as the agent would, reading material.json,
-# writing plan.md and draft.json, running check.py and critique.py, and printing the session's JSON result. Its draft
+# writing plan.md and draft.json, running check.py and critique.py (beside its folder, by the path its allowed tools
+# name), and printing the session's JSON result. Its draft
 # is the fixture's own (fake_draft.json beside it, example_script) where that fits the episode's chapters, else words
 # that meet its length.
 FAKE_AGENT = r'''
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
 args = sys.argv[1:]
 if args[:2] == ["auth", "status"]:
     print(json.dumps({"loggedIn": True, "authMethod": "claude.ai"}))
@@ -33,7 +34,12 @@ if args[:2] == ["auth", "status"]:
 assert "-p" in args, args
 assert args[args.index("--tools") + 1] == "Read,Write,Edit,Glob,Grep,Bash", args
 allowed = args[args.index("--allowedTools") + 1]
-assert "Bash(python check.py:*)" in allowed and "WebSearch" not in allowed and "Bash(*)" not in allowed, allowed
+# The command scripts lie beside the folder (story_agent.commands_folder), named by their path from it.
+named = re.search(r"Bash\(python (\S*)check\.py:\*\)", allowed)
+assert named and named.group(1).startswith("../") and named.group(1).endswith(".commands/"), allowed
+assert "WebSearch" not in allowed and "Bash(*)" not in allowed, allowed
+prefix = named.group(1)
+assert not os.path.exists("check.py"), "no command script lies in the session's own folder"
 material = json.load(open("material.json", encoding="utf-8"))
 length = material["length"]
 # The agent writes its target: host_b's seven words per chapter, host_a the rest.
@@ -61,8 +67,8 @@ if os.path.isfile(given):
         draft = fixed
 open("plan.md", "w", encoding="utf-8").write("# Plan\n\nThe turn: a probe.\n")
 json.dump(draft, open("draft.json", "w", encoding="utf-8"), ensure_ascii=False)
-check = subprocess.run([sys.executable, "check.py"], capture_output=True, text=True, encoding="utf-8")
-critique = subprocess.run([sys.executable, "critique.py"], capture_output=True, text=True, encoding="utf-8")
+check = subprocess.run([sys.executable, prefix + "check.py"], capture_output=True, text=True, encoding="utf-8")
+critique = subprocess.run([sys.executable, prefix + "critique.py"], capture_output=True, text=True, encoding="utf-8")
 json.dump({"check": check.stdout, "critique": critique.stdout}, open("agent_log.json", "w", encoding="utf-8"))
 print(json.dumps({"type": "result", "result": "Finished the episode.", "is_error": False, "num_turns": 7,
                   "duration_ms": 1234, "total_cost_usd": 1.5, "usage": {"input_tokens": 10, "output_tokens": 20}}))

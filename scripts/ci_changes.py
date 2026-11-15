@@ -17,17 +17,22 @@ NO_TEST_PATTERNS = (
     "docs/*",
     "site/*",
     "evals/*",
-    "LICENSE",
     ".gitignore",
     ".github/ISSUE_TEMPLATE/*",
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/CODEOWNERS",
     ".github/dependabot.yml",
 )
+# Top-level files the package build reads (pyproject.toml: readme, license-files); every test leg installs the package,
+# so a change to them is a change a test can fail on (2026-11-14 review).
+BUILD_INPUTS = frozenset({"README.md", "LICENSE"})
 
 
 def reads_no_test(path: str) -> bool:
-    """True for a file no test reads: a Markdown file at the top level or a path under NO_TEST_PATTERNS."""
+    """True for a file no test reads: a Markdown file at the top level other than the package's readme, or a path
+    under NO_TEST_PATTERNS."""
+    if path in BUILD_INPUTS:
+        return False
     if "/" not in path and path.endswith(".md"):
         return True
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in NO_TEST_PATTERNS)
@@ -40,15 +45,19 @@ def needs_tests(paths: list[str] | None) -> bool:
     return not all(reads_no_test(path) for path in paths)
 
 
-def changed_files(base: str, head: str) -> list[str] | None:
-    """The files that differ between the merge base of `base` and `head`, and `head`; None when git cannot tell."""
+def changed_files(base: str, head: str, *, cwd=None) -> list[str] | None:
+    """The files that differ between the merge base of `base` and `head`, and `head`; None when git cannot tell.
+
+    A renamed file counts on both sides (--no-renames): git names a rename by its new path alone, so a package file
+    moved into docs/ looked like a docs-only change (2026-11-14 review). The list is NUL-separated (-z), so a path git
+    would quote is read as it is."""
     if not base or not head or set(base) == {"0"}:
         return None
-    result = subprocess.run(["git", "diff", "--name-only", f"{base}...{head}"], capture_output=True, text=True,
-                            encoding="utf-8")
+    result = subprocess.run(["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...{head}"],
+                            capture_output=True, text=True, encoding="utf-8", cwd=cwd)
     if result.returncode:
         return None
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [path for path in result.stdout.split("\0") if path.strip()]
 
 
 def main(argv: list[str]) -> int:

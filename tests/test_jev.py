@@ -108,6 +108,24 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(build.return_value.open.call_count, 8, "each 403 is asked once, never again")
             pause.assert_not_called()
 
+    def test_an_answer_of_another_shape_is_asked_again_and_never_crashes_the_scan(self):
+        # The decisions endpoint is OpenRouter's alpha; a list where the answers belong raised TypeError or
+        # AttributeError, which no caller catches.
+        with patch("podcast_automate.jev.build_opener") as build, patch("podcast_automate.jev.time.sleep"):
+            build.return_value.open.side_effect = [Response({"answers": [1]}), Response([]),
+                                                   Response({"answers": {"g0": "yes"}, "usage": "free"})]
+            answers, cost = JevClient("test-key").decide("s", self.QUESTIONS)
+        self.assertEqual((answers, cost, build.return_value.open.call_count), ({"g0": "yes"}, 0.0, 3))
+
+        class Odd(Fake):
+            def decide(self, state, questions):
+                self.requests.append(sorted(questions))
+                return {"g0": "yes"}, "free"
+        corpus = index(LONG_UNRELATED)
+        with tempfile.TemporaryDirectory() as folder:
+            found, summary = scan(Odd({}), corpus, {"gap": "a missing thing"}, Path(folder) / "jev_scan.jsonl")
+        self.assertEqual((found, summary["cost_usd"]), ({"gap": []}, 0.0))
+
     def test_without_a_key_nothing_is_sent(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}), patch("podcast_automate.jev.build_opener") as build:
             with self.assertRaises(AppError) as missing:
@@ -134,7 +152,9 @@ class Fake:
 
 class ScanTests(unittest.TestCase):
     def setUp(self):
-        self.cache = Path(tempfile.mkdtemp()) / "jev_scan.jsonl"
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.cache = Path(folder.name) / "jev_scan.jsonl"
         self.corpus = index(LONG_UNRELATED, V3_BIAS_RULE, "Short heading", REFERENCES)
 
     def test_only_sections_that_can_hold_an_answer_are_asked(self):
@@ -150,7 +170,7 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(found["gap_00"], [], "below the threshold nothing is proposed")
         self.assertEqual((summary["sections"], summary["requests"], summary["model"]), (2, 4, JEV_MODEL))
         again, repeated = scan(Fake({}), self.corpus, gaps, self.cache)
-        self.assertEqual((again, repeated["requests"]), (found, 0))
+        self.assertEqual((again, repeated["new_requests"], repeated["requests"]), (found, 0, 4))
         # A new gap is the only thing asked on the next scan.
         newcomer = Fake({})
         scan(newcomer, self.corpus, {**gaps, "gap_new": "another missing thing"}, self.cache)
@@ -177,7 +197,7 @@ class ScanTests(unittest.TestCase):
         # Resumed, neither the answered nor the refused section is asked again, and the refusal still counts.
         again = Refusing({})
         _, repeated = scan(again, self.corpus, gaps, self.cache)
-        self.assertEqual((again.requests, repeated["refused_sections"]), ([], 1))
+        self.assertEqual((again.requests, repeated["refused_sections"], repeated["new_requests"]), ([], 1, 0))
 
     def test_above_the_ceiling_each_gap_is_asked_about_its_best_ranked_sections_only(self):
         """Orlagau, 2026-10-09: 81,010 sections and 33 gaps made 405,050 requests. Above MAX_REQUESTS a gap is asked
@@ -198,7 +218,65 @@ class ScanTests(unittest.TestCase):
         scan(Fake(everything.answers), corpus, gaps, self.cache)
         with patch("podcast_automate.jev.MAX_REQUESTS", 2):
             resumed, again = scan(Fake({}), corpus, gaps, self.cache)
-        self.assertEqual((resumed, again["requests"]), (found, 0))
+        self.assertEqual((resumed, again["new_requests"]), (found, 0))
+
+    def test_a_resumed_scan_counts_the_requests_and_money_of_its_whole_cache(self):
+        """Review of 2026-11-14: a scan stopped and resumed counted only the requests after the resume, so the money of
+        the part before the stop never reached the run's spending (Geld S2 ep_016 stopped at 7,854 of 9,999)."""
+        gaps = {f"gap_{n:02d}": f"missing thing number {n:02d}" for n in range(10)}
+        gaps["gap_f13"] = F13_GAP
+
+        class Stopping(Fake):
+            def decide(self, state, questions):
+                if len(self.requests) == 2:
+                    raise AppError("Jev antwortet nicht.", code="jev_unavailable", status="blocked")
+                return super().decide(state, questions)
+        with patch("podcast_automate.jev.WORKERS", 1), self.assertRaises(AppError):
+            scan(Stopping({}), self.corpus, gaps, self.cache)
+        rows = [json.loads(line) for line in self.cache.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([row["cost"] for row in rows], [0.0001, 0.0001], "each answer keeps what it cost")
+        resumed = Fake({})
+        _, summary = scan(resumed, self.corpus, gaps, self.cache)
+        self.assertEqual((len(resumed.requests), summary["new_requests"], summary["requests"]), (2, 2, 4))
+        self.assertAlmostEqual(summary["cost_usd"], 0.0004)
+
+    def test_a_scan_whose_requests_are_all_refused_stops_instead_of_leaving_every_section_out(self):
+        """Review of 2026-11-14: a refusal of every request (a setting at OpenRouter, not one section's text) left every
+        section out as refused, the scan reported itself complete, and a resume never asked them again."""
+        class Blocked(Fake):
+            def decide(self, state, questions):
+                self.requests.append(sorted(questions))
+                raise SectionRefused("Blocked by guardrail")
+        gaps = {"gap_f13": F13_GAP}
+        client = Blocked({})
+        with self.assertRaises(AppError) as stopped:
+            scan(client, self.corpus, gaps, self.cache)
+        self.assertEqual(stopped.exception.code, "jev_unavailable")
+        self.assertIn("Blocked by guardrail", str(stopped.exception))
+        self.assertFalse(self.cache.exists() and self.cache.read_text(encoding="utf-8").strip(),
+                         "nothing is recorded as refused before a request was answered")
+        # A refusal recorded by an earlier version before any answer is asked again.
+        self.cache.write_text(json.dumps({"reference": "src_v3#sec_001", "gaps": {}, "refused": ["gap_f13"],
+                                          "reason": "Blocked by guardrail"}) + "\n", encoding="utf-8")
+        working = Fake({})
+        _, summary = scan(working, self.corpus, gaps, self.cache)
+        self.assertEqual((len(working.requests), summary["refused_sections"]), (2, 0))
+
+    def test_a_refusal_before_the_first_answer_counts_for_its_section_once_another_is_answered(self):
+        corpus = index(V3_BIAS_RULE, LONG_UNRELATED)
+
+        class Refusing(Fake):
+            def decide(self, state, questions):
+                if "decrease the bias term" in state:
+                    self.requests.append(sorted(questions))
+                    raise SectionRefused("Input was flagged")
+                return super().decide(state, questions)
+        client = Refusing({})
+        _, summary = scan(client, corpus, {"gap_f13": F13_GAP}, self.cache)
+        self.assertEqual((len(client.requests), summary["refused_sections"]), (2, 1))
+        rows = [json.loads(line) for line in self.cache.read_text(encoding="utf-8").splitlines()]
+        self.assertIn({"reference": "src_v3#sec_001", "gaps": {}, "refused": ["gap_f13"], "reason": "Input was flagged"},
+                      rows)
 
 
 class MergeTests(unittest.TestCase):

@@ -17,7 +17,9 @@ Written for the operator and the agents who continue it. The evidence is the nar
 
 ## Status
 
-**Steps 1 to 3 built on 2026-10-27 (uncommitted); step 4 waits for the operator.** The operator said „Los gehts“
+**Built and committed; step 4 ran on 2026-11-01 (V-76). Since D-184 (2026-11-01) the agent is the only writer, so
+the writer switch and `--writer` below are gone ([Agent-Only Writer Plan](2026-11-01-agent-only-writer-plan.md));
+open: V-65 and V-67.** The record of 2026-10-27 follows. Steps 1 to 3 were built on 2026-10-27. The operator said „Los gehts“
 after the lab reached its goal. Built: `story_agent.py` and its task document, the story stage and the teaching branch
 without a design, the scoped review with the agent's corpus sections, budget and receipts, the project's writer
 switch in the Studio's job summary, the production view's stage and the progress texts, de and en catalogs, the CLI's
@@ -102,7 +104,9 @@ A narrated script run gets the **story agent** as its writer, chosen per project
 
 ## 5. Verification list
 
-- V-64: a real agent session in a Studio run writes a passing draft for Asimov v2 ep_007 (step 4). Started on
+V-76 was numbered V-64 until 2026-11-14, which the [Narration Plan](2026-10-23-narration-plan.md) already used.
+
+- V-76 (done 2026-11-01): a real agent session in a Studio run writes a passing draft for Asimov v2 ep_007 (step 4). Started on
   2026-11-01 as `pla script … --episode ep_007 --from-outline run_20261025_182003_335297_5efe1a9a` after the operator
   switched the waiting series run to the agent and stopped it after approval (one episode first); a Studio button
   for one episode follows once this episode reads well. Partly seen on
@@ -113,7 +117,7 @@ A narrated script run gets the **story agent** as its writer, chosen per project
   - the draft has 138 segments and 5,212 words (about 40 of 45 planned minutes), 75 of them citing sections;
   - the review passed after two repairs: three overstated conclusions, then two small citation points.
 
-  The reading by the operator is open.
+  The operator listened to it („sehr großartig“, [Agent-Only Writer Plan](2026-11-01-agent-only-writer-plan.md)).
   - Five of the eight review answers were rejected and asked again (about 22 minutes, 6.5 USD). In four of them a
     partner's echo of a fact without refs was judged `preserved`. In four, a quote differed from the text only in
     the case of its first letter, or misquoted it.
@@ -130,7 +134,9 @@ A narrated script run gets the **story agent** as its writer, chosen per project
   - The review's framing rules (series orientation, intro and outro) were not in the agent's task; both first
     reviews raised them as structure issues. Since 2026-11-01 the agent gets the rule itself in `material.json`
     (`framing`) and a task section on it (`story_agent.v3-framing`).
-- V-66: cost per episode by the CLI's count (the lab: about 7 USD per session at list prices; subscription use).
+- V-66 (done; a whole season measured on 2026-11-10: the story agent's sessions about 20 USD an episode,
+  [Money limit](../BUSINESS_LOGIC.md#money-limit)): cost per episode by the CLI's count (the lab: about 7 USD per
+  session at list prices; subscription use).
   Measured on 2026-10-30: 11.6 to 16.0 USD per session for episodes of 34 to 44 planned minutes. Asimov v2 ep_007
   (45 minutes, 2026-11-01), as subscription equivalent, 28.56 USD in all:
   - teaching: 2.95 USD;

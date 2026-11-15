@@ -18,7 +18,7 @@ from podcast_automate.errors import AppError
 from podcast_automate.models import EpisodeScript, Segment
 from podcast_automate.scripting import run_script
 from podcast_automate.speech import ELEVENLABS_MODEL, GEMINI_MODEL, OWN_AUDIO, AudioChoice, selected_audio
-from podcast_automate.storage import load_project, read_yaml, write_json
+from podcast_automate.storage import load_project, read_yaml, write_json, write_yaml
 from tests import script_fixtures as fixtures
 from tests.test_google_speech import pcm, segments
 
@@ -160,6 +160,42 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(leaked.exception.code, "credential_in_prompt")
         self.assertIn(str(REQUEST_CHARACTERS), str(overlong.exception))
 
+    def test_a_reaction_of_a_host_outside_the_passage_is_keyed_by_that_hosts_voice(self):
+        """2026-11-14: a passage of one host speaks the other host's |mhm| as a turn in that host's voice, but only the
+        passage's own hosts were in its key, so a changed voice of the other host kept the old voice's „Mhm.“ from the
+        cache. A passage without such a reaction keeps the key it always had; a take cached under the old key is kept
+        when ElevenLabs' own answer shows the reaction in today's voice, else it is asked for again."""
+        from podcast_automate.elevenlabs_speech import passage_settings
+        from podcast_automate.speech import DEFAULT_STYLES
+        from podcast_automate.storage import digest, file_hash
+        from tests.test_google_speech import wav_bytes
+        alone = segments(("c1", "c1", "host_a", 300))
+        sid = alone[0].segment_id
+        heard = {sid: alone[0].text.replace("Wort Wort", "Wort |mhm| Wort", 1)}
+        plain = {sid: alone[0].text}
+        other = {**VOICES, "host_b": "OtherVoice0123456789"}
+        key = lambda voices, spoken: digest(passage_settings(alone, spoken, voices, "de-DE"))
+        self.assertNotEqual(key(VOICES, heard), key(other, heard))
+        self.assertEqual(key(VOICES, plain), key(other, plain))
+        self.assertEqual(passage_settings(alone, plain, VOICES, "de-DE")["voices"], {"host_a": PAULI})
+        # The key as it was before: the passage's own host only.
+        old = {**passage_settings(alone, heard, VOICES, "de-DE"), "voices": {"host_a": PAULI},
+               "styles": {"host_a": DEFAULT_STYLES["host_a"]}}
+        legacy = self.cache / (digest(old) + ".wav")
+        legacy.write_bytes(wav_bytes(pcm(len(heard[sid]) / 16)))
+        write_json(legacy.with_suffix(".json"), {"settings": old, "sha256": file_hash(legacy), "voice_segments": [
+            {"voice_id": PAULI, "dialogue_input_index": 0}, {"voice_id": THOMAS, "dialogue_input_index": 1},
+            {"voice_id": PAULI, "dialogue_input_index": 2}]})
+        opener = Mock()
+        opener.open.side_effect = dialogue_answer
+        with patch("podcast_automate.elevenlabs_speech.build_opener", return_value=opener):
+            kept = self.engine.synthesize(alone, heard, VOICES, "de-DE", self.cache)
+            self.assertEqual((kept.name, opener.open.call_count), (key(VOICES, heard) + ".wav", 0))
+            self.engine.synthesize(alone, heard, other, "de-DE", self.cache)
+        self.assertEqual(opener.open.call_count, 1, "the old take speaks the reaction in another voice")
+        self.assertEqual([item["voice_id"] for item in json.loads(opener.open.call_args.args[0].data)["inputs"]],
+                         [PAULI, "OtherVoice0123456789", PAULI])
+
     def test_the_account_voices_come_with_the_users_own_first(self):
         page = {"voices": [{"voice_id": "premade0voice0id0001", "name": "Adam - Deep", "category": "premade",
                             "labels": {"gender": "male"}},
@@ -238,6 +274,42 @@ class ElevenLabsEpisodeTests(unittest.TestCase):
         tts = json.loads((work / "tts_report.json").read_text(encoding="utf-8"))
         self.assertEqual(len(check_elevenlabs_rows(self.root, script, tts, AudioChoice.model_validate(self.choice),
                                                    "de-DE")), calls)
+
+    def test_a_passage_too_long_for_one_request_stops_the_recording_before_any_request(self):
+        """2026-11-14: a passage over ElevenLabs' 2,000 characters was refused only when its turn came, after the
+        passages before it were paid for, and every resume stopped there again. It is checked before anything is
+        asked for, and no run is started."""
+        script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
+        first = script.segments[0]
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml",
+                   {"spoken_overrides": {first.segment_id: ("Ein sehr langer Satz. " * 100).strip()}})
+        runs = set((self.root / "runs").iterdir())
+        with patch("podcast_automate.elevenlabs_speech.build_opener") as build:
+            with self.assertRaises(AppError) as stopped:
+                run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=self.choice,
+                                  elevenlabs_key=KEY)
+            build.assert_not_called()
+        self.assertEqual(stopped.exception.code, "invalid_speech")
+        self.assertIn(first.segment_id, str(stopped.exception))
+        self.assertEqual(set((self.root / "runs").iterdir()), runs, "no run was started")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_markup_characters_are_spoken_as_words_not_dropped_or_turned_into_a_reaction(self):
+        """2026-11-14: ElevenLabs' words for Gemini's tags dropped any <…> it did not know with the words inside, and
+        |x| became a turn of the other host („X.“)."""
+        script = EpisodeScript.model_validate(read_yaml(self.root / "episodes/ep_001/script.yaml"))
+        first = script.segments[0]
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"spoken_overrides": {
+            first.segment_id: "Bei <5 % der Fälle und >95 % der Jahre zählt |x| nicht."}})
+        with patch("podcast_automate.elevenlabs_speech.build_opener") as build:
+            build.return_value.open.side_effect = dialogue_answer
+            run = run_episode_audio(self.root, episode="ep_001", approve_audio=True, audio_choice=self.choice,
+                                    elevenlabs_key=KEY)
+        self.assertEqual(run.status, "completed")
+        texts = [item["text"] for call in build.return_value.open.call_args_list
+                 for item in json.loads(call.args[0].data)["inputs"]]
+        self.assertIn("weniger als 5 % der Fälle und mehr als 95 % der Jahre zählt x nicht.", " ".join(texts))
+        self.assertNotIn("X.", texts)
 
     def test_without_the_elevenlabs_key_the_recording_stops_before_any_request(self):
         with patch("podcast_automate.elevenlabs_speech.build_opener") as build, \

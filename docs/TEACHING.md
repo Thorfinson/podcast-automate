@@ -2,7 +2,7 @@
 title: Teaching
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/teaching.py
   - src/podcast_automate/teaching_research.py
@@ -289,6 +289,13 @@ Like all research, it searches with the run's web search: the subscriptions' or 
   attempts) on the hold card, or `pla approve <project> --fresh-attempts`, gives it new ones. The spent corrections
   move unchanged to `<kind>_superseded_RR_NN.json`, and the points their reviews objected to stay known to the next
   review as `previous_issues`.
+- **Scoped from round two** (why: D-227). From the second round of a review an issue blocks only as a previous issue
+  or on an explanation whose text changed, and a point the review marks as a limit of the sources
+  (`issue_source_limit`) is a note. The scoped review is saved as `review.json`, the raw answer as
+  `review_answer_NN.json` (`teaching_research.PROMPT_VERSION` `teaching_research.v6-review-scope`). Until
+  14 November 2026 new points in unchanged explanations blocked every round.
+- A source of an addition that fails to read (`OSError`, `ValueError`) is recorded as a failure row, like any other
+  failed source.
 - If a routed gap comes back neither settled nor with new evidence, the run stops with `teaching_research_required`
   instead of running in a paid circle.
 

@@ -219,7 +219,7 @@ main{max-width:1240px;width:100%;margin:0 auto;padding:var(--s6) var(--s6) calc(
 .doc-rail{position:sticky;top:calc(var(--bar) + var(--s4));display:grid;gap:var(--s4);min-width:0;max-height:calc(100vh - var(--bar) - var(--dock) - 40px);overflow:auto;align-content:start}
 .doc-rail .panel{margin:0}
 .action-bar{position:sticky;bottom:calc(var(--dock) + var(--tabbar));z-index:5;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4) var(--s5);margin-top:var(--s5);box-shadow:var(--shadow)}
-body.has-player .action-bar,body.has-player .composer{bottom:calc(var(--dock) + var(--tabbar) + 64px)}
+body.has-player .action-bar,body.has-player .composer{bottom:calc(var(--dock) + var(--tabbar) + var(--player,64px))}
 .action-bar .actions{margin-top:0}
 .action-bar .hint{margin:var(--s2) 0 0}
 .action-note{margin-bottom:10px}

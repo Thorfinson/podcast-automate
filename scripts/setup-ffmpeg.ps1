@@ -1,7 +1,11 @@
 # Download the Windows x64 build linked from https://ffmpeg.org/download.html (gyan.dev), from its GitHub mirror:
 # gyan.dev drops a release's versioned package once the next one is out, the mirror keeps every release.
-# Run from any directory; only this checkout's tools/ffmpeg folder is changed.
+# Run from any directory; only this checkout's tools/ffmpeg folder is changed. A stock Windows refuses to run scripts,
+# so start it as: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.ps1
+# The script is plain ASCII and needs nothing beyond Windows PowerShell 5.1.
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 on an older .NET may offer only TLS 1.0/1.1, which GitHub refuses.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $ffmpegVersion = '9.0.1'
 $archiveSha256 = 'fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9'
 $downloadUrl = "https://github.com/GyanD/codexffmpeg/releases/download/$ffmpegVersion/ffmpeg-$ffmpegVersion-essentials_build.zip"

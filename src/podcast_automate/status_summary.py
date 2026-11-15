@@ -14,6 +14,7 @@ from pydantic import Field
 from . import studio_settings
 from .prompts import instructions
 from .call_activity import clean_status
+from .call_folders import numbered
 from .codex import CodexAdapter, subscription_environment  # noqa: F401  (tests patch CodexAdapter.structured here)
 from .errors import AppError
 from .models import Contract
@@ -144,7 +145,7 @@ def evidence_snapshot(root, run):
                 add(f"gap_{n}", str(row.get("question", "")) + ": " + str(row.get("reason", "")))
             if len(facts) >= 18:
                 break
-    schemas = sorted((work / "calls").glob("call_*/output_schema.json"))
+    schemas = numbered((work / "calls").glob("call_*/output_schema.json"))
     live = False
     latest_at = None
     if run.get("kind") == "research":

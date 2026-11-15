@@ -35,7 +35,7 @@ CORRECTION_LOOP_CODES = {
     "invalid_evidence", "invalid_question_plan", "invalid_question_scope", "invalid_supplement", "invalid_teaching_review",
     "invalid_script_evidence_review", "invalid_polish_review", "invalid_series_review", "invalid_script",
     "invalid_revision", "invalid_polish_evidence", "invalid_series_evidence", "invalid_teaching_evidence",
-    "invalid_teaching_repair", "invalid_research_gap", "verified_question_split", "invalid_dossier_rebuild"}
+    "invalid_teaching_repair", "invalid_research_gap", "invalid_dossier_rebuild"}
 SCRIPT_FRESH_CODES = {"script_review_failed", "teaching_research_required", "series_review_failed"} | CORRECTION_LOOP_CODES
 RESEARCH_FRESH_CODES = {"question_scope_unresolved"} | CORRECTION_LOOP_CODES
 BUDGET_CODES = {"script_budget_insufficient", "research_budget_insufficient", "research_budget_exhausted"}

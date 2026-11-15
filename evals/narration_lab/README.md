@@ -5,8 +5,9 @@
 > went with them; it is in git history (commit `f6d51cd`). The cases, prompts and results below stay as the
 > evidence of D-181.
 
-Real-model checks of how the script pipeline tells a story, on fixed ten-minute cases, run by hand
-(`run.py --help`). The user's goal (2026-10-26): tune the prompts on one short piece until it reaches 10/10/10, then
+Real-model checks of how the script pipeline tells a story, on fixed ten-minute cases, run by hand with `run.py` while
+it existed; its judge (`judge_quality.txt`, `judge_pair.txt`) is still run by
+[research_lean/judge.py](../research_lean/judge.py). The user's goal (2026-10-26): tune the prompts on one short piece until it reaches 10/10/10, then
 scale up to an episode, three episodes and a series.
 
 ## Cases

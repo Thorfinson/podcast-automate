@@ -4,7 +4,8 @@ A run billed to the user's key (``claude_api``, OpenRouter) or one whose web sea
 Before and during such a run the Studio shows what it spent and what the rest is expected to cost: expected calls
 (question_budget, script_budget) times the money one call costs. That figure comes from, in this order, the run's own
 billed calls once there are enough of them, the project's last completed run of the same kind with the same model
-(subscription runs count too: Claude Code reports the same calls' value at API prices), and the table below.
+(subscription runs count too: Claude Code reports the same calls' value at API prices), the table below, and for a
+model the table does not know a high assumption (assumed_usd).
 """
 from __future__ import annotations
 
@@ -37,11 +38,27 @@ def table_usd(kind, model):
     return DEFAULT_USD_PER_CALL.get((kind, canonical(model)))
 
 
+# Models the table does not know, valued at a measured model that bounds them from above. Haiku 5.5's tokens cost a
+# twentieth of Sonnet 5.5's (CLI 2.1.293's catalog, D-166), so Sonnet 5.5's measured value per call holds unless a Haiku
+# call used twenty times the tokens; no Haiku run had been priced when this was written (2026-11-15).
+BOUNDED_BY = {"claude-haiku-5-5": "claude-sonnet-5-5"}
+
+
+def assumed_usd(kind, model):
+    """The money per call assumed for a billable model without a measurement: the value of the model that bounds it
+    (BOUNDED_BY), else the highest measured value of the run kind (Opus 5.5's), a high estimate for Opus 5 and the
+    OpenRouter models other than Claude's. Never None and never 0 (review 2026-11-14: such models counted at 0 USD).
+    ``kind=None`` takes the highest value of every kind."""
+    bound = BOUNDED_BY.get(canonical(model))
+    rows = [(row_kind, usd) for (row_kind, name), usd in DEFAULT_USD_PER_CALL.items() if bound in (None, name)]
+    return max([usd for row_kind, usd in rows if row_kind == kind] or [usd for _, usd in rows])
+
+
 def fallback_usd(model):
     """The money an attempt without a reported cost is counted at when its run has no priced call yet: the higher
-    measured value of the model, or None."""
+    measured value of the model, else the value assumed for it (assumed_usd)."""
     values = [usd for (_, name), usd in DEFAULT_USD_PER_CALL.items() if name == canonical(model)]
-    return max(values) if values else None
+    return max(values) if values else assumed_usd(None, model)
 
 
 def call_usd(metadata):
@@ -73,6 +90,7 @@ def _run_mean(work: str, model: str):
 
 def project_mean(root: Path, kind, model, *, exclude=None):
     """The mean of the project's most recent completed run of this kind with this model, or None."""
+    from .errors import AppError
     from .storage import read_yaml
     model = canonical(model)
     runs = sorted((root / "runs").glob("run_*"), reverse=True)
@@ -81,7 +99,8 @@ def project_mean(root: Path, kind, model, *, exclude=None):
             continue
         try:
             manifest = read_yaml(work / "run_manifest.yaml") or {}
-        except (OSError, ValueError):
+        except (OSError, ValueError, AppError):
+            # read_yaml names a missing or unreadable manifest as invalid_project: such a folder is no completed run.
             continue
         if manifest.get("kind") != kind or manifest.get("status") != "completed":
             continue
@@ -93,16 +112,20 @@ def project_mean(root: Path, kind, model, *, exclude=None):
 
 def per_call_usd(root: Path, work: Path, kind, model, budget=None):
     """Money one more call of this run is expected to cost, and where the figure comes from:
-    ``run`` (its own billed calls), ``project`` (the last completed run), ``table`` or ``unknown``."""
+    ``run`` (its own billed calls), ``project`` (the last completed run), ``table`` (a measured value) or ``assumed``
+    (a model nobody measured, assumed_usd).
+
+    The run's mean counts its model attempts only (``model_billed_usd``, research.add_money): its Perplexity requests
+    are money too, but no call. A budget settled before that field holds ``billed_usd`` alone."""
     budget = budget or {}
     priced = budget.get("priced_attempts", 0)
     if priced >= MIN_PRICED_CALLS:
-        return budget.get("billed_usd", 0.0) / priced, "run"
+        return budget.get("model_billed_usd", budget.get("billed_usd", 0.0)) / priced, "run"
     found = project_mean(root, kind, model, exclude=work.name)
     if found is not None:
         return found, "project"
     usd = table_usd(kind, model)
-    return (usd, "table") if usd is not None else (None, "unknown")
+    return (usd, "table") if usd is not None else (assumed_usd(kind, model), "assumed")
 
 
 def spent_usd(budget):

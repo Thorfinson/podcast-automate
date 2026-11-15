@@ -6,4 +6,11 @@ what an earlier review of this supplement raised; an issue from it that is still
 previous. source_budget shows how many words each source can still carry: do not demand that an
 explanation cite a source with too few words left; ask instead that the claim it contradicts be dropped
 or narrowed. Every other observation, such as wording, a term to explain, the form of an attribution or a
-passage left unused, goes to advisories: they are kept with the supplement and do not block.
+passage left unused, goes to advisories: they are kept with the supplement and do not block. Give
+issue_explanations in the same order as issues: the number of the explanation in supplement.explanations
+each issue concerns, 0 for the first, or -1 for the supplement as a whole. Give issue_source_limit in the
+same order: true only when no correction from the supplied passages can fix the issue because the sources
+lack what it needs; such an issue is kept as a note and never sent back. When changed_explanations is
+given, an earlier review judged this supplement and raised previous_issues, and only the explanations
+listed there changed since: judge them as fully as a first review; an issue on any other explanation
+blocks only as a previous issue still unresolved.

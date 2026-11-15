@@ -29,7 +29,7 @@ There is no e-mail address for reports; GitHub's private vulnerability reporting
   session token, the Content Security Policy, uploads, downloads and every path it reads or serves.
 - **LAN mode** (`pla studio --lan`): a device outside your private network reaching the Studio, or a web page steering
   it, locally or in the home network.
-- **Key handling**: an OpenRouter, Google, Anthropic or Perplexity key, or a subscription login, ending up anywhere it
+- **Key handling**: an OpenRouter, Google, ElevenLabs, Anthropic, Perplexity or CORE key, or a subscription login, ending up anywhere it
   should not: in a prompt, a project or run file, a log, a trace, a process argument, browser storage, a request to
   another host, or a call of another provider.
 - **Source fetching**: a source address or redirect that reaches a private network address, a service key that
@@ -40,7 +40,7 @@ There is no e-mail address for reports; GitHub's private vulnerability reporting
 - **Release artifacts**: the published package and the release workflow.
 
 Out of scope: vulnerabilities in the providers' own services and CLIs (Claude Code, Codex, OpenRouter, Google,
-Perplexity; please report those to their vendors), and setups the docs advise against, such as exposing the Studio to
+ElevenLabs, Perplexity, CORE; please report those to their vendors), and setups the docs advise against, such as exposing the Studio to
 the internet or to an untrusted network: it serves plain HTTP without a login by design.
 
 ## What to include

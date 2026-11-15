@@ -1,3 +1,5 @@
+# Optional local Qwen on Windows with an AMD Radeon GPU. A stock Windows refuses to run scripts, so start it as:
+# powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-qwen.ps1 -ProjectDir projects\<name>
 param([string]$ProjectDir = 'projects\windows-pilot')
 
 $ErrorActionPreference = 'Stop'

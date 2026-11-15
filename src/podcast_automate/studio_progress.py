@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .call_folders import numbered
 from .runner import manifest_path
 from .script_checkpoints import finished  # noqa: F401  (re-exported for callers)
 from .run_budget import (accepted_gaps, criterion_gaps, dispute_decisions, disputed_checks, effective_limits,
@@ -213,7 +214,7 @@ def open_calls(work, run, since=None):
     if run.get("status") != "running":
         return []
     rows = []
-    for schema_file in sorted((work / "calls").glob("call_*/output_schema.json"))[-60:]:
+    for schema_file in numbered((work / "calls").glob("call_*/output_schema.json"))[-60:]:
         directory = schema_file.parent
         if (directory / "response.json").exists() or (directory / "failure.json").exists():
             continue
@@ -277,7 +278,7 @@ def script_progress(root, run, since=None, light=False):
     # A failed episode of a parallel stage stops the run only after the others finish their step.
     stopped = [row for row in rows if row["stage_status"] == "interrupted"
                and (not since or (stage_rows[row["episode_id"]].get("finished_at") or "") >= since)]
-    calls = sorted((work / "calls").glob("call_*/output_schema.json"))
+    calls = numbered((work / "calls").glob("call_*/output_schema.json"))
     schema = read(calls[-1], {}).get("title") if calls else None
     activity = t(f"progress.activity.{schema}" if schema in ACTIVITIES else "progress.activity.default")
     if schema == "EpisodeScript":
@@ -452,7 +453,7 @@ def insight_view(work, run, responses):
     """The current assignment (research_status.work_insight), kept while the files it reads are unchanged: the
     newest call's records, the trace, the question state and the answers so far."""
     from .research_status import work_insight
-    calls = sorted((work / "calls").glob("call_*/output_schema.json"))
+    calls = numbered((work / "calls").glob("call_*/output_schema.json"))
     if not calls:
         return None
     last = calls[-1].parent

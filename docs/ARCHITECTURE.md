@@ -2,7 +2,7 @@
 title: Architecture
 doc_type: architecture
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/claude_code.py
   - src/podcast_automate/codex.py
@@ -146,7 +146,7 @@ sub-questions run at once is in [Sequential or parallel](STUDIO.md#sequential-or
 
 ## Text provider adapters
 
-Codex CLI and Claude Code use their existing subscription logins (ChatGPT; claude.ai with Claude Max); OpenRouter is
+Codex CLI and Claude Code use their existing subscription logins (ChatGPT; claude.ai with a Claude subscription); OpenRouter is
 the API alternative, and Claude Code also runs on your own Anthropic API key as the separate provider `claude_api`
 ([On the API key](#claude-code)). A run may also search the web through the Perplexity Search API instead of its
 model's own tools ([Web search through Perplexity](#web-search-through-perplexity)). Per provider a small adapter with
@@ -173,6 +173,12 @@ structured(prompt, output_type, directory, *, prompt_version, search=False) -> (
 - **Time limits.** Each call has the absolute limit `runtime.text_timeout_seconds` (default 1800 s, see
   [Project brief](CONFIGURATION.md#project-brief)) and is stopped as hung after `process.STALL_TIMEOUT_SECONDS` (600 s)
   without output (`stall`); a hung call is not charged.
+- **Provider text.** Every provider's JSON goes through `call_activity.whole_text`: surrogate halves split across
+  chunks are joined, and a lone half becomes U+FFFD, since a lone surrogate passes pydantic but breaks `json.dump`,
+  `write_text` and `digest` later.
+- **Stopping.** `process.stop_process_tree` stops a call with its whole process tree; a tree that will not stop raises
+  `worker_stop` instead of `TimeoutExpired`, and the call's own error is kept (`stop_quietly`). An unexpected error of a
+  stage marks the stage and the run `failed` with `invalid_local_data` and a failure receipt before it propagates.
 
 ### Adapter pool
 
@@ -210,9 +216,11 @@ holds a Studio worker's key, `provider_pool.text_key` picks the key a choice nee
   npm shim (`.cmd`, `.bat`, `.ps1`) is never run through `cmd.exe`: the adapter calls `node` with the
   `node_modules/@anthropic-ai/claude-code/cli.js` next to it, else stops with `unsupported_claude_launcher`; a missing
   CLI stops with `claude_missing`. There is no project setting for the Claude path (why: D-013).
-- **Login and version.** On the subscription, `claude auth status --json` must report `loggedIn` and
-  `authMethod: "claude.ai"`, else the call stops with `authentication_required` or `subscription_required`; on the API
-  key there is no login check. `claude --version` must reach
+- **Login and version.** On the subscription, `claude auth status --json` must report `loggedIn`,
+  `authMethod: "claude.ai"` and an `apiProvider` of `firstParty` or none (`claude_code.FIRST_PARTY`), else the call
+  stops with `authentication_required` or `subscription_required`; the same check holds in `check_login`,
+  `subscriptions.claude_quota` and the story agent's `session_access` (why: D-236). On the API key there is no login
+  check. `claude --version` must reach
   `MINIMUM_CLI_VERSION` (2.1.280) and the model's entry in `MODEL_MINIMUM_CLI` (`claude-sonnet-5-5`: 2.1.284,
   `claude-haiku-5-5`: 2.1.293), else
   `claude_version` with the hint `claude update`.
@@ -236,7 +244,10 @@ holds a Studio worker's key, `provider_pool.text_key` picks the key a choice nee
 - **Environment.** It starts from `codex.subscription_environment` and sets `DISABLE_TELEMETRY=1`,
   `DISABLE_ERROR_REPORTING=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: 128 000
   for `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5` (`MODEL_OUTPUT_TOKENS`), else `MAX_OUTPUT_TOKENS` (64 000)
-  (why: D-028). `CLAUDE_CONFIG_DIR` stays untouched because it holds the subscription login.
+  (why: D-028). `CLAUDE_CONFIG_DIR` stays untouched because it holds the subscription login. A subscription call also
+  drops `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_AUTH_TOKEN` (`SUBSCRIPTION_ENV_DROPPED`; only `CLAUDE_CODE_OAUTH_TOKEN`, the subscription's own token,
+  stays), so it never runs on a cloud account or another endpoint (why: D-236).
 - **On the API key.** `ClaudeCodeAdapter(auth="api_key", api_key=…)` is the provider `claude_api` (why: D-145). It
   uses the given key, else `ANTHROPIC_API_KEY`, and stops without one with `anthropic_key_required`. Its environment
   is `claude_api_environment(model, key)`: the subscription environment above without `API_ENV_DROPPED`
@@ -269,7 +280,9 @@ holds a Studio worker's key, `provider_pool.text_key` picks the key a choice nee
 - **Rate-limit events.** The stream carries `rate_limit_event` entries with `status`, `resetsAt` and `rateLimitType`
   (for example `five_hour`). The last one is stored as `rate_limit` in `metadata.json` and, for the subscription, in
   the quota store; a refused event gives the exact reset time of a block. `isUsingOverage` and `overageStatus` are kept as
-  `using_overage` and `overage_status` where the CLI names them; nothing acts on them yet (see V-17).
+  `using_overage` and `overage_status` where the CLI names them; nothing acts on them yet (see V-17). A weekly reset
+  given as a date in the failure text ("resets Nov 18, 5pm", "Nov 18 at 5pm", "November 18, 5:00 PM") is read in local
+  time; a date already past rolls to the next year.
 - **Cost cap.** `--max-budget-usd` (`MAX_BUDGET_USD`, 12.0 per call) limits outliers; on the subscription the reported
   amount is an equivalent value, not a bill, on the API key it is money spent (recalibration: V-32). Measured with
   2.1.92 on 2026-09-19: the cap ends a call with subtype `error_max_budget_usd`, but only after the first model turn
@@ -307,7 +320,9 @@ tests.
   reasoning) are never kept.
 - **Stream.** `item/agentMessage/delta` and `item/reasoning/summaryTextDelta` feed the live output (public reasoning
   summaries only), `webSearch` items become search events, and on `turn/completed` the final message is authoritative;
-  deltas are display only. The server process is stopped after each call.
+  deltas are display only. The server process is stopped after each call; when a turn did not complete, it is stopped
+  before its input closes, so a server that stopped responding ends at the call's time limit. The output schema is
+  made strict by the same `openrouter.strict_schema` as for the other adapters.
 - **Failures.** `codex.classify_failure` maps the turn's `codexErrorInfo` (`usageLimitExceeded` or HTTP 429 →
   `quota_exhausted`, `waiting_for_quota`, with the reset parsed from "try again in …" or "try again at …";
   `unauthorized` or 401 → `authentication_required`), an unsupported schema to `invalid_output_schema` and anything else
@@ -428,8 +443,9 @@ Each kind of text has its own language rule (why: D-152, D-153, D-156):
 **Interface language.** `studio_text.t(key, **params)` looks up a flat catalog key and returns a `Localized` string
 that keeps its key, its parameters and its language; a plural value (`{"one": …, "other": …}`) is chosen by the
 `count` parameter. A key missing in the active language falls back to English, then to the key itself, with one
-warning. Both catalogs have the same keys (2,309 on 2026-11-10); `de.json` holds the German the Studio always showed, so
-German output is unchanged. Only `studio*.py` and `production_report.py` import `studio_text`, which a test guards.
+warning. Both catalogs have the same keys (2,322 on 2026-11-15); `de.json` holds the German the Studio always showed, so
+German output is unchanged. Only `studio*.py` and `production_report.py` import `studio_text`, which a test guards, and
+`test_studio_text` also fails for a key nothing names.
 The page loads its catalog from `GET /locale.js` (the active language over English, `Vary: Accept-Language`). A job
 keeps the language it started in (`ui_language` in the worker's request and in `job.json`); a resume by the scheduler
 takes the parked job's language, a queued recording the one stored when it was approved.
@@ -442,7 +458,8 @@ carries (each `code="…"` in `src/podcast_automate/*.py` and AppError's default
 `foreignText` in `web/app.js`). The original stays under **Technical details** („Technische Details“), and a notice or
 a queued recording's refusal quotes it after the text ("Original message (German, <code>): …"). A code without a text
 falls back to `error.foreign` ("Refused (<code>)" and the original). `test_studio_text` fails for a raised code
-without a text in either catalog and for a text whose code no module raises any more. Where the Studio must name a
+without a text in either catalog and for a text whose code no module raises any more; it also reads the `error_code`
+literals. Where the Studio must name a
 cause in either language, the run carries it as data: the limit of a budget stop in the manifest
 ([Run folder and manifest](#run-folder-and-manifest)), the run limit that ended a sub-question's web search as
 `block_cause` ([Run limits](RESEARCH.md#run-limits)) and an advisory's values as `params`
@@ -656,7 +673,10 @@ The rest sits next to it:
 
 ### Per-call records
 
-Every model call has its folder `runs/<run_id>/calls/call_NNN/`:
+Every model call has its folder `runs/<run_id>/calls/call_NNN/`. The number has at least three digits and more past
+999, so every reader sorts the folders by number (`call_folders.numbered`: research, the question budget, the
+production report, the script checks, the Studio, its progress, the status brief and the research status), never by
+name, and no folder is ever renamed:
 
 | File | Written by | Content |
 | --- | --- | --- |

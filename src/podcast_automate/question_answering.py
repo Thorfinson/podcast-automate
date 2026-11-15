@@ -18,6 +18,7 @@ from .research_evidence import (EVIDENCE_INSTRUCTIONS, blocks, evidence_profile,
                                 evidence_summary, scope_assessments, settle_receipts, support_errors)
 from .research_gap_probe import settle
 from .research_ledger import CALL_VERSION, check_sources, read_value, save_value
+from .research_patches import retire_stale_receipt
 from .research_models import ResearchDiscovery, SourceDocument, SourceIndex, admissible, is_idea
 from .research_dates import research_day
 from .research_reader import source_catalog
@@ -54,6 +55,8 @@ PREREQUISITE_GAP_REVIEW = ("prerequisite_gaps lists prerequisites the editor acc
 LOCK_FEEDBACK = ("The answer is locked after a failed review: read or search new passages first and answer only "
                  "with new evidence. If a criterion needs a kind of source the corpus lacks, search_web for it; "
                  "if the web search brings nothing, choose blocked and name the criterion.")
+LAST_REVIEW_READER = ("last_review names what the independent review objected to in your previous answer: its failed "
+                      "criteria and reasons. New passages have unlocked answering; correct exactly these points with them.")
 # Added only to the prompt of a task with verified prerequisites, which now carry digests instead of whole answers.
 PREREQUISITE_DIGEST_READER = ("prerequisite_answers gives each verified prerequisite answer as its question, summary, "
                               "outcome, limits and findings (id, statement, relation, references). Read a finding's "
@@ -68,6 +71,15 @@ REVIEW_MEMORY = ("previous_review is your earlier verdict on this question's pre
                  "each criterion and finding receipt whether an earlier point is resolved. Only an earlier point that is "
                  "still unresolved, or a new defect in a changed finding or in a criterion resting on one, fails the "
                  "answer now; anything else you notice belongs in issues or limitations.")
+# The same rule for the review of an answer that passed before and comes back: reworked after an objection of the
+# overall audit, or checked again after a prerequisite changed (review 2026-11-14). Its previous verdict passed.
+REVIEW_MEMORY_KEPT = ("previous_review is your earlier verdict on this question's answer, which passed; since then the "
+                      "answer was reworked after an objection of the overall review, or is checked again because a "
+                      "prerequisite changed. changed_finding_ids are the findings that are new or changed since; may_fail "
+                      "is the scope the code set for this review: those findings, the findings and criteria the "
+                      "objection names or that rest on a changed prerequisite, and the criteria resting on them. Only a "
+                      "defect within may_fail fails the answer now; anything else you notice in unchanged, passed "
+                      "material belongs in issues or limitations.")
 UNREVIEWED_CRITERION = "The review returned no verdict on this criterion."
 # From this prompt generation on (question_synthesis.PROMPT_GENERATION) the plan asks for the story a listener follows,
 # the reader keeps the story its passages tell and states a limit by the kind of evidence, and the review counts such
@@ -224,12 +236,16 @@ def review_scope(memory, answer):
     earlier = [row["finding_id"] for row in memory.get("blocking_findings", [])]
     failed = [row["index"] for row in memory.get("failed_criteria", [])]
     grouped = memory.get("criterion_findings")
+    # The findings and criteria of a passed answer that an audit objection names, or that rest on a changed prerequisite
+    # (question_dependencies.passing_memory).
+    scoped = [f.id for f in answer.findings if f.id in set(memory.get("scoped_finding_ids", []))]
+    objected = [c.index for c in answer.criteria if c.index in set(memory.get("scoped_criteria", []))]
 
     def regrouped(criterion):
         # A criterion resting on a changed finding, or on another set of findings than before (one the rework removed
         # or moved), is judged afresh: its earlier pass was about other material. A memory written before the
         # criterion sets were kept (2026-10-02) cannot tell which criterion lost a removed finding, so all may fail.
-        if set(criterion.finding_ids) & set(changed):
+        if set(criterion.finding_ids) & (set(changed) | set(scoped)):
             return True
         if grouped is None:
             return bool(removed)
@@ -237,8 +253,9 @@ def review_scope(memory, answer):
     resting = [c.index for c in answer.criteria if regrouped(c)]
     return {"step": memory.get("step"), "changed_finding_ids": changed,
             "unchanged_finding_ids": [f.id for f in answer.findings if f.id not in changed],
-            "may_fail": {"finding_ids": sorted(set(changed) | set(earlier)), "criteria": sorted(set(failed) | set(resting)),
-                         "source_adequacy": bool(changed or removed) or not memory.get("source_adequacy", True)}}
+            "may_fail": {"finding_ids": sorted(set(changed) | set(earlier) | set(scoped)),
+                         "criteria": sorted(set(failed) | set(resting) | set(objected)),
+                         "source_adequacy": bool(changed or removed or scoped) or not memory.get("source_adequacy", True)}}
 
 
 def carry_earlier(verdict, memory, scope, passages):
@@ -329,6 +346,14 @@ SEARCH_BUDGET_REASON = ("Das Web-Suchbudget ist ausgeschöpft; diese konkrete Fr
 # The run limits a sub-question's web search can stop at, as ``block_cause`` beside the German ``reason`` (since
 # 2026-10-07): the Studio names the limit and offers its raise from this field, not from the reason's wording.
 BLOCK_CAUSES = ("search_budget", "source_limit")
+
+
+def searched_this_pass(row):
+    """Whether this working pass searched the web: more web attempts than when the pass began (``pass_web_start``, set
+    where a pass begins again: an audit's reopening, a new attempt, a revalidation). Before (review 2026-11-14), every
+    search the question ever made counted, so a reworked or retried question was blocked after one step without anything
+    new although this pass had not searched. A row from before the field counts from zero, as then."""
+    return row.get("web_attempts", 0) > row.get("pass_web_start", 0)
 
 
 def budget_block(row, reason, cause=None):
@@ -562,10 +587,12 @@ class TaskResearchMixin:
             text += " " + EVIDENCE_ABSENCE_REVIEW
         memory = row.get("review_memory")
         scope = review_scope(memory, answer)
+        kept = bool(scope and memory.get("passed"))
         if scope:
-            # The review of a reworked answer remembers the verdict that failed it, and its scope is set by code and
-            # saved before the call (the design rule for repeated reviews, 2026-10-02).
-            text += " " + REVIEW_MEMORY
+            # The review of a reworked answer remembers the verdict that failed it, or the one that passed it before an
+            # audit's reopening or a revalidation, and its scope is set by code and saved before the call (the design
+            # rule for repeated reviews, 2026-10-02 and 2026-11-14).
+            text += " " + (REVIEW_MEMORY_KEPT if kept else REVIEW_MEMORY)
             payload["previous_review"] = {"failed_criteria": memory["failed_criteria"],
                                           "blocking_findings": memory["blocking_findings"],
                                           "sources_adequate": memory["source_adequacy"],
@@ -587,9 +614,10 @@ class TaskResearchMixin:
 
         # ".absence": a demanded kind of evidence the web search did not find is a result (2026-10-01); ".digest":
         # prerequisites as digests; ".memory": the earlier failed verdict and the code-set scope (both 2026-10-02).
-        # ".story": the story rule of prompt generation 4 (STORY_GENERATION).
+        # ".story": the story rule of prompt generation 4 (STORY_GENERATION); ".kept": the memory of a passed verdict
+        # (REVIEW_MEMORY_KEPT, 2026-11-14).
         tag = "".join(part for part, used in ((".absence", searched), (".digest", bool(prerequisites)),
-                                              (".memory", bool(scope)), (".story", story)) if used)
+                                              (".memory", bool(scope)), (".kept", kept), (".story", story)) if used)
         raw = self.call(self.task_folder(spec, row), f"review_{row['step']:03d}", AnswerReview, prompt,
                         validate=well_formed, tag=tag)
         # A review that passed its checks comes through the normalisation unchanged; only a final attempt is settled.
@@ -653,8 +681,8 @@ class TaskResearchMixin:
         lock = row.get("lock") or {}
         unmet = "; ".join(f"Kriterium {c['index']}: {c['text']}" for c in lock.get("criteria", [])) or \
             "; ".join(lock.get("reasons", []))
-        # Name only what actually happened: a web search that never ran is not a finding about the web.
-        searched = ("auch die Websuche brachte keine neuen Belege" if row.get("web_attempts", 0) >= 1
+        # Name only what actually happened: a web search that never ran in this pass is not a finding about the web.
+        searched = ("auch die Websuche brachte keine neuen Belege" if searched_this_pass(row)
                     else "die gespeicherten Quellen brachten keine neuen Belege")
         reason = f"Die unabhängige Prüfung hat die Antwort abgewiesen, und {searched}. Unerfüllt: {unmet}"
         if not row["reason"]:
@@ -963,6 +991,13 @@ class TaskResearchMixin:
                 if gaps:
                     text += " " + PREREQUISITE_GAP_READER
                     payload["prerequisite_gaps"] = gaps
+                # What the last review objected to stays in view once new evidence unlocked the answer, until the next
+                # review: a web search or a recovery read replaced the feedback, and the unlock hid the lock, so the
+                # reader answered again without knowing why (review 2026-11-14).
+                last = row.get("lock") if row.get("lock") and not row.get("answer_locked") else None
+                if last:
+                    text += " " + LAST_REVIEW_READER
+                    payload["last_review"] = {"criteria": last.get("criteria", []), "reasons": last.get("reasons", [])}
                 prompt = text + "\n" + json.dumps(payload, ensure_ascii=False)
 
                 def checked(candidate, final, spec=spec, row=row):
@@ -979,10 +1014,16 @@ class TaskResearchMixin:
                 # ".view": the reader sees this question's earlier passages too (VIEW_CHARS, 2026-09-30);
                 # ".absence": a demanded kind of evidence the web search did not find is answered as a result (2026-10-01);
                 # ".digest": verified prerequisites as digests, not whole answers (prerequisite_digests, 2026-10-02).
-                # ".story": the story rule of prompt generation 4 (STORY_GENERATION).
+                # ".story": the story rule of prompt generation 4 (STORY_GENERATION); ".last": the last review's objections
+                # after an unlock (LAST_REVIEW_READER, 2026-11-14).
+                # A receipt of this step whose decision never reached the ledger (a stop right after the call) answered
+                # a prompt the ledger may no longer rebuild; nothing is bound to it, so it is set aside and asked again
+                # instead of stopping every resume with invalid_research_checkpoint (review 2026-11-14).
+                if retire_stale_receipt(folder, "reader", ResearchDecision, prompt):
+                    self.save("Eine nicht übernommene Leseentscheidung wird neu angefragt")
                 decision = self.call(folder, "reader", ResearchDecision, prompt, validate=checked,
                                      tag=".view.absence" + (".digest" if prerequisites else "") +
-                                     (".story" if story else ""))
+                                     (".story" if story else "") + (".last" if last else ""))
                 row["pending"] = decision.model_dump()
                 row["activity"] = decision.reason
                 self.save(f"{spec.question} · {decision.reason}")
@@ -1033,9 +1074,9 @@ class TaskResearchMixin:
             # passages/candidates or a passing independent review reset the count.
             if row["status"] != "reviewing":
                 row["no_progress"] = 0 if novel else row["no_progress"] + 1
-            # Locked, the web already searched in this attempt and still nothing new: the concrete
+            # Locked, the web already searched in this working pass and still nothing new: the concrete
             # gap goes to the operator now instead of after further fruitless steps.
-            if row["status"] == "researching" and row.get("answer_locked") and not novel and row["web_attempts"] >= 1:
+            if row["status"] == "researching" and row.get("answer_locked") and not novel and searched_this_pass(row):
                 self.lock_block(spec, row)
             self.save(f"Recherchefrage: {spec.question}")
         if row["status"] == "blocked" and not row.get("outcome"):

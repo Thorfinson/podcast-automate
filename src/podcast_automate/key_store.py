@@ -8,11 +8,23 @@ or a store that refuses) leaves every key in the Studio's memory only, as before
 """
 from __future__ import annotations
 
-from .logs import logger
-
 SERVICE = "podcast-automate"
 # Every key the Studio holds: OpenRouter, Google, Anthropic, Perplexity, CORE's free key and ElevenLabs.
 KINDS = ("openrouter", "google", "anthropic", "perplexity", "core", "elevenlabs")
+# The environment variable a server or a ``pla`` process may carry each of those keys in instead (D-167).
+KEY_VARIABLES = {"openrouter": "OPENROUTER_API_KEY", "google": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
+                 "perplexity": "PERPLEXITY_API_KEY", "core": "PLA_CORE_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY"}
+# Every environment variable that holds a credential: the keys above and those a provider CLI or SDK would read
+# itself. A subscription CLI starts without any of them (codex.subscription_environment), and logs.scrub replaces
+# their values. One list, so a new key kind cannot reach a child or a log line through a list that forgot it (review
+# 2026-11-14: PLA_CORE_API_KEY was missing from both).
+SECRET_VARIABLES = (*KEY_VARIABLES.values(), "OPENAI_API_KEY", "CODEX_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+def logger(name):
+    # Imported here: logs reads SECRET_VARIABLES from this module.
+    from .logs import logger as named
+    return named(name)
 
 
 class Vault:

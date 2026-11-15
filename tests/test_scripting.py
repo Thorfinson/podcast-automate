@@ -1000,6 +1000,73 @@ class ScriptingTests(fixtures.ScriptProjectCase):
         self.assertEqual((after['repairs'], after['script_review_version']), (3, STORY_REVIEW))
         self.assertEqual(read_yaml(self.root / 'episodes/ep_001/script.yaml'), last_draft)
 
+    def test_a_pass_judged_by_a_rule_set_aside_is_not_restored_over_todays_verdict(self):
+        """2026-11-14 review: a resume that judged a saved draft again by today's rule kept the earlier pass, and once
+        today's review blocked with its repairs spent, it restored that pass and published the old verdict."""
+        from podcast_automate.models import RunManifest, StageRecord
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
+            done = run_script(self.root)
+        work = self.root / "runs" / done.run_id
+        checkpoint = work / "reviews/ep_001_checkpoint.json"
+        saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+        self.assertIsNotNone(saved["passed"])
+        write_json(checkpoint, {**saved, "editorial_review_version": "editorial_review.v0", "repairs": 3})
+        manifest = RunManifest.model_validate(read_yaml(work / "run_manifest.yaml"))
+        for name in ("review", "publish"):
+            manifest.stages[name] = StageRecord()
+        write_yaml(work / "run_manifest.yaml", manifest.model_dump(mode="json"))
+
+        def blocking(prompt, output_type, directory, **kwargs):
+            value, metadata = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is ScriptReview:
+                value.issues = [ScriptIssue(category="grounding", segment_ids=[REPLY], reason="Kein Beleg.")]
+            return value, metadata
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=blocking):
+            resumed = run_script(self.root, resume=True, run_id=done.run_id)
+        self.assertEqual((resumed.status, resumed.stages["review"].error.code), ("blocked", "script_review_failed"))
+
+    def test_a_point_only_research_could_fix_is_a_note_never_a_repair(self):
+        """2026-11-14 review: a review point had no way to say that only research could fix it, so a depth or scope
+        point the sources could not answer blocked and spent the repairs."""
+        from podcast_automate.script_pipeline import saved_verdict_stands
+        limited = ScriptIssue(category="scope", segment_ids=[REPLY], reason="Die Quellen beantworten das nicht.",
+                              source_limit=True)
+        unsupported = ScriptIssue(category="grounding", segment_ids=[REPLY], reason="Kein Beleg.", source_limit=True)
+        previous = ScriptReview(issues=[ScriptIssue(category="scope", segment_ids=[REPLY], reason="Alt.")], limitations=[])
+        scoped = follow_up_scope(ScriptReview(issues=[limited, unsupported], limitations=[],
+                                              issue_basis=["previous", "changed"]), previous, [REPLY])
+        self.assertEqual((scoped.issues, scoped.advisories), ([unsupported], [limited]),
+                         "a statement the sources do not hold is cut by a repair, never noted")
+        self.assertNotIn("source_limit", ScriptIssue(category="clarity", segment_ids=[], reason="Unklar.").model_dump())
+        # A pass saved under the version before stands; a blocking verdict is judged again by today's rule.
+        self.assertTrue(saved_verdict_stands("script_review.v17-scene-order+corpus", ScriptReview(issues=[], limitations=[])))
+        self.assertFalse(saved_verdict_stands("script_review.v17-scene-order+corpus", previous))
+
+        def noting(prompt, output_type, directory, **kwargs):
+            value, metadata = self.model(prompt, output_type, directory, **kwargs)
+            if output_type is ScriptReview:
+                value.issues = [limited]
+            return value, metadata
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=noting):
+            run = run_script(self.root)
+        self.assertEqual(run.status, "completed", {k: v.error for k, v in run.stages.items() if v.error})
+        self.assertNotIn(EpisodeScript, self.calls, "no repair was asked")
+        notes = json.loads((self.root / "runs" / run.run_id / "reviews/ep_001_accepted_notes.json").read_text(encoding="utf-8"))
+        self.assertEqual([note["reason"] for note in notes], [limited.reason])
+
+    def test_a_budget_read_that_fails_never_counts_as_nothing_spent_before_the_jev_scan(self):
+        from types import SimpleNamespace
+        from podcast_automate.script_pipeline import ScriptRun
+        work = self.root / "runs/run_jev"
+        write_json(work / "budget.json", {"model_calls": 1, "search_rounds": 0, "billed_usd": 5.0})
+        run = SimpleNamespace(work=work, limits=lambda: SimpleNamespace(cost_usd=1.0))
+        run.budget_now = lambda: ScriptRun.budget_now(run)
+        # A sharing violation read through read_optional_json came back as no budget at all.
+        with patch("podcast_automate.script_pipeline.read_optional_json", return_value={}):
+            with self.assertRaises(AppError) as caught:
+                ScriptRun.jev_proposals(run, {"gap": "Was fehlt?"})
+        self.assertEqual(caught.exception.code, "cost_limit_reached")
+
     def test_changed_project_requires_new_script_run(self):
         with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.model):
             run_script(self.root)
@@ -1186,7 +1253,7 @@ class AssembledDossierScriptTests(fixtures.ScriptProjectCase):
         quoting = ('quoted = json.loads(json.dumps(draft))\n'
                    'quoted["segments"][1]["text"] += " Quote: " + material["sections"][0]["text"]\n'
                    'json.dump(quoted, open("draft.json", "w", encoding="utf-8"), ensure_ascii=False)\n'
-                   'first = subprocess.run([sys.executable, "check.py"], capture_output=True, text=True, encoding="utf-8")\n'
+                   'first = subprocess.run([sys.executable, prefix + "check.py"], capture_output=True, text=True, encoding="utf-8")\n'
                    'open("quoted_check.json", "w", encoding="utf-8").write(first.stdout)\n'
                    'json.dump(draft, open("draft.json", "w", encoding="utf-8"), ensure_ascii=False)')
         draft = EpisodeScript.model_validate_json(example_script().model_dump_json().replace('"f_energy"', f'"{self.FINDING}"'))

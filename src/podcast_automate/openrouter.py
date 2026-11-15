@@ -235,6 +235,10 @@ class OpenRouterAdapter:
         # The cost of a completed stream, kept when its answer is then refused (truncated, invalid, rejected): that
         # model work is billed all the same (D-148).
         self._billed = None
+        # Whether OpenRouter may have run model work without a reported cost: the request was sent and no cost came
+        # back (a time limit, a broken connection, a stream that ended early). Such an ending counts at the estimate,
+        # never as free (review 2026-11-14: every time-limited Astra call was counted at 0 USD).
+        self._unpriced = False
         activity = CallActivity(directory, output_type.__name__, self.model,
                                 secrets=(self._key.get_secret_value(),))
         activity.diagnostic("request", prompt_chars=len(prompt), prompt_bytes=len(prompt.encode("utf-8")),
@@ -250,6 +254,10 @@ class OpenRouterAdapter:
             if self._billed is not None:
                 exc.details.setdefault("billed_usd", self._billed)
                 receipt["billed_usd"] = self._billed
+            elif self._unpriced:
+                # provider_pool.ended_row counts the attempt at the estimate.
+                exc.details.setdefault("billed_unknown", True)
+                receipt["billed_unknown"] = True
             if exc.code == "rejected_output":
                 # The parsed answer is model output, kept as an accepted one is kept in response.json.
                 receipt["validation_errors"] = exc.details["defects"]
@@ -288,6 +296,8 @@ class OpenRouterAdapter:
         write_json(directory / "output_schema.json", schema)
         try:
             with build_opener(NoRedirect()).open(request, timeout=self.settings.text_timeout_seconds) as response:
+                # OpenRouter accepted the request: from here, an ending without a reported cost is unpriced.
+                self._unpriced = True
                 envelope = stream_response(response, activity, secret, start + self.settings.text_timeout_seconds)
             self._billed = billed_cost(envelope)
         except HTTPError as exc:
@@ -298,7 +308,10 @@ class OpenRouterAdapter:
                 body = b""
             exc.close()
             raise api_failure(code, refusal_reason(body, (secret,)) if code == 403 else "") from None
-        except (TimeoutError, URLError, OSError, HTTPException):
+        except (TimeoutError, URLError, OSError, HTTPException) as exc:
+            # urllib wraps only a failure while connecting or sending the request in URLError; any other ending came
+            # after OpenRouter had the whole request, waiting for or reading its answer.
+            self._unpriced = self._unpriced or not isinstance(exc, URLError)
             raise AppError("OpenRouter-Verbindung unterbrochen oder Zeitlimit erreicht. Mit pla resume fortsetzen.",
                            code="openrouter_connection", status="blocked") from None
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
@@ -308,6 +321,8 @@ class OpenRouterAdapter:
             if not isinstance(envelope, dict):
                 raise ValueError("Expected an object")
             if envelope.get("error"):
+                # A whole error body instead of a stream: OpenRouter refused before any model work.
+                self._unpriced = False
                 error = envelope["error"]
                 code = int(error.get("code", 502)) if isinstance(error, dict) else 502
                 raise api_failure(code, refusal_reason(error, (secret,)) if code == 403 else "")

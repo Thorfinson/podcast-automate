@@ -439,6 +439,102 @@ class FoundationResearchTests(unittest.TestCase):
             apply_foundations(self.root, self.work, self.config, [self.entry], self.dossier, self.context, changed)
         self.assertEqual(caught.exception.code, "invalid_source_snapshot")
 
+    def test_a_later_review_blocks_only_on_open_points_and_explanations_that_changed(self):
+        """2026-11-14 review: from the second review on, every new critical point blocked wherever it pointed, so each
+        correction could meet a new point in an explanation an earlier review had passed. Now an earlier point still
+        open, or a point on an explanation that changed since, blocks; a point on one judged before unchanged is a
+        note, and so is a point only a source the research lacks could fix."""
+        critical = "The explanation drops the source's limit to two configurations."
+        later = "The explanation calls the score a probability."
+        reviews = []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if schema is FoundationReview:
+                reviews.append(json.loads(prompt.splitlines()[-1]))
+                if len(reviews) == 1:
+                    value.issues, value.issue_basis, value.issue_explanations = [critical], ["unsupported_claim"], [0]
+                elif len(reviews) == 2:
+                    # The correction left the one explanation as it was: a new point on it is a note.
+                    value.issues, value.issue_basis, value.issue_explanations = [later], ["factual_error"], [0]
+            return value
+        self.research(invoke)
+        self.assertEqual(self.calls, [ResearchDiscovery, FoundationSupplement, FoundationReview, FoundationSupplement,
+                                      FoundationReview])
+        self.assertNotIn("changed_explanations", reviews[0])
+        self.assertEqual((reviews[1]["previous_issues"], reviews[1]["changed_explanations"]), ([critical], []))
+        folder = self.work / "teaching/ep_001/supplement"
+        stored = json.loads((folder / "review.json").read_text(encoding="utf-8"))["value"]
+        self.assertEqual((stored["issues"], stored["advisories"]), ([], [later]))
+        self.assertEqual(json.loads((folder / "review_answer_01.json").read_text(encoding="utf-8"))["value"]["issues"],
+                         [later], "the answer as given stays beside the scoped one")
+        self.assertTrue((folder / "receipt.json").exists())
+        self.assertIn("better match", self.apply()[0].findings[0].statement)
+
+    def test_a_point_on_a_changed_explanation_blocks_and_a_source_limit_never_does(self):
+        reviews, supplements = [], []
+
+        def invoke(prompt, schema, version, **kwargs):
+            value = self.invoke(prompt, schema, version, **kwargs)
+            if schema is FoundationSupplement:
+                supplements.append(1)
+                if len(supplements) == 2:
+                    value.explanations[0].explanation = "A lower score marks the better match of the two."
+            if schema is FoundationReview:
+                reviews.append(json.loads(prompt.splitlines()[-1]))
+                if len(reviews) == 1:
+                    value.issues, value.issue_basis, value.issue_explanations = ["First point."], ["factual_error"], [0]
+                elif len(reviews) == 2:
+                    value.issues, value.issue_basis, value.issue_explanations = ["Second point."], ["factual_error"], [0]
+                elif len(reviews) == 3:
+                    value.issues, value.issue_basis = ["Only the full paper would say."], ["unsupported_claim"]
+                    value.issue_explanations, value.issue_source_limit = [0], [True]
+            return value
+        self.research(invoke)
+        self.assertEqual(reviews[1]["changed_explanations"], [0], "the correction rewrote the explanation")
+        self.assertEqual(self.calls.count(FoundationReview), 3, "the point on the changed explanation blocked")
+        stored = json.loads((self.work / "teaching/ep_001/supplement/review.json").read_text(encoding="utf-8"))["value"]
+        self.assertEqual((stored["issues"], stored["advisories"]), ([], ["Only the full paper would say."]))
+        self.assertTrue((self.work / "teaching/ep_001/supplement/receipt.json").exists())
+
+    def test_a_source_that_fails_with_a_local_error_is_recorded_and_the_others_are_read(self):
+        """2026-11-14 review: only an AppError of a source was recorded; an OSError or ValueError ended the supplement,
+        and every resume replayed the saved discovery into the same failure."""
+        from podcast_automate import teaching_research
+        real = teaching_research.import_source
+        imported = []
+
+        def import_source(candidate, *args, **kwargs):
+            imported.append(candidate.url)
+            if len(imported) == 1:
+                raise OSError("The file is in use by another process.")
+            return real(candidate, *args, **kwargs)
+
+        def invoke(prompt, schema, version, **kwargs):
+            if schema is ResearchDiscovery:
+                self.calls.append(schema)
+                return discovery(count=2)
+            return self.invoke(prompt, schema, version, **kwargs)
+        with patch("podcast_automate.teaching_research.import_source", side_effect=import_source):
+            self.research(invoke)
+        index = json.loads((self.work / "teaching/ep_001/supplement/source_index.json").read_text(encoding="utf-8"))
+        self.assertEqual([row["source"] for row in index["failures"]], ["https://example.org/paper0"])
+        self.assertEqual(len(index["sources"]), 1)
+
+    def test_a_revision_applies_the_supplements_of_the_run_it_revises(self):
+        """2026-11-14 review: a revision collected its material without the sections the published run's own
+        supplement had fetched, so check.py refused the published episode's references to them."""
+        self.research()
+        revision = self.root / "runs/run_revision"
+        revision.mkdir(parents=True)
+        alone = apply_foundations(self.root, revision, self.config, [self.entry], self.dossier, self.context,
+                                  self.sources)[0]
+        self.assertNotIn("better match", alone.findings[0].statement)
+        carried, context, _, outputs = apply_foundations(self.root, revision, self.config, [self.entry], self.dossier,
+                                                         self.context, self.sources, carried=[self.work])
+        self.assertIn("better match", carried.findings[0].statement)
+        self.assertTrue(any(path.name == "receipt.json" for path in outputs))
+
     def test_scope_change_blocks_instead_of_silently_replanning(self):
         def invoke(*args, **kwargs):
             value = self.invoke(*args, **kwargs)

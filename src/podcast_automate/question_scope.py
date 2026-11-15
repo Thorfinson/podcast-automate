@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from copy import deepcopy
 
 from pydantic import Field
 
 from .prompts import instructions
 from .errors import AppError
 from .models import Contract, NonEmpty
-from .research_ledger import active_tasks
 from .research_tasks import QuestionPlan, QuestionTask
 from .storage import digest
 
@@ -84,33 +82,3 @@ def pending_task():
             "actions": [], "candidate_refs": [], "no_progress": 0, "fallbacks": 0, "web_attempts": 0,
             "pending": None, "answer": None, "draft_answer": None, "feedback": [], "reopenings": [],
             "activity": "Noch nicht bearbeitet", "reason": ""}
-
-
-def refine_state(state, review):
-    """Pure migration: retain verified checkpoints and all counters outside split tasks."""
-    original = QuestionPlan.model_validate(state["plan"])
-    plan, groups = scoped_plan(original, review)
-    for identifier in groups:
-        row = state["tasks"][identifier]
-        if row["status"] == "verified" or row.get("answer") is not None:
-            raise AppError("Eine geprüfte Antwort darf durch die Umfangsprüfung nicht verworfen werden.",
-                           code="verified_question_split", status="blocked")
-    updated = deepcopy(state)
-    updated["plan"] = plan.model_dump()
-    for parent, children in groups.items():
-        del updated["tasks"][parent]
-        for child in children:
-            updated["tasks"][child] = pending_task()
-    updated["dirty_tasks"] = [child for task in state["dirty_tasks"] for child in groups.get(task, [task])]
-    updated["task_groups"] = {**state.get("task_groups", {}), **groups}
-    ownership_maps = [updated.get("finding_owners", {}), updated.get("composed_findings", {}).get("owners", {})]
-    for owners in ownership_maps:
-        for identifier, assigned in owners.items():
-            owners[identifier] = sorted({child for task in assigned for child in groups.get(task, [task])})
-    # A split parent is no longer a task anyone answers; a legacy single-task field mirrors the first one left.
-    active = [task for task in active_tasks(state) if task not in groups]
-    updated["active_tasks"] = active
-    if "active_task" in updated:
-        updated["active_task"] = active[0] if active else None
-    updated["scope_review"] = review.model_dump()
-    return updated

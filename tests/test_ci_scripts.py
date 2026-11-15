@@ -1,6 +1,7 @@
 """The two CI helpers (D-205): which changes may skip the test legs, and how the suite is split into shards."""
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,22 +20,46 @@ changes = load("ci_changes")
 shard_script = load("test_shards")
 
 
+def git(folder, *args):
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.org", "-c", "core.autocrlf=false",
+                    *args], cwd=folder, check=True, capture_output=True)
+
+
 class ChangesTests(unittest.TestCase):
     def test_docs_pages_and_templates_skip_the_tests(self):
-        self.assertFalse(changes.needs_tests(["README.md", "CHANGELOG.md", "docs/STUDIO.md", "docs/media/x.mp3",
+        self.assertFalse(changes.needs_tests(["CHANGELOG.md", "CONTRIBUTING.md", "docs/STUDIO.md", "docs/media/x.mp3",
                                               "docs/specs/plan.md", "site/index.html", "evals/web_search/run.py",
                                               ".github/ISSUE_TEMPLATE/bug_report.yml", ".github/CODEOWNERS",
                                               ".github/PULL_REQUEST_TEMPLATE.md", ".github/dependabot.yml",
-                                              "LICENSE", ".gitignore"]))
+                                              ".gitignore"]))
 
     def test_everything_a_test_can_read_runs_them(self):
-        # test_third_host reads examples/, test_platforms the launchers; a workflow can change how tests run.
+        # test_third_host reads examples/, test_platforms the launchers; a workflow can change how tests run. The build
+        # that every test leg installs reads README.md (the package's readme) and LICENSE (its license file).
         for path in ["src/podcast_automate/studio.py", "src/podcast_automate/prompts/README.md",
                      "src/podcast_automate/data/story_agent_task.md", "tests/test_audio.py", "examples/x/project.yaml",
                      "Podcast-Studio.sh", "pyproject.toml", "scripts/setup-qwen.py", ".github/workflows/tests.yml",
-                     ".gitattributes", "docs.py"]:
+                     ".gitattributes", "docs.py", "README.md", "LICENSE"]:
             with self.subTest(path=path):
-                self.assertTrue(changes.needs_tests(["README.md", path]))
+                self.assertTrue(changes.needs_tests(["CHANGELOG.md", path]))
+
+    def test_a_file_moved_into_the_docs_counts_where_it_came_from(self):
+        """Review of 2026-11-14: git diff --name-only names a renamed file by its new path only, so a package file
+        moved into docs/ (or a test module into evals/) looked like a docs-only change and the test legs were skipped."""
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "src/pkg/data").mkdir(parents=True)
+            (Path(folder) / "docs").mkdir()
+            (Path(folder) / "src/pkg/data/task.md").write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+            git(folder, "init", "-q")
+            git(folder, "add", ".")
+            git(folder, "commit", "-q", "-m", "base")
+            base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=folder, capture_output=True, text=True,
+                                  check=True).stdout.strip()
+            git(folder, "mv", "src/pkg/data/task.md", "docs/task.md")
+            git(folder, "commit", "-q", "-m", "move")
+            paths = changes.changed_files(base, "HEAD", cwd=folder)
+        self.assertEqual(sorted(paths), ["docs/task.md", "src/pkg/data/task.md"])
+        self.assertTrue(changes.needs_tests(paths))
 
     def test_an_unknown_or_empty_change_runs_them(self):
         self.assertTrue(changes.needs_tests(None))

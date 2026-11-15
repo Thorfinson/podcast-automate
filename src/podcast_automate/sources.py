@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -15,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from html.parser import HTMLParser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,9 +37,15 @@ PDF_TIMEOUT_SECONDS = 120
 BOOK_TIMEOUT_SECONDS = 900
 # Name resolution has no timeout of its own; a hung resolver must not hang the worker.
 DNS_TIMEOUT_SECONDS = 10
+# A download's wait for each receive, and its whole body: the body limit is checked after every receive, so a server
+# that sends one byte at a time cannot hold the worker (2026-11-14: a 64 KiB read waited for all of it).
+RECEIVE_TIMEOUT_SECONDS = 30
+DOWNLOAD_SECONDS = 90
 
 
 def canonical_url(url: str) -> str:
+    if not isinstance(url, str):
+        raise AppError("Nur öffentliche HTTP(S)-Quellen ohne Zugangsdaten werden abgerufen.", code="invalid_source_url")
     parts = urllib.parse.urlsplit(url.strip())
     if parts.scheme.lower() not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
         raise AppError("Nur öffentliche HTTP(S)-Quellen ohne Zugangsdaten werden abgerufen.", code="invalid_source_url")
@@ -67,18 +75,73 @@ def resolve(host: str):
     return outcome[0]
 
 
-def public_url(url: str) -> str:
+def vetted(url: str) -> tuple[str, str, list[str]]:
+    """The canonical address, its host and the public addresses the host resolved to; a host with any address in a
+    private network is refused."""
     url = canonical_url(url)
     host = urllib.parse.urlsplit(url).hostname
     addresses = resolve(host)
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
         raise AppError("Die Quellenadresse verweist nicht auf einen öffentlichen Server.", code="invalid_source_url")
-    return url
+    return url, host, list(dict.fromkeys(row[4][0] for row in addresses))
+
+
+def public_url(url: str) -> str:
+    return vetted(url)[0]
+
+
+def pinned_connection(base, pins):
+    """``base`` (an HTTP or HTTPS connection class) that connects to the addresses ``pins`` holds for its host, the
+    ones ``vetted`` checked, instead of asking the name server again: a second answer could name a private address
+    (DNS rebinding). The name stays the request's Host and, for HTTPS, the certificate's. A host without pins (a proxy
+    from the environment) is connected as before."""
+    def connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **kwargs):
+        host, port = address
+        addresses = pins.get((host or "").lower())
+        if addresses is None:
+            return socket.create_connection(address, timeout, source_address)
+        failure = None
+        for ip in addresses:
+            try:
+                return socket.create_connection((ip, port), timeout, source_address)
+            except OSError as exc:
+                failure = exc
+        raise failure
+
+    class Pinned(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = connect
+    return Pinned
+
+
+class PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, pins):
+        super().__init__()
+        self.connection = pinned_connection(http.client.HTTPConnection, pins)
+
+    def http_open(self, request):
+        return self.do_open(self.connection, request)
+
+
+class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pins, context=None):
+        super().__init__(context=context)
+        self.connection = pinned_connection(http.client.HTTPSConnection, pins)
+
+    def https_open(self, request):
+        return self.do_open(self.connection, request, context=self._context)
 
 
 class PublicRedirect(urllib.request.HTTPRedirectHandler):
+    """Every redirect must name a public server too; ``check`` also pins the addresses it checked (download)."""
+
+    def __init__(self, check=None):
+        super().__init__()
+        self.check = check
+
     def redirect_request(self, request, fp, code, msg, headers, newurl):
-        public_url(newurl)
+        (self.check or public_url)(newurl)
         # urllib copies every header onto the redirected request, a service key included (CORE's Authorization):
         # a request that carries one follows a redirect only on its own host and never from https to http (2026-10-02).
         if request.get_header("Authorization") or request.get_header("Proxy-authorization"):
@@ -104,8 +167,18 @@ SOURCE_TLS = system_tls()
 
 
 def download(url: str, headers: dict | None = None) -> tuple[bytes, str, str]:
-    """``headers`` only for a free service that identifies the caller by a key (CORE)."""
-    url = public_url(url)
+    """``headers`` only for a free service that identifies the caller by a key (CORE).
+
+    Every failure of the server or the connection is ``source_download_failed`` with its HTTP status or its
+    ``network_error`` class, so the import records it as one failed source and asks the fallbacks: until 2026-11-14 a
+    garbled answer (an http.client exception) stopped the whole run, and a body cut short was kept as the document."""
+    pins = {}
+
+    def check(target):
+        address, host, addresses = vetted(target)
+        pins[host.lower()] = addresses
+        return address
+    url = check(url)
     # No browser cookies or credentials are used for source retrieval.
     request = urllib.request.Request(url, headers={
         "User-Agent": "PodcastAutomate/0.1 (personal research; public documents)",
@@ -114,67 +187,92 @@ def download(url: str, headers: dict | None = None) -> tuple[bytes, str, str]:
         **(headers or {}),
     })
     try:
-        tls = [urllib.request.HTTPSHandler(context=SOURCE_TLS)] if SOURCE_TLS is not None else []
-        opener = urllib.request.build_opener(PublicRedirect(), *tls)
-        with opener.open(request, timeout=30) as response:
-            if int(response.headers.get("Content-Length", 0)) > MAX_BYTES:
+        opener = urllib.request.build_opener(PublicRedirect(check), PinnedHTTPHandler(pins),
+                                             PinnedHTTPSHandler(pins, context=SOURCE_TLS))
+        with opener.open(request, timeout=RECEIVE_TIMEOUT_SECONDS) as response:
+            declared = response.headers.get("Content-Length")
+            declared = int(declared) if declared is not None else None
+            if declared is not None and declared > MAX_BYTES:
                 raise AppError("Quelle überschreitet 20 MiB.", code="source_too_large")
             chunks, size, started = [], 0, time.monotonic()
-            while chunk := response.read(65536):
+            # read1: at most one receive per call, so the time limit is checked after each of them.
+            while chunk := response.read1(65536):
                 size += len(chunk)
-                if size > MAX_BYTES or time.monotonic() - started > 90:
+                if size > MAX_BYTES or time.monotonic() - started > DOWNLOAD_SECONDS:
                     raise AppError("Quelle überschreitet Abrufgrenzen.", code="source_too_large")
                 chunks.append(chunk)
+            if declared is not None and not getattr(response, "chunked", False) and size < declared:
+                raise http.client.IncompleteRead(b"", declared - size)
             return b"".join(chunks), response.headers.get("Content-Type", ""), response.geturl()
     except urllib.error.HTTPError as exc:
         raise AppError(f"Quellenabruf fehlgeschlagen (HTTP {exc.code}).", code="source_download_failed",
                        details={"http_status": exc.code}) from exc
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, http.client.HTTPException) as exc:
         raise AppError(f"Quellenabruf fehlgeschlagen ({type(exc).__name__}).", code="source_download_failed",
                        details={"network_error": type(exc).__name__}) from exc
 
 
 class ArticleParser(HTMLParser):
+    """The text of a page, without its scripts, menus and forms, and the text of its main or article part.
+
+    The open tags are a stack, and an end tag closes its latest opening and every tag opened after it. Which tags are
+    open is counted per name, so each text costs the same however many tags stand open: HTML may leave out ``</p>``
+    and ``</li>``, and a page of 60,000 such paragraphs took minutes while every text scanned the whole stack
+    (2026-11-14). What a page reads as is unchanged."""
     OMIT = {"script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "template"}
     BLOCK = {"p", "div", "section", "article", "main", "h1", "h2", "h3", "h4", "li", "tr", "br"}
+    VOID = {"meta", "link", "br", "hr", "img", "input", "source", "wbr"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.stack = []
+        self.open = {}
+        self.omitted = 0
         self.text = []
         self.main_text = []
         self.title = []
         self.metadata = {}
 
+    def opened(self, tag):
+        return self.open.get(tag, 0) > 0
+
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
         if tag == "meta":
-            key = attributes.get("name", attributes.get("property", "")).lower()
+            # An attribute without a value (<meta name content="…">) is None.
+            key = (attributes.get("name", attributes.get("property", "")) or "").lower()
             if key and attributes.get("content"):
                 self.metadata.setdefault(key, []).append(attributes["content"])
         if tag == "html" and attributes.get("lang"):
             self.metadata["language"] = [attributes["lang"]]
         if tag in self.BLOCK:
             self.add_text("\n\n")
-        if tag not in {"meta", "link", "br", "hr", "img", "input", "source", "wbr"}:
+        if tag not in self.VOID:
             self.stack.append(tag)
+            self.open[tag] = self.open.get(tag, 0) + 1
+            self.omitted += tag in self.OMIT
 
     def handle_endtag(self, tag):
         if tag in self.BLOCK:
             self.add_text("\n\n")
-        if tag in self.stack:
-            self.stack = self.stack[:len(self.stack) - 1 - self.stack[::-1].index(tag)]
+        if self.opened(tag):
+            while True:
+                closed = self.stack.pop()
+                self.open[closed] -= 1
+                self.omitted -= closed in self.OMIT
+                if closed == tag:
+                    break
 
     def add_text(self, value):
-        if not any(tag in self.OMIT for tag in self.stack):
+        if not self.omitted:
             self.text.append(value)
-            if "main" in self.stack or "article" in self.stack:
+            if self.opened("main") or self.opened("article"):
                 self.main_text.append(value)
 
     def handle_data(self, data):
-        if "title" in self.stack:
+        if self.opened("title"):
             self.title.append(data)
-        if "head" not in self.stack:
+        if not self.opened("head"):
             self.add_text(data)
 
 
@@ -273,7 +371,12 @@ def interstitial(title, text):
 # mostly sold as EPUB, and an upload took only PDF, a saved page or text). Its chapters are read in reading order.
 EPUB_MIMETYPE = b"mimetypeapplication/epub+zip"
 EPUB_PART_BYTES = 20 * 1024 * 1024
-EPUB_TOTAL_BYTES = 200 * 1024 * 1024
+# An e-book is small on the wire and large unpacked: a 39 KiB file whose one chapter expanded to 19 MiB of markup took a
+# minute and 400 MiB before the text limit refused it (2026-11-14). The chapters' markup may be at most this many bytes
+# per character of the text limit, checked before any chapter is read, and a chapter is read in steps of about
+# EPUB_FEED_CHARS, stopping once its text passes the limit.
+EPUB_MARKUP_PER_CHARACTER = 10
+EPUB_FEED_CHARS = 256 * 1024
 FONT_SUFFIXES = (".ttf", ".otf", ".woff", ".woff2")
 
 
@@ -281,9 +384,27 @@ def is_epub(raw: bytes) -> bool:
     return raw.startswith(b"PK\x03\x04") and EPUB_MIMETYPE in raw[:200]
 
 
-def epub_text(raw: bytes) -> tuple[dict, list[tuple[str, None]]]:
+def chapter_blocks(markup: str, counted: int, limit: int, too_large: AppError) -> list[str]:
+    """A chapter's text blocks, read in steps cut before a tag; ``too_large`` once ``counted`` and this chapter's text
+    pass ``limit``. The characters other than white space are a lower bound of the blocks' length (the blocks lose only
+    white space between them), so a chapter is refused early only when it would be refused once read."""
+    parser, start, seen, visible = ArticleParser(), 0, 0, 0
+    while start < len(markup):
+        cut = markup.find("<", start + EPUB_FEED_CHARS)
+        cut = len(markup) if cut < 0 else cut
+        parser.feed(markup[start:cut])
+        start = cut
+        visible += len(re.sub(r"\s", "", "".join(parser.text[seen:])))
+        seen = len(parser.text)
+        if counted + visible > limit:
+            raise too_large
+    return re.split(r"\n\s*\n", "".join(parser.text))
+
+
+def epub_text(raw: bytes, *, max_text: int = MAX_TEXT) -> tuple[dict, list[tuple[str, None]]]:
     """The metadata and the text blocks of an EPUB, chapter by chapter in its reading order (the package's spine).
-    A copy-protected book is refused: its chapters are encrypted, while obfuscated fonts are common and harmless."""
+    A copy-protected book is refused: its chapters are encrypted, while obfuscated fonts are common and harmless.
+    More text than ``max_text`` is refused as soon as it is read, and markup far beyond it before reading."""
     import io
     import posixpath
     import zipfile
@@ -291,6 +412,7 @@ def epub_text(raw: bytes) -> tuple[dict, list[tuple[str, None]]]:
 
     unreadable = AppError("Das E-Book lässt sich nicht lesen. Bitte als PDF oder als EPUB ohne Kopierschutz hochladen.",
                           code="source_unreadable")
+    too_large = AppError("Extrahierter Text überschreitet die Importgrenze.", code="source_too_large")
     try:
         archive = zipfile.ZipFile(io.BytesIO(raw))
         names = set(archive.namelist())
@@ -318,23 +440,29 @@ def epub_text(raw: bytes) -> tuple[dict, list[tuple[str, None]]]:
             for field in ("title", "creator", "date", "language"):
                 if element.tag.endswith("}" + field) and (element.text or "").strip():
                     values.setdefault(field, []).append(element.text.strip())
-        blocks, total = [], 0
+        chapters = []
         for idref in order:
             item = items.get(idref)
             if item is None or "html" not in (item.get("media-type") or ""):
                 continue
             name = posixpath.normpath(posixpath.join(base, urllib.parse.unquote(item.get("href") or "")))
-            if name not in names:
-                continue
-            total += archive.getinfo(name).file_size
-            if total > EPUB_TOTAL_BYTES:
-                raise unreadable
-            parser = ArticleParser()
-            parser.feed(part(name).decode("utf-8", errors="replace"))
-            blocks += [(block, None) for block in re.split(r"\n\s*\n", "".join(parser.text))]
+            if name in names:
+                chapters.append(name)
+        if sum(archive.getinfo(name).file_size for name in chapters) > EPUB_MARKUP_PER_CHARACTER * max_text:
+            raise AppError("Das E-Book überschreitet die Importgrenze.", code="source_too_large")
+        blocks, counted = [], 0
+        for name in chapters:
+            found = chapter_blocks(part(name).decode("utf-8", errors="replace"), counted, max_text, too_large)
+            counted += sum(len(block) for block in found)
+            if counted > max_text:
+                raise too_large
+            blocks += [(block, None) for block in found]
     except AppError:
         raise
-    except (zipfile.BadZipFile, KeyError, StopIteration, ElementTree.ParseError, ValueError, TypeError) as exc:
+    # A damaged archive: a broken deflate stream (zlib.error), the zip's own encryption (RuntimeError) or a compression
+    # method Python cannot read (NotImplementedError, a RuntimeError) is one unreadable book, not a stopped run.
+    except (zipfile.BadZipFile, KeyError, StopIteration, ElementTree.ParseError, ValueError, TypeError, RuntimeError,
+            EOFError, OSError, zlib.error) as exc:
         raise unreadable from exc
     metadata = {"title": (values.get("title") or [""])[0], "authors": values.get("creator", []),
                 "published_date": (values.get("date") or [""])[0][:10], "language": (values.get("language") or ["unknown"])[0]}
@@ -342,9 +470,22 @@ def epub_text(raw: bytes) -> tuple[dict, list[tuple[str, None]]]:
 
 
 def extract(raw: bytes, content_type: str, name: str, *, book: bool = False) -> tuple[str, str, dict, list[SourceSection]]:
+    """The kind, stored suffix, metadata and sections of a document. Its content is untrusted: any failure of a reader
+    is ``source_unreadable`` with the reader's error class, so the import records one unreadable source (2026-11-14:
+    a <meta> attribute without a value raised AttributeError and stopped the whole run, on every resume again)."""
+    try:
+        return parse_document(raw, content_type, name, book=book)
+    except AppError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        raise AppError(f"Quelle konnte nicht als Text eingelesen werden ({type(exc).__name__}).",
+                       code="source_unreadable", details={"parser_error": type(exc).__name__}) from exc
+
+
+def parse_document(raw: bytes, content_type: str, name: str, *, book: bool = False):
     metadata = {}
     if is_epub(raw):
-        metadata, blocks = epub_text(raw)
+        metadata, blocks = epub_text(raw, max_text=MAX_BOOK_TEXT if book else MAX_TEXT)
         if sum(len(block) for block, _ in blocks) > (MAX_BOOK_TEXT if book else MAX_TEXT):
             raise AppError("Extrahierter Text überschreitet die Importgrenze.", code="source_too_large")
         # Read as the text of its chapters; the stored file stays the EPUB.
@@ -433,7 +574,7 @@ def blocked_sources(index):
 
 
 def comparable_title(text):
-    return re.sub(r"\W+", " ", (text or "").casefold()).strip()
+    return re.sub(r"\W+", " ", (text if isinstance(text, str) else "").casefold()).strip()
 
 
 def work_doi(candidate):
@@ -475,12 +616,16 @@ def open_access_copies(candidate, limit=3):
         return []
     files, pages = [], []
     for work in works:
-        for location in [work.get("best_oa_location") or {}, *(work.get("locations") or [])]:
+        if not isinstance(work, dict):
+            continue
+        locations = work.get("locations") if isinstance(work.get("locations"), list) else []
+        for location in [work.get("best_oa_location") or {}, *locations]:
             if not isinstance(location, dict) or not location.get("is_oa"):
                 continue
-            if location.get("pdf_url"):
+            if isinstance(location.get("pdf_url"), str) and location["pdf_url"]:
                 files.append(location["pdf_url"])
-            elif any(host in (location.get("landing_page_url") or "") for host in FULL_TEXT_PAGES):
+            elif isinstance(location.get("landing_page_url"), str) and any(
+                    host in location["landing_page_url"] for host in FULL_TEXT_PAGES):
                 pages.append(location["landing_page_url"])
     return [url for url in dict.fromkeys(files + pages) if url != candidate.url][:limit]
 
@@ -612,7 +757,12 @@ def open_access_copy(candidate, blocked, *, book=False):
     service that named it; else that failure. Each service is asked only when the ones before had no readable copy."""
     doi, tried = work_doi(candidate), {candidate.url}
     for service, copies in COPY_SERVICES:
-        for url in copies(candidate, doi)[:3]:
+        try:
+            found = [url for url in copies(candidate, doi) if isinstance(url, str)]
+        except (AppError, OSError, ValueError, TypeError, AttributeError, KeyError):
+            # A service that fails or answers in an unexpected shape names no copy; the next one is asked.
+            found = []
+        for url in found[:3]:
             if url in tried:
                 continue
             tried.add(url)
@@ -738,6 +888,38 @@ def adopt_from_library(document, candidate, root: Path, run_id: str):
     return adopted, processed
 
 
+def read_local(local: Path, citation: str) -> bytes:
+    """A local source's bytes; a file that is missing or cannot be read is one unreadable source, recorded with its
+    reason, not a stopped run."""
+    try:
+        if local.stat().st_size > (MAX_WORK_BYTES if citation else MAX_BYTES):
+            raise AppError("Lokale Quelle überschreitet die Größengrenze.", code="source_too_large")
+        return local.read_bytes()
+    except OSError as exc:
+        raise AppError(f"Lokale Quelle nicht lesbar ({type(exc).__name__}).", code="source_unreadable",
+                       details={"local_error": type(exc).__name__}) from exc
+
+
+def fetched(candidate, address, book):
+    """The download of ``address`` as ``((raw, content_type, final_url), extracted, service)``, ``extracted`` None and
+    ``service`` empty for the address itself. A refused or unreachable address brings a free copy of the same work,
+    which keeps the address it was found under as its identity; a page that is gone (or unreachable) brings the
+    Internet Archive's capture of this very address (D-197). Without either, the address's own failure is raised."""
+    try:
+        return download(address), None, ""
+    except AppError as exc:
+        failure = exc
+    if access_blocked(failure):
+        try:
+            return open_access_copy(candidate, failure, book=book)
+        except AppError:
+            if not gone(failure):
+                raise failure from None
+    if gone(failure):
+        return archived_copy(candidate, failure, book=book)
+    raise failure
+
+
 def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local: Path | None = None,
                   downloaded: tuple[bytes, str, str] | None = None, library: dict | None = None,
                   citation: str = "") -> tuple[SourceDocument, Path]:
@@ -751,31 +933,15 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
     address = str(local.resolve()) if local else canonical_url(candidate.url)
     source_id = "src_" + hashlib.sha256(address.encode()).hexdigest()[:16]
     book = bool(citation) or (not local and book_candidate(candidate))
-    extracted = None
+    # ``service`` names where a copy came from: empty for the address itself.
+    extracted, service = None, ""
     if downloaded is not None:
         raw, content_type, final_url = downloaded
     elif local:
-        if local.stat().st_size > (MAX_WORK_BYTES if citation else MAX_BYTES):
-            raise AppError("Lokale Quelle überschreitet die Größengrenze.", code="source_too_large")
-        raw, content_type, final_url = local.read_bytes(), "", ""
+        raw, content_type, final_url = read_local(local, citation), "", ""
     else:
-        try:
-            raw, content_type, final_url = download(address)
-        except AppError as exc:
-            if not (access_blocked(exc) or gone(exc)):
-                raise
-            try:
-                if not access_blocked(exc):
-                    raise exc
-                # The same work from a free repository; it keeps the address it was found under as its identity.
-                (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc, book=book)
-            except AppError:
-                if not gone(exc):
-                    raise
-                # A page that is gone: the Internet Archive's capture of this very address (D-197).
-                (raw, content_type, final_url), extracted, service = archived_copy(candidate, exc, book=book)
-    copied = extracted is not None
-    if not copied:
+        (raw, content_type, final_url), extracted, service = fetched(candidate, address, book)
+    if extracted is None:
         try:
             extracted = extract(raw, content_type, address, **({"book": True} if book else {}))
         except AppError as exc:
@@ -784,9 +950,8 @@ def import_source(candidate: SourceCandidate, root: Path, run_id: str, *, local:
             if local or not (access_blocked(exc) or scanned(exc)):
                 raise
             (raw, content_type, final_url), extracted, service = open_access_copy(candidate, exc, book=book)
-            copied = True
     kind, suffix, metadata, sections = extracted
-    copy_note = ("" if not copied else f"Archived copy of this address from the {service}: {final_url}. "
+    copy_note = ("" if not service else f"Archived copy of this address from the {service}: {final_url}. "
                  if service.startswith("Internet Archive") else f"Open-access copy of the same work found via {service}: {final_url}. ")
     raw_path = root / "sources/raw" / run_id / f"{source_id}{suffix}"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
