@@ -118,6 +118,20 @@ class ResearchStatusTests(unittest.TestCase):
         self.assertIn("Wartet auf Freigabe des Rechercheplans", info["assignment"])
         self.assertEqual(info["signals"]["state"], "completed")
 
+    def test_an_index_kept_as_a_manifest_finds_its_sections_in_the_processed_documents(self):
+        # Every index since the manifest form points at its processed texts by project path; the status looked for them
+        # under runs/ instead and found no material (review of 2026-11-14).
+        write_json(self.work / "question_research/indexes" / ("a" * 64 + ".json"), {"value": {
+            "format": "index_manifest.v1", "failures": [], "sources": [{
+                "id": "s1", "document": {"id": "s1", "title": "Original paper", "raw_path": "PRIVATE_PATH"},
+                "processed": "sources/processed/run_test/s1.json", "sections_hash": "x"}]}})
+        write_json(self.root / "sources/processed/run_test/s1.json", {"id": "s1", "sections": [
+            {"id": "p1", "page": 4, "text": "PRIVATE_FULL_TEXT"}, {"id": "p2", "page": 5, "text": "PRIVATE_FULL_TEXT"}]})
+        info = work_insight(self.work, self.run)
+        self.assertEqual((info["material"]["section_count"], info["material"]["sources"][0]["pages"],
+                          info["material"]["unresolved_sections"]), (2, [4, 5], 0))
+        self.assertNotIn("PRIVATE", json.dumps(info))
+
     def test_unsafe_index_path_is_ignored(self):
         self.state["index_hash"] = "../../private"
         self.save_state()

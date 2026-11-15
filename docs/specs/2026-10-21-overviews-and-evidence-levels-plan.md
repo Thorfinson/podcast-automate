@@ -148,7 +148,7 @@ The run records its mode (`material`) in its manifest and inputs. Its stages:
   fields and the order of steps. The result is a text source whose sections the findings cite.
 - **The operator checks.** The Studio shows every description next to its image before any finding is extracted. A
   correction is the operator's text and replaces the description.
-- **Which provider reads images** is open (V-51). Each adapter needs an image path of its own: an image input item for
+- **Which provider reads images** is open (V-77). Each adapter needs an image path of its own: an image input item for
   the Codex app server, an image input for Claude Code, image content parts for OpenRouter.
 - **Key detection.** Attachments refuse texts that contain API keys (`attachments.py:125-130`). The description runs
   through the same check; the image itself has already gone to the vision model by then ([§9](#9-security-and-privacy)).
@@ -260,7 +260,7 @@ What is relaxed and what is kept:
 - **Risk: segments that sum up.** A segment that sums up several findings is where claim drift arises, and claim drift
   drove most review repairs in the 2026-10-04 evaluation. The evidence review keeps its rules. A summary sentence
   cites the findings it restates, as a synthesis relation does (`evidence_models.SynthesisRelation`, 2 to 6
-  findings). V-53 measures the repairs per overview against those per series episode.
+  findings). V-79 measures the repairs per overview against those per series episode.
 
 ## 6. The level in every stage
 
@@ -364,7 +364,7 @@ Each step is checkpointable and leaves every existing project byte-identical. It
 
 3. **Import.** The import run with namespaced ids, its binding and its gate, the planning help from a series, and
    „Überblick erstellen“.
-   - First real test: the Orlagau overview, measured for V-53.
+   - First real test: the Orlagau overview, measured for V-79.
 
 **Phase D: level 2 with text material**
 
@@ -378,7 +378,7 @@ Each step is checkpointable and leaves every existing project byte-identical. It
 
 **Phase E: screenshots**
 
-6. **Image description.** After V-51: the description step with the operator's check, the key detection on the
+6. **Image description.** After V-77: the description step with the operator's check, the key detection on the
    descriptions, and the SECURITY rows.
 
 **Phase F: level 3**
@@ -447,11 +447,13 @@ Evals, run by hand under `evals/`:
 
 ## 13. Verification list
 
+V-77 to V-79 were numbered V-51 to V-53 until 2026-11-14, which the MVP plan's third-host items already used.
+
 | ID | Item | How to verify | Needed for | Status |
 | --- | --- | --- | --- | --- |
-| V-51 | Which providers accept an image with a structured answer: an image input item in the Codex app server, an image input in Claude Code (the prompt goes on stdin today), image content parts on OpenRouter | One probe call per adapter with a screenshot and the description schema | Phase E | open |
-| V-52 | How faithfully a description renders a screen: labels, fields, order of steps | The operator reads the descriptions of ten screenshots of one tool against the images | Phase E | open |
-| V-53 | Review repairs of an overview script against a series episode, since summing up drives claim drift | Count the repairs per category for the Orlagau overview and compare them with its episodes | Phase C | open |
+| V-77 | Which providers accept an image with a structured answer: an image input item in the Codex app server, an image input in Claude Code (the prompt goes on stdin today), image content parts on OpenRouter | One probe call per adapter with a screenshot and the description schema | Phase E | open |
+| V-78 | How faithfully a description renders a screen: labels, fields, order of steps | The operator reads the descriptions of ten screenshots of one tool against the images | Phase E | open |
+| V-79 | Review repairs of an overview script against a series episode, since summing up drives claim drift | Count the repairs per category for the Orlagau overview and compare them with its episodes | Phase C | open |
 | V-54 | Calls, duration and plan size of a level-1 overview from a topic with `OVERVIEW_SUB_QUESTIONS` = 10 | Count `calls/*` of the first overview's research and script runs | Phase B | open |
 | V-55 | Searches, sources and calls per gap at level 3, and how often a secondary source is wrong | Count per gap; the operator checks a sample of looked-up statements | Phase F | open |
 | V-56 | Whether the overview plan with about 400 omitted findings fits the output cap when the model names only what it places | The plan answer's size for Orlagau's 414 findings | Phase B | open |

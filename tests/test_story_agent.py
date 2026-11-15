@@ -23,9 +23,9 @@ from podcast_automate.models import ResearchLimits
 from podcast_automate.scripting import STARTING_RATES, measured_rate, speaking_rate
 from podcast_automate.story_agent import (ALLOWED_TOOLS, TARGET_SHARE, OrientationCheck,
                                           OrientationItem, OrientationReview, OrientationSheet, StoryCritique,
-                                          draft_errors, earlier_episodes, echo_errors, planned_entry, prepare,
-                                          run_agent, session_command, session_files, session_timeout, task_text,
-                                          used_documents)
+                                          commands_folder, draft_errors, earlier_episodes, echo_errors, planned_entry,
+                                          prepare, run_agent, session_command, session_files, session_timeout,
+                                          task_text, used_documents)
 from tests.script_fixtures import ScriptProjectCase, fake_agent
 
 # A stand-in for a session on an Anthropic key: it records the key, the dropped login token and the money cap it was
@@ -98,10 +98,11 @@ class StoryAgentChecksTests(unittest.TestCase):
         errors = draft_errors(self.folder, script)
         self.assertTrue(any("7 words" in error for error in errors), errors)
         # The agent reaches its target, not only the run's floor (D-184: ep_007 stopped at 89 % and ran 35:47 of 45).
-        context = json.loads((self.folder / "context.json").read_text(encoding="utf-8"))
-        write_json(self.folder / "context.json", {**context, "length": {"minimum_words": 10, "target_words": 10}})
+        context = json.loads((commands_folder(self.folder) / "context.json").read_text(encoding="utf-8"))
+        write_json(commands_folder(self.folder) / "context.json",
+                   {**context, "length": {"minimum_words": 10, "target_words": 10}})
         errors = draft_errors(self.folder, script)
-        self.assertTrue(any("write at least length.minimum_words (10)" in error for error in errors), errors)
+        self.assertTrue(any("write at least 10 (length.minimum_words" in error for error in errors), errors)
 
     def test_a_segment_cites_only_corpus_sections_the_agent_had(self):
         """D-182: source_refs name a section of material.json or one recorded in sources_used.json."""
@@ -689,7 +690,7 @@ class StoryRunTests(ScriptProjectCase):
         self.assertEqual(revised.status, "completed", {k: v.error for k, v in revised.stages.items() if v.error})
         work = self.root / "runs" / revised.run_id
         folder = work / "story" / "ep_001"
-        context = json.loads((folder / "context.json").read_text(encoding="utf-8"))
+        context = json.loads((commands_folder(folder) / "context.json").read_text(encoding="utf-8"))
         self.assertEqual(context["length"]["target_words"], math.ceil(10 * context["rate"]))
         self.assertIn("about 10 minutes", (folder / "TASK.md").read_text(encoding="utf-8"))
         self.assertEqual(json.loads((folder / "entry.json").read_text(encoding="utf-8"))["target_minutes"], 10)
@@ -717,7 +718,7 @@ class StoryRunTests(ScriptProjectCase):
         self.assertEqual(written.status, "completed", {k: v.error for k, v in written.stages.items() if v.error})
         run = self.root / "runs" / written.run_id
         folder = run / "story" / "ep_001"
-        context = json.loads((folder / "context.json").read_text(encoding="utf-8"))
+        context = json.loads((commands_folder(folder) / "context.json").read_text(encoding="utf-8"))
         self.assertEqual(context["length"]["target_words"], math.ceil(10 * context["rate"]))
         self.assertIn("about 10 minutes", (folder / "TASK.md").read_text(encoding="utf-8"))
         self.assertNotIn("revision", json.loads((folder / "material.json").read_text(encoding="utf-8")))
@@ -732,6 +733,285 @@ class StoryRunTests(ScriptProjectCase):
         # Teaching: story material, orientation sheet and its check; story: the session and a critique; review: the
         # script review alone, with no listener readback, editorial or teaching review.
         self.assertEqual(calls_per_episode(STORY_STAGES), 3 + 2 + 1)
+
+
+def agent_variant(folder, replacements, draft=None):
+    """The fake CLI of script_fixtures with each ``old`` line of ``replacements`` replaced by its ``new`` code."""
+    from tests.script_fixtures import FAKE_AGENT
+    code = FAKE_AGENT
+    for old, new in replacements:
+        assert code.count(old) == 1, old
+        code = code.replace(old, new)
+    fake_agent(folder, draft)
+    script = Path(folder) / "variant_claude.py"
+    script.write_text(code, encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+# The fake agent's lines the variants below change.
+COMMANDS_LINE = "prefix = named.group(1)\n"
+DRAFT_LINE = 'json.dump(draft, open("draft.json", "w", encoding="utf-8"), ensure_ascii=False)\n'
+LOG_LINE = 'json.dump({"check": check.stdout, "critique": critique.stdout}, open("agent_log.json", "w", encoding="utf-8"))\n'
+
+
+class SessionBoundaryTests(ScriptProjectCase):
+    """The 2026-11-14 review of the story agent's session: how it ends, what checks it and what a repeat starts from."""
+    story_model = StoryRunTests.story_model
+
+    def setUp(self):
+        super().setUp()
+        self.reviews = []
+
+    def run_with(self, cli, **kwargs):
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model), \
+             patch("podcast_automate.claude_code.claude_command", return_value=cli):
+            return run_script(self.root, **kwargs)
+
+    def test_a_session_that_hits_the_quota_waits_for_it_and_its_repeat_starts_from_what_it_left(self):
+        """Before, the run read only draft.json: a quota stop of the session was story_agent_failed, without the quota
+        wait and its automatic resume, or its half-done draft was accepted; the repeat started from nothing."""
+        marker = self.root.parent / "fail_once"
+        marker.write_text("1", encoding="utf-8")
+        record = ('prefix = named.group(1)\n'
+                  'json.dump({"prompt": args[args.index("-p") + 1], "had": sorted(name for name in ("draft.json", '
+                  '"plan.md") if os.path.exists(name))}, open("started.json", "w", encoding="utf-8"))\n')
+        fail = (LOG_LINE + 'marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fail_once")\n'
+                'if os.path.exists(marker):\n'
+                '    os.remove(marker)\n'
+                '    print(json.dumps({"type": "result", "subtype": "success", "is_error": True, '
+                '"result": "You\'ve hit your limit · resets 3am"}))\n'
+                '    sys.exit(1)\n')
+        cli = agent_variant(self.root.parent, [(COMMANDS_LINE, record), (LOG_LINE, fail)])
+        stopped = self.run_with(cli)
+        self.assertEqual((stopped.status, stopped.stages["story"].error.code), ("waiting_for_quota", "claude_quota_exhausted"))
+        work = self.root / "runs" / stopped.run_id
+        self.assertFalse((work / "drafts" / "ep_001.json").exists(), "the cut session's draft is not accepted")
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model), \
+             patch("podcast_automate.claude_code.claude_command", return_value=cli):
+            resumed = run_script(self.root, resume=True, run_id=stopped.run_id)
+        self.assertEqual(resumed.status, "completed", {k: v.error for k, v in resumed.stages.items() if v.error})
+        folder = work / "story" / "ep_001"
+        started = json.loads((folder / "started.json").read_text(encoding="utf-8"))
+        self.assertIn("An earlier session on this same task stopped", started["prompt"])
+        self.assertEqual(started["had"], ["draft.json", "plan.md"])
+        self.assertTrue((folder / "attempts" / "01" / "draft.json").is_file())
+
+    def test_a_session_failure_is_read_from_the_clis_result(self):
+        from podcast_automate.story_agent import session_failure
+        quota = session_failure({"type": "result", "subtype": "success", "is_error": True,
+                                 "result": "You've hit your limit · resets 3am"}, 1, "", False)
+        self.assertEqual((quota.code, quota.status), ("claude_quota_exhausted", "waiting_for_quota"))
+        self.assertEqual(session_failure({"subtype": "error_max_budget_usd", "is_error": True, "result": ""}, 1, "",
+                                         True).code, "claude_budget_cap")
+        self.assertEqual(session_failure({"is_error": True, "result": "Not logged in · Please run /login"}, 1, "",
+                                         False).code, "authentication_required")
+        self.assertEqual(session_failure({}, 1, "Traceback (most recent call last)", False).code, "claude_failed")
+        self.assertIsNone(session_failure({"is_error": False, "result": "Finished."}, 0, "", False))
+
+    def test_the_session_cannot_change_what_checks_it(self):
+        """Before, check.py lay in the session's folder and the run's final check read the folder's context.json: a
+        session that lowered its floor there passed with a short draft, and a module it wrote into its folder ran as
+        check.py's code. The scripts and their context lie beside the folder now, and the run checks with its own."""
+        cheat = ('draft["segments"][1]["text"] = "It scores."\n'
+                 'context = json.load(open(prefix + "context.json", encoding="utf-8"))\n'
+                 'json.dump({**context, "length": {"minimum_words": 1, "target_words": 1000, "scene_words": {}}}, '
+                 'open("context.json", "w", encoding="utf-8"))\n'
+                 'os.makedirs("podcast_automate", exist_ok=True)\n'
+                 'open("podcast_automate/__init__.py", "w").write("")\n'
+                 'open("podcast_automate/story_agent.py", "w").write("print(\'SHADOWED\')")\n' + DRAFT_LINE)
+        stopped = self.run_with(agent_variant(self.root.parent, [(DRAFT_LINE, cheat)], fixtures_script()))
+        self.assertEqual((stopped.status, stopped.stages["story"].error.code), ("blocked", "story_agent_failed"))
+        self.assertIn("words: write at least", stopped.stages["story"].error.message)
+        folder = self.root / "runs" / stopped.run_id / "story" / "ep_001"
+        check = json.loads(json.loads((folder / "agent_log.json").read_text(encoding="utf-8"))["check"])
+        self.assertFalse(check["passed"], "check.py ran the package, not the module the session wrote")
+        self.assertFalse((folder / "check.py").exists())
+        self.assertIn('"-P"', (commands_folder(folder) / "check.py").read_text(encoding="utf-8"))
+
+    def test_a_session_that_changes_its_commands_is_refused(self):
+        tamper = (DRAFT_LINE + 'context = json.load(open(prefix + "context.json", encoding="utf-8"))\n'
+                  'json.dump({**context, "critiques": 99}, open(prefix + "context.json", "w", encoding="utf-8"))\n')
+        stopped = self.run_with(agent_variant(self.root.parent, [(DRAFT_LINE, tamper)], fixtures_script()))
+        self.assertEqual((stopped.status, stopped.stages["story"].error.code), ("blocked", "story_agent_failed"))
+        self.assertIn("verändert", stopped.stages["story"].error.message)
+
+    def test_the_review_holds_the_first_draft_to_the_runs_own_checks(self):
+        """Before, the review stage checked a draft against the run's inputs only on a resume from its checkpoint; the
+        first draft rested on the session's final check alone."""
+        uncited = ('draft["segments"][0]["knowledge_refs"] = []\ndraft["segments"][1]["knowledge_refs"] = []\n' +
+                   DRAFT_LINE)
+        with patch("podcast_automate.story_agent.draft_errors", return_value=[]):
+            stopped = self.run_with(agent_variant(self.root.parent, [(DRAFT_LINE, uncited)], fixtures_script()))
+        self.assertEqual((stopped.status, stopped.stages["review"].error.code), ("blocked", "story_agent_failed"))
+        self.assertIn("Core findings", stopped.stages["review"].error.message)
+
+    def test_an_episode_published_without_a_plan_publishes_and_its_old_plan_goes(self):
+        """A revision's session could finish without plan.md, and publishing then stopped on every resume."""
+        done = self.run_with(fake_agent(self.root.parent, fixtures_script()))
+        work = self.root / "runs" / done.run_id
+        self.assertTrue((self.root / "episodes" / "ep_001" / "story_plan.md").is_file())
+        (work / "story" / "ep_001" / "plan.md").unlink()
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model):
+            resumed = run_script(self.root, resume=True, run_id=done.run_id)
+        self.assertEqual(resumed.status, "completed", {k: v.error for k, v in resumed.stages.items() if v.error})
+        self.assertFalse((self.root / "episodes" / "ep_001" / "story_plan.md").exists())
+
+    def test_a_revision_carries_the_supplements_of_the_run_it_revises(self):
+        first = self.run_with(fake_agent(self.root.parent, fixtures_script()))
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.story_model), \
+             patch("podcast_automate.claude_code.claude_command", return_value=fake_agent(self.root.parent)):
+            revised = run_script(self.root, revise="ep_001", feedback="Ruhiger.")
+        inputs = json.loads((self.root / "runs" / revised.run_id / "inputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(inputs["revision"]["supplement_runs"], [first.run_id])
+        from podcast_automate.script_pipeline import carried_runs
+        self.assertEqual(carried_runs(self.root, inputs["revision"]), [self.root / "runs" / first.run_id])
+        self.assertEqual(carried_runs(self.root, None), [])
+
+
+def fixtures_script():
+    from tests.script_fixtures import example_script
+    return example_script()
+
+
+class SessionUnitTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name) / "story" / "ep_001"
+        self.folder.mkdir(parents=True)
+
+    def turns(self, count, words, minutes=60):
+        """A draft of ``count`` turns of 400 ms over the two chapters of ``entry``, ``words`` words in all."""
+        per = [words // count + (1 if i < words % count else 0) for i in range(count)]
+        return EpisodeScript(episode_id="ep_001", title="Probe", purpose="deep_dive",
+                             chapters=[Chapter(chapter_id="s1", title="Eins"), Chapter(chapter_id="s2", title="Zwei")],
+                             segments=[segment(f"t{i:03d}", "s1" if i < count // 2 else "s2",
+                                               "host_a" if i % 2 else "host_b", " ".join(["Wort"] * n),
+                                               ["f_a"] if i < count // 2 else ["f_b"]) for i, n in enumerate(per)])
+
+    def test_an_hour_long_episode_has_room_for_its_pauses_under_the_sixty_minute_cap(self):
+        """Before, the target ignored the pauses the 60-minute cap counts: 60 planned minutes at 150 words a minute gave
+        a floor of 8,550 words, and three hosts' 460 turns of 400 ms left room for 8,540."""
+        from podcast_automate.script_checks import validate_script, word_ceiling
+        from podcast_automate.story_agent import agent_length, draft_length, legacy_length
+        planned = entry().model_copy(update={"target_minutes": 60})
+        old = legacy_length(planned, 150)
+        self.assertEqual((old["minimum_words"], old["target_words"]), (8550, 9000))
+        budget = agent_length(planned, 150)
+        self.assertLess(budget["target_words"], 9000, "the budget reserves the expected pauses")
+        self.assertGreaterEqual(budget["minimum_words"], math.ceil(budget["target_words"] * TARGET_SHARE))
+        window = draft_length(old, self.turns(460, 8000), 150)
+        self.assertEqual(window["ceiling_words"], word_ceiling(150, 460 * 400 / 60_000))
+        self.assertEqual(window["ceiling_words"], 8540, "below the old floor of 8,550")
+        self.assertLessEqual(window["minimum_words"], window["target_words"])
+        self.assertLessEqual(window["target_words"], window["ceiling_words"])
+        draft = self.turns(460, window["minimum_words"])
+        self.assertEqual(validate_script(draft, planned, rate=150), [])
+        (self.folder / "plan.md").write_text("# Plan\n", encoding="utf-8")
+        context = {"entry": planned.model_dump(), "roles": ["host_a", "host_b"], "assembled": False, "sources": [],
+                   "length": old, "rate": 150, "root": str(self.folder), "sections": [], "critiques": 4}
+        with patch("podcast_automate.story_agent.corpus_sections", return_value=[]):
+            errors = draft_errors(self.folder, draft, context=context)
+            long_pauses = self.turns(460, window["minimum_words"])
+            for turn in long_pauses.segments:
+                turn.pause_after_ms = 2000
+            stretched = draft_errors(self.folder, long_pauses, context=context)
+        self.assertEqual(errors, [])
+        # Pauses beyond a turn's default count against the cap, but never lower the floor.
+        self.assertEqual(draft_length(old, long_pauses, 150)["minimum_words"], window["minimum_words"])
+        self.assertTrue(any("holds at most" in error for error in stretched), stretched)
+        # An episode well under the cap keeps the budget it always had.
+        short = entry().model_copy(update={"target_minutes": 30})
+        self.assertEqual(agent_length(short, 150), legacy_length(short, 150))
+
+    def test_a_draft_without_a_plan_is_refused(self):
+        script = self.turns(4, 40, 1)
+        context = {"entry": entry().model_dump(), "roles": ["host_a", "host_b"], "assembled": False, "sources": [],
+                   "length": {"minimum_words": 1, "target_words": 40}, "root": str(self.folder), "sections": []}
+        with patch("podcast_automate.story_agent.corpus_sections", return_value=[]):
+            self.assertTrue(any("plan.md is missing" in e for e in draft_errors(self.folder, script, context=context)))
+            (self.folder / "plan.md").write_text("# Plan\n", encoding="utf-8")
+            self.assertFalse(any("plan.md" in e for e in draft_errors(self.folder, script, context=context)))
+
+    def test_the_editor_reads_the_length_window_and_the_story_material_and_failed_calls_use_no_critique(self):
+        """Before, the editor knew neither the floor nor the material, so it asked for cuts the floor then refilled and
+        for scenes the material lacked; and every failed critique call counted against the four."""
+        from podcast_automate.prompts import instructions
+        from podcast_automate.story_agent import CRITIQUE_VERSION, CritiqueScores, Scale, counted_critiques, \
+            serve_critiques
+        requests = self.folder / "requests"
+        requests.mkdir()
+        write_json(requests / "critique_1.json", {"draft": self.turns(2, 7, 1).model_dump_json()})
+        write_json(requests / "critique_1.answer.json", {"error": "Kontingent erreicht", "code": "claude_quota_exhausted"})
+        write_json(requests / "critique_2.json", {"draft": self.turns(2, 7, 1).model_dump_json()})
+        asked = []
+        scale = Scale(score=7, reason="Trägt.")
+
+        def invoke(prompt, schema, version):
+            asked.append((prompt, version))
+            return StoryCritique(scores=CritiqueScores(tension=scale, interest=scale, storytelling=scale),
+                                 keeps_from_10=[])
+        pipeline = SimpleNamespace(config=SimpleNamespace(audience_level="Erwachsene"), invoke=invoke)
+        context = {"critiques": 1, "length": {"minimum_words": 10, "target_words": 12}, "rate": 130}
+        story = [{"item_id": "i1", "kind": "scene", "text": "Der Bischof kam.", "source_ref": "src_a#sec_1"}]
+        self.assertEqual(serve_critiques(pipeline, self.folder, context, story), 1)
+        prompt, version = asked[0]
+        self.assertEqual(version, CRITIQUE_VERSION)
+        payload = json.loads(prompt.splitlines()[-1])
+        self.assertEqual(payload["length"], {"words": 7, "minimum_words": 10, "target_words": 12})
+        self.assertEqual(payload["story_material"], [{"kind": "scene", "text": "Der Bischof kam."}])
+        self.assertIn("never take the script below minimum_words", instructions("story_critique"))
+        self.assertIn("scores", json.loads((requests / "critique_2.answer.json").read_text(encoding="utf-8")),
+                      "the failed call used none of the one critique allowed")
+        self.assertEqual(counted_critiques(requests), 1)
+        write_json(requests / "critique_3.json", {"draft": self.turns(2, 7, 1).model_dump_json()})
+        serve_critiques(pipeline, self.folder, context, story)
+        self.assertIn("refused", json.loads((requests / "critique_3.answer.json").read_text(encoding="utf-8")))
+
+    def test_a_timed_out_session_is_stopped_with_its_whole_tree(self):
+        hanging = self.folder.parent / "hanging_claude.py"
+        hanging.write_text("import json, sys, time\n"
+                           "if sys.argv[1:3] == ['auth', 'status']:\n"
+                           "    print(json.dumps({'loggedIn': True, 'authMethod': 'claude.ai'}))\n"
+                           "    sys.exit(0)\n"
+                           "time.sleep(60)\n", encoding="utf-8")
+        limits = {"model_calls": 10, "search_rounds": 1, "sources": 1}
+        pipeline = SimpleNamespace(work=self.folder.parent, text_generation={"provider": "claude_code"},
+                                   limits=lambda: ResearchLimits(**limits))
+        from podcast_automate import process
+        with patch("podcast_automate.claude_code.claude_command", return_value=[sys.executable, str(hanging)]), \
+             patch("podcast_automate.process.stop_quietly", wraps=process.stop_quietly) as stopped:
+            with self.assertRaises(AppError) as caught:
+                run_agent(pipeline, self.folder, timeout=-1)
+        self.assertEqual(caught.exception.code, "story_agent_timeout")
+        stopped.assert_called()
+
+    def test_only_a_first_party_claude_login_runs_the_session(self):
+        from podcast_automate.story_agent import session_access
+        pipeline = SimpleNamespace(text_generation={"provider": "claude_code"})
+        for provider, allowed in ((None, True), ("firstParty", True), ("bedrock", False), ("vertex", False)):
+            status = {"logged_in": True, "auth_method": "claude.ai", "subscription": "max", "api_provider": provider}
+            with patch("podcast_automate.claude_code.login_status", return_value=status):
+                if allowed:
+                    self.assertFalse(session_access(pipeline, ["claude"])[0])
+                else:
+                    with self.assertRaises(AppError) as caught:
+                        session_access(pipeline, ["claude"])
+                    self.assertEqual(caught.exception.code, "authentication_required")
+
+    def test_the_task_names_the_commands_beside_the_folder_and_its_old_text_stays_for_old_drafts(self):
+        from podcast_automate.story_agent import allowed_tools, command_prefix
+        prefix = command_prefix(self.folder)
+        self.assertEqual(prefix, "../ep_001.commands/")
+        text = task_text("de-DE", 20, commands=prefix)
+        self.assertIn("`python ../ep_001.commands/check.py`", text)
+        self.assertIn("Bash(python ../ep_001.commands/check.py:*)", allowed_tools(prefix))
+        command = session_command(["claude"], commands=prefix)
+        self.assertEqual(command[command.index("--allowedTools") + 1], allowed_tools(prefix))
+        # Without commands the task reads as the sessions before v6 read it, so their drafts stand on resume.
+        legacy = task_text("de-DE", 20, 2, revision=True)
+        self.assertIn("`python check.py`", legacy)
+        self.assertNotIn("../", legacy)
 
 
 if __name__ == "__main__":

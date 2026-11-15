@@ -31,7 +31,8 @@ from .script_checks import (MAX_PLAN_REPAIRS, checked_series_plan, episode_sourc
                             script_review_signature, validate_plan, validate_script)
 from .script_models import MAX_EPISODE_MINUTES, EpisodePlan, SeriesPlan
 from .script_pipeline import ScriptRun  # noqa: F401
-from .series_review import SERIES_REVIEW_VERSION, SeriesReview, reviewed_scripts, series_issues, series_report
+from .series_review import (SERIES_REVIEW_VERSION, SeriesReview, reviewed_scripts, round_scope, series_issues,
+                            series_report)
 from .story_agent import story_entry
 from .storage import (bound_brief, digest, file_hash, load_project, project_hash, project_lock, read_yaml, write_json,
                       write_yaml)
@@ -222,8 +223,12 @@ def revision_inputs(root, revise, feedback, research_id, dossier, roles=None, mi
         # new length; the series plan stays the approved outline.
         written = EpisodePlan.model_validate({**written.model_dump(), "target_minutes": minutes})
     inherited_knowledge = json.loads((previous_work / "knowledge_model.json").read_text(encoding="utf-8"))
+    # The runs whose supplementary research the published episode tells from: the run that published it and those it
+    # carried itself, oldest first; the revision applies their supplements before its own (ScriptRun.carried_runs).
+    carried = [*((previous_inputs.get("revision") or {}).get("supplement_runs") or []), previous_id]
     revision = {"source_run_id": previous_id, "original_script": original.model_dump(), "feedback": feedback,
-                **({"entry": written.model_dump()} if written is not selected_entry else {})}
+                **({"entry": written.model_dump()} if written is not selected_entry else {}),
+                "supplement_runs": list(dict.fromkeys(carried))}
     return inherited_plan, inherited_knowledge, revision
 
 
@@ -575,6 +580,34 @@ def series_review_target(root: Path, run_id: str) -> dict:
             "published_run_id": inputs.get("published_run_id"), "report_mirrored": bool(inputs.get("mirror_report"))}
 
 
+def outline_review_scope(root: Path, outline_run: str, plan, scripts) -> dict | None:
+    """What a series review over the published episodes of ``outline_run`` is told and judged by once one has reviewed
+    them before (SERIES_REVIEW_POINTER): that review's checks with what became of each, and the episodes whose
+    published text changed since, as series_review.round_scope puts them for a correction round; with them only an
+    earlier objection the scripts still have, or a failure in a changed episode, blocks. None for the first review of
+    the outline, or when the earlier one judged another plan.
+
+    2026-11-14 review: each review over the published episodes judged every episode afresh, so after a revision of the
+    episodes it named, new points on episodes that had passed unchanged came back as blocking, each offered as another
+    revision, and the review and revise rounds did not settle."""
+    try:
+        pointer = json.loads((root / SERIES_REVIEW_POINTER).read_text(encoding="utf-8"))
+        if pointer.get("outline_run_id") != outline_run:
+            return None
+        earlier = manifest_path(root, pointer["run_id"]).parent
+        saved = json.loads((earlier / "series_review.json").read_text(encoding="utf-8"))
+        asked = json.loads((earlier / "inputs.json").read_text(encoding="utf-8"))
+        report = saved["report"]
+        if saved.get("sha256") != digest(report) or not report.get("review") or asked.get("plan") != plan.model_dump():
+            return None
+        before = {script["episode_id"]: digest(script) for script in asked.get("scripts") or []}
+        changed = [script.episode_id for script in scripts if before.get(script.episode_id) != digest(script.model_dump())]
+        scope = round_scope(report, changed, int((report.get("scope") or {}).get("round") or 0) + 1)
+    except (OSError, ValueError, KeyError, TypeError, AppError):
+        return None
+    return {"previous_review_run_id": pointer["run_id"], "scope": scope}
+
+
 def run_series_review(root: Path, *, run_id=None, outline_run=None, backend=None, model=None, reasoning_effort=None):
     """Review a published run's scripts on their own, without touching that run's folder; with ``outline_run``, the
     published episodes of that outline, each written by a run of its own (outline_episodes, D-184), once all are.
@@ -630,6 +663,11 @@ def run_series_review(root: Path, *, run_id=None, outline_run=None, backend=None
                   "published_run_id": published_run_id,
                   "mirror_report": bool(outline_run) or published_run_id == source_id,
                   "scripts": [s.model_dump() for s in scripts], "plan": plan.model_dump()}
+        previous = outline_review_scope(root, outline_run, plan, scripts) if outline_run else None
+        if previous:
+            # Saved before the call, so the question it asks is on record (series_review.classify judges by it).
+            inputs.update(previous)
+        scope = (previous or {}).get("scope")
         write_json(work / "inputs.json", inputs)
         manifest = RunManifest(run_id=identifier, kind="series_review",
                                project_hash=project_hash(config), input_hash=digest(inputs),
@@ -658,9 +696,11 @@ def run_series_review(root: Path, *, run_id=None, outline_run=None, backend=None
                         settle_call(work, number)
                 return re_asked(once, cast_note(config) + prompt)
 
-            report = series_report(config, plan, scripts, manifest.input_hash, invoke)
-            # What blocks, per episode, so the Studio can offer each episode's revision with it (D-184).
-            issues = series_issues(SeriesReview.model_validate(report["review"])) if report.get("review") else {}
+            report = series_report(config, plan, scripts, manifest.input_hash, invoke, scope=scope)
+            # What blocks, per episode, so the Studio can offer each episode's revision with it (D-184), judged by the
+            # scope the review was asked with.
+            issues = series_issues(SeriesReview.model_validate(report["review"]), report.get("scope")) \
+                if report.get("review") else {}
             write_json(work / "series_review.json", {
                 "report": report, "sha256": digest(report),
                 "episode_issues": {key: [issue.model_dump() for issue in rows] for key, rows in issues.items()}})

@@ -13,7 +13,7 @@ corpus sections the published episode used. These steps replace "How to work":
    outline.json may then set new chapters.
 3. Check the facts of every segment you change as step 9 of "How to work" says, and add every corpus section you
    newly use to sources_used.json.
-4. Run `python check.py` until it passes.
-5. Run `python critique.py` only where the change touched the telling, at most {critiques} times, and change only
+4. Run `python {commands}check.py` until it passes.
+5. Run `python {commands}critique.py` only where the change touched the telling, at most {critiques} times, and change only
    what a point names within what the feedback asked for.
 6. Finish when check.py passes and no fact doubt is left. Say in one line what you changed.

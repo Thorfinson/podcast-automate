@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 import time
 import wave
@@ -123,7 +124,21 @@ def passage_context(passages, number, segments, heard):
 
 def passage_settings(segments, spoken, voices, language, model=ELEVENLABS_MODEL, styles=None, context=None):
     """The cache key and stored record of one passage: as on Google's route (google_speech.passage_settings), with the
-    context of the passages around it, which shapes the delivery too."""
+    context of the passages around it, which shapes the delivery too. A host who speaks in the passage only a listener
+    reaction (passage_turns: the other host's „Mhm.“) is keyed with its voice and style as well; a passage without one
+    keeps the key it always had (legacy_settings)."""
+    styles = styles if styles is not None else DEFAULT_STYLES
+    settings = legacy_settings(segments, spoken, voices, language, model, styles, context)
+    outside = sorted({role for role, _ in passage_turns(segments, spoken, styles)} - set(settings["voices"]))
+    if outside:
+        # 2026-11-14: the other host's voice was not in the key, so a changed voice kept the old voice's reaction.
+        settings["voices"] = {**settings["voices"], **{role: voices[role] for role in outside}}
+        settings["styles"] = {**settings["styles"], **{role: styles.get(role, "") for role in outside}}
+    return settings
+
+
+def legacy_settings(segments, spoken, voices, language, model=ELEVENLABS_MODEL, styles=None, context=None):
+    """The key a passage had until 2026-11-14: the voices and styles of the hosts its segments belong to only."""
     roles = sorted({segment.speaker_id for segment in segments})
     styles = styles if styles is not None else DEFAULT_STYLES
     return {"provider": ELEVENLABS_PROVIDER, "model": model, "adapter_version": ELEVENLABS_SPEECH_VERSION,
@@ -132,6 +147,20 @@ def passage_settings(segments, spoken, voices, language, model=ELEVENLABS_MODEL,
             "segments": [{"speaker_id": segment.speaker_id, "text": segment.text,
                           **spoken_settings(segment.text, spoken[segment.segment_id])} for segment in segments],
             "context": context or {}, "format": "pcm", "sample_rate": 24000, "channels": 1, "sample_width": 2}
+
+
+def spoke_as_asked(record, body):
+    """Whether a cached take's own answer (ElevenLabs' voice_segments) shows every turn of ``body`` in its voice."""
+    rows = record.get("voice_segments") if isinstance(record, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return False
+    asked = {index: item["voice_id"] for index, item in enumerate(body["inputs"])}
+    heard = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("dialogue_input_index") not in asked:
+            return False
+        heard.setdefault(row["dialogue_input_index"], set()).add(row.get("voice_id"))
+    return set(heard) == set(asked) and all(voices == {asked[index]} for index, voices in heard.items())
 
 
 def request_body(turns, voices, model, language, context=None):
@@ -181,6 +210,8 @@ class ElevenLabsSpeech:
             if not take_defect(recorded_pcm(path), heard):
                 return path
             evict(path)
+        if self.adopt(segments, spoken, voices, language, cache, styles, context, settings, path, heard):
+            return path
         self.require_key()
         started = time.monotonic()
         body = request_body(turns, voices, self.model, language, context)
@@ -201,6 +232,26 @@ class ElevenLabsSpeech:
         write_json(path.with_suffix(".json"), {"settings": settings, "sha256": file_hash(path),
             "elapsed_seconds": round(time.monotonic() - started, 3), "speech_quality_verified": False, **record})
         return path
+
+    def adopt(self, segments, spoken, voices, language, cache, styles, context, settings, path, heard):
+        """Keep a take cached under the passage's key before 2026-11-14 (legacy_settings), which lacked the voice of a
+        host who speaks only a reaction in it, when ElevenLabs' own answer shows every turn in today's voice; it is
+        copied under today's key. Without that proof the passage is asked for again."""
+        old = legacy_settings(segments, spoken, voices, language, self.model, styles, context)
+        if old == settings:
+            return False
+        legacy = cache / (digest(old) + ".wav")
+        record = cached_audio(legacy, old)
+        body = request_body(passage_turns(segments, spoken, styles), voices, self.model, language, context)
+        if not record or not spoke_as_asked(record, body) or take_defect(recorded_pcm(legacy), heard):
+            return False
+        with tempfile.TemporaryDirectory(dir=cache) as temporary:
+            wav = Path(temporary) / "audio.wav"
+            shutil.copyfile(legacy, wav)
+            wav.replace(path)
+        write_json(path.with_suffix(".json"), {**record, "settings": settings, "sha256": file_hash(path),
+                                               "adopted_from": legacy.name})
+        return True
 
     def request(self, body, cache):
         """One take: the PCM of ElevenLabs' answer and what it reports (credits, request id, the turns' times). The

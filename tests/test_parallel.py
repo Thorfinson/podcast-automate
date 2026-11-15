@@ -300,6 +300,7 @@ class StudioParallelTests(unittest.TestCase):
         folder = self.root / "exports/ep_001/run_old"
         folder.mkdir(parents=True)
         (folder / "audio.mp3").write_bytes(b"mp3")
+        write_json(folder / "audio_report.json", {"ai_marking_embedded": True})
         choice = selected_audio(self.root, self.config)
         write_json(self.root / "episodes/ep_001/audio_latest.json", {
             "script_sha256": file_hash(self.root / "episodes/ep_001/script.yaml"), "voices": choice.voices,

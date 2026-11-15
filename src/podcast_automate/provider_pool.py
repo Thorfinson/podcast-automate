@@ -92,14 +92,17 @@ def bill(directory, row, *, replace=False) -> None:
 
 
 def ended_row(started, *, metadata=None, error=None) -> dict:
-    """The row of an ended attempt: priced from the receipt or the failure's ``billed_usd``, unpriced after a timeout
-    or stall, free otherwise (refused before any model work, such as a missing key)."""
+    """The row of an ended attempt: priced from the receipt or the failure's ``billed_usd``; unpriced after a timeout
+    or stall, or when the adapter says the provider may have billed model work it reported no cost for
+    (``billed_unknown``: an OpenRouter time limit, a broken connection or stream after the request was sent); free
+    otherwise (refused before any model work, such as a missing key)."""
     usd = (metadata or {}).get("separately_billed_cost") if error is None else error.details.get("billed_usd")
     if isinstance(usd, (int, float)) and not isinstance(usd, bool) and usd >= 0:
         state = "priced"
+    elif error is None or error.code in UNPRICED_CODES or error.details.get("billed_unknown") is True:
+        usd, state = None, "unpriced"
     else:
-        usd, state = None, "unpriced" if error is not None and error.code in UNPRICED_CODES else (
-            "unpriced" if error is None else "free")
+        usd, state = None, "free"
     return {**started, "state": state, "usd": usd, "code": error.code if error is not None else None, "ended_at": now()}
 
 
@@ -357,42 +360,55 @@ class AdapterPool:
                     write_json(directory / REPEATED_ONCE[exc.code], {"provider": choice["provider"], "message": str(exc),
                                "retried_at": now()})
                     continue
-                if choice["provider"] not in SUBSCRIPTION_PROVIDERS:
-                    raise
-                unavailable = mode == "auto" and exc.code in UNAVAILABLE_CODES
-                if exc.status != "waiting_for_quota" and not unavailable:
-                    raise
-                if unavailable:
-                    bookkeeping(subscriptions.record_unavailable, choice["provider"], exc)
-                else:
-                    # The paused run is resumed at this provider's reset (subscriptions.quota_retry_at).
-                    exc.details.setdefault("provider", choice["provider"])
-                    # A Claude block is a cheap note for every mode; re-reading Codex windows only serves the rule.
-                    if mode == "auto" or choice["provider"] == "claude_code":
-                        noted = bookkeeping(subscriptions.record_quota_failure, choice["provider"], exc,
-                                            settings=self.settings)
-                        if choice["provider"] == "codex_cli" and isinstance(noted, dict) and noted.get("resets_at"):
-                            exc.details.setdefault("blocked_until", noted["resets_at"])
-                if mode != "auto":
-                    raise
-                tried.append(choice["provider"])
-                try:
-                    alternative = self.choose(mode, prefer, candidates, exclude=tried, refresh=True)
-                except AppError as final:
-                    # Both subscriptions are out: name both resets. A blocked login keeps the quota error. A provider
-                    # that is unusable (an expired login, too old a CLI) beside one out of quota stops with its own
-                    # error, which the user can fix now: the quota pause waited for the other's reset, days at times.
-                    if final.status == "waiting_for_quota" and not unavailable:
-                        raise final from exc
-                    raise exc from final
-                write_json(directory / "provider_switch.json", {
-                    "from": choice["provider"], "to": alternative["provider"], "error_code": exc.code,
-                    "message": str(exc), "switched_at": now()})
-                choice = alternative
+                choice = self.failover(exc, choice, mode=mode, prefer=prefer, candidates=candidates, tried=tried,
+                                       directory=directory)
                 continue
             if choice["provider"] == "claude_code":
                 bookkeeping(subscriptions.record_claude_success, metadata.get("rate_limit"), started_at=started)
             return output, metadata
+
+    def failover(self, exc, choice, *, mode, prefer, candidates, tried, directory):
+        """After a failed attempt: the subscription that takes the call over under the automatic rule, with the notes
+        the shared quota store keeps of the failure. Raises the error the call stops with otherwise."""
+        provider = choice["provider"]
+        if provider not in SUBSCRIPTION_PROVIDERS:
+            raise exc
+        unavailable = mode == "auto" and exc.code in UNAVAILABLE_CODES
+        if exc.status != "waiting_for_quota" and not unavailable:
+            raise exc
+        # A login failure is noted at once, since every choice checks a login note afresh (subscriptions.LOGIN_REASONS).
+        # Any other unusable subscription (a failed turn, too old a CLI) is noted only once another one takes the call
+        # over: with nothing to move to, one transient failure noted for ten minutes stopped every automatic job of the
+        # computer at its first call as "not installed or not logged in" (review 2026-11-14).
+        deferred = unavailable and exc.code not in subscriptions.LOGIN_REASONS
+        if unavailable and not deferred:
+            bookkeeping(subscriptions.record_unavailable, provider, exc)
+        elif not unavailable:
+            # The paused run is resumed at this provider's reset (subscriptions.quota_retry_at).
+            exc.details.setdefault("provider", provider)
+            # A Claude block is a cheap note for every mode; re-reading Codex windows only serves the rule.
+            if mode == "auto" or provider == "claude_code":
+                noted = bookkeeping(subscriptions.record_quota_failure, provider, exc, settings=self.settings)
+                if provider == "codex_cli" and isinstance(noted, dict) and noted.get("resets_at"):
+                    exc.details.setdefault("blocked_until", noted["resets_at"])
+        if mode != "auto":
+            raise exc
+        tried.append(provider)
+        try:
+            alternative = self.choose(mode, prefer, candidates, exclude=tried, refresh=True)
+        except AppError as final:
+            # Both subscriptions are out: name both resets. A blocked login keeps the quota error. A provider that is
+            # unusable (an expired login, too old a CLI) beside one out of quota stops with its own error, which the
+            # user can fix now: the quota pause waited for the other's reset, days at times.
+            if final.status == "waiting_for_quota" and not unavailable:
+                raise final from exc
+            raise exc from final
+        if deferred:
+            bookkeeping(subscriptions.record_unavailable, provider, exc)
+        write_json(directory / "provider_switch.json", {
+            "from": provider, "to": alternative["provider"], "error_code": exc.code,
+            "message": str(exc), "switched_at": now()})
+        return alternative
 
     def attempt(self, adapter, choice, prompt, output_type, directory, *, prompt_version, search):
         """One adapter call; for a billed provider it leaves a row in billing.json that says it started, and replaces

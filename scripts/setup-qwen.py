@@ -23,15 +23,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     workspace = Path(__file__).resolve().parents[1]
     if platform.system() not in {"Darwin", "Linux"}:
-        parser.error("Windows/Radeon: scripts/setup-qwen.ps1 verwenden.")
+        parser.error("On Windows (AMD Radeon), use scripts/setup-qwen.ps1.")
     if args.device == "mps" and platform.system() != "Darwin":
-        parser.error("MPS ist nur auf macOS verfügbar.")
+        parser.error("MPS is available on macOS only.")
     root = inside(workspace / "projects", str((workspace / args.project).resolve())) if args.project else None
     if root:
         load_project(root)  # Validate before installing/downloading anything.
     python = args.python or shutil.which("python3.12") or (sys.executable if sys.version_info[:2] == (3, 12) else None)
     if not python:
-        parser.error("Python 3.12 installieren oder mit --python angeben.")
+        parser.error("Install Python 3.12 or name it with --python.")
     version_check = "import sys; assert sys.version_info[:2] == (3, 12), 'Qwen setup requires Python 3.12'"
     subprocess.run([python, "-c", version_check], check=True)
     environment = workspace / ".venv-tts"
@@ -39,7 +39,7 @@ def main(argv=None):
     if not environment.exists():
         subprocess.run([python, "-m", "venv", str(environment)], check=True)
     if not tts.is_file():
-        parser.error("Die vorhandene .venv-tts gehört zu einem anderen System. Lokal neu anlegen.")
+        parser.error("The existing .venv-tts belongs to another system; remove it and run the setup again.")
     subprocess.run([str(tts), "-c", version_check], check=True)
     command = [str(tts), "-m", "pip", "install", f"torch=={TORCH_VERSION}", f"torchaudio=={TORCH_VERSION}"]
     if args.torch_index_url:
@@ -77,8 +77,8 @@ snapshot_download(sys.argv[3], revision=sys.argv[4])
     write_json(workspace / ".studio/tts-runtime.json", settings)
     installed = subprocess.run([str(tts), "-m", "pip", "freeze"], check=True, capture_output=True, text=True).stdout
     atomic_text(workspace / ".studio/tts-requirements-installed.txt", installed)
-    print("Qwen eingerichtet. Neue Studio-Projekte verwenden diese lokalen Einstellungen.")
-    print("Geräteprüfung bestanden; echte Sprachausgabe erst nach deiner Audiofreigabe.")
+    print("Qwen is set up. New Studio projects use these local settings.")
+    print("Device check passed; real speech starts only after you approve a recording.")
 
 
 if __name__ == "__main__":

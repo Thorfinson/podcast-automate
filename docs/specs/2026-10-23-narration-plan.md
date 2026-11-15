@@ -19,8 +19,11 @@ open. (why: D-180)
 
 ## Status
 
-**Built on 2026-10-23, uncommitted; the evaluation under `evals/narration` is being built.** No real-model call has run
-under the new prompts yet (V-58 to V-63).
+**Built on 2026-10-23 and committed (cfee6fb). On 2026-11-01 the narration review, the dialogue polishing, the
+teaching design and `evals/narration` went with the writing prompt (D-184).** What stays: the research's story rules
+(prompt generation 4), the story material and the story research before each episode, and the core limit
+(`script_checks.CORE_MINUTES`). V-60 and V-61 are dropped with D-184; V-58, V-59 and V-64 stay open, V-62 and V-63 in
+part. The record of 2026-10-23 follows.
 
 The operator decided on 2026-10-23: build all of it, with the narration review after writing and before dialogue
 polishing („eher nach dem Schreiben und vor der Dialogglättung“), and test it before the whole Orlagau series is
@@ -119,8 +122,8 @@ Planned, run by hand with real models; nothing here runs in either test suite.
 | --- | --- | --- | --- | --- |
 | V-58 | Real-model behaviour of the story rules in plan, reader and answer review: whether plans ask for events and people, readers keep the scene beside the number, and reviews accept such findings without calling them scope creep | The first research run of generation 4; count story questions in the plan and story findings per answer, and the review issues of the `.story` calls | First new research run | open |
 | V-59 | Whether story material from the sections the episode's findings cite suffices, or a story's section is often uncited | Evaluation 2; for Orlagau ep_002, whether Kuchavez is reported as `missing_story` | Evaluation | open |
-| V-60 | The narration review's calibration and the share of rewrite, research and note points | Evaluation 1 | Evaluation | open |
-| V-61 | Whether reworks pass within `NARRATION_GROWTH` = 1.15 and the scope check, or are refused (`kept_draft`), and whether the evidence review flags reworked stories more often | Evaluation 3, then the `status` in each `narration/<ep>/result.json` of the first narrated series | Evaluation, first series | open |
-| V-62 | Whether `CORE_MINUTES` = 4 leaves the plan valid without many repairs and the episodes room to tell, and whether the `first_answer_voice` rule and the dramaturgy families vary what a listener hears | The first narrated plan's repairs and core counts; the operator listens to three episodes in a row | First narrated series | open |
-| V-63 | Calls and cost per episode of the new parts: one story-material call, one narration review, a rework and its review when points are named, plus the evidence repairs a rework causes | Count `calls/*` by prompt family in the production report of the first narrated series | First narrated series | open |
+| V-60 | The narration review's calibration and the share of rewrite, research and note points | Evaluation 1 | Evaluation | dropped with D-184: the narration review is gone |
+| V-61 | Whether reworks pass within `NARRATION_GROWTH` = 1.15 and the scope check, or are refused (`kept_draft`), and whether the evidence review flags reworked stories more often | Evaluation 3, then the `status` in each `narration/<ep>/result.json` of the first narrated series | Evaluation, first series | dropped with D-184: the narration rework and `NARRATION_GROWTH` are gone |
+| V-62 | Whether `CORE_MINUTES` = 4 leaves the plan valid without many repairs and the episodes room to tell, and whether the `first_answer_voice` rule and the dramaturgy families vary what a listener hears | The first narrated plan's repairs and core counts; the operator listens to three episodes in a row | First narrated series | open for `CORE_MINUTES`; the `first_answer_voice` rule and the dramaturgy families dropped with D-184 (the teaching design is gone) |
+| V-63 | Calls and cost per episode of the new parts: one story-material call, one narration review, a rework and its review when points are named, plus the evidence repairs a rework causes | Count `calls/*` by prompt family in the production report of the first narrated series | First narrated series | open for the story-material call; the narration review and its rework dropped with D-184 |
 | V-64 | Whether the story research finds the stories the material names as missing (Kuchavez in Thietmar for Orlagau ep_002), how often it ends `not_found` or `refused`, and its calls per episode | Evaluation 3 (ep_002), then `story_research.json` of the first narrated series | Evaluation, first series | open |

@@ -14,7 +14,9 @@ This module has no project dependencies, so storage, speech, execution and studi
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from pathlib import Path
 
 SETTINGS_NAME = ".studio-settings.json"
@@ -24,6 +26,23 @@ SECTIONS = ("text", "audio", "execution", "allowances", "research_limits", "text
 WEB_SEARCH = ("model", "perplexity")
 # Unpaywall answers only with a contact address (sources.unpaywall_copies); empty leaves it out.
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+")
+# Only Windows has momentary sharing violations; tests switch the retry on through this flag, as storage's.
+SHARING_VIOLATIONS = os.name == "nt"
+
+
+def read_text(path: Path, timeout: float = 2.0) -> str:
+    """``path.read_text``, waiting out a momentary sharing violation on Windows: the settings page replacing the file,
+    or a virus scanner holding it. Read as missing, one read gave a worker the project's own limits, text model and web
+    search (review 2026-11-14). storage.read_text does the same, but storage imports this module."""
+    deadline, pause = time.monotonic() + timeout, 0.01
+    while True:
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if not SHARING_VIOLATIONS or time.monotonic() >= deadline:
+                raise
+            time.sleep(pause)
+            pause = min(pause * 2, 0.2)
 
 
 def web_search(root: Path) -> str:
@@ -52,7 +71,7 @@ def load_dir(projects: Path) -> dict | None:
     """The workspace settings of the projects directory ``projects``, or None."""
     path = path_for(projects)
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        data = json.loads(read_text(path)) if path.is_file() else None
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -70,7 +89,7 @@ def text_data(root: Path, default=None):
         return chosen
     path = root / "studio/text.json"
     try:
-        saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        saved = json.loads(read_text(path)) if path.is_file() else None
     except (OSError, ValueError):
         saved = None
     return saved if isinstance(saved, dict) else default

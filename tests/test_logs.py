@@ -49,6 +49,30 @@ class FailureRecordTests(unittest.TestCase):
             (root / "runs/latest.json").write_text('{"run_id": "run_x"}', encoding="utf-8")
             self.assertEqual(status(root)["failure_records"], [f"runs/run_x/failures/{records[0]}"])
 
+    def test_an_error_of_any_other_type_leaves_no_running_manifest_behind(self):
+        """Review 2026-11-14: an error outside the caught types (subprocess.TimeoutExpired from a failed taskkill, an
+        AttributeError) left the stage and the run "running" on disk although no worker carried them on."""
+        import subprocess
+        from podcast_automate.storage import read_yaml
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            init_project(root, TopicBrief(topic="Thema"))
+            manifest = RunManifest(run_id="run_y", kind="text_probe", project_hash="a", input_hash="b",
+                                   stages={"codex_probe": StageRecord()})
+            path = root / "runs/run_y/run_manifest.yaml"
+            path.parent.mkdir(parents=True)
+
+            def broken():
+                raise subprocess.TimeoutExpired(["taskkill"], 10)
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                execute_stages(root, manifest, path, {"codex_probe": broken})
+            saved = RunManifest.model_validate(read_yaml(path))
+            record = saved.stages["codex_probe"]
+            self.assertEqual((saved.status, record.status, record.error.code), ("failed", "failed", "invalid_local_data"))
+            self.assertIn("Technische Details: runs/run_y/failures/codex_probe_1_", record.error.message)
+            self.assertEqual(len(failure_records(root / "runs/run_y")), 1)
+
 
 class ConfigureLoggingTests(unittest.TestCase):
     def test_a_release_through_another_spelling_of_the_path_closes_the_handler(self):
@@ -89,6 +113,19 @@ class ConfigureLoggingTests(unittest.TestCase):
         from podcast_automate.logs import scrub
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "plain-anthropic-value-42"}):
             self.assertNotIn("plain-anthropic-value-42", scrub("Aufruf mit plain-anthropic-value-42 fehlgeschlagen"))
+
+    def test_every_key_variable_of_the_environment_is_scrubbed_the_core_key_too(self):
+        """Review 2026-11-14: CORE's key in PLA_CORE_API_KEY matches no key pattern, and the scrub's own list of
+        variables did not name it, so a log line kept it."""
+        import os
+        from unittest.mock import patch
+        from podcast_automate.logs import scrub
+        values = {"PLA_CORE_API_KEY": "core0123456789abcdef0123456789ab", "ELEVENLABS_API_KEY": "plain-eleven-value-42",
+                  "OPENAI_API_KEY": "plain-openai-value-42"}
+        with patch.dict(os.environ, values):
+            text = scrub("Anfrage mit " + " und ".join(values.values()))
+        for value in values.values():
+            self.assertNotIn(value, text)
 
     def test_log_file_redacts_credentials_in_message_and_traceback(self):
         """2026-10-04 docs review: worker.log, studio.log and pla.log got full tracebacks unredacted; only the failure

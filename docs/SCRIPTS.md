@@ -2,7 +2,7 @@
 title: Scripts
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/scripting.py
   - src/podcast_automate/script_pipeline.py
@@ -99,7 +99,7 @@ values are stored with the run and reused on resume; a different selection needs
 explicitly switched to another provider.
 
 ```powershell
-# Fixed on Claude Code (Claude Max subscription, claude.ai sign-in):
+# Fixed on Claude Code (Claude subscription, claude.ai sign-in):
 .\.venv\Scripts\pla.exe script .\projects\windows-pilot --episode ep_001 --backend claude_code
 
 # Per call Claude while it has quota, otherwise Codex; pauses only when both are empty:
@@ -318,21 +318,32 @@ drafts 14 % longer without making them better.
   check every fact, run the checks and the critiques. A project with a third host appends
   its cast ([Three hosts](#three-hosts)); a revision appends its own steps ([Revising a script](#revising-a-script)).
 - **Four command scripts**, the only commands the session may run besides the file tools (Read, Write, Edit, Glob,
-  Grep; [Local files](SECURITY.md#local-files)):
+  Grep; [Local files](SECURITY.md#local-files)). They and their `context.json` lie beside the agent's folder, in
+  `story/<episode_id>.commands/`, and run with `python -P` in their own folder, so nothing the session writes into its
+  own folder is imported or read as their context; the session calls them as `python ../<episode_id>.commands/check.py`
+  and so on (why: D-222). Until 14 November 2026 they lay in the session's folder, where its Write tool could change
+  them:
   - `check.py`: the run's script checks on the draft (structure and finding references; the quotation limit over the
     given passages where the run applies it, for an assembled dossier, and always over the corpus sections in
     `sources_used.json`), echo lines (a turn that opens with only the other host's last words) and the word budget;
   - `critique.py`: an editor's verdict on tension, interest and storytelling with what keeps the draft from 10
     (`prompts/story_critique.txt`), at most four times per session (`story_agent.CRITIQUES`). The editor hears the
-    script as the brief's audience, with the hosts by name and part (`story_agent.critique_input`, D-190). The request
-    goes to the run as a file and the run makes the call, so the budget, the receipts and the provider choice apply;
+    script as the brief's audience, with the hosts by name and part (`story_agent.critique_input`, D-190). It also
+    gets the draft's length window (`words`, `minimum_words`, `target_words`) and the story material, and is told not
+    to ask for cuts below the floor and to ask only for what the script or the material holds; its 8-point form and its
+    lack of memory stay, since the user withdrew D-187 (`story_agent.CRITIQUE_VERSION`
+    `story_critique.v3-length-material`; why: D-225). Only an answer with scores, or a refusal, counts as one of the
+    four; a failed critique call uses none. The request goes to the run as a file and the run makes the call, so the
+    budget, the receipts and the provider choice apply;
   - `search.py` and `read.py`: the project's own research corpus, every section of every source the research
     stored, so the agent finds the scenes a finding only names, and of every document of the research run's starting
     library the research did not take in (`story_agent.corpus_documents`, D-190). Geld verstehen S1's best case for
     ep_003 stood only there.
 
-A session's draft stands on resume while its material and task are unchanged; a repeated session moves the earlier
-one's files to `attempts/NN/`.
+A session's draft stands on resume while its material and task are unchanged (`story_agent.SESSION_VERSION`
+`story_agent.v6-commands`; a draft accepted under `v5` still stands); a repeated session moves the earlier one's files
+to `attempts/NN/`. A repeated session on the same material starts from the cut session's `plan.md`, `draft.json`,
+`outline.json` and `sources_used.json`, so a session cut by a limit does not pay for its work twice (why: D-223).
 
 ### Opening and ending
 
@@ -362,7 +373,13 @@ The agent gets its word budget computed at the plan's length, or a revision's ow
 - a target, the planned minutes at that rate, spread over the scenes by the number of their explanation steps;
 - a floor of 95 % of the target (`story_agent.TARGET_SHARE`), above the 85 % every script must reach
   (`script_checks.MIN_DURATION_SHARE`), and a cap of 1.1 times the target (`story_agent.LENGTH_SLACK`); `check.py`
-  and the final check refuse a draft outside them.
+  and the final check refuse a draft outside them;
+- the window fits the 60-minute cap with the pauses (why: D-224): target and floor are clamped with the expected pauses
+  (40 words a turn, 400 ms each). `check.py` clamps again with the draft's own pauses, counts words as
+  `script_metrics` does and reports `ceiling_words` and `pause_minutes`; pauses over 400 ms never lower the floor.
+  Before, the target was unreachable for 60-minute plans, and for plans with many turns the floor too: at 60 minutes,
+  150 words a minute and 460 turns the floor of 8,550 words lay above the cap of 8,540; the window is now 8,113 to
+  8,540.
 
 Asimov v2 ep_007 (2026-11-01) stopped at 89 % of its target, inside the old window, and ran 35:47 for 45 planned
 minutes, also because ElevenLabs spoke faster than the 130 words a minute every budget assumed (why: D-184). The
@@ -373,10 +390,16 @@ writing prompt's target factor of 1.3 for Sonnet 5.5 (D-127) ended with it; the 
 - `plan.md` (the turn, the idea, the perspective, the chapters and their beats), `draft.json`, optionally
   `outline.json` (its own two to four chapters, which must hold every core finding in exactly one chapter; core
   findings are never demoted) and `sources_used.json` (every corpus section used beyond the material).
-- Code checks the draft again when the session ends (`story_agent.draft_errors`); a draft that fails stops the
-  episode with `story_agent_failed` and the defects in `errors.json`. A session over its time limit stops with
+- Code checks the draft again when the session ends (`story_agent.draft_errors`, which requires `plan.md`), with the
+  run's own context in memory, never the commands' `context.json`; it verifies the command scripts' checksums and runs
+  `ScriptRun.script_errors` on the first draft too (why: D-222). A draft that fails stops the episode with
+  `story_agent_failed` and the defects in `errors.json`. A session over its time limit stops with
   `story_agent_timeout` (eight minutes per planned minute, at least two hours: `story_agent.session_timeout`; the
   lab's ten-minute sessions took 31 to 60 minutes).
+- A session that fails fails as the CLI does (why: D-223): `is_error`, an error subtype or a non-zero exit go through
+  `claude_code.classify_claude_failure`, so a quota limit pauses with `waiting_for_quota` and resumes by itself, and an
+  expired login, the money cap and the output limit stop with their own codes. Until 14 November 2026 every such stop
+  was `story_agent_failed`, which no automatic resume takes.
 - `story/<episode_id>/entry.json` holds the episode with the agent's chapters, which this run's review and publishing
   use; the series plan is unchanged. `drafts/<episode_id>.json` holds the accepted draft.
 
@@ -405,7 +428,8 @@ and hashes. Show notes and companion kits list the cited sections' sources besid
 
 ### Outputs of an agent episode
 
-Publishing writes `story_plan.md` (the agent's plan) beside the script, and the quality report's episode entry gains
+Publishing writes `story_plan.md` (the agent's plan) beside the script; without a plan it skips the file and removes
+an old one. The quality report's episode entry gains
 `story_agent`: the critique scores in order, the corpus sections used, whether the agent set its own chapters, and the
 session's turns, duration and reported cost (`script_artifacts.story_report`). Its `teaching_review` reads
 `not_applicable`.
@@ -483,6 +507,9 @@ why: D-208). It also gets the measured `dialogue_shape` and the listenability ru
 - An episode whose gap probe still has unread hits it should have read stops with `research_gap_unread` before its
   review ([Gap probe](RESEARCH.md#in-the-script-run)).
 - After a subscription pause too, a text already corrected need not be written again.
+- A point only more research could fix is a note, never a repair (`ScriptIssue.source_limit`), and never in
+  `grounding`: it goes to the reader as a limit of the sources instead of spending the three repairs on a text that
+  cannot get better. (why: D-228)
 
 ### Scoped follow-up review
 
@@ -524,12 +551,14 @@ The review compares each segment that cites findings with the cited source secti
 
 ### Saved verdicts
 
-Today's version is `script_review.v17-scene-order` (`script_checks.SCRIPT_REVIEW_VERSION`) with the corpus rule
-(`+corpus`). A saved verdict stands on resume only when it was given with exactly this version and rule
-(`script_pipeline.saved_verdict_stands`), with today's `teaching.EDITORIAL_REVIEW_VERSION` and, for a dossier with an
+Today's version is `script_review.v18-source-limit` (`script_checks.SCRIPT_REVIEW_VERSION`; D-228) with the corpus
+rule (`+corpus`). A saved verdict stands on resume only when it was given with exactly this version and rule
+(`script_pipeline.saved_verdict_stands`), or as a passing verdict of `script_review.v17-scene-order`
+(`script_checks.RELAXED_REVIEW_VERSIONS`), with today's `teaching.EDITORIAL_REVIEW_VERSION` and, for a dossier with an
 evidence version, today's `evidence_models.EVIDENCE_VERSION`; otherwise the saved draft is reviewed again, and its
-latest text and spent repairs stay. The editorial version also changes with the rule of which points block, so a
-review stopped under the old rule is judged by today's (`editorial_review.v6-residual`, D-210). None of this grants an approval or resets the model budget.
+latest text and spent repairs stay, and its `passed` mark is cleared whenever the saved verdict no longer stands. The
+editorial version also changes with the rule of which points block, so a review stopped under the old rule is judged
+by today's (`editorial_review.v6-residual`, D-210). None of this grants an approval or resets the model budget.
 
 ### Limits of the review
 
@@ -646,6 +675,11 @@ outline's last episode is published, or on request ([Writing the episodes](STUDI
 - It has no correction round and blocks nothing: the episodes stay readable and recordable. Its points are offered
   per episode as a [revision](#revising-a-script) with the points as feedback; after a revision the episode's
   published run differs from `episode_runs`, and the series can be reviewed again.
+- **From the second review on it remembers** (why: D-226): it gets the previous review's checks with what became of
+  them and the episodes whose text changed, saved in its `inputs.json` (`scope`) before the call. Only an earlier
+  objection still open or a failure in a changed episode blocks; a new point on an unchanged episode is an advisory
+  (basis `unchanged`). Until 14 November 2026 each review found new points in episodes nobody had changed, and review
+  and revision rounds did not settle.
 
 ### Scope and limits of the series review
 
@@ -690,6 +724,10 @@ A revision is a story agent session given the published episode and the feedback
   the teaching stage collects the episode's material again.
 - The session gets `published.json` (the episode as published), the feedback in `material.json` under `revision`, and
   the corpus sections the published episode used (its run's `sources_used.json`), which the draft may keep citing.
+- It carries the supplements of the run it revises and of the runs that run carried (`inputs.json`
+  `revision.supplement_runs`) into its material, its review and the companion kit, so a scene told from a
+  supplement's source survives the revision. Until 14 November 2026 the revision's corpus lacked them: Geld verstehen
+  season 1 ep_002's revision lost Epley's Harvard scene. (why: D-229)
   `TASK.md` adds the revision's steps (`data/story_agent_revision.md`): copy the published episode, change what the
   feedback asks and what the change touches, keep every other segment as it was, check the changed facts, and use at
   most two critiques (`story_agent.REVISION_CRITIQUES`) only where the telling changed.

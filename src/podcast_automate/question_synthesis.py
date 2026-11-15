@@ -14,7 +14,8 @@ from .errors import AppError
 from .evidence_models import EVIDENCE_VERSION, FindingSupport, SourceAssessment
 from .prompts import instructions
 from .question_answering import read_context
-from .question_dependencies import invalidate_dependents, prerequisites_current, revalidate
+from .question_dependencies import (changed_prerequisites, invalidate_dependents, passing_memory, prerequisite_refs,
+                                    prerequisites_current, revalidate)
 from .question_ownership import editable_findings, finding_owners, preserve_unrelated
 from .research_gap_probe import coverage_terms, gap_id, probe, settle
 from .research_evidence import (EVIDENCE_INSTRUCTIONS, SYNTHESIS_EVIDENCE_RULE, SYNTHESIS_INSTRUCTIONS,
@@ -706,9 +707,11 @@ class SynthesisMixin:
             if notes:
                 report["script_notes"] = notes
             # Which questions each objection may reopen, fixed by code before the routing (objection_scopes).
+            # A round recorded before probe objections had a scope keeps routing them as it did.
             routing = (record or {}).get("routing_scope") or {
                 "issues": follow.get("issues", []),
-                "requirements": self.requirement_routes(report["requirements"], tasks, dossier, follow)}
+                "requirements": self.requirement_routes(report["requirements"], tasks, dossier, follow),
+                "probes": self.probe_routes(report, tasks, dossier)}
             report["routing_scope"] = routing
             if record is None:
                 # This round's verdicts and the answers they judged: the next round's follow-up starts from them, and a
@@ -846,6 +849,18 @@ class SynthesisMixin:
                 allowed = (allowed & changed) or allowed
             routes[rid] = {"task_ids": sorted(allowed), "remedy": follow.get("remedies", {}).get(rid)}
         return routes
+
+    def probe_routes(self, report, tasks, dossier):
+        """Per objection of a corpus probe with unread hits (research_quality.quality_report ``probe_objections``), the
+        questions it may reopen: those that own its gap in the plan and those serving the coverage row it was probed for,
+        never an accepted gap. Reading the hits can close it, so its remedy is research (objection_scopes)."""
+        accepted = set(self.accepted_summary())
+        rows = []
+        for objection in report.get("probe_objections", []):
+            questions = {row.question_id for row in dossier.coverage if row.gap == objection["gap"]}
+            owners = {t.id for t in tasks if objection["gap_id"] in t.gap_ids or set(t.question_ids) & questions}
+            rows.append({"text": objection["text"], "task_ids": sorted(owners - accepted)})
+        return rows
 
     def noted_limits_remain(self, report):
         """Whether a passing report rests on recorded limits: an unmet requirement (a source limit, a recorded limit),
@@ -1100,7 +1115,11 @@ class SynthesisMixin:
         it against the sections already retrieved. Reading counts across all tasks, so a gap
         whose candidate sections a reader saw is confirmed rather than blocked.
         """
-        texts = dict.fromkeys([*dossier.open_questions, *(row.gap for row in dossier.coverage if row.gap)])
+        # The coverage row of an accepted gap is no gap to research (quality_report tolerates it): probed, its unread
+        # hits blocked every audit round and went to the routing without a scope (review 2026-11-14).
+        accepted = {qid for gap in self.accepted_summary().values() for qid in gap.get("question_ids", [])}
+        texts = dict.fromkeys([*dossier.open_questions,
+                               *(row.gap for row in dossier.coverage if row.gap and row.question_id not in accepted)])
         wanted = {gap_id(text): text for text in texts}
         rows = {row["gap_id"]: row for row in self.state.get("gap_probes", [])}
         rows.update({row["gap_id"]: row for row in probe(self.index, {gid: text for gid, text in wanted.items()
@@ -1138,6 +1157,9 @@ class SynthesisMixin:
         for issue in scope.get("issues", []):
             known.setdefault(issue["text"], []).append({"task_ids": issue["task_ids"], "requirement_id": None,
                                                         "finding_ids": [], "remedy": issue.get("remedy")})
+        for row in scope.get("probes", []):
+            known.setdefault(row["text"], []).append({"task_ids": row["task_ids"], "requirement_id": None,
+                                                      "finding_ids": [], "remedy": "research"})
         for row in report.get("requirements", []):
             route = scope.get("requirements", {}).get(row["requirement_id"])
             if route is not None:
@@ -1330,11 +1352,14 @@ class SynthesisMixin:
         # Per task, how its objections resolve and which passages they cite: a task whose objections all
         # say "revise" (the read passages suffice) only corrects its answer instead of researching again.
         resolutions, cited = {}, {}
+        # Per task, the anchors that reopen it: what the review of its rework may still fail (objected_scope).
+        anchored = {}
         for oid, text in upheld.items():
             anchor = registry[oid]
             if anchor["task_id"] in accepted:
                 continue
             reasons.setdefault(anchor["task_id"], []).append(text)
+            anchored.setdefault(anchor["task_id"], []).append(anchor)
             resolutions.setdefault(anchor["task_id"], set()).add(anchor["resolution"])
             cited.setdefault(anchor["task_id"], []).extend(anchor.get("evidence_refs", []))
         for route in (routes.routes if routes else []):
@@ -1357,6 +1382,7 @@ class SynthesisMixin:
                             **({"remedy": remedy} if remedy else {})}
                         continue
                     routed = True
+                    anchored.setdefault(task_id, []).append(anchor.model_dump())
                     resolutions.setdefault(task_id, set()).add(anchor.resolution)
                     cited.setdefault(task_id, []).extend(anchor.evidence_refs)
                     identifier = self.existing_objection(registry, closed, anchor, identifier)
@@ -1392,10 +1418,21 @@ class SynthesisMixin:
                                      "previous_verification": row.get("verification")})
             revise = resolutions.get(task_id) == {"revise"}
             previous_refs = [e["reference"] for f in (row["answer"] or {}).get("findings", []) for e in f.get("evidence", [])]
+            # The review of the reworked answer remembers its passed verdict and may fail only what the objections name
+            # and what the rework changes (the design rule for repeated reviews; before, review 2026-11-14, it judged
+            # everything afresh, and a point it had passed in unchanged material could undo the rework).
+            objected = self.objected_scope(task_id, row, anchored.get(task_id, []))
+            memory = passing_memory(row, *objected) if objected is not None else None
             row.update(status="researching", answer=None, draft_answer=row["reopenings"][-1]["previous_answer"],
                        feedback=[*texts, *([REVISE_NOTE] if revise else [])], step=0, no_progress=0, fallbacks=0, pending=None,
-                       revise_only=revise, activity=("Einwand der Gesamtprüfung betrifft nur den Wortlaut: Antwort wird an den "
+                       revise_only=revise, pass_web_start=row.get("web_attempts", 0),
+                       activity=("Einwand der Gesamtprüfung betrifft nur den Wortlaut: Antwort wird an den "
                        "gelesenen Stellen korrigiert") if revise else "Mit konkretem Einwand aus der Gesamtprüfung wieder geöffnet")
+            row.pop("review_scope", None)
+            if memory:
+                row["review_memory"] = memory
+            else:
+                row.pop("review_memory", None)
             if revise:
                 # The passages the answer cited and the objections name: everything the correction may rest on.
                 row["current_refs"] = [ref for ref in dict.fromkeys([*previous_refs, *cited.get(task_id, [])])
@@ -1426,6 +1463,26 @@ class SynthesisMixin:
                   else "Verbliebene Einwände betreffen nur akzeptierte Lücken oder unbelegte Prüfforderungen" if disagreements
                   else "Verbliebene Einwände sind als Grenzen vermerkt oder betreffen akzeptierte Lücken")
         return reopened, blocked
+
+    @staticmethod
+    def objected_scope(task_id, row, anchors):
+        """(finding ids, criterion indices) of the answer that the objections reopening ``task_id`` name: they may still
+        fail its rework's review, as unresolved earlier objections. None where an anchor names nothing code can find in
+        the answer (a composed dossier's own finding ids, an anchor without findings or criterion): that review then
+        judges the whole answer, as before."""
+        local = {f["id"] for f in (row.get("answer") or {}).get("findings", [])}
+        findings, criteria = set(), set()
+        prefix = f"{task_id}__"
+        for anchor in anchors:
+            ids = [fid[len(prefix):] if fid.startswith(prefix) else fid for fid in anchor.get("finding_ids") or []]
+            if anchor.get("criterion_index") is not None:
+                criteria.add(anchor["criterion_index"])
+            elif not ids:
+                return None
+            if not set(ids) <= local:
+                return None
+            findings.update(ids)
+        return (findings, criteria) if anchors else None
 
     def note_after_reworks(self, task_id, texts, identifiers, basis="reworks_spent", **extra):
         """Record the objections to a question whose two reworks are spent as limits of its verified answer
@@ -1516,7 +1573,9 @@ class SynthesisMixin:
         again, as the resume does (prerequisites_current). A prerequisite reworked in the same round as this question
         passed its new answer, and the dependent came back verified against the old one (2026-10-02 review)."""
         if not prerequisites_current(task, self.state, row.get("verification")):
-            revalidate(row, activity="Behaltene Antwort wird gegen die geänderte Voraussetzung nachgeprüft")
+            changed = changed_prerequisites(task.depends_on, self.state, row.get("verification"))
+            revalidate(row, activity="Behaltene Antwort wird gegen die geänderte Voraussetzung nachgeprüft",
+                       scope_refs=prerequisite_refs(self.state, changed))
 
     def noted_after_reworks(self):
         """The objections noted against questions whose reworks are spent, as the quality report lists them, and those

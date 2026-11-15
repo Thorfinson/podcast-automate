@@ -12,10 +12,12 @@ from pydantic import ValidationError
 
 from .prompts import instructions
 from .errors import AppError
-from .call_activity import CallActivity, contract_rejection, mentions, parsed_json, write_rejected_output
+from .call_activity import CallActivity, contract_rejection, mentions, parsed_json, provider_json, write_rejected_output
 from .codex_stream import run_app_server
+from .key_store import SECRET_VARIABLES
 from .model_trace import redact
 from .models import RuntimeSettings, TextProbeOutput
+from .openrouter import strict_schema
 from .process import STALL_TIMEOUT_SECONDS, run_process
 from .storage import write_json
 from .text_settings import validate_model, validate_reasoning
@@ -60,10 +62,10 @@ def executable_command(executable: str) -> list[str]:
 
 
 def subscription_environment() -> dict[str, str]:
-    """A child environment that can only use the CLI's subscription login, never an API key."""
+    """A child environment that can only use the CLI's subscription login, never an API key: without every variable
+    that holds a credential (key_store.SECRET_VARIABLES)."""
     environment = os.environ.copy()
-    for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "PERPLEXITY_API_KEY", "ELEVENLABS_API_KEY"):
+    for key in SECRET_VARIABLES:
         environment.pop(key, None)
     return environment
 
@@ -208,21 +210,8 @@ class CodexAdapter:
         schema_file = directory / "output_schema.json"
         response_file = directory / "response.pending.json"
         response_file.unlink(missing_ok=True)
-        schema = output_type.model_json_schema()
-
-        def strict(node):
-            if isinstance(node, dict):
-                node.pop("default", None)
-                if node.get("type") == "object" and "properties" in node:
-                    node["required"] = list(node["properties"])
-                    node["additionalProperties"] = False
-                for value in node.values():
-                    strict(value)
-            elif isinstance(node, list):
-                for value in node:
-                    strict(value)
-
-        strict(schema)
+        # The same strict form every adapter sends (one definition, so Codex and Claude cannot drift apart).
+        schema = strict_schema(output_type)
         write_json(schema_file, schema)
         args = self.command() + [
             "-c", 'model_provider="openai"', "--ask-for-approval", "never",
@@ -280,7 +269,7 @@ class CodexAdapter:
         events = []
         for line in result.stdout.splitlines():
             try:
-                event = json.loads(line)
+                event = provider_json(line)
             except json.JSONDecodeError:
                 continue
             if isinstance(event, dict):

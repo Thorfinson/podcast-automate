@@ -354,6 +354,25 @@ class PublishKitTests(KitCase):
         self.assertEqual(caught.exception.code, "script_edited")
         self.assertIsNone(saved_kit(self.root, "ep_001"))
 
+    def test_a_revision_s_kit_reads_the_supplements_it_carries(self):
+        # Review 2026-11-14: a revision carries the supplements of the run it revises (scripting.revision_inputs,
+        # supplement_runs), so its kit must know their sources too, or the show notes cite what the kit cannot name.
+        from podcast_automate.publish_kit import run_evidence
+        folder = self.root / "runs/run_published_x/teaching/ep_001/supplement"
+        paper = document("src_epley", "Epley 2004", url="https://example.org/epley", citation="Epley 2004")
+        write_json(folder / "source_index.json", SourceIndex(sources=[paper], failures=[]).model_dump())
+        write_json(folder / "evidence.json", {"value": {"explanations": [{
+            "questions": ["Wie?"], "finding_ids": ["f_energy"], "explanation": "Erklärung.",
+            "evidence": [{"reference": "src_epley#sec_0001", "excerpt": "Text."}]}], "remaining_gaps": []}})
+        write_json(folder / "receipt.json", {"binding": "test", "outputs": {}})
+        refs, documents, _, _ = run_evidence(self.work)
+        self.assertNotIn("src_epley", documents, "a run that carries nothing reads only its own supplements")
+        inputs = json.loads((self.work / "inputs.json").read_text(encoding="utf-8"))
+        write_json(self.work / "inputs.json", {**inputs, "revision": {"supplement_runs": ["run_published_x"]}})
+        refs, documents, _, _ = run_evidence(self.work)
+        self.assertEqual(documents["src_epley"].citation, "Epley 2004")
+        self.assertIn("src_epley#sec_0001", refs["f_energy"])
+
     def test_the_cli_writes_the_kit_of_one_episode(self):
         output = io.StringIO()
         with patch("podcast_automate.publish_kit.AdapterPool", self.pool([{"short": SHORT, "long": LONG}], [])), \

@@ -16,5 +16,9 @@ summed up in places; you notice the lecture. 4 means information in dialogue for
 mentioned rather than told. 2 means a list of facts. Use the whole range; a score above 8 needs a reason
 that names what makes it exceptional. For each scale give the score and a reason that quotes or names
 the passages it rests on (segment ids). Then list what keeps the script from 10, most important first,
-at most eight points, each with the segment ids, the problem and a concrete fix. Write reasons, problems
-and fixes in the script's language.
+at most eight points, each with the segment ids, the problem and a concrete fix. length (where given)
+holds the script's spoken words and the window it must stay in, minimum_words to target_words: a fix may
+cut, but your fixes together never take the script below minimum_words; where they would, name what
+takes the cut part's place. story_material (where given) is what the writer's sources tell: a fix uses
+only scenes, details and people the script or story_material already holds, never a scene, detail or
+person they lack. Write reasons, problems and fixes in the script's language.

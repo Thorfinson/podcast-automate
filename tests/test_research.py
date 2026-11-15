@@ -347,6 +347,309 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(canonical_url("HTTPS://EXAMPLE.ORG/paper#section"), "https://example.org/paper")
 
 
+class SourceServer:
+    """A source server for ``sources.download`` without a network: every connection the download opens is one end of
+    a socketpair whose other end reads the request and sends the next of ``answers`` (bytes, or a function of the
+    socket and ``release``, an event set when the test ends). It records the address each connection was opened to."""
+
+    def __init__(self, *answers):
+        import threading
+        self.answers, self.requests, self.connected = list(answers), [], []
+        self.release = threading.Event()
+
+    def create_connection(self, address, timeout=None, source_address=None, **kwargs):
+        import threading
+        self.connected.append(tuple(address))
+        ours, theirs = socket.socketpair()
+        ours.settimeout(timeout if isinstance(timeout, (int, float)) else None)
+        threading.Thread(target=self.answer, args=(theirs, self.answers.pop(0)), daemon=True).start()
+        return ours
+
+    def answer(self, sock, payload):
+        with sock:
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    return
+                data += chunk
+            self.requests.append(data.decode("latin-1"))
+            if callable(payload):
+                payload(sock, self.release)
+            else:
+                sock.sendall(payload)
+
+    def __enter__(self):
+        self.patches = [patch("socket.create_connection", self.create_connection)]
+        for active in self.patches:
+            active.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.release.set()
+        for active in self.patches:
+            active.stop()
+        return False
+
+
+def public(*addresses):
+    """``sources.resolve`` answering every host with these public addresses, or by host from a dict."""
+    def answer(host):
+        found = addresses[0].get(host, ()) if addresses and isinstance(addresses[0], dict) else addresses
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in found]
+    return patch("podcast_automate.sources.resolve", side_effect=answer)
+
+
+EPUB_CONTAINER = (b'<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" '
+                  b'version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" '
+                  b'media-type="application/oebps-package+xml"/></rootfiles></container>')
+
+
+def epub(*chapters, compress=None):
+    """An EPUB of ``chapters`` (bytes of XHTML), in reading order."""
+    import zipfile
+    items = "".join(f'<item id="c{n}" href="c{n}.xhtml" media-type="application/xhtml+xml"/>' for n in range(len(chapters)))
+    spine = "".join(f'<itemref idref="c{n}"/>' for n in range(len(chapters)))
+    package = (f'<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata '
+               f'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Book</dc:title></metadata><manifest>{items}'
+               f'</manifest><spine>{spine}</spine></package>').encode()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=compress or zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(zipfile.ZipInfo("mimetype"), b"application/epub+zip")
+        archive.writestr("META-INF/container.xml", EPUB_CONTAINER)
+        archive.writestr("OEBPS/content.opf", package)
+        for n, chapter in enumerate(chapters):
+            archive.writestr(f"OEBPS/c{n}.xhtml", chapter)
+    return buffer.getvalue()
+
+
+def damaged(raw, name="OEBPS/c0.xhtml", *, corrupt=False, encrypted=False, method=None):
+    """``raw`` with the entry ``name`` damaged the way real files are: a broken deflate stream, the zip's own
+    encryption flag, or a compression method Python cannot read (Deflate64 is 9)."""
+    raw = bytearray(raw)
+    local = raw.find(name.encode()) - 30
+    central = raw.rfind(name.encode()) - 46
+    assert raw[local:local + 4] == b"PK\x03\x04" and raw[central:central + 4] == b"PK\x01\x02"
+    if corrupt:
+        start = local + 30 + len(name)
+        for offset in range(start + 5, start + 25):
+            raw[offset] ^= 0x5A
+    if encrypted:
+        raw[local + 6] |= 1
+        raw[central + 8] |= 1
+    if method is not None:
+        raw[local + 8:local + 10] = raw[central + 10:central + 12] = method.to_bytes(2, "little")
+    return bytes(raw)
+
+
+class LegacyArticleParser:
+    """The page reader as it was until 2026-11-14, kept to show that the linear one reads every page alike."""
+
+    @staticmethod
+    def text(page):
+        from html.parser import HTMLParser
+        from podcast_automate.sources import ArticleParser
+
+        class Legacy(HTMLParser):
+            OMIT, BLOCK = ArticleParser.OMIT, ArticleParser.BLOCK
+
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self.stack, self.text, self.main_text, self.title, self.metadata = [], [], [], [], {}
+
+            def handle_starttag(self, tag, attrs):
+                attributes = dict(attrs)
+                if tag == "meta":
+                    key = attributes.get("name", attributes.get("property", "")).lower()
+                    if key and attributes.get("content"):
+                        self.metadata.setdefault(key, []).append(attributes["content"])
+                if tag == "html" and attributes.get("lang"):
+                    self.metadata["language"] = [attributes["lang"]]
+                if tag in self.BLOCK:
+                    self.add_text("\n\n")
+                if tag not in {"meta", "link", "br", "hr", "img", "input", "source", "wbr"}:
+                    self.stack.append(tag)
+
+            def handle_endtag(self, tag):
+                if tag in self.BLOCK:
+                    self.add_text("\n\n")
+                if tag in self.stack:
+                    self.stack = self.stack[:len(self.stack) - 1 - self.stack[::-1].index(tag)]
+
+            def add_text(self, value):
+                if not any(tag in self.OMIT for tag in self.stack):
+                    self.text.append(value)
+                    if "main" in self.stack or "article" in self.stack:
+                        self.main_text.append(value)
+
+            def handle_data(self, data):
+                if "title" in self.stack:
+                    self.title.append(data)
+                if "head" not in self.stack:
+                    self.add_text(data)
+        parser = Legacy()
+        parser.feed(page)
+        return "".join(parser.text), "".join(parser.main_text), "".join(parser.title), parser.metadata
+
+
+class SourceRetrievalTests(unittest.TestCase):
+    """The review of 2026-11-14: what a source server or file can do to a research run."""
+
+    def test_a_broken_server_answer_is_a_failed_download_not_a_crash(self):
+        # An exception class the import loops did not catch stopped every task of the run, and each resume fetched
+        # the reserved address again and stopped the same way.
+        from podcast_automate.sources import download
+        answers = {"a garbled status line": b"SSH-2.0-OpenSSH_9.6\r\n\r\n",
+                   "more than 100 headers": b"HTTP/1.1 200 OK\r\n" + b"".join(b"X-H%d: v\r\n" % n for n in range(101))
+                   + b"\r\n",
+                   "a chunked body cut short": b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n400\r\n" + b"a" * 100,
+                   "a body shorter than its length": b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n" + b"a" * 100}
+        for case, answer in answers.items():
+            with self.subTest(case), public("8.8.8.8"), SourceServer(answer), self.assertRaises(AppError) as failed:
+                download("http://example.org/paper")
+            self.assertEqual(failed.exception.code, "source_download_failed")
+            self.assertTrue(failed.exception.details.get("network_error"), "so the free copies and the archive are asked")
+
+    def test_the_time_limit_of_a_download_holds_while_a_server_sends_byte_by_byte(self):
+        from podcast_automate import sources
+
+        def trickle(sock, release):
+            sock.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\nx")
+            release.wait(30)
+        with public("8.8.8.8"), SourceServer(trickle), patch("podcast_automate.sources.RECEIVE_TIMEOUT_SECONDS", 3), \
+                patch("podcast_automate.sources.DOWNLOAD_SECONDS", -1), self.assertRaises(AppError) as stopped:
+            sources.download("http://example.org/paper")
+        self.assertEqual(stopped.exception.code, "source_too_large", "the limit is checked after every receive")
+
+    def test_a_download_connects_to_the_address_it_checked(self):
+        # The address was checked, then the connection asked the name server again, which could answer with a
+        # private address the second time (DNS rebinding).
+        from podcast_automate import sources
+        page = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"
+        with public("8.8.8.8"), SourceServer(page) as server:
+            self.assertEqual(sources.download("http://example.org/paper")[0], b"hello")
+        self.assertEqual(server.connected, [("8.8.8.8", 80)])
+        self.assertIn("Host: example.org\r\n", server.requests[0])
+
+        class TLS:
+            names = []
+
+            def wrap_socket(self, sock, server_hostname=None, **kwargs):
+                self.names.append(server_hostname)
+                return sock
+        with public("8.8.8.8"), SourceServer(page) as server, patch("podcast_automate.sources.SOURCE_TLS", TLS()):
+            self.assertEqual(sources.download("https://example.org/paper")[0], b"hello")
+        self.assertEqual((server.connected, TLS.names), ([("8.8.8.8", 443)], ["example.org"]),
+                         "the certificate is checked for the name, the connection goes to the checked address")
+        moved = b"HTTP/1.1 302 Found\r\nLocation: http://other.example/next\r\nContent-Length: 0\r\n\r\n"
+        with public({"example.org": ["8.8.8.8"], "other.example": ["8.8.4.4"]}), SourceServer(moved, page) as server:
+            self.assertEqual(sources.download("http://example.org/paper")[2], "http://other.example/next")
+        self.assertEqual(server.connected, [("8.8.8.8", 80), ("8.8.4.4", 80)])
+        with public({"example.org": ["8.8.8.8"], "other.example": ["127.0.0.1"]}), SourceServer(moved) as server, \
+                self.assertRaises(AppError) as refused:
+            sources.download("http://example.org/paper")
+        self.assertEqual((refused.exception.code, server.connected), ("invalid_source_url", [("8.8.8.8", 80)]))
+
+    def test_a_meta_tag_with_an_empty_attribute_is_read_like_any_page(self):
+        page = (b'<html><head><meta name content="x"><meta property content="y"><title>T</title></head><body><p>'
+                + TEXT.encode() + b"</p></body></html>")
+        kind, _, metadata, sections = extract(page, "text/html", "https://example.org/a")
+        self.assertEqual((kind, metadata["title"]), ("html", "T"))
+        self.assertIn(TEXT, " ".join(section.text for section in sections))
+
+    def test_a_damaged_epub_is_an_unreadable_source(self):
+        chapter = b"<html><body><p>" + TEXT.encode() + b"</p></body></html>"
+        book = epub(chapter)
+        self.assertEqual(extract(book, "application/epub+zip", "book.epub")[:2], ("text", ".epub"))
+        for case, raw in {"a broken deflate stream": damaged(book, corrupt=True),
+                          "the zip's own encryption": damaged(book, encrypted=True),
+                          "Deflate64": damaged(book, method=9)}.items():
+            with self.subTest(case), self.assertRaises(AppError) as refused:
+                extract(raw, "application/epub+zip", "book.epub")
+            self.assertEqual(refused.exception.code, "source_unreadable")
+
+    def test_any_parser_failure_is_an_unreadable_source(self):
+        candidate = SourceCandidate(url="https://example.org/a", title="A page", authors=[], published_date="",
+                                    rationale="Test", primary_source=True)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("podcast_automate.sources.ArticleParser.feed", side_effect=AssertionError("parser")), \
+                self.assertRaises(AppError) as refused:
+            import_source(candidate, Path(temporary), "run_x", downloaded=(HTML, "text/html", candidate.url))
+        self.assertEqual((refused.exception.code, refused.exception.details.get("parser_error")),
+                         ("source_unreadable", "AssertionError"))
+
+    def test_a_free_copy_service_that_answers_oddly_names_no_copy(self):
+        from podcast_automate import sources
+        candidate = SourceCandidate(url="https://doi.org/10.1234/abcd.5678", title="A paper", authors=[],
+                                    published_date="", rationale="Test", primary_source=True)
+        for body in (b"[1, 2]", b'{"best_oa_location": {"is_oa": true, "pdf_url": 5}, "locations": "x"}'):
+            with self.subTest(body=body), patch("podcast_automate.sources.download", return_value=(body, "", "")):
+                self.assertEqual(sources.open_access_copies(candidate), [])
+        with patch("podcast_automate.sources.download", return_value=(b"[]", "", "")):
+            blocked = AppError("Quellenabruf fehlgeschlagen (HTTP 403).", code="source_download_failed",
+                               details={"http_status": 403})
+            with self.assertRaises(AppError) as kept:
+                sources.open_access_copy(candidate, blocked)
+        self.assertIs(kept.exception, blocked)
+
+    def test_the_page_reader_reads_pages_without_closing_tags_alike_and_in_linear_time(self):
+        import time
+        from podcast_automate.sources import ArticleParser
+        pages = [HTML.decode(), "<p>one<p>two<li>three<li>four</ul><div>five</div>",
+                 "<html><head><title>T</title><style>x</style></head><body><nav>menu<p>n</nav><main><p>m1<p>m2"
+                 "<script>s</script>after</main><article><p>a</article><p>out</body></html>",
+                 "<body><b><i>x</b> y</i> z<form>f<p>q</form> w<svg><text>t</text></svg> v<template>u</template>",
+                 "<head><title>a<title>b</title>c</head><p>d</p></p></div><title>in body</title><p>e"]
+        for page in pages:
+            parser = ArticleParser()
+            parser.feed(page)
+            with self.subTest(page=page[:40]):
+                self.assertEqual(("".join(parser.text), "".join(parser.main_text), "".join(parser.title),
+                                  parser.metadata), LegacyArticleParser.text(page))
+        # HTML may leave out </p>; 60,000 such paragraphs took minutes, quadratic in the open tags.
+        page = "<html><body>" + "".join(f"<p>Paragraph {n} of an ordinary page." for n in range(60_000)) + "</body></html>"
+        started = time.monotonic()
+        ArticleParser().feed(page)
+        self.assertLess(time.monotonic() - started, 20)
+
+    def test_an_epub_stops_reading_once_its_text_passes_the_limit(self):
+        # A 39 KiB e-book whose one chapter expanded to 19 MiB of markup took a minute and 400 MiB before the text
+        # limit refused it, since the limit was checked only after every chapter was read.
+        from podcast_automate import sources
+        fed = []
+        original = sources.ArticleParser.feed
+
+        def feed(parser, data):
+            fed.append(len(data))
+            return original(parser, data)
+        chapter = b"<html><body>" + b"<p>Readable words of the book.</p>" * 100_000 + b"</body></html>"
+        with patch("podcast_automate.sources.ArticleParser.feed", feed), self.assertRaises(AppError) as refused:
+            extract(epub(chapter), "application/epub+zip", "book.epub")
+        self.assertEqual(refused.exception.code, "source_too_large")
+        self.assertLess(sum(fed), 2 * sources.MAX_TEXT, "the chapter is read only until its text passes the limit")
+        # Markup without text is refused by its size before it is read at all.
+        fed.clear()
+        empty = b"<html><body>" + b"<span></span>" * 500_000 + b"</body></html>"
+        with patch("podcast_automate.sources.ArticleParser.feed", feed), self.assertRaises(AppError) as refused:
+            extract(epub(empty, empty), "application/epub+zip", "book.epub")
+        self.assertEqual((refused.exception.code, fed), ("source_too_large", []))
+
+    def test_a_chapter_read_in_steps_reads_as_read_at_once(self):
+        import random
+        import re
+        from podcast_automate import sources
+        pieces = ["<p>", "</p>", "Text &amp; more ", "&eacute;t&eacute; ", "<!-- a < b -->", "<b>bold</b>", "<li>item",
+                  "<script>if (a < b) {x}</script>", "<br/>", "word " * 30, "<div class='x'>", "</div>", "&nbsp;",
+                  "<style>p { a: b }</style>", "<nav>menu</nav>", "<main>", "</main>", "\n\n  ", "<h2>Head</h2>", "&am"]
+        generator = random.Random(7)
+        markup = "<html><body>" + "".join(generator.choice(pieces) for _ in range(60_000)) + "</body></html>"
+        self.assertGreater(len(markup), 2 * sources.EPUB_FEED_CHARS)
+        parser = sources.ArticleParser()
+        parser.feed(markup)
+        self.assertEqual(sources.chapter_blocks(markup, 0, 10 ** 9, AppError("x", code="source_too_large")),
+                         re.split(r"\n\s*\n", "".join(parser.text)))
+
+
 class ResearchTests(fixtures.ResearchProjectCase):
     def test_an_openrouter_model_researches_through_perplexity_without_any_subscription(self):
         """D-151: with the Perplexity search an OpenRouter run needs no subscription; the run binds the search, the
@@ -868,17 +1171,144 @@ class ResearchTests(fixtures.ResearchProjectCase):
             save_value(folder / "question_research/state.json", state)
             self.assertEqual(unanswered_questions(folder), ["t2"])
 
-    def test_parser_upgrade_reuses_download_and_rebuilds_dossier(self):
+    def test_parser_upgrade_re_extracts_only_a_run_whose_questions_are_not_planned_yet(self):
+        """Review 2026-11-14: after a parser upgrade every resume read the raw files again. The question ledger binds a
+        run's sources by their text (question_research.initialise), so a changed text stopped such a run for good with
+        inputs_changed, and a completed run was recalculated. Both keep their stored extraction now. A run stopped before
+        its questions were planned reuses its download and is read again with the new parser, as before."""
+        from podcast_automate.research import EXTRACTION_VERSION
+        from podcast_automate.storage import file_hash
+
+        def upgraded(model):
+            return (patch("podcast_automate.research.EXTRACTION_VERSION", "test-upgrade"),
+                    patch("podcast_automate.sources.EXTRACTION_VERSION", "test-upgrade"),
+                    patch("podcast_automate.research.CodexAdapter.structured", side_effect=model))
+
+        def stopping_at(schema):
+            stopped = []
+
+            def model(prompt, output_type, directory, **kwargs):
+                if output_type is schema and not stopped:
+                    stopped.append(True)
+                    raise AppError("Quota", code="quota_exhausted", status="waiting_for_quota")
+                return self.model(prompt, output_type, directory, **kwargs)
+            return model
         with patch("podcast_automate.research.CodexAdapter.structured", side_effect=self.model):
-            run_research(self.root)
-            with patch("podcast_automate.research.EXTRACTION_VERSION", "test-upgrade"), \
-                 patch("podcast_automate.sources.EXTRACTION_VERSION", "test-upgrade"):
-                second = run_research(self.root, resume=True)
+            completed = run_research(self.root)
+        work = self.root / "runs" / completed.run_id
+        request = json.loads((work / "research_request.json").read_text(encoding="utf-8"))
+        self.assertEqual(request["extraction_version"], EXTRACTION_VERSION, "a new run records the parser of its sources")
+        volatile = {"budget.json", "budget_projection.json", "run_manifest.yaml"}
+
+        def files():
+            return {p.relative_to(self.root).as_posix(): file_hash(p) for p in sorted([*work.rglob("*"),
+                    *(self.root / "sources").rglob("*")]) if p.is_file() and p.name not in volatile}
+        before, calls = files(), len(self.calls)
+        first, second, third = upgraded(self.model)
+        with first, second, third:
+            again = run_research(self.root, resume=True, run_id=completed.run_id)
+        self.assertEqual((again.status, again.stages["retrieval"].attempts, again.stages["dossier"].attempts),
+                         ("completed", 1, 1), "a completed run is not recalculated")
+        self.assertEqual((files(), len(self.calls)), (before, calls))
+        # A run past its plan keeps the extraction its ledger was bound to.
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=stopping_at(ResearchDecision)):
+            planned = run_research(self.root)
+        self.assertTrue((self.root / "runs" / planned.run_id / "question_research/state.json").exists())
+        first, second, third = upgraded(self.model)
+        with first, second, third:
+            resumed = run_research(self.root, resume=True, run_id=planned.run_id)
+        self.assertEqual((resumed.status, resumed.stages["retrieval"].attempts), ("completed", 1))
+        # A run stopped before its questions were planned is read again with the new parser, from its stored download.
+        with patch("podcast_automate.research.CodexAdapter.structured", side_effect=stopping_at(QuestionPlan)):
+            unplanned = run_research(self.root)
+        self.assertEqual(unplanned.status, "waiting_for_quota")
+        self.assertFalse((self.root / "runs" / unplanned.run_id / "question_research/state.json").exists())
+        downloads = self.download.call_count
+        first, second, third = upgraded(self.model)
+        with first, second, third:
+            rebuilt = run_research(self.root, resume=True, run_id=unplanned.run_id)
+        self.assertEqual((rebuilt.status, rebuilt.stages["retrieval"].attempts, rebuilt.stages["discovery"].attempts),
+                         ("completed", 2, 1))
+        self.assertEqual(self.download.call_count, downloads)
+
+    def test_the_advisor_of_an_openrouter_run_is_asked_with_the_runs_key(self):
+        """Review 2026-11-14: the advisor's pool got the Anthropic key only. An OpenRouter run whose key came from the
+        Studio or --api-key stopped at its first blocked question with openrouter_key_required, one charged call per
+        resume."""
+        from podcast_automate.research_advisor import BlockAdvice
+        from podcast_automate.web_search import SearchPlan
+        config = json.loads(json.dumps(self.config.model_dump(mode="json")))
+        config["research_limits"]["cost_usd"] = 50.0
+        write_yaml(self.root / "project.yaml", config)
+        keys = []
+
+        def openrouter(adapter, prompt, output_type, directory, **kwargs):
+            keys.append((output_type, adapter._key.get_secret_value()))
+            if output_type is SearchPlan:
+                return SearchPlan(queries=["energy model definition"], languages=[]), {"separately_billed_cost": 0.01}
+            if output_type is ResearchDecision:
+                return decision("blocked"), {"separately_billed_cost": 0.01}
+            payload = json.loads(prompt.splitlines()[-1])
+            searched = isinstance(payload, dict) and "results" in payload and "task" in payload
+            output, _ = self.model(payload["task"] if searched else prompt, output_type, directory,
+                                   **{**kwargs, "search": searched})
+            return output, {"separately_billed_cost": 0.01}
+        found = {"queries": ["energy model definition"], "request_id": "r1", "usd": 0.005, "elapsed_seconds": 0.1,
+                 "results": [{"title": "Paper 0", "url": "https://example.org/paper0", "snippet": "s", "date": None,
+                              "last_updated": None}]}
+        environment = {name: value for name, value in os.environ.items() if name != "OPENROUTER_API_KEY"}
+        with patch.dict(os.environ, environment, clear=True), \
+                patch("podcast_automate.openrouter.OpenRouterAdapter.structured", autospec=True, side_effect=openrouter), \
+                patch("podcast_automate.web_search.PerplexitySearch.search", return_value=found), \
+                patch("podcast_automate.research.CodexAdapter.structured", side_effect=AssertionError("no Codex")), \
+                patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=AssertionError("no Claude")):
+            run = run_research(self.root, backend="openrouter", model="vendor/test-model", api_key="or-key-0123456789",
+                               web_search="perplexity", perplexity_key="pplx-test-key-0123456789", plan_review="auto")
+        self.assertEqual(run.stages["dossier"].error.code, "research_questions_blocked")
+        self.assertIn((BlockAdvice, "or-key-0123456789"), keys)
+
+    def test_a_call_refused_for_a_missing_key_before_any_model_work_is_not_charged(self):
+        """Review 2026-11-14: a call the OpenRouter adapter refused for a missing key, before any request, stayed charged
+        to the run's call and search limits, and a resume did not give it back."""
+        config = json.loads(json.dumps(self.config.model_dump(mode="json")))
+        config["research_limits"]["cost_usd"] = 50.0
+        write_yaml(self.root / "project.yaml", config)
+        environment = {name: value for name, value in os.environ.items() if name != "OPENROUTER_API_KEY"}
+        with patch.dict(os.environ, environment, clear=True), \
+                patch("podcast_automate.research.CodexAdapter.structured", side_effect=AssertionError("no Codex")):
+            run = run_research(self.root, backend="openrouter", model="vendor/test-model", web_search="perplexity",
+                               perplexity_key="pplx-test-key-0123456789", plan_review="auto")
+        self.assertEqual(run.stages["discovery"].error.code, "openrouter_key_required")
+        budget = json.loads((self.root / "runs" / run.run_id / "budget.json").read_text(encoding="utf-8"))
+        self.assertEqual((budget["model_calls"], budget["search_rounds"]), (0, 0))
+
+    def test_a_run_on_codex_s_default_model_keeps_it_when_the_setting_changes_before_a_resume(self):
+        """Review 2026-11-14: a run started without --model stored no text choice and resumed on whatever
+        runtime.codex_model said then, though the model choice stays binding. New runs record the model they started
+        with; a run started before keeps reading the setting."""
+        data = self.config.model_dump(mode="json")
+        data["runtime"]["codex_model"] = "gpt-6-astra"
+        write_yaml(self.root / "project.yaml", data)
+        models, stopped = [], []
+
+        def model(adapter, prompt, output_type, directory, **kwargs):
+            models.append(adapter.settings.codex_model)
+            if output_type is ResearchDecision and not stopped:
+                stopped.append(True)
+                raise AppError("Quota", code="quota_exhausted", status="waiting_for_quota")
+            return self.model(prompt, output_type, directory, **kwargs)
+        with patch("podcast_automate.research.CodexAdapter.structured", autospec=True, side_effect=model):
+            first = run_research(self.root)
+            self.assertEqual(first.status, "waiting_for_quota")
+            data["runtime"]["codex_model"] = "gpt-6-other"
+            write_yaml(self.root / "project.yaml", data)
+            count = len(models)
+            second = run_research(self.root, resume=True, run_id=first.run_id)
         self.assertEqual(second.status, "completed")
-        self.assertEqual(second.stages["retrieval"].attempts, 2)
-        self.assertEqual(second.stages["dossier"].attempts, 2)
-        self.assertEqual(second.stages["discovery"].attempts, 1)
-        self.assertEqual(self.download.call_count, 1)
+        self.assertEqual(set(models[count:]), {"gpt-6-astra"})
+        work = self.root / "runs" / first.run_id
+        self.assertEqual(json.loads((work / "research_request.json").read_text(encoding="utf-8"))["codex_model"],
+                         "gpt-6-astra")
 
     def test_source_limit_trims_excess_search_results_and_never_loads_more(self):
         """Since 2026-09-30 an excess is trimmed to the limit and named instead of discarding the paid search;

@@ -920,3 +920,79 @@ class SeriesRepairWorkflowTests(unittest.TestCase):
         work = self.root / "runs" / run.run_id
         self.assertFalse((work / "reviews/ep_002_series_repair_rejected.json").exists())
         self.assertTrue((work / "reviews/ep_002_before_series_repair.json").exists())
+
+
+class OutlineSeriesReviewTests(unittest.TestCase):
+    """The Studio's series review over an outline's published episodes, each written by a run of its own (D-184)."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve() / "project"
+        from podcast_automate.storage import init_project
+        init_project(self.root, TopicBrief(topic="Test topic", voice_profile={"host_a": "Aiden", "host_b": "Vivian"}))
+        self.plan = fixtures.example_plan()
+        second = self.plan.episodes[0].model_copy(deep=True, update={"episode_id": "ep_002", "title": "Second"})
+        self.plan.episodes.append(second)
+        write_json(self.root / "runs/run_outline/series_plan.json", self.plan.model_dump())
+        self.publish("ep_001", "run_a", "Am Anfang steht ein Vergleich.")
+        self.publish("ep_002", "run_b", "Am Ende steht eine Antwort.")
+        self.answers, self.prompts = [], []
+
+    def publish(self, episode, run_id, text):
+        """``episode`` as published by ``run_id`` from the outline, its last turn saying ``text``."""
+        work = self.root / "runs" / run_id
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "series_plan.json").write_bytes((self.root / "runs/run_outline/series_plan.json").read_bytes())
+        script = fixtures.example_script().model_copy(update={"episode_id": episode})
+        script.segments[-1].text = text
+        write_yaml(self.root / "episodes" / episode / "script.yaml", script.model_dump())
+        write_json(self.root / "episodes" / episode / "latest.json", {"run_id": run_id, "episode_ids": [episode]})
+
+    def answer(self, failing):
+        """A verdict failing each criterion of ``failing`` on its episode, every other criterion passing."""
+        from podcast_automate.series_review import CRITERIA
+
+        def respond(prompt, output_type, directory, **kwargs):
+            self.prompts.append(json.loads(prompt.splitlines()[-1]))
+            scripts = self.prompts[-1]["scripts"]
+            evidence = [{"episode_id": s["episode_id"], "segment_id": s["segments"][-1]["segment_id"],
+                         "quote": s["segments"][-1]["text"]} for s in scripts]
+            checks = [{"criterion": name, "verdict": "fail", "reason": f"{name} fehlt.", "evidence": [],
+                       "episode_ids": [failing[name]]} if name in failing else
+                      {"criterion": name, "verdict": "pass", "reason": "Trägt.", "evidence": evidence}
+                      for name in CRITERIA]
+            return SeriesReview(checked_episodes=[s["episode_id"] for s in scripts], checks=checks, warnings=[]), {}
+        return respond
+
+    def review(self, failing):
+        from podcast_automate.scripting import run_series_review
+        with patch("podcast_automate.scripting.CodexAdapter.structured", side_effect=self.answer(failing)):
+            run = run_series_review(self.root, outline_run="run_outline")
+        self.assertEqual(run.status, "completed", run.stages["review"].error)
+        work = self.root / "runs" / run.run_id
+        return (json.loads((work / "inputs.json").read_text(encoding="utf-8")),
+                json.loads((work / "series_review.json").read_text(encoding="utf-8")))
+
+    def test_a_review_after_revisions_knows_the_last_one_and_blocks_only_on_open_or_changed_points(self):
+        """2026-11-14 review: each review over the published episodes judged every episode afresh, so after the
+        episodes it named were revised, new points on episodes that had passed unchanged came back as blocking, each
+        offered as another revision. From the second review on it gets the last one's checks and what became of each,
+        and the episodes whose text changed since, saved in its inputs before the call."""
+        inputs, first = self.review({"arc": "ep_002"})
+        self.assertNotIn("scope", inputs)
+        self.assertEqual(list(first["episode_issues"]), ["ep_002"])
+        # ep_001 is revised; ep_002, which the first review named, is not.
+        self.publish("ep_001", "run_c", "Am Anfang steht jetzt ein Fall.")
+        inputs, second = self.review({"arc": "ep_002", "progression": "ep_002", "coverage": "ep_001"})
+        scope = inputs["scope"]
+        self.assertEqual(scope["changed_episodes"], ["ep_001"])
+        arc = next(row for row in scope["previous_checks"] if row["criterion"] == "arc")
+        self.assertEqual((arc["blocking"], arc["outcome"]), (True, "uncorrected"))
+        self.assertIn("previous_checks", self.prompts[-1], "the review is told what it said before")
+        # The open objection (arc on ep_002) and the failure in the changed episode block; a new point on the
+        # unchanged ep_002 is a note.
+        self.assertEqual({episode: [issue["reason"] for issue in rows] for episode, rows in second["episode_issues"].items()},
+                         {"ep_002": ["arc: arc fehlt."], "ep_001": ["coverage: coverage fehlt."]})
+        self.assertEqual([(row["criterion"], row["basis"]) for row in second["report"]["advisories"]],
+                         [("progression", "unchanged")])

@@ -94,17 +94,6 @@ TEXT_PRESETS = [
     {"id": "openrouter_deepseek", "label": "DeepSeek V4.1 Flash · max · OpenRouter", "provider": "openrouter",
      "model": "deepseek/deepseek-v4.1-flash", "reasoning_effort": "max"},
 ]
-PROVIDER_NOTES = {
-    "codex_cli": "Codex CLI mit ChatGPT-Abo; kein API-Guthaben. Das Kontingent wird vor jedem Aufruf gelesen.",
-    "claude_code": "Claude Code CLI mit Claude-Max-Abo (claude.ai-Anmeldung); keine API-Kosten. Ein erreichtes "
-                   "Limit wird erst beim Aufruf sichtbar und danach bis zum Reset vermerkt.",
-    "openrouter": "OpenRouter-API mit eigenem Key und Guthaben.",
-    "claude_api": "Claude Code CLI mit eigenem Anthropic-API-Key; jeder Aufruf wird über dein Anthropic-Konto "
-                  "abgerechnet. Ein Lauf braucht eine Kostengrenze in USD.",
-    "auto": "Automatische Abo-Wahl je Modellaufruf: Claude (Haiku 5.5) über das Claude-Max-Abo, bis dessen Kontingent erschöpft "
-            "ist, dann Codex über das ChatGPT-Abo. Ohne Kontingent pausiert der Lauf bis zum frühesten Reset. Die Modelle "
-            "kommen aus dem Katalog; die Stufe ist deren Standard oder eine gemeinsame Stufe wie high für beide.",
-}
 
 
 def catalog_age(today=None):

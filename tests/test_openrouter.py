@@ -220,6 +220,59 @@ class OpenRouterTests(unittest.TestCase):
         req = Request(ENDPOINT, headers={"Authorization": "Bearer " + KEY})
         self.assertIsNone(NoRedirect().redirect_request(req, None, 307, "redirect", {}, "https://example.org"))
 
+    def test_an_ending_after_the_request_was_sent_without_a_cost_is_marked_for_the_estimate(self):
+        """Review 2026-11-14: a time limit, a broken connection or a stream that ended early after OpenRouter had the
+        request counted as free, although OpenRouter bills the model work done until then. A failure while connecting,
+        an HTTP refusal or an error body stays free; a completed stream keeps its reported cost."""
+
+        class Cut(io.BytesIO):
+            # The stream's first event arrives, then the read times out.
+            def readline(self, *args):
+                line = super().readline(*args)
+                if not line:
+                    raise TimeoutError()
+                return line
+
+        delta = b'data: {"choices":[{"delta":{"reasoning":"Erst die Quellen."}}]}\n\n'
+        cases = [(TimeoutError(), "openrouter_connection", True), (ConnectionResetError(), "openrouter_connection", True),
+                 (Cut(delta), "openrouter_connection", True), (delta, "invalid_model_output", True),
+                 (URLError(OSError("connection refused")), "openrouter_connection", False),
+                 (HTTPError(ENDPOINT, 429, "limit", {}, io.BytesIO(b"")), "openrouter_rate_limit", False),
+                 ({"error": {"code": 429, "message": "slow"}}, "openrouter_rate_limit", False)]
+        for result, code, unpriced in cases:
+            with self.subTest(result=type(result).__name__, code=code):
+
+                def respond(request, timeout, result=result):
+                    if isinstance(result, Exception):
+                        raise result
+                    if isinstance(result, io.BytesIO):
+                        return result
+                    return io.BytesIO(result if isinstance(result, bytes) else json.dumps(result).encode())
+                with patch("podcast_automate.openrouter.build_opener") as opener, self.assertRaises(AppError) as caught:
+                    opener.return_value.open.side_effect = respond
+                    self.adapter.structured("Explain this topic.", Reply, self.root / "cut", prompt_version="test")
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(caught.exception.details.get("billed_unknown", False), unpriced)
+                receipt = json.loads((self.root / "cut/failure.json").read_text(encoding="utf-8"))
+                self.assertEqual(receipt.get("billed_unknown", False), unpriced)
+        with self.assertRaises(AppError) as caught:
+            self.call(envelope('{"unknown":"value"}'))
+        self.assertEqual((caught.exception.details["billed_usd"], "billed_unknown" in caught.exception.details),
+                         (0.002, False))
+
+    def test_an_emoji_split_over_two_chunks_is_joined_and_half_of_one_replaced(self):
+        """Review 2026-11-14: a stream that splits a character's two UTF-16 halves over two chunks left two lone
+        surrogates in the answer; it validated, and writing response.json then failed after the paid call."""
+        parts = ['{"detail":{"text":"Gr\ud83d', '\ude00ße und \ud83d","count":2}}']
+        chunks = [{"choices": [{"delta": {"content": part}}]} for part in parts]
+        chunks[-1]["choices"][0]["finish_reason"] = "stop"
+        chunks.append({"choices": [], "usage": {"cost": 0.002}})
+        raw = b"".join(("data: " + json.dumps(c) + "\n\n").encode() for c in chunks) + b"data: [DONE]\n\n"
+        result, _ = self.call(raw)
+        self.assertEqual(result.detail.text, "Gr\U0001f600ße und �")
+        saved = json.loads((self.root / "call/response.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["detail"]["text"], "Gr\U0001f600ße und �")
+
     def test_key_is_required_and_env_fallback_is_explicitly_overridable(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
             self.adapter = OpenRouterAdapter(RuntimeSettings(), model="vendor/test-model")

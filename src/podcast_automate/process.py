@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .errors import AppError
+from .logs import logger
 
 # A streaming model call that sends nothing for this long is treated as hung and stopped, well
 # before the absolute deadline; the caller repeats it once. Absolute deadlines stay in project.yaml.
@@ -14,9 +15,34 @@ STALL_TIMEOUT_SECONDS = 600
 
 
 def stop_process_tree(process: subprocess.Popen) -> None:
-    """Stop only this owned worker and its descendants, including new sessions."""
+    """Stop only this owned worker and its descendants, including new sessions.
+
+    A tree that does not end in time (taskkill itself not answering, or a process that outlives it) raises
+    ``AppError(code="worker_stop")``, never ``subprocess.TimeoutExpired``: callers handle the application's errors,
+    and before, the bare timeout escaped a Studio request and the stage runner (review 2026-11-14)."""
     if process.poll() is not None:
         return
+    try:
+        kill_tree(process)
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired as exc:
+        logger("process").warning("Prozess %s nicht rechtzeitig beendet: %s", process.pid, exc)
+        raise AppError("Der Arbeitsprozess konnte nicht rechtzeitig angehalten werden.", code="worker_stop") from exc
+
+
+def stop_quietly(process: subprocess.Popen) -> bool:
+    """stop_process_tree for a caller that is already ending with an error of its own, which must not be replaced:
+    a failed stop is logged. True when the tree is gone."""
+    try:
+        stop_process_tree(process)
+        return True
+    except AppError as exc:
+        logger("process").warning("Prozess %s nicht angehalten (%s): %s", process.pid, exc.code, exc)
+        return False
+
+
+def kill_tree(process: subprocess.Popen) -> None:
+    """Kill the process and its descendants; the operating system's own way on Windows."""
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                        capture_output=True, timeout=10, check=False)
@@ -56,12 +82,12 @@ def stop_process_tree(process: subprocess.Popen) -> None:
                     pass
             raise AppError("Der Arbeitsprozess konnte nicht angehalten werden. Zugriffsrechte prüfen.",
                            code="worker_stop") from exc
-    process.wait(timeout=10)
 
 
 def _stop_tree(process: subprocess.Popen) -> None:
-    stop_process_tree(process)
-    process.communicate()
+    # Draining the pipes of a tree that still runs could wait for ever; the caller raises its own error either way.
+    if stop_quietly(process):
+        process.communicate()
 
 
 def stall_error(seconds) -> AppError:
@@ -155,7 +181,8 @@ def _stream_process(process, input_text, timeout, args, callback, cancel_check, 
             except subprocess.TimeoutExpired:
                 continue
     except BaseException:
-        stop_process_tree(process)
+        # The time limit, stall or cancel stays the error; a stop that fails is logged (stop_quietly).
+        stop_quietly(process)
         raise
     finally:
         for thread in threads:

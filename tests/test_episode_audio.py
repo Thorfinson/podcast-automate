@@ -401,6 +401,117 @@ class EpisodeAudioTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.stages["synthesis"].error.code, "invalid_audio")
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_a_published_episode_records_against_its_own_research_after_a_new_one_began(self):
+        """2026-11-14, the user's decision: a recording binds the research run its script run read, completed and
+        intact, not the project's newest one. Until then new focus questions or a new research run refused every
+        recording of the published episodes for good („Skript und geprüfte Recherche passen nicht zusammen“)."""
+        own = json.loads((self.root / "research/latest.json").read_text(encoding="utf-8"))["run_id"]
+        config = read_yaml(self.root / "project.yaml")
+        write_yaml(self.root / "project.yaml",
+                   {**config, "focus_questions": [*(config.get("focus_questions") or []), "Was kommt danach?"]})
+        newer = "run_29991231_000000_000000_newer000"
+        write_json(self.root / "research/latest.json", {"run_id": newer})
+        write_json(self.root / "research/active.json", {"run_id": newer})
+        self.assertEqual(self.render().status, "completed")
+        # Its own research must still be as it finished: a changed file of it refuses the recording.
+        manifest = read_yaml(manifest_path(self.root, own))
+        relative = next(iter(next(stage for stage in manifest["stages"].values() if stage.get("outputs"))["outputs"]))
+        with (self.root / relative).open("ab") as stream:
+            stream.write(b"\n")
+        with patch("podcast_automate.episode_audio.run_tts", side_effect=AssertionError("must not render")):
+            with self.assertRaises(AppError) as caught:
+                run_episode_audio(self.root, episode="ep_001", approve_audio=True)
+        self.assertEqual(caught.exception.code, "invalid_script")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_a_raised_limit_or_time_limit_keeps_a_recording_resumable_while_content_does_not(self):
+        """Operational fields never bind a resumed run (D-038), the audio run's too since 2026-11-14: a money limit or a
+        longer time limit saved while a recording rests keeps it resumable. A content field still refuses, and so does
+        a Qwen setting that decides the sound (model, revision, device, attention, seed)."""
+        run = self.render()
+        self.assertEqual(run.status, "completed")
+        config = read_yaml(self.root / "project.yaml")
+        raised = {**config, "research_limits": {**config["research_limits"], "cost_usd": 12.5},
+                  "runtime": {**config["runtime"], "tts_timeout_seconds": 7200}}
+        write_yaml(self.root / "project.yaml", raised)
+        with patch("podcast_automate.episode_audio.run_tts", side_effect=AssertionError("nothing to render")):
+            self.assertEqual(run_episode_audio(self.root, resume=True, run_id=run.run_id).status, "completed")
+            for name, changed in (("revision", {**raised, "runtime": {**raised["runtime"], "tts_revision": "other"}}),
+                                  ("content", {**raised, "audience_level": "Fachleute"})):
+                write_yaml(self.root / "project.yaml", changed)
+                with self.subTest(name), self.assertRaises(AppError) as caught:
+                    run_episode_audio(self.root, resume=True, run_id=run.run_id)
+                self.assertEqual(caught.exception.code, "inputs_changed")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_an_engine_file_binds_its_text_whatever_its_line_ends_and_old_byte_hashes_still_resume(self):
+        """The engine files are CRLF in a Windows checkout and LF in the wheel and a fresh clone, so a recording bound
+        the bytes of one machine. Since 2026-11-14 a recording binds the text with LF line ends; a run that bound the
+        CRLF bytes resumes on this checkout and on one with LF line ends."""
+        import hashlib
+        from podcast_automate import episode_audio
+        text = Path(episode_audio.__file__).with_name("qwen_worker.py").read_bytes().replace(b"\r\n", b"\n")
+        engine = self.root.parent / "engine" / "qwen_worker.py"
+        engine.parent.mkdir()
+        engine.write_bytes(text.replace(b"\n", b"\r\n"))
+        with patch("podcast_automate.episode_audio.worker_path", return_value=engine):
+            run = self.render()
+            self.assertEqual(run.status, "completed")
+            work = manifest_path(self.root, run.run_id).parent
+            inputs = json.loads((work / "inputs.json").read_text(encoding="utf-8"))
+            self.assertEqual(inputs["worker_sha256"], hashlib.sha256(text).hexdigest())
+            legacy = {**inputs, "worker_sha256": hashlib.sha256(text.replace(b"\n", b"\r\n")).hexdigest()}
+            write_yaml(work / "run_manifest.yaml", {**read_yaml(work / "run_manifest.yaml"), "input_hash": digest(legacy)})
+            with patch("podcast_automate.episode_audio.run_tts", side_effect=AssertionError("nothing to render")):
+                for form in (text.replace(b"\n", b"\r\n"), text):
+                    engine.write_bytes(form)
+                    self.assertEqual(run_episode_audio(self.root, resume=True, run_id=run.run_id).status, "completed")
+            engine.write_bytes(text + b"# changed\n")
+            with self.assertRaises(AppError) as caught:
+                run_episode_audio(self.root, resume=True, run_id=run.run_id)
+            self.assertEqual(caught.exception.code, "inputs_changed")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_markup_characters_in_a_spoken_form_reach_the_engine_as_words(self):
+        """2026-11-14: Gemini and ElevenLabs take <…> for a tag and |…| for a listener reaction, so ElevenLabs dropped
+        „5 % und über“ of „<5 % und über >95 %“. The engine hears words instead; the operator's own form stays as
+        written."""
+        form = "Bei <5 % der Fälle zählt |x| nicht."
+        write_yaml(self.root / "episodes/ep_001/audio_review.yaml", {"spoken_overrides": {"seg_002": form}})
+        self.assertEqual(self.render().status, "completed")
+        self.assertIn("Bei weniger als 5 % der Fälle zählt x nicht.", self.spoken)
+        report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["spoken_overrides"], {"seg_002": form})
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_a_recording_without_the_ai_marking_is_named_unmarked(self):
+        """D-154's tags stand in every MP3 made since 2026-10-07; an earlier one, or one whose tags did not come back
+        from the file, is named unmarked, so the Studio can call it outdated and assemble it again from the cache."""
+        from podcast_automate.episode_audio import recording_unmarked
+        self.assertEqual(self.render().status, "completed")
+        report = json.loads((self.root / "episodes/ep_001/audio_latest.json").read_text(encoding="utf-8"))
+        self.assertFalse(recording_unmarked(self.root, report))
+        path = (self.root / report["parts"][0]["audio"]).with_name("audio_report.json")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for legacy in ({k: v for k, v in data.items() if k not in {"ai_marking", "ai_marking_embedded"}},
+                       {**data, "ai_marking_embedded": False}):
+            write_json(path, legacy)
+            self.assertTrue(recording_unmarked(self.root, report))
+
+
+class SpokenSymbolsTests(unittest.TestCase):
+    def test_markup_characters_are_spoken_as_words_and_the_allowed_tags_stay(self):
+        from podcast_automate.episode_audio import spoken_symbols
+        self.assertEqual(spoken_symbols("Bei <5 % der Fälle, >95 % nie.", "de-DE"),
+                         "Bei weniger als 5 % der Fälle, mehr als 95 % nie.")
+        self.assertEqual(spoken_symbols("p <= 0.05 and x >= 3, so A -> B.", "en-US"),
+                         "p at most 0.05 and x at least 3, so A → B.")
+        self.assertEqual(spoken_symbols("Der Betrag |x| zählt.", "de-DE"), "Der Betrag x zählt.")
+        self.assertEqual(spoken_symbols("<sigh> Gut so, <5 %.", "de-DE"), "<sigh> Gut so, weniger als 5 %.")
+        plain = "Nichts  zu   ändern."
+        self.assertIs(spoken_symbols(plain, "de-DE"), plain)
+
 
 class ListeningSheetTests(unittest.TestCase):
     def test_an_episode_in_parts_names_the_part_of_every_row(self):

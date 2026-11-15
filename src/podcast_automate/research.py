@@ -15,6 +15,7 @@ from pathlib import Path
 from .prompts import fragment, instructions
 from . import PIPELINE_IDENTITY
 from . import attachments
+from .call_folders import numbered
 from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.research.CodexAdapter.structured)
 from .errors import AppError
 from .execution import ExecutionChoice, selected_execution
@@ -50,7 +51,9 @@ UNANSWERED_CALL_CODES = frozenset({
     "timeout", "stall", "interrupted", "missing_executable", "codex_missing", "claude_missing",
     "authentication_required", "subscription_required", "claude_version", "prompt_too_large",
     "invalid_output_schema", "unsupported_codex_launcher", "unsupported_claude_launcher",
-    "anthropic_key_required", "anthropic_authentication"})
+    "anthropic_key_required", "anthropic_authentication",
+    # Refused before the request goes out (provider_pool.AdapterPool.structured, openrouter.require_key).
+    "openrouter_key_required"})
 
 
 def inherit_sources(root, work, manifest, config, local_files, parent_id):
@@ -173,15 +176,29 @@ def check_money(budget, limit):
 
 def add_money(budget, rows) -> None:
     """Count one call's billing rows (provider_pool.read_billing): a priced attempt with its money, an attempt without
-    a reported cost (timeout, interrupted) at the run's mean so far or the table's value, a free one not at all."""
+    a reported cost (timeout, interrupted) at the run's mean so far or the table's value, a free one not at all.
+
+    A Perplexity request (``provider: perplexity``) counts its money, but is no model attempt: ``priced_attempts`` and
+    the mean that values an unpriced model attempt (``model_billed_usd`` over them) count model attempts only, and an
+    unpriced request counts at the request price. Before (review 2026-11-14), ten requests at 0.005 USD pulled that mean,
+    and the projection (cost_estimate.per_call_usd), toward the price of a search. A budget from before keeps the money
+    it counted as model money."""
+    from .web_search import USD_PER_REQUEST
     for row in rows:
         usd = row.get("usd")
-        if row.get("state") == "priced" and isinstance(usd, (int, float)) and not isinstance(usd, bool) and usd >= 0:
+        search = row.get("provider") == "perplexity"
+        state = row.get("state")
+        if state not in {"priced", "unpriced", "started"}:
+            continue
+        model_usd = budget.get("model_billed_usd", budget.get("billed_usd", 0.0))
+        if state == "priced" and isinstance(usd, (int, float)) and not isinstance(usd, bool) and usd >= 0:
             budget["billed_usd"] = round(budget.get("billed_usd", 0.0) + usd, 6)
-            budget["priced_attempts"] = budget.get("priced_attempts", 0) + 1
-        elif row.get("state") in {"unpriced", "started"}:
+            budget["model_billed_usd"] = round(model_usd + (0.0 if search else usd), 6)
+            if not search:
+                budget["priced_attempts"] = budget.get("priced_attempts", 0) + 1
+        elif state in {"unpriced", "started"}:
             priced = budget.get("priced_attempts", 0)
-            each = (budget.get("billed_usd", 0.0) / priced if priced else
+            each = (USD_PER_REQUEST if search else model_usd / priced if priced else
                     fallback_usd(row.get("model")) or 0.0)
             budget["estimated_usd"] = round(budget.get("estimated_usd", 0.0) + each, 6)
             budget["unpriced_attempts"] = budget.get("unpriced_attempts", 0) + 1
@@ -238,7 +255,7 @@ def reconcile_budget(work: Path) -> list[int]:
         budget = json.loads(path.read_text(encoding="utf-8"))
         settled = budget.get("settled", [])
         money = False
-        for directory in sorted((work / "calls").glob("call_*")):
+        for directory in numbered((work / "calls").glob("call_*")):
             # A billed call the worker never settled (killed after or during the call): its rows, where a killed
             # attempt left one that only says it started, count now (D-148).
             match = re.fullmatch(r"call_(\d+)", directory.name)
@@ -249,7 +266,7 @@ def reconcile_budget(work: Path) -> list[int]:
                 money = True
         refunded = budget.setdefault("refunded", [])
         found = []
-        for directory in sorted((work / "calls").glob("call_*")):
+        for directory in numbered((work / "calls").glob("call_*")):
             match = re.fullmatch(r"call_(\d+)", directory.name)
             if not match or int(match[1]) in refunded or (directory / "response.json").exists():
                 continue
@@ -418,7 +435,7 @@ DISCOVERY_VERSION = "research_discovery.v6-archives"
 def saved_discovery(work, topic):
     """A first search this run already paid for and a later check stopped: adopted on resume instead of searching
     the web again, as long as it answered the same prompt generation and keeps the topic (Asimov, 2026-09-30)."""
-    for folder in sorted((work / "calls").glob("call_*"), reverse=True):
+    for folder in reversed(numbered((work / "calls").glob("call_*"))):
         metadata = read_optional_json(folder / "metadata.json", {}) or {}
         if metadata.get("prompt_version") != DISCOVERY_VERSION:
             continue
@@ -461,6 +478,21 @@ def latest_research_run(root: Path):
             return folder.name
         newest = newest or folder.name
     return imported_library(root) or newest
+
+
+def text_pools(config, selection, api_key=None, perplexity_key=None):
+    """The run's adapter pool and its advisor's (research_advisor). The key goes only to the provider that bills it:
+    OpenRouter's, or the Anthropic key to Claude on the key (D-145), and to both pools, since a billed run's advisor
+    keeps the run's provider. Before (review 2026-11-14) the advisor got the Anthropic key only, and an OpenRouter run
+    whose key came from the Studio or --api-key stopped at its first blocked question with openrouter_key_required."""
+    provider = selection.get("provider")
+    keys = {"api_key": api_key if provider == "openrouter" else None,
+            "anthropic_key": api_key if provider == "claude_api" else None}
+    pool = AdapterPool(config.runtime, selection, **keys, perplexity_key=perplexity_key)
+    # The advice on a blocked question asks the deepest setting of the run's subscription; a billed run keeps its own
+    # model and key.
+    advisor = AdapterPool(config.runtime, advisor_selection(pool.text_generation), **keys, perplexity_key=perplexity_key)
+    return pool, advisor
 
 
 def run_research(root: Path, *, resume=False, run_id: str | None = None,
@@ -565,10 +597,15 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
                                    ("discovery", "retrieval", "dossier", "review", "completeness", "publish")})
             write_yaml(path.parent / "project_snapshot.yaml", config.model_dump(mode="json"))
             # The project's execution choice is fixed at the start, as for scripts; a resume keeps it.
+            # A run on Codex's default choice records the model it started with, so a later change of the setting does
+            # not switch a resumed run's model (runtime is operational and outside the hash); and every new run records
+            # the parser of its sources.
             write_json(path.parent / "research_request.json", {"text_generation": selection,
                        "requirements": requirements_for(config), "quality_policy": "research_quality.v1",
                        "plan_review": plan_review, "execution": selected_execution(root).model_dump(),
-                       **({"seed_corpus": seed_corpus} if seed_corpus else {})})
+                       **({"seed_corpus": seed_corpus} if seed_corpus else {}),
+                       **({"codex_model": config.runtime.codex_model} if selection is None else {}),
+                       "extraction_version": EXTRACTION_VERSION})
         work = path.parent
         request = read_optional_json(work / "research_request.json", {}) or {}
         # An automatic plan approval asked for at the start stays with the run; a required review does too.
@@ -585,7 +622,11 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         if resume:
             # A stopped worker leaves its reservation behind; the call it never finished is not charged.
             reconcile_budget(work)
-        if resume and manifest.stages["retrieval"].status == "completed":
+        # A parser upgrade reads the stored raw files again only while nothing is bound to their text yet. A completed
+        # run is not recalculated, and the question ledger binds its sources by their text (question_research.initialise):
+        # re-extracting them stopped such a run for good once a text changed (review 2026-11-14).
+        if (resume and manifest.stages["retrieval"].status == "completed" and manifest.status != "completed"
+                and not (work / "question_research" / "state.json").exists()):
             try:
                 previous_index = SourceIndex.model_validate_json((work / "source_index.json").read_text(encoding="utf-8"))
                 if any(source.extraction_version != EXTRACTION_VERSION for source in previous_index.sources):
@@ -612,15 +653,10 @@ def run_research(root: Path, *, resume=False, run_id: str | None = None,
         if selection:
             check_adapter_versions(selection)
         # The key goes only to the provider that bills it: OpenRouter, or Claude on the Anthropic key (D-145).
-        provider = (selection or {}).get("provider")
-        keys = {"api_key": api_key if provider == "openrouter" else None,
-                "anthropic_key": api_key if provider == "claude_api" else None}
-        pool = AdapterPool(config.runtime, selection or {"provider": "codex_cli", "model": config.runtime.codex_model,
-                                                        "reasoning_effort": None}, **keys, perplexity_key=perplexity_key)
-        # The advice on a blocked question asks the deepest setting of the run's subscription (research_advisor); a
-        # billed run keeps its own model and key.
-        advisor_pool = AdapterPool(config.runtime, advisor_selection(pool.text_generation),
-                                   anthropic_key=keys["anthropic_key"], perplexity_key=perplexity_key)
+        # A run started before the default model was recorded keeps reading today's setting.
+        default = {"provider": "codex_cli", "model": request.get("codex_model", config.runtime.codex_model),
+                   "reasoning_effort": None}
+        pool, advisor_pool = text_pools(config, selection or default, api_key, perplexity_key)
 
         def limits():
             return effective_limits(work, config.research_limits, input_hash)

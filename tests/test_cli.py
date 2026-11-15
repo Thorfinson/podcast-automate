@@ -61,6 +61,27 @@ class CliTests(unittest.TestCase):
             _, data = self.invoke("status", root, "--json")
             self.assertEqual(data["run"]["stages"]["codex_probe"]["error"]["code"], "codex_missing")
 
+    def test_a_quota_pause_exits_with_2_also_when_it_is_raised_or_pauses_a_series_review(self):
+        """OPERATIONS, Exit codes: 2 for a quota pause. Until 2026-11-14 a pause raised outside a run (the one model call
+        of pla publish-kit) and a series review that paused both exited with 1."""
+        from podcast_automate.models import RunManifest
+        with tempfile.TemporaryDirectory() as root:
+            self.invoke("init", root, "--topic", "Thema", "--json")
+            paused = AppError("Kein Abo hat gerade Kontingent.", code="subscriptions_exhausted", status="waiting_for_quota")
+            for error, expected in ((paused, 2), (AppError("Fehlt.", code="missing_audio", status="blocked"), 1)):
+                with self.subTest(status=error.status), \
+                        patch("podcast_automate.publish_kit.build_publish_kit", side_effect=error):
+                    code, data = self.invoke("publish-kit", root, "--episode", "ep_001", "--json")
+                    self.assertEqual((code, data["status"]), (expected, error.status))
+            for status, expected in (("waiting_for_quota", 2), ("blocked", 1), ("completed", 0)):
+                review = RunManifest(run_id="run_review", kind="series_review", status=status, project_hash="p",
+                                     input_hash="i", stages={})
+                with self.subTest(review=status), \
+                        patch("podcast_automate.scripting.run_series_review", return_value=review), \
+                        patch("podcast_automate.scripting.series_review_target",
+                              return_value={"script_run_id": "run_s", "report_mirrored": False}):
+                    self.assertEqual(self.invoke("series-review", root, "--json")[0], expected)
+
     def test_series_review_runs_on_its_own_without_touching_the_reviewed_run(self):
         from podcast_automate.scripting import run_script
         from podcast_automate.storage import file_hash, read_yaml

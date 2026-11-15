@@ -42,6 +42,9 @@ for line in sys.stdin:
         assert p['config']['mcp_servers']['personal']['enabled'] is False
         assert p['selectedCapabilityRoots']==[] and p['environments']==[]
         result = {'modelProvider':'openai','model':p['model'],'thread':{'id':'t','ephemeral':True}}
+        if mode == 'deaf':
+            # Alive, but reading no more of its input: the large turn request cannot be written.
+            emit({'id':request['id'],'result':result}); time.sleep(20); sys.exit()
     elif method == 'turn/start':
         assert p['summary']=='concise' and p['effort']=='xhigh'
         assert p['outputSchema']['additionalProperties'] is False
@@ -63,6 +66,9 @@ for line in sys.stdin:
         notice('item/agentMessage/delta',itemId='a',delta=' Beta"}')
         if mode == 'disconnect': sys.exit(0)
         text = '{"reason":"Alpha Beta"}' if mode!='invalid' else '{}'
+        if mode == 'surrogate':
+            # Half of an emoji in the final message; json.dumps sends it as the escape \ud83d.
+            text = '{"reason":"Alpha \ud83d Beta"}'
         notice('item/completed',item={'id':'a','type':'agentMessage','phase':'final_answer','text':text})
         notice('thread/tokenUsage/updated',tokenUsage={'total':{'inputTokens':12,'outputTokens':8,'cachedInputTokens':2,'reasoningOutputTokens':3}})
         if mode == 'failed':
@@ -134,6 +140,26 @@ class CodexStreamTests(unittest.TestCase):
         with self.assertRaises(AppError) as error:
             self.call()
         self.assertEqual(error.exception.code, 'interrupted')
+
+    def test_a_server_that_stops_reading_its_input_is_stopped_at_the_time_limit(self):
+        """Review 2026-11-14: closing the server's input waited for the writer thread, which was stuck writing a large
+        turn request into a server that read no more, so the time limit never ended the call."""
+        import time
+        self.adapter.settings = self.adapter.settings.model_copy(update={'text_timeout_seconds': 3})
+        started = time.monotonic()
+        with patch.dict(os.environ, {'PLA_STREAM_TEST': 'deaf'}), self.assertRaises(AppError) as error:
+            self.adapter.structured('x' * 4_000_000, Result, self.root / 'deaf', prompt_version='test')
+        self.assertEqual(error.exception.code, 'timeout')
+        self.assertLess(time.monotonic() - started, 12, 'the server sleeps 20 s; the call must not wait for it')
+
+    def test_half_an_emoji_in_the_final_message_is_replaced_instead_of_crashing(self):
+        """Review 2026-11-14: a lone surrogate in the turn's final message made writing the pending response fail with
+        UnicodeEncodeError after the answer had arrived."""
+        with patch.dict(os.environ, {'PLA_STREAM_TEST': 'surrogate'}):
+            result, _ = self.call()
+        self.assertEqual(result.reason, 'Alpha � Beta')
+        self.assertEqual(json.loads((self.root / 'call/response.json').read_text(encoding='utf-8')),
+                         {'reason': 'Alpha � Beta'})
 
 
 class StructuredTraceTests(unittest.TestCase):

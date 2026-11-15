@@ -159,6 +159,25 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(steps[:count], [("normalize", index, count) for index in range(count)])
         self.assertEqual([row[0] for row in steps[count:]], ["loudness", "encode"])
 
+    def test_the_montage_works_in_its_scratch_folder_and_clears_what_a_hard_stop_left(self):
+        """2026-11-14: the montage's temporary files lay in the export folder, and a Studio stop (taskkill /F) left up to
+        1.7 GB of WAVs there for good. They go into the caller's scratch folder (the run's own), and every montage first
+        removes the mix-* folders an earlier one left, there and in the export folder."""
+        scratch, output = self.root / "work", self.root / "export"
+        for left in (scratch / "mix-stopped", output / "mix-older"):
+            left.mkdir(parents=True)
+            (left / "mixed.wav").write_bytes(b"left over")
+        used, original = [], tempfile.TemporaryDirectory
+
+        def spy(*args, **kwargs):
+            used.append(Path(kwargs["dir"]))
+            return original(*args, **kwargs)
+        with patch("podcast_automate.audio.tempfile.TemporaryDirectory", side_effect=spy):
+            assemble(self.script, self.paths, output, scratch=scratch)
+        self.assertEqual(used, [scratch])
+        self.assertEqual((list(scratch.glob("mix-*")), list(output.glob("mix-*"))), ([], []))
+        self.assertTrue((output / "audio.mp3").is_file())
+
     def test_montage_real_mp3_and_measured_chapters(self):
         output = self.root / "result"
         produced = assemble(self.script, self.paths, output)

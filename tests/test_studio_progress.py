@@ -456,3 +456,44 @@ class StudioProgressTests(unittest.TestCase):
         write_json(self.work / "question_research/state.json", {"value": {"tasks": {}, "phase": "questions"}, "sha256": "x"})
         write_json(self.work / "calls/call_008/output_schema.json", {"title": "SomethingElse"})
         self.assertEqual(script_progress(self.root, run)["work_insight"]["assignment_id"], "saved_results")
+
+
+class CallOrderTests(unittest.TestCase):
+    """Call folders are named call_NNN, and research runs go past call_999 (1,100 to 1,500 calls are common). Sorted by
+    name, call_1000 came before call_101, so every view of the newest call stayed on call_999: no open call, the old
+    activity, provider and assignment, and a status brief about calls long done."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.work = self.root / "runs/run_long"
+        for number in range(930, 1003):
+            folder = self.work / "calls" / f"call_{number:03d}"
+            last = number == 1002
+            write_json(folder / "output_schema.json", {"title": "StorySession" if last else "StoryCritique"})
+            write_json(folder / "provider_choice.json", {"provider": "claude_code" if last else "codex_cli"})
+            if last:
+                write_json(folder / "activity.json", {"status": "running", "started_at": "2026-11-14T10:00:00+00:00"})
+            else:
+                write_json(folder / "response.json", {})
+
+    def test_the_newest_and_the_open_call_are_found_by_number_after_call_999(self):
+        from podcast_automate import studio, studio_text
+        from podcast_automate.call_folders import numbered
+        from podcast_automate.research_status import work_insight
+        from podcast_automate.status_summary import evidence_snapshot
+        from podcast_automate.studio_progress import open_calls
+        self.assertEqual([path.name for path in numbered(self.work.joinpath("calls").glob("call_*"))][-3:],
+                         ["call_1000", "call_1001", "call_1002"])
+        run = {"run_id": "run_long", "kind": "research", "status": "running", "stages": {}}
+        self.assertEqual([row["call"] for row in open_calls(self.work, run)], ["call_1002"])
+        self.assertEqual(studio.latest_provider_choice(self.work)["call"], "call_1002")
+        self.assertEqual(work_insight(self.work, run)["signals"]["call"], "call_1002")
+        facts = {fact["id"] for fact in evidence_snapshot(self.root, run)["facts"]}
+        self.assertIn("call_1002", facts)
+        self.assertNotIn("call_996", facts, "the brief reads the six newest calls")
+        script = {"run_id": "run_long", "kind": "script", "status": "running", "stages": {"story": {"status": "running"}}}
+        progress = script_progress(self.root, script)
+        self.assertEqual(progress["activity"], studio_text.t("progress.activity.StorySession"))
+        self.assertEqual(progress["model_call_started_at"], "2026-11-14T10:00:00+00:00")

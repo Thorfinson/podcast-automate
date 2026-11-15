@@ -2,7 +2,7 @@
 title: Business logic
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/provider_pool.py
   - src/podcast_automate/subscriptions.py
@@ -60,7 +60,7 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 ### Subscriptions first, never an automatic switch to paid APIs
 
 - Text runs on the existing subscriptions through their official CLI logins: Codex CLI with a ChatGPT subscription,
-  Claude Code with a claude.ai login (Claude Max). Two paid alternatives run only when you choose them: OpenRouter on
+  Claude Code with a claude.ai login (any Claude subscription; a series uses much of its quota). Two paid alternatives run only when you choose them: OpenRouter on
   your OpenRouter credit, and Claude Code on your own Anthropic API key (`claude_api`,
   [below](#claude-on-your-own-api-key)); likewise the web search through Perplexity on your Perplexity key
   ([Research runs and their web search](#research-runs-and-their-web-search)). A subscription user needs no API
@@ -76,13 +76,14 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 
 ### Fixed providers and the rule `auto`
 
-- A fixed choice (Sonnet 5.5, Opus 5.5, Astra, an OpenRouter model, Claude on the API key) never switches, stops even
+- A fixed choice (Haiku 5.5, Sonnet 5.5, Opus 5.5, Astra, an OpenRouter model, Claude on the API key) never switches, stops even
   on an unusable subscription and never queries quotas for the rule.
 - **Automatic** („Automatisch“) is the preset of new Studio projects (`--backend auto`); without `--backend` the CLI
   uses `codex_cli`.
 - Under `auto` the provider is chosen before every model call, because quota changes during a run: Claude
-  (`text_settings.AUTO_PREFERENCE = "claude_code"`) with Sonnet 5.5 at `high` over the Claude Max subscription while
-  no Claude block is noted, then Codex with GPT-6 Astra at `xhigh` (both catalog defaults). Only when both are out
+  (`text_settings.AUTO_PREFERENCE = "claude_code"`) with Haiku 5.5 at `xhigh` over the Claude subscription while
+  no Claude block is noted (`text_settings.DEFAULT_CLAUDE_MODEL`, `DEFAULT_CLAUDE_EFFORT`; why: D-166), then Codex
+  with GPT-6 Astra at `xhigh` (both catalog defaults). Only when both are out
   does the job pause, until the earliest reset. Runs saved before 2026-09-26 with Codex first keep that order on
   resume.
 - Under `auto` a prompt larger than Claude's context limit goes to Codex.
@@ -92,7 +93,9 @@ Presets, default models and minimum CLI versions: [PRODUCT](PRODUCT.md#providers
 ### Claude on your own API key
 
 `claude_api` runs the Claude Code CLI on your Anthropic API key instead of the claude.ai login; every call is billed
-to your Anthropic account (presets "Sonnet 5.5 · high · Anthropic API key" („Sonnet 5.5 · high · Anthropic-API-Key“) and "Opus 5.5 · high · Anthropic API key" („Opus 5.5 · high · Anthropic-API-Key“)).
+to your Anthropic account (presets "Haiku 5.5 · xhigh · Anthropic API key" („Haiku 5.5 · xhigh · Anthropic-API-Key“),
+"Sonnet 5.5 · high · Anthropic API key" („Sonnet 5.5 · high · Anthropic-API-Key“) and "Opus 5.5 · high · Anthropic API
+key" („Opus 5.5 · high · Anthropic-API-Key“); without a model of its own Haiku 5.5 at `xhigh`, as on the subscription).
 It is its own provider, so no rule written for the subscription `claude_code` applies to it (why: D-145):
 
 - It is always a fixed choice: never a candidate of `auto`, never chosen automatically, and a switch to it is
@@ -142,6 +145,10 @@ It is its own provider, so no rule written for the subscription `claude_code` ap
   failure does, and the rule passes the failed one over for ten minutes (`subscriptions.UNAVAILABLE_SECONDS`, 600 s,
   as long as a cached login is trusted). For a login reason (`subscriptions.LOGIN_REASONS`) it re-checks the login at
   every choice, so a new login such as `claude auth login` counts at once. (why: D-026)
+- A note for a reason other than the login (`claude_failed`, `codex_failed`, `claude_version`, a launcher error) is
+  written only once the other subscription has taken the call over (`provider_pool.AdapterPool.failover`); a login
+  reason is noted at once. Until 14 November 2026 one transient failure with nothing to move to blocked every
+  automatic job of the computer for ten minutes. (why: D-235)
 - If the other subscription cannot take over either:
   - both out of quota: the run pauses with `subscriptions_exhausted`, naming both reset times;
   - current one out of quota, other unusable: the quota failure stays and the run pauses;
@@ -248,7 +255,8 @@ Rules of a switch (why: D-024):
   gaps.
 - A call without a model answer (time limit, stalled stream, quota pause, abort) is not charged: `budget.json` lists
   it under `refunded`, and call numbers stay unique; on a key its money still counts. A charged failure (invalid
-  output, a failed provider turn) keeps its charge.
+  output, a failed provider turn) keeps its charge. A research call refused for a missing OpenRouter key before any
+  request is not charged and does not count against the call limit.
 - **Stop job** („Auftrag anhalten“) ends the worker hard; its open calls keep their reservation until `resume`
   releases each that left neither an answer nor a charged failure, in research and script runs alike
   (`research.reconcile_budget`).
@@ -267,7 +275,9 @@ Rules of a switch (why: D-024):
 - After the scope check the Studio and the question report show the **minimum need of further calls** (dossier and
   closing reviews included) and the available budget. Finished answers and reusable checkpoints lower the need; more
   search, reading and corrections may raise it. If the budget does not cover even the minimum, the run stops with
-  `research_budget_insufficient`; answers and topic scope stay. Optional calls may not use the closing reserve.
+  `research_budget_insufficient`; answers and topic scope stay. Optional calls may not use the closing reserve. A
+  follow-up round's minimum counts its follow-up assessment (`assessment_followup`), not a whole assessment, and
+  nothing once its scope is empty or the round is assessed. `budget_block` is stamped only on blocked sub-questions.
 - A script run stops with `script_budget_insufficient` when the approved limit does not cover its
   [lower bound](#script-lower-bound-and-expected-calls).
 - A run billed to a key stops with `cost_limit_required` or `cost_limit_reached` at its [money limit](#money-limit).
@@ -381,14 +391,24 @@ USD (why: D-146, D-148, D-151):
   and the rows of its query-planning step count with its call. `research.settle_call` adds a call's rows to `budget.json` once (`billed_usd`, `priced_attempts`,
   `estimated_usd`, `unpriced_attempts`, `settled`). An attempt without a reported cost (time limit, stall, killed
   worker) counts at the run's mean per priced attempt, before the first one at the higher measured value of its model
-  (`cost_estimate.fallback_usd`). A refunded call returns its call, not its money. On resume `research.reconcile_budget`
-  settles what a killed worker left. A subscription run's `budget.json` gets none of these keys.
+  (`cost_estimate.fallback_usd`). The mean counts model attempts only (`model_billed_usd`): Perplexity requests stay
+  out of it, and a request without a reported price counts at 0.005 USD (why: D-216). A refunded call returns its
+  call, not its money. On resume `research.reconcile_budget` settles what a killed worker left. A subscription run's
+  `budget.json` gets none of these keys.
+- **No billable model counts at 0 USD** (why: D-234). A model the table below does not measure is valued high
+  (`cost_estimate.assumed_usd`): Haiku 5.5 at Sonnet 5.5's value, an upper bound, since its tokens cost a twentieth of
+  Sonnet's and no Haiku call has been priced yet (`cost_estimate.BOUNDED_BY`; see V-83); every other unmeasured model
+  (Opus 5, Astra, DeepSeek, an unknown one) at the highest measured value of its run kind. An OpenRouter attempt that
+  ends by the time limit, a broken connection or an early-ended stream after the request was sent counts at that
+  estimate (`billed_unknown`); a connect failure, an HTTP refusal and an error body stay free. Until 14 November 2026
+  such attempts and models counted 0 USD against the limit.
 - **Spent** = `billed_usd` + `estimated_usd` + `external_usd`. The billed amount is the cost the provider reports:
   OpenRouter's, or Claude Code's own `total_cost_usd`, an estimate at API prices; the Anthropic Console bill is
   authoritative (see V-30); a Perplexity request counts at the fixed price per request, and Perplexity's usage page is
   authoritative (see V-35).
-- **Jev.** With a limit set, a script run stops before the Jev scan once its limit is reached; the scan's money counts
-  as `external_usd` when the scan is complete (`research.settle_external`).
+- **Jev.** With a limit set, a script run stops before the Jev scan once its limit is reached (it reads `budget.json`
+  under `.budget.lock`); the scan's money counts as `external_usd` when the scan is complete
+  (`research.settle_external`), requests made before a stop included (why: D-221).
 - **Side jobs.** Expression tags and the companion kits of an episode and of the whole podcast each run under a
   small call allowance of their own with the
   project's money limit; the editorial conversation counts its money in `studio/assistant/budget.json` against the same
@@ -397,8 +417,9 @@ USD (why: D-146, D-148, D-151):
   plan projection, a script run's `budget_projection.json`) gain a `cost` block (`cost_estimate.cost_view`): limit,
   spent, money per call and its origin, expected remaining and total, unpriced attempts. The money per call comes from
   the run's own mean after ten priced attempts, else the project's last completed run of the same kind and model
-  (subscription runs count, since Claude Code reports their value at API prices), else the table below, else unknown.
-  It is a hint; only the limit stops a run. Other projections stay as they were.
+  (subscription runs count, since Claude Code reports their value at API prices), else the table below, else the
+  assumed value above (origin `assumed`, until 14 November 2026 `unknown`). It is a hint; only the limit stops a run.
+  Other projections stay as they were.
 
 `cost_estimate.DEFAULT_USD_PER_CALL`, the mean Claude Code `total_cost_usd` per call over the completed runs created
 2026-09-26 to 2026-10-04, measured on 2026-10-07:
@@ -477,8 +498,11 @@ display: [STUDIO](STUDIO.md#stopping-and-resuming)):
 
 A trial project ("Trial" („Probelauf“), trial run) runs the whole pipeline once on a narrow topic for little money and time
 (`trial.py`; why: D-157). It is an ordinary project whose brief carries `trial: true`
-([Project brief](CONFIGURATION.md#project-brief)); `pla init <project> --trial` without `--topic` takes the sample
-topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a rainbow form?" (`trial.TRIAL_TOPICS`).
+([Project brief](CONFIGURATION.md#project-brief)). The Studio's checkbox **Trial: a narrow topic, one short episode**
+on a new project is the easiest way to make one ([STUDIO](STUDIO.md#the-guided-flow)). On the command line,
+`pla init <project> --trial` without `--topic` takes the sample topic of the brief's language, „Wie entsteht ein
+Regenbogen?“ or "How does a rainbow form?" (`trial.TRIAL_TOPICS`); the language is German (`de-DE`) unless
+`--language en-US` says otherwise.
 
 | Limit | Trial value | Where it applies |
 | --- | --- | --- |
@@ -492,6 +516,9 @@ topic of the brief's language, „Wie entsteht ein Regenbogen?“ or "How does a
   lowered, never introduced: unset, it still refuses every billed call (`cost_limit_required`), and setting one stays
   your decision.
 - A raise for one run ([Raising a limit](#raising-a-limit), a stop card, a pre-approval) works as for every run.
+- The 20-minute cap is applied again on every save of the brief and every applied proposal of the editorial partner
+  (unset means 20, otherwise at most 20), and a save cannot drop the trial flag. Until 14 November 2026 a proposal
+  could lift a trial to 180 minutes. (why: D-240)
 - Why these values: the completed runs measured 16.4 to 23.4 calls per sub-question, so three take up to about 70,
   and discovery, planning, an advisor call and the closing calls about 15 more; 110 leaves a margin above that. The
   same limit carries the script work of the one episode: at least eight calls (the table of contents, six for the
@@ -550,6 +577,9 @@ Only a finished draft can be revised or approved. An interrupted planning grants
   passed checks again.
 - A manual change to inputs or production configuration needs a new audio approval. Merely resuming an unchanged run
   keeps its approval; an interrupted audio run still needs its matching approval.
+- A recording binds its script run's own research run (completed, with its own outputs intact), not the project's
+  newest research, so new focus questions or a new research run do not keep a published episode from being recorded
+  again (the user's decision of 2026-11-14; why: D-230).
 
 ### Decisions that stay yours
 
@@ -574,7 +604,9 @@ sub-questions and their decisions: [RESEARCH](RESEARCH.md#blocked-sub-questions-
   `RESEARCH_OPERATIONAL_FIELDS`): `runtime` (for example deadlines and program paths) and `research_limits` in every
   run kind, in research also `voice_profile`, `tts_backend`, `text_backend` and `host_names`. They enter the input hash
   as the run's `project_snapshot.yaml` recorded them at the start, so a higher limit or a longer time limit saved while
-  a run waits keeps it resumable; the resumed run uses the current values. (why: D-038)
+  a run waits keeps it resumable; the resumed run uses the current values. (why: D-038) Since 14 November 2026 this
+  holds for audio runs too (an audio resume hashes `bound_brief` over its `project_snapshot.yaml`), except that Qwen's
+  sound fields (`runtime.tts_model`, `tts_revision`, `tts_device`, `tts_attention`, `seed`) still bind.
 - In the Studio, changing the brief, host names, editorial notes or spoken forms while a run that depends on them
   rests (a table of contents awaiting approval included) first shows a warning and a question; afterwards that run can
   no longer be resumed. Changes on the settings page ask no such question.

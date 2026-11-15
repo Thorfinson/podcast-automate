@@ -29,15 +29,15 @@ are listed in the [README](README.md#docs).
 
 ## Set up
 
-You need Python 3.12 or newer, FFmpeg and, for the browser suite, Node 22. The tests need no account, key, GPU or
-network.
+You need Python 3.12 or 3.13, Git, FFmpeg and, for the browser suite, Node 22. The tests need no account, key, GPU or
+network, and no Claude Code or Codex CLI.
 
-Windows (PowerShell, in the repository folder):
+Windows (PowerShell, in your fork's folder after `git clone`):
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\scripts\setup-ffmpeg.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ffmpeg.ps1
 ```
 
 macOS and Linux: install FFmpeg with your package manager, then run `sh scripts/setup.sh`, which creates `.venv` and
@@ -54,8 +54,8 @@ formatter: keep the style of the file you edit.
 
 ## Run the tests
 
-There are two suites: the Python suite (about 1,290 tests, about 11 minutes; `python scripts/test_shards.py --run 1 3`
-runs a third of it) and the browser-logic suite (about 240 tests, about a second). Their commands, the Windows
+There are two suites: the Python suite (about 1,380 tests, about 11 minutes; `python scripts/test_shards.py --run 1 3`
+runs a third of it) and the browser-logic suite (about 250 tests, about a second). Their commands, the Windows
 PATH line for FFmpeg and which tests a change selects are in AGENTS.md:
 
 - [The two suites](AGENTS.md#the-two-suites): commands and requirements.
@@ -68,9 +68,12 @@ PATH line for FFmpeg and which tests a change selects are in AGENTS.md:
 takes seconds to a few minutes. Before the pull request, run both suites in full once; CI runs them again on every push.
 
 CI runs the lint job and, unless a change touches only docs and other files no test reads, both suites on one runner,
-Linux with Python 3.13, the Python suite in three shards; the checks `lint` and `tests passed` must pass. macOS,
-Windows and Python 3.12 are tested on every release, and by hand in the release workflow's dry run (Actions ›
-Release › Run workflow); test locally on your own system as well.
+Linux with Python 3.13, the Python suite in three shards, each leg after a check that FFmpeg is on PATH; the checks
+`lint` and `tests passed` must pass. A renamed file counts at its old and its new path, and `README.md` and `LICENSE`
+count as inputs of the package build, so a change to them runs the tests (D-242). A pull request's superseded run is
+cancelled; a push to `main` never is, since its change set is the diff to the push before (D-243). macOS, Windows and
+Python 3.12 are tested on every release, and by hand in the release workflow's dry run (Actions › Release › Run
+workflow); test locally on your own system as well.
 
 **Never add a test that performs a real model call,** a download, speech synthesis or any other network access. Model
 answers come from patched adapters and the fixtures in `tests/*_fixtures.py`. Checks against real models live under

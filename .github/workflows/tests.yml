@@ -5,17 +5,20 @@ on:
   pull_request:
 permissions:
   contents: read
-# Only tests run here, never a deployment, so a superseded run of the same ref is safe to cancel.
+# Only tests run here, never a deployment, so a superseded run of a pull request is safe to cancel: the next run tests
+# the whole pull request again. A push to main gets a group of its own commit and is never cancelled or replaced: its
+# change set is the diff to the previous push, so a cancelled code push followed by a docs-only push would have left
+# the code untested on main (2026-11-14 review).
 concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   lint:
     # Seconds, not minutes: a style or syntax slip fails here before the test legs report.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-python@v7.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Lint Python (Ruff, the version pinned in pyproject.toml's dev extra)
@@ -23,7 +26,7 @@ jobs:
           ruff=$(python -c "import tomllib; print(next(d for d in tomllib.load(open('pyproject.toml', 'rb'))['project']['optional-dependencies']['dev'] if d.startswith('ruff')))")
           python -m pip install "$ruff"
           ruff check --output-format=github .
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Check the browser script's syntax
@@ -31,12 +34,13 @@ jobs:
 
   changes:
     # Whether the change touches a file a test can read; docs, the project page, evals and the issue and pull request
-    # templates cannot break a test, so a change of only those skips the test legs (scripts/ci_changes.py, D-205).
+    # templates cannot break a test, so a change of only those skips the test legs (scripts/ci_changes.py, D-205). A
+    # renamed file counts on both sides, and README.md and LICENSE count as build inputs.
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: diff
@@ -58,18 +62,20 @@ jobs:
         shard: [1, 2, 3]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-python@v7.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Install package
         run: python -m pip install .
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.shard == 1
         with:
           node-version: "22"
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Check FFmpeg (the audio integration tests skip without it)
+        run: ffmpeg -version && ffprobe -version
       - name: Check Unix launchers
         if: matrix.shard == 1
         run: |

@@ -32,15 +32,15 @@ afterwards and understand the one idea it carries. Take the time it needs; this 
 - `earlier/`: the published text of each of those episodes, one file each.
 - `draft.json`: your result, in the format below.
 - `outline.json` (optional): your own chapters instead of the outline's scenes, see "Chapters".
-- `python search.py <words>`: searches the whole research corpus of this podcast (all collected sources,
-  far more than material.json) for sections holding the words; `python read.py <reference>` prints one
+- `python {commands}search.py <words>`: searches the whole research corpus of this podcast (all collected sources,
+  far more than material.json) for sections holding the words; `python {commands}read.py <reference>` prints one
   section in full. See "Research in the corpus".
 - `sources_used.json`: every corpus section you use beyond material.json, as
   `[{{"reference": "<src_…#sec_…>", "why": "..."}}]`.
 - `plan.md`: your plan, written before the draft.
-- `python check.py`: the code checks the script run applies (structure, finding citations, the quotation
+- `python {commands}check.py`: the code checks the script run applies (structure, finding citations, the quotation
   limit, echo lines, length). Run it after every change; draft.json must pass it.
-- `python critique.py`: an editor reads draft.json as a listener would hear it and rates tension, interest
+- `python {commands}critique.py`: an editor reads draft.json as a listener would hear it and rates tension, interest
   and storytelling, with what keeps it from 10. You may run it at most {critiques} times. Weigh its points:
   fix what is right with the fewest changes and keep what works. It does not check facts; you do.
 
@@ -76,8 +76,8 @@ afterwards and understand the one idea it carries. Take the time it needs; this 
    it. Typical slips: a step or sequence the source does not give, "most" where the source gives only the
    most frequent value, a scholar's paraphrase told as the chronicle's scene, a feeling or gesture no
    source reports.
-10. Run `python check.py`, fix, repeat until it passes.
-11. Run `python critique.py`, make targeted changes, run check.py again, and repeat until a critique rates
+10. Run `python {commands}check.py`, fix, repeat until it passes.
+11. Run `python {commands}critique.py`, make targeted changes, run check.py again, and repeat until a critique rates
     all three scales 8 or more or you have used every critique. Change only what a point names and what
     it touches; keep what works.
 12. Finish when check.py passes and no fact doubt is left. Say in one line what you finished.
@@ -94,7 +94,7 @@ material.json holds only the passages the episode's findings cite. The corpus be
 charters, regesta, chronicles, editions, studies. Where the story needs a moment the material only names
 in a line (a decision, a scene, a person's part in it, who was there, what was given or said), search the
 corpus before you plan around the gap: names in their period spellings and Latin forms, places, years,
-key words (`python search.py <name> <place> <year>`). Read promising hits in full with read.py.
+key words (`python {commands}search.py <name> <place> <year>`). Read promising hits in full with read.py.
 - Use only what a section itself says, attributed to that source ("a regest of the charter", "the old
   chronicle of the convent"), and record every section you use in sources_used.json.
 - Search for the story's people and moments, not for new topics; leave out what does not serve the turn.

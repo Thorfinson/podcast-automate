@@ -41,8 +41,9 @@ from podcast_automate.storage import init_project, load_project, read_yaml, writ
 
 
 def lab():
-    """The narration lab's judge (quality, compare, Judgment), loaded from its file."""
-    spec = importlib.util.spec_from_file_location("narration_lab", REPO / "evals" / "narration_lab" / "run.py")
+    """The narration lab's judge (quality, compare, Judgment), loaded from judge.py beside this file: the lab's own
+    run.py went with the writing prompt (D-184), its judging parts were kept here."""
+    spec = importlib.util.spec_from_file_location("narration_lab_judge", HERE / "judge.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

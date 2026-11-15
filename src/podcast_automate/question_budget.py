@@ -18,6 +18,7 @@ import math
 from datetime import datetime, timezone
 from statistics import median
 
+from .call_folders import numbered
 from .errors import AppError
 from .cost_estimate import money_view
 from .storage import digest, read_optional_json, read_text, write_json
@@ -88,7 +89,7 @@ def _saved_state(work, state):
 def run_timings(work):
     """Timings of this run's calls so far, from the receipts ``research.invoke`` writes per call."""
     rows = []
-    for path in sorted((work / "calls").glob("call_*/timing.json")):
+    for path in numbered((work / "calls").glob("call_*/timing.json")):
         row = read_optional_json(path, {}) or {}
         seconds = row.get("seconds")
         if isinstance(seconds, (int, float)) and seconds >= 0:
@@ -257,9 +258,29 @@ def remaining_calls(state, folder):
         if checkpoint(correction) is None:
             closing.add(correction)
     assessment = synthesis / "assessment.json"
+    if assembled and (synthesis / "assessment_merged.json").exists():
+        # The round's assessment is on record (question_synthesis.assessed_record): no further assessment call.
+        return questions, closing
+    if assembled and checkpoint(assessment) is None and follow_up_round(state, folder):
+        # From the second assembled round the assessment is a follow-up (question_synthesis.follow_up_assessment), which
+        # makes no call when its saved scope holds no requirement. Before (review 2026-11-14) every round counted a whole
+        # assessment that a follow-up round never makes, one call more than the round needs.
+        scope = checkpoint(synthesis / "assessment_scope.json")
+        if scope is not None and not scope.get("requirements"):
+            return questions, closing
+        assessment = synthesis / "assessment_followup.json"
     if checkpoint(assessment) is None:
         closing.add(assessment)
     return questions, closing
+
+
+def follow_up_round(state, folder):
+    """Whether this assembled round's assessment is a follow-up: an earlier round since the last rebuild has one on
+    record, as question_synthesis.previous_assessment finds it."""
+    rebuilds = state.get("rebuilds") or []
+    first = int(rebuilds[0]["from_audit_round"]) + 1 if rebuilds else 0
+    return any((folder / "synthesis" / f"audit_{number:02d}" / name).exists()
+               for number in range(first, int(state["audit_round"])) for name in ("assessment_merged.json", "assessment.json"))
 
 
 def budget_projection(work, state, limits, request=None, *, root=None):

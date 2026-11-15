@@ -165,11 +165,15 @@ def quality_report(config, dossier, discovery, index, assessment, grounding_issu
     gaps.extend(assessment.issues)
     gaps.extend(grounding_issues)
     probes = [dict(row) for row in gap_probes]
-    gaps.extend(f"{row['text']} Dazu gibt es ungelesene Abschnitte im Korpus: "
-                + ", ".join(hit["reference"] for hit in row["hits"]) + "."
-                for row in probes if row["status"] == "hits_unread")
+    # Each probe objection names the gap it was probed for, so code can fix which questions it may reopen
+    # (question_synthesis.probe_routes).
+    probe_objections = [{"text": f"{row['text']} Dazu gibt es ungelesene Abschnitte im Korpus: "
+                                 + ", ".join(hit["reference"] for hit in row["hits"]) + ".",
+                         "gap": row["text"], "gap_id": row["gap_id"]}
+                        for row in probes if row["status"] == "hits_unread"]
+    gaps.extend(row["text"] for row in probe_objections)
     return {"version": QUALITY_VERSION, "passed": all(r["passed"] for r in rows) and not gaps,
-            "gap_probes": probes,
+            "gap_probes": probes, **({"probe_objections": probe_objections} if probe_objections else {}),
             "criteria": CRITERIA, "requirements": rows, "closed": sum(r["passed"] for r in rows),
             "total": len(rows), "blocking_gaps": list(dict.fromkeys(gaps)),
             "accepted_gaps": [{"task_id": tid, "question": gap.get("question", ""), "reason": gap.get("reason", ""),

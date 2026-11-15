@@ -89,8 +89,11 @@ def _source_metadata(path, modified, size):
         document = source.get("document") or source
         sections = source.get("sections")
         if sections is None and source.get("processed"):
-            root = path.parents[3]
-            processed = read(root / source["processed"], {}) if (root / source["processed"]).is_file() else {}
+            # The index lies at <project>/runs/<run>/question_research/indexes/, its processed paths are the project's.
+            root = path.parents[4]
+            target = root / source["processed"]
+            inside = target.resolve().is_relative_to(root.resolve())
+            processed = read(target, {}) if inside and target.is_file() else {}
             sections = processed.get("sections", [])
         for section in sections or []:
             lookup[f"{document['id']}#{section['id']}"] = (document["id"], document.get("title", ""), section.get("page"))
@@ -145,7 +148,9 @@ def iso_mtime(path):
 
 
 def work_insight(work, run):
-    calls = sorted((work / "calls").glob("call_*/output_schema.json"))
+    # By number: a long run goes past call_999 (call_folders).
+    from .call_folders import numbered
+    calls = numbered((work / "calls").glob("call_*/output_schema.json"))
     if not calls:
         return None
     directory = calls[-1].parent

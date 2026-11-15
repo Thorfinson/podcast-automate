@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from podcast_automate import studio as studio_module
 from podcast_automate.errors import AppError
 from podcast_automate.models import Failure, RunManifest, StageRecord, TopicBrief
 from podcast_automate.runner import manifest_path, outputs_valid
@@ -27,13 +28,40 @@ from tests.script_fixtures import example_plan, example_script
 
 # Studio tests start real workers; a worker keeps Windows awake unless told not to (studio_worker, 2026-10-02).
 _KEEP_AWAKE = patch.dict(os.environ, {"PLA_KEEP_AWAKE": "0"})
+# The unguarded class, for the one test that starts a real worker on purpose (real_worker below).
+REAL_POPEN = subprocess.Popen
+
+
+class GuardedPopen(subprocess.Popen):
+    """subprocess.Popen while these tests run, refusing a real Studio worker or a relaunched Studio. No test patch
+    reaches such a process, so a refusal that regressed would run research or a script with the machine's real codex or
+    claude CLI (2026-11-14 review). Every other process starts as before; a test that means to start a worker patches
+    ``podcast_automate.studio.subprocess.Popen``, which takes this guard's place for its duration, or uses
+    ``real_worker()`` for a worker that fails before any provider is reached."""
+
+    def __init__(self, args, *rest, **kwargs):
+        parts = [str(part) for part in args] if isinstance(args, (list, tuple)) else str(args).split()
+        if "podcast_automate.studio_worker" in parts or parts[1:4] == ["-m", "podcast_automate", "studio"]:
+            raise AssertionError(f"a test started a real Studio process ({' '.join(parts[1:4])}); "
+                                 "patch podcast_automate.studio.subprocess.Popen")
+        super().__init__(args, *rest, **kwargs)
+
+
+_POPEN_GUARD = patch.object(subprocess, "Popen", GuardedPopen)
+
+
+def real_worker():
+    """Lift the guard for one start: only for a request whose real worker stops before any provider or GPU access."""
+    return patch.object(subprocess, "Popen", REAL_POPEN)
 
 
 def setUpModule():
     _KEEP_AWAKE.start()
+    _POPEN_GUARD.start()
 
 
 def tearDownModule():
+    _POPEN_GUARD.stop()
     _KEEP_AWAKE.stop()
 
 
@@ -211,8 +239,27 @@ def stop_fake_workers(app):
         app.stop_all()
 
 
+def key_variables():
+    """Every environment variable the Studio takes a key from, and the other secrets key_store knows, wherever the
+    constants live."""
+    from podcast_automate import key_store
+    names = set((getattr(studio_module, "KEY_VARIABLES", None) or getattr(key_store, "KEY_VARIABLES", {})).values())
+    return sorted(names | set(getattr(key_store, "SECRET_VARIABLES", ())))
+
+
+def guard_studio_processes(test_case):
+    """For the rest of ``test_case``: no key from the machine's environment and no real Studio process (see
+    GuardedPopen). The Studio falls back to every key's variable (studio.KEY_VARIABLES); with ELEVENLABS_API_KEY set,
+    the voice list asked ElevenLabs with the developer's key and the key states failed (2026-11-14 review)."""
+    for target in (patch.dict(os.environ, {name: "" for name in key_variables()}),
+                   patch.object(subprocess, "Popen", GuardedPopen)):
+        target.start()
+        test_case.addCleanup(target.stop)
+
+
 class StudioHttpTests(unittest.TestCase):
     def setUp(self):
+        guard_studio_processes(self)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         # Resolved as Studio() resolves it: its workers and jobs are keyed by that form (an 8.3 TEMP differs).
@@ -238,6 +285,23 @@ class StudioHttpTests(unittest.TestCase):
         result = response.status, body, dict(response.getheaders())
         connection.close()
         return result
+
+    def test_no_key_of_the_machine_and_no_real_studio_process_reach_these_tests(self):
+        """2026-11-14 review: with ELEVENLABS_API_KEY set on the developer's machine, the key states failed and the voice
+        list asked ElevenLabs with that key; a refused start that regressed would have started a real worker."""
+        with patch.dict(os.environ, {"ELEVENLABS_API_KEY": "sk_from_the_machine"}):
+            # The variable set inside a test still counts, as the Studio's fallback should.
+            self.assertEqual(self.app.key_source("elevenlabs"), "environment")
+        self.assertEqual(self.app.key_states()["key_sources"], {kind: None for kind in self.app.key_states()["key_sources"]})
+        for command in ([sys.executable, "-m", "podcast_automate.studio_worker", str(self.root)],
+                        [sys.executable, "-m", "podcast_automate", "studio", str(self.workspace), "--no-browser"]):
+            with self.subTest(command=command[1:4]), self.assertRaises(AssertionError):
+                subprocess.Popen(command)
+        with patch("podcast_automate.studio.subprocess.Popen") as process:
+            subprocess.Popen([sys.executable, "-m", "podcast_automate.studio_worker", str(self.root)])
+        process.assert_called_once()
+        quick = subprocess.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True, check=True)
+        self.assertEqual(quick.stdout.strip(), "ok")
 
     def test_every_page_names_what_needs_the_missing_openrouter_key(self):
         """The user's wish of 2026-10-04: the Studio keeps the OpenRouter key in memory only, a fresh page after a
@@ -840,6 +904,26 @@ class StudioHttpTests(unittest.TestCase):
             self.assertEqual(status, 200, body)
         stop_fake_workers(self.app)
         self.assertFalse(wish.exists(), "a new job starts without an earlier job's wish")
+
+    def test_stop_and_stop_after_refuse_a_job_that_started_after_the_click(self):
+        """A confirm dialog may stay open while one job ends and the scheduler starts the next: the header's „Anhalten“
+        and „Nach dieser Folge anhalten“ name the job they were clicked for (``expected_job_id``) and refuse another
+        with 409 job_changed. The wish names the series' outline (review 2026-11-14)."""
+        wish = self.root / "studio/stop_after_episode.json"
+        write_json(self.root / "studio/job.json", {"id": "job_new", "action": "episodes", "status": "running",
+                                                   "outline": "run_outline", "run": {"run_id": "run_ep_003"}})
+        for path, data in (("stop", {"expected_job_id": "job_old"}),
+                           ("stop_after", {"enabled": True, "expected_job_id": "job_old"})):
+            with self.subTest(path=path):
+                status, body, _ = self.request(f"/api/projects/example/{path}", data)
+                self.assertEqual((status, json.loads(body)["code"]), (409, "job_changed"), body)
+        self.assertFalse(wish.exists())
+        status, body, _ = self.request("/api/projects/example/stop_after", {"enabled": True, "expected_job_id": "job_new"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual({key: read_json(wish)[key] for key in ("outline", "run_id", "job_id")},
+                         {"outline": "run_outline", "run_id": "run_ep_003", "job_id": "job_new"})
+        # Without the field the request acts on the current job, as before.
+        self.assertEqual(json.loads(self.request("/api/projects/example/stop", {})[1])["code"], "no_active_job")
 
     def test_the_studio_serves_its_own_fonts_and_nothing_else_under_fonts(self):
         # The page's CSP takes fonts from the Studio only (D-186): IBM Plex comes from the package.
@@ -1546,6 +1630,7 @@ class StudioHttpTests(unittest.TestCase):
         path = self.root / "exports/ep_001/run_test/audio.mp3"
         path.parent.mkdir(parents=True)
         path.write_bytes(b"0123456789")
+        write_json(path.parent / "audio_report.json", {"ai_marking_embedded": True})
         write_json(folder / "audio_latest.json", {"script_sha256":file_hash(folder / "script.yaml"),
             "voices":self.config.voice_profile, "parts":[{"audio":"exports/ep_001/run_test/audio.mp3"}]})
         detail = json.loads(self.request("/api/projects/example")[1])
@@ -1584,6 +1669,13 @@ class StudioHttpTests(unittest.TestCase):
                   "parts": [{"audio": "exports/ep_001/run_test/audio.mp3", "duration_seconds": 2286.09}]}
         write_json(folder / "audio_latest.json", report)
         write_json(self.root / "studio/audio.json", choice)
+        # Review 2026-11-14: an MP3 without the AI marking (D-154) is not current; a montage from the cache adds it.
+        row = json.loads(self.request("/api/projects/example")[1])["episodes"][0]
+        self.assertEqual((row["audio_current"], row["audio_stale"]), (False, ["ai_marking"]))
+        write_json(path.parent / "audio_report.json", {"ai_marking_embedded": False})
+        row = json.loads(self.request("/api/projects/example")[1])["episodes"][0]
+        self.assertEqual((row["audio_current"], row["audio_stale"]), (False, ["ai_marking"]))
+        write_json(path.parent / "audio_report.json", {"ai_marking_embedded": True})
         row = json.loads(self.request("/api/projects/example")[1])["episodes"][0]
         self.assertEqual((row["audio_current"], row["audio_stale"], row["audio_seconds"]), (True, [], 2286))
         write_json(self.root / "studio/audio.json", {**choice, "pace": {"de-DE": {"tempo": 0.93, "unhurried": True}}})
@@ -1646,8 +1738,47 @@ class StudioHttpTests(unittest.TestCase):
                       {"rate": 9}, {"rate": "fast"}):
             with self.subTest(wrong=wrong):
                 self.assertEqual(self.request("/api/projects/example/reader_state", wrong)[0], 400)
+        # A refusal speaks the interface language (D-152); until 2026-11-14 these three were German in either.
+        from podcast_automate import studio_text
+        studio_text.save_setting(self.workspace, "en")
+        for wrong in ({"episode": "../x", "read": "h"}, {"recording": "exports/a.wav", "position": 1}, {"rate": 9}):
+            with self.subTest(english=wrong):
+                answer = json.loads(self.request("/api/projects/example/reader_state", wrong)[1])
+                self.assertEqual((answer["code"], answer["message_language"]), ("invalid_request", "en"))
+                self.assertTrue(answer["error"].startswith("Invalid "), answer["error"])
         # Without the session token nothing is written.
         self.assertEqual(self.request("/api/projects/example/reader_state", {"rate": 1}, headers={"X-Studio-Token": "x"})[0], 403)
+
+    def test_a_refusal_names_a_file_but_never_its_local_folders(self):
+        """Review 2026-11-14: pipeline messages name absolute paths („Datei nicht lesbar: C:\\Users\\…\\project.yaml“), and
+        the error answer passed them on to the page, in LAN mode to every device; a stop message never did."""
+        (self.root / "project.yaml").write_text("topic: [unclosed\n", encoding="utf-8")
+        status, body, _ = self.request("/api/projects/example")
+        answer = json.loads(body)
+        self.assertEqual((status, answer["code"]), (400, "invalid_project"))
+        self.assertIn("project.yaml", answer["error"])
+        self.assertNotIn(self.workspace.name, answer["error"])
+
+    def test_every_request_gets_an_answer_even_after_an_unexpected_error(self):
+        """Review 2026-11-14: an exception outside the refused kinds, such as the TimeoutExpired of a stop whose worker
+        outlived taskkill's ten seconds, dropped the connection without an answer."""
+        with patch.object(self.app, "stop", side_effect=subprocess.TimeoutExpired("taskkill", 10)), \
+                patch("podcast_automate.studio.logger"):
+            status, body, _ = self.request("/api/projects/example/stop", {})
+        self.assertEqual((status, json.loads(body)["code"]), (500, "processing_failed"))
+
+    def test_the_connection_checks_key_row_speaks_the_language_the_check_started_in(self):
+        """D-152: the key row a Gemini or ElevenLabs check adds was German in either interface until 2026-11-14."""
+        write_json(self.root / "studio/audio.json", AudioChoice(provider="google_gemini_tts",
+                   voices={"host_a": "Erinome", "host_b": "Sadachbia"}).model_dump())
+        # A fresh answer per call: perform adds its key row to the doctor's list.
+        with patch("podcast_automate.studio_worker.inspect", side_effect=lambda *a, **k: {"ready": True, "checks": []}), \
+                patch.dict(os.environ, {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}):
+            english = perform(self.root, {"action": "check", "text": {}, "ui_language": "en"})
+            german = perform(self.root, {"action": "check", "text": {}, "ui_language": "de", "google_key": "AIza-test-key"})
+        self.assertEqual([(row["name"], row["detail"]) for row in english["checks"]["checks"]],
+                         [("Google-Key", "Google key missing.")])
+        self.assertEqual(german["checks"]["checks"][0]["detail"], "Key hinterlegt; noch kein API-Hörtest durchgeführt.")
 
     def test_restart_marks_unfinished_job_as_interrupted_and_keeps_run(self):
         write_json(self.root / "studio/job.json", {"id":"test", "status":"running", "action":"plan",
@@ -1658,7 +1789,8 @@ class StudioHttpTests(unittest.TestCase):
 
     def test_real_worker_persists_failure_without_running_a_model(self):
         # A missing saved run fails before any provider or GPU access, exercising the real IPC path.
-        status, _, _ = self.request("/api/projects/example/start", {"action":"resume", "run_id":"run_missing"})
+        with real_worker():
+            status, _, _ = self.request("/api/projects/example/start", {"action":"resume", "run_id":"run_missing"})
         self.assertEqual(status, 200)
         self.app.worker(self.root).wait(timeout=10)
         result = self.app.job(self.root)
@@ -1795,6 +1927,22 @@ class OwnAudioTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(self.detail()["audio_settings"]["third_voice"], third)
 
+    def test_a_three_host_project_on_the_workspaces_elevenlabs_without_its_voice_still_opens(self):
+        """Review 2026-11-14: a three-host project following the settings page's ElevenLabs choice, which has no third
+        voice, failed its page and its overview card with third_voice_required as soon as an episode was published.
+        The page names the missing voice itself (audio.block.third_voice); its recording counts as changed voices."""
+        config = read_yaml(self.root / "project.yaml")
+        write_yaml(self.root / "project.yaml", {**config, "third_host": {"name": "Ea-nasir", "role": "A copper trader."}})
+        write_json(self.workspace / "projects/.studio-settings.json", {"audio": self.eleven})
+        write_yaml(self.root / "episodes/ep_001/script.yaml", example_script().model_dump())
+        (self.root / "episodes/ep_001/script.md").write_text("# Folge 1\n", encoding="utf-8")
+        write_json(self.root / "episodes/ep_001/audio_latest.json", {"script_sha256": "old", "parts": []})
+        status, body, _ = self.request("/api/projects/example")
+        self.assertEqual(status, 200, body)
+        self.assertFalse(json.loads(body)["episodes"][0]["audio_current"])
+        status, body, _ = self.request("/api/projects")
+        self.assertNotIn("unavailable", json.loads(body)["projects"][0], body)
+
     def test_the_elevenlabs_key_is_stored_under_its_kind_and_lists_the_accounts_voices(self):
         status, body, _ = self.request("/api/elevenlabs/voices", {})
         self.assertEqual((status, json.loads(body)["code"]), (400, "elevenlabs_key_required"))
@@ -1831,6 +1979,25 @@ class WorkspaceSettingsTests(unittest.TestCase):
 
     def view(self):
         return json.loads(self.request("/api/settings")[1])
+
+    def test_a_settings_file_held_for_a_moment_is_read_again_not_taken_for_missing(self):
+        """Review 2026-11-14: on Windows a reader meets a sharing violation for a moment while the settings page replaces
+        the file, or while a virus scanner holds it. Read as "no workspace settings", that read gave a worker the
+        project's own limits, text model and web search."""
+        from podcast_automate import studio_settings
+        write_json(self.workspace / "projects/.studio-settings.json", {"web_search": "perplexity",
+                   "text": {"provider": "claude_code"}})
+        original, failures = Path.read_text, [PermissionError(13, "sharing violation") for _ in range(4)]
+
+        def held(path, *args, **kwargs):
+            if path.name == ".studio-settings.json" and failures:
+                raise failures.pop()
+            return original(path, *args, **kwargs)
+        with patch.object(studio_settings, "SHARING_VIOLATIONS", True, create=True), \
+                patch.object(Path, "read_text", held):
+            self.assertEqual(studio_settings.web_search(self.root), "perplexity")
+            self.assertEqual(studio_settings.text_data(self.root)["provider"], "claude_code")
+        self.assertEqual(failures, [])
 
     def test_the_web_search_through_perplexity_is_a_workspace_choice_with_a_money_limit_and_its_key(self):
         """D-151: searching through Perplexity bills its key, so the setting needs a money limit; projects then name the
@@ -1958,14 +2125,15 @@ class StopAfterEpisodeTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         write_json(self.root / "studio/job.json", {"id": "job_series", "action": "episodes", "status": "running"})
 
-    def series(self, *, wish_for=None, run=None):
-        """write_in_order over three outline episodes with the pipeline replaced; the wish arrives while ep_001 runs."""
+    def series(self, *, wish_for=None, run=None, wish=None):
+        """write_in_order over three outline episodes with the pipeline replaced; the wish arrives while ep_001 runs.
+        ``wish_for`` names a job as a wish from before 2026-11-14 did; ``wish`` is the whole record."""
         from podcast_automate import studio_worker
         written, read = [], []
 
         def write(root, *, episode, **kwargs):
-            if wish_for and not written:
-                write_json(root / "studio/stop_after_episode.json", {"job_id": wish_for, "asked_at": "now"})
+            if (wish_for or wish) and not written:
+                write_json(root / "studio/stop_after_episode.json", wish or {"job_id": wish_for, "asked_at": "now"})
             written.append(episode)
             return RunManifest(run_id=f"run_{episode}", kind="script", project_hash="p", input_hash="i",
                                status="completed", stages={})
@@ -1995,20 +2163,22 @@ class StopAfterEpisodeTests(unittest.TestCase):
                 self.assertNotIn("stopped_after_episode", result)
                 self.assertEqual(result["series_review"], {"status": "completed"})
 
-    def test_the_wish_goes_on_with_a_resume_of_its_run_and_ends_with_any_other_job(self):
+    def test_the_wish_goes_on_with_a_resume_of_its_run_and_ends_with_a_new_script_job(self):
         """Codex review on #25: a series job asked to stop that pauses for quota is resumed by the scheduler as a new
-        job; the wish must name that job, or the resumed episode writes on past it."""
+        job; the wish must name that job, or the resumed episode writes on past it. A wish from before 2026-11-14 names
+        only its job; work of another lane leaves it (review 2026-11-14, see the next test)."""
         from podcast_automate.studio import carry_stop_after
         wish = self.root / "studio/stop_after_episode.json"
         previous = {"id": "job_series", "action": "episodes", "status": "waiting_for_quota",
                     "run": {"run_id": "run_ep_002"}}
+        # A resume carries its saved run (Studio.start), whose kind names its lane.
+        resume = {"id": "job_new", "action": "resume", "run": {"run_id": "run_ep_002", "kind": "script"}}
         cases = [
-            ("the scheduler resumes the paused run", {"id": "job_new", "action": "resume"},
-             {"run_id": "run_ep_002", "series": "run_outline"}, "job_new"),
-            ("a resume of another run", {"id": "job_new", "action": "resume"},
+            ("the scheduler resumes the paused run", resume, {"run_id": "run_ep_002", "series": "run_outline"}, "job_new"),
+            ("a resume of another run", {**resume, "run": {"run_id": "run_other", "kind": "script"}},
              {"run_id": "run_other", "series": "run_outline"}, None),
-            ("a resume outside a series", {"id": "job_new", "action": "resume"}, {"run_id": "run_ep_002"}, None),
-            ("other new work", {"id": "job_new", "action": "research"}, {}, None),
+            ("a resume outside a series", resume, {"run_id": "run_ep_002"}, None),
+            ("other new work", {"id": "job_new", "action": "research"}, {}, "job_series"),
         ]
         for name, job, payload, expected in cases:
             with self.subTest(name):
@@ -2029,6 +2199,47 @@ class StopAfterEpisodeTests(unittest.TestCase):
         result, written, _ = self.series(run=resumed)
         self.assertEqual(written, [])
         self.assertEqual((result["run"]["run_id"], result["next_episode"]), ("run_resumed", "ep_001"))
+
+    def test_a_wish_names_the_series_it_ends_whichever_job_writes_it(self):
+        """Since 2026-11-14 the wish names the outline whose remaining episodes it ends, not one job."""
+        result, written, _ = self.series(wish={"outline": "run_outline", "job_id": "job_earlier", "asked_at": "now"})
+        self.assertEqual((written, result["stopped_after_episode"]), (["ep_001"], True))
+        result, written, _ = self.series(wish={"outline": "run_other", "job_id": "job_series", "asked_at": "now"})
+        self.assertEqual(written, ["ep_001", "ep_002", "ep_003"], "a wish for another outline is not this series'")
+
+    def test_the_wish_outlives_other_work_while_its_series_is_stopped(self):
+        """Review 2026-11-14: an „Alle restlichen“ job asked to stop after its episode stopped on an expired login; the
+        card's own „Verbindungen prüfen“ started a check, which removed the wish, and the automatic resume after the login
+        wrote every remaining episode. A chat, a check, a voice sample or a run of another lane leaves the wish; the
+        series' resume takes it on; a new job of the script lane supersedes the series and ends it."""
+        from podcast_automate.studio import carry_stop_after
+        wish = self.root / "studio/stop_after_episode.json"
+        stopped = {"id": "job_series", "action": "episodes", "status": "blocked", "outline": "run_outline",
+                   "run": {"run_id": "run_ep_002", "kind": "script"}}
+        write_json(wish, {"outline": "run_outline", "run_id": "run_ep_002", "job_id": "job_series", "asked_at": "then"})
+        previous = stopped
+        for job in ({"id": "job_check", "action": "check"}, {"id": "job_chat", "action": "assistant"},
+                    {"id": "job_research", "action": "research"}):
+            carry_stop_after(self.root, previous, job, {})
+            self.assertEqual(read_json(wish)["outline"], "run_outline", job["action"])
+            previous = job
+        resume = {"id": "job_resume", "action": "resume", "run": {"run_id": "run_ep_002", "kind": "script"}}
+        carry_stop_after(self.root, previous, resume, {"run_id": "run_ep_002", "series": "run_outline"})
+        self.assertEqual((read_json(wish)["outline"], read_json(wish)["job_id"]), ("run_outline", "job_resume"))
+        script_jobs = [({"id": "job_n", "action": "episodes"}, {"run_id": "run_outline"}),
+                       ({"id": "job_n", "action": "episode"}, {"run_id": "run_outline"}),
+                       ({"id": "job_n", "action": "revise"}, {"episode": "ep_001"}),
+                       ({**resume, "run": {"run_id": "run_rev", "kind": "script"}}, {"run_id": "run_rev"}),
+                       (resume, {"run_id": "run_ep_002", "series": "run_other_outline"})]
+        for job, payload in script_jobs:
+            with self.subTest(job=job["action"], payload=payload):
+                write_json(wish, {"outline": "run_outline", "job_id": "job_series", "asked_at": "then"})
+                carry_stop_after(self.root, stopped, job, payload)
+                self.assertFalse(wish.exists())
+        # A wish from before 2026-11-14 names only its job: pinned to that job's outline before other work replaces it.
+        write_json(wish, {"job_id": "job_series", "asked_at": "then"})
+        carry_stop_after(self.root, stopped, {"id": "job_check", "action": "check"}, {})
+        self.assertEqual(read_json(wish)["outline"], "run_outline")
 
 
 class StudioStopTests(unittest.TestCase):
@@ -2236,6 +2447,26 @@ class StudioStopTests(unittest.TestCase):
         self.assertEqual(self.app.job(self.root)["status"], "interrupted")
         saved = RunManifest.model_validate(read_yaml(manifest_path(self.root, "run_e").parent / "run_manifest.yaml"))
         self.assertEqual(saved.status, "pending")
+
+    def test_the_workers_own_identity_in_its_job_file_counts_without_the_studios_record(self):
+        """An October review leftover, fixed 2026-11-14: the worker names itself with its pid and its creation time as
+        ISO text (studio_worker.process_started_at), which worker_identity skipped, so only the Studio's own record
+        (studio/workers/) told a live worker from a reused process id."""
+        from datetime import datetime, timezone
+        import psutil
+        job_id = "b" * 32
+        self.running_research(job_id)
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        created = datetime.fromtimestamp(psutil.Process(process.pid).create_time(), timezone.utc).isoformat()
+        job = read_json(self.root / "studio/job.json")
+        write_json(self.root / "studio/job.json", {**job, "pid": process.pid, "started_process_at": created})
+        shown = self.app.job(self.root)
+        self.assertEqual((shown["status"], shown.get("external_stoppable")), ("running", True))
+        # The same pid with a start long before is a later process that reused it: the worker has ended.
+        write_json(self.root / "studio/job.json", {**job, "pid": process.pid, "started_process_at": "2020-01-01T00:00:00+00:00"})
+        self.assertEqual(self.app.job(self.root)["status"], "interrupted")
 
     def test_a_recorded_worker_that_ended_is_interrupted_once_the_project_is_free(self):
         from podcast_automate.studio import record_worker

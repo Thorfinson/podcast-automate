@@ -80,7 +80,7 @@ let trialChecked=false;
 async function saveReaderState(data, projectId=project?.id) {
   if(!projectId)return null;
   const result=await api(`/api/projects/${encodeURIComponent(projectId)}/reader_state`,data);
-  if(project?.id===projectId)project.reader_state=result.reader_state;
+  if(project?.id===projectId){project.reader_state=result.reader_state;actionCount++;}
   if(playlist?.projectId===projectId)playlist.state=result.reader_state;
   return result.reader_state;
 }
@@ -93,7 +93,7 @@ function audioFacts(p) {
   return {total,voiced:voiced.length,outdated:outdated.length,unvoiced:Math.max(0,total-voiced.length),
     reasons:[...new Set(outdated.flatMap(e=>e.audio_stale||[]))]};
 }
-const STALE_LABELS=Object.fromEntries(["script","voices","provider","model","pauses","pace","styles","alternate_roles","audio","music"]
+const STALE_LABELS=Object.fromEntries(["script","voices","provider","model","pauses","pace","styles","alternate_roles","audio","music","ai_marking"]
   .map(id=>[id,tp(`stale.${id}`)]));
 const staleText=reasons=>(reasons||[]).map(r=>STALE_LABELS[r]||r).join(", ");
 const minutesText=seconds=>{const m=Math.round(Number(seconds)/60);return m>=60?tp("time.hours_minutes",{hours:Math.floor(m/60),minutes:m%60}):tp("time.minutes",{minutes:m});};
@@ -176,11 +176,15 @@ const elevenOptions = voices => {
   const known=new Set(rows.map(([id])=>id));
   return [...Object.values(voices||{}).filter(id=>id&&!known.has(id)).map(id=>[id,id]),...rows];
 };
-async function loadElevenVoices(force=false) {
+// keepForm: the settings page is drawn again from what its fields hold, so edits typed while the list loaded stay
+// (2026-11-14 review: "Stimmen neu laden" put back the saved values under "Ungespeicherte Änderungen"). A caller that
+// has just set the draft itself, such as a new provider, passes false.
+async function loadElevenVoices(force=false, keepForm=true) {
   if(elevenLoading||(elevenVoices&&!force)||!keyAvailable("elevenlabs"))return;
   elevenLoading=true;
   try{elevenVoices=(await api("/api/elevenlabs/voices",{})).voices||[];}catch{elevenVoices=elevenVoices||[];}
   finally{elevenLoading=false;}
+  if(keepForm&&settingsPage&&settingsDraft&&$("settings-section-text"))settingsDraft=settingsFromForm();
   render();
 }
 const mediaUrl = path => "/media/"+encodeURIComponent(project.id)+"/"+path.split("/").map(encodeURIComponent).join("/");
@@ -225,12 +229,23 @@ function errorText(error) {
 // Whether a stop's server message (stop.message_language) is in the page's language. Older servers name none; their
 // messages are German. German pages keep showing every message as before.
 const sameLanguage = info => LANG!=="en"||(info?.message_language||"de")===LANG;
-async function api(path, data, renewed=false) {
+const unreachable = () => { const error=new Error(tp("error.unreachable")); error.network=true; return error; };
+// A poll gives up after POLL_MS.timeout: a request the server or the network never answers counts as no connection,
+// instead of holding every later poll (2026-11-14 review: one hung request kept a phone's page showing "läuft").
+const pollSignal = () => typeof AbortSignal!=="undefined"&&AbortSignal.timeout?AbortSignal.timeout(POLL_MS.timeout):undefined;
+async function api(path, data, renewed=false, signal=undefined) {
   const options = data === undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json","X-Studio-Token":boot.token},body:JSON.stringify(data)};
+  if(signal)options.signal=signal;
   let response;
   try { response = await fetch(path, options); }
-  catch { const error=new Error(tp("error.unreachable")); error.network=true; throw error; }
-  const result = await response.json().catch(()=>({error:tp("error.unreadable"),message_language:LANG}));
+  catch { throw unreachable(); }
+  let result;
+  try { result = await response.json(); }
+  catch(error) {
+    // A body cut off by the poll's time limit is no answer either.
+    if(signal?.aborted)throw unreachable();
+    result = {error:tp("error.unreadable"),message_language:LANG};
+  }
   if (!response.ok) {
     // A restarted server has a new session token: renew it once instead of failing every click.
     if(response.status===403&&result.code==="forbidden"&&data!==undefined&&!renewed){
@@ -250,7 +265,33 @@ async function api(path, data, renewed=false) {
   }
   return result;
 }
-async function attempt(action) { try { notice(""); await action(); } catch(error) { notice(errorText(error),"error"); } }
+// An action belongs to the project open when it was clicked (2026-11-14 review: "approve all" sent its remaining
+// approvals to the project opened meanwhile, an upload's answer replaced another project's works, a reply pulled the
+// page back to the project left). actionScope() names that project, the load of it on the page and the navigation
+// the click came from. Every request and every reply of the action checks it: once the editor left the project, the
+// action stops before its next request and its reply is dropped, quietly (LeftProject).
+let projectLoads=0;
+// Each reply an action applies counts here; a poll that started before it is older than that reply and is dropped.
+let actionCount=0;
+class LeftProject extends Error {}
+const actionScope=()=>({id:project?.id||null,load:projectLoads,epoch:navigationEpoch});
+const onProject=s=>!!s?.id&&project?.id===s.id&&projectLoads===s.load;
+function ensureOn(s) { if(!onProject(s))throw new LeftProject(); }
+const projectPath=(s,suffix="")=>`/api/projects/${encodeURIComponent(s.id)}${suffix}`;
+// A request of the action to its own project, sent only while the editor is still on it.
+function projectApi(s, suffix, data) { ensureOn(s); return api(projectPath(s,suffix),data); }
+// The project again after an action, applied only where the editor still is.
+async function reloadProject(s, {signature=false}={}) {
+  const fresh=await api(projectPath(s));
+  ensureOn(s);
+  project=fresh;actionCount++;
+  if(signature)lastJobSignature=projectJobSignature(project);
+  return fresh;
+}
+async function attempt(action) {
+  try { notice(""); await action(); }
+  catch(error) { if(!(error instanceof LeftProject))notice(errorText(error),"error"); }
+}
 // An explanation folded under „Wie das funktioniert“ (D-185): the page shows the state and the control, the how on
 // request.
 const howItWorks = html => html?`<details class="hint-toggle"><summary>${t("how_it_works")}</summary><p class="hint">${html}</p></details>`:"";
@@ -283,11 +324,14 @@ const seriesQueueable=()=>revisionQueueable()&&project.queues_series===true;
 // „Nach dieser Folge anhalten“ (D-207): a job that writes the remaining episodes one after another ends after the one it
 // writes now, on a server that offers it (stops_after_episode); the wish can be taken back while the episode runs.
 const writesSeries=j=>j?.action==="episodes"||(j?.action==="resume"&&j?.series===true);
+// The main job a stop is meant for: the server refuses with job_changed once another job runs (2026-11-14 review: a
+// confirm dialog left open while a queued revision started stopped that revision instead).
+const expectedJob=j=>j?.id?` data-expected-job="${escape(j.id)}"`:"";
 const stopAfterControl=j=>{
   if(project?.stops_after_episode!==true||!writesSeries(j)||j.status!=="running"||j.external)return "";
   return project.stop_after_episode
-    ?`<span class="hint">${t("job.stop_after.set")}</span><button class="quiet small" data-action="stop_after" data-enabled="false">${t("job.stop_after.cancel")}</button>`
-    :`<button class="secondary small" data-action="stop_after" data-enabled="true">${t("job.stop_after.button")}</button>`;
+    ?`<span class="hint">${t("job.stop_after.set")}</span><button class="quiet small" data-action="stop_after" data-enabled="false"${expectedJob(j)}>${t("job.stop_after.cancel")}</button>`
+    :`<button class="secondary small" data-action="stop_after" data-enabled="true"${expectedJob(j)}>${t("job.stop_after.button")}</button>`;
 };
 const plannedTitle=id=>(project?.outline?.plan?.episodes||[]).find(e=>e.episode_id===id)?.title||id;
 function renderRevisionQueue() {
@@ -717,12 +761,10 @@ async function queueAttachments(files) {
     if(epoch===navigationEpoch)pendingAttachments.push(...added);
   }finally{readingAttachments=false;refreshAttachmentComposer();}
 }
-async function removeAttachment(id) {
+async function removeAttachment(id, s=actionScope()) {
   if(running()||setupSending)return;
-  const projectId=project.id;
-  await api(`/api/projects/${projectId}/remove_attachment`,{id});
-  const updated=await api(`/api/projects/${projectId}`);
-  if(project?.id===projectId){project=updated;refreshAttachmentComposer();}
+  await projectApi(s,"/remove_attachment",{id});
+  await reloadProject(s);refreshAttachmentComposer();
 }
 // Why the chat got no answer, beside the card's text: the step's message in the page's language; on an English page a
 // German pipeline message explained by its code with the original folded into the details (D-200), or without a text
@@ -1314,7 +1356,8 @@ function coreUsage() {
   const full=Number(core.calls)>=Number(core.limit);
   return `<p class="hint">${t("core.usage",{calls:Number(core.calls),limit:Number(core.limit)})}${full?` · ${t("core.full")}`:""}.</p>`;
 }
-async function uploadWork(button) {
+async function uploadWork(button, s=actionScope()) {
+  ensureOn(s);
   const refusedIndex=button.dataset.refusedIndex, index=button.dataset.workIndex;
   const refused=refusedIndex!==undefined?project.works.refused[Number(refusedIndex)]:null;
   const row=refused||index==="new"?null:project.works.missing[Number(index)];
@@ -1328,12 +1371,15 @@ async function uploadWork(button) {
   for(const task of (refused||row)?.tasks||[])query.append("task",task.id);
   button.disabled=true;notice(tp("works.uploading",{work:quoted(citation)}));
   let response;
-  try { response=await fetch(`/api/projects/${encodeURIComponent(project.id)}/work?${query}`,{method:"POST",
+  try { response=await fetch(projectPath(s,`/work?${query}`),{method:"POST",
     headers:{"Content-Type":"application/octet-stream","X-Studio-Token":boot.token},body:file}); }
+  catch { throw unreachable(); }
   finally { button.disabled=false; }
   const result=await response.json().catch(()=>({error:tp("error.unreadable"),message_language:LANG}));
   if(!response.ok){const error=new Error(result.error||tp("works.upload_failed"));error.code=result.code;error.language=result.error?result.message_language:LANG;throw error;}
-  project.works=result.works;render();
+  // A long upload may end on another project's page: its list belongs to the project it was made for.
+  ensureOn(s);
+  project.works=result.works;actionCount++;render();
   notice(tp(row||refused?"works.uploaded_retry":"works.uploaded_other"),"ok");
 }
 // The table of contents in one plain sentence beside its approval (D-155): episodes, minutes, the opening episode and,
@@ -1621,21 +1667,21 @@ function audioRequest(episodeId, rerender=false) {
     ...(rerender?{rerender:true}:{}),expression_hash:e.expression?.hash||"",script_hash:e.hash,readable_hash:e.readable_hash,
     config_hash:project.config_hash,audio_hash:project.audio_hash,music_hash:project.music_hash||""};
 }
-async function rerenderEpisode(episodeId) {
-  await start("audio",audioRequest(episodeId,true));
+async function rerenderEpisode(episodeId, s=actionScope()) {
+  await start("audio",audioRequest(episodeId,true),s);
 }
-async function saveSpokenOverride(episodeId, segmentId) {
+async function saveSpokenOverride(episodeId, segmentId, s=actionScope()) {
   const field=$("spoken-"+segmentId), value=field?field.value:"";
   const segment=project.episodes.find(row=>row.script.episode_id===episodeId)?.script.segments.find(s=>s.segment_id===segmentId);
   // What the table already produces is not an override; sending it empty removes a stale one.
   const spoken=segment&&value.trim()===applySpokenForms(segment.text,project.spoken_forms)?"":value;
   const saved=project.episodes.find(row=>row.script.episode_id===episodeId)?.spoken_overrides?.[segmentId]||"";
   if(spoken.trim()!==saved.trim()&&!confirmPaused(["audio"]))return;
-  await api(`/api/projects/${project.id}/spoken_override`,{episode:episodeId,segment_id:segmentId,spoken});
-  project=await api(`/api/projects/${project.id}`);readingSnapshot=null;render();
+  await projectApi(s,"/spoken_override",{episode:episodeId,segment_id:segmentId,spoken});
+  await reloadProject(s);readingSnapshot=null;render();
   notice(tp(spoken?"spoken.saved":"spoken.none"),"ok");
 }
-async function saveSpeechSettings() {
+async function saveSpeechSettings(s=actionScope()) {
   const hostA=$("host-name-a").value.trim(), hostB=$("host-name-b").value.trim();
   if(!!hostA!==!!hostB)throw new Error(tp("speech.hosts_both"));
   const names=project.config?.host_names||{};
@@ -1643,11 +1689,11 @@ async function saveSpeechSettings() {
   if(hostA!==(names.host_a||"")||hostB!==(names.host_b||""))changes.push("config");
   if(JSON.stringify(parseSpokenForms($("spoken-forms").value).entries)!==JSON.stringify(project.spoken_forms?.entries||[]))changes.push("audio");
   if(!confirmPaused(changes))return;
-  await api(`/api/projects/${project.id}/save`,{config:{...project.config,host_names:hostA?{host_a:hostA,host_b:hostB}:null},
+  await projectApi(s,"/save",{config:{...project.config,host_names:hostA?{host_a:hostA,host_b:hostB}:null},
     config_hash:project.config_hash,text:project.text,audio_settings:currentAudio(),
     audio_hash:project.audio_hash,spoken_forms:parseSpokenForms($("spoken-forms").value),
     spoken_forms_hash:project.spoken_forms_hash});
-  project=await api(`/api/projects/${project.id}`);render();
+  await reloadProject(s);render();
   notice(tp("speech.saved"),"ok");
 }
 function refreshScriptReader() {
@@ -1789,7 +1835,7 @@ function ownModelField(provider,row,a) {
   const current=provider===a.provider&&row.models[a.model]?a.model:row.default_model;
   return settingField("own-audio-model",tp("settings.audio.model"),settingSelect("own-audio-model",models,current));
 }
-async function saveOwnAudio(clear=false) {
+async function saveOwnAudio(clear=false, s=actionScope()) {
   const a=currentAudio(), provider=$("own-audio-provider")?.value||a.provider, row=audioCatalog()[provider]||{};
   const chosen=$("own-audio-model")?.value, model=row.models?.[chosen]?chosen:provider===a.provider?a.model:row.default_model;
   const audio=clear?null:{...a,provider,model,
@@ -1801,10 +1847,11 @@ async function saveOwnAudio(clear=false) {
     const third=$("own-voice-c")?.value;
     if(third&&third!==audio.voices.host_a&&third!==audio.voices.host_b)audio.third_voice=third;else delete audio.third_voice;
   }
-  const result=await api(`/api/projects/${encodeURIComponent(project.id)}/audio_own`,{audio});
+  const result=await projectApi(s,"/audio_own",{audio});
+  ensureOn(s);
   project.audio_own=result.audio_own;project.audio_settings=result.audio_settings;ownAudioProvider=null;
   // The episodes' recordings are current or not against the new choice, so the page is fetched again.
-  project=await api("/api/projects/"+encodeURIComponent(project.id));
+  await reloadProject(s);
   render();
   notice(tp(clear?"audio.own.cleared":"audio.own.saved"),"ok");
 }
@@ -1885,12 +1932,12 @@ function refreshQueues() {
   else if(step===PAGE.outline||step===PAGE.production)render();
 }
 // Holds or resumes the queue, empties it or moves one episode (D-195); emptying asks first, since it drops the approvals.
-async function changeQueue(action,data) {
+async function changeQueue(action,data,s=actionScope()) {
   const count=(project.audio_queue||[]).length;
   if(action==="queue-clear"&&typeof window.confirm==="function"&&!window.confirm(tp("queue.remove_all_confirm",{count})))return false;
   const request=action==="queue-hold"?{hold:data.hold==="true"}:action==="queue-clear"?{all:true}:{episode:data.episode,move:data.move};
-  await api(`/api/projects/${project.id}/audio_queue`,request);
-  project=await api(`/api/projects/${project.id}`);render();
+  await projectApi(s,"/audio_queue",request);
+  await reloadProject(s);render();
   notice(action==="queue-clear"?tp("act.queue_cleared",{count}):action==="queue-move"?tp("act.queue_moved"):tp(request.hold?"act.queue_held":"act.queue_released"),"ok");
   return true;
 }
@@ -1903,8 +1950,11 @@ function pendingRecordings() {
 // as approved, so they are made again from the speech cache with a new approval, without new speech. Their own bulk
 // approval covers them alone (D-193; 2026-11-08: "approve all" would also have recorded Asimov's 16 episodes never
 // voiced, about 175,000 credits, when only the music was to be added).
+// A recording without the AI marking (D-154) is assembled again the same way, from the cache (review 2026-11-14).
+const MONTAGE_ONLY_STALE=new Set(["music","ai_marking"]);
 function musicOnlyRecordings() {
-  return pendingRecordings().filter(e=>(e.audio||[]).length>0&&(e.audio_stale||[]).length===1&&e.audio_stale[0]==="music");
+  return pendingRecordings().filter(e=>(e.audio||[]).length>0&&(e.audio_stale||[]).length>0
+    &&e.audio_stale.every(reason=>MONTAGE_ONLY_STALE.has(reason)));
 }
 function renderMusicRemix() {
   const rows=musicOnlyRecordings();
@@ -2110,7 +2160,7 @@ async function playEpisode(episodeId, part=0) {
   if(!same){playlist={projectId:p.id,items,index,part,state:p.reader_state||{}};player.src=items[index].urls[part];}
   $("sample-player")?.pause?.();$("sample-playback").hidden=true;
   $("episode-playback").hidden=false;document.body?.classList?.add?.("has-player");
-  $("episode-playing-label").textContent=playerLabel();
+  $("episode-playing-label").textContent=playerLabel();syncPlayerOffset();
   player.playbackRate=Number(playlist.state?.rate)||1;
   if($("player-rate"))$("player-rate").value=String(player.playbackRate);
   try{await player.play();}catch{throw new Error(tp("player.play_failed"));}
@@ -2124,7 +2174,13 @@ async function stepPlaylist(delta) {
 }
 function closePlayer() {
   $("episode-player")?.pause?.();$("episode-playback").hidden=true;document.body?.classList?.remove?.("has-player");
-  playlist=null;if(step===PAGE.audio&&project)refreshRecordings();
+  syncPlayerOffset();playlist=null;if(step===PAGE.audio&&project)refreshRecordings();
+}
+// The episode player's height, so the save bar and the composer stick above it (style.css --player): on a phone the
+// player wraps onto two rows, about twice the 64 px the bar used to leave (2026-11-14 review).
+function syncPlayerOffset() {
+  const bar=$("episode-playback");
+  document.documentElement?.style?.setProperty?.("--player",`${bar&&!bar.hidden?bar.offsetHeight||0:0}px`);
 }
 // Where each recording stopped and which were heard to the end, saved every ten seconds of listening.
 function wirePlayer() {
@@ -2236,7 +2292,9 @@ async function runCardAction(button) {
     for(const q of next.retries||[])await approve({kind:"retry",task_id:q.id,hint:q.hint});
     await api(`${path}/start`,{action:"resume",run_id:next.runId});
   } finally { submitting=false; }
-  overviewData=await loadOverview();refreshOverview();
+  // The card's project is named by the card, so its steps go to it wherever the editor is; the overview poll that
+  // started before them is older than this read.
+  overviewData=await loadOverview();actionCount++;refreshOverview();
   notice(tp("overview.action_done",{topic:quoted(shortText(p.topic,60))}),"ok");
 }
 function pipelineStates(p) {
@@ -2357,9 +2415,9 @@ function renderOverview() {
     <section class="projects" aria-label="${t("sidebar.projects")}">
     <div id="overview-projects" class="project-cards">${overviewData.projects.length?sortedProjects().map(overviewCard).join(""):`<p id="overview-empty" class="hint">${t("overview.empty")}</p>`}</div></section><div id="overview-trash">${trashMarkup()}</div>`;
 }
-async function loadOverview() {
-  if(boot.capabilities?.project_overview)return await api("/api/projects");
-  const details=await Promise.all(boot.projects.map(p=>api("/api/projects/"+encodeURIComponent(p.id))));
+async function loadOverview(signal=undefined) {
+  if(boot.capabilities?.project_overview)return await api("/api/projects",undefined,false,signal);
+  const details=await Promise.all(boot.projects.map(p=>api("/api/projects/"+encodeURIComponent(p.id),undefined,false,signal)));
   return {projects:details.map(p=>({id:p.id,topic:p.config.topic,job:p.job,script_count:p.episodes.length,has_research:!!p.research,has_outline:!!p.outline,
     episodes:p.episodes.map(e=>({...e,episode_id:e.script.episode_id,title:e.script.title}))})),trash:[]};
 }
@@ -2367,13 +2425,13 @@ async function showOverview() {
   if(setupSending)throw new Error(tp("chat.sending_wait"));
   if(!leaveSettings())return;
   const epoch=++navigationEpoch,data=await loadOverview();if(epoch!==navigationEpoch)return;
-  overviewData=data;overviewPage=true;settingsPage=false;project=null;followWorkflow=false;pendingAttachments=[];
+  overviewData=data;overviewPage=true;settingsPage=false;project=null;projectLoads++;followWorkflow=false;pendingAttachments=[];
   updatePageUrl();render();
 }
 async function showSettings(push=true) {
   if(setupSending)throw new Error(tp("chat.sending_wait"));
   const epoch=++navigationEpoch,data=await api("/api/settings");if(epoch!==navigationEpoch)return;
-  settingsData=data;settingsDraft=structuredClone(data.settings);settingsPage=true;overviewPage=false;project=null;settingsDirty=false;
+  settingsData=data;settingsDraft=structuredClone(data.settings);settingsPage=true;overviewPage=false;project=null;projectLoads++;settingsDirty=false;
   followWorkflow=false;pendingAttachments=[];drawerOpen=false;
   updatePageUrl(push);render();
 }
@@ -2384,12 +2442,18 @@ function refreshOverview() {
   for(const card of container.querySelectorAll?.("[data-project-card]")||[])
     if(!overviewData.projects.some(p=>p.id===card.dataset.projectCard))card.remove();
   if(overviewData.projects.length&&$("overview-empty"))$("overview-empty").hidden=true;
-  for(const p of sortedProjects()){
+  const sorted=sortedProjects();
+  for(const p of sorted){
     const card=$("project-card-"+p.id);
     if(!card){container.insertAdjacentHTML?.("beforeend",overviewCard(p));continue;}
     card.className=cardClass(p);
     redraw(card,overviewCardInner(p));
   }
+  // A project that starts waiting for the editor moves up, as a full render would place it (2026-11-14 review: the
+  // cards kept the order of the first render while the overview stayed open).
+  const shown=Array.from(container.querySelectorAll?.("[data-project-card]")||[],card=>card.dataset.projectCard);
+  if(shown.join("\n")!==sorted.map(p=>p.id).join("\n"))
+    for(const p of sorted){const card=$("project-card-"+p.id);if(card)container.appendChild?.(card);}
   const trash=$("overview-trash"),content=trashMarkup();
   redraw(trash,content);
 }
@@ -2432,7 +2496,7 @@ function renderAudioJob(j,{main=false}={}) {
   const queued=main?null:queuedEntry(j.episode);
   const blocked=main?(running()?tp("audio_job.other_running"):""):queued?tp("queue.place",{position:Number(queued.position)}):audioBlockReason(j.episode,isEleven(j.provider));
   return `<section class="audio-job${info?" stopped":""}"><div class="job-top"><strong>${escape(e?.script.title||j.episode||tp("run_label.episode_audio"))} · ${escape(state)}</strong>
-    ${active&&!(j.external&&!j.external_stoppable)?`<button class="danger small" data-action="stop"${main?"":` data-job-id="${escape(j.id)}"`}>${t("audio_job.stop")}</button>`:""}</div>
+    ${active&&!(j.external&&!j.external_stoppable)?`<button class="danger small" data-action="stop"${main?expectedJob(j):` data-job-id="${escape(j.id)}"`}>${t("audio_job.stop")}</button>`:""}</div>
     ${active?audioPhase(j.progress)+heartbeatNote(j):info?stopBody(j,info,{target,blocked}):""}
 </section>`;
 }
@@ -2667,8 +2731,15 @@ const STOP_RULES={
   credential_in_response:rule("credential_in_response","dead",{actions:["restart"]}),
   invalid_output_schema:rule("invalid_output_schema","dead"),
   unsupported_run:rule("unsupported_run","dead",{actions:["restart"]}),
-  missing_outputs:rule("missing_outputs","dead",{actions:["restart"]}),
-  worker_stop:rule("worker_stop","dead"),
+  // A run to go on with is resumed, as their texts say; without one (a job of its own) the step starts again from its
+  // page (2026-11-14 review: both were dead ends whose texts promised „Fortsetzen“).
+  missing_outputs:c=>({kind:"retry",title:tp("stop.missing_outputs.title"),actions:["restart"],
+    text:say(c.run||RESTART_VERBS[c.job.action]?"stop.missing_outputs.text":"stop.missing_outputs.text_page")}),
+  worker_stop:c=>({kind:"fix",title:tp("stop.worker_stop.title"),
+    text:say(c.run||RESTART_VERBS[c.job.action]?"stop.worker_stop.text":"stop.worker_stop.text_page")}),
+  // A local source outside the project folder stops the research before it reads anything, and again on every resume
+  // (research.run_research): the way on is the material on the brief page and the research anew.
+  local_source_outside:rule("local_source_outside","fix",{actions:["open_brief","restart"],no_resume:true}),
   research_context_incomplete:rule("research_context_incomplete","dead",{actions:["restart"]}),
   script_review_failed:rule("script_review_failed","retry",{actions:["fresh_attempts","new_outline"]}),
   subscriptions_exhausted:rule("subscriptions_exhausted","wait"),
@@ -2788,7 +2859,7 @@ for(const code of ["rejected_output","invalid_evidence_review","invalid_question
   "invalid_search_receipt","invalid_question_review","invalid_evidence","invalid_question_plan","invalid_question_scope",
   "invalid_supplement","invalid_teaching_review","invalid_script_evidence_review","invalid_polish_review","invalid_series_review","invalid_script","invalid_revision",
   "invalid_polish_evidence","invalid_series_evidence","invalid_teaching_evidence","invalid_teaching_repair","invalid_research_gap",
-  "verified_question_split","invalid_dossier_rebuild"])
+  "invalid_dossier_rebuild"])
   // A step that saved its rejected answers replays them on a resume and stops again without a call; fresh attempts are
   // offered where the backend would set them aside (job.fresh_attempts).
   STOP_RULES[code]=c=>reasked(c)??(c.kind==="script"?{kind:"retry",title:tp("stop.correction.title"),text:say("stop.correction.script.text"),actions:["fresh_attempts","new_outline"]}:
@@ -2816,7 +2887,8 @@ function stopInfo(job) {
   rule??={kind:"retry",title:tp("stop.generic.title"),actions:["restart"],
     text:code?tp("stop.generic.text_code",{code,resume:context.resume}):tp("stop.generic.text",{resume:context.resume})};
   const value=v=>typeof v==="function"?v(context):v;
-  const info={code,kind:rule.kind,title:value(rule.title),text:value(rule.text),actions:[...(value(rule.actions)||[])],card:!!rule.card};
+  const info={code,kind:rule.kind,title:value(rule.title),text:value(rule.text),actions:[...(value(rule.actions)||[])],card:!!rule.card,
+    no_resume:!!rule.no_resume};
   if(verb){
     info.kind=["wait","fix","decision"].includes(info.kind)?info.kind:"retry";
     info.actions=info.actions.filter(a=>["key","check"].includes(a));
@@ -2887,7 +2959,7 @@ function canResume(job,info=stopInfo(job)) {
     return Number(ledger?.reopenable||0)>0||Number(ledger?.retry_requested||0)>0||ledger?.phase!=="blocked"||(unadvised(ledger)>0&&adviceAffordable(ledger))
       ||(settled.size>0&&!undecided.length);
   }
-  return ["retry","wait","fix"].includes(info.kind)&&!info.actions.includes("key");
+  return ["retry","wait","fix"].includes(info.kind)&&!info.actions.includes("key")&&!info.no_resume;
 }
 function restartAction(job) {
   const kind=job.run?.kind||job.stop?.run_kind;
@@ -3441,17 +3513,18 @@ function renderAudioJobBar() {
   return `<span class="job-dot ${active?"running":stopped.length?"blocked":"done"}" aria-hidden="true"></span><span class="job-text">${audioJobSummary()}</span>${key}${resume}${step!==PAGE.audio&&(active||stopped.length)?`<button class="secondary small status-link" data-step="${PAGE.audio}">${t("audio_bar.view")}</button>`:""}`;
 }
 // Resumes every stopped recording at once, each as its own card's „Fortsetzen“ would; a refusal is named, not hidden.
-async function resumeStoppedAudio() {
-  const jobs=stoppedAudio().filter(j=>resumableAudio(j)&&!queuedEntry(j.episode)), id=project.id, refused=[];
+async function resumeStoppedAudio(s=actionScope()) {
+  const jobs=stoppedAudio().filter(j=>resumableAudio(j)&&!queuedEntry(j.episode)), refused=[];
   let queued=0;
   if(!jobs.length)throw new Error(tp("audio_bar.none"));
   submitting=true;
   try {
     for(const job of jobs){
-      try{if((await api(`/api/projects/${id}/start`,{action:"resume",run_id:job.run.run_id,episode:job.episode}))?.queued)queued++;}
-      catch(error){refused.push(`${job.episode}: ${errorText(error)}`);}
+      // A refusal is named; leaving the project ends the loop (projectApi).
+      try{if((await projectApi(s,"/start",{action:"resume",run_id:job.run.run_id,episode:job.episode}))?.queued)queued++;}
+      catch(error){if(error instanceof LeftProject)throw error;refused.push(`${job.episode}: ${errorText(error)}`);}
     }
-    project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project);
+    await reloadProject(s,{signature:true});
   } finally { submitting=false; }
   lastJobView="";render();
   notice(refused.length?tp("audio_bar.partial",{done:jobs.length-refused.length,total:jobs.length,refused:refused.join("; ")})
@@ -3665,7 +3738,7 @@ function renderJobView() {
   const calls=(Number.isSafeInteger(job.progress?.model_call_limit)&&job.progress.model_call_limit>0?` · ${t("job.calls",{used:Number(job.progress.model_calls||0),limit:job.progress.model_call_limit})}`:"")+
     (job.progress?.cost_spent_usd!==undefined?` · ${job.progress.cost_limit_usd?t("job.cost_limit",{spent:usd(job.progress.cost_spent_usd),limit:usd(job.progress.cost_limit_usd)}):t("job.cost",{spent:usd(job.progress.cost_spent_usd)})}`:"");
   const meta=active&&job.started_at?` · ${t("nav.hint.since",{elapsed:elapsedText(job.started_at)})}${calls}`:
-    !active&&job?.stopped_after_episode&&job.next_episode?` · ${t("job.stop_after.done",{episode:escape(plannedTitle(job.next_episode))})}`:"";
+    !active&&job?.stopped_after_episode&&job.next_episode?` · ${t("job.stop_after.done",{episode:plannedTitle(job.next_episode)})}`:"";
   const lastLine=active?(job.progress?.model_trace?.lines||[]).at(-1):null;
   const audioNote=audioRunning.length?(step!==PAGE.audio?`<button class="quiet small status-link" data-step="${PAGE.audio}">${audioJobSummary()} →</button>`:`<span class="hint">${audioJobSummary()}</span>`):"";
   // A worker an earlier Studio started still runs: shown as running elsewhere; stopped only when its identity is on record.
@@ -3673,12 +3746,14 @@ function renderJobView() {
   // The header resumes only where plain "Fortsetzen" is the way on; where the stop card recommends fresh attempts it
   // leads there instead.
   const fresh=freshRecommended(job,info);
+  const stopControl=`<button class="danger small" data-action="stop"${expectedJob(j)} data-confirm="${t("job.stop_confirm")}">${t("job.stop")}</button>`;
+  const control=active&&job.external&&!job.external_stoppable?`<span class="hint">${t("job.ends_itself")}</span>`:
+    active?stopControl+stopAfterControl(job):
+    resumable&&running()?`<span class="hint">${t(audioRunning.length?"job.resume_after_audio":"job.resume_after_job")}</span>`:
+    resumable&&!fresh?`<button class="secondary small" data-action="resume" data-run-id="${escape(r?.run_id||"")}">${t("button.resume")}</button>`:"";
+  const jump=destination!==null&&destination!==undefined&&destination!==step?`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`:"";
   bar.innerHTML=offlineMark()+`<span class="job-dot ${tone}${connectionLost?" offline":""}" aria-hidden="true"></span><span class="job-text"><strong>${escape(title)}</strong>${meta}${elsewhere}</span>`+
-    (active&&job.external&&!job.external_stoppable?`<span class="hint">${t("job.ends_itself")}</span>`:
-    active?`<button class="danger small" data-action="stop" data-confirm="${t("job.stop_confirm")}">${t("job.stop")}</button>${stopAfterControl(job)}`:
-      resumable&&running()?`<span class="hint">${t(audioRunning.length?"job.resume_after_audio":"job.resume_after_job")}</span>`:
-      resumable&&!fresh?`<button class="secondary small" data-action="resume" data-run-id="${escape(r?.run_id||"")}">${t("button.resume")}</button>`:"")+
-    (destination!==null&&destination!==undefined&&destination!==step?`<button class="secondary small status-link" data-step="${destination}">${links[destination]} →</button>`:"")+audioNote;
+    control+jump+audioNote;
   if(research)replaceKeeping(research,job.progress?.phase==="research"?renderResearchPanel(job,r,active,questionOpen,researchOpen,researchBlocked,reopenable,resumable):"");
   const live=$("research-live");
   if(live)live.innerHTML=lastLine?.text?`<section class="panel live-panel" aria-live="polite"><div class="panel-title"><h2>Live</h2><span class="hint">${lastLine.at?t("time.ago",{age:progressAge(lastLine.at)}):""}</span></div><p class="live-text">${escape(lastLine.text)}</p><button class="quiet small" data-action="drawer-toggle">${t("live.all")}</button></section>`:"";
@@ -3786,7 +3861,7 @@ async function selectProject(id, loaded=null, requestedPage=null) {
   overviewPage=false;settingsPage=false;
   pendingAttachments=[];drawerOpen=false;trialChecked=false;
   for(const key of Object.keys(accessChoices))delete accessChoices[key];
-  project=selected;
+  project=selected;projectLoads++;
   episodeIndex=0;scriptEpisodeId=null;readingSnapshot=null;followWorkflow=requestedPage===null;briefChatOpen=false;
   step=requestedPage===null?recommendedPage():requestedPage;
   lastJobSignature=projectJobSignature(project);updatePageUrl();render();
@@ -3834,38 +3909,46 @@ async function sendSetupMessage(message) {
       const created=await api("/api/projects",{config,text:boot.text_defaults||defaultTextChoice(),
         execution:{text:"sequential",audio:"sequential"},...(trial?{trial:true}:{})});
       trialChecked=false;
-      project=await api("/api/projects/"+created.id);await refreshProjects();updatePageUrl();
+      project=await api("/api/projects/"+encodeURIComponent(created.id));projectLoads++;await refreshProjects();updatePageUrl();
     }
+    // The page stays on this project while the message is sent: setupSending holds every navigation.
+    const s=actionScope();
     if(pendingAttachments.length){
-      await api(`/api/projects/${project.id}/upload`,{files:pendingAttachments.map(({name,base64})=>({name,base64}))});
+      await projectApi(s,"/upload",{files:pendingAttachments.map(({name,base64})=>({name,base64}))});
       pendingAttachments=[];
-      project=await api(`/api/projects/${project.id}`);
+      await reloadProject(s);
     }
-    await start("assistant",{message});
+    await start("assistant",{message},s);
     const field=$("chat-message");
     if(field)field.value="";
   }finally{setupSending=false;refreshAttachmentComposer();}
 }
-async function applySetupProposal() {
+async function applySetupProposal(s=actionScope()) {
   if(proposalChangesBrief()&&!confirmPaused(["config"]))return;
-  await api(`/api/projects/${project.id}/apply_proposal`,{proposal_hash:project.proposal_hash,
+  await projectApi(s,"/apply_proposal",{proposal_hash:project.proposal_hash,
     config_hash:project.config_hash,audio_hash:project.audio_hash,execution_hash:project.execution_hash});
-  project=await api(`/api/projects/${project.id}`);await refreshProjects();render();notice(tp("summary.applied"),"ok");
+  await reloadProject(s);await refreshProjects();ensureOn(s);render();notice(tp("summary.applied"),"ok");
 }
-async function start(action, extra={}) {
+// Starts a job of the project the action belongs to (s); the page follows it only from the page the click came from.
+async function start(action, extra={}, s=actionScope()) {
   if(!project) throw new Error(tp("start.no_project"));
+  ensureOn(s);
   const parallelAudio=action==="audio"||(action==="resume"&&extra.episode);
   const queueable=(action==="audio"&&!extra.rerender)||(action==="resume"&&isEleven((project.audio_jobs||[]).find(j=>j.run?.run_id===extra.run_id)?.provider));
   // A revision, or every remaining episode, is never refused for a running job: the server queues it (D-191, D-192).
   const textQueued=(action==="revise"&&revisionQueueable())||(action==="episodes"&&seriesQueueable());
   if(parallelAudio?audioBlockReason(extra.episode,queueable):!textQueued&&running()) throw new Error(parallelAudio?audioBlockReason(extra.episode,queueable):tp("audio.block.running"));
-  const id=project.id;
   submitting=true;
   let response;
-  try { response=await api(`/api/projects/${id}/start`,{action,...extra});project=await api(`/api/projects/${id}`);lastJobSignature=projectJobSignature(project); }
+  try { response=await projectApi(s,"/start",{action,...extra});await reloadProject(s,{signature:true}); }
   finally { submitting=false; }
-  if(response?.queued){notice(tp(action==="revise"?"start.queued_revision":action==="episodes"?"start.queued_series":action==="resume"?"start.queued_resume":response.held?"start.queued_held":"start.queued",{position:Number(response.position)}),"ok");render();return response;}
-  navigatePage(recommendedPage(),{automatic:true,push:false});
+  if(response?.queued){
+    const key=action==="revise"?"start.queued_revision":action==="episodes"?"start.queued_series":action==="resume"?"start.queued_resume":response.held?"start.queued_held":"start.queued";
+    notice(tp(key,{position:Number(response.position)}),"ok");render();return response;
+  }
+  // A page the editor opened in this project meanwhile stays open (2026-11-14 review: a late reply moved the page).
+  if(navigationEpoch===s.epoch)navigatePage(recommendedPage(),{automatic:true,push:false});
+  else render();
   if(action==="assistant")scrollChatToEnd();
   return response;
 }
@@ -3873,56 +3956,57 @@ function jobSignature(job) { return job?`${job.id}:${job.status}`:""; }
 function projectJobSignature(p) { return [jobSignature(p?.job),jobSignature(p?.main_job),...(p?.audio_jobs||[]).map(jobSignature)].join("|"); }
 // Resuming after an approval or a stored key is one click; the resume target travels on the button.
 // Adopt every open retry recommendation with its hint (as edited in its field), then resume once.
-async function applyAdvice(button) {
-  for(const q of adviceRetries(project.job?.progress?.research_questions)){
-    const hint=$("retry-hint-"+q.id)?.value||q.advice.hint||"";
-    await api(`/api/projects/${project.id}/approve`,{kind:"retry",run_id:button.dataset.runId,task_id:q.id,hint});
-  }
-  await resumeFrom(button);
+async function applyAdvice(button, s=actionScope()) {
+  // The hints as the fields hold them when the click came, before the first request.
+  const retries=adviceRetries(project.job?.progress?.research_questions).map(q=>({task_id:q.id,hint:$("retry-hint-"+q.id)?.value||q.advice.hint||""}));
+  for(const q of retries)await projectApi(s,"/approve",{kind:"retry",run_id:button.dataset.runId,...q});
+  await resumeFrom(button,s);
 }
 // Limits that stop the open questions rise to the sized values in one approval (and the call limit where the advice
 // needs room), then every retry advice is adopted and the run resumes (D-155).
-async function raiseAndAdopt(button) {
+async function raiseAndAdopt(button, s=actionScope()) {
   const payload={kind:"model_calls",run_id:button.dataset.runId,sources:Number(button.dataset.sources),search_rounds:Number(button.dataset.searchRounds)};
   if(button.dataset.modelCalls)payload.model_calls=Number(button.dataset.modelCalls);
-  await api(`/api/projects/${project.id}/approve`,payload);
-  await applyAdvice(button);
+  const retries=adviceRetries(project.job?.progress?.research_questions).map(q=>({task_id:q.id,hint:$("retry-hint-"+q.id)?.value||q.advice.hint||""}));
+  await projectApi(s,"/approve",payload);
+  for(const q of retries)await projectApi(s,"/approve",{kind:"retry",run_id:button.dataset.runId,...q});
+  await resumeFrom(button,s);
 }
 // The editor's side in a disputed objection; the run stopped only for it, so it resumes at once.
-async function decideDispute(button) {
+async function decideDispute(button, s=actionScope()) {
   const id=button.dataset.objectionId;
-  await api(`/api/projects/${project.id}/approve`,{kind:"dispute",run_id:button.dataset.runId,objection_id:id,
+  await projectApi(s,"/approve",{kind:"dispute",run_id:button.dataset.runId,objection_id:id,
     decision:button.dataset.decision,note:$("dispute-note-"+id)?.value||""});
-  project=await api(`/api/projects/${project.id}`);lastJobView="";
+  await reloadProject(s);lastJobView="";
   // The run resumes once, when the last dispute of the round is decided.
-  if(!running()&&!disputes(project.job||{}).some(d=>!d.decision?.decision)){await resumeFrom(button);return true;}
+  if(!running()&&!disputes(project.job||{}).some(d=>!d.decision?.decision)){await resumeFrom(button,s);return true;}
   render();return false;
 }
 // The accepted access gap; when it was the last open decision, the run resumes with it at once.
-async function acceptAccessGap(button) {
+async function acceptAccessGap(button, s=actionScope()) {
   const id=button.dataset.taskId, source=$("access-source-"+id)?.value||"";
   if(!source)throw new Error(tp("act.access_source_missing"));
-  await api(`/api/projects/${project.id}/approve`,{kind:"access_gap",run_id:button.dataset.runId,task_id:id,
+  await projectApi(s,"/approve",{kind:"access_gap",run_id:button.dataset.runId,task_id:id,
     criterion:Number($("access-criterion-"+id)?.value),source});
-  project=await api(`/api/projects/${project.id}`);lastJobView="";
+  await reloadProject(s);lastJobView="";
   const rows=project.job?.progress?.research_questions?.questions||[];
   // A question that only waits for its prerequisite is decided with it.
-  if(!running()&&!rows.some(q=>q.status==="blocked"&&q.outcome!=="prerequisite_block"&&!q.accepted_gap&&!q.retry_requested&&!q.access_gap_requested)){await resumeFrom(button);return true;}
+  if(!running()&&!rows.some(q=>q.status==="blocked"&&q.outcome!=="prerequisite_block"&&!q.accepted_gap&&!q.retry_requested&&!q.access_gap_requested)){await resumeFrom(button,s);return true;}
   render();return false;
 }
 // A new teaching design of the stopped episode with the editor's note, then the resume that starts it.
 // The plan approval in one click (D-155): the limits the plan needs rise first (raise_to, only those that rise), then
 // the plan is approved and, with data-then-resume, the run starts. A cap asks for a shortened plan instead, which is
 // shown again with its own limits, so nothing is raised for it.
-async function approvePlan(button) {
+async function approvePlan(button, s=actionScope()) {
   const payload=planApprovalRequest(button.dataset.runId);
   const raise=Object.fromEntries([["model_calls",button.dataset.raiseCalls],["search_rounds",button.dataset.raiseRounds],["sources",button.dataset.raiseSources]]
     .filter(([,value])=>value).map(([key,value])=>[key,Number(value)]));
   const raised=!payload.max_tasks&&Object.keys(raise).length>0;
-  if(raised)await api(`/api/projects/${project.id}/approve`,{kind:"model_calls",run_id:button.dataset.runId,...raise});
-  await api(`/api/projects/${project.id}/approve`,payload);
-  if(button.dataset.thenResume){await resumeFrom(button);return {payload,raised,resumed:true};}
-  project=await api(`/api/projects/${project.id}`);lastJobView="";render();
+  if(raised)await projectApi(s,"/approve",{kind:"model_calls",run_id:button.dataset.runId,...raise});
+  await projectApi(s,"/approve",payload);
+  if(button.dataset.thenResume){await resumeFrom(button,s);return {payload,raised,resumed:true};}
+  await reloadProject(s);lastJobView="";render();
   return {payload,raised,resumed:false};
 }
 // An episode opened from the series board: its script on the reading page, or its recording on the audio page.
@@ -3931,8 +4015,9 @@ function openEpisode(id, page) {
   else{scriptEpisodeId=id;readingSnapshot=null;}
   navigatePage(page===PAGE.audio?PAGE.audio:PAGE.scripts);
 }
-async function resumeFrom(button) {
-  await start("resume",{run_id:button.dataset.runId||project.job?.run?.run_id||project.run?.run_id,...(button.dataset.episode?{episode:button.dataset.episode}:{})});
+async function resumeFrom(button, s=actionScope()) {
+  ensureOn(s);
+  await start("resume",{run_id:button.dataset.runId||project.job?.run?.run_id||project.run?.run_id,...(button.dataset.episode?{episode:button.dataset.episode}:{})},s);
 }
 document.addEventListener("submit",event=>{
   event.preventDefault();attempt(async()=>{
@@ -3964,8 +4049,9 @@ document.addEventListener("change",event=>attempt(async()=>{
     settingsDraft={...draft,audio:{...rest,provider,voices:{...(row.defaults||draft.audio.voices)},
       ...(isPassage(provider)?{styles:{...(row.default_styles||styles)},alternate_roles:!!row.alternate_roles}:{})}};
     if(isEleven(provider)){
-      // The account's voices: the first two of the user's own stand until two are picked.
-      await loadElevenVoices();
+      // The account's voices: the first two of the user's own stand until two are picked. The draft above is the new
+      // provider's, so the fields of the old one must not be read back into it.
+      await loadElevenVoices(false,false);
       const own=(elevenVoices||[]).filter(v=>v.category!=="premade");
       if(own.length>1)settingsDraft.audio.voices={host_a:own[0].voice_id,host_b:own[1].voice_id};
     }
@@ -3999,6 +4085,8 @@ document.addEventListener("click",event=>{
   attempt(async()=>{
     // Starting over or stopping costs finished work or a running call; such buttons say so first.
     if(button.dataset.confirm&&typeof window.confirm==="function"&&!window.confirm(button.dataset.confirm))return;
+    // The project this click acts on: its requests and replies stop once the editor leaves it (actionScope).
+    const s=actionScope();
     if(button.dataset.scroll){
       // A folded target (a dossier group, a long list) opens on the way.
       const target=$(button.dataset.scroll);
@@ -4013,7 +4101,7 @@ document.addEventListener("click",event=>{
     if(button.dataset.playEpisode){await playEpisode(button.dataset.playEpisode);return;}
     if(button.dataset.player){if(button.dataset.player==="close")closePlayer();else await stepPlaylist(button.dataset.player==="next"?1:-1);return;}
     if(button.dataset.removePending!==undefined){if(!setupSending){pendingAttachments.splice(Number(button.dataset.removePending),1);refreshAttachmentComposer();}return;}
-    if(button.dataset.removeAttachment){await removeAttachment(button.dataset.removeAttachment);return;}
+    if(button.dataset.removeAttachment){await removeAttachment(button.dataset.removeAttachment,s);return;}
     if(button.id==="new-project"||button.hasAttribute("data-new-project")){await selectProject("");return;}
     if(button.id==="project-overview"||button.dataset.action==="overview"){await showOverview();return;}
     if(button.dataset.cardAction){await runCardAction(button);return;}
@@ -4033,7 +4121,7 @@ document.addEventListener("click",event=>{
     if(button.dataset.previewVoice){
       const voice=button.dataset.previewVoice,language=button.dataset.language,provider=button.dataset.previewProvider;
       if(isGemini(provider)&&!savedSample(voice,language)){
-        await storeKey();await start("audio_sample",{voice,language,approve_sample:true});
+        await storeKey();await start("audio_sample",{voice,language,approve_sample:true},s);
       }else await playSample(voice,language,provider);
       return;
     }
@@ -4053,18 +4141,18 @@ document.addEventListener("click",event=>{
       if(busy.length&&typeof window.confirm==="function"&&!window.confirm(tp("act.quit.confirm",{jobs:busy.join(", ")})))return;
       await api("/api/quit",{});project=null;$("job-status").hidden=true;$("job-bar").hidden=true;$("content").innerHTML=`<section class="empty"><h1>${t("act.quit.title")}</h1><p>${t("act.quit.text")}</p></section>`;return;
     }
-    if(action==="apply-proposal"){await applySetupProposal();return;}
+    if(action==="apply-proposal"){await applySetupProposal(s);return;}
     if(action==="open-settings"){await showSettings();return;}
-    if(action==="resume-stopped-audio"){await resumeStoppedAudio();return;}
+    if(action==="resume-stopped-audio"){await resumeStoppedAudio(s);return;}
     if(action==="save-settings"){await saveSettings();return;}
     if(action==="pair-sample"){await pairSample(button);return;}
     if(action==="load-eleven-voices"){await loadElevenVoices(true);return;}
-    if(action==="own-audio-save"){await saveOwnAudio();return;}
-    if(action==="own-audio-clear"){await saveOwnAudio(true);return;}
+    if(action==="own-audio-save"){await saveOwnAudio(false,s);return;}
+    if(action==="own-audio-clear"){await saveOwnAudio(true,s);return;}
     if(action==="store-key"){
       const kind=button.dataset.keyKind||"openrouter";
       if(!await storeKey(button.dataset.keyField||"api-key",kind))throw new Error(tp("act.key_missing",{key:KEY_NAMES[kind]}));
-      if(button.dataset.thenResume){await resumeFrom(button);return;}
+      if(button.dataset.thenResume){await resumeFrom(button,s);return;}
       // The settings page keeps what was typed but not saved yet when it shows the new key state.
       if(settingsPage&&settingsDraft)settingsDraft=settingsFromForm();
       lastJobView="";stopHtml="";render();notice(tp("act.key_stored"),"ok");return;
@@ -4075,8 +4163,8 @@ document.addEventListener("click",event=>{
       await sendSetupMessage(last.message);return;
     }
     if(action==="approve-chat"){
-      await api(`/api/projects/${project.id}/approve`,{kind:"chat_calls",model_calls:Number(button.dataset.modelCalls)});
-      project=await api(`/api/projects/${project.id}`);render();notice(tp("act.chat_limit",{resend:quoted(tp("button.resend"))}),"ok");return;
+      await projectApi(s,"/approve",{kind:"chat_calls",model_calls:Number(button.dataset.modelCalls)});
+      await reloadProject(s);render();notice(tp("act.chat_limit",{resend:quoted(tp("button.resend"))}),"ok");return;
     }
     if(action==="forget-key"){
       const kind=button.dataset.keyKind||"openrouter", field=KEY_FIELDS[kind]||"api-key";
@@ -4085,19 +4173,28 @@ document.addEventListener("click",event=>{
       if(settingsPage&&settingsDraft){settingsDraft=settingsFromForm();render();}
       renderKeyNote();$(KEY_STATUS[kind]||"key-status").textContent=tp(keyAvailable(kind)?"act.key_env":"act.key_removed");return;
     }
-    if(action==="stop"){await api(`/api/projects/${project.id}/stop`,{job_id:button.dataset.jobId});project=await api(`/api/projects/${project.id}`);render();return;}
-    if(action==="stop_after"){await api(`/api/projects/${project.id}/stop_after`,{enabled:button.dataset.enabled==="true"});project=await api(`/api/projects/${project.id}`);render();return;}
-    if(action==="apply-advice"){await applyAdvice(button);notice(tp("act.advice_applied"),"ok");return;}
-    if(action==="raise-adopt"){await raiseAndAdopt(button);notice(tp("act.limits_advice_applied"),"ok");return;}
-    if(action==="upload-work"){await uploadWork(button);return;}
+    if(action==="stop"||action==="stop_after"){
+      // The main job the page showed travels along; the server refuses once another one runs (job_changed).
+      const expected=button.dataset.expectedJob?{expected_job_id:button.dataset.expectedJob}:{};
+      const request=action==="stop"?{job_id:button.dataset.jobId,...expected}:{enabled:button.dataset.enabled==="true",...expected};
+      try { await projectApi(s,action==="stop"?"/stop":"/stop_after",request); }
+      catch(error) {
+        if(error.code!=="job_changed")throw error;
+        await reloadProject(s);lastJobView="";render();notice(errorText(error),"warn");return;
+      }
+      await reloadProject(s);render();return;
+    }
+    if(action==="apply-advice"){await applyAdvice(button,s);notice(tp("act.advice_applied"),"ok");return;}
+    if(action==="raise-adopt"){await raiseAndAdopt(button,s);notice(tp("act.limits_advice_applied"),"ok");return;}
+    if(action==="upload-work"){await uploadWork(button,s);return;}
     if(action==="retry-task"){
       const hint=$("retry-hint-"+button.dataset.taskId)?.value||"";
-      await api(`/api/projects/${project.id}/approve`,{kind:"retry",run_id:button.dataset.runId,task_id:button.dataset.taskId,hint});
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice(tp("act.retry_requested",{resume:quoted(tp("button.resume"))}),"ok");return;
+      await projectApi(s,"/approve",{kind:"retry",run_id:button.dataset.runId,task_id:button.dataset.taskId,hint});
+      await reloadProject(s);lastJobView="";render();notice(tp("act.retry_requested",{resume:quoted(tp("button.resume"))}),"ok");return;
     }
     if(action==="production-report"){
-      productionReports[button.dataset.runId]=await api(`/api/projects/${project.id}/report?run_id=${encodeURIComponent(button.dataset.runId)}`);
-      lastJobView="";renderJob();return;
+      productionReports[button.dataset.runId]=await projectApi(s,`/report?run_id=${encodeURIComponent(button.dataset.runId)}`);
+      ensureOn(s);lastJobView="";renderJob();return;
     }
     if(action==="production-report-close"){delete productionReports[button.dataset.runId];lastJobView="";renderJob();return;}
     if(action==="restart-when-idle"||action==="restart-cancel"){
@@ -4107,29 +4204,32 @@ document.addEventListener("click",event=>{
     }
     if(action==="toggle-jev-probe"){
       const enabled=button.dataset.enabled==="1";
-      await api(`/api/projects/${project.id}/jev_probe`,{enabled});
-      project=await api(`/api/projects/${project.id}`);render();
+      await projectApi(s,"/jev_probe",{enabled});
+      await reloadProject(s);render();
       notice(tp(enabled?(boot.key_available?"act.jev_on":"act.jev_on_key"):"act.jev_off"),"ok");return;
     }
     if(action==="unqueue"){
-      await api(`/api/projects/${project.id}/audio_queue`,{episode:button.dataset.episode});
-      project=await api(`/api/projects/${project.id}`);render();notice(tp("act.unqueued"),"ok");return;
+      await projectApi(s,"/audio_queue",{episode:button.dataset.episode});
+      await reloadProject(s);render();notice(tp("act.unqueued"),"ok");return;
     }
-    if(action==="queue-hold"||action==="queue-clear"||action==="queue-move"){await changeQueue(action,button.dataset);return;}
+    if(action==="queue-hold"||action==="queue-clear"||action==="queue-move"){await changeQueue(action,button.dataset,s);return;}
     if(action==="unqueue-revision"){
       // The episode too, for a server older than the key (D-192), which removes by episode.
-      await api(`/api/projects/${project.id}/revision_queue`,{key:button.dataset.key,episode:button.dataset.episode});
-      project=await api(`/api/projects/${project.id}`);render();notice(tp("act.unqueued"),"ok");return;
+      await projectApi(s,"/revision_queue",{key:button.dataset.key,episode:button.dataset.episode});
+      await reloadProject(s);render();notice(tp("act.unqueued"),"ok");return;
     }
     if(action==="audio-all"||action==="audio-music"){
       const music=action==="audio-music";
       if(!$(music?"audio-music-all":"audio-approve-all")?.checked)throw new Error(tp("act.confirm_read"));
       const rows=music?musicOnlyRecordings():pendingRecordings();let started=0,queued=0;
-      for(const e of rows){
-        const response=await api(`/api/projects/${project.id}/start`,{action:"audio",...audioRequest(e.script.episode_id),approve_audio:true});
+      // Every approval is built from the page the editor confirmed, before the first request (2026-11-14 review: the
+      // loop read the project anew each time and approved the episodes of the project opened meanwhile).
+      const requests=rows.map(e=>({action:"audio",...audioRequest(e.script.episode_id),approve_audio:true}));
+      for(const request of requests){
+        const response=await projectApi(s,"/start",request);
         if(response?.queued)queued++;else started++;
       }
-      project=await api(`/api/projects/${project.id}`);lastJobSignature=projectJobSignature(project);render();
+      await reloadProject(s,{signature:true});render();
       notice(tp("act.audio_all",{count:rows.length,started,queued}),"ok");return;
     }
     if(action==="text-switch"){
@@ -4138,36 +4238,36 @@ document.addEventListener("click",event=>{
       const cost=billedProvider(choice)?Number($("text-switch-cost")?.value||0):0;
       const order=choice==="openrouter"?`OpenRouter · ${boot.text_catalog?.openrouter_models?.[model]||model}`:
         model?`${SWITCH_CHOICES[choice]||choice} · ${boot.text_catalog?.claude_models?.[model]||model}`:SWITCH_CHOICES[choice]||choice;
-      await api(`/api/projects/${project.id}/approve`,{kind:"text_switch",run_id:button.dataset.runId,choice,...(model?{model}:{}),...(cost>0?{cost_usd:cost}:{})});
-      if(button.dataset.thenResume&&!running()){await resumeFrom(button);notice(`${tp("act.switched",{order})} ${tp("act.carries_on")}`,"ok");return;}
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();
+      await projectApi(s,"/approve",{kind:"text_switch",run_id:button.dataset.runId,choice,...(model?{model}:{}),...(cost>0?{cost_usd:cost}:{})});
+      if(button.dataset.thenResume&&!running()){await resumeFrom(button,s);notice(`${tp("act.switched",{order})} ${tp("act.carries_on")}`,"ok");return;}
+      await reloadProject(s);lastJobView="";render();
       notice(running()?tp("act.switched_next",{order}):tp("act.switched_resume",{order,resume:quoted(tp("button.resume"))}),"ok");return;
     }
     if(action==="fresh-attempts"){
-      await api(`/api/projects/${project.id}/approve`,{kind:"fresh_attempts",run_id:button.dataset.runId});
-      await resumeFrom(button);notice(tp("act.fresh_attempts"),"ok");return;
+      await projectApi(s,"/approve",{kind:"fresh_attempts",run_id:button.dataset.runId});
+      await resumeFrom(button,s);notice(tp("act.fresh_attempts"),"ok");return;
     }
     if(action==="finish-residual"){
-      await api(`/api/projects/${project.id}/approve`,{kind:"residual",run_id:button.dataset.runId,note:$("residual-note")?.value||""});
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();
+      await projectApi(s,"/approve",{kind:"residual",run_id:button.dataset.runId,note:$("residual-note")?.value||""});
+      await reloadProject(s);lastJobView="";render();
       notice(running()?tp("act.residual_running"):tp("act.residual_resume",{resume:quoted(tp("button.resume"))}),"ok");return;
     }
     if(action==="decide-dispute"){
-      const resumed=await decideDispute(button), side=tp(button.dataset.decision==="reviewer"?"act.dispute.reviewer":"act.dispute.upheld");
+      const resumed=await decideDispute(button,s), side=tp(button.dataset.decision==="reviewer"?"act.dispute.reviewer":"act.dispute.upheld");
       notice(`${side}. ${resumed?tp("act.carries_on"):tp("act.dispute.resume",{resume:quoted(tp("button.resume"))})}`,"ok");return;
     }
     if(action==="accept-access-gap"){
       const criterion=Number($("access-criterion-"+button.dataset.taskId)?.value);
-      const resumed=await acceptAccessGap(button);
+      const resumed=await acceptAccessGap(button,s);
       notice(resumed?tp("act.access_gap_resumed",{criterion}):tp("act.access_gap_resume",{criterion,resume:quoted(tp("button.resume"))}),"ok");return;
     }
     if(action==="accept-gap"){
       const reason=$("gap-reason-"+button.dataset.taskId)?.value||"";
-      await api(`/api/projects/${project.id}/approve`,{kind:"gap",run_id:button.dataset.runId,task_id:button.dataset.taskId,reason});
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice(tp("act.gap_accepted",{resume:quoted(tp("button.resume"))}),"ok");return;
+      await projectApi(s,"/approve",{kind:"gap",run_id:button.dataset.runId,task_id:button.dataset.taskId,reason});
+      await reloadProject(s);lastJobView="";render();notice(tp("act.gap_accepted",{resume:quoted(tp("button.resume"))}),"ok");return;
     }
     if(action==="approve-plan"){
-      const {payload,raised,resumed}=await approvePlan(button);
+      const {payload,raised,resumed}=await approvePlan(button,s);
       if(resumed){notice(payload.max_tasks?tp("act.plan_cap_resumed",{count:payload.max_tasks}):raised?tp("act.plan_raised_resumed"):tp("act.plan_approved_resumed"),"ok");return;}
       const resume=quoted(tp("button.resume"));
       notice(payload.max_tasks?tp("act.plan_cap_resume",{count:payload.max_tasks,resume}):tp("act.plan_approved_resume",{resume}),"ok");return;
@@ -4175,9 +4275,9 @@ document.addEventListener("click",event=>{
     if(action==="approve-cost"){
       const cost=Number($("stop-cost")?.value||0);
       if(!(cost>0))throw new Error(tp("act.cost_missing"));
-      await api(`/api/projects/${project.id}/approve`,{kind:"model_calls",run_id:button.dataset.runId,cost_usd:cost});
-      if(button.dataset.thenResume&&!running()){await resumeFrom(button);notice(`${tp("act.cost_approved",{cost:usd(cost)})} ${tp("act.carries_on")}`,"ok");return;}
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice(tp("act.cost_approved",{cost:usd(cost)}),"ok");return;
+      await projectApi(s,"/approve",{kind:"model_calls",run_id:button.dataset.runId,cost_usd:cost});
+      if(button.dataset.thenResume&&!running()){await resumeFrom(button,s);notice(`${tp("act.cost_approved",{cost:usd(cost)})} ${tp("act.carries_on")}`,"ok");return;}
+      await reloadProject(s);lastJobView="";render();notice(tp("act.cost_approved",{cost:usd(cost)}),"ok");return;
     }
     if(action==="approve-calls"||action==="approve-search"||action==="approve-sources"||action==="approve-limits"){
       // Each button carries the limits it raises; "approve-limits" raises sources and search rounds together.
@@ -4185,26 +4285,26 @@ document.addEventListener("click",event=>{
       if(button.dataset.modelCalls)payload.model_calls=Number(button.dataset.modelCalls);
       if(button.dataset.sources)payload.sources=Number(button.dataset.sources);
       if(button.dataset.searchRounds)payload.search_rounds=Number(button.dataset.searchRounds);
-      await api(`/api/projects/${project.id}/approve`,payload);
-      if(button.dataset.thenResume&&!running()){await resumeFrom(button);notice(tp("act.limit_resumed"),"ok");return;}
-      project=await api(`/api/projects/${project.id}`);lastJobView="";render();notice(tp("act.limit_approved",{resume:quoted(tp("button.resume"))}),"ok");return;
+      await projectApi(s,"/approve",payload);
+      if(button.dataset.thenResume&&!running()){await resumeFrom(button,s);notice(tp("act.limit_resumed"),"ok");return;}
+      await reloadProject(s);lastJobView="";render();notice(tp("act.limit_approved",{resume:quoted(tp("button.resume"))}),"ok");return;
     }
-    if(action==="save-speech"){await saveSpeechSettings();return;}
+    if(action==="save-speech"){await saveSpeechSettings(s);return;}
     if(action==="save-notes"){
       if($("style-notes").value.trim()!==(project.style_notes||"").trim()&&!confirmPaused(["notes"]))return;
-      await api(`/api/projects/${project.id}/save`,{config:project.config,config_hash:project.config_hash,
+      await projectApi(s,"/save",{config:project.config,config_hash:project.config_hash,
         text:project.text,style_notes:$("style-notes").value,style_notes_hash:project.style_notes_hash});
-      project=await api(`/api/projects/${project.id}`);render();
+      await reloadProject(s);render();
       notice(tp("act.notes_saved"),"ok");return;
     }
     if(action==="listening-review"){
       const e=project.episodes[episodeIndex];
-      await api(`/api/projects/${project.id}/listening_review`,{episode:e.script.episode_id,
+      await projectApi(s,"/listening_review",{episode:e.script.episode_id,
         reviewed:$("listening-done").checked,note:$("listening-note").value});
-      project=await api(`/api/projects/${project.id}`);render();notice(tp("act.listening_saved"),"ok");return;
+      await reloadProject(s);render();notice(tp("act.listening_saved"),"ok");return;
     }
-    if(action==="spoken-override"){await saveSpokenOverride(button.dataset.episode,button.dataset.segment);return;}
-    if(action==="audio"&&button.dataset.rerender){await rerenderEpisode(button.dataset.episode);return;}
+    if(action==="spoken-override"){await saveSpokenOverride(button.dataset.episode,button.dataset.segment,s);return;}
+    if(action==="audio"&&button.dataset.rerender){await rerenderEpisode(button.dataset.episode,s);return;}
     const extra={};
     if(action==="audio_samples"){
       extra.language=setupSelection().config.language;extra.approve_samples=true;
@@ -4229,7 +4329,7 @@ document.addEventListener("click",event=>{
     if(action==="publish_kit"&&button.dataset.fresh)extra.fresh=true;
     if(action==="publish_kit"&&button.dataset.podcast)extra.podcast=true;
     if(action==="copy-text"){await navigator.clipboard?.writeText($(button.dataset.source)?.value||"");notice(tp("act.copied"),"ok");return;}
-    await start(action,extra);
+    await start(action,extra,s);
     // A sent request leaves no stale draft behind; unsent drafts survive re-renders elsewhere.
     if(action==="replan"&&$(button.dataset.feedback||"outline-feedback"))$(button.dataset.feedback||"outline-feedback").value="";
     if(action==="revise"&&$("script-feedback"))$("script-feedback").value="";
@@ -4241,7 +4341,8 @@ document.addEventListener("click",event=>{
 // showing the tab again polls at once (2026-10-02: hidden tabs polled every 2.5 s and slow answers overlapped, each
 // poll holding the server's lock). Each answer names the server instance: a new one means a restart, so the session
 // and the key state are read again.
-const POLL_MS={overview:10000,hidden:60000};
+// timeout: how long one poll request may take before it counts as no connection (pollSignal).
+const POLL_MS={overview:10000,hidden:60000,timeout:30000};
 let pollRunning=false, lastPollAt={overview:0,hidden:0};
 async function poll() {
   if(pollRunning)return;
@@ -4256,7 +4357,7 @@ async function poll() {
 async function checkInstance(server) {
   const known=boot?.server?.instance;
   if(!server?.instance||!known||server.instance===known)return;
-  const fresh=await fetch("/api/bootstrap").then(r=>r.ok?r.json():null).catch(()=>null);
+  const fresh=await fetch("/api/bootstrap",{signal:pollSignal()}).then(r=>r.ok?r.json():null).catch(()=>null);
   if(!fresh?.token)return;
   const lost=lostKeys(fresh);
   boot={...boot,...fresh};
@@ -4265,20 +4366,33 @@ async function checkInstance(server) {
 // The page polls the project's light status and loads the whole project only when a job or the content changed (D-159;
 // 2026-10-07: every poll carried all scripts, the dossier and every recording job, 2.5 to 3.7 MB each 2.5 s).
 async function pollProject(id) {
-  if(!boot.capabilities?.light_status)return api(`/api/projects/${id}`);
-  const light=await api(`/api/projects/${id}/status`);
-  if(project?.id!==id||light.content_version!==project.content_version||projectJobSignature(light)!==lastJobSignature)
-    return api(`/api/projects/${id}`);
+  const path=`/api/projects/${encodeURIComponent(id)}`;
+  if(!boot.capabilities?.light_status)return api(path,undefined,false,pollSignal());
+  const light=await api(`${path}/status`,undefined,false,pollSignal());
+  // A project left meanwhile: the caller drops the answer.
+  if(project?.id!==id)return light;
+  if(light.content_version!==project.content_version||projectJobSignature(light)!==lastJobSignature)
+    return api(path,undefined,false,pollSignal());
   return {...light,research:project.research,outline:project.outline,episodes:project.episodes,script_previews:project.script_previews};
 }
 async function pollOnce() {
   try {
-    if(overviewPage){const next=await loadOverview();markSynced();await checkInstance(next.server);if(overviewPage){overviewData=next;refreshOverview();renderNavigation();}return;}
+    if(overviewPage){
+      const seen=actionCount, next=await loadOverview(pollSignal());markSynced();await checkInstance(next.server);
+      // A card's action that answered meanwhile read the overview later than this poll.
+      if(overviewPage&&actionCount===seen){overviewData=next;refreshOverview();renderNavigation();}
+      return;
+    }
     if(!project||submitting||setupSending||readingAttachments)return;
-    const id=project.id,next=await pollProject(id);
-    if(project?.id!==id)return;
+    // What the page held when the poll started: a project left or loaded again, or an action's reply applied since,
+    // makes this answer older than the page, and it is dropped (2026-11-14 review: a poll read before a "Fortsetzen"
+    // brought back the stop card for 2.5 s).
+    const id=project.id, load=projectLoads, seen=actionCount, current=()=>project?.id===id&&projectLoads===load&&actionCount===seen;
+    const next=await pollProject(id);
     markSynced();
+    if(!current())return;
     await checkInstance(next.server);
+    if(!current())return;
     const changed=projectJobSignature(next)!==lastJobSignature;
     // A chat, a check or a voice sample answers where it was started; its end does not move the page.
     const auxiliary=["assistant","check","audio_sample","audio_samples"].includes((next.main_job??next.job)?.action);
@@ -4334,7 +4448,7 @@ function localizePage() {
 localizePage();
 applyTheme();
 wirePlayer();
-window.addEventListener("resize",syncReaderOffset);
+window.addEventListener("resize",()=>{syncReaderOffset();syncPlayerOffset();});
 window.addEventListener("beforeunload",event=>{if(settingsPage&&settingsDirty){event.preventDefault();event.returnValue="";}});
 attempt(async()=>{
   const startupEpoch=navigationEpoch;

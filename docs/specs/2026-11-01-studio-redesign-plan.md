@@ -1,13 +1,16 @@
 ---
 title: Studio redesign — three places, the Sendestudio look, light and dark
-status: in progress
-last_reviewed: 2026-11-01
+status: active
+last_reviewed: 2026-11-14
 ---
 
 # Studio redesign (D-185, D-186)
 
-The user accepted the design and layout review of 2026-11-01 (artifact 8b6xFzTttiXEBzcJNyAPZK) in full and chose the
-look „Sendestudio“ (C) from the canvas FvvxWcWceW47q47hyDVeQC, with a light and a dark theme the viewer can switch.
+The user accepted the design and layout review of 2026-11-01 in full and chose the look „Sendestudio“ (variant C of
+the design canvas), with a light and a dark theme the viewer can switch.
+
+**Status (2026-11-14): built, and in `main` since 2026-11-01 (0.2.0; CHANGELOG, Changed, „Studio redesign“). Open:
+V-74 and V-75.**
 
 ## Decisions
 
@@ -50,18 +53,11 @@ look „Sendestudio“ (C) from the canvas FvvxWcWceW47q47hyDVeQC, with a light 
    - On the phone: a tab bar at the bottom, a sticky primary action, the decision first, and a one-line head.
    - Long stop messages and panel explanations shrink to one sentence each; the rest moves behind a disclosure.
 
-## Working setup (this session)
+## How it was built
 
-- **Work copy:** `scratchpad/redesign`, a copy of `src`, `tests`, `docs`, `scripts` and the root docs. The baseline
-  hashes are in `scratchpad/redesign-baseline.sha256`. Before syncing back, compare main against the baseline so that
-  nobody else's edits are overwritten.
-- **Preview:** `scratchpad/preview_server.py` serves the work copy on 127.0.0.1:8766 against the trimmed workspace
-  copy `scratchpad/preview-ws`. Starting, stopping, approving, uploading and restarting are blocked, and
-  `subprocess.Popen` is refused. The live Studio on 8765 and its running job are not touched.
-- **Screenshots:** DevTools device emulation (`scratchpad/phone-shots.mjs`, `check-review.mjs`), not
-  `--window-size`.
-- **Tests:** the browser suite is `node --test tests/studio_ui.test.cjs`, run from the work copy. Python tests for
-  changed modules only, run from the work copy with `PYTHONPATH=src`.
+The redesign was built in a separate work copy, previewed on a second port against a trimmed copy of the workspace
+without starting, approving or uploading anything, and synced back into `main` once a baseline check showed no one
+else's edits would be overwritten. Phone screenshots used DevTools device emulation, not `--window-size`.
 
 ## Progress
 
@@ -93,9 +89,8 @@ look „Sendestudio“ (C) from the canvas FvvxWcWceW47q47hyDVeQC, with a light 
     - A card's stop message is its first sentence (`firstSentence`).
     - The brief's focus questions, exclusions and seed links are lists.
 - [x] Docs: STUDIO (Look and layout, phone, navigation, overview), DECISIONS D-185 and D-186, CHANGELOG. The last two
-  are inserted into main's current text by `scratchpad/sync_redesign.py`, never copied, because another session adds
-  D-187.
-- [ ] Sync back into main after the baseline check; the user restarts the Studio when no job runs (font route)
+  were inserted into main's current text, never copied over it, because another session added D-187 meanwhile.
+- [x] Synced back into main after the baseline check (2026-11-01); the Studio needs a restart for the font route.
 
 ## Verification
 

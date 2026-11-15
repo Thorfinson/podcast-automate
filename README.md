@@ -38,34 +38,40 @@ key. Research, reviews and recording can run on other providers ([Story agent](d
 
 ## Try it first: a trial project
 
-Install it (next section), then start with a trial project: in the Studio tick **Trial: a narrow topic, one short
-episode** on the new-project page, or
-run `pla init <project> --trial` (with `--topic "…"`, or without it for a narrow sample topic). A trial keeps research
-and the series small: at most three sub-questions, one episode of at most 20 minutes, at most 110 model calls per run
-and, where you set a money limit, at most 45 USD ([Trial project](docs/BUSINESS_LOGIC.md#trial-project)). It shows the
+Install it (next section), then start with a trial project. The easiest way is the Studio: tick **Trial: a narrow
+topic, one short episode** on the new-project page and name the topic and the language in the chat. On the command
+line, `pla init <project> --trial --language en-US` creates one (with `--topic "…"`, or without it for a narrow
+sample topic in that language; without `--language` the project is German, `de-DE`). A trial keeps research and the
+series small: at most three sub-questions, one episode of at most 20 minutes, at most 110 model calls per run and,
+where you set a money limit, at most 45 USD ([Trial project](docs/BUSINESS_LOGIC.md#trial-project)). It shows the
 whole pipeline for a fraction of a series' cost.
 
 ## Quick start
+
+Get the code with `git clone https://github.com/Thorfinson/podcast-automate.git` (or download it), then in its folder:
 
 | System | Setup | Start |
 | --- | --- | --- |
 | Windows 11 | [Install on Windows 11](docs/OPERATIONS.md#install-on-windows-11) | double-click `Podcast-Studio.cmd` |
 | macOS | `brew install python@3.12 ffmpeg`, then `sh scripts/setup.sh` ([details](docs/OPERATIONS.md#install-on-macos-and-linux)) | double-click `Podcast-Studio.command` |
-| Linux | Install Python 3.12 or later and FFmpeg, then `sh scripts/setup.sh` | `sh Podcast-Studio.sh` |
+| Linux | Install Python 3.12 or 3.13 with its venv module and FFmpeg (Ubuntu: `sudo apt install python3 python3-venv ffmpeg`), then `sh scripts/setup.sh` | `sh Podcast-Studio.sh` |
 
+Then install Claude Code, which writes every episode, and log in ([Install the CLIs](docs/OPERATIONS.md#install-the-clis)).
 The Studio opens `http://127.0.0.1:8765` and is reachable only from this computer
 ([Studio access](docs/SECURITY.md#studio-access)). Keys go into the settings page; the Studio keeps them in your
 operating system's credential store, never in project files. Set up your text access: [Claude Code](docs/OPERATIONS.md#claude-code),
 [Codex](docs/OPERATIONS.md#codex), [Claude on your Anthropic API key](docs/OPERATIONS.md#claude-on-your-anthropic-api-key)
-or [OpenRouter with Perplexity](docs/OPERATIONS.md#research-with-openrouter-and-perplexity); speech:
-[Gemini via Google](docs/AUDIO.md#gemini-via-google) or [ElevenLabs](docs/AUDIO.md#elevenlabs). `pla doctor --skip-tts`
-checks the installation without local Qwen. All commands: [PRODUCT](docs/PRODUCT.md#commands).
+or [OpenRouter with Perplexity](docs/OPERATIONS.md#research-with-openrouter-and-perplexity). **Before your first
+recording, choose the speech provider** under Settings › Audio: [Gemini via Google](docs/AUDIO.md#gemini-via-google)
+or [ElevenLabs](docs/AUDIO.md#elevenlabs), with its key. Until you do, the Studio records with local Qwen, which
+needs a GPU and its own setup ([Set up local Qwen](docs/OPERATIONS.md#set-up-local-qwen-on-windows)).
+`pla doctor --skip-tts` checks the installation without local Qwen. All commands: [PRODUCT](docs/PRODUCT.md#commands).
 
 ## What you need
 
-- **Python 3.12 or newer and FFmpeg.** On Windows a script installs FFmpeg into the checkout.
-- **Text access for the scripts:** a Claude subscription through the official Claude Code CLI, or your own Anthropic
-  API key through Claude Code (`claude_api`, [experimental](#experimental-parts)).
+- **Python 3.12 or 3.13, Git and FFmpeg.** On Windows a script installs FFmpeg into the checkout.
+- **Text access for the scripts:** the official Claude Code CLI ([Install the CLIs](docs/OPERATIONS.md#install-the-clis))
+  with a Claude subscription, or with your own Anthropic API key (`claude_api`, [experimental](#experimental-parts)).
 - **Text access for research and reviews**, any of: the same Claude access; a ChatGPT subscription through the
   official Codex CLI; an OpenRouter key together with a Perplexity key for the web search
   ([experimental](#experimental-parts)).
@@ -115,7 +121,8 @@ before; it is done much sooner. Recording season 1 with ElevenLabs took about 26
 - **Languages.** The Studio's interface is in English or German: it follows your browser's language, or you fix one.
   A series is written and recorded in English or German, set per project, and everything its listeners get (file
   names, show notes, the companion kit) is in that language ([Languages](docs/ARCHITECTURE.md#languages)). The `pla`
-  command line is English.
+  command line is English, except the pipeline's own stop messages that `pla status`, `pla quota` and `pla approve`
+  print, which stay German; their stop codes are the same in every language (why: D-156).
 - **AI-generated content.** Scripts and voices are produced by AI models, and the exports are marked as AI-generated.
   Before you share an episode, check its facts, the rights of the quoted sources and your platform's rules for AI
   content ([Source rights and privacy](docs/SECURITY.md#source-rights-and-privacy)).
@@ -152,12 +159,13 @@ Start with the [overview in ARCHITECTURE](docs/ARCHITECTURE.md#in-five-minutes) 
 | [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability privately |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | How we treat each other in issues and pull requests |
 
-Plans with open work: [MVP acceptance](docs/specs/2026-09-10-mvp-acceptance-plan.md) (including the verification
-list), [review-loop decision gates](docs/specs/2026-10-04-review-loop-decision-gates-plan.md),
-[overviews and evidence levels](docs/specs/2026-10-21-overviews-and-evidence-levels-plan.md),
-[narration](docs/specs/2026-10-23-narration-plan.md), [story agent](docs/specs/2026-10-27-story-agent-plan.md) and
-[agent-only writer](docs/specs/2026-11-01-agent-only-writer-plan.md). Finished plans and the
-quality audit of 19 September 2026 are in [docs/specs/](docs/specs/).
+Plans with open work: [MVP acceptance](docs/specs/2026-09-10-mvp-acceptance-plan.md) (the definition of done, and the
+main verification list with the rule for V-IDs); [review-loop decision gates](docs/specs/2026-10-04-review-loop-decision-gates-plan.md)
+and [overviews and evidence levels](docs/specs/2026-10-21-overviews-and-evidence-levels-plan.md), not built yet; and
+the built [narration](docs/specs/2026-10-23-narration-plan.md), [story agent](docs/specs/2026-10-27-story-agent-plan.md),
+[agent-only writer](docs/specs/2026-11-01-agent-only-writer-plan.md) and
+[Studio redesign](docs/specs/2026-11-01-studio-redesign-plan.md) plans, whose verification items are open. Finished
+plans and the quality audit of 19 September 2026 are in [docs/specs/](docs/specs/).
 
 ## Layout
 

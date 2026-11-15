@@ -2,7 +2,7 @@
 title: Audio
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/audio.py
   - src/podcast_automate/speech.py
@@ -32,8 +32,10 @@ covers:
 # Audio
 
 How an approved script becomes an MP3 episode with chapters, transcript and show notes, recorded locally with Qwen,
-with Gemini through Google's own API (two hosts per request, the default for Gemini since 2026-10-06), or with
-Gemini via OpenRouter (one segment per request).
+with Gemini through Google's own API (two hosts per request, the default for Gemini since 2026-10-06), with
+ElevenLabs (Text to Dialogue), or with Gemini via OpenRouter (one segment per request). A project records with local
+Qwen until the settings page's **Audio** section, or the project's own speech choice, names another provider
+(`speech.selected_audio`).
 
 ## Recording flow
 
@@ -63,9 +65,15 @@ The guided flow ends on the page **Recording** („Vertonung“):
 
 The two hosts need two different voices. Switching the provider does not carry an earlier approval over to another
 provider's calls. A resumed audio run keeps the model, voices, style and text it started with; only the OpenRouter or
-Google key may be renewed (see [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)).
+Google key may be renewed (see [Runs, resume and input binding](BUSINESS_LOGIC.md#runs-resume-and-input-binding)). A
+raised limit or a longer time limit saved meanwhile no longer blocks the resume: the audio run binds its operational
+fields as its snapshot recorded them, except Qwen's sound fields.
 
 On the command line, `pla audio` records one reviewed episode with Qwen (see [Commands](PRODUCT.md#commands)).
+
+A recording binds its script run's own research run (completed, with its own outputs intact), not the project's
+newest research: new focus questions or a new research run do not keep a published episode from being recorded
+again (the user's decision of 2026-11-14; why: D-230).
 
 ### Segments, cache and assembly
 
@@ -80,6 +88,17 @@ On the command line, `pla audio` records one reviewed episode with Qwen (see [Co
 - The cache key covers provider, model revision, voice, spoken segment text, pronunciation and TTS settings,
   including any seeds used. Only changed or missing segments are rendered again. Failed episodes can be resumed one
   by one.
+- The montage's temporary files go into the run folder (`runs/<run_id>/mix-*`), and every montage first removes the
+  `mix-*` folders a hard stop left there and in the export folder, so a stopped montage leaves no gigabytes of WAVs.
+- **Spoken symbols** (why: D-232). `<`, `>` and `|` in a segment's text or a spoken form are spoken as words: German
+  „weniger als“, „mehr als“, „höchstens“ (`<=`), „mindestens“ (`>=`), English "less than", "more than", "at most",
+  "at least" (`episode_audio.SYMBOL_WORDS`); `->`, `<-`, `<->`, `=>` and `<=>` become →, ←, ↔, ⇒ and ⇔
+  (`ARROW_SIGNS`); a lone `|` is dropped. The expression layer's own tags stay. Before, ElevenLabs dropped the words
+  inside an unknown `<…>`, and `|x|` in a script became the other host's reaction.
+- **Engine files as LF text** (why: D-233). A run binds `speech.py`, `google_speech.py`, `elevenlabs_speech.py` and
+  `qwen_worker.py` by the hash of their LF form (`worker_sha256`); the raw and the CRLF hash stay accepted on resume,
+  and `.gitattributes` writes the four files with LF on every checkout. Before, a Windows checkout (CRLF) and a clone
+  or the wheel (LF) bound different bytes.
 - Real speaker overlaps and scene-wide stage directions are not implemented. A podcast may have one piece of music
   ([Music](#music)); other audio extras: see [Out of scope](PRODUCT.md#out-of-scope).
 
@@ -126,6 +145,11 @@ after the last word (`music.py`, `audio.assemble`; why: D-189). `<project>/studi
   recorded. A project without music records and hashes as before.
 - A recording made before the music came is not current any more ("changed: music" („geändert: Musik“)). Since the music is mixed in
   the montage only, recording such an episode again takes every take from the cache: a new approval, no new speech.
+- **Montage-only re-recordings** (why: D-231). When only the music, the tempo or the AI marking differ, the new
+  recording speaks the expression tags the latest recording spoke, so nothing is spoken again. A recording whose MP3
+  lacks the AI marking (`audio_report.json` without `ai_marking_embedded: true`) counts as outdated with the reason
+  `ai_marking` („KI-Kennzeichnung“) and is offered in the same card as the music-only ones, assembled again from the
+  cache. All 64 recordings current in the user's projects on 2026-11-14 were marked.
 - Show notes, the episode's companion kit (`description.txt`, `sources.md`) and the podcast's `sources.md` name the
   piece as its license asks, in the podcast's language (`content_text` `music_credit`), never written by a model. The
   podcast's descriptions leave it out, since every episode's description carries it (D-194).
@@ -268,8 +292,11 @@ choice](#a-projects-own-speech-choice)), and store the **ElevenLabs key** („El
 
 - Passages as on Google's route ([Passages](#passages)), but at most 1,600 characters of script text and 20 segments
   (`elevenlabs_speech.MAX_PASSAGE_CHARACTERS`, `PASSAGE_RULE`): ElevenLabs advises at most 2,000 characters per
-  dialogue request, and the tags and the other host's reactions add some. A passage over 2,000 characters is refused
-  before any request (`invalid_speech`).
+  dialogue request, and the tags and the other host's reactions add some. A passage over 2,000 characters refuses the
+  recording before anything is requested, naming its segments (`invalid_speech`), so no credits are spent on it.
+- A host who speaks only a reaction in a passage is part of its cache key. An old take of such a passage is adopted
+  without a request when ElevenLabs' stored `voice_segments` show today's voices, else the passage is asked again
+  (see V-81).
 - The expression layer's reading is Gemini's ([Expression tags](#expression-tags)) and is spoken in ElevenLabs' words
   (`elevenlabs_speech.passage_turns`): each tag becomes its square-bracket counterpart (`<sigh>` → `[sighs]`,
   `<short pause>` → `[short pause]`, `<breath>` → `[inhales]`), a listener reaction `|mhm|` a short turn of the other
@@ -609,7 +636,9 @@ of a new approval:
   for Gemini with expression also the tags you read (the hash of `expression.json`). If the expression was placed
   again since you read it, the Studio rejects the re-render and asks you to read and approve again.
 - The run renders only the changed segment again; all others come from the cache. With Gemini through Google that is
-  the whole passage containing the segment: its other turns are spoken anew too and may sound different.
+  the whole passage containing the segment: its other turns are spoken anew too and may sound different. On
+  ElevenLabs the passage before or after it may be recorded again too, since 100 characters of each neighbour are in
+  a passage's key, so one re-render costs up to three paid passages.
 - The run's approval receipt names the stored approval, not a new decision.
 - The deviations then appear in the export report and in the show notes.
 
@@ -664,8 +693,9 @@ takes a minute on 2026-11-06, three at once 7 to 8.8.
   step. As many start at once as places are free; the rest is queued. It covers every episode without a current
   recording, the never voiced ones too.
 - **Assemble {n} episodes again with music** („{n} Folgen mit Musik neu zusammensetzen“), above it, covers only the
-  recorded episodes whose one change is the music (stale reason `music` alone, `musicOnlyRecordings`): their takes
-  come from the cache, so no new speech is sent. Its own checkmark, never preset, approves them again; they start or
+  recorded episodes whose changes are montage-only: the music and, since 2026-11-14, a missing AI marking (stale
+  reasons `music` and `ai_marking` alone, `musicOnlyRecordings`; D-231): their takes and the tags they spoke come from
+  the cache, so no new speech is sent. Its own checkmark, never preset, approves them again; they start or
   queue as above. Why a second button: on 2026-11-08 the first would also have recorded Asimov v2's 16 episodes never
   voiced, about 175,000 ElevenLabs credits, when only the music was to be added (D-193).
 - The Studio must stay open for this.

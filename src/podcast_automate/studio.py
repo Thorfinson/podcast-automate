@@ -26,6 +26,7 @@ from pydantic import Field
 
 from .errors import AppError
 from . import attachments
+from .call_folders import numbered
 from .execution import (ExecutionChoice, MAX_ELEVENLABS_RECORDINGS, MAX_PARALLEL, default_jev_probe, jev_probe_enabled,
                         jev_probe_state,
                         selected_execution, set_jev_probe,
@@ -33,7 +34,7 @@ from .execution import (ExecutionChoice, MAX_ELEVENLABS_RECORDINGS, MAX_PARALLEL
 from .logs import add_secret, configure_logging, logger, scrub
 from .models import (Contract, EpisodeScript, Failure, ResearchLimits, RunManifest, RuntimeSettings, SeriesGoal,
                      TopicBrief, host_labels, now)
-from .episode_audio import reading_hash, saved_approval, saved_expression
+from .episode_audio import reading_hash, recording_unmarked, saved_approval, saved_expression
 from .expression import BACKCHANNEL, TAG
 from .runner import LIMIT_DETAIL_VALUES, manifest_path
 from .run_budget import (approve_criterion_gap, approve_model_call_limit, approve_research_gap, approve_research_plan,
@@ -59,6 +60,7 @@ from .studio_progress import memo
 from .studio_messages import clean, language_of, paths_only, user_text
 from . import project_versions, provided_works, studio_allowances, studio_settings, studio_text, subscriptions
 from .studio_text import Localized, t
+from . import key_store
 from .key_store import Vault
 from .sources import core_usage
 from .production_report import production_report
@@ -72,7 +74,7 @@ from .cost_estimate import COST_TABLE_MEASURED_ON, DEFAULT_USD_PER_CALL
 from .text_settings import (BILLED_TEXT_PROVIDERS, CLAUDE_EFFORTS, CLAUDE_MODELS, CODEX_MODELS, DEFAULT_CLAUDE_EFFORT,
                             DEFAULT_CLAUDE_MODEL,
                             DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT, EFFORT_EQUIVALENTS, OPENROUTER_EFFORTS,
-                            OPENROUTER_MODELS, PROVIDER_NOTES, REASONING_EFFORTS, TEXT_PRESETS, TEXT_PROVIDERS,
+                            OPENROUTER_MODELS, REASONING_EFFORTS, TEXT_PRESETS, TEXT_PROVIDERS,
                             auto_candidates, provider_model, text_preset, validate_model, validate_reasoning)
 
 VOICES = QWEN_VOICES
@@ -183,9 +185,10 @@ def project_music(root):
     return {key: record[key] for key in ("title", "author", "source", "license")}, record
 
 
-def stale_reasons(report, script_hash, voices, stored, current, music=None):
-    """Why a recording no longer matches its episode, as the page names it: "script", "voices", "music" (D-189), or
-    each field of the audio choice that differs (expression aside, as in same_audio_generation)."""
+def stale_reasons(report, script_hash, voices, stored, current, music=None, unmarked=False):
+    """Why a recording no longer matches its episode, as the page names it: "script", "voices", "music" (D-189),
+    "ai_marking" for an MP3 without the AI marking (D-154), or each field of the audio choice that differs (expression
+    aside, as in same_audio_generation)."""
     reasons = []
     if report.get("script_sha256") != script_hash:
         reasons.append("script")
@@ -193,6 +196,8 @@ def stale_reasons(report, script_hash, voices, stored, current, music=None):
         reasons.append("voices")
     if report.get("music") != music:
         reasons.append("music")
+    if unmarked:
+        reasons.append("ai_marking")
     try:
         first, second = (AudioChoice.model_validate(value).model_dump() for value in (stored, current))
     except (ValueError, TypeError):
@@ -294,15 +299,19 @@ def record_worker(root, job_id, process):
 
 
 def worker_identity(root, job):
-    """The pid and start time of a job's worker: the record the Studio writes when it starts one, or the fields the
-    worker writes into its job file at start, ``pid`` and ``started_process_at`` (psutil creation time, seconds since
-    the epoch). None when neither is there."""
+    """The pid and start time of a job's worker: the record the Studio writes when it starts one
+    (``process_started_at``, psutil creation time in seconds since the epoch), or the fields the worker writes into its
+    job file at start, ``pid`` and ``started_process_at`` (that creation time as ISO text, studio_worker.
+    process_started_at; until 2026-11-14 skipped here, review leftover). None when neither is there."""
     job_id = (job or {}).get("id")
     record = read_json(worker_record(root, job_id), {}) if isinstance(job_id, str) and re.fullmatch(r"[a-f0-9]{32}", job_id) else {}
     for source in (record or {}, job or {}):
         pid = source.get("pid")
         started = source.get("started_process_at", source.get("process_started_at"))
-        if type(pid) is int and pid > 0 and isinstance(started, (int, float)):
+        if isinstance(started, str):
+            moment = parse_iso(started)
+            started = moment.timestamp() if moment is not None else None
+        if type(pid) is int and pid > 0 and isinstance(started, (int, float)) and not isinstance(started, bool):
             return {"pid": pid, "started": float(started)}
     return None
 
@@ -408,9 +417,26 @@ def auto_resume(job):
     return None
 
 
+def waits_for_resume(job):
+    """Whether the scheduler resumes this stopped main job by itself at some point: a quota reset, a transient stop's
+    pause, a code update (auto_resume with a time), or an expired login it checks (resume_after_login), each while
+    automatic resumes are left."""
+    if not isinstance(job, dict):
+        return False
+    plan = auto_resume(job)
+    if plan and plan[1]:
+        return True
+    run = job.get("run") or {}
+    count = job.get("auto_resume_count", 0)
+    count = count if type(count) is int and count >= 0 else 0
+    return (job.get("status") in {"blocked", "failed"} and stop_code(job)[0] == "authentication_required"
+            and run.get("kind") in {"research", "script"} and isinstance(run.get("run_id"), str)
+            and count < MAX_AUTO_RESUMES)
+
+
 def latest_provider_choice(work):
     """The decision of the newest model call, with the switch receipt when that call changed provider."""
-    calls = sorted((work / "calls").glob("call_*/provider_choice.json"))
+    calls = numbered((work / "calls").glob("call_*/provider_choice.json"))
     if not calls:
         return None
     choice = read_json(calls[-1], {})
@@ -650,26 +676,63 @@ def writes_series(job):
     return bool(job) and (job.get("action") == "episodes" or (job.get("action") == "resume" and job.get("series") is True))
 
 
-def stop_after_asked(root, job=None):
-    """Whether the project's job was asked to end after its current episode; the wish names that job, so it never
-    outlives it."""
-    job = job if job is not None else read_json(root / "studio/job.json", {}) or {}
+def job_outline(root, job):
+    """The outline whose remaining episodes ``job`` writes: the one the job names (Studio.start), else, for a job
+    started before jobs named it, the project's current outline; None for a job that writes no series."""
+    if not writes_series(job):
+        return None
+    if isinstance(job.get("outline"), str) and job["outline"]:
+        return job["outline"]
+    work = Studio.outline_work(root)
+    return work.name if work is not None else None
+
+
+def stop_wish(root):
+    """The wish on record (stop_after_episode.json), or None. It names the series it ends by its outline (``outline``),
+    the episode run it was asked during (``run_id``) and the job asked (``job_id``); a wish written before 2026-11-14
+    names only the job."""
     wish = read_json(root / STOP_AFTER, {}) or {}
+    return wish if isinstance(wish, dict) and wish else None
+
+
+def stop_after_asked(root, job=None, outline=None):
+    """Whether the job that writes ``outline``'s remaining episodes, or the project's ``job`` (job.json by default), was
+    asked to end after its current episode. The wish names the series, so it outlives the job asked: a chat, a check
+    or a run of another lane may come between, and the series' resume, by hand or by the scheduler, takes it on."""
+    wish = stop_wish(root)
+    if wish is None:
+        return False
+    job = job if job is not None else read_json(root / "studio/job.json", {}) or {}
+    if wish.get("outline"):
+        target = outline or job_outline(root, job)
+        return bool(target) and wish["outline"] == target
     return bool(job.get("id")) and wish.get("job_id") == job.get("id")
 
 
 def carry_stop_after(root, previous, job, payload):
-    """„Nach dieser Folge anhalten“ (D-207) when a new job starts: a resume of the run the wish's job was writing, the
-    scheduler's after a quota wait among them, keeps it under its own id; any other new job starts without it
-    (Codex review on #25: a resume after a quota wait wrote on past the episode)."""
-    wish = read_json(root / STOP_AFTER, {}) or {}
-    same_run = (job.get("action") == "resume" and bool(payload.get("series")) and bool(previous.get("id"))
-                and wish.get("job_id") == previous.get("id")
-                and (previous.get("run") or {}).get("run_id") == payload.get("run_id"))
-    if wish and same_run:
-        write_json(root / STOP_AFTER, {**wish, "job_id": job["id"]})
-    else:
+    """„Nach dieser Folge anhalten“ (D-207) when a new main job starts. The resume of the series the wish names, the
+    scheduler's after a quota wait among them, takes it on under its own id (Codex review on #25). A new job of the
+    script lane supersedes the series' stopped run and ends the wish. Any other job leaves it: review 2026-11-14, the
+    check a stop card offered after an expired login removed it, and the automatic resume wrote every remaining
+    episode. ``previous`` is the job.json the new job replaces."""
+    wish = stop_wish(root)
+    if wish is None:
+        return
+    outline = wish.get("outline")
+    if not outline and previous and wish.get("job_id") == previous.get("id"):
+        # A wish from before it named its series names the job asked, whose outline it is.
+        outline = job_outline(root, previous)
+    continues = job.get("action") == "resume" and bool(payload.get("series"))
+    if continues and (payload["series"] == outline if outline else (
+            bool(previous.get("id")) and wish.get("job_id") == previous.get("id")
+            and (previous.get("run") or {}).get("run_id") == payload.get("run_id"))):
+        write_json(root / STOP_AFTER, {**wish, "outline": outline or payload["series"], "job_id": job["id"]})
+    elif continues or lane(job) == "script" or (not outline and wish.get("job_id") != (previous or {}).get("id")):
+        # Superseded, or a wish from before that no job can match any more (it names a job that is gone).
         (root / STOP_AFTER).unlink(missing_ok=True)
+    elif outline and not wish.get("outline"):
+        # Pinned to its series now, before the job it names leaves job.json.
+        write_json(root / STOP_AFTER, {**wish, "outline": outline})
 
 
 def read_revisions(root):
@@ -899,8 +962,7 @@ def episode_view(folder, table, table_key, language):
 # Each key's attribute on the Studio, and the environment variable a server may carry it in instead (D-167).
 KEY_ATTRIBUTES = {"openrouter": "key", "google": "google_key", "anthropic": "anthropic_key",
                   "perplexity": "perplexity_key", "core": "core_key", "elevenlabs": "elevenlabs_key"}
-KEY_VARIABLES = {"openrouter": "OPENROUTER_API_KEY", "google": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
-                 "perplexity": "PERPLEXITY_API_KEY", "core": "PLA_CORE_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY"}
+KEY_VARIABLES = key_store.KEY_VARIABLES  # one list for the Studio, the subscription CLIs' environment and the logs
 
 
 def valid_key(value) -> bool:
@@ -935,6 +997,8 @@ class Studio:
         self.code_stamp = code_fingerprint()
         self.restart_requested = self.restarting = False
         self.restart_hook = None
+        # The call that lets the computer sleep again while no stopped run waits (keep_awake_while_waiting).
+        self.awake_release = None
         configure_path(self.workspace)
 
     def root(self, project):
@@ -1048,7 +1112,7 @@ class Studio:
                                  "openrouter_efforts": OPENROUTER_EFFORTS, "presets": TEXT_PRESETS,
                                  "reasoning_efforts": REASONING_EFFORTS, "claude_models": CLAUDE_MODELS,
                                  "claude_efforts": CLAUDE_EFFORTS, "effort_equivalents": EFFORT_EQUIVALENTS,
-                                 "provider_notes": PROVIDER_NOTES, "auto_candidates": auto_candidates(),
+                                 "auto_candidates": auto_candidates(),
                                  # What a billed run's money limit is set against (cost_estimate, D-146).
                                  "billed_providers": list(BILLED_TEXT_PROVIDERS),
                                  "usd_per_call": [{"kind": kind, "model": model, "usd": usd}
@@ -1415,8 +1479,11 @@ class Studio:
         """Waiting rows start one at a time, in the order asked, once their project is free (D-191): no job and no
         recording of it runs, a place is free, and no stopped script run holds them (revisions_held). Each start
         checks the request again (start's own rules); one refused keeps its reason, and the next one goes on. A row
-        of the remaining episodes (D-192) starts as „Alle weiteren Folgen“ would, at its length."""
+        of the remaining episodes (D-192) starts as „Alle weiteren Folgen“ would, at its length. While a restart is asked
+        for, the rows wait for the new server."""
         started = []
+        if self.restart_requested or self.restarting:
+            return started
         for path in sorted(self.projects.glob("*/studio/revision_queue.json")):
             root, project = path.parents[1], path.parents[1].name
             with self.mutex:
@@ -1482,8 +1549,10 @@ class Studio:
         """Approved Gemini recordings waiting in a project's queue start in approval order once a place is free.
         Each start checks the approval again (start's own rules): one that no longer holds stays in the queue with
         its reason instead of starting, and one waiting for a place or a key simply waits. A held queue starts
-        nothing (D-195)."""
+        nothing (D-195), and while a restart is asked for every row waits for the new server."""
         started = []
+        if self.restart_requested or self.restarting:
+            return started
         for path in sorted(self.projects.glob("*/studio/audio_queue.json")):
             root, project = path.parents[1], path.parents[1].name
             with self.mutex:
@@ -1598,7 +1667,7 @@ class Studio:
     def ready_to_start(self, root, gpu=False):
         """Whether a main job of this project could start now by start's own rules (no restart pending, the project
         idle and unlocked, a place free), checked before the scheduler commits to anything."""
-        if self.restarting:
+        if self.restarting or self.restart_requested:
             return False
         try:
             self.idle(root)
@@ -1711,11 +1780,39 @@ class Studio:
                                   (self.apply_allowances, "Vorab-Erlaubnisse übersprungen."),
                                   (self.start_queued, "Warteschlange der Vertonung übersprungen."),
                                   (self.start_revisions, "Warteschlange der Überarbeitungen übersprungen."),
+                                  (self.keep_awake_while_waiting, "Wachhalten übersprungen."),
                                   (self.restart_when_idle, "Neustart übersprungen.")):
                 try:
                     step()
                 except Exception:  # The scheduler must outlive any single project's trouble.
                     logger("studio").warning(failure, exc_info=True)
+
+    def waiting_projects(self):
+        """The projects with a stopped main job, in job.json or parked, that the scheduler resumes by itself
+        (waits_for_resume)."""
+        found = set()
+        for path in sorted([*self.projects.glob("*/studio/job.json"), *self.projects.glob("*/studio/paused_*.json")]):
+            try:
+                if waits_for_resume(read_json(path)):
+                    found.add(path.parents[1].name)
+            except (OSError, ValueError):
+                continue  # Read again at the next pass.
+        return sorted(found)
+
+    def keep_awake_while_waiting(self):
+        """Keep the computer awake while a stopped run waits for its automatic resume; True while one does. Until
+        2026-11-14 only a running worker held it (studio_worker.keep_awake), so a run waiting for its quota reset, its
+        10/30/90-minute pause or the login check let the computer sleep through it (2026-10-02: a reset at 01:20 went
+        unused until 09:30). The scheduler's thread calls this on every pass, so on Windows its own thread holds the
+        request; PLA_KEEP_AWAKE=0 and CI switch it off as for the workers."""
+        waiting = bool(self.waiting_projects())
+        if waiting and self.awake_release is None:
+            from .studio_worker import keep_awake
+            self.awake_release = keep_awake()
+        elif not waiting and self.awake_release is not None:
+            release, self.awake_release = self.awake_release, None
+            release()
+        return waiting
 
     def active_audio(self):
         return {key: value for key, value in self.audio_processes.items() if value[0].poll() is None}
@@ -1913,13 +2010,29 @@ class Studio:
             # three-host project read „geändert: Stimmen“ although it spoke the chosen voices.
             stored = report.get("audio_generation", {"provider": "qwen3_local", "voices": report.get("voices")})
             current = audio.for_language(config.language).model_dump()
-            voices = audio.for_episode(folder.name).for_hosts(config).voices
-            row["audio_current"] = (report.get("script_sha256") == row["hash"]
+            try:
+                voices = audio.for_episode(folder.name).for_hosts(config).voices
+            except AppError as exc:
+                if exc.code != "third_voice_required":
+                    raise
+                # A three-host project on an ElevenLabs choice without the third voice (D-179): this choice can record
+                # nothing, so no recording is current; the page names the missing voice (review 2026-11-14: the
+                # page and the overview card failed instead).
+                voices = None
+            # An MP3 without the AI marking (D-154; every recording before 2026-10-07) is not current either: a montage
+            # from the cache adds it, and until then the downloads would hand it out unmarked (review 2026-11-14).
+            unmarked = bool(row["audio"]) and memo(
+                ("unmarked", str(folder)),
+                [folder / "audio_latest.json"] + [inside(root, part["audio"]).parent / "audio_report.json"
+                                                  for part in report.get("parts", [])],
+                lambda: recording_unmarked(root, report))
+            row["audio_current"] = (voices is not None and report.get("script_sha256") == row["hash"]
                 and report.get("voices") == voices and same_audio_generation(stored, current)
-                and report.get("music") == music)
+                and report.get("music") == music and not unmarked)
             # What an older recording differs in, so the page can say why it is not current (D-160).
             row["audio_stale"] = ([] if row["audio_current"] or not row["audio"]
-                                  else stale_reasons(report, row["hash"], voices, stored, current, music))
+                                  else stale_reasons(report, row["hash"], voices, stored, current, music,
+                                                     unmarked=unmarked))
             seconds = report.get("total_seconds") or sum(part.get("duration_seconds") or 0 for part in report.get("parts", []))
             row["audio_seconds"] = round(seconds) if row["audio"] and isinstance(seconds, (int, float)) else None
             if full:
@@ -2157,6 +2270,10 @@ class Studio:
             if data.get("config_hash") != project_hash(old):
                 raise AppError(t("server.save.project_changed"), code="inputs_changed")
             config = TopicBrief.model_validate(data["config"])
+            if old.trial or config.trial:
+                # A trial stays one short episode (D-157), whatever the page or the editorial partner's proposal asks
+                # (review 2026-11-14: a proposal's 180 minutes planned a long series); a page may not drop the flag.
+                config = trial_brief(config)
             config.runtime = old.runtime
             config.local_sources = kept_local_sources(root, old.local_sources, config.local_sources)
             self.validate_voices(config)
@@ -2204,8 +2321,12 @@ class Studio:
                 "report": production_report(work, allowance_rows=studio_allowances.allowance_log(root))}
 
     def allowances(self, project, data):
-        """Fresh attempts and extra calls the scheduler may grant this project's runs without asking."""
-        return {"allowances": studio_allowances.set_allowances(self.root(project), data)}
+        """Fresh attempts and extra calls the scheduler may grant this project's runs without asking; refused while the
+        settings page sets them for every project, which then holds over this file (studio_allowances.allowances)."""
+        root = self.root(project)
+        if isinstance(studio_settings.section(root, "allowances"), dict):
+            raise AppError(t("server.allowances.workspace"), code="invalid_request")
+        return {"allowances": studio_allowances.set_allowances(root, data)}
 
     def settings_values(self, root=None):
         """The workspace settings as one project sees them (its own files where the workspace sets none), or the
@@ -2375,7 +2496,7 @@ class Studio:
             episode, read = data.get("episode"), data.get("read")
             if not isinstance(episode, str) or not re.fullmatch(r"ep_[a-z0-9_]+", episode) or read is not None and (
                     not isinstance(read, str) or len(read) > 128):
-                raise AppError("Ungültige Lesemarke.", code="invalid_request")
+                raise AppError(t("server.reader_state.read"), code="invalid_request")
             if read:
                 state["read"][episode] = read
             else:
@@ -2384,7 +2505,7 @@ class Studio:
             recording, seconds = data.get("recording"), data.get("position")
             if (not isinstance(recording, str) or not re.fullmatch(r"exports/[\w./-]+\.mp3", recording) or ".." in recording
                     or seconds is not None and (type(seconds) not in (int, float) or not 0 <= seconds <= 86400)):
-                raise AppError("Ungültige Wiedergabestelle.", code="invalid_request")
+                raise AppError(t("server.reader_state.position"), code="invalid_request")
             if data.get("heard") is True:
                 state["heard"][recording] = True
                 state["positions"].pop(recording, None)
@@ -2392,7 +2513,7 @@ class Studio:
                 state["positions"][recording] = int(seconds)
         if "rate" in data:
             if type(data["rate"]) not in (int, float) or not 0.5 <= data["rate"] <= 3:
-                raise AppError("Ungültige Wiedergabegeschwindigkeit.", code="invalid_request")
+                raise AppError(t("server.reader_state.rate"), code="invalid_request")
             state["rate"] = data["rate"]
         write_json(path, state)
         return {"reader_state": state}
@@ -2472,6 +2593,10 @@ class Studio:
         root = self.root(project)
         if self.restarting:
             raise AppError(t("server.start.restarting"), code="studio_restarting")
+        if self.restart_requested:
+            # The user's decision of 2026-11-14: once a restart is asked for, nothing new starts until it happened;
+            # queued work waits in its queue for the new server.
+            raise AppError(t("server.start.restart_requested"), code="studio_restarting")
         action = data.get("action")
         if action not in {"assistant", "research", *SCRIPT_ACTIONS, "audio", "audio_sample", "audio_samples",
                           "resume", "check", "expression", "publish_kit"}:
@@ -2695,6 +2820,9 @@ class Studio:
         if payload.get("series"):
             # Kept with the job, so a resume that stops again still goes on with the series when it is resumed.
             job["series"] = True
+        if action == "episodes" or payload.get("series"):
+            # The series it writes, which „Nach dieser Folge anhalten“ names (job_outline).
+            job["outline"] = payload.get("series") or payload["run_id"]
         if remote_episode:
             job.update(episode=remote_episode, provider=remote_provider)
             payload["audio_job_id"] = job["id"]
@@ -2770,7 +2898,16 @@ class Studio:
         except Exception:  # psutil: the process ended in between, or may not be inspected.
             return None
 
-    def stop(self, project, job_id=None):
+    @staticmethod
+    def expect_job(root, expected):
+        """A request made for one main job (``expected_job_id``) refuses another: the page's confirm dialog may stay
+        open while one job ends and the next starts. Without the field the request acts on the current job."""
+        if expected is None:
+            return
+        if expected != (read_json(root / "studio/job.json", {}) or {}).get("id"):
+            raise AppError(t("server.stop.job_changed"), code="job_changed")
+
+    def stop(self, project, job_id=None, expected_job_id=None):
         root = self.root(project)
         if job_id:
             owner = self.audio_processes.get(job_id)
@@ -2779,26 +2916,31 @@ class Studio:
             if owner is None and process is None:
                 raise AppError(t("server.stop.audio_missing"), code="no_active_job")
         else:
+            self.expect_job(root, expected_job_id)
             # A worker that outlived the Studio that started it is stopped as well, once its identity is verified.
             process = self.worker(root) or self.external_worker(root, root / "studio/job.json")
         if process is None or process.poll() is not None:
             raise AppError(t("server.stop.none"), code="no_active_job")
         stop_process_tree(process)
-        return record_interruption(root, expected_job_id=job_id, audio_job_id=job_id)
+        return record_interruption(root, expected_job_id=job_id or expected_job_id, audio_job_id=job_id)
 
     def stop_after(self, project, data):
         """„Nach dieser Folge anhalten“ (D-207): the running job that writes the remaining episodes ends once the episode
         it writes now is published and read for its tags; ``enabled: false`` takes the wish back. The worker looks for
-        it between two episodes (studio_worker.write_in_order)."""
+        it between two episodes (studio_worker.write_in_order). The wish names the series' outline, so it outlives the
+        job asked (carry_stop_after)."""
         root = self.root(project)
         if data.get("enabled", True) is False:
-            # Taking the wish back is always safe, also once the job has ended.
+            # Taking the wish back is always safe, also once the job has ended or another one runs.
             (root / STOP_AFTER).unlink(missing_ok=True)
             return {"stop_after_episode": False}
+        self.expect_job(root, data.get("expected_job_id"))
         job = read_json(root / "studio/job.json", {}) or {}
         if job.get("status") != "running" or not writes_series(job):
             raise AppError(t("server.stop_after.none"), code="no_active_job")
-        write_json(root / STOP_AFTER, {"job_id": job["id"], "asked_at": now()})
+        outline = job_outline(root, job)
+        write_json(root / STOP_AFTER, {"job_id": job["id"], **({"outline": outline} if outline else {}),
+                                       "run_id": (job.get("run") or {}).get("run_id"), "asked_at": now()})
         return {"stop_after_episode": True}
 
     def stop_all(self):
@@ -2977,7 +3119,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                         if not match:
                             raise AppError(t("server.not_found"), code="not_found")
                         project, action = match.groups()
-                        result = app.stop(project, data.get("job_id")) if action == "stop" else getattr(app, action)(project, data)
+                        result = (app.stop(project, data.get("job_id"), data.get("expected_job_id")) if action == "stop"
+                                  else getattr(app, action)(project, data))
             elif path in {"/", "/app.js", "/style.css"}:
                 name = "index.html" if path == "/" else path[1:]
                 body = files("podcast_automate").joinpath("web", name).read_bytes()
@@ -3073,18 +3216,30 @@ class StudioHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return  # A cancelled download still exits its context and cleans up.
         except (AppError, ValueError, KeyError, TypeError, OSError) as exc:
-            code = exc.code if isinstance(exc, AppError) else "invalid_request"
-            raw = (exc.args[0] if exc.args else "") if isinstance(exc, AppError) else t("server.request.failed")
-            message, language = str(raw), message_language(raw)
-            for key in app.stored_keys():
-                message = message.replace(key, t("server.key_hidden"))
             if not isinstance(exc, AppError):
                 # Request bodies and paths stay out of the log; the traceback names the failing code.
                 logger("studio").warning("Anfrage %s abgewiesen: %s", urlsplit(self.path).path, type(exc).__name__, exc_info=exc)
-            self.drain()
-            self.send_data(403 if code == "forbidden" else 404 if code == "not_found" else 400,
-                           json.dumps({"error": message, "code": code, "message_language": language},
-                                      ensure_ascii=False).encode("utf-8"))
+            self.refuse(app, exc)
+        except Exception as exc:  # noqa: BLE001  (every request gets an answer)
+            # Review 2026-11-14: a stop whose worker outlived taskkill's ten seconds raised TimeoutExpired, and the page
+            # saw only a dropped connection.
+            logger("studio").error("Anfrage %s fehlgeschlagen: %s", urlsplit(self.path).path, type(exc).__name__, exc_info=exc)
+            self.refuse(app, AppError(t("server.request.unexpected"), code="processing_failed"), status=500)
+
+    def refuse(self, app, exc, status=None):
+        """The error answer: the code, the message without the stored keys and with local paths cut to file names
+        (review 2026-11-14: a pipeline message such as „Datei nicht lesbar: C:\\Users\\…“ reached the page, in LAN mode
+        too), and the message's language."""
+        code = exc.code if isinstance(exc, AppError) else "invalid_request"
+        raw = (exc.args[0] if exc.args else "") if isinstance(exc, AppError) else t("server.request.failed")
+        message, language = str(raw), message_language(raw)
+        for key in app.stored_keys():
+            message = message.replace(key, t("server.key_hidden"))
+        message = paths_only(message) or message
+        self.drain()
+        status = status or {"forbidden": 403, "not_found": 404, "job_changed": 409}.get(code, 400)
+        self.send_data(status, json.dumps({"error": message, "code": code, "message_language": language},
+                                          ensure_ascii=False).encode("utf-8"))
 
     def send_audio(self, path):
         self.send_file(path, "audio/mpeg")

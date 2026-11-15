@@ -2,7 +2,7 @@
 title: Quality
 doc_type: quality
 status: current
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/script_checks.py
   - src/podcast_automate/script_advisories.py
@@ -37,7 +37,7 @@ scripts), `series_review.py` and `script_advisories.py`.
 | `rights_check` | Planned gate | Individual rights states and export blocks are not implemented yet. Currently only private use and the deterministic quote limits apply; see [Source rights and privacy](SECURITY.md#source-rights-and-privacy). |
 | `audio_readiness_check` | Yes, before rendering | Speakers, spoken text, pauses and chapters are unambiguous. |
 | `audio_output_check` | Yes, before the final audio export | All segments are present and technically valid; assembly, measured duration and chapters match. |
-| `advisories` | No | Non-blocking review notes beside the gates: terms defined again, repeated reminders that an example is invented, a long cold open, a duration above the target, more than two turns over 120 words and a partner share under 25 % (`script_advisories.py` with German and English patterns; other languages get only the cold-open, duration, turn and share notes); series-review findings that only describe a source limitation or that, in the re-check of a repair round, newly concern an unchanged episode; and, in the research, findings from only one research group (`single_group_findings`). They are stored in `reports/script_quality.yaml` under `episodes.<ep>.advisories` and `series_review.advisories`, or in the research report, and the Studio shows them under **Review notes** („Hinweise der Prüfungen“) (review notes, [on the reading page](STUDIO.md#review-notes-on-the-reading-page)). Since 2026-10-07 each row of `script_advisories.py` also carries `params`, the values of its German `detail`, so the Studio can word it in its interface language by `code`: `redefined_term` (`term`, `definitions`), `repeated_hedging` (`reminders`, `limit`), `long_cold_open` (`words`, `limit`), `over_target_duration` (`estimated_minutes`, `target_minutes`, `percent`, `limit_percent`), `long_turns` (`turns`, `longest_words`, `over_words`, `turn_words`, `limit`), `low_partner_share` (`percent`, `floor_percent`); `detail` is unchanged, and older rows have no `params` (why: D-153). Nothing evaluates them automatically. |
+| `advisories` | No | Non-blocking review notes beside the gates: terms defined again, repeated reminders that an example is invented, a long cold open, a duration above the target, more than two turns over 120 words and a partner share under 25 % (`script_advisories.py` with German and English patterns; other languages get only the cold-open, duration, turn and share notes); series-review findings that only describe a source limitation or that, in the re-check of a repair round or a later review over an outline's published episodes, newly concern an unchanged episode (basis `unchanged`, D-226); script-review points only more research could fix (`source_limit`, never in `grounding`, D-228); and, in the research, findings from only one research group (`single_group_findings`). They are stored in `reports/script_quality.yaml` under `episodes.<ep>.advisories` and `series_review.advisories`, or in the research report, and the Studio shows them under **Review notes** („Hinweise der Prüfungen“) (review notes, [on the reading page](STUDIO.md#review-notes-on-the-reading-page)). Since 2026-10-07 each row of `script_advisories.py` also carries `params`, the values of its German `detail`, so the Studio can word it in its interface language by `code`: `redefined_term` (`term`, `definitions`), `repeated_hedging` (`reminders`, `limit`), `long_cold_open` (`words`, `limit`), `over_target_duration` (`estimated_minutes`, `target_minutes`, `percent`, `limit_percent`), `long_turns` (`turns`, `longest_words`, `over_words`, `turn_words`, `limit`), `low_partner_share` (`percent`, `floor_percent`); `detail` is unchanged, and older rows have no `params` (why: D-153). Nothing evaluates them automatically. |
 
 ID and schema checks are deterministic. Depth of content, fit of the evidence and naturalness need an editorial
 assessment; a source ID does not prove that a statement is factually correct. The report keeps automatic checks, model
@@ -54,18 +54,20 @@ episode must never count as a review of the whole series.
 ## Assessment criteria
 
 The prioritised main case is a source-bound podcast series whose scope follows from the topic and the desired depth.
-Total duration and number of episodes are not fixed; the limits per episode and per recorded part are under
+Total duration and number of episodes are not fixed; the limit per episode, recorded as one MP3, is under
 [Episode and series length](BUSINESS_LOGIC.md#episode-and-series-length). The assessment covers research, depth of
 explanation, structure across several episodes and listening quality.
 
 ### State of the assessment
 
-Version 0.1 covers the whole path from real topic research to the automatic assembly and MP3 export of approved
+Version 0.2 covers the whole path from real topic research to the automatic assembly and MP3 export of approved
 episodes (see [What it is for](PRODUCT.md#what-it-is-for)). The tests check simulated model responses and real FFmpeg
 processing of test signals.
 
-A complete series of six episodes with exported MP3s exists („Die Entwicklung der Transformer-Architektur“, produced
-from 13 to 16 September 2026). The audit of 19 September 2026 assessed it: the individual verdicts are in the
+A complete series of the current pipeline exists: „Geld verstehen“ season 1, 15 episodes written by the story agent
+and recorded with ElevenLabs, measured on 2026-11-10 ([Money limit](BUSINESS_LOGIC.md#money-limit)). The first
+complete series, six episodes with exported MP3s („Die Entwicklung der Transformer-Architektur“, produced from 13 to
+16 September 2026), predates it. The audit of 19 September 2026 assessed it: the individual verdicts are in the
 [quality audit](specs/2026-09-19-quality-audit.md), the changes made from it in the
 [status of its implementation plan](specs/2026-09-19-quality-audit-plan.md#status). Source and structure checks still
 do not prove sufficient depth of explanation; that is what the script review against the
@@ -95,7 +97,7 @@ Tutor pedagogy, quizzes, diagnosis of learning progress and repetition planning 
 | Listenability | Pace, pronunciation, pauses and chapters support the explanation. | A formally correct script is hard to follow when spoken. |
 | Automatic production | Two stable voices, fitting transitions, loudness and finished files come about without manual editing. | The user has to sort, join or repair audio snippets in an editor. |
 | Reliability | Subscription pauses and technical errors can be resumed with the results kept. | An interruption forces the series to be recomputed, or an unrequested switch to an API. |
-| Running time | The duration planned from the content and the actually measured duration are shown; every episode and every recorded part stays within its limit. | A fixed total number of hours counts as proof of quality, or word count is equated with depth. |
+| Running time | The duration planned from the content and the actually measured duration are shown; every episode stays within its limit. | A fixed total number of hours counts as proof of quality, or word count is equated with depth. |
 
 ## Depth check
 
@@ -207,10 +209,11 @@ The cases under `evals/`, each with a README on how to run it:
 - [`narration_lab/`](../evals/narration_lab/README.md): an archive since 2026-11-01: the narration workshop of
   2026-10-26/27 on fixed ten-minute cases (Milgram, Kuchavez, Heinrich), with its cases, prompts and results as the
   evidence of D-181: writer variants, the agentic writer the story agent came from, and the v3 judge the operator
-  calibrated. Its `run.py` went with the writing prompt (D-184).
+  calibrated. Its `run.py` went with the writing prompt (D-184); its judge runs on in `research_lean/judge.py`.
 - [`research_lean/`](../evals/research_lean/README.md): whether a research with far fewer sub-questions still
   gives the story agent what it needs: one brief researched with at most 12 and at most 4 sub-questions, one agent
-  episode each, judged by the lab's v3 judge; real research and script runs on the subscription.
+  episode each, judged by the lab's v3 judge (kept in its `judge.py`); real research and script runs on the
+  subscription.
 - [`research_evidence/`](../evals/research_evidence/README.md): an offline contract check of the evidence gate on 14
   fixed, fictional cases (eight with seeded defects, six clean controls), labelled by the implementation agent (see
   V-5).

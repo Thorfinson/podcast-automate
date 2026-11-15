@@ -2,7 +2,7 @@
 title: Studio
 doc_type: frontend
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/studio.py
   - src/podcast_automate/studio_worker.py
@@ -208,7 +208,10 @@ A project runs through six steps. The navigation groups their pages into the thr
    server's `audio_stale`: script, voices, provider, model, pauses, pace, styles, alternate roles, music); the page
    names it once above the approval (why: D-160). The voices compared are the ones the recording spoke, with the
    third host's in a project that has one (`for_hosts`); until 2026-11-08 every three-host recording read "changed: voices" („geändert: Stimmen“). A podcast with music shows it on the approval card under "Music" („Musik“)
-   ([Music](AUDIO.md#music)).
+   ([Music](AUDIO.md#music)). A recording whose MP3 lacks the AI marking reads "changed: AI marking"
+   („geändert: KI-Kennzeichnung“) and is offered with the music-only ones in **Assemble {n} episodes again with music**,
+   from the cache (D-231). A three-host project on the workspace's ElevenLabs choice without a third voice opens
+   again; none of its recordings counts as current until a third voice is set.
 
 The pronunciation check, the panels for spoken forms, host names and editorial notes, re-rendering one segment and the
 listening review are described in [Spoken forms and pronunciation](AUDIO.md#spoken-forms-and-pronunciation),
@@ -248,9 +251,11 @@ in one job, and **„Schreiber“** (writer) in the job summary chose between th
   beside "Stop" lets the episode it writes now finish, published and read for its tags, and then ends the job as done
   instead of starting the next one; the bar then says **Stops after this episode** („Hält nach dieser Folge an“) with
   **Keep writing** („Doch weiterschreiben“) to take it back, and once it ended, which episode comes next. The wish
-  belongs to that one job (`studio/stop_after_episode.json` names it): a resume of the run it was asked for, also the
-  scheduler's after a quota wait, takes it on, and any other new job starts without it. The button
-  shows only on a server that offers it (`stops_after_episode`; why: D-207). **Resume** on the approved outline's own
+  names the series' outline, not the job (`studio/stop_after_episode.json`; why: D-237): a chat, a connection check,
+  a voice sample or a run of another lane keeps it, the series' resume carries it, also the scheduler's after a quota
+  wait, and a new job of the script lane ends it. Until 14 November 2026 it named the job, so the check behind the
+  login stop card removed it and the automatic resume wrote every remaining episode. The button shows only on a
+  server that offers it (`stops_after_episode`; why: D-207). **Resume** on the approved outline's own
   run writes its next episode too.
   An episode the batch stopped at is resumed with the rest of the batch: it is finished, then the remaining episodes
   follow (the rule: [Writing a series in order](SCRIPTS.md#writing-a-series-in-order)). These actions need the approved outline (`plan_approval_required`) and refuse once every episode is written
@@ -356,7 +361,7 @@ projects:
 
 | Section | What you set there |
 | --- | --- |
-| **Text model** („Textmodell“) | One of the presets; see [Choosing the text model](#choosing-the-text-model). Below them a line names the measured money per call of Claude Sonnet 5.5 and Opus 5.5 in research and script work and that a whole series took 1,400 to 1,800 calls ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
+| **Text model** („Textmodell“) | One of the presets; see [Choosing the text model](#choosing-the-text-model). Below them a line names the measured money per call of Claude Sonnet 5.5 and Opus 5.5 in research and script work, that a whole series took 1,400 to 1,800 calls in October 2026, and that the last one measured, on 10 November 2026, took 873 ([Money limit](BUSINESS_LOGIC.md#money-limit)). |
 | **Web search** („Websuche“) | **Through the text model** („Über das Textmodell“) (through the text model: Claude and Codex search with their own tools, the default) or **Through Perplexity** („Über Perplexity“) (through Perplexity: the Studio searches itself and the text model chooses among the results). Perplexity lets every text model research, an OpenRouter model included, needs the Perplexity key and a money limit, and costs about 0.005 USD per search request. New research and script runs take the choice; running ones keep theirs ([Research runs and their web search](BUSINESS_LOGIC.md#research-runs-and-their-web-search)). Below it, **Contact address for Unpaywall** („Kontaktadresse für Unpaywall“): with an address, the search for a free copy of a blocked source also asks Unpaywall, which receives the address with every request; empty leaves Unpaywall out. Saved with the workspace settings, not in the credential store; each new job's worker reads it (`studio_settings.unpaywall_email`, [Pipeline](RESEARCH.md#pipeline)). |
 | **Audio** | Provider (Qwen, Gemini through Google, ElevenLabs, Gemini through OpenRouter), speech model (Gemini, ElevenLabs), the voices of host A and host B (for ElevenLabs the voices of your account, loaded with the ElevenLabs key, your own first, **Reload voices** („Stimmen neu laden“)), **Voice of host C (three speakers only)** („Stimme Host C (nur bei drei Sprechern)“) (the voice of a third host, automatic by default, chosen on ElevenLabs; [Three hosts](AUDIO.md#three-hosts)), the three pauses ([Pause minimums](AUDIO.md#pause-minimums)), **Speaking pace · German** („Sprechtempo Deutsch“) and **Speaking pace · English** („Sprechtempo Englisch“) (speaking tempo per language, [Speaking pace per language](AUDIO.md#speaking-pace-per-language)); for Gemini and ElevenLabs whether expression tags are set before recording. For Google and ElevenLabs also the style of each role with its presets and **Style of host C** („Stil von Host C“), **Speak … unhurried** („… ohne Eile sprechen“) per language, **Swap roles from episode to episode** („Rollen von Folge zu Folge tauschen“) and, for Google, **▶ Conversation sample** („▶ Gesprächsprobe“) of exactly this selection ([Style and roles](AUDIO.md#style-and-roles), [ElevenLabs](AUDIO.md#elevenlabs)). A project may hold a choice of its own instead ([A project's own speech choice](AUDIO.md#a-projects-own-speech-choice)): the recording page's panel **This project's speech provider** („Sprachanbieter dieses Projekts“) sets it, the third host's voice included, and **Back to Settings** („Wieder wie Einstellungen“) removes it. |
 | **Execution** („Ausführung“) | See [Sequential or parallel](#sequential-or-parallel). |
@@ -379,8 +384,9 @@ names its missing key ("Anthropic key missing" („Anthropic-Key fehlt“)). Wha
 (why: D-161).
 
 **Save settings for all projects** („Einstellungen für alle Projekte speichern“) saves the page from a bar pinned at
-its foot, which reads **Unsaved changes** („Ungespeicherte Änderungen“) after an edit and **Everything saved** („Alles gespeichert“) otherwise; leaving the page with unsaved edits asks first. Storing or removing a key acts at once
-and is no unsaved edit. On the settings page and the overview, the sidebar lists the projects instead of a project's
+its foot, which reads **Unsaved changes** („Ungespeicherte Änderungen“) after an edit and **Everything saved** („Alles gespeichert“) otherwise; leaving the page with unsaved edits asks first. On a phone the bar stays above the episode player.
+Storing or removing a key acts at once and is no unsaved edit, and reloading the ElevenLabs voices keeps unsaved
+edits. On the settings page and the overview, the sidebar lists the projects instead of a project's
 places. The chip at the top
 reads **Applies to all projects** („Gilt für alle Projekte“) once the workspace settings are saved, **Still per project** („Noch je Projekt“) before. Storage, the values shown before the first save, and when running jobs pick up a
 change: [Studio settings](CONFIGURATION.md#studio-settings) (why: D-108). The project page only shows the settings,
@@ -443,8 +449,8 @@ exhausted, the hold card offers the other one: **Resume with Astra (xhigh)** (�
 
 ## Overview, navigation and hold cards
 
-The overview lists each project once, as a card: those waiting for you first, then running ones, then the rest. A
-card holds:
+The overview lists each project once, as a card: those waiting for you first, then running ones, then the rest; it
+sorts the cards again on every refresh, so a project that starts waiting moves to the front. A card holds:
 - the project's state as one badge (läuft, wartet auf dich, angehalten, braucht Hilfe, erledigt or bereit; its tooltip
   names every step's state);
 - the episodes planned, written and recorded, with one mark per planned episode;
@@ -491,7 +497,8 @@ name it there, as in „14 angehalten: OpenRouter verweigert den Zugriff“, wit
 a button to the "OpenRouter key" panel; until 2026-10-04 only the job list on the recording page named the reason. The browser tab shows ● for a running job, ▲ for a decision and ! for
 a stop; the overview shows the number of waiting projects.
 
-The collapsed **Engine room** („Maschinenraum“) at the bottom holds only telemetry, in this order (why: D-164):
+The collapsed **Engine room** („Maschinenraum“) at the bottom holds only telemetry, in this order (why: D-164); it and
+the status brief order a run's calls by their number, so a run past call 999 shows its current call again:
 **Status brief** („Kurzbericht“), the live output, the calls and money of the run, the times of the current call,
 the run's text model with **Choose another provider for this job** („Anderen Anbieter für diesen Auftrag wählen“)
 folded, and for research and script runs the **Production report** („Produktionsbericht“) (production report: calls, model time and share
@@ -511,6 +518,12 @@ Opening an existing project leads to the actual work step, also for a resumed jo
 follows the flow; a page you open yourself stays open when the background work finishes. Project and page are kept in
 the address, so back and forward in the browser switch between visited pages.
 Navigation and reloading start no model calls and grant no approvals.
+
+**An action belongs to its project** (why: D-241). A click captures the project it was made on; its later requests
+and replies apply only while you are still on that project, and a poll older than the last applied reply is dropped,
+so an approval or an upload never reaches, and a reply never redraws, a project opened in the meantime. The stop
+buttons send the job they were shown for (`expected_job_id`); while another job runs, the server answers 409
+`job_changed` instead of stopping it.
 
 ### Stop reasons
 
@@ -556,7 +569,14 @@ page, the recording in the episode's card, and the conversation as a chat reply.
   what stays readable. Until 2026-11-01 a teaching plan still incomplete after its corrections stopped here with
   **„Mit den offenen Punkten neu entwerfen“** (redraft with the open points); the teaching design ended with D-184. A
   script run begun with the writing prompt that has written an episode stops with `writer_retired`
-  ([Runs begun before D-184](SCRIPTS.md#runs-begun-before-d-184)).
+  ([Runs begun before D-184](SCRIPTS.md#runs-begun-before-d-184)). **Local source outside the project** („Lokale
+  Quelle außerhalb des Projekts“, `local_source_outside`) has no "Resume": it leads to the brief page and to starting
+  the research over.
+
+A step that ended without its results (`missing_outputs`) and a worker that could not be stopped (`worker_stop`)
+offer "Resume" when there is a run to resume, and otherwise say to start the step again from its page. Every request
+gets an answer: an unexpected error of the server answers 500 with `processing_failed`, and error answers name files,
+never local folders. The rows of the connection check and the reader's refusals follow the interface language.
 
 Messages appear in the [interface language](#interface-language). The Studio's own messages come from its catalogs;
 in a pipeline message it replaces command-line hints, local paths and internal identifiers and, in a German interface,
@@ -619,7 +639,9 @@ of interrupted; the Studio recognises it by process ID and process start time an
 Without this record, the page says that it ends by itself.
 
 While a worker runs, it keeps the computer awake: on Windows through `SetThreadExecutionState` (the display may turn
-off), on macOS through `caffeinate` (why: D-104); `PLA_KEEP_AWAKE=0` switches this off (see
+off), on macOS through `caffeinate` (why: D-104). The server does the same while a stopped run waits for its
+[automatic resume](#automatic-resume): a quota reset, the pauses of 10, 30 and 90 minutes, a code update or the login
+check, so a reset at night is not lost to sleep (why: D-239). `PLA_KEEP_AWAKE=0` and `CI` switch both off (see
 [Environment variables](CONFIGURATION.md#environment-variables)).
 
 What a stop keeps and what "Resume" reuses is in
@@ -674,7 +696,8 @@ resumed automatically, and the Studio announces nothing there; for missing voice
 Under "Without asking" on the settings page, **Fresh attempts per run** („Neue Anläufe je Lauf“) and **Raise the call limit per run** („Aufruflimit erhöhen je Lauf“) set what the Studio may give a stopped run by itself. The job summary
 on "Brief" shows them; a hold card announces when one is about to be used. A new workspace, without saved settings
 and without a project, shows 2 fresh attempts and 250 extra calls there and gives them to its first project; existing
-workspaces keep theirs (why: D-155). The choices, when the scheduler applies them and which decisions always stay
+workspaces keep theirs (why: D-155). While the workspace settings set pre-approvals, the route that would set a
+project's own (`allowances`) refuses. The choices, when the scheduler applies them and which decisions always stay
 yours: [Pre-approvals](BUSINESS_LOGIC.md#pre-approvals) and [Budgets](BUSINESS_LOGIC.md#budgets).
 
 ### Research decisions and limits
@@ -718,9 +741,11 @@ after an interruption picks up from there without resetting the correction limit
 
 The page reloads `app.js` on every visit, but the server and its scheduler keep the code they started with. If the code
 has changed since, the top of the page shows "The Studio has new code" („Das Studio hat neuen Code“) with **Restart as soon as nothing is running** („Neu starten, sobald nichts läuft“). The Studio then waits until no job and no recording
-runs, accepts no new ones meanwhile, ends itself and restarts in the background with the same working folder and port,
-without a browser window. The new server takes over queued recordings and scheduled resumes; the page reconnects by
-itself.
+runs, ends itself and restarts in the background with the same working folder and port, without a browser window.
+Once the restart is requested it starts no new work (the user's decision of 2026-11-14; why: D-238): a start of
+yours is refused (`studio_restarting`), and queued recordings and revisions, automatic resumes and pre-approvals wait
+for the new server; taking the restart back restores the scheduling. The new server takes over queued recordings and
+scheduled resumes; the page reconnects by itself.
 
 The new server loads the keys from the credential store (D-167). Only on a system without one, an OpenRouter, Google, Anthropic or Perplexity key stored in the Studio lived only in the old server's memory and must be entered again
 ([Times and connection](#times-and-connection)); until then queued Gemini episodes show "waiting for the Google key" („wartet auf den Google-Key“)
@@ -761,7 +786,8 @@ old server.
 
 The page never polls twice at the same time: a project page every 2.5 seconds, the overview every 10 seconds and a
 hidden tab once a minute (the last two are `POLL_MS` in `web/app.js`); a tab that becomes visible again polls at once
-(why: D-106). A project page polls `/api/projects/<id>/status`: the page without research, outline, episodes and
+(why: D-106). One poll request may take at most 30 seconds (`POLL_MS.timeout`): a poll the server or the network
+never answers shows "No connection", and the next poll runs as planned. A project page polls `/api/projects/<id>/status`: the page without research, outline, episodes and
 script previews, its jobs without the stages' output hashes, plus `content_version`, a fingerprint of those parts. Only
 when the fingerprint or a job changes does it load the whole project (why: D-159); measured on 2026-10-07, 37 to
 84 KB per poll instead of 2.5 to 3.7 MB. The two queues, recordings and revisions with their hold, come with every

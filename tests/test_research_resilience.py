@@ -903,14 +903,30 @@ class SourceIsolationTests(unittest.TestCase):
         self.assertEqual(metadata["extraction_coverage"]["pages_with_text"], 1)
 
     def test_owner_locked_pdf_opens_with_the_empty_user_password(self):
-        """Copy and print restrictions alone do not make a public document unreadable."""
-        writer = text_pdf(PAGE_TEXT)
-        writer.encrypt(user_password="", owner_password="owner")
-        buffer = io.BytesIO()
-        writer.write(buffer)
-        kind, _, _, sections = extract(buffer.getvalue(), "application/pdf", "restricted.pdf")
-        self.assertEqual(kind, "pdf")
-        self.assertIn("Models assign an energy", sections[0].text)
+        """Copy and print restrictions alone do not make a public document unreadable, whatever the cipher. pypdf's
+        default is RC4; Acrobat locks with AES-128 or AES-256, which pypdf reads only with a crypto backend (the
+        package's pypdf[crypto] dependency, 2026-11-14 review: without it every AES-locked source was "encrypted")."""
+        for algorithm in (None, "AES-128", "AES-256"):
+            with self.subTest(algorithm=algorithm or "RC4-128 (pypdf's default)"):
+                writer = text_pdf(PAGE_TEXT)
+                writer.encrypt(user_password="", owner_password="owner", algorithm=algorithm)
+                buffer = io.BytesIO()
+                writer.write(buffer)
+                kind, _, _, sections = extract(buffer.getvalue(), "application/pdf", "restricted.pdf")
+                self.assertEqual(kind, "pdf")
+                self.assertIn("Models assign an energy", sections[0].text)
+
+    def test_a_real_user_password_stays_unreadable_with_every_cipher(self):
+        for algorithm in ("AES-128", "AES-256"):
+            with self.subTest(algorithm=algorithm):
+                writer = text_pdf(PAGE_TEXT)
+                writer.encrypt(user_password="user", owner_password="owner", algorithm=algorithm)
+                buffer = io.BytesIO()
+                writer.write(buffer)
+                with self.assertRaises(AppError) as caught:
+                    extract(buffer.getvalue(), "application/pdf", "locked.pdf")
+                self.assertEqual((caught.exception.code, caught.exception.details),
+                                 ("source_unreadable", {"pdf_reason": "encrypted"}))
 
     def test_name_resolution_cannot_hang_the_worker(self):
         def slow(*args, **kwargs):

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .prompts import instructions
 from .codex import CodexAdapter  # noqa: F401  (tests patch podcast_automate.studio_worker.CodexAdapter.structured)
-from . import attachments, studio_settings
+from . import attachments, studio_settings, studio_text
 from .doctor import inspect
 from .episode_audio import run_episode_audio, saved_expression, tag_episode
 from .expression import TAG
@@ -174,10 +174,11 @@ def perform(root, request, sample_progress=None):
             except AppError:
                 available = False
             name = "Google-Key" if google else "ElevenLabs-Key" if eleven else "Gemini-TTS-Key"
-            checks["checks"].append({"name": name, "ok": available,
-                "detail": "Key hinterlegt; noch kein API-Hörtest durchgeführt." if available
-                          else "Google-Key fehlt." if google else "ElevenLabs-Key fehlt." if eleven
-                          else "OpenRouter-Key fehlt."})
+            # In the interface language the check was started in (D-152); until 2026-11-14 always German.
+            detail = ("server.check.key_present" if available else "server.check.google_missing" if google
+                      else "server.check.elevenlabs_missing" if eleven else "server.check.openrouter_missing")
+            checks["checks"].append({"name": name, "ok": available, "detail": str(studio_text.text(
+                interface_language(request.get("ui_language")), detail))})
             checks["ready"] = checks["ready"] and available
         return {"checks": checks}
     if action == "audio_sample":
@@ -354,7 +355,7 @@ def write_in_order(root, outline, request, search, kwargs, *, chain, episode=Non
     the current episode (D-207), the chain ends once that one is published and read for its tags."""
     stopped = False
     while run is None or (chain and run.status == "completed"):
-        if run is not None and stop_after_asked(root):
+        if run is not None and stop_after_asked(root, outline=outline):
             (root / STOP_AFTER).unlink(missing_ok=True)
             stopped = True
             break

@@ -15,7 +15,7 @@ from podcast_automate.research_tasks import AnswerReview, QuestionAnswer, Questi
 from podcast_automate.storage import digest, write_json
 from tests import research_fixtures
 from tests import test_question_research as harness
-from tests.question_fixtures import complete_fixture_response, decision, task_value
+from tests.question_fixtures import answer_for, complete_fixture_response, decision, task_value
 
 CALL = "question_research.v3-clauses"
 
@@ -370,6 +370,238 @@ class WorkflowTests(unittest.TestCase):
             receipt = read_value(next((engine.folder / "tasks" / task).rglob("downloads.json")))
             self.assertIn(address(task), {s.url for s in engine.receipt_index(receipt).sources})
             self.assertEqual(len(engine.receipt_index(receipt).sources), len(engine.index.sources))
+
+    def test_after_a_reopening_only_a_web_search_of_this_pass_ends_a_locked_answer_at_once(self):
+        """Review 2026-11-14: the immediate block of a locked answer asks whether the web was searched in this working
+        pass, but counted every search the question ever made. A question retried or reworked after a first pass that had
+        searched was blocked after one step without anything new, and its reason named a web search that never ran."""
+        engine, spec, row = self.completed()
+        row.update(status="blocked", outcome="evidence_block", web_attempts=1)
+        engine.reopen_task(row, activity="Neuer Versuch", feedback=[])
+        decisions = [decision("answer", answer=answer_for(self.ref)),
+                     decision("read", windows=[ReaderWindow(reference=self.ref, before=0, after=0)])]
+        readers = []
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                readers.append(payload["allowed_actions"])
+                return decisions[len(readers) - 1] if len(readers) <= len(decisions) else decision(
+                    "search_web", web_queries=["energy measured"])
+            if schema is AnswerReview:
+                return self.review(payload, passed=False)
+        self.fixture.hook = hook
+        engine.research_task(spec)
+        self.assertEqual(row["status"], "blocked")
+        self.assertEqual(row["web_attempts"], 2, "the block came after a web search of this pass")
+        self.assertIn("auch die Websuche brachte keine neuen Belege", row["reason"])
+
+    def two_criteria(self, passed=(True, True)):
+        """A review of a two-criterion answer; ``passed`` per criterion."""
+        def review(payload):
+            return complete_fixture_response(AnswerReview(criteria=[
+                dict(index=i, passed=ok, reason="Fixture verdict.") for i, ok in enumerate(passed)],
+                supported=True, source_adequacy=True, issues=[]), payload)
+        return review
+
+    def two_findings(self):
+        answer = answer_for(self.ref)
+        second = {**answer.findings[0].model_dump(), "id": "f_second", "statement": "Energies order the configurations."}
+        return QuestionAnswer.model_validate({**answer.model_dump(), "findings": [*answer.model_dump()["findings"], second],
+                                              "criteria": [*answer.model_dump()["criteria"], {
+                                                  "index": 1, "explanation": "The source orders them.",
+                                                  "finding_ids": ["f_second"]}]})
+
+    def reopened_by_audit(self):
+        """A completed run of one two-criterion question whose audit objects to the wording of its finding f_energy;
+        returns engine, spec and row after the routing."""
+        from unittest.mock import patch
+        from podcast_automate.evidence_models import ResearchObjection
+        from podcast_automate.research_models import ResearchDossier
+        from podcast_automate.research_review import SourceReview
+        from podcast_automate.research_tasks import ReopenPlan
+        passing = self.two_criteria()
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is QuestionPlan:
+                return QuestionPlan(tasks=[{**task_value(), "acceptance": ["Define energy.", "Order the configurations."]}])
+            if schema is ResearchDecision:
+                return decision("answer", answer=self.two_findings())
+            if schema is AnswerReview:
+                return passing(payload)
+        self.fixture.hook = hook
+        engine, spec, row = self.completed()
+        dossier = ResearchDossier.model_validate_json(
+            (self.fixture.work / "complete_research/dossier.json").read_text(encoding="utf-8"))
+        plan = ReopenPlan(routes=[dict(index=0, task_ids=[spec.id], reason="Wording only.", anchors=[ResearchObjection(
+            id="obj_wording", rule="claim_preservation", task_id=spec.id, criterion_index=None,
+            finding_ids=[f"{spec.id}__f_energy"],
+            evidence_refs=[self.ref], missing_evidence="", reason="The summary widens the source.",
+            correction="Restore the source's limit.", closure_condition="The summary keeps the source's limit.",
+            resolution="revise")])])
+
+        def routed(folder, name, schema, prompt, *, validate=None, **kwargs):
+            validate(plan, True)
+            return plan
+        with patch.object(engine, "call", side_effect=routed):
+            engine.reopen(dossier, SourceReview(issues=[], limitations=[]),
+                          {"blocking_gaps": ["The summary widens the source."], "requirements": []})
+        return engine, spec, row
+
+    def test_the_review_of_an_answer_reworked_after_an_audit_keeps_what_it_passed_before(self):
+        """Review 2026-11-14 (the design rule for repeated reviews): the review of an answer an audit reopened started
+        without memory or scope, so a point it had passed in unchanged material could fail the rework, which then ended
+        blocked and gave back the answer from before, its correction lost."""
+        engine, spec, row = self.reopened_by_audit()
+        memory = row["review_memory"]
+        self.assertEqual((memory["passed"], memory["scoped_finding_ids"]), (True, ["f_energy"]),
+                         "the finding the objection names may still fail")
+        reworked = self.two_findings()
+        reworked.summary += " Restricted to the configurations the source names."
+        prompts = []
+        failing_second = self.two_criteria((True, False))
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is ResearchDecision:
+                return decision("answer", answer=reworked)
+            if schema is AnswerReview:
+                prompts.append((prompt, payload))
+                return failing_second(payload)
+        self.fixture.hook = hook
+        engine.research_task(spec)
+        prompt, payload = prompts[0]
+        self.assertIn("previous_review is your earlier verdict on this question's answer, which passed", prompt)
+        self.assertEqual(payload["previous_review"]["may_fail"],
+                         {"finding_ids": ["f_energy"], "criteria": [0], "source_adequacy": True})
+        self.assertEqual(row["status"], "verified", "a new objection to criterion 1, unchanged and passed, is an advisory")
+        self.assertIn("advisory", [item["kind"] for item in row["verification"]["limitations"]])
+        self.assertTrue(any(".memory.kept.story.review_" in version for _, version in self.fixture.calls))
+        self.assertNotIn("review_memory", row)
+
+    def test_a_revalidation_may_fail_only_the_findings_built_on_the_changed_prerequisite(self):
+        """Review 2026-11-14: a revalidated answer was reviewed afresh, so an unchanged finding unrelated to the changed
+        prerequisite could fail and block the run. The scope is the findings that cite the prerequisite's passages."""
+        from podcast_automate.question_dependencies import invalidate_dependents
+        _, _, row = self.completed()
+        answer = answer_for(self.ref).model_dump()
+        other = {**answer["findings"][0], "id": "f_other", "evidence": [{"reference": "src_other#s1", "excerpt": "Other"}]}
+        answer["findings"].append(other)
+        answer["criteria"].append({"index": 1, "explanation": "Another source.", "finding_ids": ["f_other"]})
+        dependent = {**copy_row(row), "answer": answer}
+        revalidate(dependent, scope_refs={self.ref})
+        memory = dependent["review_memory"]
+        self.assertEqual((memory["passed"], memory["scoped_finding_ids"]), (True, ["f_energy"]))
+        scope = review_scope(memory, QuestionAnswer.model_validate(answer))
+        self.assertEqual(scope["may_fail"], {"finding_ids": ["f_energy"], "criteria": [0], "source_adequacy": True})
+        # Where no finding cites the prerequisite's passages, code cannot tell what rests on it: the whole answer is judged.
+        unrelated = {**copy_row(row), "answer": answer}
+        revalidate(unrelated, scope_refs={"src_none#s0"})
+        self.assertNotIn("review_memory", unrelated)
+        # A recheck under tightened rules judges the whole answer, as before.
+        recheck = {**copy_row(row), "answer": answer, "review_memory": {"stale": True}}
+        revalidate(recheck)
+        self.assertNotIn("review_memory", recheck)
+        # The dependents a reworked prerequisite sends back are scoped by that prerequisite's passages.
+        state = {"plan": {"tasks": [task_value(), {**task_value("task_synthesis", "synthesis"), "depends_on": ["task_definition"]}]},
+                 "tasks": {"task_definition": {**copy_row(row), "status": "researching", "answer": None,
+                                               "draft_answer": answer_for(self.ref).model_dump()},
+                           "task_synthesis": {**copy_row(row), "answer": answer}}}
+        invalidate_dependents(state, ["task_definition"])
+        self.assertEqual(state["tasks"]["task_synthesis"]["review_memory"]["scoped_finding_ids"], ["f_energy"])
+
+    def test_a_rejected_review_s_objections_stay_in_view_after_new_evidence_unlocks_the_answer(self):
+        """Review 2026-11-14: after a failed review a web search or a recovery read replaced the feedback, and the unlock
+        hid the lock, so the reader answered again without knowing why its answer had failed."""
+        from podcast_automate.research_tasks import QuestionSearch
+        f = self.fixture
+        f.download.side_effect = lambda url: (research_fixtures.HTML.replace(
+            b"These sentences", b"Additional independent evidence. These sentences"), "text/html", url)
+        engine, spec, row = self.completed()
+        payloads = []
+
+        class Stop(Exception):
+            pass
+
+        def hook(prompt, schema, payload, kwargs):
+            if schema is AnswerReview:
+                return self.review(payload, passed=False)
+            if schema is QuestionSearch:
+                return QuestionSearch(candidates=research_fixtures.discovery(count=2).candidates[1:], limitations=[])
+            if schema is ResearchDecision:
+                payloads.append(payload)
+                if len(payloads) == 1:
+                    return decision("search_web", web_queries=["energy measured"])
+                raise Stop
+        f.hook = hook
+        row.update(status="reviewing", step=row["step"] + 1)
+        with self.assertRaises(Stop):
+            engine.research_task(spec)
+        self.assertTrue(payloads[0]["answer_lock"])
+        self.assertIsNone(payloads[1]["answer_lock"], "the new source unlocked the answer")
+        self.assertIn("Criterion 0 not met", " ".join(payloads[1]["last_review"]["reasons"]))
+        self.assertEqual([c["index"] for c in payloads[1]["last_review"]["criteria"]], [0])
+
+    def test_a_call_limit_reached_during_a_question_leaves_its_outcome_as_it_is(self):
+        """Review 2026-11-14: the budget check stamped budget_block on a question still being researched; once the limit
+        was raised and the run resumed, a later evidence block of that question was reported as a spent budget."""
+        from podcast_automate.errors import AppError
+        engine, spec, row = self.completed()
+        row.update(status="researching", outcome=None, step=row["step"] + 1, pending=None)
+        write_json(self.fixture.work / "budget.json", {"model_calls": engine.limits().model_calls, "search_rounds": 0})
+        with self.assertRaises(AppError) as stopped:
+            engine.ensure_budget(engine.task_folder(spec, row) / f"step_{row['step']:03d}" / "reader.json")
+        self.assertEqual(stopped.exception.code, "research_budget_insufficient")
+        self.assertIsNone(row["outcome"])
+
+    def test_a_reader_receipt_never_applied_is_asked_again_when_its_prompt_changed(self):
+        """Review 2026-11-14: a reader receipt saved just before a stop, while the ledger still lacked its decision, was
+        rebuilt on resume from a ledger other questions or an update had changed, and every resume stopped with
+        invalid_research_checkpoint. Nothing is bound to such a receipt; it is set aside and asked again."""
+        f = self.fixture
+        folder = f.work / "question_research/tasks/task_definition/attempt_0/step_000"
+        stale = decision("blocked").model_dump()
+        write_json(folder / "reader.json", {"input_hash": "0" * 64, "sha256": digest(stale), "value": stale})
+        engine = f.engine()
+        engine.run(f.discovery, f.index)
+        self.assertEqual(engine.state["tasks"]["task_definition"]["status"], "verified")
+        self.assertTrue((folder / "reader_superseded_receipt_00.json").exists())
+
+    def test_a_provided_work_whose_import_fails_on_the_file_is_recorded_not_raised(self):
+        """Review 2026-11-14: the import of a provided work caught only AppError, while every other import loop also
+        records OSError and ValueError."""
+        from unittest.mock import patch
+        from podcast_automate import provided_works
+        engine, spec, _ = self.completed()
+        work = provided_works.add(self.fixture.root, research_fixtures.TEXT.encode(), citation="Kuran (1995)",
+                                  tasks=[spec.id])
+        with patch("podcast_automate.question_research.import_source", side_effect=OSError("disk gone")):
+            self.assertEqual(engine.adopt_provided_works(), [])
+        self.assertIn("disk gone", engine.state["provided_works"][work["id"]]["error"])
+
+
+def copy_row(row):
+    return json.loads(json.dumps(row))
+
+
+class ClosingCallTests(unittest.TestCase):
+    def test_a_follow_up_round_counts_its_follow_up_assessment_not_a_whole_one(self):
+        """Review 2026-11-14: every assembled round counted a whole assessment (assessment.json) among the closing calls,
+        which a follow-up round never makes, so the last approved call could not be spent on its follow-up or routing."""
+        import tempfile
+        from pathlib import Path
+        from podcast_automate.question_budget import remaining_calls
+        from podcast_automate.research_ledger import save_value
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            state = {"phase": "audit", "tasks": {}, "audit_round": 1, "prompt_generation": 4, "seed_dossier": None,
+                     "dirty_tasks": []}
+            self.assertEqual(remaining_calls(dict(state, audit_round=0), folder)[1],
+                             {folder / "synthesis/audit_00/assessment.json"})
+            save_value(folder / "synthesis/audit_00/assessment_merged.json", {"requirements": [], "issues": []})
+            self.assertEqual(remaining_calls(state, folder)[1], {folder / "synthesis/audit_01/assessment_followup.json"})
+            save_value(folder / "synthesis/audit_01/assessment_scope.json", {"requirements": [], "changed_tasks": []})
+            self.assertEqual(remaining_calls(state, folder)[1], set(), "a follow-up with nothing in scope makes no call")
+            save_value(folder / "synthesis/audit_01/assessment_merged.json", {"requirements": [], "issues": []})
+            self.assertEqual(remaining_calls(state, folder)[1], set(), "an assessed round makes no further call")
 
 
 if __name__ == "__main__":

@@ -51,7 +51,11 @@ hits_read_confirmed or resolved, or research_limits a matching limit. Without ei
 statement as unsupported and return a grounding correction that names the matching section.
 research_limits lists limits the research noted for this episode's statements: a limit stated
 briefly with the affected statement is supported; a missing one belongs in limitations, never in
-issues. Put nonblocking cautions in limitations. A model review is not human approval or proof of
+issues. Put nonblocking cautions in limitations. Set source_limit to true on an issue or advisory
+only when rewriting the script from the supplied material cannot fix it because the research lacks
+the material, such as more depth or an answer the sources do not hold; it is then noted, never
+repaired. Never set it for a statement the sources do not support: a repair fixes that by cutting or
+narrowing it. Otherwise set it to false. A model review is not human approval or proof of
 complete topic coverage. Compare with original_draft: polishing must preserve substantive
 explanations, quantities and qualifications, rather than hide omissions behind fluent speech. Do not
 treat the original as verified truth: corrections and missing explanations needed to satisfy a

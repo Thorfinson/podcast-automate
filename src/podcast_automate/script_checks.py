@@ -10,6 +10,7 @@ import math
 import re
 from pathlib import Path
 
+from .call_folders import numbered
 from .errors import AppError
 from .models import TWO_HOSTS, EpisodeScript
 from .prompts import instructions
@@ -168,7 +169,7 @@ def load_plan_checkpoint(work, signature, *, allow_legacy=False):
     # response for an editorial revision with different instructions.
     plan, repairs = None, 0
     if allow_legacy:
-        for path in sorted((work / "calls").glob("call_*/metadata.json")):
+        for path in numbered((work / "calls").glob("call_*/metadata.json")):
             metadata = json.loads(path.read_text(encoding="utf-8"))
             version = metadata.get("prompt_version", "")
             response = path.with_name("response.json")
@@ -212,6 +213,15 @@ def checked_series_plan(work, prompt, invoke, dossier, central_question, signatu
 MIN_DURATION_SHARE = 0.85
 # A corpus section a story agent's segment cites (Segment.source_refs, D-182).
 SECTION_REFERENCE = re.compile(r"src_[a-z0-9_]+#sec_[a-z0-9_]+")
+
+
+def word_ceiling(rate: float, pause_minutes: float) -> int:
+    """The most spoken words (script_metrics' count) a script with ``pause_minutes`` of planned pauses may hold at
+    ``rate`` and still be estimated within MAX_EPISODE_MINUTES, the cap validate_script holds it to (a hair of slack
+    keeps 56.9333… × 150 at 8,540 rather than float's 8,539.999…)."""
+    return max(0, math.floor((MAX_EPISODE_MINUTES - pause_minutes) * rate + 1e-6))
+
+
 def word_budget(episode: EpisodePlan, factor=1.0, rate=SPOKEN_WORDS_PER_MINUTE) -> dict:
     """The spoken words the story agent is given for ``episode``: the floor validate_script holds a draft to, a target
     ``factor`` above the planned duration (story_agent.TARGET_FACTOR, 1.0), and that target spread over the scenes by
@@ -450,7 +460,11 @@ def outline_hash(work: Path) -> str:
 # v16 (2026-10-07): the breathers of the listenability rules; a dialogue point only, like v14 and v15.
 # v17 (2026-10-19): a fact whose finding a later scene introduces is moved there or asked as that scene's open
 # question, never given the later finding's ID, which validate_script rejects (D-175).
-SCRIPT_REVIEW_VERSION = "script_review.v17-scene-order"
+# v18 (2026-11-14 review): a point that only research could fix says so (ScriptIssue.source_limit) and stays a note.
+SCRIPT_REVIEW_VERSION = "script_review.v18-source-limit"
+# Earlier versions whose saved verdict stands on resume when nothing in it blocks (script_pipeline.saved_verdict_stands):
+# a passed review is not asked again for a rule that only adds a way for a point to be a note.
+RELAXED_REVIEW_VERSIONS = ("script_review.v17-scene-order",)
 # Deliberately independent of SCRIPT_REVIEW_VERSION: a review-policy bump must re-review the saved
 # draft, which script_pipeline does through the versions it stores in the checkpoint, and must not
 # discard the draft and its consumed repair allowance.

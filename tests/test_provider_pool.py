@@ -27,16 +27,13 @@ from tests import script_fixtures as fixtures
 from tests import test_studio
 
 
-STORE_ENV = patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(Path(tempfile.mkdtemp()) / "subscriptions.json")})
-
-
 def setUpModule():
-    # Never touch ~/.podcast-automate from a test, whichever path a run takes.
-    STORE_ENV.start()
-
-
-def tearDownModule():
-    STORE_ENV.stop()
+    # Never touch ~/.podcast-automate from a test, whichever path a run takes. The store's folder goes with the module.
+    folder = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(folder.cleanup)
+    store_env = patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(Path(folder.name) / "subscriptions.json")})
+    store_env.start()
+    unittest.addModuleCleanup(store_env.stop)
 
 
 def snapshot(provider, *, available, usable=True, resets_at=None, reason=None):
@@ -52,7 +49,9 @@ class QuotaFakes:
         self.codex, self.claude = codex, claude
         self.reset = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
         self.claude_reset = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
-        store = Path(tempfile.mkdtemp()) / "subscriptions.json"
+        folder = tempfile.TemporaryDirectory()
+        test_case.addCleanup(folder.cleanup)
+        store = Path(folder.name) / "subscriptions.json"
         for target in (patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(store)}),
                        patch.object(subscriptions, "codex_quota", side_effect=self.codex_quota),
                        patch.object(subscriptions, "claude_quota", side_effect=self.claude_quota)):
@@ -539,6 +538,57 @@ class PoolUnitTests(unittest.TestCase):
                     "Prompt", TextProbeOutput, Path(temp) / "fixed", prompt_version="test")
         self.assertEqual(fixed.exception.code, "claude_failed")
         self.assertFalse((Path(temp) / "fixed/provider_switch.json").exists())
+
+    def test_a_failed_turn_without_another_usable_subscription_leaves_no_note_for_the_next_call(self):
+        """Review 2026-11-14: with Codex not installed, one claude_failed noted Claude unusable for ten minutes, and
+        every automatic job of the computer stopped at its first call with "not installed or not logged in"."""
+        config = TopicBrief(topic="Thema")
+        answer = TextProbeOutput(topic="Thema", focus_questions=["Warum?"], note="Kurz")
+        failed = AppError("Claude-Aufruf fehlgeschlagen: Overloaded.", code="claude_failed")
+        claude_first = {**text_generation_settings(config, backend="auto"), "prefer": "claude_code"}
+        missing = {**snapshot("codex_cli", available=False, usable=False, reason="codex_missing")}
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.dict(os.environ, {"PLA_SUBSCRIPTIONS_STORE": str(Path(temp) / "subscriptions.json")}), \
+                patch.object(subscriptions, "codex_quota", return_value=missing), \
+                patch.object(subscriptions, "claude_quota", return_value=snapshot("claude_code", available=True)), \
+                patch("podcast_automate.provider_pool.CodexAdapter.structured", side_effect=AssertionError("no Codex")):
+            with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=failed), \
+                    self.assertRaises(AppError) as error:
+                AdapterPool(config.runtime, claude_first).structured("Prompt", TextProbeOutput, Path(temp) / "first",
+                                                                     prompt_version="test")
+            self.assertEqual(error.exception.code, "claude_failed")
+            self.assertIsNone(subscriptions.unavailable_state("claude_code"))
+            with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", return_value=(answer, {})):
+                output, _ = AdapterPool(config.runtime, claude_first).structured("Prompt", TextProbeOutput,
+                                                                                 Path(temp) / "next", prompt_version="test")
+            self.assertEqual(output, answer)
+            # A login failure is noted as before: the next choice checks the login afresh.
+            login = AppError("Claude-Anmeldung muss erneuert werden", code="authentication_required", status="blocked")
+            with patch("podcast_automate.claude_code.ClaudeCodeAdapter.structured", side_effect=login), \
+                    self.assertRaises(AppError):
+                AdapterPool(config.runtime, claude_first).structured("Prompt", TextProbeOutput, Path(temp) / "login",
+                                                                     prompt_version="test")
+            self.assertEqual(subscriptions.unavailable_state("claude_code")["reason"], "authentication_required")
+
+    def test_an_openrouter_attempt_that_may_have_run_without_a_cost_counts_at_the_estimate(self):
+        """Review 2026-11-14: an OpenRouter call ended by its time limit or a broken stream after the request was sent
+        left a "free" billing row, so the money limit never saw what OpenRouter billed for it."""
+        config = TopicBrief(topic="Thema")
+        pool = AdapterPool(config.runtime, text_generation_settings(config, backend="openrouter", model="openai/gpt-6-astra"),
+                           api_key="test-key")
+        cases = [(AppError("Zeitlimit", code="openrouter_connection", status="blocked", details={"billed_unknown": True}),
+                  "unpriced"),
+                 (AppError("Strom abgebrochen", code="invalid_model_output", status="blocked",
+                           details={"billed_unknown": True}), "unpriced"),
+                 (AppError("Nicht erreichbar", code="openrouter_connection", status="blocked"), "free"),
+                 (AppError("Ratenlimit", code="openrouter_rate_limit", status="waiting_for_quota"), "free")]
+        with tempfile.TemporaryDirectory() as temp:
+            for number, (failure, state) in enumerate(cases):
+                with self.subTest(code=failure.code, state=state), \
+                        patch("podcast_automate.provider_pool.OpenRouterAdapter.structured", side_effect=failure), \
+                        self.assertRaises(AppError):
+                    pool.structured("Prompt", TextProbeOutput, Path(temp) / f"call_{number}", prompt_version="test")
+                self.assertEqual([row["state"] for row in read_billing(Path(temp) / f"call_{number}")], [state])
 
     def test_a_research_call_without_an_observed_search_is_repeated_once_on_the_same_provider(self):
         """D-155: search_not_observed stopped runs four times where a resume usually passed; it is now asked once more

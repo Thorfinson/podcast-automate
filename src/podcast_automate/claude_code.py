@@ -20,9 +20,9 @@ from pathlib import Path
 
 from pydantic import SecretStr, ValidationError
 
-from .call_activity import (CallActivity, clean_status, contract_rejection, mentions, rate_limit_refused,
+from .call_activity import (CallActivity, clean_status, contract_rejection, mentions, provider_json, rate_limit_refused,
                             write_rejected_output)
-from .codex import subscription_environment
+from .codex import MONTHS, subscription_environment
 from .errors import AppError
 from .models import TextProbeOutput
 from .openrouter import strict_schema
@@ -38,6 +38,11 @@ API_ADAPTER_VERSION = "claude_api.v1"
 # an API-key call runs without them, so the key is the only way the CLI can authenticate.
 API_ENV_DROPPED = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
                    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+# The same for a subscription call, which keeps only the subscription's own token: a cloud provider or another endpoint
+# would run the call outside the claude.ai login and outside every money limit (review 2026-11-14).
+SUBSCRIPTION_ENV_DROPPED = tuple(name for name in API_ENV_DROPPED if name != "CLAUDE_CODE_OAUTH_TOKEN")
+# The API provider ``claude auth status`` names for Anthropic itself; an older CLI names none.
+FIRST_PARTY = (None, "firstParty")
 # Opus 5.5 and the level xhigh are refused by older CLIs (2.1.92 names 2.1.280 as the minimum).
 MINIMUM_CLI_VERSION = (2, 1, 280)
 # Models a newer CLI brings: 2.1.283 has no catalog entry for Sonnet 5.5, 2.1.284 has (2026-09-29); 2.1.289 and
@@ -119,9 +124,12 @@ def claude_command(executable: str = "claude") -> list[str]:
 
 
 def claude_environment(model=None) -> dict[str, str]:
-    """Subscription login only, no telemetry; CLAUDE_CONFIG_DIR stays untouched because it holds that login.
+    """Subscription login only, no telemetry; CLAUDE_CONFIG_DIR stays untouched because it holds that login, and
+    nothing that sends the call to a cloud provider or another endpoint (SUBSCRIPTION_ENV_DROPPED).
     The output cap is the model's (MODEL_OUTPUT_TOKENS); calls without a model answer nothing long."""
     environment = subscription_environment()
+    for name in SUBSCRIPTION_ENV_DROPPED:
+        environment.pop(name, None)
     environment.update({"DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                         "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(MODEL_OUTPUT_TOKENS.get(model, MAX_OUTPUT_TOKENS))})
@@ -194,6 +202,25 @@ def claude_block_window(message, *, rate_limit=None, now=None) -> tuple[datetime
         value = datetime.fromtimestamp(int(epoch.group(1)), timezone.utc)
         if now < value < now + timedelta(days=30):
             return value, kind
+    # "resets Nov 18, 5pm", "resets November 18 at 5:00 PM": a weekly limit names its day (review 2026-11-14: the
+    # clock below read none of it, and the block ended at the next Monday instead).
+    dated = re.search(r"reset\w*\s+(?:on\s+|am\s+)?(" + "|".join(MONTHS) + r")[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b,?"
+                      r"(?:\s*(?:at\s+|um\s+)?(\d{1,2})(?!\d)(?::(\d{2}))?\s*(am|pm)?)?", lower)
+    if dated:
+        hour, minute, meridian = int(dated.group(3) or 0), int(dated.group(4) or 0), dated.group(5)
+        if meridian == "pm" and hour < 12:
+            hour += 12
+        if meridian == "am" and hour == 12:
+            hour = 0
+        local_now = now.astimezone()
+        try:
+            value = local_now.replace(month=MONTHS.index(dated.group(1)) + 1, day=int(dated.group(2)), hour=hour,
+                                      minute=minute, second=0, microsecond=0)
+            if value <= local_now:
+                value = value.replace(year=value.year + 1)
+            return value.astimezone(timezone.utc), kind
+        except ValueError:
+            pass
     clock = re.search(r"reset\w*\s+(?:at\s+|um\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", lower)
     if clock:
         hour, minute, meridian = int(clock.group(1)), int(clock.group(2) or 0), clock.group(3)
@@ -363,6 +390,10 @@ class ClaudeCodeAdapter:
         if status["auth_method"] != "claude.ai":
             raise AppError("Keine bestätigte Claude-Abo-Anmeldung (claude.ai). API-Key-Anmeldungen werden nicht "
                            "verwendet; der Aufruf wurde nicht gestartet.", code="subscription_required", status="blocked")
+        if status.get("api_provider") not in FIRST_PARTY:
+            raise AppError("Claude Code ist auf einen anderen API-Anbieter eingestellt (Bedrock, Vertex, Foundry oder eine "
+                           "eigene Adresse); ein Abo-Aufruf liefe dort außerhalb des Abos. Der Aufruf wurde nicht "
+                           "gestartet.", code="subscription_required", status="blocked")
         return "claude.ai"
 
     def cli_version(self) -> str:
@@ -461,7 +492,7 @@ class ClaudeCodeAdapter:
         events = []
         for line in result.stdout.splitlines():
             try:
-                event = json.loads(line)
+                event = provider_json(line)
             except json.JSONDecodeError:
                 continue
             if isinstance(event, dict):

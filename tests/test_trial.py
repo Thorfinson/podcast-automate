@@ -109,6 +109,43 @@ class TrialProjectTests(unittest.TestCase):
         _, data = self.invoke("init", str(self.projects / "plain"), "--topic", "Ebbe", "--json")
         self.assertNotIn("trial", data["project"])
         self.assertNotIn("trial", data)
+        self.assertEqual(data["project"]["language"], "de-DE", "German stays the default")
+        # --language makes an English project, and an English trial takes the English sample topic (2026-11-14: the
+        # command line had no way to an English project).
+        code, data = self.invoke("init", str(self.projects / "english"), "--trial", "--language", "en-US", "--json")
+        self.assertEqual((code, data["project"]["language"], data["project"]["topic"]), (0, "en-US", TRIAL_TOPICS["en-US"]))
+        _, data = self.invoke("init", str(self.projects / "tides-en"), "--topic", "Tides", "--language", "en-US", "--json")
+        self.assertEqual((data["project"]["language"], data["project"]["topic"]), ("en-US", "Tides"))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["init", str(self.projects / "french"), "--topic", "Marées", "--language", "fr-FR", "--json"])
+
+    def test_a_studio_trial_stays_one_short_episode_when_its_brief_is_saved_or_a_proposal_applied(self):
+        """Review 2026-11-14: the 20 minutes were set only when the trial was created. Applying the editorial partner's
+        proposal took its 180 minutes, and the trial planned a long series of runs."""
+        from podcast_automate.execution import settings_execution
+        from podcast_automate.speech import selected_audio
+        from podcast_automate.studio import Studio
+        studio = Studio(self.projects.parent)
+        project = studio.create({"config": {"topic": ""}, "trial": True})["id"]
+        root = self.projects / project
+        for proposed, expected in ((180, TRIAL_MINUTES), (None, TRIAL_MINUTES), (12, 12.0)):
+            with self.subTest(proposed=proposed):
+                config = load_project(root)
+                proposal = {"role": "assistant", "message": "Vorschlag", "topic": config.topic, "central_question": "Wie?",
+                            "prior_knowledge": "", "depth_request": "Anschaulich.", "focus_questions": [],
+                            "excluded_topics": [], "target_total_minutes": proposed}
+                write_json(root / "studio/chat.json", [{"role": "user", "message": "Bitte."}, proposal])
+                studio.apply_proposal(project, {"proposal_hash": digest(proposal), "config_hash": project_hash(config),
+                                                "audio_hash": digest(selected_audio(root, config).model_dump()),
+                                                "execution_hash": digest(settings_execution(root).model_dump())})
+                saved = load_project(root)
+                self.assertEqual((saved.trial, saved.target_total_minutes), (True, expected))
+        # A save from the brief page caps a longer wish, also from a page that left the flag out.
+        config = load_project(root)
+        brief = {key: value for key, value in config.model_dump(mode="json").items() if key != "trial"}
+        studio.save(project, {"config": {**brief, "target_total_minutes": 90}, "config_hash": project_hash(config),
+                              "text": {}})
+        self.assertEqual((load_project(root).trial, load_project(root).target_total_minutes), (True, TRIAL_MINUTES))
 
     def test_the_studio_brief_takes_the_sample_topic_of_its_language_and_the_flag_is_strict(self):
         brief = trial_brief(TopicBrief(topic="Neues Podcast-Projekt", language="en-US"), sample_topic=True)

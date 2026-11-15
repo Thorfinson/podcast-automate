@@ -2,7 +2,7 @@
 title: Research
 doc_type: business-logic
 status: current
-last_reviewed: 2026-11-13
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/research.py
   - src/podcast_automate/question_research.py
@@ -98,6 +98,8 @@ No dossier is composed, closed or published while a sub-question has neither a v
    Every reason is one sentence of at most about 300 characters. Passed answers are stored with source and answer checksums and survive an interruption.
 
    The review of a reworked answer sees its earlier rejecting verdict (failed criteria, blocking findings, source suitability). Before the call, code fixes what may still fail (`review_scope`, stored at the sub-question): the points objected to earlier, new or changed findings, and every criterion resting on one of them or on another set of findings than before (for example after the rework removed one). Anything the review newly objects to in unchanged, previously passed material keeps the earlier verdict and is listed as a note among the limitations.
+
+   A passed answer that comes back, for an audit rework or a revalidation, is reviewed the same way, with its passed verdict and a scope set by code (why: D-212): the changed findings and the findings and criteria the objection names, and for a revalidation the findings that cite the changed prerequisites' passages and the criteria resting on them. A new point outside the scope is an advisory. A recheck under tightened rules, an anchor that maps to no finding, or a revalidation where no finding cites the prerequisite gets a whole review. The call tags carry `.memory.kept` (the review) and `.last` (the reader). After an unlock the reader sees `last_review`, the lock's criteria and reasons, until the next review. A reader receipt that was never applied and whose prompt changed is set aside as `reader_superseded_receipt_NN.json` and asked again.
 6. **Dossier and overall review:** The dossier is built only from the verified answers. From prompt generation 3 on it is assembled without a model call from every finding of every verified answer, unchanged, plus each answer's summary and limits ([Assembled dossier](#assembled-dossier)). An independent assessment of all original guiding questions remains required. Concrete objections go to the affected sub-questions; answers that together serve one guiding question are not reopened wholesale.
 7. **Export:** Dossier and companion files become the current project state only after the individual and overall reviews passed, never with an open sub-question ([Revalidation instead of a stop](#revalidation-instead-of-a-stop)). Research artefacts and raw sources stay local and are excluded from Git.
 
@@ -233,6 +235,7 @@ Before the run stops for blocked sub-questions, each gets an advisor call (`rese
 - The card **Waiting for you** („Wartet auf dich“) shows its diagnosis, its recommendation and the sources it found as links; its hint is already in the field for the new attempt.
 - The run starts a recommended new attempt itself, at most five times per sub-question (`research_advisor.MAX_AUTO_RETRIES`) and never after an automatic attempt that read no new section (`auto_stop`: `limit` or `no_progress`). Every other decision stays with the human, who sees the advice next to the question.
 - The advice is search help, not evidence: what the new attempt finds goes through the same independent review.
+- A billed run's advisor gets the run's key: an OpenRouter run's advisor its OpenRouter key.
 - Without room in the call budget for the advice and a new attempt, it is skipped.
 
 ### Try again
@@ -443,6 +446,8 @@ A hit does not refute the gap. A term search over hundreds of sections almost al
 
 Only `hits_unread` blocks: the quality review then names the section, and `open_questions.md` carries the status after every open question. Hits are also queued as the first read windows of the responsible sub-question, at no extra call.
 
+An accepted gap is not probed again. A probe objection gets a scope set by code (`routing_scope.probes`, remedy `research`), so it reopens only the sub-questions its hits belong to, and the quality gate lists these objections as `probe_objections`. Until 14 November 2026 a probe of an accepted gap blocked every round of an assembled dossier and could reopen any sub-question. (why: D-214)
+
 ### In the script run
 
 In the script run the same probe runs once per run during planning over the uncertainties of the knowledge model, with the dossier's `gap_terms`, and writes `runs/<run_id>/gap_probes.json`. The uncertainties are the dossier's open questions and coverage gaps, its unresolved syntheses and, since 2026-10-04, the limits the research noted for the script ([Research limits in the script](SCRIPTS.md#research-limits-in-the-script)). An assembled dossier has no open questions and, with every sub-question answered, no coverage gap, so its limits are its only gaps; until then its probe searched nothing, and Jev never ran on it. (why: D-131)
@@ -471,8 +476,8 @@ A new script run can also check the gaps with Jev, TypeSafe's decision model via
 - **Ceiling:** A scan makes at most 10,000 requests (`jev.MAX_REQUESTS`). Above that, each gap is asked only about its best sections by the probe's word ranking (its sentence, key terms and `gap_terms`), the same number for every gap and as many as the ceiling allows (`jev.asked_pairs`). A section several gaps rank shares one request; a section without any word in common with a gap is not asked about it. Only asked pairs are proposed, so a resumed scan proposes what a fresh one would. (why: D-172)
 - **Hits:** Sections with a probability of at least 0.3 (`jev.THRESHOLD`) join the word hits, at most five per gap (`jev.JEV_HITS`), marked with `"via": "jev"` and their probability.
 - **Reading stays mandatory:** Jev decides nothing; a Jev hit has to be read like any other before the gap may stand. Jev finds the matching passages even when gap and source are in different languages; the text model still reads and confirms them.
-- **Safe to interrupt:** The answers are stored in `runs/<run_id>/jev_scan.jsonl`, where an interrupted scan continues; `runs/<run_id>/jev_probe.json` reports progress, requests and cost.
-- **Refusals:** A rate limit, a server error or a broken connection is asked again, four times in all. OpenRouter's HTTP 403 is read by its body (`jev.forbidden`): a spent limit of the key or the workspace (`error.metadata.limit_source`, or "key limit" in the message) stops with `openrouter_credits`, so raise the limit, then resume; a section whose text OpenRouter's moderation or a guardrail blocks is left out, recorded in `jev_scan.jsonl` with the reason, not asked again and counted as `refused_sections` in `jev_probe.json`, since the word search still covers it; any other 403 stops with `jev_unavailable` and OpenRouter's reason, without the key. Until 13 November 2026 every 403 stopped without the reason. (why: D-211)
+- **Safe to interrupt:** The answers are stored in `runs/<run_id>/jev_scan.jsonl`, where an interrupted scan continues; an answered line carries its cost (lines written before 14 November 2026 count 0 USD). `runs/<run_id>/jev_probe.json` reports progress and counts the whole cache (`requests`, `cost_usd`), with `new_requests` for this call's, so money spent before a stop reaches the run's spending (why: D-221).
+- **Refusals:** A rate limit, a server error or a broken connection is asked again, four times in all. OpenRouter's HTTP 403 is read by its body (`jev.forbidden`): a spent limit of the key or the workspace (`error.metadata.limit_source`, or "key limit" in the message) stops with `openrouter_credits`, so raise the limit, then resume; a section whose text OpenRouter's moderation or a guardrail blocks is left out, recorded in `jev_scan.jsonl` with the reason, not asked again and counted as `refused_sections` in `jev_probe.json`, since the word search still covers it; any other 403 stops with `jev_unavailable` and OpenRouter's reason, without the key. Until 13 November 2026 every 403 stopped without the reason. (why: D-211) A refusal counts for its section only after some request of the scan was answered: eight refusals without one answer stop the probe with `jev_unavailable` and record nothing, since a refusal of every request is a setting at OpenRouter, not a verdict on a section. (why: D-219)
 - **Effort:** At most 10,000 requests, at about 19 requests per second about nine minutes and, with sections of about 1,000 characters, an estimated 0.50 USD (`jev_probe.json` reports the billed cost). Without the ceiling the corpora of Asimov and Ontologies needed about 20,000 requests and 0.60 USD, and Orlagau's 92 provided editions 405,050 requests, about six hours; with it Orlagau's run of 9 October 2026 made 9,804 requests for 0.51 USD. With a money limit set, the run checks it before the scan and counts the scan's cost once it is complete ([Money limit](BUSINESS_LOGIC.md#money-limit)).
 - **Basis:** The evaluation of 29 September 2026 (`evals/jev_decisions`) showed that Jev separates cited sections from random ones well (AUC 0.95 to 0.975), including German questions against English sources; there the word search reported 15 of 23 Asimov gaps as `no_hits`. Jev does not reliably judge whether individual statements are faithful to findings and is not used for that. (why: D-041)
 - **Errors:** A rejected key, missing credit or a privacy setting that excludes TypeSafe stop the run with the respective reason.
@@ -514,7 +519,7 @@ Question work has fixed limits:
 
 - The web search (`search_web`) is offered only while the sub-question has web attempts, the run search rounds and the source limit room (`web_open`). (why: D-057)
 - An answer given anyway is not reviewed and counts as a step without progress.
-- If the lock is active, the web was already searched in this working pass, and a step brings no new evidence, the sub-question is blocked at once with `evidence_block` and the unmet criteria.
+- If the lock is active, the web was already searched in this working pass, and a step brings no new evidence, the sub-question is blocked at once with `evidence_block` and the unmet criteria. The searches count per working pass (`pass_web_start`, set where a pass begins: a reopening, an advisor's or editor's new attempt, a revalidation); until 14 November 2026 they counted over the question's lifetime, so a search of an earlier pass cut a rework off after one step. (why: D-215)
 - If progress fails to come otherwise, the specific question is blocked with a reason; other questions continue.
 - A resume alone neither resets these limits nor starts a new loop. Deciding a blocked sub-question: [Blocked sub-questions and decisions](#blocked-sub-questions-and-decisions).
 
@@ -556,13 +561,16 @@ If a verified prerequisite is reworked or reopened, every verified answer buildi
 
 ### Download and import limits
 
-- Downloads are limited to 20 MiB (`sources.MAX_BYTES`) and bounded waiting times; name resolution waits at most 10 seconds (`sources.DNS_TIMEOUT_SECONDS`).
+- Downloads are limited to 20 MiB (`sources.MAX_BYTES`) and bounded waiting times; name resolution waits at most 10 seconds (`sources.DNS_TIMEOUT_SECONDS`), each receive at most 30 seconds (`sources.RECEIVE_TIMEOUT_SECONDS`), and the body's limit of 90 seconds is checked after every receive.
+- A download connects only to the addresses that were checked: the connection is pinned to them, without a second DNS lookup. With a proxy from the environment the proxy resolves the name. (why: D-217)
 - A download carrying a service key (for example CORE's) follows a redirect only on the same server and never from https to http; otherwise it aborts, so the key does not go to a foreign server.
+- Any failure of an untrusted source's server or of its reader is one failed source, recorded as a row of the source index, never a stopped run (why: D-218): a body shorter than its `Content-Length` is a failed download (`network_error`), so the free copies and the Internet Archive are asked; a protocol error (a garbled status line, more than 100 headers, a chunked body cut short) is `source_download_failed`; any failure of a reader is `source_unreadable` with `parser_error`, and a missing or unreadable local source `source_unreadable` with `local_error`; a provided work's file and parse errors are recorded like any other import error. Pages without closing tags are read in linear time.
+- An EPUB's markup may hold at most 10 bytes per character of the text limit (`sources.EPUB_MARKUP_PER_CHARACTER`: 10 MB for an article, 60 MB for a book), and its chapters are read in steps that stop at the limit; a damaged EPUB (a broken deflate stream, zip encryption, an unknown compression) is `source_unreadable`. (why: D-220)
 - PDF texts are extracted in a separate process with a 120-second time limit (`sources.PDF_TIMEOUT_SECONDS`), so a broken file cannot stop the job.
 - At most 300 PDF pages and one million extracted text characters are imported per source (`pdf_text.MAX_PAGES`, `MAX_TEXT`).
 - Books are read with the book limits: at most 2,000 pages and 6 million characters (`pdf_text.BOOK_PAGES`, `BOOK_TEXT`; for HTML and text `sources.MAX_BOOK_TEXT`) within 900 seconds (`sources.BOOK_TIMEOUT_SECONDS`). A book is a provided work, every source typed as a primary work (`source_type: primary_work`), and every address at OAPEN, DOAB, Project Gutenberg, archive.org, OpenEdition or Open Book Publishers or with a path such as `/book/`, `/books/` or `/monograph/` (`sources.book_candidate`). (why: D-055)
 - The 20 MiB still apply to every download; only a work uploaded in the Studio may be larger (`provided_works.MAX_WORK_BYTES`, 150 MiB).
-- PDFs locked only with an owner password against copying or printing are read; a user password remains an access problem, as do image PDFs without text, login pages and unsupported formats.
+- PDFs locked only with an owner password against copying or printing are read, with RC4, AES-128 and AES-256 alike (`pypdf[crypto]`; why: D-245); a user password remains an access problem, as do image PDFs without text, login pages and unsupported formats.
 - Automatic text extraction may capture formulas, tables and figures incompletely ([pypdf text extraction and its limits](https://pypdf.readthedocs.io/en/stable/user/extract-text.html)).
 - Every failed download appears with its cause in the download report and as a row of the source index: error class of the PDF reader, encrypted file, page or size limit, pages without a text layer (probably scanned) or HTTP status, each with a fixed `code` such as `source_unreadable` or `source_download_failed`. Text recognition (OCR) does not start automatically; a readable version of the same source can be supplied as a `seed_urls` entry, which needs a new research run.
 
@@ -577,8 +585,9 @@ The source stays fully stored within the import limits. For each sub-question th
 ### Resuming interrupted and older runs
 
 - Valid completed stages are skipped on resume. Successful model responses and individual downloads (with checksum checkpoints) are stored, so an interruption between search, reading and review repeats no finished work.
-- After a parser update, stored raw files can be processed again and dependent dossier and review stages are renewed. Damaged raw files are downloaded again.
+- After a parser update (`sources.EXTRACTION_VERSION`), the stored raw files are read again only for a run stopped before its questions were planned, and its dependent dossier and review stages are renewed. A run with a question ledger, which binds its sources by their text, and a completed run keep their extraction; a new run records its `extraction_version`. Until 14 November 2026 a re-extraction stopped a ledgered run for good, and completed runs were recalculated. (why: D-213) Damaged raw files are downloaded again.
 - Stopped older runs adopt, at the next **Resume**, the retrieved sources and the last formally valid draft of the stored rounds; old assessments become hints, not automatically passed answers. Raw files, section references and checksums are checked before reuse, and consumption in the run budget is kept. Fully completed runs are not recalculated.
+- A run started without `--model` records its Codex model (`codex_model`) in `research_request.json` and keeps it on resume.
 - The open Studio server resumes a job paused by a subscription limit or stopped by a transient technical error by itself ([Automatic resume](STUDIO.md#automatic-resume)); new attempts and a higher call limit without asking come only from the pre-approvals ([Budgets](BUSINESS_LOGIC.md#budgets)).
 - At the next resume the new Studio worker loads updated research code without a server restart; reloading the browser page loads the new display.
 

@@ -48,6 +48,15 @@ class AllowanceTests(unittest.TestCase):
         detail = json.loads(self.request("/api/projects/example")[1])
         self.assertEqual((detail["allowances"]["fresh_attempts"], detail["allowances"]["extra_calls"]), (2, 250))
 
+    def test_a_projects_own_allowances_are_refused_while_the_settings_page_sets_them_for_all(self):
+        """Review 2026-11-14: with workspace settings the project's own file is never read (studio_allowances.allowances),
+        so the route answered 200 and changed nothing."""
+        write_json(self.workspace / "projects/.studio-settings.json", {"allowances": {"fresh_attempts": 1, "extra_calls": 0}})
+        status, body, _ = self.request("/api/projects/example/allowances", {"fresh_attempts": 3, "extra_calls": 1000})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "invalid_request"), body)
+        self.assertFalse((self.root / "studio/allowances.json").exists())
+        self.assertEqual(studio_allowances.allowances(self.root), {"fresh_attempts": 1, "extra_calls": 0})
+
     def test_fresh_attempts_are_granted_up_to_the_allowance_and_the_run_resumes(self):
         self.allow(fresh=1)
         self.stopped("script_review_failed")
@@ -342,6 +351,44 @@ class ResumeWithoutDecisionTests(unittest.TestCase):
         self.assertNotIn("auto_resume_count", self.run_worker(by_hand, answered))
 
 
+class KeepAwakeTests(unittest.TestCase):
+    setUp = test_studio.StudioHttpTests.setUp
+
+    def test_the_studio_keeps_the_computer_awake_while_a_stopped_run_waits_for_its_automatic_resume(self):
+        """An October review leftover, fixed 2026-11-14: only a running worker held the system (studio_worker.keep_awake),
+        so a run waiting for its quota reset, its 10/30/90-minute pause or the login check let the computer sleep through
+        it (2026-10-02: a reset at 01:20 went unused until 09:30)."""
+        from podcast_automate import studio_worker
+        held = []
+        run = {"run_id": "run_x", "kind": "research", "stages": {}}
+        waiting = [{"status": "waiting_for_quota", "retry_at": "2999-01-01T00:00:00+00:00", "run": run},
+                   {"status": "failed", "error_code": "timeout", "finished_at": now(), "run": run},
+                   {"status": "blocked", "error_code": "authentication_required", "finished_at": now(),
+                    "run": {**run, "kind": "script"}}]
+        resting = [{"status": "blocked", "error_code": "research_budget_exhausted", "finished_at": now(), "run": run},
+                   {"status": "waiting_for_quota", "retry_at": "2999-01-01T00:00:00+00:00", "auto_resume_count": 3,
+                    "run": run},
+                   {"status": "completed", "run": run}]
+        with patch.object(studio_worker, "keep_awake",
+                          side_effect=lambda: held.append("held") or (lambda: held.append("released"))):
+            self.assertFalse(self.app.keep_awake_while_waiting())
+            for job in waiting:
+                with self.subTest(waiting=job["status"]):
+                    write_json(self.root / "studio/job.json", {"id": "job1", "action": "resume", **job})
+                    self.assertTrue(self.app.keep_awake_while_waiting())
+            self.assertEqual(held, ["held"], "held once while one run or another waits")
+            # A parked run waits as well.
+            (self.root / "studio/job.json").unlink()
+            write_json(self.root / "studio/paused_research.json", {"id": "job1", "action": "resume", **waiting[0]})
+            self.assertTrue(self.app.keep_awake_while_waiting())
+            (self.root / "studio/paused_research.json").unlink()
+            for job in resting:
+                with self.subTest(resting=job["status"]):
+                    write_json(self.root / "studio/job.json", {"id": "job1", "action": "resume", **job})
+                    self.assertFalse(self.app.keep_awake_while_waiting())
+        self.assertEqual(held, ["held", "released"])
+
+
 class NewWorkspaceTests(unittest.TestCase):
     def test_a_new_workspace_starts_with_two_fresh_attempts_and_250_extra_calls_and_no_other_one_changes(self):
         """D-155: a newcomer meets every pre-approvable stop; the user's own tested values are the start of a workspace
@@ -436,6 +483,38 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(stopped, [True])
         status, body, _ = self.request("/api/projects/example/start", {"action": "check"})
         self.assertEqual((status, json.loads(body)["code"]), (400, "studio_restarting"))
+
+    def test_once_a_restart_is_asked_for_no_new_work_starts_and_the_queues_wait_for_the_new_server(self):
+        """The user's decision of 2026-11-14 (review): after „Neu starten, sobald nichts läuft“ the Studio starts nothing
+        new, as STUDIO.md says. Until then only the moment of the restart refused starts, so queued recordings and
+        revisions, automatic resumes and pre-approvals kept the restart waiting until the queues ran dry."""
+        self.app.restart_hook = lambda: None
+        self.assertEqual(self.request("/api/server/restart", {})[0], 200)
+        status, body, _ = self.request("/api/projects/example/start", {"action": "check"})
+        self.assertEqual((status, json.loads(body)["code"]), (400, "studio_restarting"))
+        self.assertEqual(json.loads(body)["error"], "Ein Neustart ist vorgemerkt: Bis das Studio neu gestartet ist, "
+                         "beginnt es keinen neuen Auftrag. Den Neustart zurücknehmen, um jetzt zu starten.")
+        queued = [{"episode": "ep_001", "queued_at": now(), "data": {"action": "audio", "episode": "ep_001"}}]
+        revisions = [{"episode": "ep_002", "queued_at": now(), "data": {"action": "revise", "episode": "ep_002",
+                                                                        "message": "Kürzer."}}]
+        write_json(self.root / "studio/audio_queue.json", queued)
+        write_json(self.root / "studio/revision_queue.json", revisions)
+        write_json(self.root / "studio/job.json", {"id": "job1", "status": "waiting_for_quota", "action": "resume",
+                   "retry_at": "2026-09-01T10:00:00+00:00", "finished_at": "2026-09-01T09:00:00+00:00",
+                   "run": {"run_id": "run_x", "kind": "research", "stages": {}}})
+        write_json(self.workspace / "projects/.studio-settings.json", {"allowances": {"fresh_attempts": 1, "extra_calls": 0}})
+        with patch.object(self.app, "start") as start:
+            for step in (self.app.resume_due, self.app.resume_after_login, self.app.apply_allowances,
+                         self.app.start_queued, self.app.start_revisions):
+                self.assertEqual(step(), [], step.__name__)
+        start.assert_not_called()
+        self.assertEqual(json.loads((self.root / "studio/audio_queue.json").read_text(encoding="utf-8")), queued)
+        self.assertEqual(json.loads((self.root / "studio/revision_queue.json").read_text(encoding="utf-8")), revisions)
+        # Taken back, the restart starts nothing and the scheduler goes on as before.
+        status, body, _ = self.request("/api/server/restart", {"cancel": True})
+        self.assertFalse(json.loads(body)["server"]["restart_requested"])
+        with patch.object(self.app, "start") as start:
+            self.assertEqual(self.app.resume_due(), ["example"])
 
     def test_changed_code_marks_the_server_stale(self):
         self.assertFalse(json.loads(self.request("/api/projects")[1])["server"]["stale"])

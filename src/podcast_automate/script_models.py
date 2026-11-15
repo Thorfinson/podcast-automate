@@ -1,5 +1,5 @@
 """A source-bound outline and review contracts for the first editorial pipeline."""
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -91,10 +91,19 @@ class KnowledgeModel(Contract):
     source_assessments: list[SourceAssessment] = Field(default_factory=list)
 
 
-class ScriptIssue(Contract):
+class ScriptIssue(LaterFields):
     category: Literal["grounding", "clarity", "depth", "dialogue", "scope", "structure"]
     segment_ids: list[Identifier]
     reason: NonEmpty
+    # Since 2026-11-14 (review): a point the script cannot fix from the supplied material because the research lacks it
+    # is a note, never a repair (script_pipeline.source_limited); left out of every dump while false, so saved reviews
+    # keep their bytes.
+    source_limit: bool = Field(default=False, description=(
+        "True only when rewriting the script from the supplied material cannot fix the point because the research "
+        "lacks the material, such as depth or an answer the sources do not hold; never for a statement the sources do "
+        "not support, which a repair fixes by cutting or narrowing it."))
+
+    LATER: ClassVar[dict] = {"source_limit": False}
 
 
 # Why a follow-up review lets an issue block: a previous issue still open, a segment the repair changed, or a

@@ -1018,14 +1018,35 @@ function studio({language='de', setting='auto'}={}) {
     return elements.get(id);
   };
   const defaults = {topic:'New project',central_question:'Why?',voice_profile:{host_a:'Aiden',host_b:'Vivian'},language:'de-DE',prior_knowledge:'',depth_request:'Deep',focus_questions:[],excluded_topics:[],seed_urls:[]};
-  const context = vm.createContext({console,structuredClone,AbortController,encodeURIComponent,URL,URLSearchParams,btoa,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
+  // hold(path) keeps the next request to path waiting until the returned function releases it (or its signal aborts):
+  // the editor can move on while an answer is under way. The answer is what the server held when the request was sent.
+  // failures answer a path with an error status instead.
+  const holds = new Map(), failures = new Map();
+  const hold = path => { let release; const gate = new Promise(resolve => { release = resolve; }); if (!holds.has(path)) holds.set(path, []); holds.get(path).push(gate); return release; };
+  const aborted = signal => new Promise((resolve, reject) => signal?.addEventListener?.('abort', () => reject(signal.reason), {once:true}));
+  const context = vm.createContext({console,structuredClone,AbortController,AbortSignal,encodeURIComponent,URL,URLSearchParams,btoa,setInterval(){},window:{addEventListener(name,handler){events.set(name,handler);},scrollTo(){}},
     document:{getElementById:element,querySelectorAll(){return [];},addEventListener(name,handler){events.set('document:'+name,handler);},modelContext:{registerTool(tool){registered.set(tool.name,tool);}}},
-    fetch:async(path,options)=>{requests.push({path,options});const data=responses.get(path)??{token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults};return{ok:true,json:async()=>structuredClone(data)};}});
+    fetch:async(path,options)=>{requests.push({path,options});const data=responses.get(path)??{token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults};
+      const failure=failures.get(path), gate=holds.get(path)?.shift();
+      if(gate)await Promise.race([gate,aborted(options?.signal)]);
+      if(failure)return{ok:false,status:failure.status,json:async()=>structuredClone(failure.body)};
+      return{ok:true,json:async()=>structuredClone(data)};}});
   vm.runInContext(localeScript(language, setting), context);
   vm.runInContext(source, context);
   const run = code => vm.runInContext(code,context);
   run(`boot=${JSON.stringify({token:'csrf',voices:['Aiden','Vivian'],projects:[],defaults})}`);
-  return {run,context,elements,registered,requests,responses,events};
+  return {run,context,elements,registered,requests,responses,events,hold,failures};
+}
+// The page's own start-up read (bootstrap, then the overview) settles; a test sets its project after it.
+const settled = () => new Promise(resolve => setTimeout(resolve, 0));
+// A tap on a button, through the page's own click listener; resolves once the action it started has ended.
+function tap(app, dataset) {
+  app.run('globalThis.__attempt??=attempt;attempt=fn=>(globalThis.__tapped=globalThis.__attempt(fn));');
+  const button = {dataset, hasAttribute(){return false;}};
+  app.events.get('document:click')({target:{closest:selector=>selector==='button'?button:null}});
+  const pending = app.run('globalThis.__tapped');
+  app.run('attempt=globalThis.__attempt;');
+  return pending;
 }
 // The job UI spans the topbar line, the docked drawer and the panel a step page owns.
 function jobView(app) {
@@ -1066,6 +1087,7 @@ test('unapplied chat proposals render without changing saved project settings',(
 
 test('applying a chat proposal sends only its review hashes and reloads saved preferences',async()=>{
   const app=studio(),p=workflowProject(app);p.job.status='completed';
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
   Object.assign(p,{proposal_hash:'proposal',config_hash:'config',audio_hash:'audio',execution_hash:'execution'});
   app.run(`project=${JSON.stringify(p)};`);
   p.text={provider:'codex_cli',model:'gpt-6-astra',reasoning_effort:'xhigh'};
@@ -1131,6 +1153,7 @@ test('a revision from the reader may ask for its own length, and an empty field 
 test('a revision asked for while a run works is queued, and the reader lists what waits',async()=>{
   // 2026-11-08: Geld verstehen's ep_002 and ep_004 revisions could not be asked for while ep_003's ran (D-191).
   const app=studio(),p=workflowProject(app);
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
   p.episodes=[2,4].map(n=>({script:{episode_id:'ep_00'+n,title:'F'+n,segments:[],chapters:[]}}));
   p.revision_queue=[];
   app.run(`project=${JSON.stringify(p)};`);
@@ -1168,6 +1191,7 @@ test('a revision asked for while a run works is queued, and the reader lists wha
 test('every remaining episode may wait behind the queued revisions, at its own length',async()=>{
   // 2026-11-08: the rest of Geld verstehen's first season was to follow its last queued revision overnight (D-192).
   const app=studio(),p=workflowProject(app);
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
   p.outline={hash:'h',approval:{plan_hash:'h'},next_episode:'ep_002',
     plan:{central_question:'Why?',explanation_path:'Path',scope_note:'Scope',episodes:['One','Two','Three'].map((title,i)=>
       ({episode_id:'ep_00'+(i+1),title,central_question:'Why?',target_minutes:46,scenes:[],deferred_questions:[]}))},
@@ -1220,6 +1244,7 @@ test('the approved outline offers a localized length only while new episodes rem
 test('writing buttons send the chosen length, omit an empty choice and retain queue behavior',async()=>{
   for(const action of ['episode','episodes'])for(const value of ['', '10', '35', '60']){
     const app=studio(),p=workflowProject(app);
+    await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
     p.outline.next_episode='ep_001';
     p.revision_queue=[];p.queues_series=true;
     p.job.status=action==='episodes'?'running':'completed';
@@ -1365,6 +1390,7 @@ test('the pronunciation report stands above the approval checkbox',()=>{
 
 test('host names are edited in the speech panel and saved as a pair or not at all',async()=>{
   const app=studio(), p=workflowProject(app);
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
   p.job.status='completed';p.job.run.status='completed';p.config_hash='cfg';p.audio_hash='aud';p.spoken_forms_hash='forms';
   p.config={...p.config,host_names:{host_a:'Mara',host_b:'Jonas'}};
   p.episodes=[publishedEpisode({})];
@@ -2649,12 +2675,13 @@ test('a stopped Gemini episode stays visible while the others are voiced and res
 
 test('a stopped ElevenLabs recording without a free place can be resumed into the queue and then says it waits',async()=>{
   const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
   const stop={code:'elevenlabs_busy',stage:'synthesis'};
   const job=(n,extra={})=>({id:'a'+n,action:'audio',status:'blocked',episode:'ep_00'+n,provider:'elevenlabs_tts',stop,run:{run_id:'run_'+n,kind:'episode_audio',stages:{}},...extra});
   const jobs=[job(1,{status:'running',stop:undefined,started_at:new Date().toISOString(),progress:{completed_segments:1,total_segments:9}}),job(2),job(3)];
   app.run(`boot.key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,audio_settings:{provider:'elevenlabs_tts',voices:{host_a:'S87WJpstXs0Ge2ukRiXJ',host_b:'VHYWoxffK1pFlM1dtRb0'}},audio_capacity:{limit:3,active:3,available:0},audio_queue:[],
     episodes:[1,2,3].map(n=>({script:{episode_id:'ep_00'+n,title:'F'+n,segments:[],chapters:[]},hash:'h',readable_hash:'r',audio:[],metrics:{words:1,estimated_minutes:1}})),
-    audio_jobs:${JSON.stringify(jobs)}};project.job=project.audio_jobs[0];step=PAGE.audio;render();`);
+    audio_jobs:${JSON.stringify(jobs)}};project.job=project.audio_jobs[0];overviewPage=false;step=PAGE.audio;render();`);
   const panel=app.elements.get('audio-jobs').innerHTML;
   assert.ok(panel.includes('data-action="resume" data-run-id="run_2" data-episode="ep_002" >'),'no place is free, yet it can be resumed');
   assert.ok(!panel.includes('gleichzeitig wie erlaubt'));
@@ -2975,6 +3002,20 @@ test('recordings out of date only for the music are assembled again on their own
   assert.equal(app.run('renderMusicRemix()'),'','nothing to assemble again, no panel');
 });
 
+test('a recording without the AI marking is assembled again from the cache like one that lacks only the music',()=>{
+  // Review 2026-11-14: an MP3 made before D-154 went out unmarked in every download; the montage adds the marking.
+  const app=studio();
+  const voiced=(id,stale)=>({script:{episode_id:id,title:`Folge ${id}`},hash:'h',readable_hash:'r',
+    audio:[`exports/${id}/run_x/audio.mp3`],audio_current:false,audio_stale:stale});
+  app.run(`boot.key_available=true;boot.elevenlabs_key_available=true;boot.capabilities={parallel_audio:true};project={id:'p',config:boot.defaults,
+    audio_settings:{provider:'elevenlabs_tts',voices:{host_a:'Pauli',host_b:'Thomas'}},
+    episodes:[${[voiced('ep_001',['ai_marking']),voiced('ep_002',['music','ai_marking']),voiced('ep_003',['voices','ai_marking'])]
+      .map(e=>JSON.stringify(e)).join(',')}],audio_jobs:[],audio_capacity:{available:3},audio_queue:[]};`);
+  assert.equal(app.run('musicOnlyRecordings().map(e=>e.script.episode_id).join(",")'),'ep_001,ep_002','a new voice is new speech');
+  assert.equal(app.run('staleText(["ai_marking"])'),'KI-Kennzeichnung');
+  assert.ok(app.run('renderMusicRemix()').includes('nur die Musik oder die KI-Kennzeichnung'));
+});
+
 test('the overview card offers the whole podcast as a download, not only a player',()=>{
   const app=studio();
   const card=p=>app.run(`boot.capabilities={podcast_downloads:true,project_overview:true};overviewCard(${JSON.stringify(p)})`);
@@ -3024,6 +3065,7 @@ test('the production report loads on request and shows stages, versions, stops a
 test('stopped recordings name their shared reason in the bar and resume all at once',async()=>{
   // 2026-10-04: fourteen Transformer recordings stopped on a key's credit limit; the bar said only "14 angehalten".
   const app=studio();
+  await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
   const stop={code:'openrouter_forbidden',stage:'synthesis',message:'OpenRouter hat die Anfrage abgewiesen: Key limit exceeded.'};
   const job=(n,extra={})=>({id:'a'+n,action:'resume',status:'blocked',episode:'ep_00'+n,stop,run:{run_id:'run_'+n,kind:'episode_audio',stages:{}},...extra});
   const jobs=[job(1),job(2),job(3)];
@@ -3314,7 +3356,7 @@ test('every stop code the backend raises has its own card instead of the generic
   const info=(code,kind='research')=>app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'${code}'},run:{run_id:'r',kind:'${kind}',stages:{}}})`);
   const expected={missing_executable:'fix',unsupported_codex_launcher:'fix',unsupported_claude_launcher:'fix',openrouter_forbidden:'fix',
     openrouter_search_unsupported:'fix',invalid_backend:'fix',credential_in_prompt:'dead',credential_in_response:'dead',
-    invalid_output_schema:'dead',unsupported_run:'dead',missing_outputs:'dead',worker_stop:'dead',research_context_incomplete:'dead',
+    invalid_output_schema:'dead',unsupported_run:'dead',missing_outputs:'retry',worker_stop:'fix',research_context_incomplete:'dead',
     research_questions_open:'retry',question_scope_unresolved:'retry',invalid_speech:'retry',audio_approval_required:'decision',
     // Gemini through Google (google_speech, 2026-10-06).
     google_key_required:'fix',invalid_google_key:'fix',google_authentication:'fix',google_quota:'wait',
@@ -3336,7 +3378,7 @@ test('every stop code the backend raises has its own card instead of the generic
   assert.ok(info('invalid_speech','episode_audio').text.includes('zweimal zu kurz, zu lang oder mit langer Stille'));
   // Correction loops that fell through before.
   for(const [code,kind] of [['invalid_polish_evidence','script'],['invalid_series_evidence','script'],['invalid_teaching_evidence','script'],
-    ['invalid_teaching_repair','script'],['invalid_research_gap','script'],['verified_question_split','research'],['invalid_dossier_rebuild','research']])
+    ['invalid_teaching_repair','script'],['invalid_research_gap','script'],['invalid_dossier_rebuild','research']])
     assert.equal(info(code,kind).title,'Korrekturversuche aufgebraucht',code);
   // A missing answer is asked again; a spent correction loop no longer hides behind that promise.
   assert.ok(info('invalid_model_output').text.includes('Mit neuen Anläufen fortsetzen'));
@@ -4151,9 +4193,9 @@ test('a script correction loop that asks anew offers fresh attempts in one sente
   const en=studio({language:'en'});
   en.run(`project={id:'p',config:boot.defaults,research:'dossier'};`);
   html=card(en,'invalid_script');
-  assert.ok(html.includes('script still breaks its length or source mapping. “Resume” writes the episode anew with fresh attempts; everything else stays saved.'));
+  assert.ok(html.includes('script still breaks its length or source mapping. “Resume” writes the episode again with fresh attempts; everything else stays saved.'));
   assert.ok(html.includes('>Resume with fresh attempts</button>'));
-  assert.ok(card(en,'rejected_output').includes('The check rejected its answers three times as malformed. “Resume” asks this step anew; no rejected answer is replayed.'));
+  assert.ok(card(en,'rejected_output').includes('The check rejected its answers three times as malformed. “Resume” asks this step again; no rejected answer is replayed.'));
   assert.deepEqual(germanLeft(html),[]);
 });
 
@@ -4401,7 +4443,7 @@ test('deterministic advisories read in the page language from their values, olde
       '«Token &lt;x&gt;» wird in dieser Folge 3-mal neu definiert, obwohl der Begriff aus einer früheren Folge bekannt ist.']],
     ['en',['The first spoken passage has 157 words; above 100 the episode starts without a breather. (seg_001)',
       'An estimated 27.5 minutes against 21 planned, that is 130 percent of the target; above 120 percent the episode counts as too long.',
-      '“Token &lt;x&gt;” is defined anew 3 times in this episode although the term is known from an earlier episode.']]]){
+      '“Token &lt;x&gt;” is defined again 3 times in this episode although the term is known from an earlier episode.']]]){
     const app=studio({language}), p=workflowProject(app);
     p.job.status='completed';p.job.run.status='completed';
     p.episodes=[publishedEpisode({advisories:rows})];
@@ -4618,6 +4660,7 @@ test('stop after this episode stands beside the stop of a series job, and its en
 test('the stop-after button sends the wish and takes it back (D-207)',async()=>{
   for(const enabled of ['true','false']){
     const app=studio(),p=workflowProject(app);
+    await new Promise(resolve=>setTimeout(resolve,0)); // the page's own start-up read settles before the project is set
     p.job.action='episodes';p.stops_after_episode=true;p.stop_after_episode=enabled==='false';
     app.run(`project=${JSON.stringify(p)};let pending;attempt=fn=>pending=fn();`);
     app.responses.set('/api/projects/test/stop_after',{stop_after_episode:enabled==='true'});
@@ -4629,4 +4672,229 @@ test('the stop-after button sends the wish and takes it back (D-207)',async()=>{
     assert.equal(sent.enabled,enabled==='true');
     assert.equal(app.run('project.stop_after_episode'),enabled==='true','the page shows the answer at once');
   }
+});
+
+// Findings of the UI review, 2026-11-14: an action belongs to the project it was clicked in.
+const raceEpisode=(id,title)=>({script:{episode_id:id,title,chapters:[],segments:[]},hash:'h-'+id,readable_hash:'r-'+id,audio:[],audio_current:false,metrics:{words:1,estimated_minutes:1}});
+const raceProject=id=>({id,config:{topic:id.toUpperCase(),language:'de-DE',voice_profile:{host_a:'Kore',host_b:'Puck'}},config_hash:'c-'+id,audio_hash:'a-'+id,music_hash:'',
+  audio_settings:{provider:'google_gemini_tts',voices:{host_a:'Kore',host_b:'Puck'}},audio_jobs:[],audio_queue:[],chat:[],job:null,
+  episodes:['ep_001','ep_002','ep_003'].map(e=>raceEpisode(e,`${id.toUpperCase()} ${e}`))});
+
+test('"approve all" stops when the editor opens another project and never approves that project\'s episodes',async()=>{
+  const app=studio();
+  await settled();
+  const A=raceProject('a'), B=raceProject('b');
+  app.responses.set('/api/projects/a',A);app.responses.set('/api/projects/b',B);
+  app.responses.set('/api/projects/a/start',{queued:false});app.responses.set('/api/projects/b/start',{queued:false});
+  app.run(`boot.google_key_available=true;boot.capabilities={parallel_audio:true};project=${JSON.stringify(A)};overviewPage=false;step=PAGE.audio;render();$("audio-approve-all").checked=true;`);
+  const release=app.hold('/api/projects/a/start');
+  const tapped=tap(app,{action:'audio-all'});
+  await settled();
+  await app.run(`selectProject('b')`);
+  release();
+  await tapped;
+  const starts=app.requests.filter(r=>r.path.endsWith('/start')).map(r=>[r.path,JSON.parse(r.options.body).episode]);
+  assert.deepEqual(starts,[['/api/projects/a/start','ep_001']],'only the approval sent before the switch, and none to b');
+  assert.equal(app.run('project.id'),'b');
+  assert.equal(app.elements.get('notice').textContent,'','no notice of an action the editor left');
+});
+
+test('a work upload that ends after the editor opened another project leaves that project\'s works alone',async()=>{
+  const app=studio();
+  await settled();
+  const A={id:'a',config:{topic:'A'},works:{missing:[{work:'Book of A',tasks:[{id:'q1',question:'Q of A'}]}],provided:[]},episodes:[],chat:[]};
+  const B={id:'b',config:{topic:'B'},works:{missing:[{work:'Book of B',tasks:[{id:'q9',question:'Q of B'}]}],provided:[]},episodes:[],chat:[]};
+  const upload='/api/projects/a/work?citation=Book+of+A&task=q1';
+  app.responses.set(upload,{works:{missing:[],provided:[{id:'w1',citation:'Book of A'}]}});app.responses.set('/api/projects/b',B);
+  app.run(`project=${JSON.stringify(A)};overviewPage=false;step=PAGE.research;$("work-file-0").files=[{name:'a.pdf'}];`);
+  const release=app.hold(upload);
+  const tapped=tap(app,{action:'upload-work',workIndex:'0'});
+  await settled();
+  await app.run(`selectProject('b',null,PAGE.research)`);
+  release();
+  await tapped;
+  assert.equal(app.run('project.id'),'b');
+  assert.deepEqual(app.run('project.works'),B.works);
+  assert.ok(!app.elements.get('notice').className.includes('error'),'a finished upload is no error');
+});
+
+test('a started job\'s reply leaves the editor where they went meanwhile',async()=>{
+  const app=studio();
+  await settled();
+  const A={...raceProject('a'),research:'dossier'}, running={...A,job:{id:'j1',action:'research',status:'running',started_at:new Date().toISOString(),run:{run_id:'r1',kind:'research',stages:{}}}};
+  app.responses.set('/api/projects',{projects:[{id:'a',topic:'A'}],trash:[]});
+  app.responses.set('/api/projects/a/start',{});app.responses.set('/api/projects/a',running);
+  // To the overview: the reply does not pull the page back into the project.
+  app.run(`boot.capabilities={project_overview:true};project=${JSON.stringify(A)};overviewPage=false;step=PAGE.research;`);
+  let release=app.hold('/api/projects/a/start');
+  let tapped=tap(app,{action:'research'});
+  await settled();
+  await app.run('showOverview()');
+  release();await tapped;
+  assert.equal(app.run('overviewPage'),true);
+  assert.equal(app.run('project'),null);
+  // Another page of the same project: it stays open and shows the started job.
+  app.run(`project=${JSON.stringify(A)};overviewPage=false;step=PAGE.research;`);
+  release=app.hold('/api/projects/a/start');
+  tapped=tap(app,{action:'research'});
+  await settled();
+  app.run('navigatePage(PAGE.brief)');
+  release();await tapped;
+  assert.equal(app.run('step'),app.run('PAGE.brief'));
+  assert.equal(app.run('project.job.status'),'running');
+});
+
+test('a poll that started before a click and answers after it does not bring the old state back',async()=>{
+  const app=studio();
+  await settled();
+  const before={...raceProject('a'),job:{id:'j0',action:'research',status:'blocked',stop:{code:'timeout'},run:{run_id:'r1',kind:'research',stages:{}}}};
+  const after={...before,job:{id:'j1',action:'resume',status:'running',started_at:new Date().toISOString(),run:{run_id:'r1',kind:'research',stages:{}}}};
+  app.responses.set('/api/projects/a',before);
+  app.run(`boot.capabilities={};project=${JSON.stringify(before)};lastJobSignature=projectJobSignature(project);overviewPage=false;step=PAGE.research;`);
+  const release=app.hold('/api/projects/a');
+  const polled=app.run('pollOnce()');
+  await settled();
+  // The server takes the resume; the poll above read the project before it.
+  app.responses.set('/api/projects/a/start',{});app.responses.set('/api/projects/a',after);
+  await app.run(`start('resume',{run_id:'r1'})`);
+  assert.equal(app.run('project.job.status'),'running');
+  release();await polled;
+  assert.equal(app.run('project.job.status'),'running','the late poll is older than the resume');
+  assert.equal(app.run('lastJobSignature'),'j1:running|','the signature stays the resumed job\'s');
+});
+
+// The fake page's fields take the values their markup was drawn with, as a browser's would.
+function fillForm(app, html) {
+  for(const m of html.matchAll(/<input id="([^"]+)"([^>]*)>/g)){
+    const field=app.run(`$(${JSON.stringify(m[1])})`), value=/value="([^"]*)"/.exec(m[2]);
+    if(value)field.value=value[1];
+    field.checked=/\bchecked\b/.test(m[2]);
+  }
+  for(const m of html.matchAll(/<select id="([^"]+)"[^>]*>([\s\S]*?)<\/select>/g)){
+    const selected=/value="([^"]*)" selected/.exec(m[2])||/value="([^"]*)"/.exec(m[2]);
+    if(selected)app.run(`$(${JSON.stringify(m[1])})`).value=selected[1];
+  }
+}
+
+test('reloading the ElevenLabs voices on the settings page keeps the edits typed before it',async()=>{
+  const app=studio();
+  await settled();
+  const settings={text:{provider:'auto',reasoning_effort:null,max_output_tokens:32768},audio:{provider:'elevenlabs_tts',voices:{host_a:'AAAAAAAAAAAAAAAAAAAA',host_b:'BBBBBBBBBBBBBBBBBBBB'}},
+    execution:{text:'sequential',audio:'sequential'},allowances:{fresh_attempts:0,extra_calls:0},research_limits:{model_calls:100,sources:10,search_rounds:5},text_timeout_seconds:1800};
+  app.responses.set('/api/elevenlabs/voices',{voices:[{voice_id:'AAAAAAAAAAAAAAAAAAAA',name:'Own A',category:'cloned'},{voice_id:'BBBBBBBBBBBBBBBBBBBB',name:'Own B',category:'cloned'}]});
+  app.run(`boot.elevenlabs_key_available=true;boot.audio_catalog={elevenlabs_tts:{label:'ElevenLabs',voices:[],models:{eleven_v4:'Eleven v4'},default_model:'eleven_v4'}};boot.text_catalog={presets:[]};
+    project=null;overviewPage=false;settingsPage=true;settingsData={global:true,settings:${JSON.stringify(settings)},key_available:true,elevenlabs_key_available:true};
+    settingsDraft=structuredClone(settingsData.settings);elevenVoices=[];render();`);
+  fillForm(app,app.elements.get('content').innerHTML);
+  app.run(`$("settings-calls").value="750";markSettingsDirty({id:'settings-calls'});`);
+  await app.run('loadElevenVoices(true)');
+  const html=app.elements.get('content').innerHTML;
+  assert.ok(html.includes('id="settings-calls" type="number" min="1" max="100000" step="1" value="750"'),'the typed call limit stays');
+  assert.ok(html.includes('Ungespeicherte Änderungen'));
+  assert.ok(html.includes('>Own A</option>'),'the voices arrived');
+});
+
+test('the header stop names the job the page showed, and a refusal for another job says so and reloads',async()=>{
+  const app=studio(),p=workflowProject(app);
+  await settled();
+  p.job.action='episodes';p.stops_after_episode=true;
+  app.run(`project=${JSON.stringify(p)};overviewPage=false;step=PAGE.production;render();`);
+  const bar=app.elements.get('job-bar').innerHTML;
+  assert.ok(bar.includes('data-action="stop" data-expected-job="job-one"'),bar);
+  assert.ok(bar.includes('data-action="stop_after" data-enabled="true" data-expected-job="job-one"'));
+  const now={...p,job:{...p.job,id:'job-two'}};
+  app.responses.set('/api/projects/test',now);
+  app.failures.set('/api/projects/test/stop',{status:409,body:{error:'Inzwischen läuft ein anderer Auftrag.',code:'job_changed',message_language:'de'}});
+  await tap(app,{action:'stop',expectedJob:'job-one'});
+  const sent=JSON.parse(app.requests.find(r=>r.path==='/api/projects/test/stop').options.body);
+  assert.equal(sent.expected_job_id,'job-one');
+  assert.equal(app.elements.get('notice').textContent,'Inzwischen läuft ein anderer Auftrag.');
+  assert.equal(app.run('project.job.id'),'job-two','the page shows the job that runs now');
+  app.failures.clear();
+  app.responses.set('/api/projects/test/stop_after',{stop_after_episode:true});
+  await tap(app,{action:'stop_after',enabled:'true',expectedJob:'job-two'});
+  assert.equal(JSON.parse(app.requests.find(r=>r.path==='/api/projects/test/stop_after').options.body).expected_job_id,'job-two');
+});
+
+test('the stopped-after line names the next episode with its title escaped once',()=>{
+  const app=studio(),p=workflowProject(app);
+  p.outline.plan.episodes[0].title='Kerbholz & Bank <1>';
+  app.run(`project=${JSON.stringify(p)};Object.assign(project.job,{status:'completed',stopped_after_episode:true,next_episode:'ep_001'});project.job.run.status='completed';overviewPage=false;renderJob();`);
+  const bar=app.elements.get('job-bar').innerHTML;
+  assert.ok(bar.includes('als Nächstes: Kerbholz &amp; Bank &lt;1&gt;'),bar);
+  assert.ok(!bar.includes('&amp;amp;'));
+});
+
+test('a poll the server never answers ends as a lost connection and lets the next poll run',async()=>{
+  const app=studio();
+  await settled();
+  const p=raceProject('a');
+  app.responses.set('/api/projects/a',p);
+  app.run(`boot.capabilities={};POLL_MS.timeout=20;project=${JSON.stringify(p)};lastJobSignature=projectJobSignature(project);overviewPage=false;step=PAGE.research;`);
+  app.hold('/api/projects/a');
+  await app.run('poll()');
+  assert.equal(app.run('connectionLost'),true);
+  assert.equal(app.run('pollRunning'),false,'the hung request holds no later poll');
+  await app.run('poll()');
+  assert.equal(app.run('connectionLost'),false,'the next answer ends the lost connection');
+});
+
+test('the overview moves a project that starts waiting for the editor to the front while it stays open',()=>{
+  const app=studio();
+  const order=[];
+  const card=id=>({id:'project-card-'+id,dataset:{projectCard:id},className:'',innerHTML:'',remove(){}});
+  const cards={a:card('a'),b:card('b')};
+  app.elements.set('project-card-a',cards.a);app.elements.set('project-card-b',cards.b);order.push(cards.a,cards.b);
+  app.elements.set('overview-projects',{querySelectorAll:()=>[...order],appendChild(node){order.splice(order.indexOf(node),1);order.push(node);},insertAdjacentHTML(){}});
+  app.run(`overviewPage=true;overviewData={projects:[{id:'a',topic:'A'},{id:'b',topic:'B',job:{status:'review_ready'}}],trash:[]};refreshOverview();`);
+  assert.deepEqual(order.map(c=>c.dataset.projectCard),['b','a']);
+  // Unchanged order moves nothing.
+  let moves=0;app.elements.get('overview-projects').appendChild=()=>{moves++;};
+  app.run('refreshOverview();');
+  assert.equal(moves,0);
+});
+
+test('the save bar sits above the episode player at the height the player has, also on a phone',async()=>{
+  const app=studio();
+  const props={};
+  app.context.document.documentElement={style:{setProperty(name,value){props[name]=value;}},removeAttribute(){},setAttribute(){}};
+  app.elements.get('episode-playback')||app.run('$("episode-playback")');
+  app.elements.get('episode-playback').offsetHeight=128;
+  app.elements.get('episode-playback').hidden=false;
+  app.run('syncPlayerOffset()');
+  assert.equal(props['--player'],'128px');
+  app.run('closePlayer()');
+  assert.equal(props['--player'],'0px');
+  const css=fs.readFileSync('src/podcast_automate/web/style.css','utf8');
+  assert.ok(css.includes('body.has-player .action-bar,body.has-player .composer{bottom:calc(var(--dock) + var(--tabbar) + var(--player,64px))}'));
+});
+
+test('a step without results and a worker that cannot be stopped offer the resume their texts promise',()=>{
+  const app=studio();
+  const info=(code,run=true)=>app.run(`stopInfo({status:'blocked',action:'resume',stop:{code:'${code}'},${run?"run:{run_id:'r',kind:'research',stages:{}}":"run:null"}})`);
+  const can=(code,run=true)=>app.run(`canResume({status:'blocked',action:'resume',stop:{code:'${code}'},${run?"run:{run_id:'r',kind:'research',stages:{}}":"run:null"}})`);
+  for(const code of ['missing_outputs','worker_stop']){
+    assert.ok(info(code).text.includes('„Fortsetzen“'),code);
+    assert.equal(can(code),true,`${code} resumes a run it carries`);
+    assert.ok(!info(code,false).text.includes('„Fortsetzen“'),`${code} without a run promises no resume`);
+    assert.equal(can(code,false),false);
+  }
+  assert.equal(info('missing_outputs').kind,'retry');
+  assert.equal(info('worker_stop').kind,'fix');
+});
+
+test('a local source outside the project folder has its own card that leads to the brief, not to a resume',()=>{
+  const app=studio();
+  app.run(`project={id:'p',config:boot.defaults,research:'dossier',job:{id:'j',status:'blocked',action:'research',message:'Lokale Quellen müssen im Projektordner liegen; außerhalb liegt: ../notes.md.',
+    stop:{code:'local_source_outside',run_kind:'research'},run:{run_id:'r',kind:'research',stages:{}}}};overviewPage=false;step=PAGE.research;render();`);
+  const info=app.run('stopInfo(project.job)');
+  assert.equal(info.title,'Lokale Quelle außerhalb des Projekts');
+  assert.equal(app.run('canResume(project.job)'),false,'a resume would stop at the same place');
+  const card=app.elements.get('stop-card').innerHTML;
+  assert.ok(!card.includes('data-action="resume"'));
+  assert.ok(card.includes('data-step="0"'),'the brief, where material is uploaded');
+  assert.ok(card.includes('data-action="research"'),'and the research anew');
+  assert.ok(card.includes('../notes.md'),'the message names the file');
+  const en=studio({language:'en'});
+  assert.equal(en.run(`stopInfo({status:'blocked',action:'research',stop:{code:'local_source_outside'},run:{run_id:'r',kind:'research',stages:{}}})`).title,'Local source outside the project');
 });

@@ -14,6 +14,7 @@ The key stays in memory and in the Authorization header; redirects are refused.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -48,6 +49,10 @@ ATTEMPTS = 4
 LIMIT_WORDS = ("key limit", "limit exceeded", "limit reached", "budget")
 BLOCK_WORDS = ("moderation", "flagged", "guardrail")
 BLOCK_METADATA = ("reasons", "flagged_input", "patterns")
+# A refusal is about one section's text only once some request of the scan was answered. Until then the scan asks one
+# request at a time, each from another source where it can, and stops after this many refusals without an answer: a
+# setting at OpenRouter that refuses every request is not a section to leave out (2026-11-14).
+REFUSALS_WITHOUT_ANSWER = 8
 
 
 class SectionRefused(Exception):
@@ -81,6 +86,15 @@ def forbidden(detail, secret):
                     code="jev_unavailable", status="blocked", details={"provider_message": reason} if reason else {})
 
 
+def number(value) -> float:
+    """A reported number (a probability, a cost), 0 for anything that is not one."""
+    try:
+        value = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
 class JevClient:
     def __init__(self, api_key=None, *, timeout=120):
         self._key = SecretStr((api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY", "")).strip())
@@ -105,7 +119,11 @@ class JevClient:
             try:
                 with build_opener(NoRedirect()).open(request, timeout=self.timeout) as response:
                     answer = json.loads(response.read(1024 * 1024))
-                return answer["answers"], float((answer.get("usage") or {}).get("cost") or 0)
+                # An answer of another shape (the endpoint is OpenRouter's alpha) is asked again like a broken one.
+                if not isinstance(answer, dict) or not isinstance(answer.get("answers"), dict):
+                    raise ValueError("unexpected Jev answer")
+                usage = answer.get("usage") if isinstance(answer.get("usage"), dict) else {}
+                return answer["answers"], number(usage.get("cost"))
             except HTTPError as exc:
                 code = exc.code
                 try:
@@ -203,9 +221,11 @@ def asked_pairs(index, sections, gaps, gap_terms=None):
 
 
 def load_scores(cache):
-    """The cached answers ``{(reference, gap): probability}`` and the pairs OpenRouter refused (``SectionRefused``),
-    which are not asked again either."""
-    scores, refused = {}, set()
+    """What ``cache`` holds: the answers ``{(reference, gap): probability}``, the pairs OpenRouter refused
+    (``SectionRefused``), which are not asked again either, and the requests and money of every line. A refusal counts
+    only beside an answer of the same scan (a refusal of every request is no section's), and a pair answered after a
+    refusal is answered. Lines written before a line kept its cost count no money."""
+    scores, refused, requests, cost = {}, set(), 0, 0.0
     if cache.exists():
         for line in cache.read_text(encoding="utf-8").splitlines():
             if line.strip():
@@ -213,7 +233,22 @@ def load_scores(cache):
                 for gap, probability in row["gaps"].items():
                     scores[(row["reference"], gap)] = probability
                 refused.update((row["reference"], gap) for gap in row.get("refused", ()))
-    return scores, refused
+                requests += 1
+                cost += number(row.get("cost"))
+    return scores, (refused - scores.keys()) if scores else set(), requests, cost
+
+
+def warm_up_order(pending):
+    """``pending``'s positions, one source after another in turn: the requests asked one at a time until one is
+    answered, so that one source whose texts OpenRouter refuses does not stand for the whole scan."""
+    by_source = {}
+    for position, item in enumerate(pending):
+        by_source.setdefault(item[0].split("#")[0], []).append(position)
+    order, queues = [], list(by_source.values())
+    while queues:
+        order += [queue.pop(0) for queue in queues]
+        queues = [queue for queue in queues if queue]
+    return order
 
 
 def scan(client, index, gaps, cache, *, progress=None, gap_terms=None):
@@ -226,51 +261,88 @@ def scan(client, index, gaps, cache, *, progress=None, gap_terms=None):
 
     A section whose text OpenRouter's moderation or a guardrail refuses is left out with its reason in ``cache`` and
     counted as ``refused_sections`` (D-211): Jev only proposes sections to read, and the word search still covers it,
-    so one refused text no longer stops the whole probe."""
+    so one refused text no longer stops the whole probe. That holds once a request of the scan was answered: before,
+    the scan asks one request at a time and stops with ``jev_unavailable`` after ``REFUSALS_WITHOUT_ANSWER`` refusals
+    without an answer, recording none of them, since a refusal of every request is a setting, not a section.
+
+    The summary counts the whole cache: ``requests`` and ``cost_usd`` are those of every request the scan made, also
+    before a stop and its resume, ``new_requests`` those of this call (2026-11-14: a resumed scan counted only the
+    requests after the resume, and the money before the stop never reached the run's spending)."""
     client.require_key()
     sections = candidate_sections(index)
     asked = asked_pairs(index, sections, gaps, gap_terms)
-    scores, refused = load_scores(cache)
+    scores, refused, _, _ = load_scores(cache)
     pending = []
     for reference, title, text in sections:
         open_gaps = [gid for gid in asked.get(reference, ()) if (reference, gid) not in scores
                      and (reference, gid) not in refused]
         for start in range(0, len(open_gaps), QUESTIONS_PER_REQUEST):
             pending.append((reference, title, text, open_gaps[start:start + QUESTIONS_PER_REQUEST]))
-    lock, spent, done = threading.Lock(), [0.0], [0]
+    lock, done = threading.Lock(), [0]
     cache.parent.mkdir(parents=True, exist_ok=True)
 
-    def ask(item):
+    def request(item):
+        """One request's cache line; a refused one names its gaps under ``refused``."""
         reference, title, text, batch = item
         questions = {f"g{n}": gap_question(gaps[gid]) for n, gid in enumerate(batch)}
         try:
             answers, cost = client.decide(f"Source: {title}\n\n{text[:SECTION_CHARS]}", questions)
         except SectionRefused as refusal:
-            row, cost = {"reference": reference, "gaps": {}, "refused": list(batch), "reason": refusal.reason}, 0.0
-        else:
-            row = {"reference": reference, "gaps": {gid: float((answers.get(f"g{n}") or {}).get(BOOL_TYPE) or 0)
-                                                    for n, gid in enumerate(batch)}}
+            return {"reference": reference, "gaps": {}, "refused": list(batch), "reason": refusal.reason}
+        rows = answers if isinstance(answers, dict) else {}
+        probabilities = {}
+        for n, gid in enumerate(batch):
+            value = rows.get(f"g{n}")
+            probabilities[gid] = number(value.get(BOOL_TYPE)) if isinstance(value, dict) else 0.0
+        return {"reference": reference, "gaps": probabilities, "cost": number(cost)}
+
+    def record(row):
         with lock:
             with cache.open("a", encoding="utf-8") as sink:
                 sink.write(json.dumps(row) + "\n")
-            scores.update({(reference, gid): p for gid, p in row["gaps"].items()})
-            refused.update((reference, gid) for gid in row.get("refused", ()))
-            spent[0] += cost
+            scores.update({(row["reference"], gid): p for gid, p in row["gaps"].items()})
+            refused.update((row["reference"], gid) for gid in row.get("refused", ()))
             done[0] += 1
             if progress:
                 progress(done[0], len(pending))
 
-    if pending:
+    remaining = list(range(len(pending)))
+    if pending and not scores:
+        # No request of this scan has been answered yet: one at a time until one is.
+        held = []
+        for position in warm_up_order(pending):
+            remaining.remove(position)
+            row = request(pending[position])
+            if "refused" not in row:
+                record(row)
+                break
+            held.append(row)
+            if len(held) >= REFUSALS_WITHOUT_ANSWER:
+                break
+        if not scores and held:
+            reason = held[-1]["reason"]
+            raise AppError(f"OpenRouter hat {len(held)} Anfragen der Jev-Lückenprobe abgewiesen, ohne eine zu beantworten: "
+                           f"{reason}. Die Einstellung bei OpenRouter prüfen oder die Jev-Lückenprobe ausschalten.",
+                           code="jev_unavailable", status="blocked", details={"provider_message": reason})
+        for row in held:
+            record(row)
+
+    def ask(position):
+        record(request(pending[position]))
+
+    if remaining:
         with ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="jev") as pool:
-            for _ in pool.map(ask, pending):
+            for _ in pool.map(ask, remaining):
                 pass
+    _, refused, requests, cost = load_scores(cache)
     titles = {reference: (title, text) for reference, title, text in sections}
     wanted = {(reference, gid) for reference, gap_ids in asked.items() for gid in gap_ids}
     found = {gid: sorted(((ref, titles[ref][0], p, titles[ref][1][:400]) for (ref, g), p in scores.items()
                           if g == gid and p >= THRESHOLD and (ref, g) in wanted), key=lambda row: (-row[2], row[0]))
              for gid in gaps}
     summary = {"model": JEV_MODEL, "version": JEV_PROBE_VERSION, "threshold": THRESHOLD, "sections": len(sections),
-               "asked_pairs": len(wanted), "max_requests": MAX_REQUESTS, "requests": len(pending),
+               "asked_pairs": len(wanted), "max_requests": MAX_REQUESTS, "requests": requests,
+               "new_requests": done[0],
                "refused_sections": len({reference for reference, gid in refused if (reference, gid) in wanted}),
-               "cost_usd": round(spent[0], 6)}
+               "cost_usd": round(cost, 6)}
     return found, summary

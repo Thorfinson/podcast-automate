@@ -2,7 +2,7 @@
 title: Gotchas
 doc_type: gotchas
 status: current
-last_reviewed: 2026-11-03
+last_reviewed: 2026-11-15
 ---
 
 # Gotchas
@@ -25,7 +25,12 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   `tools/ffmpeg/bin` themselves (`platforms.configure_path`). ([FFmpeg](OPERATIONS.md#ffmpeg))
 - ⚠ **After a fresh checkout, audio assembly fails because FFmpeg is missing:** `tools/ffmpeg/` is git-ignored. Run
   `scripts/setup-ffmpeg.ps1` again. ([FFmpeg](OPERATIONS.md#ffmpeg))
-- ✓ **Setup stops with „Die vorhandene .venv passt nicht zu diesem System …“ (or the same for `.venv-tts`):** virtual
+- ⚠ **`setup-ffmpeg.ps1` fails with "running scripts is disabled on this system":** Windows 11's default execution
+  policy runs no PowerShell script. Start it as `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\scripts\setup-ffmpeg.ps1`, which allows this one call and leaves the policy as it is (the same for
+  `setup-qwen.ps1`). ([FFmpeg](OPERATIONS.md#ffmpeg))
+- ✓ **Setup stops with "The existing .venv does not belong to this system …" (or "The existing .venv-tts belongs to
+  another system …"):** virtual
   environments copied from another computer are system-specific. Do not copy them; set them up on the new machine
   (`scripts/setup.sh` and `scripts/setup-qwen.py` detect the copy). ([Move to another computer](OPERATIONS.md#move-to-another-computer))
 - ⚠ **An old running job fails or misbehaves after a move to another computer:** runs contain absolute paths and
@@ -115,6 +120,16 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ⚠ **Exports of an English project come out in English in a German Studio, and the other way round:** exports
   follow the project's content language (`language` in `project.yaml`), not the interface language.
   ([Languages](ARCHITECTURE.md#languages))
+- ⚠ **A run past call 999 shows an old call as its current one:** `calls/call_1000` sorts before `call_101` by name.
+  Never sort `calls/call_*` by name; use `call_folders.numbered`.
+  ([Per-call records](ARCHITECTURE.md#per-call-records))
+- ⚠ **`studio_settings` cannot use `storage.read_text`:** `storage` imports `studio_settings`, so the settings module
+  has its own retrying `read_text`.
+- ⚠ **Closing a pipe that another thread writes into blocks:** the close waits until that write ends. Stop the child
+  process first, then close its pipes (`process.stop_process_tree`).
+- ⚠ **A lone surrogate in a model answer breaks a run later:** pydantic accepts it, but `json.dump`, `write_text` and
+  `digest` then fail. Provider text goes through `call_activity.whole_text`, which joins split halves and turns a
+  lone one into U+FFFD. ([Text provider adapters](ARCHITECTURE.md#text-provider-adapters))
 
 ## Research
 
@@ -154,6 +169,20 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **A research run stops on a text-call timeout:** the call time limit (`runtime.text_timeout_seconds`, default
   1800) is too low for the call. Raise it on the settings page, or in `project.yaml` without workspace settings, and
   resume the same run; it does not bind the run (`storage.bound_brief`). ([Time limits and stalls](RESEARCH.md#time-limits-and-stalls))
+- ⚠ **After a parser update (`sources.EXTRACTION_VERSION`) a run's sources still read as before:** a run with a
+  question ledger keeps its old extraction, since the ledger binds its sources by their text (D-213). To read them with
+  the new parser, start a new research run; `--reuse-sources` refuses sources of an older parser version.
+  ([Resuming interrupted and older runs](RESEARCH.md#resuming-interrupted-and-older-runs))
+- ⚠ **A new way of starting a working pass on a sub-question:** `pass_web_start` is set only where a pass begins (a
+  reopening, an advisor's or editor's attempt, a revalidation); a new path that starts a pass must set it too, or the
+  answer lock counts the searches of the earlier pass (D-215).
+- ⚠ **A server error escapes the source import:** `http.client`'s exceptions (`BadStatusLine`, `IncompleteRead`,
+  `HTTPException`) are no `OSError`, and urllib wraps only connect and send failures in `URLError`, not the errors of
+  `getresponse()`; a raw timeout therefore means the request was sent. `zipfile` raises `zlib.error`, `RuntimeError`
+  and `NotImplementedError`, and `HTMLParser` gives `None` for an attribute without a value. Catch them as a failed
+  source (D-218).
+- ⚠ **A short download looks complete:** `HTTPResponse.read(n)` blocks until `n` bytes arrive and does not raise when
+  the body falls short of `Content-Length`; read with `read1` and compare the sizes (`sources.py`).
 
 ## Scripts
 
@@ -195,6 +224,10 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   2026-11-01:** it takes the established terms from the earlier episodes' `teaching_plan.yaml`. Plans written before
   `Concept.terms` carry opaque concept IDs (`c01`, `c07_kv_cache`), and episodes the story agent wrote have no teaching
   plan at all (D-184). Pass the spoken terms with `--terms "Token,Query,…"`. ([Advisories](TEACHING.md#advisories))
+- ⚠ **The story agent's command scripts are not in its folder:** since `story_agent.v6-commands` they and their
+  `context.json` lie in `story/<ep>.commands/` beside it, and the story folder holds no `context.json` (D-222). A
+  session left running across the code update falls back to the folder's own `context.json`.
+  ([What the session gets](SCRIPTS.md#what-the-session-gets))
 
 ## Audio
 
@@ -209,7 +242,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   change to that file ends the resumability of every recording of that route not yet finished (`inputs_changed`;
   Transformer ep_010, 2026-10-04). Approve the episode again: the new run takes every segment or passage already
   spoken from `cache/audio/gemini` or `cache/audio/google`, whose keys hold the text and the voices, not the code.
-  Change an engine file only while no recording of its route is open.
+  Change an engine file only while no recording of its route is open. Line endings alone no longer count: the hash is
+  taken of the file's LF form, and the raw and the CRLF hash stay accepted on resume (D-233). After the
+  `.gitattributes` change of 2026-11-14 the next checkout writes the four engine files with LF on Windows too.
 - ✓ **Switching an episode from OpenRouter to Google records it completely again:** the two routes share no cache
   (one segment against a passage of several) and an approval names its provider. The old recording stays until the
   new one is published.
@@ -224,9 +259,11 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **Google stops a recording with `google_quota` at once instead of waiting:** the key's daily quota is used up,
   which waiting minutes cannot lift. Resume after the quota resets, or raise the tier in Google AI Studio.
   ([Keys, errors and limits](AUDIO.md#keys-errors-and-limits))
-- ⚠ **A literal pipe in a spoken text becomes a listener reaction in a Google recording:** Google reads text
-  between pipes (`|mhm|`) as the other host's reaction. The expression check admits only the listed reactions, but a
-  pipe in the script itself or a spoken form would be taken the same way; write it out instead.
+- ✓ **A literal pipe or angle bracket in a spoken text:** since 2026-11-14 `<`, `>` and `|` in a segment's text or a
+  spoken form are spoken as words, and a lone `|` is dropped (D-232), so a pipe there no longer becomes the other
+  host's reaction and ElevenLabs no longer drops the words inside an unknown `<…>`. A reaction can no longer be
+  written into a spoken form: only the expression layer places reactions (`|mhm|`).
+  ([Segments, cache and assembly](AUDIO.md#segments-cache-and-assembly))
 - ✓ **Every chapter of a Qwen recording fails as `invalid_audio` after the GPU work:** `runtime.tts_revision` was
   `main`, while the worker records the commit it actually loaded. `pla init` pins the known commit
   (`cli.pinned_revision`); when it knows none it says so, and you enter the commit in `project.yaml` before the first
@@ -239,8 +276,8 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   continues only runs with unchanged inputs. Start a new `audio-probe` run.
   ([Make a sample and resume it](OPERATIONS.md#make-a-sample-and-resume-it))
 - ⚠ **An audio run started before a code update refuses to resume:** the run hashes its worker files (`speech.py`,
-  `qwen_worker.py`), so a change to them makes its inputs differ. Start a fresh audio run; approvals stay valid, and
-  cached segments whose spoken text equals their script text are reused.
+  `qwen_worker.py`), so a change to their content makes its inputs differ (line endings alone do not, D-233). Start a
+  fresh audio run; approvals stay valid, and cached segments whose spoken text equals their script text are reused.
 - ✓ **A Gemini recording stops at once with `openrouter_privacy` (HTTP 404):** the OpenRouter account allows only Zero
   Data Retention providers, which excludes Google's speech model. Allow it at openrouter.ai/settings/privacy, then
   resume; the error names the setting (`speech.py`). ([Keys, errors and limits of the check](AUDIO.md#keys-errors-and-limits-of-the-check))
@@ -253,9 +290,9 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
 - ✓ **The audio approval or a re-render is refused after "Place expression again":** the approval is bound to the hash of
   the expression tags you read. Read the episode again with the current tags and approve again.
   ([Tags are part of reading the script](AUDIO.md#tags-are-part-of-reading-the-script))
-- ✓ **An episode near the part length fails with `duration_exceeded` after paid synthesis:** parts were sized with the
-  planned pause instead of the applied minimum. Partitioning and assembly now use the same `audio.applied_pause`
-  (`episode_audio.segment_durations`). ([Pause minimums](AUDIO.md#pause-minimums))
+- ✓ **An episode near the part length failed with `duration_exceeded` after paid synthesis:** until 2026-10-04 parts
+  were sized with the planned pause instead of the applied minimum. Since one episode is one MP3 (D-128) there are no
+  parts, and assembly applies the minimums through `audio.applied_pause`. ([Pause minimums](AUDIO.md#pause-minimums))
 - ⚠ **A player shows no „KI-generiert“ (AI-generated) comment for an exported MP3:** FFmpeg 9 writes the `comment`
   tag as a TXXX frame named "comment", not as a COMM frame, and a player that reads only COMM shows nothing. The tags
   are there (`ai_marking_embedded` in `audio_report.json`, read back with ffprobe); a real COMM frame would need a
@@ -297,4 +334,10 @@ stage docs, unknowns in the verification list of the [MVP acceptance plan](specs
   `storage.read_text`. ([Rules for the tests themselves](../AGENTS.md#rules-for-the-tests-themselves))
 - ⚠ **The Python suite is green, but the audio integration tests were skipped:** they run only when `ffmpeg` and
   `ffprobe` are on `PATH` (`skipUnless(shutil.which("ffmpeg") …)`), and `scripts/setup-ffmpeg.ps1` does not change the
-  system `PATH`. Run the two `PATH` lines from [FFmpeg](OPERATIONS.md#ffmpeg) before the suite.
+  system `PATH`. Run the two `PATH` lines from [FFmpeg](OPERATIONS.md#ffmpeg) before the suite. In CI every test leg
+  checks `ffmpeg -version && ffprobe -version` first and fails without them.
+- ⚠ **A browser test that sets `project` too early:** the page's start-up read ends on the overview, which counts as
+  leaving the project, so its replies would be dropped (D-241). `await settled()` before setting `project`.
+- ✓ **A Studio test picks up the machine's keys or starts a real worker:** the Studio tests blank every key variable
+  (`ELEVENLABS_API_KEY` and the others of `key_store.SECRET_VARIABLES`) and guard against a real `studio_worker`
+  start.

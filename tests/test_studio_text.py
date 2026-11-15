@@ -125,7 +125,7 @@ class CatalogTests(unittest.TestCase):
         with using("en"):
             one, many = t("server.audio.capacity", count=1), t("server.audio.capacity", count=3)
         self.assertEqual((one.language, one.key), ("en", "server.audio.capacity"))
-        self.assertEqual(str(many), "All 3 recording places are taken. Finish or stop an episode being recorded.")
+        self.assertEqual(str(many), "All 3 recording slots are taken. Finish or stop an episode being recorded.")
         self.assertNotEqual(str(one), str(many))
         self.assertEqual(t("server.audio.capacity", count=1),
                          "Alle 1 Plätze für die Vertonung sind belegt. Eine laufende Folge fertigstellen oder anhalten.")
@@ -257,12 +257,44 @@ class BoundaryTests(unittest.TestCase):
                     for keyword in node.keywords:
                         if keyword.arg == "code":
                             codes |= literal(keyword.value)
+                # A code set on a job or a record directly (review 2026-11-14: the worker's processing_failed had no
+                # text): job["error_code"] = …, record.update(error_code=…), {"error_code": …}.
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Subscript) and literal(target.slice) == {"error_code"}:
+                            codes |= literal(node.value)
+                if isinstance(node, ast.Call):
+                    codes |= {code for keyword in node.keywords if keyword.arg == "error_code"
+                              for code in literal(keyword.value)}
+                if isinstance(node, ast.Dict):
+                    codes |= {code for key, value in zip(node.keys, node.values)
+                              if key is not None and literal(key) == {"error_code"} for code in literal(value)}
         self.assertGreater(len(codes), 150, "the pattern no longer finds the pipeline's codes")
         german, english = studio_text.catalog("de"), studio_text.catalog("en")
         self.assertEqual(sorted(code for code in codes if f"error.code.{code}" not in german
                                 or f"error.code.{code}" not in english), [], "every code needs its text in both catalogs")
         texts = {key[len("error.code."):] for key in english if key.startswith("error.code.")}
         self.assertEqual(sorted(texts - codes), [], "a text for a code no module raises")
+
+    def test_every_catalog_key_is_named_by_the_page_or_the_studio(self):
+        """A key nothing names is dead text (review 2026-11-14: ten were left over, among them the provider notes the
+        page no longer read). A key counts as named when the page (app.js, index.html) or a module names it whole, or
+        names its start up to a dot that a template, an f-string or a concatenation completes at run time."""
+        web = PACKAGE / "web"
+        texts = [(web / "app.js").read_text(encoding="utf-8"), (web / "index.html").read_text(encoding="utf-8"),
+                 *self.sources().values()]
+        whole, prefixes = set(), set()
+        for text in texts:
+            for literal in re.findall(r"[\"'`]([a-z_][\w.-]*)[\"'`]", text):
+                whole.add(literal)
+                if literal.endswith("."):
+                    prefixes.add(literal)  # "message.exception." + name, key.startswith("pipeline.activity.")
+            # `stop.${code}.title` in the page, f"progress.activity.{schema}" in a module.
+            prefixes.update(re.findall(r"[`\"']([a-z_][\w-]*(?:\.[\w-]+)*\.)(?:\$\{|\{)", text))
+        self.assertGreater(len(prefixes), 40, "the pattern no longer finds the page's key prefixes")
+        unnamed = sorted(key for key in studio_text.catalog("en")
+                         if key not in whole and not any(key.startswith(prefix) for prefix in prefixes))
+        self.assertEqual(unnamed, [], "a key nothing names")
 
 
 if __name__ == "__main__":

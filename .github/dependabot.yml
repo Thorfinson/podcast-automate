@@ -1,5 +1,6 @@
 # Weekly update pull requests for the workflows' actions and the package's Python dependencies. They run the same CI
-# as every pull request; a major version waits for a maintainer's read of its changelog (CONTRIBUTING.md).
+# as every pull request; a major version waits for a maintainer's read of its changelog (CONTRIBUTING.md). The actions
+# are pinned by commit SHA with the version as a comment; Dependabot moves both together.
 version: 2
 updates:
   - package-ecosystem: github-actions

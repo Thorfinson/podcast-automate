@@ -2,7 +2,7 @@
 title: Product
 doc_type: product
 status: current
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-15
 covers:
   - src/podcast_automate/text_settings.py
   - src/podcast_automate/speech.py
@@ -21,7 +21,7 @@ Podcast Automate is a personal research-to-podcast system. You give it a topic; 
 web with evidence, plans a deep-dive series, writes and reviews dialogue scripts and records approved episodes as
 MP3. Everything runs locally. Model calls go through your Claude or Codex subscription, through OpenRouter or through
 Claude Code on your own Anthropic API key, web searches through the text model's own tools or through Perplexity,
-speech through local Qwen or Gemini.
+speech through local Qwen, Gemini or ElevenLabs.
 
 The main case is a personal deep-dive podcast series on a given topic; scope and desired depth decide the number of
 episodes and the total duration (why: D-001). How long a series, an episode and a recorded part may be is set in
@@ -41,10 +41,9 @@ Windows, macOS and Linux. The target machine for local speech output has an AMD 
 uses the existing subscriptions (ChatGPT/Codex and Claude Max) through the official CLIs; local speech output and
 automatic audio assembly are part of the MVP. Additional paid APIs and manual audio editing are not required.
 
-Version 0.1 implements project management, the browser Studio, question-driven research up to the reviewed dossier,
+Version 0.2 implements project management, the browser Studio, question-driven research up to the reviewed dossier,
 series planning, dialogue scripts written episode by episode by a Claude Code agent and reviewed against the sources,
-and the recording of approved scripts
-with local Qwen or with Gemini through Google or OpenRouter. The [Roadmap](#roadmap) lists what is not built yet, the
+and the recording of approved scripts with local Qwen, with Gemini through Google or OpenRouter, or with ElevenLabs. The [Roadmap](#roadmap) lists what is not built yet, the
 [MVP acceptance plan](specs/2026-09-10-mvp-acceptance-plan.md) the acceptance criteria.
 
 ### Main use cases
@@ -91,7 +90,7 @@ Every model answer must satisfy a strict JSON schema and is checked deterministi
 
 **Text and audio are chosen independently**, for example Codex plans and reviews the script and Gemini records it
 through Google; the script itself is always written by the story agent, Claude Opus 5.5 (below). **Codex** is the locally installed Codex CLI with a ChatGPT subscription login, **Claude** the Claude Code
-CLI with a claude.ai login (Claude Max subscription). The text models do not run offline on the PC, and neither
+CLI with a claude.ai login (any Claude subscription; a whole series uses much of a plan's quota). The text models do not run offline on the PC, and neither
 subscription bills individual calls. OpenRouter serves text models with structured JSON answers, paid from your
 OpenRouter credit. **Claude on the API key** (`claude_api`) is the Claude Code CLI on your own Anthropic API key, for
 use without a subscription: every call, web research included, is billed to your Anthropic account, and a run needs a
@@ -191,14 +190,14 @@ messages of the pipeline modules that `pla status`, `pla quota` and `pla approve
 | Command | Purpose | Main options |
 | --- | --- | --- |
 | `pla studio [<workspace>]` | Open the guided Studio locally in the browser (`http://127.0.0.1:8765`) | `--port 8765`, `--no-browser`, `--lan` (on Windows `Podcast-Studio-WLAN.cmd`) for a phone in the home network; [Starting the Studio](STUDIO.md#starting-the-studio) |
-| `pla init <project> --topic "…"` | Create a project with a validated brief; records the Qwen revision this computer already uses | `--total-minutes <minutes>` (optional planning wish, see [Project brief](CONFIGURATION.md#project-brief)), `--tts-python` (Python of the separate Qwen environment), `--trial` (a [trial project](BUSINESS_LOGIC.md#trial-project): one episode of at most 20 minutes, a research plan of at most three sub-questions and small limits per run; only with it may `--topic` be left out, for a narrow sample topic; why: D-157) |
+| `pla init <project> --topic "…"` | Create a project with a validated brief; records the Qwen revision this computer already uses | `--language de-DE\|en-US` (the language of the series; default `de-DE`), `--total-minutes <minutes>` (optional planning wish, see [Project brief](CONFIGURATION.md#project-brief)), `--tts-python` (Python of the separate Qwen environment), `--trial` (a [trial project](BUSINESS_LOGIC.md#trial-project): one episode of at most 20 minutes, a research plan of at most three sub-questions and small limits per run; only with it may `--topic` be left out, for a narrow sample topic in the project's language, „Wie entsteht ein Regenbogen?“ or, with `--language en-US`, "How does a rainbow form?"; why: D-157) |
 | `pla new-version <project>` | Start the next version of a project beside it: the same brief, attachments, provided works and choices, none of its runs; the newest completed research run's sources come along as a starting library ([New versions](STUDIO.md#new-versions)) | `--to <folder>` (default: `<topic>-v<n>-<id>` beside the old version) |
 | `pla doctor [<project>]` | Check installation, Codex and Claude login, subscription quota, Claude on the API key (`ANTHROPIC_API_KEY` set and Claude Code recent enough), the Perplexity search (`PERPLEXITY_API_KEY` set; informational), TTS environment and catalog age; no model call | `--skip-tts` checks without local Qwen |
 | `pla quota` | Show the quota of both subscriptions without a model call | |
 | `pla research <project>` | Run kind `research`: live search, source import, dossier and source review up to the reviewed dossier | `--backend codex_cli\|claude_code\|claude_api\|auto`, or `openrouter` with `--web-search perplexity`, `--web-search model\|perplexity` (web search of a new run; the Perplexity key from `PERPLEXITY_API_KEY`), `--api-key` (hidden prompt for the Anthropic key of `claude_api` or the OpenRouter key, else `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`), `--model`, `--reasoning-effort`, `--approve-plan`, `--reuse-sources RUN_ID`, `--seed-corpus RUN_ID`; [Starting and resuming](RESEARCH.md#starting-and-resuming) |
-| `pla script <project>` | Run kind `script`: compact knowledge model, series plan and dialogue scripts written by the story agent and reviewed, for reading | `--episode ep_001` (bring one episode forward; without it all planned scripts are written), `--from-outline RUN_ID` with `--episode` (write that episode of an approved outline without planning again), `--revise EPISODE_ID` with `--feedback` (the story agent revises the published episode), `--backend codex_cli\|openrouter\|claude_code\|claude_api\|auto`, `--model`, `--reasoning-effort`, `--api-key` (hidden prompt for the OpenRouter or Anthropic key), `--max-output-tokens`, `--jev-probe`, `--web-search model\|perplexity` (supplementary research of a new run; the Perplexity key from `PERPLEXITY_API_KEY`); [Running a script job](SCRIPTS.md#running-a-script-job) |
+| `pla script <project>` | Run kind `script`: compact knowledge model, series plan and dialogue scripts written by the story agent and reviewed, for reading | `--episode ep_001` (bring one episode forward; without it all planned scripts are written), `--from-outline RUN_ID` with `--episode` (write that episode of an approved outline without planning again), `--revise EPISODE_ID` with `--feedback` (the story agent revises the published episode), `--minutes N` with `--revise` or `--from-outline` (that episode's own length, 10 to 60 minutes; default the plan's), `--backend codex_cli\|openrouter\|claude_code\|claude_api\|auto`, `--model`, `--reasoning-effort`, `--api-key` (hidden prompt for the OpenRouter or Anthropic key), `--max-output-tokens`, `--jev-probe`, `--web-search model\|perplexity` (supplementary research of a new run; the Perplexity key from `PERPLEXITY_API_KEY`); [Running a script job](SCRIPTS.md#running-a-script-job) |
 | `pla series-review <project>` | Run kind `series_review`: review the scripts of a published script run as a series, without changing that run | `--run <run_id>` (default: the last published), `--backend codex_cli\|claude_code\|claude_api\|auto` (`claude_api` takes its key from `ANTHROPIC_API_KEY`), `--model`, `--reasoning-effort`; [Series review](SCRIPTS.md#series-review) |
-| `pla audio <project> --episode ep_001 --approve-audio` | Run kind `episode_audio`: record one read and approved episode with local Qwen, assemble it and export MP3, chapters, transcript and show notes. Gemini via OpenRouter is chosen in the Studio | `--approval-note` |
+| `pla audio <project> --episode ep_001 --approve-audio` | Run kind `episode_audio`: record one read and approved episode with local Qwen, assemble it and export MP3, chapters, transcript and show notes. Gemini through Google or OpenRouter and ElevenLabs record only from the Studio | `--approval-note` |
 | `pla publish-kit <project> --episode ep_001` | Companion kit of one published episode for uploading it to a podcast platform: a short description, an episode description of at most 4,000 characters with chapter marks (`00:00 Title`) and sources appended, and the source list. One call of the script run's text model writes the two descriptions and is reused while the script is unchanged; chapters and sources are built from the recording and the research without a model. Writes `publish/` next to the recording, or `episodes/<ep>/publish/` without one; publishes nothing | `--fresh` asks for new descriptions; an OpenRouter script run takes its key from `OPENROUTER_API_KEY`, a `claude_api` one from `ANTHROPIC_API_KEY` |
 | `pla publish-kit <project> --podcast` | Companion kit of the whole podcast: a short description and a description of the podcast for Spotify and Apple Podcasts, the sources of every episode in one list, and the transcript of every published episode with a heading per chapter and its measured start. One call of the newest script run's text model writes the two descriptions from the episodes' plans and chapter titles and is reused while they are unchanged; transcript and sources are built without a model. Writes `publish/` in the project; publishes nothing | `--fresh`; the keys as for `--episode` |
 | `pla status <project>` | Progress, finished episodes, concrete pause or failure reasons and failure logs | `--run-id` |

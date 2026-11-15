@@ -221,9 +221,16 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config,
         write_yaml(folder / "script.yaml", script.model_dump())
         write_json(folder / "latest.json", {"run_id": manifest.run_id, "episode_ids": [entry.episode_id]})
         atomic_text(folder / "script.md", render_script(script, host_labels(config)))
-        # The story agent's own plan (D-181); an episode written before D-184 published its teaching plan instead.
+        # The story agent's own plan (D-181); an episode written before D-184 published its teaching plan instead. A
+        # revision's session could finish without one until check.py asked for it (2026-11-14 review: publish then
+        # stopped on every resume): such an episode is published without a plan, and the plan of the text it replaces
+        # goes, since it plans another text.
         story = work / "story" / entry.episode_id
-        atomic_text(folder / "story_plan.md", (story / "plan.md").read_text(encoding="utf-8"))
+        plan_file = story / "plan.md"
+        if plan_file.is_file():
+            atomic_text(folder / "story_plan.md", plan_file.read_text(encoding="utf-8"))
+        else:
+            (folder / "story_plan.md").unlink(missing_ok=True)
         atomic_text(folder / "show_notes.md", render_show_notes(script, entry, dossier, source_map,
                                                                 research_id=research_id, run_id=manifest.run_id,
                                                                 language=config.language))
@@ -238,7 +245,7 @@ def publish_scripts(root, work, *, plan, entries, dossier, sources, config,
             "advisories": advisories(script, entry, metrics, language=config.language,
                                      terms=established_terms(episode_continuity(work, entry)))}
         outputs.extend(folder / name for name in ("episode_plan.yaml", "story_plan.md", "script.yaml", "script.md",
-                                                  "show_notes.md", "latest.json"))
+                                                  "show_notes.md", "latest.json") if (folder / name).is_file())
     quality_path = root / "reports/script_quality.yaml"
     previous = read_yaml(quality_path) if quality_path.is_file() else {}
     # The top-level ``run_id`` is this run; each episode entry names the run that judged its text.
