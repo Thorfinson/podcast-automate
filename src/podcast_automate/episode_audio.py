@@ -344,14 +344,14 @@ def recording_unmarked(root, report):
 
 
 def steady_choice(choice, language):
-    """``choice`` as ``language`` speaks it, without what the montage alone does with the takes (the tempo) and without
-    the expression switch, which same_audio_generation leaves out too."""
+    """``choice`` as ``language`` speaks it, without what the montage alone does with the takes (the tempo). The
+    expression switch stays in, unlike in same_audio_generation: a remix speaks the tags of the recording it remixes,
+    so a switch turned on would keep an episode without expression and one turned off would speak the old tags again
+    (Codex review on #30)."""
     spoken = choice.for_language(language)
     data = spoken.model_copy(update={"pace": {key: pace.model_copy(update={"tempo": 1.0})
                                               for key, pace in spoken.pace.items()}}).model_dump()
-    data = AudioChoice.model_validate(data).model_dump()
-    data.pop("expression", None)
-    return data
+    return AudioChoice.model_validate(data).model_dump()
 
 
 def montage_only(root, report, choice, voices, music, language):

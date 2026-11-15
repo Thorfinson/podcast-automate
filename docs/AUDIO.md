@@ -146,7 +146,8 @@ after the last word (`music.py`, `audio.assemble`; why: D-189). `<project>/studi
 - A recording made before the music came is not current any more ("changed: music" („geändert: Musik“)). Since the music is mixed in
   the montage only, recording such an episode again takes every take from the cache: a new approval, no new speech.
 - **Montage-only re-recordings** (why: D-231). When only the music, the tempo or the AI marking differ, the new
-  recording speaks the expression tags the latest recording spoke, so nothing is spoken again. A recording whose MP3
+  recording speaks the expression tags the latest recording spoke, so nothing is spoken again. The expression switch
+  must be the same as at that recording; one turned on or off makes it a new recording. A recording whose MP3
   lacks the AI marking (`audio_report.json` without `ai_marking_embedded: true`) counts as outdated with the reason
   `ai_marking` („KI-Kennzeichnung“) and is offered in the same card as the music-only ones, assembled again from the
   cache. All 64 recordings current in the user's projects on 2026-11-14 were marked.

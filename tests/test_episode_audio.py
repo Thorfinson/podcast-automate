@@ -513,6 +513,24 @@ class SpokenSymbolsTests(unittest.TestCase):
         self.assertIs(spoken_symbols(plain, "de-DE"), plain)
 
 
+class MontageOnlyTests(unittest.TestCase):
+    def test_a_remix_that_also_switches_expression_is_a_new_recording(self):
+        # Codex review on #30: with the expression switch left out of the comparison, a recording made without
+        # expression and remixed for new music with expression switched on reused its empty tags, so the episode stayed
+        # without expression although the choice now asked for it; switched off, the old tags were spoken again.
+        from podcast_automate.episode_audio import montage_only
+        voices = {"host_a": "Erinome", "host_b": "Sadachbia"}
+        plain = AudioChoice(provider="google_gemini_tts", voices=voices)
+        tagged = plain.model_copy(update={"expression": True})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for before, after, remix in ((plain, plain, True), (tagged, tagged, True),
+                                         (plain, tagged, False), (tagged, plain, False)):
+                report = {"voices": voices, "audio_generation": before.model_dump(), "music": None, "parts": []}
+                self.assertIs(montage_only(root, report, after, voices, "theme", "de-DE"), remix,
+                              (before.expression, after.expression))
+
+
 class ListeningSheetTests(unittest.TestCase):
     def test_an_episode_in_parts_names_the_part_of_every_row(self):
         """2026-10-02: each part's times start at 0:00, so a two-part sheet listed "0:00" twice without saying where."""
