@@ -48,7 +48,7 @@ dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "pypdf[fonts,crypto]>=6.18.1
 
 [project.optional-dependencies]
 # Contributor tools: `python -m pip install -e ".[dev]"`. CI installs the Ruff version pinned here (tests.yml).
-dev = ["ruff==0.17.4"]
+dev = ["ruff==0.17.6"]
 
 [project.urls]
 Homepage = "https://github.com/Thorfinson/podcast-automate"
